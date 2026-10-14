@@ -75,7 +75,8 @@ const rangeSchema = z.object({
 				text: z.string(),
 			}),
 		)
-		.min(1),
+		.min(1)
+		.max(500),
 });
 const actionSchema = z.discriminatedUnion("action", [
 	listSchema,

@@ -113,6 +113,13 @@ export function noteFence(d: { id: string; title: string; rev: number; body: str
 // this old — a typing session is one version, not hundreds.
 const APP_VERSION_GAP_MS = 10 * 60 * 1000;
 const VERSION_CAP = 100;
+// list() is the index — unbounded body materialization would make every
+// page load O(total body bytes). The preview flattens in JS (flatLine's
+// markdown rules aren't SQL); a bounded source prefix keeps the query
+// cheap — only a body opening with ~4k of whitespace/markup under-fills
+// the 200-char preview.
+const LIST_PREVIEW_SOURCE_CHARS = 4096;
+const LIST_DEFAULT_LIMIT = 200;
 
 export interface NoteStore {
 	create(input: {
@@ -123,7 +130,8 @@ export interface NoteStore {
 	get(id: string): Note | null;
 	// project: a project id, "loose" (project_id IS NULL), or "all"
 	// (default). archived: true lists the archived shelf only; default
-	// is active notes. q searches title+body via notes_fts.
+	// is active notes. q searches title+body via notes_fts. limit
+	// defaults to 200 — callers after completeness must say so.
 	list(filter?: {
 		project?: string | "loose" | "all" | undefined;
 		q?: string | undefined;
@@ -228,6 +236,20 @@ interface NoteRow {
 	created_at: string;
 	updated_at: string;
 }
+
+// list() reads a bounded body prefix for the preview — the NoteRow
+// fields it doesn't select (last_source, created_at) are unused there.
+type NoteListRow = Pick<
+	NoteRow,
+	| "id"
+	| "project_id"
+	| "title"
+	| "rev"
+	| "pinned_at"
+	| "archived_at"
+	| "updated_at"
+	| "body_md"
+>;
 
 interface VersionRow {
 	rev: number;
@@ -426,16 +448,16 @@ export function openNotes(
 			clauses.push(
 				filter.archived === true ? "n.archived_at IS NOT NULL" : "n.archived_at IS NULL",
 			);
-			let limit = "";
-			if (filter.limit !== undefined) {
-				limit = " LIMIT ?";
-				params.push(filter.limit);
-			}
+			params.push(filter.limit ?? LIST_DEFAULT_LIMIT);
 			const rows = db
-				.query<NoteRow, (string | number)[]>(
-					`SELECT n.* FROM notes n ${join}
+				.query<NoteListRow, (string | number)[]>(
+					`SELECT n.id, n.project_id, n.title, n.rev, n.pinned_at,
+						n.archived_at, n.updated_at,
+						substr(n.body_md, 1, ${LIST_PREVIEW_SOURCE_CHARS}) AS body_md
+					 FROM notes n ${join}
 					 WHERE ${clauses.join(" AND ")}
-					 ORDER BY n.pinned_at IS NOT NULL DESC, n.updated_at DESC${limit}`,
+					 ORDER BY n.pinned_at IS NOT NULL DESC, n.updated_at DESC
+					 LIMIT ?`,
 				)
 				.all(...params);
 			return rows.map((r) => ({

@@ -25,6 +25,12 @@ marker="$(git rev-parse --git-path GOBLIN_DEPLOYED_REV)" || fail "cannot resolve
 marker_dir="$(dirname "$marker")"
 [ -d "$marker_dir" ] && [ -w "$marker_dir" ] && [ -x "$marker_dir" ] ||
 	fail "deployment marker directory is not writable: $marker_dir"
+# One deploy at a time: a slow acceptance must not let a finishing
+# sibling regress a newer marker, and a rollback-vs-forward race can
+# leave node_modules/app/dist stale against the running rev. Block —
+# the wait is bounded by the holder's own run.
+exec 9>"$marker_dir/.deploy-lock" || fail "cannot open deploy lock: $marker_dir"
+flock 9 || fail "cannot take deploy lock: $marker_dir"
 old_rev=""
 refresh_all=true
 if [ -e "$marker" ] || [ -L "$marker" ]; then
@@ -45,6 +51,9 @@ if [ -e "$marker" ] || [ -L "$marker" ]; then
 				fail "cannot resolve deployment marker commit: $marker"
 			refresh_all=false ;;
 		"$old_rev missing")
+			# No local object — the printed rollback line would name a
+			# commit git can't check out.
+			old_rev=""
 			step "deployment marker history is missing; refreshing everything" ;;
 		*) fail "invalid commit in deployment marker: $marker ($marker_type)" ;;
 	esac
@@ -155,9 +164,11 @@ fi
 # rejects as an invalid commit (wedging deploys until hand-repaired).
 marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot create deployment marker temp file"
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
-sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
+# Plain sync FILE fsyncs it — `sync -d` is write-range only and skips a
+# fresh file's size metadata; on a directory it does nothing at all.
+sync "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
-sync -d "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
+sync "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"

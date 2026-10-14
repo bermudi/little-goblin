@@ -76,8 +76,15 @@ import {
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
 import type { SubagentsConfig } from "./config.ts";
-import { CUA_TOOLS, type Desktops, type CuaTool, type LeaseHolder } from "./desktops.ts";
-import type { Sandboxes } from "./sandboxes.ts";
+import {
+	CUA_TOOLS,
+	DesktopError,
+	type Desktops,
+	type CuaTool,
+	type LeaseHolder,
+} from "./desktops.ts";
+import { PodmanError } from "./podman.ts";
+import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import {
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
@@ -1120,6 +1127,18 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		} as T;
 	}
 
+	// A claim that adopted/restarted/recreated the desktop returns a
+	// lifecycle note — persist it on the run so the next tool result
+	// carries it as a diagnostic. Worker notes arrive through the
+	// sandbox's onLifecycle hook; computer rows aren't worker lease
+	// holders, so this writes the row directly.
+	function persistClaimNote(rowId: number, note: string | undefined): void {
+		if (note === undefined || note === "") return;
+		const cur = runs.get(rowId);
+		if (cur === null || cur.stopRequested || cur.status === "stopped") return;
+		runs.update(rowId, { lifecycleNote: note });
+	}
+
 	// Computer tools also renew the desktop controller lease before
 	// touching the box — observation and input alike; acting under
 	// someone else's lease is impossible.
@@ -1129,7 +1148,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			...tool,
 			execute: async (args: never, api: ToolExecutionApi, context: Context) => {
 				const row = requireRow(api);
-				await deps.desktops.claim(row.desktop!, holderFor(row.id));
+				const claimed = await deps.desktops.claim(row.desktop!, holderFor(row.id));
+				persistClaimNote(row.id, claimed.note);
 				// The claim await is a cancellation window — stop intent can
 				// persist while it pends, and the entry row is stale. Re-gate
 				// on a fresh read immediately before dispatch.
@@ -1461,7 +1481,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 			if (row.kind === "computer" && row.desktop !== null) {
 				try {
-					await deps.desktops.claim(row.desktop, holderFor(row.id));
+					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
+					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
 					log.warn("subagent lost its desktop lease — aborting the request", err, {
 						run: row.id,
@@ -1519,7 +1540,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		name: "goblin-computer",
 		tools: computerTools.map((t) => {
 			if (t.name === "finish" || t.name === "ask_operator") return t;
-			return withRunGuards(withLeaseRenew(withTerminalWrap(t)));
+			// Lifecycle-outermost like the worker wraps — a claim note
+			// persisted mid-execute still reaches this call's result.
+			return withLifecycleNote(withRunGuards(withLeaseRenew(withTerminalWrap(t))));
 		}),
 		hooks: [toolLog, requestGuard],
 	});
@@ -1660,9 +1683,20 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				const out = exportNamedBytes(row.workspace, relDir, name, data);
 				outcome = "error" in out ? { error: `${f}: ${out.error}` } : { rel: out.rel };
 			} catch (err) {
-				outcome = {
-					error: `${f}: ${err instanceof Error ? err.message : String(err)}`,
-				};
+				// Only the export boundary's own typed refusals are
+				// model-visible outcomes — an unexpected host/storage
+				// error is a failed settle, not a fabricated refusal: it
+				// propagates so the run stays owned and monitor recovery
+				// retries the durable export later.
+				if (
+					err instanceof DesktopError ||
+					err instanceof SandboxError ||
+					err instanceof PodmanError
+				) {
+					outcome = { error: `${f}: ${err.message}` };
+				} else {
+					throw err;
+				}
 			}
 			row = runs.recordExport(row.id, source, outcome);
 		}
@@ -1756,6 +1790,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				}
 				const conv = await harness.conversation(asConv(row.piConversationId), ctx);
 				await conv?.abort(ctx);
+				await conv?.waitForIdle(ctx);
 			}
 			const stopped = runs.update(id, { status: "stopped", finishedAt: Date.now() });
 			// A stopped row is never re-admitted — its retry budget and
@@ -1766,6 +1801,29 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			releaseLeases(stopped);
 			notify(stopped);
 		});
+	}
+
+	// Terminal settling past a recorded Pi conversation is only allowed
+	// once the conversation is proven dead — the failed step may already
+	// have landed a submission that is still executing. A missing
+	// conversation IS the proof; a failed lookup/abort/join is not, so
+	// callers get false and keep the row owned and recovery-pending
+	// rather than releasing a slot Pi may still be burning.
+	async function confirmPiIdle(rowId: number, piConversationId: string): Promise<boolean> {
+		if (harnessClosed) return false;
+		try {
+			const conv = await harness.conversation(asConv(piConversationId), ctx);
+			if (conv === undefined) return true;
+			await conv.abort(ctx);
+			await conv.waitForIdle(ctx);
+			return true;
+		} catch (err) {
+			log.warn("Pi cancellation could not be confirmed — the run stays owned", err, {
+				run: rowId,
+				conversation: piConversationId,
+			});
+			return false;
+		}
 	}
 
 	// ---------- settle / monitor ----------
@@ -1799,6 +1857,15 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			// exportProgress are durable, the next boot's finalize
 			// resumes from them — never a partial done/failed notice.
 			const closingNow = () => closing || harnessClosed;
+			// Stop intent lands outside the lane — after every awaited
+			// step a fresh row read decides whether a terminal/question
+			// transition is still this path's to make; once stop intent
+			// is persisted the stop path owns them.
+			const preempted = (): boolean => {
+				if (closingNow()) return true;
+				const cur = runs.get(rowId);
+				return cur === null || cur.stopRequested || cur.status === "stopped";
+			};
 			const row = runs.get(rowId);
 			if (row === null) return;
 			if (row.status === "stopped" || row.status === "done" || row.status === "failed") return;
@@ -1806,7 +1873,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			if (row.inputRev > rev || row.inputIntent !== null) return; // a newer input owns settlement
 			if (closingNow()) return;
 			if (row.piConversationId === null) {
-				if (closingNow()) return;
+				if (preempted()) return;
 				runs.update(rowId, {
 					status: "failed",
 					error: "no Pi conversation recorded",
@@ -1818,7 +1885,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			// Pi commits are durable — after waitForIdle a single read is
 			// authoritative; a storage error propagates to the caller.
 			const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
-			if (closingNow()) return;
+			if (preempted()) return;
 			const recorded = doc?.outcome ?? null;
 			// An outcome only settles the input it answered — a stale one
 			// must never be attributed to a later submitted steer.
@@ -1826,7 +1893,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			log.info("subagent settle", { run: rowId, outcome: outcome?.kind ?? null, unanswered });
 			if (outcome?.kind === "done") {
 				const { exported, errors } = await exportOutcomeFiles(row, outcome.files);
-				if (closingNow()) return; // a close during export starts no new screenshot
+				if (preempted()) return; // a close or stop during export starts no new screenshot
 				let finalScreenshot = row.finalScreenshot;
 				if (row.kind === "computer" && row.desktop !== null && finalScreenshot === null) {
 					try {
@@ -1843,13 +1910,22 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 							runs.update(rowId, { finalScreenshot });
 						}
 					} catch (err) {
-						errors.push(`final screenshot: ${err instanceof Error ? err.message : String(err)}`);
+						// Same contract as file exports: a typed refusal is an
+						// outcome; an unexpected host/storage error is a failed
+						// settle that must not mark the run done.
+						if (
+							err instanceof DesktopError ||
+							err instanceof SandboxError ||
+							err instanceof PodmanError
+						) {
+							errors.push(`final screenshot: ${err.message}`);
+						} else {
+							throw err;
+						}
 					}
 				}
-				if (closingNow()) return;
 				// Stop wins over a settlement that raced an export.
-				const latest = runs.get(rowId)!;
-				if (latest.stopRequested || latest.status === "stopped") return;
+				if (preempted()) return;
 				const done = runs.update(rowId, {
 					status: "done",
 					result: outcome.result,
@@ -1862,7 +1938,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				releaseLeases(done);
 				notify(done);
 			} else if (outcome?.kind === "ask") {
-				if (closingNow()) return;
+				if (preempted()) return;
 				const waiting = runs.update(rowId, {
 					status: "needs_input",
 					question: outcome.question,
@@ -1878,7 +1954,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						error += ` — ${unanswered.detail}`;
 				} else {
 					const lastStop = await lastAssistantStopReason(row.piConversationId);
-					if (closingNow()) return;
+					if (preempted()) return;
 					error =
 						lastStop === "length"
 							? "the model's reply hit the output limit (stop reason length) before any terminal tool call"
@@ -1952,10 +2028,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// Admit's verdict distinguishes the non-admissions callers must
 	// answer differently: "halted" means stop/close owns the row,
 	// "blocked" is a lease conflict carrying the reason — a caller that
-	// persisted an intent must roll it back or re-queue, since drain
-	// only retries queued rows — and "requeued" means a transient
+	// persisted an intent must roll it back or keep it pending, since
+	// drain only retries queued rows — and "requeued" means a transient
 	// failure deferred THIS admission: the intent stays persisted and
-	// the drain retries it, so callers must not roll back.
+	// the retry path (drain backoff for a queued row, scan recovery for
+	// a live one) owns it, so callers must not roll back.
 	type AdmitOutcome =
 		| { kind: "admitted" }
 		| { kind: "halted" }
@@ -1971,7 +2048,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			if (row.kind === "computer") {
 				if (row.desktop === null) throw new SubagentError("computer run without a desktop");
 				try {
-					await deps.desktops.claim(row.desktop, holderFor(row.id));
+					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
+					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
 					if (preserveRunning) {
@@ -2100,11 +2178,33 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			) {
 				return { kind: "halted" };
 			}
-			// Transient infra failures must not end a durable run: re-queue
-			// with backoff and let the drain retry the idempotent path —
-			// the deterministic requestId reuses a submission that landed
-			// before the error, and a persisted answer/steer intent is
-			// never touched here. Only the attempt bound settles terminal.
+			if (preserveRunning || cur.piConversationId !== null) {
+				// A recorded Pi conversation means a submission may have
+				// landed before the error — even a thrown submit can be a
+				// lost ack. The row stays running and owned: the persisted
+				// intent, the revision, the global slot and the retry
+				// budgets are retained, and the scan's bounded recovery
+				// drives the idempotent re-admit — only a confirmed
+				// cancellation there can settle the row terminal.
+				if (cur.status !== "running") {
+					runs.update(row.id, { status: "running" });
+				}
+				admitAttempts.delete(row.id);
+				retryAfter.delete(row.id);
+				recoveryPending.add(row.id);
+				log.warn(
+					"subagent admission failed past a recorded Pi conversation — the row stays owned; scan recovery retries",
+					err,
+					{ run: row.id },
+				);
+				return { kind: "requeued", reason: msg };
+			}
+			// No Pi conversation is recorded, so no submission can have
+			// landed — a queued retry with backoff is safe, and exhausting
+			// the bounded budget may settle terminally without confirming
+			// a cancellation. The drain microtask would fire before the
+			// backoff expires and find nothing eligible — a timer wakes it
+			// when the row is due instead of waiting out a scan interval.
 			const attempts = (admitAttempts.get(row.id) ?? 0) + 1;
 			if (attempts < ADMIT_MAX_ATTEMPTS) {
 				admitAttempts.set(row.id, attempts);
@@ -2117,9 +2217,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					maxAttempts: ADMIT_MAX_ATTEMPTS,
 					retryInMs: delay,
 				});
-				// The drain microtask fires before the backoff expires and
-				// finds nothing eligible — wake it again when the row is due
-				// instead of waiting out a full scan interval.
 				setTimeout(scheduleDrain, delay).unref?.();
 				scheduleDrain();
 				return { kind: "requeued", reason: msg };
@@ -2139,18 +2236,22 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		}
 	}
 
-	// A blocked boot re-admit already armed the lease backoff drain
-	// consults — re-queue so the retry actually happens. Dropping the
-	// outcome here orphans the row the way send() did: a persisted
-	// intent defers settlement forever, and a running row with no
-	// monitor is never finalized — drain only retries queued rows.
-	function queueBlockedReadmit(row: SubagentRun, outcome: AdmitOutcome): void {
-		if (outcome.kind !== "blocked") return;
-		runs.update(row.id, { status: "queued" });
-		log.warn("subagent re-admit blocked by a held lease — queued for retry", {
-			run: row.id,
-			reason: outcome.reason,
-		});
+	// A re-admit verdict for a live row never demotes it to queued —
+	// its persisted intent and running slot are retained because Pi
+	// work for the row may still be live; the scan's recovery path is
+	// the retry vehicle for both a refused lease and a failed re-admit.
+	// A "requeued" outcome is surfaced so the scan counts the attempt.
+	function readmitOutcome(row: SubagentRun, outcome: AdmitOutcome): void {
+		if (outcome.kind === "requeued") {
+			throw new SubagentError(`re-admission could not land: ${outcome.reason}`);
+		}
+		if (outcome.kind === "blocked") {
+			recoveryPending.add(row.id);
+			log.warn("subagent re-admit blocked by a held lease — the running row keeps its slot", {
+				run: row.id,
+				reason: outcome.reason,
+			});
+		}
 	}
 
 	async function recoverRun(boot: SubagentRun): Promise<void> {
@@ -2192,8 +2293,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 			if (row.inputIntent !== null) {
 				// A persisted answer/steer the row never received —
-				// re-admit through the idempotent path.
-				queueBlockedReadmit(row, await admit(row));
+				// re-admit through the idempotent path, preserving the
+				// running slot: the earlier submission may be live.
+				readmitOutcome(row, await admit(row, true));
 				return undefined;
 			}
 			const doc = await harness.snapshot(RunDoc, asConv(piConv), ctx);
@@ -2215,8 +2317,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				}
 			}
 			// No reacquirable submission — idempotent re-admission
-			// finds the admitted requestId or admits once.
-			queueBlockedReadmit(row, await admit(row));
+			// finds the admitted requestId or admits once, without
+			// ever demoting the live row to queued.
+			readmitOutcome(row, await admit(row, true));
 			return undefined;
 		});
 		if (rev !== undefined) await finalize(boot.id, rev);
@@ -2388,6 +2491,14 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					scheduleDrain();
 					return runs.get(id)!;
 				}
+				// A persisted intent is the retry path's authority —
+				// overwriting its revision would break the deterministic
+				// requestId of a submission that may already have landed.
+				if (row.inputIntent !== null) {
+					throw new SubagentError(
+						`run #${id} has a persisted input still retrying — it owns the next submission`,
+					);
+				}
 				// Steering a live run: persist the intent, then admit
 				// through the same lane so a crash at any gap recovers it.
 				const origRev = row.inputRev;
@@ -2463,10 +2574,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						continue;
 					}
 					await recoverRun(row);
+					recoveryAttempts.delete(id);
 				} catch (err) {
 					const attempts = (recoveryAttempts.get(id) ?? 0) + 1;
+					recoveryAttempts.set(id, attempts);
+					const msg = err instanceof Error ? err.message : String(err);
 					if (attempts < RECOVERY_MAX_ATTEMPTS) {
-						recoveryAttempts.set(id, attempts);
 						recoveryPending.add(id);
 						log.error("subagent recovery retry failed — stays pending", err, {
 							run: id,
@@ -2475,24 +2588,54 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						});
 						continue;
 					}
-					recoveryAttempts.delete(id);
-					const msg = err instanceof Error ? err.message : String(err);
-					log.error("subagent recovery exhausted — settling the run failed", err, {
-						run: id,
-						attempts,
-					});
-					const row = runs.get(id);
-					if (row !== null && row.status === "running" && !row.stopRequested) {
-						// Recovery is what re-attaches settlement — with it
-						// exhausted the run's Pi work would burn unwatched.
-						if (row.piConversationId !== null) {
-							try {
-								const conv = await harness.conversation(asConv(row.piConversationId), ctx);
-								await conv?.abort(ctx);
-							} catch (abortErr) {
-								log.warn("recovery-exhaustion abort failed", abortErr, { run: id });
-							}
+					// The ordinary retry budget is spent — but settling
+					// terminal is only allowed once Pi's side is confirmed
+					// dead: a recovered step may have landed a submission
+					// that is still executing. Cancelling is ownership
+					// proof, not permission to release — an unconfirmed
+					// cancel keeps the row running, owned and pending. The
+					// whole confirm-and-fail runs in the per-run lane: a
+					// send or finalize holding it must complete (or see the
+					// terminal row) rather than interleave a new
+					// submission between the abort and the update.
+					const settled = await lane(id, async (): Promise<boolean> => {
+						if (closing || harnessClosed) return false;
+						const live = runs.get(id);
+						if (live === null || live.status !== "running" || live.stopRequested) {
+							return true;
 						}
+						if (
+							live.piConversationId !== null &&
+							!(await confirmPiIdle(id, live.piConversationId))
+						) {
+							recoveryPending.add(id);
+							log.error(
+								"subagent recovery exhausted but Pi cancellation is unconfirmed — the run stays owned",
+								err,
+								{ run: id, attempts },
+							);
+							return false;
+						}
+						// A close landing during the confirmed cancel keeps
+						// the row owned — the next boot's scan owns the
+						// terminal decision, not a wedged process.
+						if (closing || harnessClosed) {
+							recoveryPending.add(id);
+							return false;
+						}
+						const afterCancel = runs.get(id);
+						if (
+							afterCancel === null ||
+							afterCancel.stopRequested ||
+							afterCancel.status !== "running"
+						) {
+							// A stop landing during the cancel owns the transition.
+							return true;
+						}
+						log.error("subagent recovery exhausted — settling the run failed", err, {
+							run: id,
+							attempts,
+						});
 						const failed = runs.update(id, {
 							status: "failed",
 							error: `recovery failed after ${attempts} attempts: ${msg}`,
@@ -2501,7 +2644,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						});
 						releaseLeases(failed);
 						notify(failed);
-					}
+						return true;
+					});
+					if (settled) recoveryAttempts.delete(id);
+					continue;
 				}
 			}
 			await drain();
@@ -2527,7 +2673,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			for (const row of running) {
 				if (row.kind !== "computer" || row.desktop === null) continue;
 				try {
-					await deps.desktops.claim(row.desktop, holderFor(row.id));
+					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
+					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
 					const failed = runs.update(row.id, {

@@ -85,14 +85,16 @@ store):
   queue drains in start order as runs settle.
 - **No timeout-and-revive.** Runs are durable; they end by outcome or
   by an explicit stop — or by an *exhausted retry budget*, never by a
-  single infra hiccup: a transient failure during admission (an import
-  exec timeout, a cpIn error, a harness hiccup) re-queues the run with
-  exponential backoff and retries the idempotent admission up to five
-  times before settling `failed` with an origin notice; recovery —
-  re-attaching a dead monitor — is bounded the same way (ten scan
-  attempts), and exhaustion aborts the run's Pi work best-effort,
-  settles `failed`, notifies the origin and releases the lease. Halt
-  intents (stop, close, vanished row) are never retried.
+  single infra hiccup: a transient failure during admission before a
+  Pi conversation id is recorded (an import exec timeout, a cpIn
+  error, a harness hiccup) re-queues the run with exponential backoff
+  and retries the idempotent admission up to five times before
+  settling `failed` with an origin notice; past a recorded
+  conversation id there is no queued demotion — the failure rides the
+  bounded recovery budget instead (ten scan attempts), and exhaustion
+  settles `failed` only after the run's Pi work is confirmed aborted
+  and idle, in the run's own lane. Halt intents (stop, close,
+  vanished row) are never retried.
 - **Goblin starts them and owns the outcome.** Results return to the
   origin conversation fenced (`<event source="subagent">`, the delegation
   fence rule) — a subagent that read arbitrary screens gains no authority
@@ -408,10 +410,11 @@ built once).
   and processes are still the answer it waits on), while a computer
   `needs_input` releases the desktop controller lease so the operator
   can act. `send` requeues the same Pi conversation and re-acquires
-  before executing. A transient admission failure re-queues through
-  the same drain: the retry delay rides the lease backoff map, a
-  timer wakes the drain when it expires, and a persisted
-  answer/steer intent survives the failed attempt untouched.
+  before executing. A transient admission failure before a recorded
+  Pi conversation id re-queues through the same drain: the retry
+  delay rides the lease backoff map, a timer wakes the drain when it
+  expires, and a persisted answer/steer intent survives the failed
+  attempt untouched.
 - **Idempotent dual-store.** Two stores advance one run:
   `subagent_runs` rows in goblin.sqlite (routing) and Pi Durable's own
   sqlite (transcripts + the typed run-state doc). The recipe: insert
@@ -460,6 +463,48 @@ built once).
   done/failed notice fires, the lease stays. The next boot's finalize
   resumes export where progress left off — landed files are never
   recopied — and settles once.
+- **A claimed conversation never rolls back.** Once a Pi conversation
+  id is recorded on a row, a submission may have landed — so no failure
+  may return that row to `queued`: the row stays `running`, holds its
+  worker/desktop lease and its global slot, and rides the bounded
+  `recoveryPending` scan retry; the persisted intent (`inputIntent` /
+  `inputRev`) survives untouched and `send` still rejects with
+  persisted/retry wording. A `failed` transition is allowed only after
+  Pi cancellation is confirmed — `harness.conversation()` lookup (a
+  missing conversation is proof no work exists), then `conv.abort`
+  and `conv.waitForIdle`. A closed harness or a failed lookup, abort
+  or idle-join keeps the row running and owned; cancellation failure
+  is safety-critical, never permission to release. And a `stop` that
+  lands while cancellation confirmation awaits wins over the failure
+  transition — the row settles `stopped`, not `failed`.
+- **Only expected refusals become export errors.** Export and the
+  final screenshot translate `DesktopError`, `SandboxError` and
+  `PodmanError` — plus a box-files `{ error }` verdict — into
+  persisted `exportErrors`; every other exception (host storage,
+  EIO/EACCES, transport) throws. No fabricated progress, no notice,
+  no terminal row: the run stays running and leased, and the next
+  scan's recovery path finishes it once.
+- **Finalization re-reads before every transition.** After any
+  awaited boundary — the doc snapshot, each export iteration, the
+  final screenshot, `lastAssistantStopReason` — the row is re-read
+  before an ask/done/failed update; `stopRequested`, `stopped`,
+  `closing` or a closed harness returns silently with no notice and
+  no release. A stop racing a held read can't be answered by a stale
+  question or failure.
+- **Claim notes are caller evidence.** `claim` returns
+  `Promise<DesktopRow & { note?: string }>` — reconcile warnings
+  (recreated, adopted, restarted) ride the return value and are
+  persisted by each subagents consumer onto the run's `lifecycleNote`
+  before proceeding (respecting `stopRequested`), never onto the
+  desktop row. The note reaches the operator through the run's
+  diagnostic/final notice so the first screenshot after a recreate
+  discloses the lost contents and lease.
+- **A truncated screenshot is no screenshot.** A screenshot readback
+  whose process result carries `truncated` or `outputCapped` is
+  rejected before any durable write or observation mint — exit 0 and
+  nonempty bytes don't redeem a partial frame. No audit file, no
+  `lastObsId`, no `shotSeq` advance; the error names the capped or
+  truncated readback.
 - **Pinned.** `@earendil-works/pi-durable`, `pi-ai`, `chord` at
   exactly `1.0.2`, `typebox` at `1.3.27` — exact versions in
   package.json; the catalog metadata (context windows, thinking

@@ -7,7 +7,15 @@
 // never the model.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -21,7 +29,7 @@ import type { DeliveryApi } from "./tg/delivery.ts";
 import { wakeConversation, type WakeDeps } from "./wake.ts";
 import type { Desktops, DesktopRow, DesktopAction, LeaseHolder } from "./desktops.ts";
 import { DesktopError } from "./desktops.ts";
-import type { Sandboxes } from "./sandboxes.ts";
+import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import {
 	makeSandboxEnv,
@@ -664,7 +672,14 @@ function fakeSandboxes(): MemSandbox {
 			fs.write(dest, new Uint8Array(readFileSync(hostPath)));
 			return {};
 		},
-		catFile: async (_conv, path) => ({ data: fs.read(fs.norm(path)) }),
+		// Missing/non-file paths raise the typed refusal the export
+		// boundary persists — matching the real catFile contract, so an
+		// injected plain Error still exercises the unexpected-fault path.
+		catFile: async (_conv, path) => {
+			const p = fs.norm(path);
+			if (!fs.isFile(p)) throw new SandboxError(`${path} is not a regular file in the sandbox`);
+			return { data: fs.read(p) };
+		},
 		setNetwork: async () => ({}),
 		reset: async () => ({}),
 	};
@@ -1124,8 +1139,13 @@ async function until(
 // the transient-infra injection for admit's retry paths. Consumed on
 // first use; the retry submit (and any later one) awaits holdRetry
 // first when provided, so a test can observe the requeued row before
-// the retry lands. restore() unwraps Harness.open.
-function armSubmitFault(holdRetry?: Promise<void>): { arm: () => void; restore: () => void } {
+// the retry lands. With loseAck the armed submit calls the REAL submit
+// first and throws after it landed — the lost-acknowledgement shape an
+// initial admission can leave behind. restore() unwraps Harness.open.
+function armSubmitFault(
+	holdRetry?: Promise<void>,
+	loseAck = false,
+): { arm: () => void; restore: () => void } {
 	const origOpen = Harness.open;
 	let armed = false;
 	Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
@@ -1144,6 +1164,7 @@ function armSubmitFault(holdRetry?: Promise<void>): { arm: () => void; restore: 
 					return origSubmit(...sArgs);
 				}
 				armed = false;
+				if (loseAck) await origSubmit(...sArgs);
 				throw new Error("injected transient submit failure");
 			};
 			return conv;
@@ -1154,6 +1175,84 @@ function armSubmitFault(holdRetry?: Promise<void>): { arm: () => void; restore: 
 		arm: () => (armed = true),
 		restore: () => {
 			armed = false;
+			Harness.open = origOpen;
+		},
+	};
+}
+
+// Wraps every conversation handle the owner opens: submit throws while
+// submitArmed, abort holds on abortHold (when set) and throws while
+// abortArmed — the two seams that let a steer re-admission and a
+// cancellation-confirmation both fail on demand. abortEntered resolves
+// when an abort call is observed holding, so a test can land a stop
+// mid-confirmation. restore() unwraps Harness.open.
+function armConversationFaults(): {
+	submitArmed: boolean;
+	abortArmed: boolean;
+	abortHold: Promise<void> | null;
+	abortEntered: Promise<void>;
+	releaseAbort: () => void;
+	restore: () => void;
+} {
+	const origOpen = Harness.open;
+	const faults = {
+		submitArmed: false,
+		abortArmed: false,
+		abortHold: null as Promise<void> | null,
+	};
+	const abortGate = Promise.withResolvers<void>();
+	const abortEntered = Promise.withResolvers<void>();
+	Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+		const h = await origOpen(...args);
+		const origConversation = h.conversation.bind(h) as (...cArgs: unknown[]) => Promise<unknown>;
+		(h as unknown as { conversation: unknown }).conversation = async (...cArgs: unknown[]) => {
+			const conv = await origConversation(...cArgs);
+			if (conv === undefined || conv === null) return conv;
+			const target = conv as {
+				submit: (...sArgs: unknown[]) => Promise<unknown>;
+				abort: (...aArgs: unknown[]) => Promise<unknown>;
+			};
+			const origSubmit = target.submit.bind(target);
+			const origAbort = target.abort.bind(target);
+			target.submit = async (...sArgs: unknown[]) => {
+				if (faults.submitArmed) throw new Error("injected persistent submit failure");
+				return origSubmit(...sArgs);
+			};
+			target.abort = async (...aArgs: unknown[]) => {
+				if (faults.abortHold !== null) {
+					abortEntered.resolve();
+					await faults.abortHold;
+				}
+				if (faults.abortArmed) throw new Error("injected abort failure");
+				return origAbort(...aArgs);
+			};
+			return conv;
+		};
+		return h;
+	}) as typeof Harness.open;
+	return {
+		get submitArmed() {
+			return faults.submitArmed;
+		},
+		set submitArmed(v: boolean) {
+			faults.submitArmed = v;
+		},
+		get abortArmed() {
+			return faults.abortArmed;
+		},
+		set abortArmed(v: boolean) {
+			faults.abortArmed = v;
+		},
+		get abortHold() {
+			return faults.abortHold;
+		},
+		set abortHold(v: Promise<void> | null) {
+			faults.abortHold = v;
+		},
+		abortEntered: abortEntered.promise,
+		releaseAbort: () => abortGate.resolve(),
+		restore: () => {
+			abortGate.resolve();
 			Harness.open = origOpen;
 		},
 	};
@@ -2157,7 +2256,7 @@ describe("subagents owner", () => {
 		void o2;
 	});
 
-	test("a boot re-admit blocked by a held lease re-queues the persisted intent", async () => {
+	test("a boot re-admit blocked by a held lease keeps the running row owned; scan retries", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
 		dirs.push(dir);
 		const dbPath = join(dir, "goblin.sqlite");
@@ -2207,21 +2306,31 @@ describe("subagents owner", () => {
 		};
 		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
 		const o2 = await open(r2);
-		await until(() => r2.runs.get(a.id)?.status === "queued", "blocked re-admit re-queued the row");
-		expect(r2.runs.get(a.id)?.inputIntent).toBe("steer-after-restart");
-		// The holder leaves — drain admits the queued intent and the
-		// steer reaches the model.
+		// The blocked re-admit never demotes the live row to queued —
+		// the earlier submission may still be executing, so the running
+		// slot and the persisted intent are retained and the scan's
+		// recovery is the retry vehicle.
+		const mid = r2.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		expect(mid.inputIntent).toBe("steer-after-restart");
+		expect(mid.inputMode).toBe("steer");
+		// The holder leaves — a scan's recovery admits the persisted
+		// steer and it reaches the model. The replayed original
+		// submission requests first (the steer lands behind it), so it
+		// consumes the first queued reply; the finish must wait for the
+		// steered generation's request.
 		desktops.held.delete("d1");
 		const dRow = desktops.get("d1")!;
 		dRow.leaseKind = null;
 		dRow.leaseExpiresAt = null;
+		r2.model.push({ kind: "text", text: "replayed original" });
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
 		await until(
 			async () => {
 				await o2.scan();
 				return r2.runs.get(a.id)?.status === "done";
 			},
-			"queued intent admits after release",
+			"recovery admits the persisted intent after release",
 			30_000,
 		);
 		const steerSeen = r2.model.seen.some((s) =>
@@ -2442,6 +2551,83 @@ describe("subagents owner", () => {
 				await hold.promise;
 				return delegate.apply(h, [token, ...rest]);
 			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		return {
+			entered: entered.promise,
+			release: () => hold.resolve(),
+			restore: () => {
+				hold.resolve();
+				Harness.open = origOpen;
+			},
+		};
+	}
+
+	// Holds every RunDoc snapshot past the first `skip` until release —
+	// api.snapshot delegates to h.snapshot, so the request guard's
+	// per-request doc read passes through this seam too. The scripted
+	// rounds below make exactly one request, so read #1 is the guard's
+	// and the next RunDoc read is finalize's durable one — parking the
+	// terminal/question transition mid-lane while a stop lands outside.
+	function holdRunDocSnapshot(skip = 1): {
+		entered: Promise<void>;
+		release: () => void;
+		restore: () => void;
+	} {
+		const origOpen = Harness.open;
+		const hold = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		let reads = 0;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await origOpen(...args);
+			const origSnapshot = h.snapshot;
+			h.snapshot = (async (token: unknown, ...rest: unknown[]) => {
+				const kind = (token as { definition?: { kind?: unknown } } | null)?.definition?.kind;
+				const delegate = origSnapshot as (...sArgs: unknown[]) => Promise<unknown>;
+				if (kind !== "goblin.subagent-run" || reads++ < skip) {
+					return delegate.apply(h, [token, ...rest]);
+				}
+				entered.resolve();
+				await hold.promise;
+				return delegate.apply(h, [token, ...rest]);
+			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		return {
+			entered: entered.promise,
+			release: () => hold.resolve(),
+			restore: () => {
+				hold.resolve();
+				Harness.open = origOpen;
+			},
+		};
+	}
+
+	// Holds every conversation.entries() page read — the failure
+	// classifier's lastAssistantStopReason seam — until release().
+	function holdConvEntries(): {
+		entered: Promise<void>;
+		release: () => void;
+		restore: () => void;
+	} {
+		const origOpen = Harness.open;
+		const hold = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await origOpen(...args);
+			const origConversation = h.conversation.bind(h) as (...cArgs: unknown[]) => Promise<unknown>;
+			(h as unknown as { conversation: unknown }).conversation = async (...cArgs: unknown[]) => {
+				const conv = await origConversation(...cArgs);
+				if (conv === undefined || conv === null) return conv;
+				const target = conv as { entries: (...eArgs: unknown[]) => Promise<unknown> };
+				const origEntries = target.entries.bind(target);
+				target.entries = async (...eArgs: unknown[]) => {
+					entered.resolve();
+					await hold.promise;
+					return origEntries(...eArgs);
+				};
+				return conv;
+			};
 			return h;
 		}) as typeof Harness.open;
 		return {
@@ -2767,9 +2953,7 @@ describe("subagents owner", () => {
 	});
 
 	test("out-of-workspace import fails the run at admission", async () => {
-		// A deterministic refusal still burns the bounded retry budget
-		// before the terminal row — the short base keeps the test fast.
-		const r = rig({ admitRetryMs: 1 });
+		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "x" } }] });
 		const a = await o.start({
@@ -2779,8 +2963,22 @@ describe("subagents owner", () => {
 			task: "t",
 			files: ["../escape.txt"],
 		});
-		await until(() => r.runs.get(a.id)?.status === "failed", "failed");
-		expect(r.runs.get(a.id)?.error).toContain("outside the workspace");
+		// The import refuses AFTER the Pi conversation id is recorded —
+		// a submission may have landed, so the row stays running and
+		// owned; the scan's recovery budget, not queued backoff, owns
+		// the terminal decision.
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.runs.get(a.id)?.piConversationId !== null,
+			"failure past the conversation write keeps the run owned",
+		);
+		expect(r.wakes.length).toBe(0);
+		for (let i = 0; i < 10; i++) {
+			await o.scan();
+		}
+		const row = r.runs.get(a.id)!;
+		expect(row.status).toBe("failed");
+		expect(row.error).toContain("outside the workspace");
+		expect(r.wakes.length).toBe(1);
 	});
 
 	test("worker tools carry a sandbox lifecycle note", async () => {
@@ -2959,11 +3157,12 @@ describe("subagents owner", () => {
 		expect(r.runs.get(a.id)?.status).toBe("stopped");
 	});
 
-	// A transient infra fault during admission re-queues the run with
-	// backoff instead of settling it terminal — the deterministic
-	// requestId makes the retry idempotent.
+	// A transient infra fault during admission past the recorded Pi
+	// conversation keeps the run running and owned instead of settling
+	// it terminal — the scan's recovery drives the retry, and the
+	// deterministic requestId makes it idempotent.
 	test("a transient admission failure requeues; the retry admits and settles", async () => {
-		const r = rig({ admitRetryMs: 1 });
+		const r = rig();
 		writeFileSync(join(r.workspace, "a.txt"), "A");
 		const origCp = r.sandboxes.cpIn.bind(r.sandboxes);
 		let cpAttempts = 0;
@@ -2986,26 +3185,31 @@ describe("subagents owner", () => {
 			task: "t",
 			files: ["a.txt"],
 		});
-		// Attempt one threw; the retry parks in cp while still queued —
-		// the row was re-queued, not failed.
+		// Attempt one threw past the recorded Pi conversation — the row
+		// stays running and owned, never queued: the scan's recovery
+		// drives the retry, which parks in cp for the second attempt.
 		await until(
-			() => cpAttempts >= 2 && r.runs.get(a.id)?.status === "queued",
-			"transient failure requeued the run",
+			() => cpAttempts === 1 && r.runs.get(a.id)?.status === "running",
+			"transient failure keeps the run owned",
 		);
 		const mid = r.runs.get(a.id)!;
 		expect(mid.error).toBeNull();
 		expect(mid.stopRequested).toBe(false);
 		expect(mid.inputRev).toBe(0);
 		expect(r.wakes.length).toBe(0);
+		const recovery = o.scan();
+		await until(() => cpAttempts >= 2, "recovery retried the import");
+		expect(r.runs.get(a.id)?.status).toBe("running");
 		pass.resolve();
+		await recovery;
 		await until(() => r.runs.get(a.id)?.status === "done", "retry admitted and settled");
 		expect(r.runs.get(a.id)?.result).toBe("ok-after-retry");
 		expect(r.runs.get(a.id)?.inbox).toEqual([`/inbox/subagents/${a.id}/01-a.txt`]);
 		expect(r.wakes.length).toBe(1);
 	});
 
-	test("admission failures past the attempt bound settle terminal and notify", async () => {
-		const r = rig({ admitRetryMs: 1 });
+	test("admission failures past the recovery bound settle terminal and notify", async () => {
+		const r = rig();
 		writeFileSync(join(r.workspace, "a.txt"), "A");
 		let cpAttempts = 0;
 		r.sandboxes.cpIn = async () => {
@@ -3020,15 +3224,26 @@ describe("subagents owner", () => {
 			task: "t",
 			files: ["a.txt"],
 		});
-		await until(() => r.runs.get(a.id)?.status === "failed", "exhaustion settles terminal", 20_000);
+		// Every attempt fails past the recorded Pi conversation — the
+		// run stays owned until the recovery budget is spent and the
+		// cancellation is confirmed idle.
+		await until(
+			() => cpAttempts === 1 && r.runs.get(a.id)?.status === "running",
+			"first failure keeps the run owned",
+		);
+		for (let i = 0; i < 10; i++) {
+			await o.scan();
+		}
 		const row = r.runs.get(a.id)!;
-		expect(row.error).toContain("admission failed after 5 attempts");
+		expect(row.status).toBe("failed");
+		expect(row.error).toContain("recovery failed after 10 attempts");
 		expect(row.error).toContain("persistent podman fault");
 		expect(row.finishedAt).not.toBeNull();
-		// Bounded: five attempts, not an infinite spin.
-		expect(cpAttempts).toBe(5);
+		// Bounded: the initial admission plus one per scan, not an
+		// infinite spin.
+		expect(cpAttempts).toBe(11);
 		expect(r.wakes.length).toBe(1);
-		expect(r.wakes[0]!.text).toContain("admission failed after 5 attempts");
+		expect(r.wakes[0]!.text).toContain("recovery failed after 10 attempts");
 		// The terminal row frees its slot for other work.
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
 		const b = await o.start({
@@ -3041,11 +3256,12 @@ describe("subagents owner", () => {
 	});
 
 	test("a transient failure on the needs_input resume path keeps the persisted answer", async () => {
-		// The retry's submit parks until the requeued row was observed.
+		// The recovery retry's submit parks until the failed admission's
+		// row state was observed.
 		const pass = Promise.withResolvers<void>();
 		const fault = armSubmitFault(pass.promise);
 		try {
-			const r = rig({ admitRetryMs: 1 });
+			const r = rig();
 			const o = await open(r);
 			r.model.push({
 				kind: "tools",
@@ -3060,17 +3276,15 @@ describe("subagents owner", () => {
 			});
 			await until(() => r.runs.get(a.id)?.status === "needs_input", "parked on the question");
 			expect(r.wakes.length).toBe(1);
-			// The NEXT submit (the resume admission) fails once, transiently;
-			// the retry parks inside submit until the row was observed.
+			// The NEXT submit (the resume admission) fails once, transiently.
+			// A submission may have landed before the throw, so the row
+			// stays running and owned — the scan's recovery owns the retry.
 			fault.arm();
 			await o.send(a.id, WS, "the operator answer");
-			// The retry parks inside its submit (the persist step has
-			// already flipped the row running) — the answer must still be
-			// sitting on the row at that point.
 			await until(() => {
 				const row = r.runs.get(a.id);
 				return row?.status === "running" && row.inputIntent === "the operator answer";
-			}, "resume admission requeued after the transient failure");
+			}, "failed resume admission keeps the persisted answer on the running row");
 			const mid = r.runs.get(a.id)!;
 			// The answer and its revision survive the failed admission.
 			expect(mid.inputIntent).toBe("the operator answer");
@@ -3078,7 +3292,12 @@ describe("subagents owner", () => {
 			expect(mid.inputRev).toBe(2);
 			expect(mid.error).toBeNull();
 			pass.resolve();
-			await until(() => r.runs.get(a.id)?.status === "done", "retry settles the run");
+			// The scan is the retry vehicle — poll it until the
+			// recovery lands the retried submit and the run settles.
+			await until(async () => {
+				await o.scan();
+				return r.runs.get(a.id)?.status === "done";
+			}, "recovery settles the run");
 			expect(r.runs.get(a.id)?.result).toBe("resumed-ok");
 			// The answer reached the model exactly once.
 			const withAnswer = r.model.seen.filter((s) =>
@@ -3091,10 +3310,10 @@ describe("subagents owner", () => {
 		}
 	});
 
-	test("a transient steer failure stays persisted, rejects the send, and retries", async () => {
+	test("a transient steer failure keeps the running row owned; the scan re-admits the persisted intent", async () => {
 		const fault = armSubmitFault();
 		try {
-			const r = rig({ admitRetryMs: 1 });
+			const r = rig({ admitRetryMs: 1, maxRuns: 1 });
 			const o = await open(r);
 			const gate = Promise.withResolvers<void>();
 			r.model.push({
@@ -3117,12 +3336,41 @@ describe("subagents owner", () => {
 			await expect(o.send(a.id, WS, "steer-into-transient")).rejects.toThrow(
 				/stays persisted and retries/,
 			);
-			// The retry runs on the backoff timer — it may already have
-			// admitted by the time send rejects; assert the end state.
+			// A failure past the claim keeps the row running and owned:
+			// the submission may have landed before the error, so the
+			// intent, the revision, the worker lease and the global slot
+			// all stay — only the scan's idempotent re-admit retries.
+			const mid = r.runs.get(a.id)!;
+			expect(mid.status).toBe("running");
+			expect(mid.inputIntent).toBe("steer-into-transient");
+			expect(mid.inputMode).toBe("steer");
+			expect(mid.inputRev).toBe(2);
+			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
+			expect(r.wakes.length).toBe(0);
+			// A second send while the intent is pending must not clobber
+			// the deterministic revision of a submission that may have
+			// already landed.
+			await expect(o.send(a.id, WS, "must-not-clobber")).rejects.toThrow(
+				/persisted input still retrying/,
+			);
+			// A different-origin run queued behind the held slot stays
+			// queued — the possibly-live submission still owns it.
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
+			const b = await o.start({
+				kind: "worker",
+				conversationId: "conv:b",
+				workspace: r.workspace,
+				task: "b",
+			});
+			await Bun.sleep(200);
+			expect(r.runs.get(b.id)?.status).toBe("queued");
+			// The scan's recovery performs the re-admit — the requestId is
+			// deterministic, so the steer reaches the model exactly once.
+			await o.scan();
 			await until(() => {
 				const row = r.runs.get(a.id);
 				return row?.status === "running" && row.inputIntent === null;
-			}, "steer retry admitted with the intent cleared");
+			}, "scan re-admitted the persisted steer");
 			gate.resolve();
 			await until(() => r.runs.get(a.id)?.status === "done", "steered successor settles");
 			expect(r.runs.get(a.id)?.result).toBe("steered");
@@ -3130,6 +3378,74 @@ describe("subagents owner", () => {
 				r.model.seen.filter((s) => JSON.stringify(s.messages).includes("steer-into-transient"))
 					.length,
 			).toBe(1);
+			await until(() => r.runs.get(b.id)?.status === "done", "freed slot admits the queued run");
+			expect(r.runs.get(b.id)?.result).toBe("b-ok");
+		} finally {
+			fault.restore();
+		}
+	});
+
+	// The same ownership rule on the INITIAL admission: a submit that
+	// lands in Pi but throws returning its ack keeps the row running
+	// with its slot — the scan's re-admit finds the deterministic
+	// requestId and reuses the landed submission instead of duplicating
+	// it.
+	test("a lost ack on the initial submit keeps the row owned; the scan reuses the landed submission", async () => {
+		const fault = armSubmitFault(undefined, true);
+		try {
+			const r = rig({ maxRuns: 1 });
+			const o = await open(r);
+			const gate = Promise.withResolvers<void>();
+			r.model.push({
+				kind: "hold",
+				gate: gate.promise,
+				then: { kind: "tools", calls: [{ name: "finish", args: { result: "a-ok" } }] },
+			});
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
+			fault.arm();
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			// The submission landed — the model request is in flight —
+			// but the ack threw, so the row stays running and owned with
+			// the intent persisted and the only slot held.
+			await until(
+				() => r.model.seen.length === 1 && r.runs.get(a.id)?.status === "running",
+				"lost-ack admission keeps the run owned",
+			);
+			const mid = r.runs.get(a.id)!;
+			expect(mid.inputIntent).not.toBeNull();
+			expect(mid.inputMode).toBe("initial");
+			expect(mid.inputRev).toBe(1);
+			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
+			// A different-origin run queued behind the held slot stays
+			// queued — the possibly-live submission still owns it.
+			const b = await o.start({
+				kind: "worker",
+				conversationId: "conv:b",
+				workspace: r.workspace,
+				task: "b",
+			});
+			await Bun.sleep(200);
+			expect(r.runs.get(b.id)?.status).toBe("queued");
+			// The scan's re-admit finds the already-landed requestId — the
+			// monitor attaches, no second submission, no second request.
+			await o.scan();
+			const rec = r.runs.get(a.id)!;
+			expect(rec.status).toBe("running");
+			expect(rec.inputIntent).toBeNull();
+			expect(rec.piSubmissionId).not.toBeNull();
+			expect(r.model.seen.length).toBe(1);
+			gate.resolve();
+			await until(() => r.runs.get(a.id)?.status === "done", "held request settles once");
+			expect(r.runs.get(a.id)?.result).toBe("a-ok");
+			await until(() => r.runs.get(b.id)?.status === "done", "freed slot admits the queued run");
+			expect(r.runs.get(b.id)?.result).toBe("b-ok");
+			// One notice per run — no duplicate settle.
+			expect(r.wakes.length).toBe(2);
 		} finally {
 			fault.restore();
 		}
@@ -3196,6 +3512,465 @@ describe("subagents owner", () => {
 			Harness.open = origOpen;
 		}
 	}, 20_000);
+
+	// An unconfirmed cancel is not permission to release: repeated
+	// steer re-admission failures plus a failing abort leave the row
+	// running, owned and recovery-pending with no notice — the slot is
+	// only freed once the abort actually joins the Pi side idle.
+	test("recovery exhaustion cannot terminalize while the abort is unconfirmed; repair settles once", async () => {
+		const fault = armConversationFaults();
+		try {
+			const r = rig({ maxRuns: 1 });
+			const o = await open(r);
+			const gate = Promise.withResolvers<void>();
+			r.model.push({ kind: "hold", gate: gate.promise });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "request in flight");
+			// The steer submit fails persistently AND the abort fails —
+			// no evidence the original Pi work is dead, so nothing may
+			// settle or release.
+			fault.submitArmed = true;
+			await expect(o.send(a.id, WS, "steer-nowhere")).rejects.toThrow(
+				/stays persisted and retries/,
+			);
+			fault.abortArmed = true;
+			for (let i = 0; i < 14; i++) {
+				await o.scan();
+				expect(r.runs.get(a.id)?.status).toBe("running");
+				expect(r.wakes.length).toBe(0);
+			}
+			const wedged = r.runs.get(a.id)!;
+			expect(wedged.inputIntent).toBe("steer-nowhere");
+			expect(wedged.inputRev).toBe(2);
+			expect(wedged.error).toBeNull();
+			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
+			// Repair the cancel: the abort joins the held Pi work, and
+			// the exhausted row settles terminal exactly once.
+			gate.resolve();
+			fault.abortArmed = false;
+			await until(
+				async () => {
+					await o.scan();
+					return r.runs.get(a.id)?.status === "failed";
+				},
+				"confirmed cancel settles the exhausted run",
+				20_000,
+			);
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("failed");
+			expect(row.error).toMatch(/recovery failed after \d+ attempts/);
+			expect(row.error).toContain("injected persistent submit failure");
+			expect(row.finishedAt).not.toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("recovery failed after");
+			await o.scan();
+			expect(r.wakes.length).toBe(1);
+			expect(r.runs.workerLease(WS)).toBeNull();
+		} finally {
+			fault.restore();
+		}
+	}, 30_000);
+
+	// A stop landing while the cancellation-confirmation await is
+	// outstanding wins over the failure transition — the exhausted row
+	// settles stopped, never failed.
+	test("a stop landing during an unconfirmed cancel wins over recovery exhaustion", async () => {
+		const fault = armConversationFaults();
+		try {
+			const r = rig();
+			const o = await open(r);
+			const gate = Promise.withResolvers<void>();
+			r.model.push({ kind: "hold", gate: gate.promise });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "request in flight");
+			fault.submitArmed = true;
+			await expect(o.send(a.id, WS, "steer-nowhere")).rejects.toThrow(
+				/stays persisted and retries/,
+			);
+			// Hold every abort — the exhaustion's cancel confirm parks
+			// on it while the stop lands.
+			const holdAbort = Promise.withResolvers<void>();
+			fault.abortHold = holdAbort.promise;
+			// Nine failed scans bring the retry count to the bound; the
+			// tenth's confirmation abort is the one held open.
+			for (let i = 0; i < 9; i++) {
+				await o.scan();
+			}
+			const wedged = r.runs.get(a.id)!;
+			expect(wedged.status).toBe("running");
+			expect(wedged.error).toBeNull();
+			const raceScan = o.scan();
+			await fault.abortEntered;
+			const stopping = o.stop(a.id, WS);
+			await Bun.sleep(100);
+			holdAbort.resolve();
+			const stopped = await stopping;
+			await raceScan;
+			expect(stopped.status).toBe("stopped");
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("stopped");
+			expect(row.error).toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("Stopped");
+			await o.scan();
+			expect(r.wakes.length).toBe(1);
+			gate.resolve();
+		} finally {
+			fault.restore();
+		}
+	}, 30_000);
+
+	// The exhaustion's confirm-and-fail runs INSIDE the per-run lane:
+	// a send queued behind it must observe the terminal row and reject
+	// — never interleave a new submission between the abort and the
+	// update.
+	test("recovery exhaustion's terminal edge holds the run lane — a racing send sees the failed row", async () => {
+		const fault = armConversationFaults();
+		try {
+			const r = rig();
+			const o = await open(r);
+			const gate = Promise.withResolvers<void>();
+			r.model.push({ kind: "hold", gate: gate.promise });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "request in flight");
+			fault.submitArmed = true;
+			await expect(o.send(a.id, WS, "steer-nowhere")).rejects.toThrow(
+				/stays persisted and retries/,
+			);
+			// Nine failed re-admissions bring recovery to the bound; the
+			// tenth's cancellation-confirm holds its abort inside the
+			// run's lane.
+			for (let i = 0; i < 9; i++) {
+				await o.scan();
+			}
+			expect(r.runs.get(a.id)?.status).toBe("running");
+			const holdAbort = Promise.withResolvers<void>();
+			fault.abortHold = holdAbort.promise;
+			const raceScan = o.scan();
+			await fault.abortEntered;
+			// This send queues behind the lane-held confirm: once the
+			// abort confirms and the row fails, the send observes the
+			// terminal row — it can never reach its submit.
+			const racing = o.send(a.id, WS, "must-not-dispatch");
+			await Bun.sleep(100);
+			holdAbort.resolve();
+			await raceScan;
+			await expect(racing).rejects.toThrow(/is failed/);
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("failed");
+			expect(row.error).toContain("recovery failed after");
+			// No new submission, no new model request, exactly one
+			// terminal notice.
+			expect(r.model.seen.length).toBe(1);
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("recovery failed after");
+			gate.resolve();
+		} finally {
+			fault.restore();
+		}
+	}, 30_000);
+
+	// An unexpected host/storage fault at the export edge is not a
+	// model-visible refusal: nothing is fabricated into the ledger, the
+	// row stays owned and running, and the next scan performs the real
+	// durable export exactly once.
+	test("an unexpected export read error keeps the run owned — scan retries the real export", async () => {
+		const r = rig();
+		const o = await open(r);
+		r.box.write("/work/a.txt", new TextEncoder().encode("A"));
+		r.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "exp", files: ["/work/a.txt"] } }],
+		});
+		const origCat = r.sandboxes.catFile.bind(r.sandboxes);
+		let eio = true;
+		const catCalls: string[] = [];
+		r.sandboxes.catFile = async (conv, path) => {
+			catCalls.push(path);
+			if (eio) throw new Error("EIO: host storage read failed");
+			return origCat(conv, path);
+		};
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		await until(() => catCalls.length === 1, "the export read attempted");
+		await until(() => r.runs.get(a.id) !== null, "row present");
+		await Bun.sleep(200);
+		const mid = r.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		expect(mid.exportedFiles).toEqual([]);
+		expect(mid.exportErrors).toEqual([]);
+		expect(Object.keys(mid.exportProgress)).toEqual([]);
+		expect(r.wakes.length).toBe(0);
+		expect(existsSync(join(r.workspace, `subagents/${a.id}/01-a.txt`))).toBe(false);
+		eio = false;
+		await o.scan();
+		await until(() => r.runs.get(a.id)?.status === "done", "scan retries the export", 10_000);
+		const row = r.runs.get(a.id)!;
+		expect(row.exportedFiles).toEqual([`subagents/${a.id}/01-a.txt`]);
+		expect(row.exportErrors).toEqual([]);
+		expect(readFileSync(join(r.workspace, `subagents/${a.id}/01-a.txt`), "utf8")).toBe("A");
+		expect(r.wakes.length).toBe(1);
+		expect(r.wakes[0]!.text).toContain("Exported:");
+		await o.scan();
+		expect(r.wakes.length).toBe(1);
+	});
+
+	// The same contract against a REAL host write failure: the export
+	// dir refuses writes (EACCES for a non-root user), the durable write
+	// throws, and nothing is fabricated — restore the mode and the
+	// scan's retry lands the actual exported bytes exactly once.
+	test("an unexpected EACCES on the durable export write keeps the run owned", async () => {
+		if (typeof process.getuid === "function" && process.getuid() === 0) {
+			return; // root bypasses mode bits — EACCES is not reproducible
+		}
+		const r = rig();
+		const o = await open(r);
+		r.box.write("/work/a.txt", new TextEncoder().encode("A"));
+		r.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "exp", files: ["/work/a.txt"] } }],
+		});
+		// The run's export parent exists but refuses new entries — the
+		// mkdir inside resolveExportDir fails EACCES on this host.
+		const exportRoot = join(r.workspace, "subagents");
+		mkdirSync(exportRoot);
+		chmodSync(exportRoot, 0o500);
+		const origCat = r.sandboxes.catFile.bind(r.sandboxes);
+		let catCalls = 0;
+		r.sandboxes.catFile = async (conv, path) => {
+			catCalls++;
+			return origCat(conv, path);
+		};
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		try {
+			await until(() => catCalls === 1, "the export read attempted — the write fails next");
+			await Bun.sleep(200);
+			const mid = r.runs.get(a.id)!;
+			expect(mid.status).toBe("running");
+			expect(mid.exportedFiles).toEqual([]);
+			expect(mid.exportErrors).toEqual([]);
+			expect(Object.keys(mid.exportProgress)).toEqual([]);
+			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
+			expect(r.wakes.length).toBe(0);
+			expect(existsSync(join(exportRoot, String(a.id)))).toBe(false);
+			chmodSync(exportRoot, 0o700);
+			await o.scan();
+			await until(
+				() => r.runs.get(a.id)?.status === "done",
+				"scan retries the real export",
+				10_000,
+			);
+			const row = r.runs.get(a.id)!;
+			expect(row.exportedFiles).toEqual([`subagents/${a.id}/01-a.txt`]);
+			expect(row.exportErrors).toEqual([]);
+			expect(readFileSync(join(r.workspace, `subagents/${a.id}/01-a.txt`), "utf8")).toBe("A");
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("Exported:");
+			await o.scan();
+			expect(r.wakes.length).toBe(1);
+		} finally {
+			chmodSync(exportRoot, 0o700);
+		}
+	});
+
+	// Same contract at the final-screenshot edge: an unexpected fault
+	// must not mark the computer run done or fabricate progress.
+	test("an unexpected final-screenshot error keeps the computer run owned for scan retry", async () => {
+		const desktops = fakeDesktops();
+		await desktops.allocate("d1");
+		const r = rig({ desktops });
+		const o = await open(r);
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "shot" } }] });
+		const origShot = desktops.screenshot.bind(desktops);
+		let eio = true;
+		let shotCalls = 0;
+		desktops.screenshot = async (name) => {
+			shotCalls++;
+			if (eio) throw new Error("EIO: screenshot storage fault");
+			return origShot(name);
+		};
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(() => shotCalls === 1, "final screenshot attempted");
+		await Bun.sleep(200);
+		const mid = r.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		expect(mid.finalScreenshot).toBeNull();
+		expect(mid.exportErrors).toEqual([]);
+		expect(r.wakes.length).toBe(0);
+		eio = false;
+		await o.scan();
+		await until(() => r.runs.get(a.id)?.status === "done", "scan retries the screenshot", 10_000);
+		const row = r.runs.get(a.id)!;
+		expect(row.finalScreenshot).toBe(`subagents/${a.id}/final.png`);
+		expect(row.result).toBe("shot");
+		expect(r.wakes.length).toBe(1);
+		await o.scan();
+		expect(r.wakes.length).toBe(1);
+	});
+
+	// A stop landing while finalize's durable doc read is outstanding
+	// wins over the ask transition — no question row, no stale notice.
+	test("a stop landing during an ask's doc read wins — only the stopped notice fires", async () => {
+		const fault = holdRunDocSnapshot();
+		try {
+			const r = rig();
+			const o = await open(r);
+			r.model.push({
+				kind: "tools",
+				calls: [{ name: "ask_operator", args: { question: "which login?" } }],
+			});
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "the ask round completed");
+			await fault.entered;
+			const stopping = o.stop(a.id, WS);
+			await Bun.sleep(100);
+			fault.release();
+			const stopped = await stopping;
+			expect(stopped.status).toBe("stopped");
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("stopped");
+			expect(row.question).toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("Stopped");
+			expect(r.wakes[0]!.text).not.toContain("which login?");
+		} finally {
+			fault.restore();
+		}
+	}, 20_000);
+
+	// Same guard on the no-outcome failure branch: a stop landing while
+	// the doc read is held suppresses the failure transition.
+	test("a stop landing during a failed run's doc read wins — no failure notice", async () => {
+		const fault = holdRunDocSnapshot();
+		try {
+			const r = rig();
+			const o = await open(r);
+			r.model.push({ kind: "text", text: "no terminal call" });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "the round completed");
+			await fault.entered;
+			const stopping = o.stop(a.id, WS);
+			await Bun.sleep(100);
+			fault.release();
+			const stopped = await stopping;
+			expect(stopped.status).toBe("stopped");
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("stopped");
+			expect(row.error).toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("Stopped");
+		} finally {
+			fault.restore();
+		}
+	}, 20_000);
+
+	// And the same guard one await later — a stop landing while the
+	// stop-reason page read is outstanding still wins the transition.
+	test("a stop landing during the stop-reason read wins — no failure notice", async () => {
+		const fault = holdConvEntries();
+		try {
+			const r = rig();
+			const o = await open(r);
+			r.model.push({ kind: "text", text: "no terminal call" });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length === 1, "the round completed");
+			await fault.entered;
+			const stopping = o.stop(a.id, WS);
+			await Bun.sleep(100);
+			fault.release();
+			const stopped = await stopping;
+			expect(stopped.status).toBe("stopped");
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("stopped");
+			expect(row.error).toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("Stopped");
+		} finally {
+			fault.restore();
+		}
+	}, 20_000);
+
+	// A claim that had to recreate the desktop returns its lifecycle
+	// note through the claim — the owner persists it onto the run and
+	// the next computer tool result carries it as a diagnostic.
+	test("a desktop claim warning persists as the run's lifecycle note and reaches the next tool result", async () => {
+		const desktops = fakeDesktops();
+		await desktops.allocate("d1");
+		const origClaim = desktops.claim.bind(desktops);
+		let claims = 0;
+		const NOTE =
+			"desktop d1's container was recreated fresh — previous files and lease state are gone";
+		desktops.claim = async (name, holder) => {
+			claims++;
+			const row = await origClaim(name, holder);
+			return claims === 1 ? { ...row, note: NOTE } : row;
+		};
+		const r = rig({ desktops });
+		const o = await open(r);
+		r.model.push({ kind: "tools", calls: [{ name: "screenshot", args: {} }] });
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "saw note" } }] });
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(() => r.runs.get(a.id)?.status === "done", "done");
+		expect(r.runs.get(a.id)?.result).toBe("saw note");
+		// The admission claim's warning survived to the run row and rode
+		// the first screenshot's diagnostics into the next request.
+		expect(
+			r.model.seen.some((s) =>
+				JSON.stringify(s.messages).includes("previous files and lease state are gone"),
+			),
+		).toBe(true);
+	});
 });
 
 // ---------- explicit model profile seam (phase 4 experiment) ----------

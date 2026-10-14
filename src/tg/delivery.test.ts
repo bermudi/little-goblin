@@ -39,10 +39,14 @@ const conv: Conversation = {
 function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
 	const msgs: string[] = [];
 	const voices: number[] = [];
+	const actions: string[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
 	const api = {
-		sendChatAction: () => Promise.resolve(true),
+		sendChatAction: async (_chat: number, action: string) => {
+			actions.push(action);
+			return true;
+		},
 		sendMessage: async (_chat: number, text: string) => {
 			if (opts.gate?.current) await opts.gate.current;
 			if (opts.failSends) throw new Error("sendMessage failed");
@@ -70,7 +74,7 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 			return true;
 		},
 	} as unknown as Api;
-	return { api, msgs, voices, reactions, markups };
+	return { api, msgs, voices, actions, reactions, markups };
 }
 
 describe("delivery", () => {
@@ -792,6 +796,56 @@ describe("delivery", () => {
 		actions.length = 0;
 		await sleep(12);
 		// Terminal sink: no orphaned record_voice, no ghost typing.
+		expect(actions).toEqual([]);
+	});
+
+	// Telegram clears the chat action when a real message lands. The
+	// tick is up to typingIntervalMs away, so every mid-turn send must
+	// re-ping immediately — the indicator stays visible while the turn
+	// is still busy. The interval here is 60 s: any "typing" recorded
+	// below is a re-ping, never the tick.
+	test("a mid-turn voice note re-pings typing immediately", async () => {
+		const { api, actions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		actions.length = 0; // drop construction's immediate ping
+		await sink.onVoiceNote!(new Uint8Array([1]));
+		await sleep(0);
+		// record_voice announces the note, typing follows its landing.
+		expect(actions).toEqual(["record_voice", "typing"]);
+	});
+
+	test("a mid-turn send inside a synthesis window never stomps record_voice with typing", async () => {
+		const { api, actions, voices } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		const stop = sink.onVoiceSynthesisStart!();
+		actions.length = 0; // construction ping + synthesis-start record_voice
+		await sink.onVoiceNote!(new Uint8Array([1]));
+		await sleep(0);
+		expect(voices).toHaveLength(1); // the note landed — its re-ping was gated
+		expect(actions.every((a) => a === "record_voice")).toBe(true);
+		stop();
+		await sink.onDone({ kind: "completed" });
+	});
+
+	test("a landed chunk re-pings typing while the turn continues", async () => {
+		const { api, actions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		actions.length = 0;
+		sink.onTextDelta("a".repeat(CHUNK + 10));
+		await sleep(0);
+		expect(actions).toEqual(["typing"]); // the chunk landing's re-ping
+	});
+
+	test("finalize sends after onDone ghost no typing", async () => {
+		const { api, actions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		sink.onTextDelta("a".repeat(CHUNK + 10));
+		await sleep(0);
+		actions.length = 0;
+		sink.onTextDelta(" tail");
+		await sink.onDone({ kind: "completed" });
+		// The drain sent the remaining chunk after the sink was done —
+		// that send must not resurrect the indicator on a finished turn.
 		expect(actions).toEqual([]);
 	});
 

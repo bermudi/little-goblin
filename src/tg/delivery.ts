@@ -15,6 +15,10 @@ import { rateCallbackData } from "./rate-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
+// Rich draft keep-alive: re-push an unchanged draft at this age so the
+// 30 s Telegram TTL never expires mid-turn. Parameterized for tests the
+// same way typingIntervalMs is.
+const DRAFT_TTL_MS = 20_000;
 // Leave headroom under Telegram's 4096 limit for the status block.
 const CHUNK_LIMIT = 3800;
 // Rich messages cap at 32768 chars (Bot API 10.3); headroom under the
@@ -195,6 +199,8 @@ export function makeDeliverySink(
 	// How long a photo-path file holds for burst siblings before its
 	// album (or solo send) goes out.
 	mediaGroupWindowMs = 400,
+	// Age at which an unchanged rich draft is re-pushed (TTL keep-alive).
+	draftTtlMs = DRAFT_TTL_MS,
 ): TurnSink {
 	// Routing bug alarm (DESIGN.md, App channel): app conversations have
 	// no Telegram door — their sink is the HTTP stream. A silent send
@@ -297,21 +303,15 @@ export function makeDeliverySink(
 
 	function sendTyping(): void {
 		if (!mayDeliver()) return;
-		if (richMode) {
-			// The draft bubble is the indicator; refresh only on new content
-			// or TTL keep-alive — identical re-sends would re-animate the
-			// bubble every 4 s. The reasoning bubble's own growth/staleness
-			// counts too: a long thinking stretch with no answer text must
-			// still keep its draft alive.
-			const body = rendered();
-			const stale =
-				body !== lastDraftBody ||
-				Date.now() - lastDraftSentAt > 20_000 ||
-				reasoningText.length !== reasoningPushed ||
-				(reasoningText !== "" && Date.now() - reasoningSentAt > 20_000);
-			if (stale) pushDrafts(body);
-			return;
-		}
+		// The chat-status indicator stays live in rich mode too: drafts
+		// carry content, the chat action carries liveness. While a
+		// synthesis window is open the record_voice interval owns the
+		// status bar instead.
+		if (recordings.size === 0) pingTyping();
+		if (richMode) refreshRichDrafts();
+	}
+	sendTyping();
+	function pingTyping(): void {
 		withTimeout(
 			api.sendChatAction(conv.chatId, "typing", {
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
@@ -321,7 +321,28 @@ export function makeDeliverySink(
 			log.debug("typing ping failed", { error: String(err) });
 		});
 	}
-	sendTyping();
+	// Telegram clears the chat action when a real message lands, and the
+	// next tick is up to typingIntervalMs away — dead air while the turn
+	// is still busy. Re-ping right after a mid-turn send; skipped while a
+	// synthesis window owns the status bar and once the sink is done (no
+	// ghost typing on a finished turn).
+	function repingTyping(): void {
+		if (sinkDone || recordings.size > 0 || !mayDeliver()) return;
+		pingTyping();
+	}
+	// Draft refresh policy for rich mode: push only on new content or TTL
+	// keep-alive — identical re-sends would re-animate the bubble every
+	// 4 s. The reasoning bubble's own growth/staleness counts too: a long
+	// thinking stretch with no answer text must still keep its draft alive.
+	function refreshRichDrafts(): void {
+		const body = rendered();
+		const stale =
+			body !== lastDraftBody ||
+			Date.now() - lastDraftSentAt > draftTtlMs ||
+			reasoningText.length !== reasoningPushed ||
+			(reasoningText !== "" && Date.now() - reasoningSentAt > draftTtlMs);
+		if (stale) pushDrafts(body);
+	}
 	function sendRecording(): void {
 		if (!authoritative()) return;
 		withTimeout(
@@ -332,6 +353,10 @@ export function makeDeliverySink(
 		).catch((err: unknown) => {
 			log.debug("record voice ping failed", { error: String(err) });
 		});
+		// Synthesis pauses the typing interval, which otherwise carries
+		// the draft keep-alive — without this a long synthesis lets the
+		// draft evaporate mid-turn (30 s TTL) while record_voice runs.
+		if (richMode) refreshRichDrafts();
 	}
 
 	async function sendVoice(audio: Uint8Array): Promise<void> {
@@ -364,6 +389,9 @@ export function makeDeliverySink(
 		});
 		await chain;
 		if (failure) throw failure.error;
+		// A landed voice note clears the chat action — restore the typing
+		// indicator immediately instead of waiting out the tick.
+		repingTyping();
 		if (uncertain) {
 			throw new Error(
 				"Telegram delivery uncertain — voice not sent again; check Telegram before retrying",
@@ -444,6 +472,7 @@ export function makeDeliverySink(
 				kind: "photo",
 				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 			});
+			repingTyping();
 		} catch (err) {
 			if (err instanceof TelegramTimeoutError) {
 				markUncertain(err, "sendPhoto");
@@ -491,6 +520,7 @@ export function makeDeliverySink(
 					files: group.length,
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
+				repingTyping();
 			}
 			return;
 		} catch (err) {
@@ -578,6 +608,7 @@ export function makeDeliverySink(
 					kind: "document",
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
+				repingTyping();
 			} catch (err) {
 				if (err instanceof TelegramTimeoutError) {
 					// A file-send timeout is as ambiguous as a text one — the
@@ -771,6 +802,9 @@ export function makeDeliverySink(
 							message: sent.message_id,
 							...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 						});
+						// The chunk landing cleared the chat action — restore it now;
+						// the finalize drain (sinkDone) stays silent.
+						repingTyping();
 					} catch (err) {
 						if (err instanceof TelegramTimeoutError) {
 							markUncertain(err, "sendMessage", idx);

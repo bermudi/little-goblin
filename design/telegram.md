@@ -633,7 +633,20 @@ streams its accumulated markdown into `sendRichMessageDraft` (same
 the TTL) and on completion sends the same content once via
 `sendRichMessage`. The preview is the message, formatting included; the
 hand-off (draft vanishes, real message lands) is accepted behavior, not a
-bug to smooth over. Drafts replace the typing indicator entirely. The
+bug to smooth over. ~~Drafts replace the typing indicator entirely.~~
+**Typing stays live alongside drafts (ruling 2026-10-14, operator):**
+the chat action is not a rich-mode casualty — the 4 s tick pings
+`sendChatAction("typing")` in every mode while the turn runs, drafts or
+not, because "goblin is busy" must always read as typing… in the
+status bar. Division of labor: drafts carry content, the chat action
+carries liveness. Two consequences ride this: Telegram clears the
+chat action whenever a real message lands, so every mid-turn send
+(voice note, file, chunk boundary) re-pings immediately instead of
+waiting out the tick — gated to skip while a synthesis window owns
+the status bar (`record_voice`) and after `onDone` (no ghost typing on
+a finished turn); and the draft TTL keep-alive moves onto whatever
+tick is live, so a long voice synthesis (typing interval paused)
+doesn't let the draft evaporate mid-turn. The
 finalizing send carries everything the message needs in one call —
 `reply_markup` included (ruling 2026-10-13): the completed-turn rating
 row goes out on the `sendRichMessage`, not a follow-up

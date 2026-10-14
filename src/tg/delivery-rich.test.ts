@@ -14,6 +14,8 @@ import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { makeDeliverySink, resetMessageEffectsGateForTests } from "./delivery.ts";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const conv: Conversation = {
 	id: "dm:1",
 	chatId: 1,
@@ -54,11 +56,15 @@ function fakeApi(
 	const richSends: Array<{ markdown: string; other: Record<string, unknown> }> = [];
 	const msgs: string[] = [];
 	const edits: string[] = [];
+	const actions: string[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
 	let sendAttempts = 0;
 	const api = {
-		sendChatAction: () => Promise.resolve(true),
+		sendChatAction: async (_chat: number, action: string) => {
+			actions.push(action);
+			return true;
+		},
 		sendMessage: async (_chat: number, text: string) => {
 			msgs.push(text);
 			return { message_id: msgs.length };
@@ -116,6 +122,7 @@ function fakeApi(
 		richSends,
 		msgs,
 		edits,
+		actions,
 		reactions,
 		markups,
 		sendAttempts: () => sendAttempts,
@@ -134,6 +141,76 @@ const silenceLogs = () => {
 };
 
 describe("rich delivery", () => {
+	// Drafts carry content, the chat action carries liveness: the typing
+	// indicator must stay live in rich mode too, not be replaced by the
+	// draft bubble (operator ruling 2026-10-14).
+	test("rich mode keeps the typing chat action live alongside drafts", async () => {
+		const done = silenceLogs();
+		try {
+			const { api, drafts, actions } = fakeApi();
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				2, // typingIntervalMs — the tick drives both ping and refresh
+				undefined,
+				undefined,
+				{ enabled: true },
+			);
+			await sleep(12);
+			// The placeholder draft went out AND typing pings keep coming.
+			expect(drafts.length).toBeGreaterThan(0);
+			const typings = actions.filter((a) => a === "typing").length;
+			expect(typings).toBeGreaterThanOrEqual(2);
+			await sink.onDone({ kind: "completed" });
+			actions.length = 0;
+			await sleep(12);
+			// Terminal sink: no ghost typing after the rich send landed.
+			expect(actions).toEqual([]);
+		} finally {
+			done();
+		}
+	});
+
+	// Synthesis pauses the typing interval, which otherwise carries the
+	// draft keep-alive: with a tiny draft TTL the recording tick must
+	// keep re-pushing the unchanged draft, and nothing may ping typing
+	// while record_voice owns the status bar.
+	test("a synthesis window keeps refreshing the rich draft — no mid-turn evaporation", async () => {
+		const done = silenceLogs();
+		try {
+			const { api, drafts, actions } = fakeApi();
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				2, // typingIntervalMs — powers the recording tick while synthesis runs
+				undefined,
+				undefined,
+				{ enabled: true },
+				400,
+				10, // draftTtlMs — the unchanged draft goes stale almost immediately
+			);
+			// One sync block: text lands, the typing interval is cleared, and
+			// the recording tick is armed before any timer can fire.
+			sink.onTextDelta("hold");
+			const stop = sink.onVoiceSynthesisStart!();
+			const pushed = drafts.length;
+			actions.length = 0;
+			await sleep(25);
+			expect(drafts.length).toBeGreaterThan(pushed); // keep-alive re-pushed
+			expect(actions.every((a) => a === "record_voice")).toBe(true);
+			stop();
+			await sink.onDone({ kind: "completed" });
+		} finally {
+			done();
+		}
+	});
+
 	test("DM turn streams rich drafts and finalizes with one rich send", async () => {
 		const done = silenceLogs();
 		try {

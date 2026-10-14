@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { ensureDir, paths } from "./config.ts";
+import { ensureDir, goblinHome, paths } from "./config.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import type { MemoryQueue } from "./memory-queue.ts";
@@ -75,19 +75,20 @@ export function resolveLinkedDir(input: string): string {
 	if (!statSync(real).isDirectory()) {
 		throw new ProjectInputError(`project dir is not a directory: ${input}`);
 	}
-	// state/ holds the DB, the log, and the memory bank config — a chat
-	// cwd'd there reads and writes goblin's own guts. Compare realpaths:
-	// a symlink into state is the same refusal.
-	let stateReal: string;
+	// $GOBLIN_HOME holds the state DB, the log, goblin.json5, auth.jsonl,
+	// workspace (SOUL.md, skills), and the managed-project homes — a chat
+	// cwd'd anywhere in there reads and writes goblin's own guts.
+	// Compare realpaths: a symlink into the tree is the same refusal.
+	let homeReal: string;
 	try {
-		stateReal = realpathSync(paths.state());
+		homeReal = realpathSync(goblinHome());
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		stateReal = paths.state();
+		homeReal = goblinHome();
 	}
-	if (real === stateReal || real.startsWith(`${stateReal}/`)) {
+	if (real === homeReal || real.startsWith(`${homeReal}/`)) {
 		throw new ProjectInputError(
-			`project dir must not be inside goblin's state directory: ${input}`,
+			`project dir must not be inside goblin's home directory: ${input}`,
 		);
 	}
 	return real;

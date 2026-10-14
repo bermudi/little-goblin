@@ -75,14 +75,19 @@ describe("resolveLinkedDir", () => {
 		expect(() => resolveLinkedDir(file)).toThrow("not a directory");
 	});
 
-	test("refuses anything under goblin's state directory", () => {
+	test("refuses goblin's home and anything under it", () => {
 		const home = useHome();
+		expect(() => resolveLinkedDir(home)).toThrow("goblin's home");
 		const state = join(home, "state");
+		mkdirSync(join(home, "projects"), { recursive: true });
+		mkdirSync(join(home, "workspace"), { recursive: true });
 		mkdirSync(state, { recursive: true });
-		expect(() => resolveLinkedDir(state)).toThrow("state");
+		expect(() => resolveLinkedDir(state)).toThrow("goblin's home");
+		expect(() => resolveLinkedDir(join(home, "projects"))).toThrow("goblin's home");
+		expect(() => resolveLinkedDir(join(home, "workspace"))).toThrow("goblin's home");
 		const inside = join(state, "nested");
-		mkdirSync(inside);
-		expect(() => resolveLinkedDir(inside)).toThrow("state");
+		mkdirSync(inside, { recursive: true });
+		expect(() => resolveLinkedDir(inside)).toThrow("goblin's home");
 	});
 
 	test("~/ expands to the home directory", () => {
@@ -94,21 +99,27 @@ describe("resolveLinkedDir", () => {
 	});
 
 	test("a symlinked dir stores the realpath — repoints can't surprise a cwd", () => {
-		const home = useHome();
-		const target = join(home, "real-target");
+		useHome();
+		// The link and its target both live outside $GOBLIN_HOME —
+		// inside it the link is refused before resolution matters.
+		const outside = mkdtempSync(join(tmpdir(), "goblin-linked-"));
+		dirs.push(outside);
+		const target = join(outside, "real-target");
 		mkdirSync(target, { recursive: true });
-		const link = join(home, "the-link");
+		const link = join(outside, "the-link");
 		symlinkSync(target, link);
 		expect(resolveLinkedDir(link)).toBe(target);
 	});
 
-	test("a symlink INTO the state directory is refused as state", () => {
+	test("a symlink INTO goblin's home is refused", () => {
 		const home = useHome();
 		const state = join(home, "state");
 		mkdirSync(state, { recursive: true });
-		const link = join(home, "state-link");
+		const outside = mkdtempSync(join(tmpdir(), "goblin-linked-"));
+		dirs.push(outside);
+		const link = join(outside, "state-link");
 		symlinkSync(state, link);
-		expect(() => resolveLinkedDir(link)).toThrow("state");
+		expect(() => resolveLinkedDir(link)).toThrow("goblin's home");
 	});
 });
 

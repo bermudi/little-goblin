@@ -70,6 +70,7 @@ function SkillCard({
 			</div>
 			<KV k="updated" v={ts(skill.updatedAt)} />
 			<KV k="size" v={bytes(skill.sizeBytes)} mono />
+			{skill.truncated && <p className="empty">file list truncated — size is a floor</p>}
 			<div className="skill-files">
 				{skill.files.map((f) => (
 					<button

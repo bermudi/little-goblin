@@ -56,6 +56,37 @@ function setup(): {
 }
 
 describe("the write path", () => {
+	test("the resulting body limit guards every write and rolls back combined patches", () => {
+		const { notes } = setup();
+		const body = "x".repeat(1_000_000);
+		expect(() => notes.create({ title: "too big", body: `${body}x` })).toThrow(NoteInputError);
+		const n = notes.create({ title: "capped", body });
+		expect(() => notes.append(n.id, "more", "agent")).toThrow(NoteInputError);
+		expect(() => notes.write(n.id, { body: `${body}x` }, "agent")).toThrow(NoteInputError);
+		expect(() =>
+			notes.replaceRanges(n.id, [{ start: 0, end: 0, expected: "", text: "more" }]),
+		).toThrow(NoteInputError);
+		expect(() => notes.patch(n.id, { body: `${body}x`, pinned: true }, "app")).toThrow(
+			NoteInputError,
+		);
+		expect(notes.get(n.id)).toEqual(n);
+		expect(notes.listVersions(n.id)).toEqual([]);
+	});
+
+	test("legacy oversized notes can be renamed or reduced but never grown", () => {
+		const { store, notes } = setup();
+		const n = notes.create({ title: "legacy" });
+		const body = "x".repeat(1_000_006);
+		store.db.run("UPDATE notes SET body_md = ? WHERE id = ?", [body, n.id]);
+		const renamed = notes.write(n.id, { title: "renamed", body }, "app");
+		expect(renamed.title).toBe("renamed");
+		expect(() => notes.append(n.id, "more", "append")).toThrow(NoteInputError);
+		const reduced = notes.write(n.id, { body: body.slice(1) }, "app");
+		expect(reduced.body.length).toBe(1_000_005);
+		expect(() => notes.write(n.id, { body }, "agent")).toThrow(NoteInputError);
+		expect(notes.write(n.id, { body: "small" }, "app").body).toBe("small");
+	});
+
 	test("agent/append/restore writes version every time", () => {
 		const { notes } = setup();
 		const n = notes.create({ title: "groceries", body: "milk" });

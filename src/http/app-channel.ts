@@ -55,6 +55,7 @@ import { log } from "../log.ts";
 import {
 	NOTE_PART,
 	type Note,
+	NOTE_BODY_MAX,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
@@ -334,12 +335,6 @@ const projectPatchBody = z
 		{ message: "nothing to write" },
 	);
 
-// The note body persists verbatim, mirrors into FTS, and is copied
-// whole into a stored chat event at attach time — one oversized write
-// would inflate every later read of it. The bound rides all three
-// content doors (create, patch, append).
-const NOTE_BODY_MAX = 1_000_000;
-
 // Notes (design/projects.md → Notes). projectId: explicit null moves
 // a note back to loose — the flag-write half of a PATCH.
 const noteCreateBody = z.object({
@@ -351,7 +346,8 @@ const noteCreateBody = z.object({
 const notePatchBody = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
-		body: z.string().max(NOTE_BODY_MAX).optional(),
+		// The store bounds the result, allowing legacy oversized bodies to shrink.
+		body: z.string().optional(),
 		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),

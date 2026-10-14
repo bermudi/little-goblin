@@ -165,6 +165,14 @@ never a silent overwrite. The single real conflict — the operator typing
 while the agent edits — surfaces as that 409, and the editor offers
 reload-or-keep-mine. No Yjs/CRDT: one human.
 
+**Body size is a write-path invariant.** New bodies are capped at
+1,000,000 UTF-16 code units, including the resulting body after append
+or range edits. The shared store enforces it for the app and note tool,
+before versioning or committing any combined flag changes. Existing
+oversized rows remain editable: a write may keep or reduce their body
+length, never grow it. The editor can rename them while resubmitting the
+unchanged body, then reduce them below the cap without losing content.
+
 **The buffer outlives the page.** Every document change is captured
 synchronously — a plugin on the editor's doc, not the debounced
 listener — into a same-origin `localStorage` draft keyed per note: the

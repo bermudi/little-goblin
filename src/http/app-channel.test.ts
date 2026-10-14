@@ -2517,8 +2517,7 @@ describe("app notes", () => {
 			const note = (await created.json()) as { id: string; rev: number; body: string };
 			expect(note.body).toBe(atCap);
 
-			// A live etag keeps 422 unambiguous — the cap fires before the
-			// concurrency guard could speak (428/409).
+			// A live etag keeps the size refusal unambiguous (422, not 428/409).
 			const refusedPatch = await patchJson(
 				call,
 				`/api/app/notes/${note.id}`,
@@ -2538,15 +2537,62 @@ describe("app notes", () => {
 				text: over,
 			});
 			expect(refusedAppend.status).toBe(422);
-			const appended = await postJson(call, `/api/app/notes/${note.id}/append`, {
+			const refusedResult = await postJson(call, `/api/app/notes/${note.id}/append`, {
 				text: atCap,
 			});
+			expect(refusedResult.status).toBe(422);
+			const unchanged = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+			};
+			expect(unchanged.body).toBe("small");
+			const text = "x".repeat(1_000_000 - "small\n\n".length);
+			const appended = await postJson(call, `/api/app/notes/${note.id}/append`, { text });
 			expect(appended.status).toBe(200);
 			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
 				body: string;
 			};
 			// append joins with a blank line.
-			expect(after.body).toBe(`small\n\n${atCap}`);
+			expect(after.body).toBe(`small\n\n${text}`);
+			expect(after.body.length).toBe(1_000_000);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("ordinary editor saves can rename and reduce existing oversized notes", async () => {
+		const { http, call, notes, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const n = notes.create({ title: "legacy" });
+			const body = "x".repeat(1_000_006);
+			store.db.run("UPDATE notes SET body_md = ? WHERE id = ?", [body, n.id]);
+			const path = `/api/app/notes/${n.id}`;
+			const renamed = await patchJson(
+				call,
+				path,
+				{ title: "renamed", body },
+				{ "if-match": `"${n.rev}"` },
+			);
+			expect(renamed.status).toBe(200);
+			const saved = (await renamed.json()) as { title: string; body: string; rev: number };
+			expect(saved.title).toBe("renamed");
+			expect(saved.body.length).toBe(body.length);
+			const refused = await patchJson(
+				call,
+				path,
+				{ body: `${body}x`, pinned: true },
+				{ "if-match": `"${saved.rev}"` },
+			);
+			expect(refused.status).toBe(422);
+			expect(notes.get(n.id)!.pinnedAt).toBeNull();
+			expect(notes.get(n.id)!.rev).toBe(saved.rev);
+			const reduced = await patchJson(
+				call,
+				path,
+				{ title: saved.title, body: body.slice(1) },
+				{ "if-match": `"${saved.rev}"` },
+			);
+			expect(reduced.status).toBe(200);
+			expect(notes.get(n.id)!.body.length).toBe(1_000_005);
 		} finally {
 			http.stop();
 		}

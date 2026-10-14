@@ -22,6 +22,20 @@ import { log } from "./log.ts";
 import type { ProjectStore } from "./projects.ts";
 
 export type NoteSource = "app" | "agent" | "rewrite" | "append" | "restore";
+export const NOTE_BODY_MAX = 1_000_000;
+
+function checkBodySize(body: string, previousLength = 0): void {
+	// Legacy oversized notes must remain editable without permitting more growth.
+	if (body.length <= Math.max(NOTE_BODY_MAX, previousLength)) return;
+	log.info("note body size refused", {
+		length: body.length,
+		previousLength,
+		max: NOTE_BODY_MAX,
+	});
+	throw new NoteInputError(
+		`note body exceeds ${NOTE_BODY_MAX} characters; existing oversized notes may only stay the same size or shrink`,
+	);
+}
 
 export interface Note {
 	id: string;
@@ -371,6 +385,7 @@ export function openNotes(
 		}
 		const title = next.title ?? current.title;
 		const body = next.body ?? current.body;
+		checkBodySize(body, current.body.length);
 		if (title === current.title && body === current.body) return current;
 		// The PRE-write state is the version — its `source` names the
 		// write superseding it. App autosaves coalesce: record only on
@@ -464,6 +479,7 @@ export function openNotes(
 	}): Note {
 		const title = input.title.trim();
 		if (title === "") throw new NoteInputError("note title is empty");
+		checkBodySize(input.body ?? "");
 		checkProjectId(input.projectId ?? null);
 		const id = randomUUID();
 		const at = now().toISOString();

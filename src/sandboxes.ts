@@ -213,12 +213,15 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	// network as its recorded state.
 	async function applyNetwork(name: string, want: boolean, conv: string): Promise<void> {
 		const remove = async (): Promise<void> => {
-			// Row outlives a failed rm on purpose: it carries the network
-			// intent, so a later reconcile re-attempts the cleanup instead
-			// of adopting a live container's actual state.
+			// The row outlives the rm either way. A failed rm leaves a
+			// possibly-live container: the row's intent is what the next
+			// reconcile re-attempts the cleanup from, instead of adopting
+			// the container's actual state. A landed rm leaves a row
+			// pointing at nothing — the next call's missing-with-row path
+			// recreates from the recorded image and network intent, rather
+			// than a fresh row on the config default losing a custom image.
 			await podman.rm(name, conv);
 			bumpGeneration(conv);
-			store.delete(conv);
 		};
 		const before = await podman.inspect(name, conv).catch(async (err: unknown) => {
 			if (want) throw err;
@@ -559,6 +562,11 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				},
 				conv,
 			);
+			// A probe killed by the caller's abort resolves (boundedRun
+			// never rejects) with a non-zero exit — misread as a missing
+			// file unless the abort is checked first, same rule as the
+			// read below.
+			opts?.abortSignal?.throwIfAborted();
 			if (probe.exitCode !== 0) {
 				throw new SandboxError(`${path} is not a regular file in the sandbox`);
 			}

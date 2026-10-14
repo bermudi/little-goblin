@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
-import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
+import { boundedRun, spawnProc, type BoundedProc, type BoundedProcBytes } from "./proc.ts";
 import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
 
 const PREFIX = "test-sbx-";
@@ -46,7 +46,10 @@ function fakeEngine(opts?: {
 	}>;
 	breakDisconnect?: boolean;
 	failDisconnect?: boolean;
+	/** Image refs the fake store holds beyond the default IMAGE. */
+	images?: string[];
 }) {
+	const images = new Set([IMAGE, ...(opts?.images ?? [])]);
 	const containers = new Map<string, FakeContainer>();
 	for (const c of opts?.containers ?? []) {
 		containers.set(c.name, {
@@ -78,6 +81,11 @@ function fakeEngine(opts?: {
 		// Fires inside a successful disconnect — arms failures that must
 		// land after the network op, like the confirming inspect.
 		onDisconnect: undefined as undefined | (() => void),
+		// Takes over the exec seam entirely — the abort tests run a real
+		// boundedRun subprocess through it.
+		execImpl: undefined as
+			| undefined
+			| ((args: string[], opts: PodmanExecOpts) => Promise<BoundedProc>),
 	};
 
 	const runner = async (args: string[]) => {
@@ -132,7 +140,7 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "image" && sub === "exists") {
-			return { code: args[2] === IMAGE ? 0 : 1, stdout: "", stderr: "" };
+			return { code: images.has(args[2]!) ? 0 : 1, stdout: "", stderr: "" };
 		}
 		if (cmd === "run") {
 			const name = args[args.indexOf("--name") + 1]!;
@@ -184,6 +192,7 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
+		if (flags.execImpl !== undefined) return flags.execImpl(args, _opts);
 		if (flags.killedExec) {
 			flags.killedExec = false;
 			return {
@@ -374,7 +383,9 @@ describe("sandboxes lifecycle", () => {
 		engine.flags.breakDisconnect = true;
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network off/);
 		expect(engine.containers.has(name)).toBe(false);
-		expect(store.get(conv)).toBeNull();
+		// The row survives the removal — it carries the image and the
+		// network intent the next call's recreate restores.
+		expect(store.get(conv)).toMatchObject({ container: name, image: IMAGE, network: true });
 	});
 
 	test("network off is fail-closed: a failed disconnect removes the container", async () => {
@@ -387,7 +398,9 @@ describe("sandboxes lifecycle", () => {
 		engine.flags.failDisconnect = true;
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network disconnect failed/);
 		expect(engine.containers.has(name)).toBe(false);
-		expect(store.get(conv)).toBeNull();
+		// The row survives the removal — the failed toggle never wrote
+		// network=off, so intent is still on.
+		expect(store.get(conv)).toMatchObject({ container: name, image: IMAGE, network: true });
 	});
 
 	test("an unverifiable off-state INSPECT — not just a lying one — also removes", async () => {
@@ -404,7 +417,59 @@ describe("sandboxes lifecycle", () => {
 		};
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/verify failed/);
 		expect(engine.containers.has(name)).toBe(false);
-		expect(store.get(conv)).toBeNull();
+		expect(store.get(conv)).toMatchObject({ container: name, image: IMAGE, network: true });
+	});
+
+	test("a fail-closed removal keeps the row — the next call recreates its image and network intent", async () => {
+		const CUSTOM = "docker.io/library/debian:stable-slim";
+		const conv = "dm:keep-row";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({
+			containers: [{ name, image: CUSTOM, networks: [NETWORK] }],
+			images: [CUSTOM],
+		});
+		const { sandboxes, store } = rig(engine);
+		// A custom-image sandbox recorded mid-life: the row is the only
+		// place that image and intent survive on.
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: CUSTOM,
+			network: true,
+			createdAt: 1,
+			lastUsedAt: 2,
+		});
+		engine.flags.failDisconnect = true;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network disconnect failed/);
+		expect(engine.containers.has(name)).toBe(false);
+		// Fail-closed removes the container — and keeps the intent row.
+		expect(store.get(conv)).toMatchObject({ image: CUSTOM, network: true });
+		// The next call recreates FROM the row — not from config defaults.
+		engine.flags.failDisconnect = false;
+		const out = await sandboxes.exec(conv, "true", execOpts);
+		expect(out.note).toContain("recreated");
+		const c = engine.containers.get(name)!;
+		expect(c.image).toBe(CUSTOM);
+		expect(c.networks.has(NETWORK)).toBe(true);
+	});
+
+	test("a stale row whose container is already gone reaps clean", async () => {
+		// Rows kept after fail-closed removals point at nothing — podman's
+		// rm is idempotent on a missing name, so the sweep deletes the row
+		// without a warn-and-retry loop.
+		const staleConv = "dm:ghost";
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine, { idleHours: 1 });
+		store.put({
+			conversationId: staleConv,
+			container: containerNameFor(staleConv, PREFIX),
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		await sandboxes.exec("dm:active", "true", execOpts);
+		expect(store.get(staleConv)).toBeNull();
 	});
 
 	test("a fresh container is created attached — if its bring-to-state inspect fails, it is removed", async () => {
@@ -620,5 +685,45 @@ describe("sandboxes lifecycle", () => {
 		await sandboxes.exec("dm:active", "true", execOpts);
 		expect(engine.containers.has(staleName)).toBe(false);
 		expect(store.get(staleConv)).toBeNull();
+	});
+});
+
+describe("catFile", () => {
+	test("an abort during the test -f probe surfaces AbortError, not a read failure", async () => {
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine);
+		const conv = "dm:abort";
+		const controller = new AbortController();
+		// The real subprocess boundary: an aborted boundedRun resolves
+		// killed (it never rejects) — the probe exits non-zero, and
+		// without an abort check that reads as "not a regular file".
+		engine.flags.execImpl = (_args, opts) => {
+			const proc = spawnProc(["/bin/sh", "-c", "sleep 30"]);
+			controller.abort();
+			return boundedRun(proc, opts);
+		};
+		const err = await sandboxes.catFile(conv, "/work/any", { abortSignal: controller.signal }).then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(err).toBeInstanceOf(DOMException);
+		expect((err as DOMException).name).toBe("AbortError");
+		// Only the probe ran — the export read never started.
+		expect(engine.execCalls).toHaveLength(1);
+		expect(engine.execCalls[0]).toContain("sb-check");
+	});
+
+	test("a failed probe without an abort still reports not-a-regular-file", async () => {
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine);
+		engine.flags.execImpl = async () => ({
+			stdout: "",
+			stderr: "",
+			exitCode: 1,
+			timedOut: false,
+			truncated: false,
+			killed: false,
+		});
+		await expect(sandboxes.catFile("dm:x", "/work/missing")).rejects.toThrow(/not a regular file/);
 	});
 });

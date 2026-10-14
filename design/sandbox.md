@@ -148,7 +148,8 @@ tool already makes. Flat schema, per-action contract enforced inside
   built.
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
-  confirmed off when off is intended is removed, not used.
+  confirmed off when off is intended is removed, not used — its row stays:
+  it carries the image and intent the next call recreates from.
 - `reset` — optional `image`.
 
 The description says what the model needs: not the host; root inside;

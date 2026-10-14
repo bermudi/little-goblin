@@ -382,6 +382,20 @@ describe("NoteEditor save loop", () => {
 		expect(patches[0]!.init.keepalive).toBeUndefined();
 	});
 
+	test("the cap counts serialized JSON, not markdown — escapes can still push it over", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		// 12k control chars are ~12 KB of markdown but serialize as
+		// \uXXXX escapes — ~72 KB over the wire, past the ~64 KiB limit.
+		await edit(ref, "\u0001".repeat(12_000));
+		await notice();
+		await act(async () => win.dispatchEvent(new win.Event("pagehide")));
+		await tick(0);
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.init.keepalive).toBeUndefined();
+	});
+
 	test("an edit flushed by unmount PATCHes without waiting for the listener", async () => {
 		root = createRoot(container);
 		const ref = await mount(note.body, 60_000);

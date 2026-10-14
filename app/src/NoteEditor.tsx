@@ -74,7 +74,10 @@ const DEBOUNCE_MS = 1000;
 // fetch keepalive rejects request bodies past ~64KiB with a TypeError
 // the unloading page can't show anyone — pagehide keeps keepalive only
 // under the cap; a bigger body rides the same flush as a plain PATCH
-// (the hidden-page flush already sent one without it).
+// (the hidden-page flush already sent one without it). The browser
+// limit counts the whole serialized body — JSON escaping inflates a
+// control-char-heavy body up to 6x, so the check measures the wire
+// JSON in save(), not the markdown.
 const KEEPALIVE_BODY_MAX = 60_000;
 const utf8 = new TextEncoder();
 
@@ -244,15 +247,16 @@ const NoteEditor = forwardRef<
 		markStatus("saving");
 		const flight = (async () => {
 			try {
-				const { data } = await patchNote(
-					token,
-					noteId,
-					{
-						body: md,
-						...(opts.title !== undefined ? { title: opts.title } : {}),
-					},
-					{ ifMatch: expectedRev, keepalive: opts.keepalive === true },
-				);
+				const patch = {
+					body: md,
+					...(opts.title !== undefined ? { title: opts.title } : {}),
+				};
+				const { data } = await patchNote(token, noteId, patch, {
+					ifMatch: expectedRev,
+					keepalive:
+						opts.keepalive === true &&
+						utf8.encode(JSON.stringify(patch)).length <= KEEPALIVE_BODY_MAX,
+				});
 				baselineRef.current = md;
 				serverBodyRef.current = data.body;
 				// Never backwards — a flag response may race ahead.
@@ -330,9 +334,9 @@ const NoteEditor = forwardRef<
 		// hasn't caught up.
 		const md = ed.action(getMarkdown());
 		if (md === baselineRef.current) return;
-		void save(revRef.current, {
-			keepalive: keepalive && utf8.encode(md).length <= KEEPALIVE_BODY_MAX,
-		});
+		// save() measures the serialized patch against the keepalive cap
+		// itself — call sites only pass the intent.
+		void save(revRef.current, { keepalive });
 	}
 
 	// A server-side content change landed: adopt the note, rebase the

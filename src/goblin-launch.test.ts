@@ -49,7 +49,10 @@ function stubs(dir: string, chromiumBody?: string): string {
 async function readWhenLanded(path: string, ms = 3000): Promise<string | null> {
 	const deadline = Date.now() + ms;
 	while (Date.now() < deadline) {
-		if (existsSync(path)) return readFileSync(path, "utf8");
+		if (existsSync(path)) {
+			const content = readFileSync(path, "utf8");
+			if (content !== "") return content;
+		}
 		await new Promise((r) => setTimeout(r, 20));
 	}
 	return null;
@@ -62,14 +65,15 @@ async function readWhenLanded(path: string, ms = 3000): Promise<string | null> {
 function run(
 	args: string[],
 	who: { uid: string; user: string },
-	opts?: { chromiumBody?: string },
+	opts?: { chromiumBody?: string; logState?: "missing" | "blocked" },
 ): Promise<{ code: number; err: string; log: string; logDir: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-launch-"));
 	dirs.push(dir);
 	const bin = stubs(dir, opts?.chromiumBody);
 	const log = join(dir, "stub");
 	const logDir = join(dir, "launch-logs");
-	mkdirSync(logDir, { recursive: true });
+	if (opts?.logState !== "missing") mkdirSync(logDir, { recursive: true });
+	if (opts?.logState === "blocked") mkdirSync(join(logDir, "goblin-launch-chromium.log"));
 	const proc = Bun.spawn(["/bin/sh", SCRIPT, ...args], {
 		env: {
 			PATH: `${bin}:/usr/bin:/bin`,
@@ -113,8 +117,8 @@ describe("goblin-launch", () => {
 			"XDG_RUNTIME_DIR=/home/desk/.runtime",
 			`GOBLIN_LAUNCH_LOG=${logDir}/goblin-launch-chromium.log`,
 			"/bin/sh",
-			"-c",
-			'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1',
+			"-ec",
+			'exec >>"${GOBLIN_LAUNCH_LOG}" 2>&1; "$@" </dev/null &',
 			"goblin-launch",
 			"chromium",
 			"--force-renderer-accessibility",
@@ -177,6 +181,33 @@ describe("goblin-launch", () => {
 		expect(code).toBe(0);
 		const captured = await readWhenLanded(`${logDir}/goblin-launch-chromium.log`);
 		expect(captured).toBe("zygote_linux.cc: failed to enter sandbox\n");
+	});
+
+	test.each(["missing", "blocked"] as const)(
+		"a %s log path refuses the launch loudly",
+		async (logState) => {
+			const { code, err, log } = await run(
+				["chromium"],
+				{ uid: "1000", user: "desk" },
+				{ logState },
+			);
+			expect(code).not.toBe(0);
+			expect(err).toContain(logState === "missing" ? "is missing" : "goblin-launch-chromium.log");
+			expect(existsSync(`${log}.app`)).toBe(false);
+		},
+	);
+
+	test("opening the log does not wait for the detached app's lifetime", async () => {
+		const start = performance.now();
+		const { code } = await run(
+			["chromium"],
+			{ uid: "1000", user: "desk" },
+			{
+				chromiumBody: "#!/bin/sh\nsleep 2\n",
+			},
+		);
+		expect(code).toBe(0);
+		expect(performance.now() - start).toBeLessThan(1_000);
 	});
 
 	test("the whitelist still refuses non-url argv and unknown apps", async () => {

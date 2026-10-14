@@ -167,8 +167,8 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 				};
 			}
 			const input = parsed.data;
-			// Every action past this point is a pool mutation or an
-			// engine read — a cancelled call never starts one.
+			// Refuse all pre-aborted calls; network/destroy/transfers also
+			// carry the signal through their pool lane and preflight waits.
 			abortSignal?.throwIfAborted();
 			try {
 				switch (input.action) {

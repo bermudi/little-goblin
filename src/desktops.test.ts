@@ -697,6 +697,43 @@ describe("desktops pool", () => {
 		},
 	);
 
+	test("an import cancelled after staging removes its stage without writing the destination", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+		writeFileSync(host, "x");
+		const controller = new AbortController();
+		const cp = engine.podman.cp.bind(engine.podman);
+		engine.podman.cp = async (...args) => {
+			await cp(...args);
+			controller.abort();
+		};
+		await expect(
+			desktops.cpIn(name, host, "/home/desk/f.bin", {
+				abortSignal: controller.signal,
+			}),
+		).rejects.toThrow();
+		expect(engine.calls.some((a) => a[0] === "cp")).toBe(true);
+		expect(engine.execCalls.some((a) => a.includes("cp"))).toBe(false);
+		expect(engine.execCalls.some((a) => a.includes("rm"))).toBe(true);
+	});
+
+	test("a dispatched network toggle verifies and records intent even if cancellation lands", async () => {
+		const engine = fakeEngine();
+		const { desktops, store, name } = await fresh(engine);
+		const controller = new AbortController();
+		const connect = engine.podman.networkConnect.bind(engine.podman);
+		engine.podman.networkConnect = async (...args) => {
+			await connect(...args);
+			controller.abort();
+		};
+		await desktops.setNetwork(name, true, { abortSignal: controller.signal });
+		expect(controller.signal.aborted).toBe(true);
+		expect(store.get(name)!.network).toBe(true);
+		expect(engine.containers.get(containerNameForDesktop(name))!.networks.size).toBe(1);
+		expect(engine.calls.at(-1)?.[0]).toBe("inspect");
+	});
+
 	test.each(["stopped", "missing", "adopted"] as const)(
 		"the first observation after %s reconciliation can drive input",
 		async (state) => {

@@ -10,12 +10,9 @@ set -eu
 
 DESK_USER=desk
 DESK_HOME=/home/desk
-# The detached app's stdout/stderr land in an owned per-app log —
-# /dev/null made a startup crash invisible to every later debugging
-# pass. The detached context opens the file itself, so the log is
-# desk-owned under any caller; the launcher's own fds stay /dev/null
-# so the spawning exec returns at once. The dir is the fixed session
-# dir; the override exists for the stubbed test — prod never sets it.
+# Open the log as desk before detaching, so permission failures reach the
+# caller and the app inherits only log fds, never the spawning exec's pipes.
+# The override lets boundary tests run without the image's /run/desk.
 LOG_DIR="${GOBLIN_LAUNCH_LOG_DIR:-/run/desk}"
 
 run_detached() {
@@ -40,16 +37,16 @@ run_detached() {
 				DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
 				XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
 				GOBLIN_LAUNCH_LOG="${log}" \
-				/bin/sh -c 'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1' \
-				goblin-launch "$@" </dev/null >/dev/null 2>&1 &
+				/bin/sh -ec 'exec >>"${GOBLIN_LAUNCH_LOG}" 2>&1; "$@" </dev/null &' \
+				goblin-launch "$@" </dev/null
 	else
 		env HOME="${DESK_HOME}" \
 			DISPLAY=":99" \
 			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
 			XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
 			GOBLIN_LAUNCH_LOG="${log}" \
-			/bin/sh -c 'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1' \
-			goblin-launch "$@" </dev/null >/dev/null 2>&1 &
+			/bin/sh -ec 'exec >>"${GOBLIN_LAUNCH_LOG}" 2>&1; "$@" </dev/null &' \
+			goblin-launch "$@" </dev/null
 	fi
 }
 

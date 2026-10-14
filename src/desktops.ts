@@ -396,13 +396,9 @@ interface EnsureResult {
 	note?: string;
 }
 
-/** Optional last param on the mutating ops: the caller's abort
- *  signal. Checked before the call, after the lane wait, after each
- *  preflight read, and immediately before a mutation dispatches — a
- *  cancelled call never starts a rm/connect/cp afterwards. A mutation
- *  already dispatched still reconciles to the row's intent: an abort
- *  never leaves an unverified network state or a half-restarted
- *  desktop. */
+/** Cancellation for network, destroy and file transfers, including lane
+ *  and preflight waits. Once dispatched, mutations finish reconciliation
+ *  so cancellation cannot leave an unverified network or restart. */
 export interface DesktopOpOpts {
 	abortSignal?: AbortSignal;
 }

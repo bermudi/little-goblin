@@ -382,11 +382,15 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	// process outlives its client), so any killed exec — deadline,
 	// abort, or the output cap — leaves work running. The restart reaps
 	// it; the filesystem survives, and network intent is re-applied
-	// from the row.
+	// from the row. Concurrent execs share the container, so one
+	// restart reaps them all — the stamp lets siblings that were killed
+	// by it skip queueing a restart of their own.
+	const lastRestartedAt = new Map<string, number>();
 	async function restartAfterKillLocked(name: string, conv: string): Promise<void> {
 		await podman.restart(name, conv);
 		const row = store.get(conv);
 		await applyNetwork(name, row?.network ?? false, conv);
+		lastRestartedAt.set(conv, Date.now());
 		log.info("sandbox restarted after killed exec", {
 			conversation: conv,
 			container: name,
@@ -407,7 +411,9 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				const fresh = store.get(row.conversationId);
 				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
 				try {
-					await podman.rm(fresh.container, conv);
+					// The row's owner, not the sweeping conversation — the
+					// podman boundary line must name who the rm was for.
+					await podman.rm(fresh.container, fresh.conversationId);
 				} catch (err) {
 					// Keep the row — the next call retries the reap.
 					log.warn("sandbox reap failed — row kept", err, {
@@ -476,10 +482,18 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				store.touch(conv, Date.now());
 				return ensureLocked(conv);
 			});
+			const execStartedAt = Date.now();
 			const r = await podman.exec(ready.container, ["/bin/sh", "-c", command], opts, conv);
 			let note = ready.note;
 			if (r.killed) {
-				await lane(conv, () => restartAfterKillLocked(ready.container, conv));
+				await lane(conv, async () => {
+					// A restart newer than this exec's start already reaped
+					// its leftover work — a killed sibling's restart kills
+					// every other in-flight exec, and each must not queue
+					// another restart for its own death.
+					if ((lastRestartedAt.get(conv) ?? 0) > execStartedAt) return;
+					await restartAfterKillLocked(ready.container, conv);
+				});
 				const killed =
 					"the command was stopped before it finished — the sandbox was restarted to stop anything still running; files were kept";
 				note = note === undefined ? killed : `${note}; ${killed}`;

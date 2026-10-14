@@ -185,34 +185,45 @@ export function makePodman(deps?: {
 		return new PodmanError(op, r.code, detail === "" ? "no output" : detail);
 	}
 
+	// True when the named network exists with the required isolation,
+	// false when missing — a present-but-wrong network is a hard error.
+	async function networkOk(name: string, conv: string | undefined): Promise<boolean> {
+		const r = await call("network inspect", ["network", "inspect", name], {
+			conversation: conv,
+		});
+		if (r.code !== 0) return false;
+		let parsed: z.infer<typeof networkInspectSchema>;
+		try {
+			parsed = networkInspectSchema.parse(JSON.parse(r.stdout));
+		} catch (err) {
+			throw new PodmanError("network inspect", 0, `unexpected output — ${err}`);
+		}
+		const isolate = parsed[0]?.options?.isolate;
+		if (parsed.length === 0 || isolate !== "strict") {
+			throw new PodmanError(
+				"network inspect",
+				0,
+				`network ${name} exists without options.isolate=strict (found ${JSON.stringify(isolate ?? null)}) — refusing to use it`,
+			);
+		}
+		return true;
+	}
+
 	return {
 		async networkEnsure(name, conv) {
-			const r = await call("network inspect", ["network", "inspect", name], {
-				conversation: conv,
-			});
-			if (r.code === 0) {
-				let parsed: z.infer<typeof networkInspectSchema>;
-				try {
-					parsed = networkInspectSchema.parse(JSON.parse(r.stdout));
-				} catch (err) {
-					throw new PodmanError("network inspect", 0, `unexpected output — ${err}`);
-				}
-				const isolate = parsed[0]?.options?.isolate;
-				if (parsed.length === 0 || isolate !== "strict") {
-					throw new PodmanError(
-						"network inspect",
-						0,
-						`network ${name} exists without options.isolate=strict (found ${JSON.stringify(isolate ?? null)}) — refusing to use it`,
-					);
-				}
-				return;
-			}
+			if (await networkOk(name, conv)) return;
 			const created = await call(
 				"network create",
 				["network", "create", "--opt", "isolate=strict", name],
 				{ conversation: conv },
 			);
-			if (created.code !== 0) throw fail("network create", created);
+			if (created.code === 0) return;
+			// A peer's create can win the inspect→create gap (two
+			// conversations' first sandboxes run in different lanes). Only
+			// a now-compliant network turns the loser's failure into a
+			// success; anything else reports the original create error.
+			if (await networkOk(name, conv)) return;
+			throw fail("network create", created);
 		},
 
 		async create(spec, conv) {

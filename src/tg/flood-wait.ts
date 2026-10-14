@@ -8,13 +8,18 @@
 
 import { GrammyError, type Transformer } from "grammy";
 import { log } from "../log.ts";
+import { API_CALL_TIMEOUT_MS } from "./deadline.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Waits stay bounded so a drain or one-shot send cannot park on the
-// clock indefinitely — beyond the cap the failure propagates to the
-// caller's existing uncertainty/failure handling, fail loud.
-const DEFAULT_MAX_WAIT_MS = 60_000;
+// Waits stay bounded under the caller's own deadline — every caller
+// wraps api in withTimeout (API_CALL_TIMEOUT_MS for sends; guest inline
+// answers run tighter at 8s, so answer* methods get their own cap), and
+// an honored wait that outlives it reports failure while still
+// delivering in the background. Beyond the cap the failure propagates
+// to the caller's existing uncertainty/failure handling, fail loud.
+const DEFAULT_MAX_WAIT_MS = API_CALL_TIMEOUT_MS - 10_000;
+const ANSWER_MAX_WAIT_MS = 5_000;
 // Honored waits per api call — a cap, not a promise to succeed.
 const DEFAULT_MAX_RETRIES = 2;
 
@@ -34,7 +39,10 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	// transformer can still throw one.
 	const honor = async (method: string, retryAfterS: number, attempt: number): Promise<boolean> => {
 		const demanded = retryAfterS * 1000;
-		if (demanded > maxWaitMs) {
+		const cap = method.startsWith("answer")
+			? Math.min(maxWaitMs, ANSWER_MAX_WAIT_MS)
+			: maxWaitMs;
+		if (demanded > cap) {
 			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
 			return false;
 		}

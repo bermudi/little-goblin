@@ -2340,6 +2340,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			throw new SubagentError(`re-admission could not land: ${outcome.reason}`);
 		}
 		if (outcome.kind === "blocked") {
+			recoveryAttempts.set(row.id, {
+				count: recoveryAttempts.get(row.id)?.count ?? 0,
+				lastError: outcome.reason,
+			});
 			recoveryPending.add(row.id);
 			log.warn("subagent re-admit blocked by a held lease — the running row keeps its slot", {
 				run: row.id,
@@ -2473,6 +2477,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			releaseLeases(failed);
 			notify(failed);
 			return true;
+		}).catch((error: unknown) => {
+			// No monitor remains to retry a failed terminal write.
+			recoveryPending.add(id);
+			throw error;
 		});
 		if (settled) recoveryAttempts.delete(id);
 	}

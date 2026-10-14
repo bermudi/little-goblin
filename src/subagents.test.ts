@@ -2323,89 +2323,102 @@ describe("subagents owner", () => {
 		void o2;
 	});
 
-	test("a boot re-admit blocked by a held lease keeps the running row owned; scan retries", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
-		dirs.push(dir);
-		const dbPath = join(dir, "goblin.sqlite");
-		const storagePath = join(dir, "subagents.sqlite");
-		const desktops = fakeDesktops();
-		const r1 = rig({ reuse: { dbPath, storagePath }, desktops });
-		const o1 = await open(r1);
-		await desktops.allocate("d1");
-		const gate = Promise.withResolvers<void>();
-		r1.model.push({ kind: "hold", gate: gate.promise });
-		const a = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "computer-task",
-			desktop: "d1",
-		});
-		await until(() => r1.model.seen.length === 1, "request in flight");
-		// A steer intent persisted before a crash — the row never
-		// received it. The rev bump matters: the deterministic
-		// requestId would otherwise collide with the task's.
-		const cur = r1.runs.get(a.id)!;
-		r1.runs.update(a.id, {
-			inputRev: cur.inputRev + 1,
-			inputIntent: "steer-after-restart",
-			inputMode: "steer",
-		});
-		const closing = o1.close();
-		gate.resolve();
-		await closing;
-		owners = owners.filter((x) => x !== o1);
-		// The lease flips between resume's Phase A re-claim and the
-		// Phase C re-admit: claim #2 evicts the run for an operator.
-		let claims = 0;
-		const origClaim = desktops.claim.bind(desktops);
-		desktops.claim = async (name, holder) => {
-			claims++;
-			if (claims === 2) {
-				const row = desktops.get(name)!;
-				row.leaseKind = "operator";
-				row.leaseId = null;
-				row.leaseExpiresAt = Date.now() + 600_000;
-				desktops.held.set(name, { kind: "operator" });
-				throw new DesktopError(`desktop ${name} is controlled by operator`);
+	test.each([false, true])(
+		"a boot re-admit blocked by a held lease retries or exhausts (exhaust=%s)",
+		async (exhaust) => {
+			const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+			dirs.push(dir);
+			const dbPath = join(dir, "goblin.sqlite");
+			const storagePath = join(dir, "subagents.sqlite");
+			const desktops = fakeDesktops();
+			const r1 = rig({ reuse: { dbPath, storagePath }, desktops });
+			const o1 = await open(r1);
+			await desktops.allocate("d1");
+			const gate = Promise.withResolvers<void>();
+			r1.model.push({ kind: "hold", gate: gate.promise });
+			const a = await o1.start({
+				kind: "computer",
+				conversationId: WS,
+				workspace: r1.workspace,
+				task: "computer-task",
+				desktop: "d1",
+			});
+			await until(() => r1.model.seen.length === 1, "request in flight");
+			// A steer intent persisted before a crash — the row never
+			// received it. The rev bump matters: the deterministic
+			// requestId would otherwise collide with the task's.
+			const cur = r1.runs.get(a.id)!;
+			r1.runs.update(a.id, {
+				inputRev: cur.inputRev + 1,
+				inputIntent: "steer-after-restart",
+				inputMode: "steer",
+			});
+			const closing = o1.close();
+			gate.resolve();
+			await closing;
+			owners = owners.filter((x) => x !== o1);
+			// The lease flips between resume's Phase A re-claim and the
+			// Phase C re-admit: claim #2 evicts the run for an operator.
+			let claims = 0;
+			const origClaim = desktops.claim.bind(desktops);
+			desktops.claim = async (name, holder) => {
+				claims++;
+				if (claims === 2) {
+					const row = desktops.get(name)!;
+					row.leaseKind = "operator";
+					row.leaseId = null;
+					row.leaseExpiresAt = Date.now() + 600_000;
+					desktops.held.set(name, { kind: "operator" });
+					throw new DesktopError(`desktop ${name} is controlled by operator`);
+				}
+				return origClaim(name, holder);
+			};
+			const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
+			const o2 = await open(r2);
+			// The blocked re-admit never demotes the live row to queued —
+			// the earlier submission may still be executing, so the running
+			// slot and the persisted intent are retained and the scan's
+			// recovery is the retry vehicle.
+			const mid = r2.runs.get(a.id)!;
+			expect(mid.status).toBe("running");
+			expect(mid.inputIntent).toBe("steer-after-restart");
+			expect(mid.inputMode).toBe("steer");
+			if (exhaust) {
+				for (let i = 0; i < 11; i++) await o2.scan();
+				const failed = r2.runs.get(a.id)!;
+				expect(failed.status).toBe("failed");
+				expect(failed.error).toContain("controlled by operator");
+				expect(r2.wakes).toHaveLength(1);
+				expect(r2.wakes[0]!.text).toContain("controlled by operator");
+				return;
 			}
-			return origClaim(name, holder);
-		};
-		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
-		const o2 = await open(r2);
-		// The blocked re-admit never demotes the live row to queued —
-		// the earlier submission may still be executing, so the running
-		// slot and the persisted intent are retained and the scan's
-		// recovery is the retry vehicle.
-		const mid = r2.runs.get(a.id)!;
-		expect(mid.status).toBe("running");
-		expect(mid.inputIntent).toBe("steer-after-restart");
-		expect(mid.inputMode).toBe("steer");
-		// The holder leaves — a scan's recovery admits the persisted
-		// steer and it reaches the model. The replayed original
-		// submission requests first (the steer lands behind it), so it
-		// consumes the first queued reply; the finish must wait for the
-		// steered generation's request.
-		desktops.held.delete("d1");
-		const dRow = desktops.get("d1")!;
-		dRow.leaseKind = null;
-		dRow.leaseExpiresAt = null;
-		r2.model.push({ kind: "text", text: "replayed original" });
-		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
-		await until(
-			async () => {
-				await o2.scan();
-				return r2.runs.get(a.id)?.status === "done";
-			},
-			"recovery admits the persisted intent after release",
-			30_000,
-		);
-		const steerSeen = r2.model.seen.some((s) =>
-			JSON.stringify(s.messages).includes("steer-after-restart"),
-		);
-		expect(steerSeen).toBe(true);
-		void o2;
-	}, 30_000);
+			// The holder leaves — a scan's recovery admits the persisted
+			// steer and it reaches the model. The replayed original
+			// submission requests first (the steer lands behind it), so it
+			// consumes the first queued reply; the finish must wait for the
+			// steered generation's request.
+			desktops.held.delete("d1");
+			const dRow = desktops.get("d1")!;
+			dRow.leaseKind = null;
+			dRow.leaseExpiresAt = null;
+			r2.model.push({ kind: "text", text: "replayed original" });
+			r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+			await until(
+				async () => {
+					await o2.scan();
+					return r2.runs.get(a.id)?.status === "done";
+				},
+				"recovery admits the persisted intent after release",
+				30_000,
+			);
+			const steerSeen = r2.model.seen.some((s) =>
+				JSON.stringify(s.messages).includes("steer-after-restart"),
+			);
+			expect(steerSeen).toBe(true);
+			void o2;
+		},
+		30_000,
+	);
 
 	test("a transient boot-recovery read failure keeps the run owned; the next scan repairs it once", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
@@ -3948,6 +3961,16 @@ describe("subagents owner", () => {
 			const o = await open(r);
 			r.model.push({ kind: "text", text: "no terminal call" });
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
+			const update = r.runs.update.bind(r.runs);
+			let terminalWriteFailed = false;
+			let caughtWriteFailures = 0;
+			r.runs.update = (id, patch) => {
+				if (!terminalWriteFailed && patch.status === "failed") {
+					terminalWriteFailed = true;
+					throw new Error("EIO: injected terminal-state write failure");
+				}
+				return update(id, patch);
+			};
 			const a = await o.start({
 				kind: "worker",
 				conversationId: WS,
@@ -3968,12 +3991,19 @@ describe("subagents owner", () => {
 			// the bound the row settles terminal.
 			await until(
 				async () => {
-					await o.scan();
+					try {
+						await o.scan();
+					} catch (error) {
+						expect(error).toBeInstanceOf(Error);
+						expect((error as Error).message).toBe("EIO: injected terminal-state write failure");
+						caughtWriteFailures++;
+					}
 					return r.runs.get(a.id)?.status === "failed";
 				},
 				"bounded wait failures settle the run failed",
 				30_000,
 			);
+			expect(caughtWriteFailures).toBe(1);
 			const row = r.runs.get(a.id)!;
 			expect(row.error).toMatch(/recovery failed after \d+ attempts/);
 			expect(row.error).toContain("injected submission wait failure");

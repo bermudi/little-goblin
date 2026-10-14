@@ -446,6 +446,31 @@ describe("sandboxes lifecycle", () => {
 		expect(out.note).toContain("restarted");
 	});
 
+	test("a reset landing mid-teardown skips the restart — the new container keeps its work", async () => {
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine);
+		const conv = "dm:20";
+		engine.flags.killedExec = true;
+		// The killed exec's restart enters the lane after its client
+		// finishes; reset fires in that gap — between ensure and the
+		// restart check — replacing the container under the same name.
+		const origExec = engine.podman.exec.bind(engine.podman);
+		engine.podman.exec = async (name, argv, o, c) => {
+			const r = await origExec(name, argv, o, c);
+			if (r.killed) await sandboxes.reset(c);
+			return r;
+		};
+		const out = await sandboxes.exec(conv, "sleep 999", execOpts);
+		// Restarting the replacement would reap work this exec never
+		// shared — the generation check skips it and the note is honest
+		// about the lost filesystem.
+		expect(engine.calls.some((a) => a[0] === "restart")).toBe(false);
+		expect(out.note).toContain("replaced");
+		expect(out.note).toContain("files are gone");
+		const name = containerNameFor(conv, PREFIX);
+		expect(engine.containers.get(name)!.running).toBe(true);
+	});
+
 	test("the sweep reaps idle rows but never the caller's", async () => {
 		const conv = "dm:caller";
 		const staleConv = "dm:stale";

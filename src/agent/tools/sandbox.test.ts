@@ -5,7 +5,15 @@
 // bytes land inside the workspace.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandboxes } from "../../sandboxes.ts";
@@ -199,6 +207,26 @@ describe("sandbox tool — export containment", () => {
 		expect(String(out.error)).toContain("outside the workspace");
 		expect(existsSync(join(outsideDir, "a"))).toBe(false);
 		expect(recorded.catFile).toHaveLength(0);
+	});
+
+	test("destination path mistakes return {error}, not a step-fatal throw", async () => {
+		const ws = workspace();
+		// A file where the parent dir should be — lstat's ENOTDIR.
+		writeFileSync(join(ws, "blocker"), "x");
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		const t = rig(ws, recorded);
+		const out = (await t.execute!(
+			{ action: "export", from: "/work/x", to: "blocker/sub/f.txt" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(String(out.error)).toContain("ENOTDIR");
+		// A directory where the file should land — rename's EISDIR.
+		mkdirSync(join(ws, "adir"));
+		const out2 = (await t.execute!(
+			{ action: "export", from: "/work/x", to: "adir" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(String(out2.error)).toContain("EISDIR");
 	});
 
 	// /stop landing mid-read must not let the host write land for a

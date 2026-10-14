@@ -181,6 +181,18 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 	const nameFor = (conv: string) => containerNameFor(conv, prefix);
 
+	// The container's name is deterministic, so a replacement is
+	// indistinguishable from the original by name alone. Each rm/create
+	// bumps this conversation's generation; a killed exec captures it at
+	// ensure time, and its queued restart skips when the generation
+	// moved — restarting a newer container would reap work it never
+	// shared.
+	const generations = new Map<string, number>();
+	const bumpGeneration = (conv: string): void => {
+		generations.set(conv, (generations.get(conv) ?? 0) + 1);
+	};
+	const generationOf = (conv: string): number => generations.get(conv) ?? 0;
+
 	function requireOurs(name: string, ins: ContainerInspect): void {
 		if (ins.labels["goblin.sandbox"] !== "1") {
 			throw new SandboxError(
@@ -201,6 +213,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			// intent, so a later reconcile re-attempts the cleanup instead
 			// of adopting a live container's actual state.
 			await podman.rm(name, conv);
+			bumpGeneration(conv);
 			store.delete(conv);
 		};
 		const before = await podman.inspect(name, conv).catch(async (err: unknown) => {
@@ -288,9 +301,11 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			const ins = await podman.inspect(name, conv).catch(() => null);
 			if (ins?.state !== "missing") {
 				await podman.rm(name, conv);
+				bumpGeneration(conv);
 			}
 			throw err;
 		}
+		bumpGeneration(conv);
 	}
 
 	// The reconcile, inside the conversation's lane.
@@ -414,6 +429,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 					// The row's owner, not the sweeping conversation — the
 					// podman boundary line must name who the rm was for.
 					await podman.rm(fresh.container, fresh.conversationId);
+					bumpGeneration(row.conversationId);
 				} catch (err) {
 					// Keep the row — the next call retries the reap.
 					log.warn("sandbox reap failed — row kept", err, {
@@ -476,26 +492,35 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	return {
 		async exec(conv, command, opts) {
 			await beginOp(conv);
-			const ready = await lane(conv, () => {
+			const ready = await lane(conv, async () => {
 				// Inside the lane so a foreign sweep's recheck sees the
 				// fresh row before it can remove this container.
 				store.touch(conv, Date.now());
-				return ensureLocked(conv);
+				const ensured = await ensureLocked(conv);
+				return { ...ensured, generation: generationOf(conv) };
 			});
 			const execStartedAt = Date.now();
 			const r = await podman.exec(ready.container, ["/bin/sh", "-c", command], opts, conv);
 			let note = ready.note;
 			if (r.killed) {
-				await lane(conv, async () => {
+				const outcome = await lane(conv, async () => {
+					// A reset/recreate replaced the container while this
+					// exec was being torn down — its leftover work died
+					// with the old container, and restarting the new one
+					// would reap work the exec never shared.
+					if (ready.generation !== generationOf(conv)) return "replaced";
 					// A restart newer than this exec's start already reaped
 					// its leftover work — a killed sibling's restart kills
 					// every other in-flight exec, and each must not queue
 					// another restart for its own death.
-					if ((lastRestartedAt.get(conv) ?? 0) > execStartedAt) return;
+					if ((lastRestartedAt.get(conv) ?? 0) > execStartedAt) return "sibling";
 					await restartAfterKillLocked(ready.container, conv);
+					return "restarted";
 				});
 				const killed =
-					"the command was stopped before it finished — the sandbox was restarted to stop anything still running; files were kept";
+					outcome === "replaced"
+						? "the command was stopped before it finished — the sandbox container was replaced meanwhile, so anything still running died with it; its files are gone"
+						: "the command was stopped before it finished — the sandbox was restarted to stop anything still running; files were kept";
 				note = note === undefined ? killed : `${note}; ${killed}`;
 			}
 			store.touch(conv, Date.now());
@@ -592,6 +617,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				if (ins.state !== "missing") {
 					requireOurs(name, ins);
 					await podman.rm(name, conv);
+					bumpGeneration(conv);
 				}
 				await createContainer(name, target, false, conv);
 				const now = Date.now();

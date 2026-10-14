@@ -620,6 +620,83 @@ describe("desktops pool", () => {
 		},
 	);
 
+	// The abort contract on the mutating ops mirrors the sandbox's: a
+	// signal that fired before the call or while it parked — behind the
+	// lane or inside the reconcile's preflight read — stops the call
+	// before any mutation dispatches.
+	test("a pre-aborted network/import call never reaches podman", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		const callsBefore = engine.calls.length;
+		await expect(
+			desktops.setNetwork(name, true, { abortSignal: AbortSignal.abort() }),
+		).rejects.toThrow();
+		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+		writeFileSync(host, "x");
+		await expect(
+			desktops.cpIn(name, host, "/home/desk/f.bin", { abortSignal: AbortSignal.abort() }),
+		).rejects.toThrow();
+		expect(engine.calls.length).toBe(callsBefore);
+		expect(engine.execCalls.length).toBe(0);
+	});
+
+	test.each(["lane", "preflight"] as const)(
+		"cancelled setNetwork during %s never connects",
+		async (wait) => {
+			const engine = fakeEngine();
+			const { desktops, store, name } = await fresh(engine);
+			const entered = Promise.withResolvers<void>();
+			const gate = Promise.withResolvers<void>();
+			const inspect = engine.podman.inspect.bind(engine.podman);
+			engine.podman.inspect = async (...args) => {
+				entered.resolve();
+				await gate.promise;
+				return inspect(...args);
+			};
+			const controller = new AbortController();
+			const first = wait === "lane" ? desktops.screenshot(name) : undefined;
+			const pending = desktops.setNetwork(name, true, { abortSignal: controller.signal });
+			await entered.promise;
+			controller.abort();
+			gate.resolve();
+			await expect(pending).rejects.toThrow();
+			await first;
+			expect(engine.calls.some((a) => a[0] === "network" && a[1] === "connect")).toBe(false);
+			expect(engine.containers.get(containerNameForDesktop(name))!.networks.size).toBe(0);
+			expect(store.get(name)!.network).toBe(false);
+		},
+	);
+
+	test.each(["lane", "preflight"] as const)(
+		"cancelled import during %s never copies a file in",
+		async (wait) => {
+			const engine = fakeEngine();
+			const { desktops, name } = await fresh(engine);
+			const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+			writeFileSync(host, "x");
+			const entered = Promise.withResolvers<void>();
+			const gate = Promise.withResolvers<void>();
+			const inspect = engine.podman.inspect.bind(engine.podman);
+			engine.podman.inspect = async (...args) => {
+				entered.resolve();
+				await gate.promise;
+				return inspect(...args);
+			};
+			const controller = new AbortController();
+			const first = wait === "lane" ? desktops.screenshot(name) : undefined;
+			const pending = desktops.cpIn(name, host, "/home/desk/f.bin", {
+				abortSignal: controller.signal,
+			});
+			await entered.promise;
+			controller.abort();
+			gate.resolve();
+			await expect(pending).rejects.toThrow();
+			await first;
+			expect(engine.calls.some((a) => a[0] === "cp")).toBe(false);
+			expect(engine.execCalls.some((a) => a.includes("mkdir") || a.includes("cp"))).toBe(false);
+		},
+	);
+
 	test.each(["stopped", "missing", "adopted"] as const)(
 		"the first observation after %s reconciliation can drive input",
 		async (state) => {

@@ -167,6 +167,9 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 				};
 			}
 			const input = parsed.data;
+			// Every action past this point is a pool mutation or an
+			// engine read — a cancelled call never starts one.
+			abortSignal?.throwIfAborted();
 			try {
 				switch (input.action) {
 					case "new": {
@@ -211,7 +214,11 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						return { name: input.name, reserved: input.reserved };
 					}
 					case "network": {
-						await deps.desktops.setNetwork(input.name, input.enabled);
+						await deps.desktops.setNetwork(
+							input.name,
+							input.enabled,
+							abortSignal === undefined ? undefined : { abortSignal },
+						);
 						return {
 							name: input.name,
 							enabled: input.enabled,
@@ -234,7 +241,12 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 							const staged = join(stage, basename(resolved.path));
 							await writeFile(staged, resolved.data);
 							abortSignal?.throwIfAborted();
-							const { note } = await deps.desktops.cpIn(input.name, staged, input.to);
+							const { note } = await deps.desktops.cpIn(
+								input.name,
+								staged,
+								input.to,
+								abortSignal === undefined ? undefined : { abortSignal },
+							);
 							return {
 								imported: input.to,
 								bytes: resolved.data.byteLength,
@@ -251,7 +263,11 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 								error: `export destination must be workspace-relative, got absolute: ${rel}`,
 							};
 						}
-						const { data, note } = await deps.desktops.catFile(input.name, input.from);
+						const { data, note } = await deps.desktops.catFile(
+							input.name,
+							input.from,
+							abortSignal === undefined ? undefined : { abortSignal },
+						);
 						// The wait above is a cancellation gap: recheck before
 						// the host write so a call cancelled mid-read never
 						// overwrites a workspace file.

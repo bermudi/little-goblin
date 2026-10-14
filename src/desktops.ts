@@ -396,6 +396,17 @@ interface EnsureResult {
 	note?: string;
 }
 
+/** Optional last param on the mutating ops: the caller's abort
+ *  signal. Checked before the call, after the lane wait, after each
+ *  preflight read, and immediately before a mutation dispatches — a
+ *  cancelled call never starts a rm/connect/cp afterwards. A mutation
+ *  already dispatched still reconciles to the row's intent: an abort
+ *  never leaves an unverified network state or a half-restarted
+ *  desktop. */
+export interface DesktopOpOpts {
+	abortSignal?: AbortSignal;
+}
+
 export interface Desktops {
 	allocate(name: string, opts?: { image?: string }): Promise<{ row: DesktopRow; note?: string }>;
 	list(): DesktopRow[];
@@ -407,8 +418,8 @@ export interface Desktops {
 	release(name: string, holder: LeaseHolder): Promise<void>;
 	handoff(name: string, from: LeaseHolder, to: LeaseHolder): Promise<void>;
 	reserve(name: string, reserved: boolean): Promise<void>;
-	setNetwork(name: string, enabled: boolean): Promise<void>;
-	destroy(name: string, by: LeaseHolder, opts?: { abortSignal?: AbortSignal }): Promise<void>;
+	setNetwork(name: string, enabled: boolean, opts?: DesktopOpOpts): Promise<void>;
+	destroy(name: string, by: LeaseHolder, opts?: DesktopOpOpts): Promise<void>;
 	screenshot(name: string): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
 	inspect(
 		name: string,
@@ -423,10 +434,19 @@ export interface Desktops {
 	/** hostPath → containerPath staged through podman cp, landed by a
 	 *  desk-user copy — the caller owns the source's provenance
 	 *  (box-files containment); no lease needed. */
-	cpIn(name: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
+	cpIn(
+		name: string,
+		hostPath: string,
+		containerPath: string,
+		opts?: DesktopOpOpts,
+	): Promise<{ note?: string }>;
 	/** A regular file's bytes as `desk` (symlinks/dirs refused), or
 	 *  DesktopError. The export twin of cpIn; no lease needed. */
-	catFile(name: string, path: string): Promise<{ data: Uint8Array; note?: string }>;
+	catFile(
+		name: string,
+		path: string,
+		opts?: DesktopOpOpts,
+	): Promise<{ data: Uint8Array; note?: string }>;
 }
 
 export function makeDesktops(deps: DesktopsDeps): Desktops {
@@ -475,8 +495,12 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 	// Reconcile actual network state with intent. Off is fail-closed:
 	// any failure to verify it removes the container — an unknown
 	// state is not usable. Row out only after rm lands; intended-on
-	// failures never trigger this cleanup.
-	async function applyNetwork(name: string, want: boolean): Promise<void> {
+	// failures never trigger this cleanup. An abort is honored only
+	// before the connect/disconnect dispatch — once the toggle has
+	// begun, the verifying inspect (and fail-closed drop) runs to
+	// completion so the caller never gets an unverified state.
+	async function applyNetwork(name: string, want: boolean, signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
 		const container = containerNameForDesktop(name);
 		const drop = async (why: string, cause?: unknown): Promise<never> => {
 			try {
@@ -513,6 +537,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			throw err;
 		}
 		if (has === want) return;
+		signal?.throwIfAborted();
 		if (want) {
 			await podman.networkConnect(networkName, container);
 			const after = await podman.inspect(container);
@@ -546,7 +571,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		}
 	}
 
-	async function createContainer(name: string, image: string, wantNetwork: boolean): Promise<void> {
+	async function createContainer(
+		name: string,
+		image: string,
+		wantNetwork: boolean,
+		signal?: AbortSignal,
+	): Promise<void> {
+		signal?.throwIfAborted();
 		if (!(await podman.imageExists(image))) {
 			throw refuse(
 				name,
@@ -554,9 +585,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				`desktop image ${image} is not in the local store; build it from the repo root: podman build -t ${image} deploy/desktop`,
 			);
 		}
+		signal?.throwIfAborted();
 		await podman.networkEnsure(networkName);
 		const c = cfg();
 		const container = containerNameForDesktop(name);
+		signal?.throwIfAborted();
 		await podman.create({
 			name: container,
 			image,
@@ -573,16 +606,20 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
 		});
 		// Created ON the network — a --network none container can never
-		// be connected later — then brought to the intended state.
+		// be connected later — then brought to the intended state. `run`
+		// already landed, so this reconcile finishes unconditionally: an
+		// abort here would strand a networked, rowless container.
 		await applyNetwork(name, wantNetwork);
 	}
 
 	// The reconcile, inside the desktop's lane.
-	async function ensureLocked(name: string): Promise<EnsureResult> {
+	async function ensureLocked(name: string, signal?: AbortSignal): Promise<EnsureResult> {
+		signal?.throwIfAborted();
 		const container = containerNameForDesktop(name);
 		const now = Date.now();
 		const row = store.get(name);
 		const ins = await podman.inspect(container);
+		signal?.throwIfAborted();
 		if (ins.state !== "missing") {
 			requireOurs(name, ins);
 			if (row === null) {
@@ -595,7 +632,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				});
 				store.put(adopted);
 				if (ins.state === "stopped") {
+					signal?.throwIfAborted();
 					await podman.start(container);
+					// Start already dispatched: the safety reconcile
+					// finishes even on cancellation.
 					await applyNetwork(name, adopted.network);
 					adopted.bootGen = (await podman.inspect(container)).startedAt;
 					adopted.lastUsedAt = now;
@@ -637,7 +677,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					});
 				}
 				row.bootGen = null;
+				signal?.throwIfAborted();
 				await podman.start(container);
+				// Start already dispatched: the safety reconcile finishes
+				// even on cancellation.
 				await applyNetwork(name, row.network);
 				row.bootGen = (await podman.inspect(container)).startedAt;
 				row.lastUsedAt = now;
@@ -672,7 +715,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				row.bootGen = ins.startedAt;
 				store.put(row);
 			}
-			await applyNetwork(name, row.network);
+			await applyNetwork(name, row.network, signal);
 			row.lastUsedAt = now;
 			store.put(row);
 			return { row, container };
@@ -682,7 +725,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			// observation state are gone with the container; the reserved
 			// pin survives — and so does the shot sequence, which names
 			// the audit frames and obs ids minted before the loss.
-			await createContainer(name, row.image, row.network);
+			await createContainer(name, row.image, row.network, signal);
 			const kept = freshRow(name, {
 				image: row.image,
 				network: row.network,
@@ -1070,11 +1113,16 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		async setNetwork(name, enabled) {
+		async setNetwork(name, enabled, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			sweepOnce(name);
 			await lane(name, async () => {
-				const ready = await ensureLocked(name);
-				await applyNetwork(name, enabled);
+				opts?.abortSignal?.throwIfAborted();
+				const ready = await ensureLocked(name, opts?.abortSignal);
+				opts?.abortSignal?.throwIfAborted();
+				await applyNetwork(name, enabled, opts?.abortSignal);
+				// The toggle already dispatched and verified — the row
+				// update is its reconciliation, never abort between them.
 				ready.row.network = enabled;
 				ready.row.lastUsedAt = Date.now();
 				store.put(ready.row);
@@ -1348,10 +1396,12 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		async cpIn(name, hostPath, containerPath) {
+		async cpIn(name, hostPath, containerPath, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			sweepOnce(name);
 			return await lane(name, async () => {
-				const ready = await ensureLocked(name);
+				opts?.abortSignal?.throwIfAborted();
+				const ready = await ensureLocked(name, opts?.abortSignal);
 				// File destinations only — `podman cp` onto an existing
 				// directory copies INTO it, and a recursive chown of that
 				// directory would rewrite unrelated desktop ownership.
@@ -1361,6 +1411,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				const parent = posix.dirname(containerPath);
+				opts?.abortSignal?.throwIfAborted();
 				const mk = await podman.exec(ready.container, ["mkdir", "-p", "--", parent], {
 					...EXEC_OPTS,
 					user: DESKTOP_USER,
@@ -1389,6 +1440,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						`refusing to import onto non-regular path ${containerPath} on desktop ${name}`,
 					);
 				}
+				opts?.abortSignal?.throwIfAborted();
 				// podman cp writes as container root, so it only stages the
 				// bytes at a goblin-chosen path in a dir desk can't write;
 				// desk itself performs the destination write — a root-owned
@@ -1405,6 +1457,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						`could not stage an import on desktop ${name}: ${mkStage.stderr.slice(0, 200)}`,
 					);
 				}
+				opts?.abortSignal?.throwIfAborted();
 				const stage = `${IMPORT_STAGE_DIR}/imp-${Date.now()}-${randomUUID().slice(0, 8)}`;
 				try {
 					await podman.cp(ready.container, hostPath, stage);
@@ -1419,6 +1472,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 							`could not stage an import on desktop ${name}: ${mode.stderr.slice(0, 200)}`,
 						);
 					}
+					// The desk-side copy is the visible write — recheck after
+					// the staging awaits so a cancelled import never lands it.
+					opts?.abortSignal?.throwIfAborted();
 					const put = await podman.exec(ready.container, ["cp", "--", stage, containerPath], {
 						...EXEC_OPTS,
 						user: DESKTOP_USER,
@@ -1469,17 +1525,26 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		async catFile(name, path) {
+		async catFile(name, path, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			sweepOnce(name);
 			return await lane(name, async () => {
-				const ready = await ensureLocked(name);
+				opts?.abortSignal?.throwIfAborted();
+				const ready = await ensureLocked(name, opts?.abortSignal);
+				opts?.abortSignal?.throwIfAborted();
 				// Same export contract as sandboxes.catFile: regular
 				// files only — -f alone follows a leaf symlink.
 				const probe = await podman.exec(
 					ready.container,
 					["/bin/sh", "-c", 'test -f "$1" && ! test -L "$1"', "desk-check", path],
-					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+					{
+						...EXEC_OPTS,
+						user: DESKTOP_USER,
+						workdir: "/run/desk",
+						...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
+					},
 				);
+				opts?.abortSignal?.throwIfAborted();
 				if (probe.timedOut || probe.exitCode !== 0) {
 					throw new DesktopError(`${path} is not a regular file on desktop ${name}`);
 				}
@@ -1488,7 +1553,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					maxOutput: EXPORT_MAX_BYTES,
 					user: DESKTOP_USER,
 					workdir: "/run/desk",
+					...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
 				});
+				opts?.abortSignal?.throwIfAborted();
 				if (r.truncated || r.stdout.byteLength > EXPORT_MAX_BYTES) {
 					throw new DesktopError(
 						`export exceeds the ${EXPORT_MAX_BYTES / (1024 * 1024)} MiB cap — nothing was exported`,

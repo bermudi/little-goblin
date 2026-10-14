@@ -272,6 +272,42 @@ describe("desktop tool", () => {
 		expect(String(bad.error)).toContain("outside the workspace");
 	});
 
+	test("network and import hand the turn's abort signal to the pool", async () => {
+		const ws = mkdtempSync(join(tmpdir(), "goblin-dt-"));
+		writeFileSync(join(ws, "payload.txt"), "x");
+		const { tool, calls } = rig({}, ws);
+		const ctl = new AbortController();
+		const signalOpts = { ...opts, abortSignal: ctl.signal };
+		await tool.execute!({ action: "network", name: "d1", enabled: true }, signalOpts);
+		expect(calls.find((c) => c.name === "setNetwork")!.args[2]).toEqual({
+			abortSignal: ctl.signal,
+		});
+		await tool.execute!(
+			{ action: "import", name: "d1", from: "payload.txt", to: "/home/desk/p.txt" },
+			signalOpts,
+		);
+		expect(calls.find((c) => c.name === "cpIn")!.args[3]).toEqual({
+			abortSignal: ctl.signal,
+		});
+	});
+
+	test("a pre-aborted call never reaches the pool — network and import", async () => {
+		const ws = mkdtempSync(join(tmpdir(), "goblin-dt-"));
+		writeFileSync(join(ws, "payload.txt"), "x");
+		const { tool, calls } = rig({}, ws);
+		const aborted = { ...opts, abortSignal: AbortSignal.abort() };
+		await expect(
+			tool.execute!({ action: "network", name: "d1", enabled: true }, aborted),
+		).rejects.toThrow();
+		await expect(
+			tool.execute!(
+				{ action: "import", name: "d1", from: "payload.txt", to: "/home/desk/p.txt" },
+				aborted,
+			),
+		).rejects.toThrow();
+		expect(calls.length).toBe(0);
+	});
+
 	test("pool refusals surface as errors, not throws", async () => {
 		const { tool } = rig({
 			release: async () => {

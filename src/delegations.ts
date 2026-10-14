@@ -8,6 +8,7 @@
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
 export type DelegationStatus =
 	| "starting"
@@ -203,6 +204,7 @@ const DELEGATIONS_COLUMNS = `
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
 	// Existing DBs predate the spin-off pin — additive column, no rebuild
 	// (design/app.md → Spin-off). NULL = Telegram-pinned like always.

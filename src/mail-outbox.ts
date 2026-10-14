@@ -9,6 +9,7 @@ import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { domainOf } from "./mail.ts";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
 export type OutboxStatus = "pending" | "sent" | "cancelled" | "expired";
 
@@ -113,6 +114,7 @@ function rowToEntry(row: unknown): OutboxEntry {
 export function openOutbox(dbPath: string): OutboxStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS mail_outbox (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		to_json TEXT NOT NULL,

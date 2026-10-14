@@ -43,9 +43,22 @@ export type ProgramTrigger = "schedule" | "webhook" | "mail";
 const TICK_MS = 30_000;
 
 export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler {
+	const ladder = ladderFor(deps);
+	ladder.stopped = false;
 	const scan = (): void => {
 		const now = new Date();
-		for (const program of deps.programs.due(now)) {
+		// The due query runs from a synchronous interval callback: a throw
+		// here (an I/O error on the programs file) would be an uncaught
+		// exception — exit(1), and the same throw again five seconds into
+		// the restart. An error line per tick is the loud, non-fatal shape.
+		let due: Program[];
+		try {
+			due = deps.programs.due(now);
+		} catch (err) {
+			log.error("program scan failed — due query", err, {});
+			return;
+		}
+		for (const program of due) {
 			// One bad row must not take the scan down with it — but it
 			// surfaces as an error line, never a swallow.
 			try {
@@ -65,8 +78,9 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 		tick: scan,
 		stop: () => {
 			clearInterval(timer);
-			for (const t of fireRetries.values()) clearTimeout(t);
-			fireRetries.clear();
+			ladder.stopped = true;
+			for (const t of ladder.timers.values()) clearTimeout(t);
+			ladder.timers.clear();
 		},
 	};
 }
@@ -74,13 +88,27 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 // The schedule-fire retry ladder (hermes' bounded zero-API-call
 // re-run): a fire whose turn died before any model call with a
 // transient cause re-fires once per delay, at most delays.length
-// retries per occurrence. Pending timers live at module scope because
-// the scheduler is a process-singleton ticker (DESIGN.md, "Programs");
-// a restart legitimately drops them — the cursor already advanced at
-// the original fire, so a dropped retry is exactly today's no-ladder
-// behavior, not worse — and startScheduler's stop() clears them.
+// retries per occurrence. Pending timers belong to the scheduler that
+// armed them — keyed by its deps, the one identity fireScheduled and
+// the sink's late onDone both hold — so a stop() ends the ladder for
+// good: an onDone that lands after the stop must not arm a fresh timer
+// into a process that is shutting down. A restart legitimately drops
+// them — the cursor already advanced at the original fire, so a dropped
+// retry is exactly the no-ladder behavior, not worse.
 const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
-const fireRetries = new Map<string, ReturnType<typeof setTimeout>>();
+interface RetryLadder {
+	timers: Map<string, ReturnType<typeof setTimeout>>;
+	stopped: boolean;
+}
+const ladders = new WeakMap<SchedulerDeps, RetryLadder>();
+function ladderFor(deps: SchedulerDeps): RetryLadder {
+	let ladder = ladders.get(deps);
+	if (ladder === undefined) {
+		ladder = { timers: new Map(), stopped: false };
+		ladders.set(deps, ladder);
+	}
+	return ladder;
+}
 
 // Cron: missed occurrences coalesce against the latest occurrence due
 // at this scan — anchored at the due row's next_run and walked with the
@@ -370,10 +398,12 @@ function scheduleRetrySink(
 				const output = sawModelOutput;
 				// The base still receives the terminal status — its ordinary
 				// error notice is what the operator sees whether or not a
-				// retry follows.
-				const delegated = base.onDone(done);
-				considerRetry(deps, program, scheduledFor, delays, attempt, done, output);
-				return delegated;
+				// retry follows; a notice that throws must not cost the rung.
+				try {
+					return base.onDone(done);
+				} finally {
+					considerRetry(deps, program, scheduledFor, delays, attempt, done, output);
+				}
 			},
 		};
 		const chunks = base.onStreamChunk;
@@ -414,6 +444,14 @@ function considerRetry(
 		});
 		return;
 	}
+	const ladder = ladderFor(deps);
+	if (ladder.stopped) {
+		log.info("schedule fire retry dropped — scheduler stopped", {
+			program: program.id,
+			name: program.name,
+		});
+		return;
+	}
 	const delayMs = delays[attempt]!;
 	log.info("schedule fire retry scheduled", {
 		program: program.id,
@@ -425,10 +463,10 @@ function considerRetry(
 	// Keyed by program AND occurrence — a frequent schedule's next fire
 	// must not cancel the previous occurrence's pending rung.
 	const key = `${program.id}:${scheduledFor.getTime()}`;
-	const prior = fireRetries.get(key);
+	const prior = ladder.timers.get(key);
 	if (prior !== undefined) clearTimeout(prior);
 	const timer = setTimeout(() => {
-		fireRetries.delete(key);
+		ladder.timers.delete(key);
 		// The timer callback has no caller left to fail into — a storage
 		// or resolution error here is an error line, not a process exit.
 		try {
@@ -441,7 +479,7 @@ function considerRetry(
 		}
 	}, delayMs);
 	timer.unref?.();
-	fireRetries.set(key, timer);
+	ladder.timers.set(key, timer);
 }
 
 // The next rung: re-read the row — it can change across the delay —

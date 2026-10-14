@@ -950,14 +950,16 @@ async function shutdown(signal: string): Promise<void> {
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
-	// The mail watcher only stops polling — cursors and drafts persist.
-	mailWatcher.stop();
+	// The mail watcher stops polling and joins an in-flight scan — a late
+	// fire must not land in a closed runtime; cursors and drafts persist.
+	const mailScan = mailWatcher.stop();
 	// The approval gate stops sweeping AND joins an in-flight Gmail send
 	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
-	// The retention worker only drains the outbox — pending rows stay
-	// durable for the next boot.
-	await memoryWorker?.stop();
+	// The retention worker aborts its in-flight request and yields — the
+	// outbox rows stay durable for the next boot. Joined under the budget
+	// like everything else: a wedged memory service is not a deploy hold.
+	const retention = memoryWorker?.stop() ?? Promise.resolve();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
 	const stopping = tg.bot.stop().catch((err: unknown) => {
@@ -967,7 +969,15 @@ async function shutdown(signal: string): Promise<void> {
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
-	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan, mailSends]);
+	const settled = Promise.allSettled([
+		stopping,
+		drained,
+		flushed,
+		delegationScan,
+		mailScan,
+		mailSends,
+		retention,
+	]);
 	const finished = await Promise.race([
 		settled.then(() => true),
 		sleep(SHUTDOWN_DRAIN_MS).then(() => false),

@@ -6,7 +6,9 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
 	closeSync,
+	fchmodSync,
 	fsyncSync,
+	futimesSync,
 	openSync,
 	renameSync,
 	statSync,
@@ -15,20 +17,66 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-export function durableWriteFile(path: string, content: string, modeIfNew = 0o644): void {
-	durableWriteBuffer(path, Buffer.from(content, "utf8"), modeIfNew);
+export interface DurableWriteOptions {
+	/** Mode for a file that does not exist yet; an existing file keeps its own. */
+	modeIfNew?: number;
+	/** Timestamps stamped on the new inode before its fsync — an archive
+	 *  copy keeps the original's mtime so freshness checks still read it
+	 *  as old, and the stamp is durable with the data. */
+	times?: { atime: Date | number; mtime: Date | number };
+}
+
+export function durableWriteFile(
+	path: string,
+	content: string,
+	options: number | DurableWriteOptions = 0o644,
+): void {
+	durableWriteBuffer(path, Buffer.from(content, "utf8"), normalize(options));
 }
 
 /** The bytes twin — fetched PDFs and other binary state get the same
  *  tmp+fsync+rename ritual as every other whole-file write. */
-export function durableWriteBytes(path: string, data: Uint8Array, modeIfNew = 0o644): void {
-	durableWriteBuffer(path, Buffer.from(data), modeIfNew);
+export function durableWriteBytes(
+	path: string,
+	data: Uint8Array,
+	options: number | DurableWriteOptions = 0o644,
+): void {
+	durableWriteBuffer(path, Buffer.from(data), normalize(options));
 }
 
-function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void {
-	let mode = modeIfNew;
+/** fsync a directory so a rename/link/unlink inside it is durable, not
+ *  just the data of the file it points at. Only an explicitly
+ *  unsupported directory fsync may degrade; EIO and other failures leave
+ *  the entry's durability unknown and propagate. */
+export function fsyncDirectory(dir: string): void {
+	const dfd = openSync(dir, constants.O_RDONLY);
+	try {
+		fsyncSync(dfd);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EOPNOTSUPP") throw err;
+	} finally {
+		closeSync(dfd);
+	}
+}
+
+function normalize(
+	options: number | DurableWriteOptions,
+): Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions {
+	if (typeof options === "number") return { modeIfNew: options };
+	return { ...options, modeIfNew: options.modeIfNew ?? 0o644 };
+}
+
+function durableWriteBuffer(
+	path: string,
+	buf: Buffer,
+	options: Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions,
+): void {
+	let mode = options.modeIfNew;
+	let existed = false;
 	try {
 		mode = statSync(path).mode & 0o777;
+		existed = true;
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
@@ -40,6 +88,11 @@ function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void 
 	);
 	const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
 	try {
+		// open() masks the mode with the umask, so a group-writable state
+		// file would silently lose its bit on every rewrite — and the loss
+		// sticks, because the next write reads the new mode. A fresh file
+		// keeps the conventional umask semantics; preservation is exact.
+		if (existed) fchmodSync(fd, mode);
 		// writeSync returns bytes written — a short write (ENOSPC,
 		// interruption) must not reach fsync/rename as a truncated file.
 		let off = 0;
@@ -48,6 +101,7 @@ function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void 
 			if (n === 0) throw new Error(`writeSync wrote 0 bytes to ${tmp}`);
 			off += n;
 		}
+		if (options.times !== undefined) futimesSync(fd, options.times.atime, options.times.mtime);
 		fsyncSync(fd);
 		closeSync(fd);
 	} catch (err) {
@@ -56,28 +110,32 @@ function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void 
 		} catch {
 			// already closed
 		}
-		try {
-			unlinkSync(tmp);
-		} catch {
-			// best-effort cleanup; a stray tmp file is better than a corrupt target
-		}
+		discardTmp(tmp);
 		throw err;
 	}
-	renameSync(tmp, path);
-	// fsync the directory so the rename itself is durable, not just the
-	// file's data. Only an explicitly unsupported directory fsync may
-	// degrade; EIO and other failures leave rename durability unknown.
 	try {
-		const dfd = openSync(dirname(path), constants.O_RDONLY);
-		try {
-			fsyncSync(dfd);
-		} catch (err) {
-			const code = (err as NodeJS.ErrnoException).code;
-			if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EOPNOTSUPP") throw err;
-		} finally {
-			closeSync(dfd);
-		}
+		renameSync(tmp, path);
+	} catch (err) {
+		// The target is untouched; the tmp must not pile up next to it
+		// (a program re-trying the write every tick would litter the
+		// directory unbounded).
+		discardTmp(tmp);
+		throw err;
+	}
+	// fsync the directory so the rename itself is durable, not just the
+	// file's data.
+	try {
+		fsyncDirectory(dirname(path));
 	} catch (err) {
 		throw new Error(`directory sync failed for ${path}: ${String(err)}`, { cause: err });
+	}
+}
+
+function discardTmp(tmp: string): void {
+	try {
+		unlinkSync(tmp);
+	} catch {
+		// best-effort cleanup inside an already-failing path; a stray tmp
+		// file is better than masking the real error
 	}
 }

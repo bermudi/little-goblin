@@ -15,7 +15,7 @@ import { openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 import { openPrograms } from "./programs.ts";
-import type { Program } from "./programs.ts";
+import type { Program, ProgramsStore } from "./programs.ts";
 import type { MailHit } from "./mail.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import type { Config } from "./config.ts";
@@ -396,6 +396,35 @@ describe("scheduler", () => {
 			});
 			await closeSinks(h);
 		});
+	});
+
+	// The due query runs from a synchronous interval callback: a throw
+	// there is an uncaught exception (exit 1) and, five seconds later, the
+	// same throw on the restart's boot scan — a crash loop on one bad read.
+	test("a throwing due() is an error line, not an uncaught exception", () => {
+		const h = harness();
+		const programs = h.deps.programs;
+		h.deps.programs = {
+			...programs,
+			due: () => {
+				throw new Error("SQLITE_IOERR: disk I/O error");
+			},
+		} as ProgramsStore;
+		const captured: string[] = [];
+		setLogFile("scheduler-due-throw-test.log");
+		setLogWriter((_path, line) => captured.push(line));
+		try {
+			const s = startScheduler(h.deps, 3_600_000); // boot scan runs the throwing query
+			s.stop();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(
+			lines.some((l) => l.msg === "program scan failed — due query" && l.level === "error"),
+		).toBe(true);
+		expect(h.submitted).toHaveLength(0);
 	});
 
 	test("a due job fires one turn into its pinned topic conversation", async () => {
@@ -1072,6 +1101,23 @@ describe("schedule fire retry ladder", () => {
 			).toMatchObject({ program: program.id });
 		} finally {
 			release();
+		}
+	});
+
+	test("an onDone that lands after stop() arms no retry", async () => {
+		const h = harness();
+		const s = startScheduler(h.deps, 3_600_000);
+		const program = ladderProgram(h);
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			// Shutdown lands first; the turn's terminal status arrives late
+			// (a sink's onDone can trail the stop by a full drain budget).
+			s.stop();
+			await h.submitted[0]!.sink.onDone(transientDone);
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(1);
+		} finally {
+			s.stop();
 		}
 	});
 

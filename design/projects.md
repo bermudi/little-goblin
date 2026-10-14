@@ -265,7 +265,10 @@ trust-mode origin check; JSON bodies require `application/json`.
   matched beyond the bound (the store is asked for limit+1, so the
   flag needs no second query), telling the client to say so rather
   than show a capped shelf as complete. No pagination: a narrower
-  `project`/`q` is how the rest is reached.
+  `project`/`q` is how the rest is reached. Content writes refuse on
+  archived notes and PATCH applies the archive flag after the content
+  write, so `{body, archived: true}` lands in one request while
+  unarchive-and-edit is two (`{archived: false}`, then the edit).
 - `conversations` POST accepts `projectId`; the list payload carries
   `projectId` per summary.
 

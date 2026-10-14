@@ -113,6 +113,11 @@ export function noteFence(d: { id: string; title: string; rev: number; body: str
 // this old — a typing session is one version, not hundreds.
 const APP_VERSION_GAP_MS = 10 * 60 * 1000;
 const VERSION_CAP = 100;
+// The one unbounded surface otherwise: a version copies the whole
+// pre-write body, so an uncapped note is ~100x that in the DB. Wire
+// schemas enforce the same number at the boundary; write() enforces
+// the result so append/replace_range can't grow past it by accretion.
+export const NOTE_BODY_MAX_CHARS = 1_000_000;
 // list() is the index — unbounded body materialization would make every
 // page load O(total body bytes). The preview flattens in JS (flatLine's
 // markdown rules aren't SQL); a bounded source prefix keeps the query
@@ -297,11 +302,17 @@ export function openNotes(
 	const db = store.db;
 	const now = deps.now ?? (() => new Date());
 	const qGet = db.query<NoteRow, [string]>("SELECT * FROM notes WHERE id = ?");
-	const qNewestVersion = db.query<VersionRow, [string]>(
-		"SELECT * FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT 1",
+	const qNewestVersion = db.query<{ at: string }, [string]>(
+		"SELECT at FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT 1",
 	);
-	const qVersions = db.query<VersionRow, [string]>(
-		"SELECT * FROM note_versions WHERE note_id = ? ORDER BY rev DESC",
+	// The versions index is metadata-only — selecting body_md would
+	// materialize every full-history copy to compute a byte count.
+	const qVersionMetas = db.query<
+		{ rev: number; source: string; conversation: string | null; at: string; bytes: number },
+		[string]
+	>(
+		`SELECT rev, source, conversation, at, length(CAST(body_md AS BLOB)) AS bytes
+		 FROM note_versions WHERE note_id = ? ORDER BY rev DESC`,
 	);
 	const qVersion = db.query<VersionRow, [string, number]>(
 		"SELECT * FROM note_versions WHERE note_id = ? AND rev = ?",
@@ -340,6 +351,12 @@ export function openNotes(
 	): Note {
 		return db.transaction(() => {
 			const current = mustGet(id);
+			// The shelf is read-only — the rewrite route is not the only
+			// door. Flags (pin/archive/move) bypass write() entirely, so
+			// this refuses content, never the unarchive that lifts it.
+			if (current.archivedAt !== null) {
+				throw new NoteInputError("note is archived");
+			}
 			if (opts.expectedRev !== undefined && opts.expectedRev !== current.rev) {
 				log.info("note conflict", {
 					note: id,
@@ -351,6 +368,11 @@ export function openNotes(
 			const title = next.title ?? current.title;
 			const body = next.body ?? current.body;
 			if (title === current.title && body === current.body) return current;
+			if (body !== current.body && body.length > NOTE_BODY_MAX_CHARS) {
+				throw new NoteInputError(
+					`note body is ${body.length} chars — the cap is ${NOTE_BODY_MAX_CHARS}`,
+				);
+			}
 			// The PRE-write state is the version — its `source` names the
 			// write superseding it. App autosaves coalesce: record only on
 			// a source change, a >10min gap, or the first version.
@@ -407,13 +429,19 @@ export function openNotes(
 	}): Note {
 		const title = input.title.trim();
 		if (title === "") throw new NoteInputError("note title is empty");
+		const body = input.body ?? "";
+		if (body.length > NOTE_BODY_MAX_CHARS) {
+			throw new NoteInputError(
+				`note body is ${body.length} chars — the cap is ${NOTE_BODY_MAX_CHARS}`,
+			);
+		}
 		checkProjectId(input.projectId ?? null);
 		const id = randomUUID();
 		const at = now().toISOString();
 		db.run(
 			`INSERT INTO notes (id, project_id, title, body_md, rev, last_source, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, 1, 'app', ?, ?)`,
-			[id, input.projectId ?? null, title, input.body ?? "", at, at],
+			[id, input.projectId ?? null, title, body, at, at],
 		);
 		log.info("note created", { note: id, project: input.projectId ?? null, title });
 		return mustGet(id);
@@ -536,7 +564,13 @@ export function openNotes(
 		},
 		listVersions(id) {
 			mustGet(id);
-			return qVersions.all(id).map(toVersionMeta);
+			return qVersionMetas.all(id).map((r) => ({
+				rev: r.rev,
+				source: r.source as NoteSource,
+				conversation: r.conversation,
+				at: r.at,
+				bytes: r.bytes,
+			}));
 		},
 		getVersion(id, rev) {
 			mustGet(id);

@@ -53,6 +53,7 @@ import {
 } from "../config.ts";
 import { log } from "../log.ts";
 import {
+	NOTE_BODY_MAX_CHARS,
 	NOTE_PART,
 	type Note,
 	NoteConflictError,
@@ -339,14 +340,14 @@ const projectPatchBody = z
 // a note back to loose — the flag-write half of a PATCH.
 const noteCreateBody = z.object({
 	title: z.string().trim().min(1).max(200),
-	body: z.string().optional(),
+	body: z.string().max(NOTE_BODY_MAX_CHARS).optional(),
 	projectId: z.string().min(1).nullish(),
 });
 
 const notePatchBody = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
-		body: z.string().optional(),
+		body: z.string().max(NOTE_BODY_MAX_CHARS).optional(),
 		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),
@@ -367,7 +368,7 @@ const notePatchBody = z
 		{ message: "nothing to write" },
 	);
 
-const noteAppendBody = z.object({ text: z.string().min(1) });
+const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX_CHARS) });
 
 // design/projects.md → AI rewrite: the selection cap rides a whole
 // note's plausible size; whitespace-only selection can't anchor a
@@ -1215,23 +1216,31 @@ export async function handleAppApi(
 				return noteError(new NoteConflictError(note))!;
 			}
 			expectedRev = rev;
+			// The shelf is read-only — refuse up front, before the flag
+			// writes below can move a patch whose content won't land.
+			if (note.archivedAt !== null) {
+				return noteError(new NoteInputError("note is archived"))!;
+			}
 		}
 		try {
 			if (patch.projectId !== undefined) deps.notes.move(noteId, patch.projectId);
 			if (patch.pinned !== undefined) deps.notes.setPinned(noteId, patch.pinned);
+			if (wantsContent) {
+				deps.notes.write(
+					noteId,
+					{
+						...(patch.title !== undefined ? { title: patch.title } : {}),
+						...(patch.body !== undefined ? { body: patch.body } : {}),
+					},
+					patch.source ?? "app",
+					{ expectedRev },
+				);
+			}
+			// The archive flag lands last: write() refuses archived
+			// notes, so flipping it first would 422 a combined
+			// {body, archived: true} patch after the flag had moved.
 			if (patch.archived !== undefined) deps.notes.setArchived(noteId, patch.archived);
-			const updated = wantsContent
-				? deps.notes.write(
-						noteId,
-						{
-							...(patch.title !== undefined ? { title: patch.title } : {}),
-							...(patch.body !== undefined ? { body: patch.body } : {}),
-						},
-						patch.source ?? "app",
-						{ expectedRev },
-					)
-				: deps.notes.get(noteId)!;
-			return noteResponse(updated);
+			return noteResponse(deps.notes.get(noteId)!);
 		} catch (err) {
 			const res = noteError(err);
 			if (res !== null) return res;

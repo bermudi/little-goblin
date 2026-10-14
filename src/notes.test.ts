@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { setLogFile } from "./log.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import {
+	NOTE_BODY_MAX_CHARS,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
@@ -67,6 +68,7 @@ describe("the write path", () => {
 		expect(versions.map((v) => v.source)).toEqual(["restore", "append", "agent"]);
 		expect(notes.getVersion(n.id, 3)!.body).toBe(beforeRestore.body);
 		expect(versions[2]!.conversation).toBe("app/c1");
+		expect(versions[2]!.bytes).toBe(4); // "milk"
 		const v1 = notes.getVersion(n.id, 1)!;
 		expect(v1.body).toBe("milk");
 		expect(v1.title).toBe("groceries");
@@ -139,6 +141,40 @@ describe("the write path", () => {
 		expect(versions).toHaveLength(100);
 		expect(versions[0]!.rev).toBe(105);
 		expect(versions[99]!.rev).toBe(6);
+	});
+
+	test("the body cap is enforced at the store — create, write, and accreting appends", () => {
+		const { notes } = setup();
+		const over = "x".repeat(NOTE_BODY_MAX_CHARS + 1);
+		expect(() => notes.create({ title: "t", body: over })).toThrow(NoteInputError);
+		const n = notes.create({ title: "t" });
+		expect(() => notes.write(n.id, { body: over }, "app")).toThrow(NoteInputError);
+		// A legal single append that crosses the cap in aggregate
+		// refuses the same way — versioning amplifies every byte.
+		const almost = "y".repeat(NOTE_BODY_MAX_CHARS - 4);
+		notes.write(n.id, { body: almost }, "agent");
+		expect(() => notes.append(n.id, "z".repeat(10), "agent")).toThrow(NoteInputError);
+		expect(notes.get(n.id)!.body).toBe(almost);
+	});
+
+	test("an archived note is read-only — every content door refuses, unarchive lifts it", () => {
+		const { notes } = setup();
+		const n = notes.create({ title: "t", body: "x" });
+		notes.append(n.id, "more", "agent"); // leaves a version to attempt restoring
+		notes.setArchived(n.id, true);
+		for (const attempt of [
+			() => notes.write(n.id, { body: "y" }, "app"),
+			() => notes.append(n.id, "y", "append"),
+			() => notes.replaceRanges(n.id, [{ start: 0, end: 1, expected: "x", text: "y" }]),
+			() => notes.restore(n.id, 1),
+		]) {
+			expect(attempt).toThrow(NoteInputError);
+			expect(attempt).toThrow(/archived/);
+		}
+		expect(notes.get(n.id)!.body).toBe("x\n\nmore");
+		// Flags bypass write() — unarchive makes it writable again.
+		notes.setArchived(n.id, false);
+		expect(notes.write(n.id, { body: "y" }, "app").body).toBe("y");
 	});
 });
 

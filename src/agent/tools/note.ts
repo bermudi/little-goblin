@@ -9,6 +9,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import {
+	NOTE_BODY_MAX_CHARS,
 	NoteConflictError,
 	NoteInputError,
 	type Note,
@@ -47,18 +48,18 @@ const readSchema = z.object({
 const createSchema = z.object({
 	action: z.literal("create"),
 	title: z.string().min(1).max(200),
-	body: z.string().optional(),
+	body: z.string().max(NOTE_BODY_MAX_CHARS).optional(),
 	where: z.enum(["here", "loose"]).optional(),
 });
 const appendSchema = z.object({
 	action: z.literal("append"),
 	id: z.string().min(1),
-	text: z.string().min(1),
+	text: z.string().min(1).max(NOTE_BODY_MAX_CHARS),
 });
 const replaceSchema = z.object({
 	action: z.literal("replace"),
 	id: z.string().min(1),
-	body: z.string(),
+	body: z.string().max(NOTE_BODY_MAX_CHARS),
 	title: z.string().min(1).max(200).optional(),
 	// A whole-body write is destructive — it must name the rev it read.
 	rev: z.number().int().positive(),
@@ -71,8 +72,8 @@ const rangeSchema = z.object({
 			z.object({
 				start: z.number().int().min(0),
 				end: z.number().int().min(0),
-				expected: z.string(),
-				text: z.string(),
+				expected: z.string().max(NOTE_BODY_MAX_CHARS),
+				text: z.string().max(NOTE_BODY_MAX_CHARS),
 			}),
 		)
 		.min(1)
@@ -144,7 +145,7 @@ function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, 
 export const noteTool = (deps: NoteToolDeps) =>
 	tool({
 		description:
-			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
+			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
 		inputSchema: noteInputSchema,
 		execute: async (raw) => {
 			// A malformed call must come back as tool output the model can

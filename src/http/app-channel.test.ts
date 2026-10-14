@@ -15,7 +15,7 @@ import { textModel } from "../testkit/fake-model.ts";
 import { loadConfig, type Config, type ConfigRef } from "../config.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
-import { openNotes } from "../notes.ts";
+import { NOTE_BODY_MAX_CHARS, openNotes } from "../notes.ts";
 import { openProjects, projectWorkdir } from "../projects.ts";
 import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
@@ -2489,6 +2489,84 @@ describe("app notes", () => {
 			const back = (await restored.json()) as { rev: number; body: string };
 			expect(back.rev).toBe(3);
 			expect(back.body).toBe("one");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an archived note refuses every content write — 422; flags still move", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string };
+			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
+			expect(
+				(await patchJson(call, `/api/app/notes/${note.id}`, { archived: true })).status,
+			).toBe(200);
+
+			// Body patch, append, restore — all refuse as input errors.
+			expect(
+				(
+					await patchJson(
+						call,
+						`/api/app/notes/${note.id}`,
+						{ body: "v2" },
+						{ "if-match": '"2"' },
+					)
+				).status,
+			).toBe(422);
+			expect(
+				(await postJson(call, `/api/app/notes/${note.id}/append`, { text: "y" })).status,
+			).toBe(422);
+			expect(
+				(await postJson(call, `/api/app/notes/${note.id}/versions/1/restore`, {})).status,
+			).toBe(422);
+			// Nothing wrote — not even the rev bumped.
+			const got = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				rev: number;
+			};
+			expect(got.body).toBe("v1\n\nx");
+			expect(got.rev).toBe(2);
+			// Unarchive is a flag write — then content lands again.
+			expect(
+				(await patchJson(call, `/api/app/notes/${note.id}`, { archived: false })).status,
+			).toBe(200);
+			expect(
+				(
+					await patchJson(
+						call,
+						`/api/app/notes/${note.id}`,
+						{ body: "v3" },
+						{ "if-match": '"2"' },
+					)
+				).status,
+			).toBe(200);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("body and append text cap at the wire — over-cap is a 422, not a write", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const over = "x".repeat(NOTE_BODY_MAX_CHARS + 1);
+			expect((await create(call, { title: "t", body: over })).status).toBe(422);
+			const created = await create(call, { title: "t" });
+			const note = (await created.json()) as { id: string };
+			expect(
+				(
+					await patchJson(
+						call,
+						`/api/app/notes/${note.id}`,
+						{ body: over },
+						{ "if-match": '"1"' },
+					)
+				).status,
+			).toBe(422);
+			expect(
+				(await postJson(call, `/api/app/notes/${note.id}/append`, { text: over })).status,
+			).toBe(422);
 		} finally {
 			http.stop();
 		}

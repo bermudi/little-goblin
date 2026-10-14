@@ -146,11 +146,26 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   at call time, so the runtime's authority fence wraps nested calls too
   — under the turn's abort signal, with call id `<parent>/<n>`. A call
   rejects inside the script when it throws, returns `{ error }`, or
-  fails validation; `bash` resolves on non-zero exits. Capped per script
-  (`maxCalls`, default 50) and in flight (8 concurrent). Calls that
+  fails validation; `bash` resolves on non-zero exits. Calls that
   completed before a failure are not undone. Raw results, never
   `toModelOutput` — a fetched PDF is its `{ pdf: { url, path, size } }`
   ref.
+- **The bounds live in the worker, before a call can post.** Upstream
+  posts every call the VM makes; a cap checked only on the host would
+  run after the port flooded and every args blob parsed. The sandbox
+  runs a local worker entry (`src/agent/tools/script-worker.ts`,
+  `workerUrl`) that wraps the pinned upstream worker: it counts calls
+  against `maxCalls` (default 50), caps serialized arguments at 1 MiB
+  per call, and keeps at most 8 posted-outstanding — the rest queue
+  inside the worker and flush as results land. The first violation
+  crashes the whole script (`kind: sandbox`) and trips the shared
+  interrupt: the bound is a terminal contract, not a rejection a
+  catch-and-retry loop can spin against. Queued calls are dropped when
+  the script settles — an unawaited call can never execute afterwards.
+  The host's own cap and semaphore stay as defense-in-depth; the
+  worker's config reaches it as a private one-line header the host
+  prepends to `workerData.code` and the wrapper strips before the eval,
+  so script line numbers are unchanged.
 - **Output is bounded, and tainted output rides fenced.** The result is
   a goblin-authored status line (completed/failed, error kind, wall
   time, call count) plus the script's `text()`/`console` items and

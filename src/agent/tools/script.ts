@@ -21,6 +21,7 @@ import { paths } from "../../config.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { summarize } from "../../reviewer.ts";
+import { encodeScriptWorkerCode, SCRIPT_WORKER_URL } from "./script-worker.ts";
 import { truncatedFooter, windowText } from "./truncate.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -92,7 +93,7 @@ function scriptDescription(callable: string[], maxCalls: number): string {
 		`- Callable: ${callable.map((n) => `tools.${n}`).join(", ")}. Arguments are exactly those of the same-named tool.`,
 		"- A call resolves to the tool's raw result and rejects with an Error when the tool fails, returns an error, or gets invalid arguments; use Promise.allSettled to keep partial results. Calls are real and are not undone if the script fails later.",
 		...(shapes !== "" ? [`- ${shapes}`] : []),
-		`- At most ${maxCalls} tool calls per script, 8 at a time. timeout_ms defaults to 120000 (max 600000) and stops the whole script. The script's memory is capped at 256 MB.`,
+		`- At most ${maxCalls} tool calls per script and 8 running at once; a call's serialized arguments are capped at 1 MiB. Exceeding any of these fails the whole script immediately — it is not a catchable rejection. timeout_ms defaults to 120000 (max 600000) and stops the whole script. The script's memory is capped at 256 MB.`,
 		"- text(value) and console.log(...) add output; a top-level return value is added last. Output over 15000 characters keeps its head and tail, and the full text is saved to a file the result names.",
 	];
 	return `Run a JavaScript script that calls your other tools and returns only what you keep. Use it for mechanical fan-out — fetch many URLs, run a command per file, filter a large result — when you don't need to read each intermediate result yourself. It does not think between steps: if a later step depends on judging an earlier result, call the tools directly.
@@ -304,10 +305,14 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 				),
 				timeoutMs: Math.min(input.timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
 				memoryLimitBytes: HEAP_LIMIT_BYTES,
+				// The bounded worker entry — call counts, arg sizes and the
+				// outstanding window are enforced before a call can post to
+				// this host (design/tools.md → Scripting).
+				workerUrl: SCRIPT_WORKER_URL,
 			});
 			let result: CodemodeResult;
 			try {
-				result = await sandbox.execute(input.code, {
+				result = await sandbox.execute(encodeScriptWorkerCode(input.code, deps.maxCalls), {
 					...(parentOptions.abortSignal !== undefined ? { signal: parentOptions.abortSignal } : {}),
 				});
 			} catch (err) {

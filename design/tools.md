@@ -162,6 +162,10 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   interrupt: the bound is a terminal contract, not a rejection a
   catch-and-retry loop can spin against. Queued calls are dropped when
   the script settles — an unawaited call can never execute afterwards.
+  A host interrupt fences calls and output without suppressing the
+  worker's first terminal message; a wrapper trip already sent its own.
+  The pinned host settles timeout/abort by interrupting and terminating
+  the worker, without waiting for a terminal message.
   The host's own cap and semaphore stay as defense-in-depth; the
   worker's config reaches it as a private one-line header the host
   prepends to `workerData.code` and the wrapper strips before the eval,

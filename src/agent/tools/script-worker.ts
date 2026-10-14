@@ -100,14 +100,16 @@ async function boot(port: MessagePort, data: unknown): Promise<void> {
 	};
 
 	port.postMessage = (message: unknown): void => {
-		if (dead || interrupted()) {
-			stop();
-			return;
-		}
+		if (dead) return;
 		const type = messageType(message);
 		if (type === "done" || type === "crash") {
 			stop();
 			post(message);
+			return;
+		}
+		if (interrupted()) {
+			// A host interrupt fences work, but upstream still owns its terminal message.
+			queue.length = 0;
 			return;
 		}
 		if (type !== "call") {
@@ -140,8 +142,9 @@ async function boot(port: MessagePort, data: unknown): Promise<void> {
 	// slot is visible and queued calls are posted before the settle
 	// re-enters the VM and drains.
 	port.on("message", (message: unknown) => {
-		if (dead || interrupted()) {
-			stop();
+		if (dead) return;
+		if (interrupted()) {
+			queue.length = 0;
 			return;
 		}
 		if (messageType(message) === "result") {

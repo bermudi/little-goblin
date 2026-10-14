@@ -745,11 +745,8 @@ describe("operator-only command gate", () => {
 			handleMessage(h.env, guestMsg(text, 20 + i), 20 + i);
 		}
 		await Promise.all([...h.env.intake.values()]);
+		await Promise.resolve();
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
-			REFUSAL,
-			REFUSAL,
-			REFUSAL,
-			REFUSAL,
 			REFUSAL,
 		]);
 		// No conversation, no journaled or buffered input, no runtime
@@ -760,6 +757,36 @@ describe("operator-only command gate", () => {
 		expect(h.pushed).toEqual([]);
 		expect(h.stopped).toEqual([]);
 		expect(calls).toEqual([]);
+		h.store.close();
+	});
+
+	test("privileged command refusals deduplicate one sender and cap actual unresolved sends", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const gate = Promise.withResolvers<{ message_id: number }>();
+		let sends = 0;
+		h.env.api.sendMessage = (() => {
+			sends++;
+			return gate.promise;
+		}) as unknown as typeof h.env.api.sendMessage;
+		for (let i = 0; i < 100; i++) handleMessage(h.env, guestMsg("/voice", 1000 + i), 1000 + i);
+		await Promise.resolve();
+		expect(sends).toBe(1);
+		for (let i = 0; i < 100; i++) {
+			handleMessage(
+				h.env,
+				tgMsg({
+					message_id: 2000 + i,
+					chat: guestChat,
+					from: { id: i + 10, is_bot: false, first_name: "guest" },
+					text: "/voice",
+				}),
+				2000 + i,
+			);
+		}
+		await Promise.resolve();
+		expect(sends).toBe(8);
+		gate.resolve({ message_id: 1 });
+		await gate.promise;
 		h.store.close();
 	});
 
@@ -801,13 +828,14 @@ describe("operator-only command gate", () => {
 		h.store.close();
 	});
 
-	test("a senderless update is not an operator — the privileged command refuses", () => {
+	test("a senderless update is not an operator — the privileged command refuses", async () => {
 		const h = routerHarness();
 		handleMessage(
 			h.env,
 			tgMsg({ message_id: 50, chat: { id: 1, type: "private" }, text: "/memory" }),
 			50,
 		);
+		await Promise.resolve();
 		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
 		expect(h.store.currentDm(1)).toBeNull();
 		h.store.close();

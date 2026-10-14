@@ -167,17 +167,17 @@ const REFUSAL_TIMEOUT_MS = 30_000;
 // the call typed without importing the transitive shim package.
 type GrammySignal = NonNullable<Parameters<Api["sendMessage"]>[3]>;
 
-export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
-	const refusalTimeoutMs = opts?.refusalTimeoutMs ?? REFUSAL_TIMEOUT_MS;
+function refusalDispatcher(refusalTimeoutMs: number) {
 	// One entry per user with an unsettled refusal send — dedup and the
 	// slot cap ride the same map. The slot is held until the send ACTUALLY
 	// settles (not merely timed out): a boundary that ignores the abort
 	// keeps its slot, so abandoned requests stay bounded.
 	const pendingRefusals = new Map<number, Promise<void>>();
-	const sendRefusal = (api: Api, id: number): void => {
+	return (api: Api, id: number, chat: number, text: string): void => {
 		if (pendingRefusals.has(id)) {
 			log.info("dm refusal coalesced — already pending", {
 				userId: id,
+				chat,
 				pending: pendingRefusals.size,
 			});
 			return;
@@ -185,6 +185,7 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 		if (pendingRefusals.size >= REFUSAL_SEND_SLOTS) {
 			log.warn("dm refusal dropped — refusal send slots exhausted", {
 				userId: id,
+				chat,
 				pending: pendingRefusals.size,
 			});
 			return;
@@ -192,16 +193,18 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), refusalTimeoutMs);
 		timer.unref?.();
-		log.info("dm refusal scheduled", { userId: id, pending: pendingRefusals.size + 1 });
+		log.info("telegram refusal scheduled", { userId: id, chat, pending: pendingRefusals.size + 1 });
 		const send = Promise.resolve()
-			.then(() =>
-				api.sendMessage(id, GUEST_REFUSAL, {}, controller.signal as unknown as GrammySignal),
-			)
+			.then(() => api.sendMessage(chat, text, {}, controller.signal as unknown as GrammySignal))
 			.then(() => {
-				log.info("dm refusal delivered", { userId: id, pending: pendingRefusals.size });
+				log.info("telegram refusal delivered", { userId: id, chat, pending: pendingRefusals.size });
 			})
 			.catch((err: unknown) => {
-				log.warn("dm refusal failed", err, { userId: id, pending: pendingRefusals.size });
+				log.warn("telegram refusal failed", err, {
+					userId: id,
+					chat,
+					pending: pendingRefusals.size,
+				});
 			})
 			.finally(() => {
 				clearTimeout(timer);
@@ -209,6 +212,21 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 			});
 		pendingRefusals.set(id, send);
 	};
+}
+
+const refusalDispatchers = new WeakMap<Api, ReturnType<typeof refusalDispatcher>>();
+function sendRefusal(api: Api, id: number, chat: number, text: string): void {
+	let dispatch = refusalDispatchers.get(api);
+	if (dispatch === undefined) {
+		dispatch = refusalDispatcher(REFUSAL_TIMEOUT_MS);
+		refusalDispatchers.set(api, dispatch);
+	}
+	dispatch(api, id, chat, text);
+}
+
+export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
+	const dispatch =
+		opts?.refusalTimeoutMs === undefined ? sendRefusal : refusalDispatcher(opts.refusalTimeoutMs);
 	return async (
 		ctx: {
 			from?: { id: number } | undefined;
@@ -239,7 +257,7 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 					userId: id,
 					guest: cfg.guest !== undefined,
 				});
-				sendRefusal(ctx.api, id);
+				dispatch(ctx.api, id, id, GUEST_REFUSAL);
 				return;
 			}
 			await next();
@@ -388,12 +406,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			userId: msg.from?.id ?? null,
 			chat: msg.chat.id,
 		});
-		void withTimeout(
-			env.api.sendMessage(msg.chat.id, OPERATOR_ONLY_REPLY),
-			"sendMessage (command refusal)",
-		)
-			.then(() => undefined)
-			.catch((err: unknown) => log.warn("command refusal failed", err, { chat: msg.chat.id }));
+		sendRefusal(env.api, msg.from?.id ?? msg.chat.id, msg.chat.id, OPERATOR_ONLY_REPLY);
 		return;
 	}
 	if (command?.command === "/new" || command?.command === "/back") {

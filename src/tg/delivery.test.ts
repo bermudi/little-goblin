@@ -9,6 +9,7 @@ import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import {
+	isMessageGoneError,
 	isNotModifiedError,
 	makeDeliverySink,
 	recentReplyText,
@@ -791,6 +792,19 @@ describe("delivery", () => {
 			isNotModifiedError({ description: "Bad Request: message is not modified", error_code: 400 }),
 		).toBe(true);
 		expect(isNotModifiedError(new Error("transient edit failure"))).toBe(false);
+	});
+
+	test("isMessageGoneError matches the phrase only at 400 — other codes stay loud", () => {
+		expect(isMessageGoneError(new Error("400: Bad Request: message to edit not found"))).toBe(true);
+		expect(
+			isMessageGoneError({ description: "Bad Request: message not found", error_code: 400 }),
+		).toBe(true);
+		// A structured non-400 carrying the words (wrapped proxy error,
+		// 502 page) is a different failure class — the sink must not die.
+		expect(
+			isMessageGoneError({ description: "upstream: message not found", error_code: 502 }),
+		).toBe(false);
+		expect(isMessageGoneError(new Error("socket hangup"))).toBe(false);
 	});
 
 	test("fenced completion stamps an existing bubble even if the authority check still passes", async () => {

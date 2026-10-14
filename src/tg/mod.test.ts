@@ -70,6 +70,33 @@ describe("accessGate", () => {
 		}
 	});
 
+	// ctx.chat on a callback resolves to the tapped message's chat, so a
+	// member tapping a button in an operator group reaches this branch —
+	// the tap must be answered or its spinner runs until Telegram expires.
+	test("a non-operator callback tap in an operator group is acked 'operator only'", async () => {
+		const configRef = { current: baseConfig };
+		const gate = accessGate(configRef);
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		const tap = {
+			from: { id: 9 },
+			chat: { id: -50, type: "group" },
+			update: { callback_query: { id: "cb-9" } },
+			api,
+		};
+		const before = tg.calls.length;
+		await gate(tap, next);
+		expect(reached).toBe(0);
+		expect(tg.calls.slice(before)).toEqual([
+			{ method: "answerCallbackQuery", args: ["cb-9", { text: "operator only" }] },
+		]);
+		// An operator's tap still passes through to the handlers.
+		await gate({ ...tap, from: { id: 1 } }, next);
+		expect(reached).toBe(1);
+	});
+
 	// The guest block is the sandbox class's feature switch — absent,
 	// allowedUsers are strangers wherever intake runs (design.md →
 	// Roles). The list alone must not open the DM lane.

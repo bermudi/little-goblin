@@ -36,7 +36,7 @@ import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError, makeDeliverySink } from "./delivery.ts";
 
 // ---------- state: summons dedup (rows, not config) ----------
 
@@ -263,12 +263,11 @@ export class GuestSink implements TurnSink {
 			this.edits++;
 			this.published = body;
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
 			if (isNotModifiedError(err)) {
 				this.published = body;
 				return;
 			}
-			if (msg.includes("message to edit not found") || msg.includes("message not found")) {
+			if (isMessageGoneError(err)) {
 				this.dead = true;
 				log.error("guest message vanished — edits stopped", undefined, {
 					inline: this.inlineMessageId,

@@ -93,6 +93,23 @@ export function isNotModifiedError(err: unknown): boolean {
 	);
 }
 
+// The edit target is gone — Telegram answers 400 "message to edit not
+// found". Same gate as above: a present non-400 error_code wins over
+// the phrase, so a wrapped proxy/fetch error can't freeze a sink.
+export function isMessageGoneError(err: unknown): boolean {
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some(
+		(h) =>
+			typeof h === "string" &&
+			(h.includes("message to edit not found") || h.includes("message not found")),
+	);
+}
+
 export interface DeliveryVoiceDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;
 	voiceMode: boolean;

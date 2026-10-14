@@ -159,6 +159,7 @@ export function accessGate(configRef: { current: Config }) {
 		ctx: {
 			from?: { id: number } | undefined;
 			chat?: { id: number; type: string } | undefined;
+			update?: { callback_query?: { id: string } | undefined };
 			api: Api;
 		},
 		next: () => Promise<void>,
@@ -190,6 +191,22 @@ export function accessGate(configRef: { current: Config }) {
 				return;
 			}
 			await next();
+			return;
+		}
+		// A callback tap isn't chatter: ctx.chat resolves to the tapped
+		// message's chat, so a member poking an operator group's buttons
+		// lands here. Answer it — the tap's spinner otherwise runs until
+		// Telegram expires it — while still refusing the authority.
+		if (ctx.update !== undefined && "callback_query" in ctx.update) {
+			const q = ctx.update.callback_query;
+			log.info("callback tap refused — not operator", { userId: id, chat: ctx.chat?.id });
+			if (q !== undefined) {
+				await withTimeout(ctx.api.answerCallbackQuery(q.id, { text: "operator only" }), "answerCallbackQuery")
+					.then(() => undefined)
+					.catch((err: unknown) =>
+						log.debug("answerCallbackQuery failed", { error: String(err) }),
+					);
+			}
 			return;
 		}
 		// Ambient room chatter is not a summons — dropped, no reply.

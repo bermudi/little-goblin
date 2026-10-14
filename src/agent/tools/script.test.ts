@@ -390,17 +390,24 @@ test("an abort stops a spinning script quickly with kind aborted", async () => {
 });
 
 test("timeout_ms stops a spinning script through the bounded worker", async () => {
-	const tools = composed({ bash: counter(() => "ok") });
+	let entered = false;
+	const tools = composed({
+		bash: counter(() => {
+			entered = true;
+			return "ok";
+		}),
+	});
 	const started = Date.now();
 	const out = await exec(scriptToolOf(tools), {
-		code: "while (true) {}",
-		timeout_ms: 100,
+		code: "await tools.bash({}); while (true) {}",
+		timeout_ms: 500,
 	});
 	expect(Date.now() - started).toBeLessThan(5_000);
+	expect(entered).toBe(true);
 	expect(out.error).toBe("timeout");
 	expect(out.text).toContain("Script failed (timeout)");
-	expect(out.text).toContain("Execution timed out after 100 ms");
-	expect(out.calls).toHaveLength(0);
+	expect(out.text).toContain("Execution timed out after 500 ms");
+	expect(out.calls).toHaveLength(1);
 });
 
 test("the VM's signal aborts a nested call the script left unawaited", async () => {

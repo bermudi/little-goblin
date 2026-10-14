@@ -7,7 +7,7 @@
 // accepted calls at maxCalls, posted-outstanding calls at 8 (the rest
 // queue inside the worker and flush as results free slots). The first
 // violation crashes the script once and trips the shared interrupt, so
-// a catch/retry loop can't keep posting; nothing is forwarded after
+// a catch/retry loop can't keep posting; no calls/output are forwarded after
 // done/crash/abort — an unawaited queued call never reaches the host.
 //
 // maxCalls travels in workerData.code: the host prepends a private

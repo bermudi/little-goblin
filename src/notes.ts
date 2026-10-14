@@ -7,9 +7,12 @@
 //
 // Every content write rides ONE path (`write`): it versions the
 // pre-write state, bumps rev, and prunes past 100 versions, all in
-// one transaction. Flags (pin/archive/move) never touch content and
-// bump nothing — the cache-stability split between a conversation's
-// frozen prompt and a note's freely-moving scope.
+// one transaction. Flags (pin/archive/move) never touch content —
+// `rev` stays still — but every accepted mutation advances
+// `state_rev`, the page's forward-ordering token: a delayed flag
+// response can't resurrect state a newer mutation already replaced.
+// The cache-stability split between a conversation's frozen prompt
+// and a note's freely-moving scope is why flags stay off `rev`.
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -28,7 +31,11 @@ export interface Note {
 	projectId: string | null;
 	title: string;
 	body: string;
+	// `rev` orders content only (the If-Match etag); `stateRev` orders
+	// every accepted mutation — content AND flag — so a delayed flag
+	// response can never pass for current.
 	rev: number;
+	stateRev: number;
 	lastSource: NoteSource;
 	pinnedAt: string | null;
 	archivedAt: string | null;
@@ -41,6 +48,7 @@ export interface NoteSummary {
 	projectId: string | null;
 	title: string;
 	rev: number;
+	stateRev: number;
 	pinnedAt: string | null;
 	archivedAt: string | null;
 	updatedAt: string;
@@ -141,7 +149,7 @@ export interface NoteStore {
 	// The app PATCH's atomic unit: flag/move mutations and the content
 	// write land together or not at all — a failed body write must not
 	// strand a committed archive or move. expectedRev guards only when
-	// title/body ride the patch; flag-only patches bump nothing.
+	// title/body ride the patch; flag-only patches still bump stateRev.
 	patch(
 		id: string,
 		next: {
@@ -163,7 +171,9 @@ export interface NoteStore {
 		edits: { start: number; end: number; expected: string; text: string }[],
 		conversation?: string,
 	): Note;
-	restore(id: string, rev: number): Note;
+	// A restore IS a content write — expectedRev guards the live rev it
+	// lands on, or a stale panel rolls newer work back silently.
+	restore(id: string, rev: number, expectedRev: number): Note;
 	setPinned(id: string, pinned: boolean): Note;
 	setArchived(id: string, archived: boolean): Note;
 	move(id: string, projectId: string | null): Note;
@@ -189,8 +199,20 @@ export function ensureNotesSchema(db: Database): void {
 			pinned_at TEXT,
 			archived_at TEXT,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			state_rev INTEGER NOT NULL DEFAULT 1
 		)`);
+	// Additive migration for stores that predate the column — existing
+	// rows initialize to 1, which stays strictly below anything minted
+	// after the upgrade.
+	if (
+		db
+			.query<{ name: string }, []>("SELECT name FROM pragma_table_info('notes')")
+			.all()
+			.every((c) => c.name !== "state_rev")
+	) {
+		db.run("ALTER TABLE notes ADD COLUMN state_rev INTEGER NOT NULL DEFAULT 1");
+	}
 	// Versions are full pre-write copies (the Open WebUI pattern),
 	// capped at the newest 100 per note — `source` names the write that
 	// superseded this state, so every agent edit is one restore away.
@@ -238,6 +260,7 @@ interface NoteRow {
 	title: string;
 	body_md: string;
 	rev: number;
+	state_rev: number;
 	last_source: string;
 	pinned_at: string | null;
 	archived_at: string | null;
@@ -261,6 +284,7 @@ function toNote(r: NoteRow): Note {
 		title: r.title,
 		body: r.body_md,
 		rev: r.rev,
+		stateRev: r.state_rev,
 		lastSource: r.last_source as NoteSource,
 		pinnedAt: r.pinned_at,
 		archivedAt: r.archived_at,
@@ -380,7 +404,7 @@ export function openNotes(
 		}
 		const updatedAt = now().toISOString();
 		db.run(
-			"UPDATE notes SET title = ?, body_md = ?, rev = rev + 1, last_source = ?, updated_at = ? WHERE id = ?",
+			"UPDATE notes SET title = ?, body_md = ?, rev = rev + 1, state_rev = state_rev + 1, last_source = ?, updated_at = ? WHERE id = ?",
 			[title, body, source, updatedAt, id],
 		);
 		const updated = mustGet(id);
@@ -405,14 +429,20 @@ export function openNotes(
 		return db.transaction(() => applyWrite(id, next, source, opts))();
 	}
 
+	// Flag mutations bump state_rev — never rev or updated_at — so a
+	// delayed response orders strictly behind anything newer without
+	// masquerading as a content change.
 	function applyMove(id: string, projectId: string | null): void {
 		checkProjectId(projectId);
-		db.run("UPDATE notes SET project_id = ? WHERE id = ?", [projectId, id]);
+		db.run("UPDATE notes SET project_id = ?, state_rev = state_rev + 1 WHERE id = ?", [
+			projectId,
+			id,
+		]);
 		log.info("note moved", { note: id, project: projectId });
 	}
 
 	function applyPin(id: string, pinned: boolean): void {
-		db.run("UPDATE notes SET pinned_at = ? WHERE id = ?", [
+		db.run("UPDATE notes SET pinned_at = ?, state_rev = state_rev + 1 WHERE id = ?", [
 			pinned ? now().toISOString() : null,
 			id,
 		]);
@@ -420,7 +450,7 @@ export function openNotes(
 	}
 
 	function applyArchive(id: string, archived: boolean): void {
-		db.run("UPDATE notes SET archived_at = ? WHERE id = ?", [
+		db.run("UPDATE notes SET archived_at = ?, state_rev = state_rev + 1 WHERE id = ?", [
 			archived ? now().toISOString() : null,
 			id,
 		]);
@@ -438,8 +468,8 @@ export function openNotes(
 		const id = randomUUID();
 		const at = now().toISOString();
 		db.run(
-			`INSERT INTO notes (id, project_id, title, body_md, rev, last_source, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, 1, 'app', ?, ?)`,
+			`INSERT INTO notes (id, project_id, title, body_md, rev, state_rev, last_source, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 1, 1, 'app', ?, ?)`,
 			[id, input.projectId ?? null, title, input.body ?? "", at, at],
 		);
 		log.info("note created", { note: id, project: input.projectId ?? null, title });
@@ -488,6 +518,7 @@ export function openNotes(
 				projectId: r.project_id,
 				title: r.title,
 				rev: r.rev,
+				stateRev: r.state_rev,
 				pinnedAt: r.pinned_at,
 				archivedAt: r.archived_at,
 				updatedAt: r.updated_at,
@@ -535,12 +566,25 @@ export function openNotes(
 			}
 			return write(id, { body }, "agent", { conversation });
 		},
-		restore(id, rev) {
-			const version = qVersion.get(id, rev);
-			if (version === null) throw new NoteInputError(`note ${id} has no rev ${rev}`);
-			const restored = write(id, { title: version.title, body: version.body_md }, "restore", {});
-			log.info("note restored", { note: id, fromRev: rev, newRev: restored.rev });
-			return restored;
+		restore(id, rev, expectedRev) {
+			// One transaction: the version read and the guarded write must
+			// see the same row — a concurrent bump between them would let
+			// a stale caller roll live content back. expectedRev rides
+			// applyWrite's ordinary conflict check, so a stale restore
+			// throws 409-shaped and writes nothing (no version, no
+			// state_rev).
+			return db.transaction(() => {
+				const version = qVersion.get(id, rev);
+				if (version === null) throw new NoteInputError(`note ${id} has no rev ${rev}`);
+				const restored = applyWrite(
+					id,
+					{ title: version.title, body: version.body_md },
+					"restore",
+					{ expectedRev },
+				);
+				log.info("note restored", { note: id, fromRev: rev, newRev: restored.rev });
+				return restored;
+			})();
 		},
 		setPinned(id, pinned) {
 			mustGet(id);

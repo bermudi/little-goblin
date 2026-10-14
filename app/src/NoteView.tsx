@@ -227,7 +227,9 @@ function VersionsPanel({
 	const restore = (rev: number) => {
 		if (restoring || !canRestoreNow()) return;
 		setRestoring(true);
-		void restoreNoteVersion(token, note.id, rev).then(
+		// If-Match = the rev the panel is looking at — the server
+		// refuses to roll back over a newer write.
+		void restoreNoteVersion(token, note.id, rev, note.rev).then(
 			(n) => {
 				setRestoring(false);
 				setPreview(null);

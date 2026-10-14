@@ -112,8 +112,8 @@ for attach and pin. An agent editing files with the generic
 `write`/`edit` tools bypasses all of it.
 
 - `notes`: `id`, `project_id` (nullable — loose notes), `title`,
-  `body_md`, `rev`, `pinned_at`, `archived_at`, `created_at`,
-  `updated_at`.
+  `body_md`, `rev`, `state_rev`, `pinned_at`, `archived_at`,
+  `created_at`, `updated_at`.
 - `note_versions`: `note_id`, `rev`, `body_md`, `source`
   (`app|agent|rewrite|append|restore` — the write that superseded this
   state), `conversation` (nullable), `at`. Full
@@ -145,7 +145,14 @@ its serialization differs from the serialization it produced right
 after load — opening an agent-written note never rewrites it.
 
 **Every mutation is one path.** `rev` increments per content write
-(title or body; pin/archive/project moves are flags and bump nothing).
+(title or body); pin/archive/project moves are flags — they bump
+nothing content-visible, not `rev`, not `updated_at`, not the version
+history. Alongside it a second monotonic `state_rev` advances on EVERY
+accepted mutation, flags included — `rev` can't order a delayed flag
+response against a content write, so every forward-only guard (adopt,
+conflict fence, ack bookkeeping) runs on `state_rev`. A refused write
+rolls the token back with everything else; the client sees it as
+`stateRev`.
 Before a content write the pre-write state is recorded as a version —
 always for `agent`, `rewrite`, `append`, and `restore` writes, so every
 non-operator edit is one restore away. Operator `app` writes are the
@@ -210,18 +217,32 @@ from a third party.
   its first message. No separate mechanism.
 
 **Refresh without push.** The editor fetches on mount and on window
-focus; a newer server rev under a clean editor reloads silently, under
-a dirty one it raises the conflict choice. Flag flips don't bump the
-rev — an archive arriving under a dirty buffer is the same conflict,
-and the mounted editor survives it so Keep mine can write back; only a
-clean page swaps to the archived readonly view. An in-flight restore
-holds the same rule: edits that land while the POST flies raise the
-conflict instead of being replaced, and a reply that arrives under a
-newer rev is ignored. In v1 a note and a chat never share a screen, so
-there is no open editor for a streamed `note` tool result to refresh;
-when they do share one, that tool result is the refetch trigger. No
-socket, no new push channel (Streaming members' "parked" ruling
-stands).
+focus; adoption is forward-only on `state_rev` — a response that isn't
+strictly newer than the accepted state is ignored entirely, so a
+delayed flag answer can't resurrect older flags or roll a title back.
+A newer server state under a clean editor reloads silently — a clean
+title draft takes a remote rename and trim-equivalent drafts sync,
+while text typed over an in-flight title write stays dirty work — and
+under a dirty buffer or a dirty title it raises the conflict choice.
+Flag flips don't bump the rev — an archive arriving under a dirty
+buffer is the same conflict, and the mounted editor survives it so
+Keep mine can write back; only a clean page swaps to the archived
+readonly view. Title saves ride the editor's single save lane (one
+PATCH carries the serialized body plus the title), so a rename can
+never race a body autosave onto the same rev, and queued saves merge
+instead of replacing each other. A refresh that beats editor creation
+queues: the mounted doc, the write rev, and the draft's base judgment
+all stand on the freshest known state — a stored draft whose base no
+longer matches restores behind the bar with its original base. An
+in-flight restore holds the same rule, and restore is a guarded
+content write itself — `If-Match` is required, a stale guard 409s the
+live note through the same conflict path, edits that land while the
+POST flies raise the conflict instead of being replaced, and a reply
+that arrives under a newer rev is ignored. In v1 a note and a chat
+never share a screen, so there is no open editor for a streamed `note`
+tool result to refresh; when they do share one, that tool result is
+the refetch trigger. No socket, no new push channel (Streaming
+members' "parked" ruling stands).
 
 **Fenced reply → append** (operator ask). In app conversations the
 model may wrap note-ready content in a `note` fence — four backticks so
@@ -278,8 +299,9 @@ trust-mode origin check; JSON bodies require `application/json`.
 - `notes` (GET list with `project`/`q`/archived filters, POST create),
   `notes/<id>` (GET, PATCH with `If-Match`, DELETE only when archived —
   the conversation archive pattern), `notes/<id>/versions` (GET),
-  `notes/<id>/versions/<rev>/restore` (POST — a write like any other,
-  current body versioned first), `notes/<id>/rewrite` (POST).
+  `notes/<id>/versions/<rev>/restore` (POST — a content write like any
+  other: `If-Match` on the live rev, the current body versioned first),
+  `notes/<id>/rewrite` (POST).
 - `conversations` POST accepts `projectId`; the list payload carries
   `projectId` per summary.
 

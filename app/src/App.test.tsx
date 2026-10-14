@@ -1667,6 +1667,7 @@ describe("app projects surface", () => {
 		projectId: null,
 		title,
 		rev: 1,
+		stateRev: 1,
 		pinnedAt: null,
 		archivedAt: null,
 		updatedAt: "2026-10-10T00:00:00.000Z",

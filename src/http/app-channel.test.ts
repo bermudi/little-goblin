@@ -2453,11 +2453,14 @@ describe("app notes", () => {
 				pinnedAt: string | null;
 				archivedAt: string | null;
 				rev: number;
+				stateRev: number;
 			};
 			expect(after.pinnedAt).not.toBeNull();
 			expect(after.archivedAt).not.toBeNull();
-			// Flags bump nothing.
+			// Flags bump nothing content-visible — the token still
+			// moves, once per accepted flag write.
 			expect(after.rev).toBe(2);
+			expect(after.stateRev).toBe(4);
 			// Strictness: unknown keys refuse.
 			expect(
 				(await patchJson(call, `/api/app/notes/${note.id}`, { frobnicate: true })).status,
@@ -2489,9 +2492,11 @@ describe("app notes", () => {
 				pinnedAt: string | null;
 				archivedAt: string | null;
 				rev: number;
+				stateRev: number;
 			};
 			expect(after.body).toBe("v1");
 			expect(after.rev).toBe(1);
+			expect(after.stateRev).toBe(1); // the token rolled back too
 			expect(after.pinnedAt).toBeNull();
 			expect(after.archivedAt).toBeNull();
 		} finally {
@@ -2601,11 +2606,58 @@ describe("app notes", () => {
 			expect(v1.body).toBe("one");
 			expect((await call(`/api/app/notes/${note.id}/versions/9`)).status).toBe(404);
 
-			const restored = await postJson(call, `/api/app/notes/${note.id}/versions/1/restore`, {});
+			const restored = await call(`/api/app/notes/${note.id}/versions/1/restore`, {
+				method: "POST",
+				headers: { "if-match": `"${after.rev}"` },
+			});
 			expect(restored.status).toBe(200);
 			const back = (await restored.json()) as { rev: number; body: string };
 			expect(back.rev).toBe(3);
 			expect(back.body).toBe("one");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("restore is a content write — If-Match is required and guards the live rev", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "one" });
+			const note = (await created.json()) as { id: string };
+			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "two" });
+			const restore = (headers: Record<string, string> = {}) =>
+				call(`/api/app/notes/${note.id}/versions/1/restore`, {
+					method: "POST",
+					headers,
+				});
+			// Missing or malformed — the write never reaches the store.
+			expect((await restore()).status).toBe(428);
+			expect((await restore({ "if-match": "abc" })).status).toBe(428);
+			// Stale — conflicts with the live note like a PATCH does.
+			const stale = await restore({ "if-match": '"1"' });
+			expect(stale.status).toBe(409);
+			expect(stale.headers.get("etag")).toBe('"2"');
+			const conflict = (await stale.json()) as { note: { rev: number; body: string } };
+			expect(conflict.note.rev).toBe(2);
+			expect(conflict.note.body).toBe("one\n\ntwo");
+			// A missing version stays 422 under a live guard.
+			const gone = await call(`/api/app/notes/${note.id}/versions/9/restore`, {
+				method: "POST",
+				headers: { "if-match": '"2"' },
+			});
+			expect(gone.status).toBe(422);
+			// The current rev restores — and nothing the refused calls
+			// touched shows up (body, versions, token all stand).
+			const ok = await restore({ "if-match": '"2"' });
+			expect(ok.status).toBe(200);
+			const back = (await ok.json()) as { rev: number; body: string; stateRev: number };
+			expect(back.rev).toBe(3);
+			expect(back.body).toBe("one");
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: { rev: number; source: string }[];
+			};
+			expect(versions.versions.map((v) => v.rev)).toEqual([2, 1]);
+			expect(versions.versions[0]!.source).toBe("restore");
 		} finally {
 			http.stop();
 		}

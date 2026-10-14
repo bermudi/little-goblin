@@ -11,9 +11,11 @@ import {
 	getOperatorConfig,
 	listMemoryDocuments,
 	loadToken,
+	NoteConflictError,
 	patchConfig,
 	patchNote,
 	patchConversationConfig,
+	restoreNoteVersion,
 	saveOperatorConfig,
 	saveToken,
 } from "./api.ts";
@@ -267,6 +269,51 @@ describe("telegram door", () => {
 	});
 });
 
+// restoreNoteVersion is a content write — the caller's live rev rides
+// If-Match, and a stale one decodes into the same conflict the editor
+// gets from a PATCH.
+describe("restoreNoteVersion", () => {
+	const NOTE = {
+		id: "n-1",
+		projectId: null,
+		title: "t",
+		body: "x",
+		rev: 8,
+		stateRev: 8,
+		lastSource: "app",
+		pinnedAt: null,
+		archivedAt: null,
+		createdAt: "x",
+		updatedAt: "x",
+	};
+
+	test("sends expectedRev as If-Match and returns the restored note", async () => {
+		const seen: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			seen.push(new Request(new URL(String(input), "http://localhost"), init));
+			return Response.json(NOTE);
+		}) as typeof fetch;
+		const restored = await restoreNoteVersion("tok", "n-1", 3, 7);
+		expect(restored.rev).toBe(8);
+		expect(seen[0]!.method).toBe("POST");
+		expect(new URL(seen[0]!.url).pathname).toBe("/api/app/notes/n-1/versions/3/restore");
+		expect(seen[0]!.headers.get("if-match")).toBe('"7"');
+		expect(seen[0]!.headers.get("authorization")).toBe("Bearer tok");
+	});
+
+	test("a 409 decodes the live note into NoteConflictError", async () => {
+		globalThis.fetch = (async (_input: string | URL | Request, _init?: RequestInit) =>
+			Response.json({ error: "conflict", note: NOTE }, { status: 409 })) as typeof fetch;
+		try {
+			await restoreNoteVersion(null, "n-1", 3, 7);
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(NoteConflictError);
+			expect((err as NoteConflictError).note.rev).toBe(8);
+		}
+	});
+});
+
 // patchNote's keepalive is best effort: past the portable 64KiB bound
 // the flag is dropped and the body still leaves whole — the durable
 // draft is the recovery path for big edits.
@@ -277,6 +324,7 @@ describe("patchNote keepalive bound", () => {
 		title: "t",
 		body: "x",
 		rev: 2,
+		stateRev: 2,
 		lastSource: "app",
 		pinnedAt: null,
 		archivedAt: null,

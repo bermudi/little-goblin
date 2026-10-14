@@ -28,6 +28,7 @@ const note: AppNote = {
 	title: "t",
 	body: "- a\n- b",
 	rev: 1,
+	stateRev: 1,
 	lastSource: "app",
 	pinnedAt: null,
 	archivedAt: null,

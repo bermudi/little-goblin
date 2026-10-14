@@ -680,6 +680,7 @@ function appNote(n: Note): AppNote {
 		title: n.title,
 		body: n.body,
 		rev: n.rev,
+		stateRev: n.stateRev,
 		lastSource: n.lastSource,
 		pinnedAt: n.pinnedAt,
 		archivedAt: n.archivedAt,
@@ -694,6 +695,7 @@ function appNoteSummary(s: ReturnType<NoteStore["list"]>[number]): AppNoteSummar
 		projectId: s.projectId,
 		title: s.title,
 		rev: s.rev,
+		stateRev: s.stateRev,
 		pinnedAt: s.pinnedAt,
 		archivedAt: s.archivedAt,
 		updatedAt: s.updatedAt,
@@ -1075,10 +1077,21 @@ export async function handleAppApi(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
+		// A restore writes content, so it rides the same If-Match guard
+		// as PATCH — a stale etag conflicts with the live note instead
+		// of rolling newer work back to the historical body.
+		const expectedRev = ifMatchRev(req);
+		if (expectedRev === null) {
+			return Response.json(
+				{ error: "If-Match required for restore" },
+				{ status: 428, headers: NO_STORE },
+			);
+		}
 		try {
 			const note = deps.notes.restore(
 				noteRestoreMatch[1]!,
 				Number.parseInt(noteRestoreMatch[2]!, 10),
+				expectedRev,
 			);
 			return noteResponse(note);
 		} catch (err) {

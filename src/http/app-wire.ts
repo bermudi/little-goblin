@@ -44,13 +44,16 @@ export interface AppProjectList {
 
 /** One note as the app sees it. GET /api/app/notes/<id>; POST
  * /api/app/notes, PATCH /api/app/notes/<id>. `rev` doubles as the
- * etag — the editor's If-Match guard rides it. */
+ * etag — the editor's If-Match guard rides it. `stateRev` orders
+ * every accepted mutation (flags included) — it's the token stale
+ * responses are judged against; `rev` alone can't see a flag flip. */
 export interface AppNote {
 	id: string;
 	projectId: string | null;
 	title: string;
 	body: string;
 	rev: number;
+	stateRev: number;
 	lastSource: "app" | "agent" | "rewrite" | "append" | "restore";
 	pinnedAt: string | null;
 	archivedAt: string | null;
@@ -64,6 +67,7 @@ export interface AppNoteSummary {
 	projectId: string | null;
 	title: string;
 	rev: number;
+	stateRev: number;
 	pinnedAt: string | null;
 	archivedAt: string | null;
 	updatedAt: string;

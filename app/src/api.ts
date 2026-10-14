@@ -242,6 +242,12 @@ export async function patchNote(
 		body: payload,
 		...(keepalive ? { keepalive: true } : {}),
 	});
+	return decodeNoteMutation(res);
+}
+
+// Every note mutation that can conflict decodes the same way: a 409
+// carries the live note so the page's conflict bar never refetches.
+async function decodeNoteMutation(res: Response): Promise<{ data: AppNote; etag: string | null }> {
 	if (res.status === 409) {
 		const body = (await res.json()) as { note: AppNote };
 		throw new NoteConflictError(body.note);
@@ -299,14 +305,23 @@ export function getNoteVersion(
 	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}`);
 }
 
-export function restoreNoteVersion(
+// Restore is a content write — expectedRev is the caller's live rev,
+// sent as If-Match so a stale panel conflicts instead of rolling a
+// newer body back.
+export async function restoreNoteVersion(
 	token: string | null,
 	id: string,
 	rev: number,
+	expectedRev: number,
 ): Promise<AppNote> {
-	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}/restore`, {
+	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}/versions/${rev}/restore`, {
 		method: "POST",
+		headers: {
+			...(token === null ? {} : { authorization: `Bearer ${token}` }),
+			"if-match": `"${expectedRev}"`,
+		},
 	});
+	return (await decodeNoteMutation(res)).data;
 }
 
 export function getMessages(token: string | null, id: string): Promise<AppMessageList> {

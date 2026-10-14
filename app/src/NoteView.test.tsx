@@ -13,6 +13,7 @@ const note: AppNote = {
 	title: "Shopping",
 	body: "milk",
 	rev: 1,
+	stateRev: 1,
 	lastSource: "app",
 	pinnedAt: null,
 	archivedAt: null,

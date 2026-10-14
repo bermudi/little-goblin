@@ -827,11 +827,24 @@ export function startMemoryWorker(
 			: undefined;
 	const worker = new MemoryQueueWorker(queue, client, Date.now, observe);
 	const tick = opts.tickFn ?? ((signal) => worker.tick(signal));
+	// stop() aborts the in-flight request through this: the queue keeps
+	// the row for the next boot (same operation id, so a replay of an
+	// accepted-but-unanswered submit is the designed path), and a deploy
+	// never waits on a wedged memory service.
+	const stopping = new AbortController();
+	// Drains until idle — but yields between ticks to a stop or a pause.
+	// During an outage every due row fails and re-arms on its backoff,
+	// so "until idle" is one full pass per backoff level: a dozen rows at
+	// the default request timeout is minutes, which is exactly what a
+	// shutdown or a /forget must never wait on. A pause still joins the
+	// in-flight tick, which is the invariant it needs: no submit on the
+	// wire while the paused section reads the queue.
 	async function drain(): Promise<void> {
 		for (;;) {
+			if (stopped || pauses > 0) return;
 			let worked = false;
 			try {
-				worked = await tick();
+				worked = await tick(stopping.signal);
 			} catch (err) {
 				// A tick failure is a bug or a broken boundary, not an
 				// expected degradation — the queue's own HindsightError
@@ -854,6 +867,7 @@ export function startMemoryWorker(
 		async stop(): Promise<void> {
 			stopped = true;
 			clearInterval(timer);
+			stopping.abort();
 			if (draining) await draining;
 		},
 		tickNow(): Promise<boolean> {
@@ -863,8 +877,9 @@ export function startMemoryWorker(
 			pauses++;
 			try {
 				// drain() never rejects (tick failures are logged inside it),
-				// so this await settles when the drain runs dry — every
-				// in-flight submit has landed and flipped its row.
+				// and it yields to the pause after its current tick — so this
+				// await settles once the in-flight submit, if any, has landed
+				// and flipped its row.
 				if (draining) await draining;
 				return await fn();
 			} finally {

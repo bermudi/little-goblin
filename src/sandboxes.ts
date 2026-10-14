@@ -17,6 +17,7 @@
 import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
 import type { BoundedProc } from "./proc.ts";
@@ -75,6 +76,7 @@ function toRow(row: unknown): SandboxRow {
 export function openSandboxes(dbPath: string): SandboxStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS sandboxes (
 		conversation_id TEXT PRIMARY KEY,
 		container TEXT NOT NULL,

@@ -38,7 +38,10 @@ export interface MailWatcherDeps {
 export interface MailWatcher {
 	/** One scan now — also the test door; production runs it on a timer. */
 	tick(): Promise<void>;
-	stop(): void;
+	/** Stops the timer and returns the in-flight scan, if any, so
+	 *  shutdown can join it: a scan parked in a Gmail call must not come
+	 *  back after the drain and fire into a closed runtime. */
+	stop(): Promise<void>;
 }
 
 const TICK_MS = 5 * 60_000;
@@ -62,12 +65,23 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		// again (the delegation watcher's rule).
 		const work = (async () => {
 			const now = deps.now?.() ?? new Date();
-			const gmail = deps.reader();
+			// The reader and the filter query sit outside the per-program
+			// guard below; a throw here would otherwise leave scan() as a
+			// context-free unhandled rejection every tick.
+			let gmail: MailPoller | null;
+			let programs: Program[];
+			try {
+				gmail = deps.reader();
+				programs = gmail === null ? [] : deps.programs.withMailFilter();
+			} catch (err) {
+				log.error("mail scan failed", err, {});
+				return;
+			}
 			if (gmail === null) {
 				log.debug("mail watcher idle — mail is not configured");
 				return;
 			}
-			for (const program of deps.programs.withMailFilter()) {
+			for (const program of programs) {
 				try {
 					await check(deps, failing, gmail, program, now);
 				} catch (err) {
@@ -91,7 +105,13 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		void scan();
 	}, tickMs);
 	void scan(); // boot catch-up: the cursor persisted, missed mail fires
-	return { tick: scan, stop: () => clearInterval(timer) };
+	return {
+		tick: scan,
+		stop: () => {
+			clearInterval(timer);
+			return current ?? Promise.resolve();
+		},
+	};
 }
 
 async function check(

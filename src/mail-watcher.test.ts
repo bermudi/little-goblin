@@ -561,4 +561,68 @@ describe("mail watcher", () => {
 		expect(h.programs.get(p.id)!.lastRun).toBe(NOW.toISOString());
 		await closeSinks(h);
 	});
+
+	// The scan's own preamble — reader(), the filter query — sits outside
+	// the per-program guard. A throw there used to reject scan() with no
+	// program context and no "mail check failed" line, every tick.
+	test("a throwing reader is an error line, not a bare unhandled rejection", async () => {
+		const h = harness();
+		mailProgram(h);
+		const captured: string[] = [];
+		setLogFile("mail-watch-reader-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const w = startMailWatcher(
+			{
+				programs: h.programs,
+				reader: () => {
+					throw new Error("gws binary missing");
+				},
+				fire: async () => {},
+				notify: async () => {},
+				now: () => NOW,
+			},
+			60_000,
+		);
+		watchers.push(w);
+		try {
+			await w.tick();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(lines.some((l) => l.msg === "mail scan failed" && l.level === "error")).toBe(true);
+		expect(h.polls).toHaveLength(0);
+	});
+
+	test("stop() joins the in-flight scan so a late fire never lands after shutdown", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100", 0);
+		let release!: () => void;
+		const parked = new Promise<void>((resolve) => (release = resolve));
+		h.pollImpl = async () => {
+			await parked;
+			return { hits: [hit("m1")], historyId: "120" };
+		};
+		const w = start(h);
+		const scan = w.tick();
+		await Bun.sleep(5);
+		let joined = false;
+		const stopped = w.stop().then(() => {
+			joined = true;
+		});
+		await Bun.sleep(5);
+		// Still parked in the Gmail call: stop() must not have resolved.
+		expect(joined).toBe(false);
+		release();
+		await stopped;
+		await scan;
+		expect(joined).toBe(true);
+		// The fire that was in flight completed inside the join.
+		expect(h.fired).toHaveLength(1);
+		await closeSinks(h);
+	});
 });

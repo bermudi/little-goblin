@@ -837,13 +837,14 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 	const drifted: string[] = [];
 	const liveSkill = join(skillsDir, skill);
 	// lstat, not existsSync: a broken link is still a link and must
-	// conflict like any other, not count as "not there". Any lstat
-	// failure means the root is unreachable — same branch as missing.
+	// conflict like any other, not count as "not there". Only ENOENT is
+	// "not there" — an unreadable root (EACCES, ELOOP, EIO) is a real
+	// failure, not a brand-new skill.
 	let rootStats: Stats | undefined;
 	try {
 		rootStats = lstatSync(liveSkill);
-	} catch {
-		// Not there at all.
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (rootStats === undefined) {
 		// Not in the manifest either → brand-new skill, nothing to drift.
@@ -907,8 +908,8 @@ function proposeSkill(
 	let targetStats: Stats | undefined;
 	try {
 		targetStats = lstatSync(target);
-	} catch {
-		// Not there at all.
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (targetStats?.isSymbolicLink()) {
 		log.warn("reviewer proposal skipped — proposal target is a symlink", {

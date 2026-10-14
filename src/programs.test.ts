@@ -417,6 +417,35 @@ describe("programs store", () => {
 		expect(s.withMailFilter()).toHaveLength(1);
 		s.close();
 	});
+
+	// The two timer-driven scans tolerate a row the schema rejects: it is
+	// an error line per scan, never a throw that takes every other
+	// program's fire down with it (the scheduler scan runs from a
+	// synchronous interval — a throw there is a process exit and a
+	// restart loop on the same row).
+	test("due() and withMailFilter() skip an undecodable row and keep the rest", () => {
+		const path = tmpdb();
+		const s = openPrograms(path);
+		const good = s.create(
+			{ name: "good", cron: "* * * * *", charter: "c", address: ADDRESS },
+			new Date(NOW.getTime() - 10 * 60_000),
+		);
+		s.setMailFilter(good.id, "from:good");
+		const bad = s.create(
+			{ name: "bad", cron: "* * * * *", charter: "c", address: ADDRESS },
+			new Date(NOW.getTime() - 10 * 60_000),
+		);
+		s.setMailFilter(bad.id, "from:bad");
+		// A hand edit (or a column from another version) the schema rejects.
+		const db = new Database(path);
+		db.run("UPDATE programs SET chat_id = 'not a number' WHERE id = ?", [bad.id]);
+		db.close();
+		expect(s.due(NOW).map((p) => p.id)).toEqual([good.id]);
+		expect(s.withMailFilter().map((p) => p.id)).toEqual([good.id]);
+		// Point reads stay strict — the caller fails loud on the bad row.
+		expect(() => s.get(bad.id)).toThrow();
+		s.close();
+	});
 });
 
 describe("mail trigger", () => {

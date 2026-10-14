@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
 import { MemoryDestinations } from "./memory-destinations.ts";
@@ -571,6 +572,13 @@ export function openStore(dbPath: string): ConversationStore {
 	// but host power loss could discard an acked commit — FULL syncs
 	// before we return.
 	db.run("PRAGMA synchronous = FULL");
+	// The default busy handler is none: an operator's sqlite3 session or a
+	// checkpoint holding the write lock would fail the next insert on the
+	// spot — the inbox insert that precedes the Telegram ack included. The
+	// wait is bounded short: five connections in this one thread share the
+	// file, so a nested cross-connection write (a bug) must still surface
+	// within seconds, not wedge the event loop.
+	db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.run("PRAGMA foreign_keys = ON");
 	db.run(`
 		CREATE TABLE IF NOT EXISTS conversations (

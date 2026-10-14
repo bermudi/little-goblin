@@ -678,4 +678,97 @@ describe("worker timer", () => {
 			server.stop(true);
 		}
 	});
+
+	// Shutdown during a memory outage: drain() used to run "until idle",
+	// which during an outage is one full pass of every due row at the
+	// request timeout — and index.ts awaited that before its drain budget
+	// even started, so a wedged Hindsight held every deploy until systemd
+	// SIGKILLed the process. stop() now aborts the in-flight request and
+	// the loop yields; the rows stay pending for the next boot.
+	test("stop() during an outage returns promptly and keeps the rows", async () => {
+		let requests = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async () => {
+				requests++;
+				await Bun.sleep(10_000); // never answers inside the client timeout
+				return new Response("late", { status: 500 });
+			},
+		});
+		try {
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+				timeoutMs: 2_000,
+			});
+			const queue = new MemoryQueue(memdb());
+			const ids: string[] = [];
+			for (let i = 0; i < 4; i++) {
+				ids.push(
+					queue.enqueue(client.target, {
+						id: `exchange-${i}`,
+						conversationId: "dm:1",
+						sourceIds: [`u${i}`, `a${i}`],
+						timestamp: "2026-09-27T10:00:00Z",
+						content: `exchange ${i}`,
+					}),
+				);
+			}
+			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
+			await Bun.sleep(50); // the timer's drain is parked in its first submit
+			expect(requests).toBe(1);
+			const started = Date.now();
+			await w.stop();
+			// Well inside one request timeout: the abort cut the wait short,
+			// and no second row was attempted after the stop.
+			expect(Date.now() - started).toBeLessThan(1_000);
+			expect(requests).toBe(1);
+			for (const id of ids) expect(queue.get(id)?.state).toBe("pending");
+			// An aborted submit is not a failed attempt — no backoff consumed.
+			expect(queue.get(ids[0]!)?.attempts).toBe(0);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	test("withWorkerPaused joins the in-flight tick, not the whole outage backlog", async () => {
+		let requests = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async () => {
+				requests++;
+				await Bun.sleep(150);
+				return new Response("unavailable", { status: 503 });
+			},
+		});
+		try {
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
+			const queue = new MemoryQueue(memdb());
+			for (let i = 0; i < 6; i++) {
+				queue.enqueue(client.target, {
+					id: `exchange-${i}`,
+					conversationId: "dm:1",
+					sourceIds: [`u${i}`, `a${i}`],
+					timestamp: "2026-09-27T10:00:00Z",
+					content: `exchange ${i}`,
+				});
+			}
+			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
+			await Bun.sleep(50); // first submit on the wire
+			const started = Date.now();
+			const seen = await w.withWorkerPaused(async () => requests);
+			// /forget's quiesce waits for the one request in flight — never
+			// for the six-row pass the outage would otherwise run.
+			expect(Date.now() - started).toBeLessThan(600);
+			expect(seen).toBeLessThanOrEqual(2);
+			await w.stop();
+		} finally {
+			server.stop(true);
+		}
+	});
 });

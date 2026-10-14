@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
@@ -10,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { durableWriteFile } from "./durable.ts";
+import { durableWriteBytes, durableWriteFile } from "./durable.ts";
 
 const dirs: string[] = [];
 
@@ -62,5 +63,44 @@ describe("durableWriteFile", () => {
 
 		expect(readFileSync(path, "utf8")).toBe("still intact");
 		expect(readdirSync(dir).sort()).toEqual(["target"]);
+	});
+});
+
+describe("durableWriteFile — mode and tmp hygiene", () => {
+	test("preserves a group-writable mode the umask would otherwise strip", () => {
+		const dir = useDir();
+		const path = join(dir, "shared");
+		writeFileSync(path, "old");
+		chmodSync(path, 0o664);
+		const prior = process.umask(0o022);
+		try {
+			durableWriteFile(path, "new");
+		} finally {
+			process.umask(prior);
+		}
+		expect(readFileSync(path, "utf8")).toBe("new");
+		// open(O_CREAT, 0o664) under umask 022 yields 0o644 — "preserving the
+		// existing mode" has to mean the exact bits, not the masked ones.
+		expect(statSync(path).mode & 0o777).toBe(0o664);
+	});
+
+	test("a failed rename leaves no tmp file behind", () => {
+		const dir = useDir();
+		// A directory squatting on the target name makes rename fail (EISDIR)
+		// after the tmp was fully written.
+		const path = join(dir, "target");
+		mkdirSync(path);
+		expect(() => durableWriteFile(path, "payload")).toThrow();
+		expect(readdirSync(dir)).toEqual(["target"]);
+	});
+
+	test("times stamp the new inode and survive the write", () => {
+		const dir = useDir();
+		const path = join(dir, "archive");
+		writeFileSync(path, "old");
+		const mtime = new Date("2020-01-02T03:04:05Z");
+		durableWriteBytes(path, Buffer.from("copy"), { times: { atime: mtime, mtime } });
+		expect(readFileSync(path, "utf8")).toBe("copy");
+		expect(statSync(path).mtimeMs).toBe(mtime.getTime());
 	});
 });

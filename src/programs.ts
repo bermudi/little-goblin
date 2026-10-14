@@ -19,6 +19,7 @@ import { Database } from "bun:sqlite";
 import { CronExpression, CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
 export interface Program {
 	id: number;
@@ -228,6 +229,26 @@ const programSchema = z.object({
 	next_run: z.string().nullable(),
 });
 
+// The two timer-driven scans decode row by row: one row the schema
+// rejects (drift between versions, a hand edit) must cost that row an
+// error line per tick, not every other program its fire — the scheduler
+// scan is a synchronous interval callback, so a throw there is an
+// uncaught exception and a restart loop on the same row.
+function decodeScan(rows: unknown[], scan: string): Program[] {
+	const out: Program[] = [];
+	for (const row of rows) {
+		try {
+			out.push(rowToProgram(row));
+		} catch (err) {
+			log.error("program row undecodable — skipped this scan", err, {
+				scan,
+				id: (row as { id?: unknown } | null)?.id,
+			});
+		}
+	}
+	return out;
+}
+
 function rowToProgram(row: unknown): Program {
 	const parsed = programSchema.parse(row);
 	return {
@@ -255,6 +276,7 @@ function rowToProgram(row: unknown): Program {
 export function openPrograms(dbPath: string): ProgramsStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	// Check, create, and purge in one transaction: a failed copy (or a
 	// crash) must not leave a half-purged database that prevents retry.
 	// The copy runs only when the programs table is being created — an
@@ -453,7 +475,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			return qList.all().map(rowToProgram);
 		},
 		due(now) {
-			return qDue.all(now.toISOString()).map(rowToProgram);
+			return decodeScan(qDue.all(now.toISOString()), "due");
 		},
 		markRan(id, now) {
 			// The program row is the source of truth for cron — read it fresh
@@ -505,7 +527,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			);
 		},
 		withMailFilter() {
-			return qWithMail.all().map(rowToProgram);
+			return decodeScan(qWithMail.all(), "mail");
 		},
 		findByHook(hash) {
 			const row = qByHook.get(hash);

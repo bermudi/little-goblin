@@ -437,3 +437,118 @@ test("deletingCount spans every destination, separately from the current bank", 
 	store.memoryQueue.confirmDeleted("exchange-2", old.target);
 	expect(store.memoryQueue.deletingCount()).toBe(1);
 });
+
+// The cancel race: "/memory off" (and a project switch-off, a
+// conversation delete) purges pending rows while the worker may have
+// one on the wire. Deleting that row strands the document remotely with
+// nothing local to forget it by; the queue defers the cancel instead.
+test("a cancel during an in-flight submit keeps the accepted row tracked", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	let onWire!: () => void;
+	const wired = new Promise<void>((resolve) => (onWire = resolve));
+	let accepted = 0;
+	const client = service(async (request) => {
+		const body = (await request.json()) as { operation_id: string };
+		onWire();
+		await gate;
+		accepted++;
+		return Response.json({
+			success: true,
+			bank_id: "g",
+			items_count: 1,
+			async: true,
+			operation_id: body.operation_id,
+		});
+	});
+	const store = storeAt(database());
+	const inflightId = enqueue(store, client);
+	// A second pending row for the same topic — the ordinary purge.
+	store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
+	const worker = new MemoryQueueWorker(store.memoryQueue, client);
+	const tick = worker.tick();
+	await wired;
+	// The operator excludes the topic while the request is on the wire.
+	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
+	expect(store.memoryQueue.get(inflightId)?.state).toBe("pending");
+	release();
+	expect(await tick).toBe(true);
+	expect(accepted).toBe(1);
+	// Accepted remotely → tracked through completion, forgettable by id.
+	expect(store.memoryQueue.get(inflightId)?.state).toBe("submitted");
+	expect(store.memoryQueue.documentDestinations(doc.id)).toEqual([
+		{ target: client.target, inflight: [{ operationId: inflightId, state: "submitted" }] },
+	]);
+	expect(store.memoryQueue.next(client.target, Date.now() + 10_000)?.operation_id).toBe(inflightId);
+});
+
+test("a cancel during an in-flight submit that fails unsent finishes the purge", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	let onWire!: () => void;
+	const wired = new Promise<void>((resolve) => (onWire = resolve));
+	let requests = 0;
+	const client = service(async () => {
+		requests++;
+		onWire();
+		await gate;
+		return new Response("unavailable", { status: 503 });
+	});
+	const store = storeAt(database());
+	const inflightId = enqueue(store, client);
+	const worker = new MemoryQueueWorker(store.memoryQueue, client);
+	const tick = worker.tick();
+	await wired;
+	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(0);
+	release();
+	expect(await tick).toBe(true);
+	// Retryable failure → the row would come due again behind the
+	// exclusion; the deferred cancel drops it instead.
+	expect(store.memoryQueue.get(inflightId)).toBeNull();
+	expect(await worker.tick()).toBe(false);
+	expect(requests).toBe(1);
+});
+
+// A row the decoder rejects must not wedge the drain at that row forever
+// (every tick: same ORDER BY, same row, same throw) nor turn every
+// cancelConversation into a throw after the exclusion already applied.
+test("an undecodable row is quarantined as blocked, not a permanent drain stall", async () => {
+	let opId = "";
+	const client = service(async (request) => {
+		const body = (await request.json()) as { operation_id: string };
+		opId = body.operation_id;
+		return Response.json({
+			success: true,
+			bank_id: "g",
+			items_count: 1,
+			async: true,
+			operation_id: opId,
+		});
+	});
+	const store = storeAt(database());
+	// An earlier rowid than the good row: schema drift or a hand edit left
+	// a payload the document schema rejects.
+	store.db.run(
+		"INSERT INTO memory_outbox (operation_id, target, document_id, payload) VALUES (?, ?, ?, ?)",
+		["7f1d2e3c-0000-4000-8000-000000000001", client.target, "poison", '{"not":"a document"}'],
+	);
+	const goodId = enqueue(store, client);
+	const worker = new MemoryQueueWorker(store.memoryQueue, client);
+	expect(await worker.tick()).toBe(true);
+	expect(store.memoryQueue.get(goodId)?.state).toBe("submitted");
+	const counts = store.memoryQueue.counts(client.target);
+	expect(counts.blocked).toBe(1);
+	expect(counts.pending).toBe(0);
+	expect(store.memoryQueue.blockedDetail(client.target)).toEqual([
+		{ document: "poison", error: expect.stringContaining("undecodable row"), attempts: 0 },
+	]);
+	// The poison row sits in another topic's purge path too — it must not
+	// stop /memory off from cancelling this topic's rows.
+	store.db.run(
+		"INSERT INTO memory_outbox (operation_id, target, document_id, payload) VALUES (?, ?, ?, ?)",
+		["7f1d2e3c-0000-4000-8000-000000000002", client.target, "poison-2", "{not json"],
+	);
+	store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
+	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
+	expect(store.memoryQueue.counts(client.target).blocked).toBe(2);
+});

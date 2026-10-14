@@ -173,6 +173,36 @@ return rs.map((r) => (r.status === "fulfilled" ? "ok" : r.reason.message)).join(
 	expect(out.calls).toHaveLength(3);
 });
 
+// A script that catches the rejection and retries re-enters the over-cap
+// branch per attempt — the warn must mark the first occurrence only, or
+// a retry loop writes one JSONL line per attempt until the deadline.
+test("over-cap rejections land every attempt but log one warn per script", async () => {
+	const target = join(home, "overcap.log");
+	setLogFile(target);
+	try {
+		const tools = composed({ bash: counter(() => "ok") }, 1);
+		const out = await exec(scriptToolOf(tools), {
+			code: `let msg = "";
+for (let i = 0; i < 6; i++) {
+	try { await tools.bash({}); msg = "ran"; } catch (e) { msg = e.message; }
+}
+return msg;`,
+		});
+		expect(out.text).toContain("call limit reached (1 per script)");
+		// Attempt 1 is under the cap and runs; attempts 2–6 never happened —
+		// not run, not recorded.
+		expect(out.calls).toHaveLength(1);
+		const warns = readFileSync(target, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as { msg?: string; error?: string })
+			.filter((l) => l.msg === "tool execute failed" && (l.error ?? "").startsWith("call limit reached"));
+		expect(warns).toHaveLength(1);
+	} finally {
+		setLogFile(null);
+	}
+});
+
 test("at most eight nested calls are in flight at once", async () => {
 	let inflight = 0;
 	let maxInflight = 0;

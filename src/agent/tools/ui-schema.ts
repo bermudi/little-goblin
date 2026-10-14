@@ -147,7 +147,7 @@ const tabsBlock = z.object({
 		.array(
 			z.object({
 				label: z.string().describe("Tab label"),
-				blocks: z.array(uiLeafSchema).min(1).describe("Leaves shown on this tab"),
+				blocks: z.array(uiLeafSchema).min(1).max(10).describe("Leaves shown on this tab"),
 			}),
 		)
 		.min(2)
@@ -161,7 +161,7 @@ const columnsBlock = z.object({
 		.array(
 			z.object({
 				title: z.string().optional().describe("Column heading"),
-				blocks: z.array(uiLeafSchema).min(1).describe("Leaves in this column"),
+				blocks: z.array(uiLeafSchema).min(1).max(10).describe("Leaves in this column"),
 			}),
 		)
 		.min(2)

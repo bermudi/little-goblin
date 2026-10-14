@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { authDefaults, type Config, parseConfig } from "../../src/config.ts";
+import { authDefaults, type Config, memoryConfigSchema, parseConfig } from "../../src/config.ts";
 import {
 	bodyFromDraft,
 	displayLevel,
@@ -111,13 +111,17 @@ describe("draftFromConfig", () => {
 	test("populated optional blocks keep their values", () => {
 		const c = baseConfig();
 		c.tts = { kind: "edge", voice: "en-US-AriaNeural", rate: "+5%", voices: ["de-DE-KatjaNeural"] };
-		c.memory = {
+		c.memory = memoryConfigSchema.parse({
 			baseUrl: "http://127.0.0.1:8888",
 			bankId: "goblin",
 			budget: "mid",
 			maxTokens: 1024,
 			recallTimeoutMs: 2000,
-		};
+			searchMaxTokens: 6000,
+			searchBudget: "mid",
+			reflectTimeoutMs: 90_000,
+			minScores: { semantic: 0.4 },
+		});
 		c.search = [{ kind: "brave", auth: "BRAVE_KEY" }, { kind: "ddg" }];
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toEqual({
@@ -137,6 +141,13 @@ describe("draftFromConfig", () => {
 			{ kind: "brave", auth: "BRAVE_KEY" },
 			{ kind: "ddg", auth: "" },
 		]);
+		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).memory).toMatchObject({
+			searchMaxTokens: 6000,
+			searchBudget: "mid",
+			reflectTimeoutMs: 90_000,
+			minScores: { semantic: 0.4 },
+			preferObservations: true,
+		});
 	});
 });
 

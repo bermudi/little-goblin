@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
-import type { Config } from "../config.ts";
+import { memoryConfigSchema, type Config } from "../config.ts";
 import {
 	accessGate,
 	applyCommands,
@@ -350,13 +350,13 @@ describe("handleMessage", () => {
 	test("an allowed user's /memory on pins the lane guest before the command runs", () => {
 		const h = routerHarness({
 			...baseConfig,
-			memory: {
+			memory: memoryConfigSchema.parse({
 				baseUrl: "http://127.0.0.1:1",
 				bankId: "g",
 				recallTimeoutMs: 500,
 				maxTokens: 256,
 				budget: "low" as const,
-			},
+			}),
 		});
 		h.env.deps.memory = {
 			client: new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }),

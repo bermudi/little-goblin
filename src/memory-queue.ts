@@ -11,6 +11,7 @@ import {
 	type MemoryDocument,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
+import { screenMemoryText } from "./memory-screen.ts";
 
 // The destination-identity vocabulary lives in hindsight.ts; this local
 // alias keeps the queue's validation reads the same as before.
@@ -86,7 +87,11 @@ export class MemoryQueue {
 	// content or resets a terminal operation. Caller logs only after committing.
 	enqueue(target: string, document: MemoryDocument): string {
 		targetSchema.parse(target);
-		const doc = memoryDocumentSchema.parse(document);
+		const parsed = memoryDocumentSchema.parse(document);
+		const doc = memoryDocumentSchema.parse({
+			...parsed,
+			content: screenMemoryText(parsed.content, "retain-queue"),
+		});
 		const payload = JSON.stringify(doc);
 		const existing = this.db
 			.query<{ operation_id: string; payload: string }, [string, string]>(

@@ -440,10 +440,10 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the eighteen tools (read, write, edit, bash, speak,
+    tools/          the tools (read, write, edit, bash, speak,
                     transcribe, vision, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
-                    bash), send_file, memory_search, search, fetch,
+                    bash), send_file, memory_search, memory_reflect, search, fetch,
                     history_search, sandbox, script, ui)
   http/             the HTTP doors: /t/ and /app/ serve the built
                     client (app/dist) — the Telegram mini app and the

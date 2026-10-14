@@ -5,11 +5,16 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, nineteen:
+Hand-rolled, zod-validated, twenty:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
 `vision` `generate_image` `program` `delegate` `mail` `send_file`
-`memory_search` `search` `fetch` `history_search` `sandbox` `script` `ui`
+`memory_search` `memory_reflect` `search` `fetch` `history_search` `sandbox` `script` `ui`
+
+`memory_reflect` is an on-demand Hindsight investigation with synthesis and
+supporting evidence, not automatic recall or an autonomous turn loop. It obeys
+memory exclusion and cancellation, uses its own bounded timeout, and stays
+out of the script tool's callable set because it invokes a model.
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -152,7 +157,7 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
   `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
   sink), `mail` (per-send human approval), `delegate` `program` (spawn
-  agents / standing work), `vision` (a model call). Excluding writes
+  agents / standing work), `vision` `memory_reflect` (model calls). Excluding writes
   would be theater — `bash` writes.
 - **Nested calls are real calls.** Each one is zod-validated against
   the tool's own input schema (the SDK validates direct calls; nothing

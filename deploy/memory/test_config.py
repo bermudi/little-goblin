@@ -9,6 +9,12 @@ ROOT = Path(__file__).parent
 
 
 class MemoryAssetsTest(unittest.TestCase):
+    def test_hindsight_upgrade_pin_matches_installer(self) -> None:
+        from install import API_IMAGE
+        text = (ROOT / "goblin-memory-api.container").read_text()
+        self.assertIn(f"Image={API_IMAGE}\n", text)
+        self.assertIn(":1.0.0-slim@sha256:", API_IMAGE)
+
     def setUp(self) -> None:
         self.env = dict(FIXED)
         self.env.update({

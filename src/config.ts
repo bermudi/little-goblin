@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
-import { hindsightConnectionSchema } from "./hindsight.ts";
+import { hindsightConnectionSchema, minScoresSchema } from "./hindsight.ts";
 import { log } from "./log.ts";
 
 // ---------- paths ----------
@@ -324,8 +324,16 @@ export const memoryConfigSchema = z.object({
 	bankId: hindsightConnectionSchema.shape.bankId,
 	auth: z.string().min(1).optional(),
 	recallTimeoutMs: z.number().int().min(100).max(10_000).default(5000),
-	maxTokens: z.number().int().min(1).max(8192).default(1024),
-	budget: z.enum(["low", "mid", "high"]).default("low"),
+	maxTokens: z.number().int().min(1).max(8192).default(2048),
+	budget: z.enum(["low", "mid", "high"]).default("mid"),
+	preferObservations: z.boolean().default(true),
+	minScores: minScoresSchema.default({ semantic: 0.3 }),
+	searchMaxTokens: z.number().int().min(1).max(8192).default(4096),
+	searchBudget: z.enum(["low", "mid", "high"]).default("high"),
+	searchMinScores: minScoresSchema.default({}),
+	reflectMaxTokens: z.number().int().min(1).max(8192).default(4096),
+	reflectBudget: z.enum(["low", "mid", "high"]).default("high"),
+	reflectTimeoutMs: z.number().int().min(100).max(300_000).default(120_000),
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 

@@ -443,8 +443,15 @@ async function boot() {
 					memoryClient && memoryBootConfig
 						? {
 								client: memoryClient,
-								maxTokens: memoryBootConfig.maxTokens,
-								budget: memoryBootConfig.budget,
+								maxTokens: memoryBootConfig.searchMaxTokens,
+								budget: memoryBootConfig.searchBudget,
+								minScores: memoryBootConfig.searchMinScores,
+								preferObservations: memoryBootConfig.preferObservations,
+								reflection: {
+									maxTokens: memoryBootConfig.reflectMaxTokens,
+									budget: memoryBootConfig.reflectBudget,
+									timeoutMs: memoryBootConfig.reflectTimeoutMs,
+								},
 								isExcluded: () => conv.memoryExcluded,
 								noteRecall,
 							}

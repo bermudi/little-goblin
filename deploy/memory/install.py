@@ -101,8 +101,8 @@ DB_IMAGE = (
     "@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966"
 )
 API_IMAGE = (
-    "ghcr.io/vectorize-io/hindsight-api:0.10.0-slim"
-    "@sha256:bc3082ccb514fee1a7f7d66da308ba2c2018e2ea2c739d2341c993e3a3bd91b9"
+    "ghcr.io/vectorize-io/hindsight-api:1.0.0-slim"
+    "@sha256:1e889b5f44a3546a40765d084162cf0807c0b08c97fb29f64d0705597f1ef3b6"
 )
 BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 
@@ -1099,7 +1099,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.reconfigure and args.no_start:
         parser.error("--reconfigure restarts the API by design; --no-start contradicts it")
 
-    print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
+    print("Goblin memory stack installer — Hindsight 1.0.0-slim + PostgreSQL 17")
     preflight()
 
     if args.reconfigure:

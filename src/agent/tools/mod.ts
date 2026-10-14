@@ -4,7 +4,6 @@
 // needs it.
 
 import type { ToolSet } from "ai";
-import type { HindsightClient } from "../../hindsight.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 import { programTool, type ProgramToolDeps } from "./program.ts";
 import type { SpeechFile } from "../transcribe.ts";
@@ -25,6 +24,8 @@ import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
+import { memoryReflectTool } from "./memory-reflect.ts";
+import type { MemorySearchDeps } from "./memory.ts";
 import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";
 
@@ -43,12 +44,12 @@ export interface FileToolDeps {
 	deliver(file: OutgoingFile): Promise<void>;
 }
 
-export interface MemoryToolDeps {
-	client: HindsightClient;
-	maxTokens: number;
-	budget: "low" | "mid" | "high";
-	isExcluded: () => boolean;
-	noteRecall: (ok: boolean) => void;
+export interface MemoryToolDeps extends MemorySearchDeps {
+	reflection?: {
+		maxTokens: number;
+		budget: "low" | "mid" | "high";
+		timeoutMs: number;
+	};
 }
 
 export interface TranscribeToolDeps {
@@ -140,7 +141,15 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// in this dep tree (reads ride the goblin-mail wrapper via bash).
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
-		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
+		...(memory
+			? {
+					memory_search: memorySearchTool(memory),
+					memory_reflect: memoryReflectTool({
+						...memory,
+						...(memory.reflection ?? { maxTokens: 4096, budget: "high", timeoutMs: 120_000 }),
+					}),
+				}
+			: {}),
 		// Fetch is always in the set (local extraction needs no config);
 		// search rides its config block. This runs per turn against
 		// configRef, so a mini-app save — the one writer that swaps the

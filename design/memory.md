@@ -25,7 +25,7 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    bankId, auth?, recallTimeoutMs?, maxTokens?, budget?}`; absent =
    exact current behavior. `auth` names an `auth.jsonl` secret for the
    Bearer token (loopback needs none). Recall defaults: 5000ms timeout,
-   1024 max tokens, `low` budget — turns must not wait on memory.
+   2048 max tokens, `mid` budget — the timeout still bounds waiting.
    (Timeout raised 2026-10-02: measured cold recall is ~2.3–2.7s — the
    remote embedding leg re-colds within ~8s of idle, so every chat turn
    pays it; 2s silently disabled recall on every cold turn rather than
@@ -290,17 +290,50 @@ snapshot and recent conversational context. No additional query-generation
 model initially. Recall has explicit time/search/output bounds and source
 references. Also expose a validated memory-search tool for deeper searches.
 
-**Reflect stays declined (reaffirmed 2026-10-06, after revisit).** The
-original one-line rationale undersold the decision. Hindsight `reflect` is
-not consolidation — it is an agentic reasoning loop inside the service:
-a question in, a disposition-shaped prose answer out, up to ten tool
-iterations under the bank's mission, disposition traits, and directives.
-Goblin declines it for the same reason it declines a replacement turn
-loop: Goblin owns reasoning, and recalled text must stay dated evidence,
-not a second engine's conclusions. The feature that makes reflect
-attractive elsewhere — curated precomputed answers ("mental models") —
-is already Goblin's workspace-file territory (SOUL.md/AGENTS.md), by
-design.
+**On-demand reflection is approved.** `memory_reflect` asks the configured
+Hindsight service to investigate cross-session patterns. It is a bounded
+memory specialist, not a replacement turn loop: Goblin still owns the final
+answer. Automatic context injection continues to use recall. Reflection
+requests supporting facts (`include: {facts: {}}`, the observed 0.10.0
+contract), returns synthesis separately from dated evidence, and identifies
+mental models and directives that shaped it. Missing evidence envelopes are
+protocol failures, not successful text-only answers. Bank disposition and
+directives are service-side interpretation, never new Goblin instructions.
+No new provider/model, bank creation, automatic reflection, or instruction-file
+generation is introduced. The existing service's configured LLM does the work.
+
+**Memory quality and safety.** Completed exchanges retain their full text
+rather than silently taking a 2,000-character prefix. Hindsight owns extraction
+chunking; an explicit one-million-character ceiling rejects oversized
+retention loudly without dropping the completed response. Context remains a
+bounded, labelled aid, not fresh evidence. Recognizable credentials are
+redacted before the durable outbox and before recall, search, reflection, and
+legacy queued submissions leave the process. Pattern screening is not a
+secrecy guarantee, does not rewrite original history, and is not retroactive
+cleanup of old outbox rows or remote storage.
+
+Automatic recall defaults to `mid` / 2048 tokens; explicit search has separate
+`searchBudget` / `searchMaxTokens` defaults of `high` / 4096. Reflection has
+`reflectBudget` / `reflectMaxTokens` / `reflectTimeoutMs` defaults of `high` /
+4096 / 120000. Explicitly configured old recall bounds remain respected.
+`preferObservations` defaults true without excluding fresh raw facts.
+`minScores` defaults to a conservative semantic cosine floor of 0.3 for
+automatic injection, while `searchMinScores` defaults empty so deliberate
+relational searches may use graph-only results. The floor is an initial
+tunable policy, not an empirically calibrated quality claim. Stage scores are
+validated and configured floors also apply client-side; a missing floored
+stage cannot pass. Recall rendering fits whole facts into a bounded character
+envelope derived from the requested token budget, with explicit omission
+counts rather than clipping qualifications. This envelope is a sizing
+estimate, not a model-specific tokenizer.
+
+Borrowed mechanisms: the catalog-pinned Hindsight Hermes plugin 1.2.2
+(`f843f173bb41f001e322cc83c917371639e47fbf`,
+`hindsight-integrations/hermes/__init__.py`) supplies observation preference,
+score-floor enforcement and optional memory investigation; current Hermes
+`agent/memory_manager.py` supplies pre-provider credential screening. Keep
+Goblin's current-turn recall, transaction-coupled durable outbox, exclusions,
+forgetting protocol, and persisted request-prefix snapshots.
 
 **Consolidation is live, and it is Hindsight's, not Goblin's (recorded
 2026-10-06; it had never been ruled on).** The deployed bank runs
@@ -315,10 +348,9 @@ including `observation` — so observations are already recall evidence
 under the existing rules: dated, sourced, outranked by current operator
 statements. Goblin's own projection stays append-only; the converging
 layer belongs to the service. Unresolved follow-ups from the revisit:
-(1) `prefer_observations` (recall flag, default false) would drop raw
+(1) `prefer_observations` (service default false, Goblin default true) drops raw
 facts superseded by a returned observation and backfill the freed token
-budget — recommended, but it changes what the model sees, so it waits
-for an explicit operator decision; (2) `/forget delete` removes source
+budget under the approved memory-quality ruling above; (2) `/forget delete` removes source
 documents, but whether delete-triggered consolidation reconciles the
 observations derived from those facts is unverified — Goblin's code has
 no observation handling anywhere (the word appears in no src file), so

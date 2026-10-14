@@ -6,7 +6,7 @@ import type { LanguageModel, UIMessage } from "ai";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./hindsight.ts";
-import type { MemoryConfig } from "./config.ts";
+import { memoryConfigSchema } from "./config.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 
 let dirs: string[] = [];
@@ -105,13 +105,14 @@ class RecordingSink implements TurnSink {
 	}
 }
 
-const memConfig: MemoryConfig = {
+const memConfig = memoryConfigSchema.parse({
 	baseUrl: "http://127.0.0.1:1",
 	bankId: "g",
 	recallTimeoutMs: 1000,
 	maxTokens: 256,
 	budget: "low",
-};
+	minScores: {},
+});
 
 interface Harness {
 	recallCount(): number;

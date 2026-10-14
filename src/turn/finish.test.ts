@@ -347,6 +347,12 @@ describe("retentionOpt", () => {
 	const reply = msg("a2", "assistant", text("done"));
 	const src = source({ userTexts: ["run it"], userIds: ["u2"] });
 
+	test("oversized retention never drops the completed reply", () => {
+		const large = source({ userTexts: ["x".repeat(1_000_000)], userIds: ["u2"] });
+		expect(retentionOpt(conv(), memDeps(), 3, large, reply)).toBeNull();
+		expect(reply.parts).toEqual([text("done")]);
+	});
+
 	test("no memory deps, no anchor, or an excluded conversation → history alone", () => {
 		expect(retentionOpt(conv(), undefined, 3, src, reply)).toBeNull();
 		expect(retentionOpt(conv(), memDeps(), null, src, reply)).toBeNull();

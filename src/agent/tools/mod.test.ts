@@ -66,7 +66,7 @@ describe("toolNames ↔ makeTools", () => {
 										...(image ? ["generate_image"] : []),
 										...(program ? ["program"] : []),
 										...(file ? ["send_file"] : []),
-										...(memory ? ["memory_search"] : []),
+										...(memory ? ["memory_search", "memory_reflect"] : []),
 									]);
 								});
 							}

@@ -1463,7 +1463,7 @@ export function SettingsView({
 													baseUrl: "",
 													bankId: "",
 													auth: "",
-													budget: "low",
+													budget: "mid",
 													tokens: "",
 													timeout: "",
 												},
@@ -1518,7 +1518,7 @@ export function SettingsView({
 								<Row label="Recall budget" col>
 									<Seg
 										options={["low", "mid", "high"]}
-										value={draft.memory.budget || "low"}
+										value={draft.memory.budget || "mid"}
 										ariaLabel="Recall budget"
 										onChange={(v) =>
 											setDraft((d) => ({

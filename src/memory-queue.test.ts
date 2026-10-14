@@ -38,6 +38,18 @@ const doc: MemoryDocument = {
 	timestamp: "2026-09-22T10:00:00Z",
 	content: "Operator: Quiet please.\nGoblin: Understood.",
 };
+
+test("screened queue payloads are revalidated before persistence", () => {
+	const store = storeAt(database());
+	const target = "f".repeat(64);
+	expect(() =>
+		store.memoryQueue.enqueue(target, {
+			...doc,
+			content: "password=x\n".repeat(80_000),
+		}),
+	).toThrow();
+	expect(store.memoryQueue.counts(target).pending).toBe(0);
+});
 const reply: UIMessage = {
 	id: "assistant-1",
 	role: "assistant",

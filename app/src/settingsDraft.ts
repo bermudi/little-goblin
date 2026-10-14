@@ -7,6 +7,7 @@
 
 import type {
 	Config,
+	MemoryConfig,
 	ProviderConfig,
 	ThinkingLevel,
 	transcriptionKinds,
@@ -184,6 +185,10 @@ export interface MemDraft {
 	budget: string;
 	tokens: string;
 	timeout: string;
+	policy?: Omit<
+		MemoryConfig,
+		"baseUrl" | "bankId" | "auth" | "budget" | "maxTokens" | "recallTimeoutMs"
+	>;
 }
 
 // The editor's mirror of the config. null blocks mean "unset" — saved
@@ -288,9 +293,19 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 					baseUrl: c.memory.baseUrl || "",
 					bankId: c.memory.bankId || "",
 					auth: c.memory.auth || "",
-					budget: c.memory.budget || "low",
+					budget: c.memory.budget || "mid",
 					tokens: c.memory.maxTokens !== undefined ? String(c.memory.maxTokens) : "",
 					timeout: c.memory.recallTimeoutMs !== undefined ? String(c.memory.recallTimeoutMs) : "",
+					policy: {
+						preferObservations: c.memory.preferObservations ?? true,
+						minScores: c.memory.minScores ?? { semantic: 0.3 },
+						searchMaxTokens: c.memory.searchMaxTokens ?? 4096,
+						searchBudget: c.memory.searchBudget ?? "high",
+						searchMinScores: c.memory.searchMinScores ?? {},
+						reflectMaxTokens: c.memory.reflectMaxTokens ?? 4096,
+						reflectBudget: c.memory.reflectBudget ?? "high",
+						reflectTimeoutMs: c.memory.reflectTimeoutMs ?? 120_000,
+					},
 				}
 			: null,
 	};
@@ -455,10 +470,11 @@ export function bodyFromDraft(
 			draft.memory === null
 				? ""
 				: {
+						...draft.memory.policy,
 						baseUrl: draft.memory.baseUrl.trim(),
 						bankId: draft.memory.bankId.trim(),
 						auth: draft.memory.auth.trim() || undefined,
-						budget: (draft.memory.budget || "low") as "low" | "mid" | "high",
+						budget: (draft.memory.budget || "mid") as "low" | "mid" | "high",
 						maxTokens: numOrUndef(draft.memory.tokens),
 						recallTimeoutMs: numOrUndef(draft.memory.timeout),
 					},

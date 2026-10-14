@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import type { Config } from "../config.ts";
+import { memoryConfigSchema, type Config } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
 import { startMemoryWorker } from "../memory.ts";
@@ -217,13 +217,13 @@ describe("commands", () => {
 	});
 });
 
-const memBlock = {
+const memBlock = memoryConfigSchema.parse({
 	baseUrl: "http://127.0.0.1:1",
 	bankId: "g",
 	recallTimeoutMs: 500,
 	maxTokens: 256,
 	budget: "low" as const,
-};
+});
 
 function setupMemory() {
 	const { store, conv, sent, stopped, deps } = setup();

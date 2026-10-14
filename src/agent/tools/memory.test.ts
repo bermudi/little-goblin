@@ -26,6 +26,35 @@ const deps = (client: HindsightClient, excluded = false) => ({
 });
 
 describe("memory_search tool", () => {
+	test("the complete output budget includes provenance for selected facts only", async () => {
+		const client = served(() =>
+			Response.json({
+				results: Array.from({ length: 1000 }, (_, i) => ({
+					id: `${i}`.padEnd(256, "f"),
+					text: "A fact.",
+					document_id: `${i}`.padEnd(256, "d"),
+				})),
+			}),
+		);
+		const result = await exec(memorySearchTool(deps(client)), { query: "x", maxTokens: 128 });
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(128 * 4);
+		expect(result).toMatchObject({ sources: [], omitted: 1000 });
+	});
+
+	test("search cancellation leaves memory health unchanged", async () => {
+		const outcomes: boolean[] = [];
+		const client = served(() => Response.json({ results: [] }));
+		const controller = new AbortController();
+		controller.abort();
+		const tool = memorySearchTool({ ...deps(client), noteRecall: (ok) => outcomes.push(ok) });
+		await (
+			tool as unknown as {
+				execute: (input: unknown, options: { abortSignal: AbortSignal }) => Promise<unknown>;
+			}
+		).execute({ query: "x" }, { abortSignal: controller.signal });
+		expect(outcomes).toEqual([]);
+	});
+
 	test("returns dated evidence with source references", async () => {
 		const client = served(() =>
 			Response.json({

@@ -13,14 +13,17 @@
 // hasn't seen. Repeating an identical action against an unchanged
 // screen is refused too.
 //
-// Reaping is a sweep at the start of every call — unleased, unreserved
-// desktops idle past idleHours lose their container then their row
-// (the caller's desktop is exempt). No ticker, no boot hook. Network
-// is fail-closed: an off state that can't be confirmed by inspect
-// removes the container rather than use it.
+// Reaping rides the start of every call — unleased, unreserved
+// desktops idle past idleHours lose their container then their row;
+// the stale listing is synchronous (the caller's desktop exempt),
+// the removals run on a detached single-flight chain, so another
+// desktop's reap is never on a call's critical path. No ticker, no
+// boot hook. Network is fail-closed: an off state that can't be
+// confirmed by inspect removes the container rather than use it.
 
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { z } from "zod";
 import {
@@ -69,6 +72,26 @@ export type CuaTool =
 	| "invoke_menu"
 	| "set_window_frame";
 
+// The dispatch allowlist — the union above as a runtime set, so act
+// fails loud on a non-member tool instead of forwarding it to
+// cua-driver. Kept literal against the union: growing one without the
+// other is a type error. Callers gate with this too, but act is the
+// enforcement point — the type cast at the boundary proves nothing.
+export const CUA_TOOLS: ReadonlySet<string> = new Set<CuaTool>([
+	"click",
+	"double_click",
+	"right_click",
+	"press_key",
+	"hotkey",
+	"type_text",
+	"scroll",
+	"drag",
+	"set_value",
+	"bring_to_front",
+	"invoke_menu",
+	"set_window_frame",
+]);
+
 export type DesktopAction =
 	| { kind: "launch"; app: "chromium"; url?: string }
 	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
@@ -94,6 +117,12 @@ export interface DesktopRow {
 	 *  the identical-action-on-unchanged-screen refusal. */
 	lastActSig: string | null;
 	lastActFrameHash: string | null;
+	/** The container boot (podman State.StartedAt) the recorded
+	 *  observation was minted on; null = unknown (fresh, migrated, or
+	 *  just-restarted row — the next reconcile records it). Optional
+	 *  in the type because unknown is a real state for row literals
+	 *  built outside this module. */
+	bootGen?: string | null;
 	shotSeq: number;
 	createdAt: number;
 	lastUsedAt: number;
@@ -123,6 +152,7 @@ const rowSchema = z.object({
 	last_obs_hash: z.string().nullable(),
 	last_act_sig: z.string().nullable(),
 	last_act_frame_hash: z.string().nullable(),
+	boot_gen: z.string().nullable(),
 	shot_seq: z.number(),
 	created_at: z.number(),
 	last_used_at: z.number(),
@@ -144,6 +174,7 @@ function toRow(row: unknown): DesktopRow {
 		lastObsHash: r.last_obs_hash,
 		lastActSig: r.last_act_sig,
 		lastActFrameHash: r.last_act_frame_hash,
+		bootGen: r.boot_gen,
 		shotSeq: r.shot_seq,
 		createdAt: r.created_at,
 		lastUsedAt: r.last_used_at,
@@ -167,19 +198,27 @@ export function openDesktops(dbPath: string): DesktopStore {
 		last_obs_hash TEXT,
 		last_act_sig TEXT,
 		last_act_frame_hash TEXT,
+		boot_gen TEXT,
 		shot_seq INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		last_used_at INTEGER NOT NULL
 	)`);
+	// Pools opened before the boot generation existed get the column
+	// backfilled; NULL reads as unknown generation, so the first
+	// reconcile invalidates any recorded observation — fail-closed.
+	const cols = new Set(
+		db.query<{ name: string }, []>("PRAGMA table_info(desktops)").all().map((c) => c.name),
+	);
+	if (!cols.has("boot_gen")) db.run("ALTER TABLE desktops ADD COLUMN boot_gen TEXT");
 	const qGet = db.query("SELECT * FROM desktops WHERE name = ?");
 	const qList = db.query("SELECT * FROM desktops ORDER BY name");
 	const qPut = db.query(
 		`INSERT INTO desktops (name, container, image, network, reserved,
 			lease_kind, lease_id, lease_expires_at,
 			last_obs_id, last_obs_used, last_obs_hash,
-			last_act_sig, last_act_frame_hash, shot_seq,
+			last_act_sig, last_act_frame_hash, boot_gen, shot_seq,
 			created_at, last_used_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET
 			container = excluded.container, image = excluded.image,
 			network = excluded.network, reserved = excluded.reserved,
@@ -190,6 +229,7 @@ export function openDesktops(dbPath: string): DesktopStore {
 			last_obs_hash = excluded.last_obs_hash,
 			last_act_sig = excluded.last_act_sig,
 			last_act_frame_hash = excluded.last_act_frame_hash,
+			boot_gen = excluded.boot_gen,
 			shot_seq = excluded.shot_seq,
 			created_at = excluded.created_at,
 			last_used_at = excluded.last_used_at`,
@@ -217,6 +257,7 @@ export function openDesktops(dbPath: string): DesktopStore {
 				row.lastObsHash,
 				row.lastActSig,
 				row.lastActFrameHash,
+				row.bootGen ?? null,
 				row.shotSeq,
 				row.createdAt,
 				row.lastUsedAt,
@@ -397,7 +438,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		}
 	}
 
-	function freshRow(name: string, ins: { image: string; network: boolean }): DesktopRow {
+	function freshRow(
+		name: string,
+		ins: { image: string; network: boolean; startedAt?: string },
+	): DesktopRow {
 		const now = Date.now();
 		return {
 			name,
@@ -413,6 +457,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			lastObsHash: null,
 			lastActSig: null,
 			lastActFrameHash: null,
+			bootGen: ins.startedAt ?? null,
 			shotSeq: 0,
 			createdAt: now,
 			lastUsedAt: now,
@@ -534,14 +579,18 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			requireOurs(name, ins);
 			if (row === null) {
 				// A labelled container with no row: adopt — the inspect
-				// tells us its image and actual network state.
+				// tells us its image, network state and boot generation.
 				const adopted = freshRow(name, {
 					image: ins.image,
 					network: ins.networks.includes(networkName),
+					startedAt: ins.startedAt,
 				});
 				store.put(adopted);
 				if (ins.state === "stopped") {
 					await podman.start(container);
+					// A start is a new boot — the generation we just
+					// recorded is void until the next running reconcile.
+					adopted.bootGen = null;
 					await applyNetwork(name, adopted.network);
 					adopted.lastUsedAt = now;
 					store.put(adopted);
@@ -581,6 +630,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						container,
 					});
 				}
+				// A start is a new boot — the recorded generation is void
+				// until the next running reconcile reads the new StartedAt.
+				row.bootGen = null;
 				await podman.start(container);
 				await applyNetwork(name, row.network);
 				row.lastUsedAt = now;
@@ -594,6 +646,27 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			}
 			// Running: the row's network intent wins over a drifted actual
 			// (a crash between connect and row update fails closed).
+			// Boot reconciliation: an out-of-band restart leaves
+			// Running=true and the container in place, so the recorded
+			// StartedAt is the only witness that the newest frame died
+			// with the previous boot — invalidate it before any input can
+			// bind (observation binding). mintObservation rides the
+			// generation recorded here, in the same lane call.
+			if (row.bootGen !== ins.startedAt) {
+				if (row.lastObsId !== null) {
+					row.lastObsId = null;
+					row.lastObsUsed = false;
+					row.lastObsHash = null;
+					row.lastActSig = null;
+					row.lastActFrameHash = null;
+					log.info("desktop observation invalidated — container rebooted out of band", {
+						desktop: name,
+						container,
+					});
+				}
+				row.bootGen = ins.startedAt;
+				store.put(row);
+			}
 			await applyNetwork(name, row.network);
 			row.lastUsedAt = now;
 			store.put(row);
@@ -620,54 +693,121 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		throw refuse(name, "ensure", `no desktop named ${name} — allocate it first`);
 	}
 
-	async function sweep(excludeName: string): Promise<void> {
-		const idle = cfg().idleHours;
-		if (idle === 0) return;
-		const cutoff = Date.now() - idle * 3_600_000;
-		for (const row of store.staleBefore(cutoff, excludeName)) {
+	// Audit frames are bounded: the newest SHOTS_RETENTION files per
+	// desktop survive (by mtime), older ones are pruned here — the one
+	// path every call rides — so an active desktop is bounded at call
+	// time and a reaped one at removal. Destroy intentionally freezes
+	// the trail for post-mortem (ruling in design/subagents.md).
+	const SHOTS_RETENTION = 200;
+
+	function pruneShots(name: string): void {
+		const dir = join(shotsRoot, name, "shots");
+		let names: string[];
+		try {
+			names = readdirSync(dir);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw err;
+		}
+		const over = names.length - SHOTS_RETENTION;
+		if (over <= 0) return;
+		const byAge: Array<{ file: string; mtime: number }> = [];
+		for (const file of names) {
 			try {
-				// The stale listing runs outside any lane, so the
-				// idle/reservation/lease verdict is re-read inside the
-				// victim's lane — a claim, observation, or pin landing
-				// between the listing and the rm must win the race.
-				await lane(row.name, async () => {
-					const fresh = store.get(row.name);
-					if (
-						fresh === null ||
-						fresh.lastUsedAt >= cutoff ||
-						fresh.reserved ||
-						leaseLive(fresh, Date.now())
-					) {
-						return;
-					}
-					await podman.rm(fresh.container);
-					store.delete(fresh.name);
-					log.info("desktop reaped", {
-						desktop: fresh.name,
-						container: fresh.container,
-						idleHours: idle,
-					});
-				});
+				byAge.push({ file, mtime: statSync(join(dir, file)).mtimeMs });
 			} catch (err) {
-				// Keep the row — the next call retries the reap.
-				log.warn("desktop reap failed — row kept", err, {
-					desktop: row.name,
-					container: row.container,
-				});
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw err;
 			}
 		}
+		byAge.sort((a, b) => a.mtime - b.mtime);
+		for (const { file } of byAge.slice(0, over)) {
+			// Best-effort per file — a failed unlink must not fail the
+			// desktop call riding this prune, only say so on the log.
+			try {
+				rmSync(join(dir, file));
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+				log.warn("desktop shot prune failed", err, { desktop: name, file });
+			}
+		}
+		log.info("desktop shots pruned", { desktop: name, removed: over, kept: SHOTS_RETENTION });
 	}
 
-	// Sweeps serialize globally so parallel calls on different
-	// desktops can't double-remove the same stale row.
-	let sweepTail: Promise<void> = Promise.resolve();
-	function sweepOnce(name: string): Promise<void> {
-		const run = sweepTail.then(() => sweep(name));
-		sweepTail = run.then(
+	// The reap verdict, inside the victim's lane: the listing was a
+	// stale snapshot, so idle/reservation/lease is re-read here — a
+	// claim, observation, or pin landing between the listing and the
+	// rm must win the race. Same label guard as destroy and adoption:
+	// never touch a container goblin's labels don't claim.
+	async function reapLocked(name: string, cutoff: number): Promise<void> {
+		const fresh = store.get(name);
+		if (
+			fresh === null ||
+			fresh.lastUsedAt >= cutoff ||
+			fresh.reserved ||
+			leaseLive(fresh, Date.now())
+		) {
+			return;
+		}
+		const ins = await podman.inspect(fresh.container);
+		if (ins.state !== "missing") requireOurs(name, ins);
+		await podman.rm(fresh.container);
+		store.delete(name);
+		pruneShots(name);
+		log.info("desktop reaped", { desktop: name, container: fresh.container });
+	}
+
+	// Reaps run on one dedicated chain, off the callers' critical
+	// path: the listing is synchronous in the caller's own call (its
+	// desktop exempt), the lane joins and rm happen here — reaping
+	// desktop B never blocks acting on desktop A. Candidates coalesce
+	// into one set, so reaps stay single-flight.
+	const reapQueue = new Map<string, number>();
+	let reapTail: Promise<void> = Promise.resolve();
+	let reapQueued = false;
+	function enqueueReap(name: string, cutoff: number): void {
+		reapQueue.set(name, cutoff);
+		if (reapQueued) return;
+		reapQueued = true;
+		const run = reapTail.then(async () => {
+			// Cleared at run start: arrivals during the run schedule
+			// the follow-up instead of being dropped.
+			reapQueued = false;
+			while (reapQueue.size > 0) {
+				const batch = [...reapQueue];
+				reapQueue.clear();
+				for (const [victim, cutoff] of batch) {
+					try {
+						await lane(victim, () => reapLocked(victim, cutoff));
+					} catch (err) {
+						// Keep the row — the next call retries the reap.
+						log.warn("desktop reap failed — row kept", err, {
+							desktop: victim,
+							container: containerNameForDesktop(victim),
+						});
+					}
+				}
+			}
+		});
+		run.catch((err) => {
+			log.warn("desktop reap chain failed", err, { desktop: name });
+		});
+		reapTail = run.then(
 			() => undefined,
 			() => undefined,
 		);
-		return run;
+	}
+
+	// Called at the top of every entry point: bound the caller's audit
+	// frames, list stale rows (caller exempt) and hand them to the
+	// reaper chain. Synchronous — nothing here can block the call
+	// behind another desktop's lane.
+	function sweepOnce(name: string): void {
+		pruneShots(name);
+		const idle = cfg().idleHours;
+		if (idle === 0) return;
+		const cutoff = Date.now() - idle * 3_600_000;
+		for (const row of store.staleBefore(cutoff, name)) enqueueReap(row.name, cutoff);
 	}
 
 	// Lifecycle ops are single-flight per desktop; claim/obs/act
@@ -727,7 +867,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 	// The uuid keeps an obs id unique across a same-ms
 	// destroy/re-allocate (createdAt and shotSeq both reset). The
 	// caller mints it — screenshot needs it for the audit basename —
-	// but the row publish happens only here.
+	// but the row publish happens only here. bootGen was reconciled
+	// against the live container earlier in this lane call, so a
+	// frame is never minted onto an unrecorded generation.
 	function mintObservation(row: DesktopRow, hash: string, uuid: string): string {
 		row.shotSeq += 1;
 		row.lastObsId = `${row.name}:${row.shotSeq}:${uuid}`;
@@ -740,7 +882,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 	return {
 		async allocate(name, opts) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			if (!NAME_RE.test(name)) {
 				throw refuse(
 					name,
@@ -783,6 +925,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						const adopted = freshRow(name, {
 							image: ins.image,
 							network: ins.networks.includes(networkName),
+							startedAt: ins.startedAt,
 						});
 						store.put(adopted);
 						log.info("desktop adopted on allocate", { desktop: name, container });
@@ -812,7 +955,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async claim(name, holder) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				const row = ready.row;
@@ -850,7 +993,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		// the lane loses updates to an in-flight act, and skipping the
 		// sweep would let these cut in line ahead of it.
 		async release(name, holder) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -876,7 +1019,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async handoff(name, from, to) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -905,7 +1048,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async reserve(name, reserved) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -918,7 +1061,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async setNetwork(name, enabled) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				await applyNetwork(name, enabled);
@@ -934,7 +1077,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async destroy(name, by) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			await lane(name, async () => {
 				const row = store.get(name);
 				const now = Date.now();
@@ -962,7 +1105,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async screenshot(name) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				const inContainer = `/run/desk/.shot-${Date.now()}.png`;
@@ -1020,7 +1163,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async inspect(name, opts) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				let pid = opts?.pid;
@@ -1063,7 +1206,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async act(name, holder, obsId, action) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const t0 = Date.now();
 				const ready = await ensureLocked(name);
@@ -1104,6 +1247,18 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						name,
 						"act",
 						`launch url ${JSON.stringify(action.url)} is not allowed on ${name} — http(s)://, file:// or about:blank only`,
+						holder,
+					);
+				}
+				if (action.kind === "cua" && !CUA_TOOLS.has(action.tool)) {
+					// Enforcement lives here, at the dispatch, not only in
+					// callers — the type-level CuaTool cast proves nothing
+					// at runtime. Runs before consumption: a refused tool
+					// must not burn the observation it rode in on.
+					throw refuse(
+						name,
+						"act",
+						`act tool ${JSON.stringify(action.tool)} is not an allowed input operation on ${name}`,
 						holder,
 					);
 				}
@@ -1173,7 +1328,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async cpIn(name, hostPath, containerPath) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				// File destinations only — `podman cp` onto an existing
@@ -1294,7 +1449,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async catFile(name, path) {
-			await sweepOnce(name);
+			sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				// Same export contract as sandboxes.catFile: regular

@@ -7,17 +7,19 @@
 // real-engine check is gated on GOBLIN_DESKTOP_LIVE=1.
 
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix } from "node:path";
 import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import {
+	CUA_TOOLS,
 	DesktopError,
 	containerNameForDesktop,
 	makeDesktops,
 	openDesktops,
+	type CuaTool,
 	type DesktopRow,
 	type Desktops,
 	type LeaseHolder,
@@ -35,10 +37,24 @@ interface FakeContainer {
 	running: boolean;
 	networks: Set<string>;
 	labels: Record<string, string>;
+	/** The boot generation podman reports as State.StartedAt — a
+	 *  restart (in-band or out-of-band) moves it, Running stays. */
+	startedAt: string;
 }
 
 function tmpdb(): string {
 	return join(mkdtempSync(join(tmpdir(), "goblin-desk-")), "goblin.sqlite");
+}
+
+// The detached reaper chain means a caller no longer awaits reaps —
+// tests poll for the effect instead of assuming it landed.
+async function waitFor(what: string, pred: () => boolean, ms = 2000): Promise<void> {
+	const deadline = Date.now() + ms;
+	while (Date.now() < deadline) {
+		if (pred()) return;
+		await Bun.sleep(10);
+	}
+	throw new Error(`timed out waiting for: ${what}`);
 }
 
 // A fake podman engine: the runner keeps container/network state, the
@@ -68,12 +84,15 @@ function fakeEngine(opts?: {
 	rootDirs?: Set<string>;
 }) {
 	const containers = new Map<string, FakeContainer>();
+	let boot = 0;
+	const nextBoot = (): string => `boot-${++boot}`;
 	for (const c of opts?.containers ?? []) {
 		containers.set(c.name, {
 			image: c.image ?? IMAGE,
 			running: c.running ?? true,
 			networks: new Set(c.networks ?? []),
 			labels: c.labels ?? {},
+			startedAt: nextBoot(),
 		});
 	}
 	const networks = new Set<string>();
@@ -108,7 +127,11 @@ function fakeEngine(opts?: {
 				stdout: JSON.stringify([
 					{
 						Config: { Image: c.image, Labels: c.labels },
-						State: { Status: c.running ? "running" : "exited", Running: c.running },
+						State: {
+							Status: c.running ? "running" : "exited",
+							Running: c.running,
+							StartedAt: c.startedAt,
+						},
 						NetworkSettings: {
 							Networks: Object.fromEntries([...c.networks].map((n) => [n, {}])),
 						},
@@ -157,11 +180,16 @@ function fakeEngine(opts?: {
 				running: true,
 				networks: new Set([network]),
 				labels,
+				startedAt: nextBoot(),
 			});
 			return { code: 0, stdout: "abc123\n", stderr: "" };
 		}
 		if (cmd === "start") {
-			containers.get(args[1]!)!.running = true;
+			const c = containers.get(args[1]!)!;
+			c.running = true;
+			// A start is a fresh boot — the generation moves, like the
+			// real engine's State.StartedAt.
+			c.startedAt = nextBoot();
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "rm") {
@@ -563,6 +591,7 @@ describe("desktops pool", () => {
 				running: true,
 				networks: new Set(),
 				labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
+				startedAt: `boot-seeded-${name}`,
 			});
 			store.put({
 				name,
@@ -594,7 +623,10 @@ describe("desktops pool", () => {
 		pinned.reserved = true;
 		store.put(pinned);
 		await desktops.screenshot("caller");
-		expect(engine.containers.has(containerNameForDesktop("stale"))).toBe(false);
+		// The reap is detached from the caller — wait it out.
+		await waitFor("stale desktop reaped", () =>
+			!engine.containers.has(containerNameForDesktop("stale")),
+		);
 		expect(store.get("stale")).toBeNull();
 		for (const kept of ["leased", "pinned", "caller"]) {
 			expect(engine.containers.has(containerNameForDesktop(kept))).toBe(true);
@@ -611,6 +643,7 @@ describe("desktops pool", () => {
 			running: true,
 			networks: new Set(),
 			labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
+			startedAt: "boot-seeded-ancient",
 		});
 		store.put({
 			name,
@@ -633,6 +666,193 @@ describe("desktops pool", () => {
 		await desktops.allocate("fresh");
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
 		expect(store.get(name)).not.toBeNull();
+	});
+
+	test("an out-of-band restart invalidates the frame even though the container reports running", async () => {
+		const engine = fakeEngine({ varyFrames: true });
+		const { desktops, store, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		// `podman restart goblin-desk-<name>`: fresh boot, still Running
+		// — inspect's state alone cannot see it, only StartedAt moved.
+		engine.containers.get(containerNameForDesktop(name))!.startedAt = "boot-out-of-band";
+		const execBefore = engine.execCalls.length;
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
+		// No input was dispatched onto the unseen frame; the dead obs is
+		// persisted-invalidated and the lease survives the reconcile.
+		expect(engine.execCalls.length).toBe(execBefore);
+		const row = store.get(name)!;
+		expect(row.lastObsId).toBeNull();
+		expect(row.lastObsHash).toBeNull();
+		expect(row.bootGen).toBe("boot-out-of-band");
+		expect(row.leaseKind).toBe("run");
+		// A fresh observation binds and dispatches under the same lease.
+		const shot2 = await desktops.screenshot(name);
+		expect(shot2.id).not.toBe(shot.id);
+		const out = await desktops.act(name, RUN_A, shot2.id, CLICK);
+		expect(out.result).toMatchObject({ effect: "unverifiable" });
+	});
+
+	test("audit frames are pruned to the newest retention window", async () => {
+		const engine = fakeEngine();
+		const { desktops, name, shotsRoot } = await fresh(engine);
+		const dir = join(shotsRoot, name, "shots");
+		mkdirSync(dir, { recursive: true });
+		for (let i = 0; i < 205; i++) {
+			const p = join(dir, `seed-${String(i).padStart(4, "0")}.png`);
+			writeFileSync(p, PNG);
+			utimesSync(p, 1_000_000, 1_000_000 + i);
+		}
+		// The call's own sweep prunes before minting: 205 seeds → 200,
+		// oldest mtimes first, then the new frame lands.
+		await desktops.screenshot(name);
+		let files = readdirSync(dir).sort();
+		expect(files.length).toBe(201);
+		expect(files.some((f) => f.startsWith("seed-0000"))).toBe(false);
+		expect(files.some((f) => f.startsWith("seed-0005"))).toBe(true);
+		// 201 is over the cap again — the next-oldest seed goes.
+		await desktops.screenshot(name);
+		files = readdirSync(dir).sort();
+		expect(files.length).toBe(201);
+		expect(files.some((f) => f.startsWith("seed-0005"))).toBe(false);
+		expect(files.some((f) => f.startsWith("seed-0006"))).toBe(true);
+		// Destroy freezes what remains (≤ cap after its own sweep's
+		// final prune) — it never wipes the dir: the audit exists for
+		// the post-mortem, not for space reclamation.
+		await desktops.destroy(name, RUN_A);
+		expect(readdirSync(dir).length).toBe(200);
+	});
+
+	test("the sweep refuses to rm a stale container it does not own by label", async () => {
+		const lines: Record<string, unknown>[] = [];
+		setLogFile("capture");
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as Record<string, unknown>);
+		});
+		try {
+			const engine = fakeEngine();
+			const { desktops, store } = rig(engine, { idleHours: 1 });
+			const name = "squat";
+			engine.containers.set(containerNameForDesktop(name), {
+				image: IMAGE,
+				running: true,
+				networks: new Set(),
+				labels: {},
+				startedAt: "boot-seeded-squat",
+			});
+			const old = Date.now() - 2 * 3_600_000;
+			store.put({
+				name,
+				container: containerNameForDesktop(name),
+				image: IMAGE,
+				network: false,
+				reserved: false,
+				leaseKind: null,
+				leaseId: null,
+				leaseExpiresAt: null,
+				lastObsId: null,
+				lastObsUsed: false,
+				lastObsHash: null,
+				lastActSig: null,
+				lastActFrameHash: null,
+				shotSeq: 0,
+				createdAt: old,
+				lastUsedAt: old,
+			});
+			// The caller exists and rides its own sweep — squat is what
+			// gets listed stale.
+			await desktops.allocate("caller");
+			await desktops.screenshot("caller");
+			// The reap is detached — wait for its verdict on the log,
+			// then pin it: the squatter is untouched, the row kept for
+			// the retry, exactly like every other removal path.
+			await waitFor(
+				"the refused reap logged",
+				() =>
+					lines.some(
+						(l) => l.msg === "desktop reap failed — row kept" && l.desktop === name,
+					),
+			);
+			expect(
+				engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerNameForDesktop(name)),
+			).toBe(false);
+			expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
+			expect(store.get(name)).not.toBeNull();
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+	});
+
+	test("the CUA allowlist is exactly the header's declared input surface", () => {
+		expect([...CUA_TOOLS].sort()).toEqual([
+			"bring_to_front",
+			"click",
+			"double_click",
+			"drag",
+			"hotkey",
+			"invoke_menu",
+			"press_key",
+			"right_click",
+			"scroll",
+			"set_value",
+			"set_window_frame",
+			"type_text",
+		]);
+	});
+
+	test("act refuses a non-member tool without burning the observation", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		// The runtime gate at the dispatch is what enforces the surface
+		// — a boundary cast to CuaTool (subagents does one) proves
+		// nothing.
+		const bypass = {
+			kind: "cua" as const,
+			tool: "launch_app" as unknown as CuaTool,
+			args: { app: "chromium" },
+		};
+		await expect(desktops.act(name, RUN_A, shot.id, bypass)).rejects.toThrow(
+			/not an allowed input operation/,
+		);
+		expect(engine.execCalls.some((a) => a.includes("launch_app"))).toBe(false);
+		// Refusal is validation, not dispatch — the same obs id binds.
+		await desktops.act(name, RUN_A, shot.id, CLICK);
+	});
+
+	test("acting on one desktop is not blocked by a parked lane on another", async () => {
+		const gate = Promise.withResolvers<void>();
+		const engine = fakeEngine({ execGate: gate.promise });
+		const { desktops, store } = rig(engine, { idleHours: 1 });
+		await desktops.allocate("a");
+		await desktops.allocate("b");
+		await desktops.claim("b", RUN_B);
+		const shotB = await desktops.screenshot("b");
+		// b looks stale to every listing, but its lease is live and its
+		// lane is parked on the gated cua exec.
+		const rowB = store.get("b")!;
+		rowB.lastUsedAt = Date.now() - 2 * 3_600_000;
+		store.put(rowB);
+		const actingB = desktops.act("b", RUN_B, shotB.id, CLICK);
+		await waitFor("b's act parked at the cua exec", () =>
+			engine.execCalls.some((c) => c.includes("cua-driver") && c.includes("click")),
+		);
+		// Calls on a sweep stale b into the detached reaper, which
+		// queues behind b's parked lane — under the old awaited sweep
+		// this claim could not complete until the gate resolved.
+		await desktops.claim("a", RUN_A);
+		const shotA = await desktops.screenshot("a");
+		expect(shotA.id).toMatch(/^a:/);
+		gate.resolve();
+		await actingB;
+		// b's reap verdict ran after the park and skipped — live lease.
+		await Bun.sleep(50);
+		expect(
+			engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerNameForDesktop("b")),
+		).toBe(false);
+		expect(store.get("b")).not.toBeNull();
 	});
 
 	test("a missing container with a row is recreated and says state is gone", async () => {
@@ -1159,6 +1379,9 @@ describe("observation id persistence", () => {
 		// A fresh owner on the same db — the goblin-restart shape.
 		const d2 = mk();
 		expect(d2.get("a")!.lastObsId).toBe(shot.id);
+		// The boot generation rides with it — the reopened owner must
+		// not mistake the recorded frame for a different boot's.
+		expect(d2.get("a")!.bootGen).not.toBeNull();
 		await d2.act("a", RUN_A, shot.id, CLICK);
 	});
 });

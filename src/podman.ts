@@ -114,6 +114,10 @@ export interface ContainerInspect {
 	/** Attached network names ([] when missing or disconnected). */
 	networks: string[];
 	labels: Record<string, string>;
+	/** State.StartedAt — the boot generation ("" when missing). A
+	 *  restart moves it while Running stays true, so it is the only
+	 *  witness that a recorded observation's boot is gone. */
+	startedAt: string;
 }
 
 // podman inspect: an array of container objects (or [] on a miss). Only
@@ -127,7 +131,11 @@ const inspectSchema = z.array(
 					Labels: z.record(z.string(), z.string()).nullable().optional(),
 				})
 				.passthrough(),
-			State: z.object({ Status: z.string(), Running: z.boolean() }).passthrough(),
+			// StartedAt optional: a build or fixture without it parses to
+			// "" — an unknown generation, which callers treat as stable.
+			State: z
+				.object({ Status: z.string(), Running: z.boolean(), StartedAt: z.string().optional() })
+				.passthrough(),
 			NetworkSettings: z
 				.object({ Networks: z.record(z.string(), z.unknown()).nullable().optional() })
 				.passthrough(),
@@ -306,6 +314,7 @@ export function makePodman(deps?: {
 				image: "",
 				networks: [],
 				labels: {},
+				startedAt: "",
 			};
 			// Missing is an empty array on stdout (podman 6 answers "no such
 			// object" + 125). Portability: some builds exit non-zero with
@@ -332,6 +341,7 @@ export function makePodman(deps?: {
 				image: c.Config.Image,
 				networks: Object.keys(c.NetworkSettings.Networks ?? {}),
 				labels: c.Config.Labels ?? {},
+				startedAt: c.State.StartedAt ?? "",
 			};
 		},
 

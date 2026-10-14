@@ -1267,6 +1267,64 @@ function armConversationFaults(): {
 	};
 }
 
+// Arms submission.wait: every handle the owner sees — the one an
+// admission submits, the one recovery re-acquires — fails its wait
+// while armed. That is the "recovery attached a monitor but the
+// wait died" shape: recoverRun keeps re-attaching cleanly while
+// settlement is never observed. restore() unwraps Harness.open.
+function armSubmissionWaitFault(): { armed: boolean; restore: () => void } {
+	const origOpen = Harness.open;
+	const state = { armed: true };
+	const wrap = (sub: unknown): unknown => {
+		if (sub === undefined || sub === null) return sub;
+		const target = sub as {
+			id: unknown;
+			status: (...sArgs: unknown[]) => Promise<unknown>;
+			wait: (...wArgs: unknown[]) => Promise<unknown>;
+			abort: (...aArgs: unknown[]) => Promise<unknown>;
+		};
+		const realWait = target.wait.bind(target);
+		return {
+			id: target.id,
+			status: target.status.bind(target),
+			abort: target.abort.bind(target),
+			wait: async (...wArgs: unknown[]) => {
+				if (state.armed) throw new Error("injected submission wait failure");
+				return realWait(...wArgs);
+			},
+		};
+	};
+	Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+		const h = await origOpen(...args);
+		const origSubmission = h.submission;
+		h.submission = (async (...sArgs: unknown[]) =>
+			wrap(
+				await (origSubmission as (...a: unknown[]) => Promise<unknown>).apply(h, sArgs),
+			)) as typeof h.submission;
+		const origConversation = h.conversation.bind(h) as (...cArgs: unknown[]) => Promise<unknown>;
+		(h as unknown as { conversation: unknown }).conversation = async (...cArgs: unknown[]) => {
+			const conv = await origConversation(...cArgs);
+			if (conv === undefined || conv === null) return conv;
+			const target = conv as { submit: (...sArgs: unknown[]) => Promise<unknown> };
+			const origSubmit = target.submit.bind(target);
+			target.submit = async (...sArgs: unknown[]) => wrap(await origSubmit(...sArgs));
+			return conv;
+		};
+		return h;
+	}) as typeof Harness.open;
+	return {
+		get armed() {
+			return state.armed;
+		},
+		set armed(v: boolean) {
+			state.armed = v;
+		},
+		restore: () => {
+			Harness.open = origOpen;
+		},
+	};
+}
+
 // ---------- tests ----------
 
 describe("subagents owner", () => {
@@ -3879,6 +3937,67 @@ describe("subagents owner", () => {
 		}
 	}, 30_000);
 
+	// A recovery that only re-attaches a monitor has not recovered:
+	// when the submission's own wait keeps failing, the bounded
+	// recovery budget must still burn — otherwise the running row
+	// pins its global slot and the conversation's lease forever.
+	test("repeated submission.wait failures exhaust bounded recovery — the freed slot and lease admit the sibling", async () => {
+		const fault = armSubmissionWaitFault();
+		try {
+			const r = rig({ maxRuns: 1 });
+			const o = await open(r);
+			r.model.push({ kind: "text", text: "no terminal call" });
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			const b = await o.start({
+				kind: "worker",
+				conversationId: "conv:b",
+				workspace: r.workspace,
+				task: "b",
+			});
+			await until(() => r.runs.get(a.id)?.status === "running", "a admitted");
+			expect(r.runs.get(b.id)?.status).toBe("queued");
+			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
+			// Every monitor the recovery re-attaches dies on the same
+			// injected wait — each scan is one bounded attempt and past
+			// the bound the row settles terminal.
+			await until(
+				async () => {
+					await o.scan();
+					return r.runs.get(a.id)?.status === "failed";
+				},
+				"bounded wait failures settle the run failed",
+				30_000,
+			);
+			const row = r.runs.get(a.id)!;
+			expect(row.error).toMatch(/recovery failed after \d+ attempts/);
+			expect(row.error).toContain("injected submission wait failure");
+			expect(r.runs.workerLease(WS)).toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("recovery failed after");
+			// The freed slot and released lease admit the sibling — on
+			// a healthy wait it settles its own outcome.
+			fault.armed = false;
+			await until(
+				async () => {
+					await o.scan();
+					return r.runs.get(b.id)?.status === "done";
+				},
+				"sibling admitted after the freed slot",
+				20_000,
+			);
+			expect(r.runs.get(b.id)?.result).toBe("b-ok");
+			expect(r.wakes.length).toBe(2);
+		} finally {
+			fault.restore();
+		}
+	}, 30_000);
+
 	// An unexpected host/storage fault at the export edge is not a
 	// model-visible refusal: nothing is fabricated into the ledger, the
 	// row stays owned and running, and the next scan performs the real
@@ -4782,5 +4901,92 @@ describe("worker shell wall", () => {
 		expect(r.ok).toBe(false);
 		if (r.ok) return;
 		expect(r.error.message).toContain("MiB wall");
+	});
+
+	// The temp files behind a shell exec (spill + rc) are cleanup the
+	// operation owns: when the guest rm fails, a successful command is
+	// still a failure — success must never be claimed over a leaked
+	// or unverified cleanup.
+	test("a failed guest temp cleanup turns a successful shell exec into an error", async () => {
+		const sb = fakeSandboxes();
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			if (argv[0] === "rm") {
+				return {
+					result: {
+						stdout: "",
+						stderr: "rm: simulated cleanup failure",
+						exitCode: 1,
+						timedOut: false,
+						truncated: false,
+					},
+				};
+			}
+			return real(conv, argv, opts);
+		};
+		const env = makeSandboxEnv(sb, join(tmpdir(), "goblin-rm-exec"), "conv:rm");
+		const r = await env.exec("echo hi", undefined, CTX);
+		expect(r.ok).toBe(false);
+		if (r.ok) return;
+		expect(r.error.code).toBe("unknown");
+		expect(r.error.message).toContain("cleanup");
+	});
+
+	// The symmetric boundary: when the command itself already failed,
+	// its error is the operation's — the cleanup failure rides only
+	// in the log, never replacing the primary failure.
+	test("a failed guest temp cleanup never masks the primary exec error", async () => {
+		const sb = fakeSandboxes();
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			if (argv[0] === "rm") {
+				return {
+					result: {
+						stdout: "",
+						stderr: "rm dead",
+						exitCode: 1,
+						timedOut: false,
+						truncated: false,
+					},
+				};
+			}
+			return real(conv, argv, opts);
+		};
+		const env = makeSandboxEnv(sb, join(tmpdir(), "goblin-rm-primary"), "conv:rm");
+		const r = await env.exec("echo hi", { cwd: "/no/such/dir" }, CTX);
+		expect(r.ok).toBe(false);
+		if (r.ok) return;
+		expect(r.error.message).toContain("sandbox shell failed");
+		expect(r.error.message).not.toContain("cleanup");
+	});
+
+	// The same contract at the staged-write boundary, with a thrown
+	// rm (the sandbox exec dying) rather than a nonzero exit: a
+	// successful staged write reports its cleanup failure, while a
+	// write that already failed keeps its own error.
+	test("a thrown guest staging cleanup fails a successful write; a failed write keeps its own error", async () => {
+		const sb = fakeSandboxes();
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			if (argv[0] === "rm") throw new Error("podman exec died");
+			return real(conv, argv, opts);
+		};
+		const root = mkdtempSync(join(tmpdir(), "goblin-rm-stage-"));
+		dirs.push(root);
+		const env = makeSandboxEnv(sb, root, "conv:rm-stage");
+		const staged = await env.writeFile("/work/out.txt", "data", CTX);
+		expect(staged.ok).toBe(false);
+		if (staged.ok) return;
+		expect(staged.error.message).toContain("cleanup");
+		// The write itself landed — only the stage cleanup failed.
+		expect(sb.fs.exists("/work/out.txt")).toBe(true);
+		// A write that failed on its own keeps that error — the
+		// cleanup failure stays a log line, never the reported cause.
+		sb.fs.write("/work/blocker", new TextEncoder().encode("x"));
+		const blocked = await env.writeFile("/work/blocker/x.txt", "data", CTX);
+		expect(blocked.ok).toBe(false);
+		if (blocked.ok) return;
+		expect(blocked.error.code).toBe("not_directory");
+		expect(blocked.error.message).not.toContain("cleanup");
 	});
 });

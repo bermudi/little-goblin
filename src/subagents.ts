@@ -553,6 +553,7 @@ class SandboxEnv implements ExecutionEnv {
 		);
 		await Bun.write(staged, content);
 		const guest = `${STAGE}-${Math.random().toString(16).slice(2)}`;
+		let cleanup: string | null = null;
 		try {
 			if (context.abortSignal?.aborted) return aborted();
 			await this.sandboxes.cpIn(
@@ -569,14 +570,20 @@ class SandboxEnv implements ExecutionEnv {
 			);
 			const bad = await this.check(r, path, context);
 			if (!bad.ok) return bad;
-			return ok<void, FileError>(undefined);
 		} catch (err) {
 			if (context.abortSignal?.aborted) return aborted();
 			throw err;
 		} finally {
-			await this.guestRm([guest]);
+			cleanup = await this.guestRm([guest]);
 			rmSync(staged, { force: true });
 		}
+		// Only a successful staged write reaches here — an error or
+		// thrown return above already owns the outcome; cleanup's
+		// failure is the operation's error, never a silent leak.
+		if (cleanup !== null) {
+			return envErr("unknown", `${path}: guest staging cleanup failed: ${cleanup}`, path);
+		}
+		return ok<void, FileError>(undefined);
 	}
 	writeFile(
 		path: string,
@@ -771,7 +778,12 @@ class SandboxEnv implements ExecutionEnv {
 		if (!out.ok) return out;
 		return ok<string, FileError>(out.value.trim());
 	}
-	private async guestRm(paths: string[]): Promise<void> {
+	// rm of guest temp files is never silent: a nonzero exit, a
+	// timeout or a thrown exec comes back as a detail string — a
+	// caller whose operation succeeded turns it into the operation's
+	// error, while one already holding a primary failure keeps it.
+	// The warn is the record either way.
+	private async guestRm(paths: string[]): Promise<string | null> {
 		try {
 			const { result } = await this.sandboxes.execArgv(this.origin, ["rm", "-f", "--", ...paths], {
 				timeoutMs: 15_000,
@@ -784,9 +796,14 @@ class SandboxEnv implements ExecutionEnv {
 					exitCode: result.exitCode,
 					timedOut: result.timedOut,
 				});
+				return result.timedOut
+					? `rm timed out: ${paths.join(" ")}`
+					: `rm exited ${result.exitCode ?? "killed"}: ${result.stderr.trim().slice(0, 200)}`;
 			}
+			return null;
 		} catch (e) {
 			log.warn("sandbox env cleanup failed", e, { conversation: this.origin, paths });
+			return e instanceof Error ? e.message : String(e);
 		}
 	}
 	async exec(
@@ -948,7 +965,15 @@ class SandboxEnv implements ExecutionEnv {
 			);
 			options?.onOutput?.(tail.stdout, context);
 			// The advertised file is retained; only the rc file goes.
-			await this.guestRm([rcpath]);
+			const rcRm = await this.guestRm([rcpath]);
+			if (rcRm !== null) {
+				const e = new PiExecutionError(
+					"unknown",
+					`command rc-file cleanup failed: ${rcRm} — spilled output remains at ${spill}`,
+				);
+				e.spillPath = spill;
+				return err<ShellExecResult, ExecutionError>(e);
+			}
 			return ok<ShellExecResult, ExecutionError>({ exitCode, spillPath: spill });
 		}
 		const out = await this.run(["cat", "--", spill], { maxOutput: afterBytes + 4096 }, context);
@@ -962,7 +987,12 @@ class SandboxEnv implements ExecutionEnv {
 			);
 		}
 		options?.onOutput?.(out.stdout, context);
-		await this.guestRm([spill, rcpath]);
+		const rm = await this.guestRm([spill, rcpath]);
+		if (rm !== null) {
+			return err<ShellExecResult, ExecutionError>(
+				new PiExecutionError("unknown", `command output cleanup failed: ${rm}`),
+			);
+		}
 		return ok<ShellExecResult, ExecutionError>({ exitCode });
 	}
 	async cleanup(): Promise<void> {}
@@ -1047,10 +1077,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// run is left durable, never mutated after close.
 	const monitorTasks = new Set<Promise<void>>();
 	const recoveryPending = new Set<number>();
-	// Consecutive failed recovery attempts per run — recovery is the
-	// only thing that re-attaches settlement, so past the bound the run
-	// settles failed and frees its slot instead of hanging forever.
-	const recoveryAttempts = new Map<number, number>();
+	// Consecutive recovery cycles per run that have not yet re-attached
+	// settlement — recovery is the only thing that re-attaches it, so
+	// past the bound the run settles failed and frees its slot instead
+	// of hanging forever. lastError keeps the newest failure text for
+	// the terminal notice.
+	const recoveryAttempts = new Map<number, { count: number; lastError: string }>();
 
 	// ---------- the run row behind a Pi conversation ----------
 
@@ -1843,10 +1875,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				finishedAt: Date.now(),
 				noticePending: true,
 			});
-			// A stopped row is never re-admitted — its retry budget and
+			// A stopped row is never re-admitted — its retry budgets and
 			// backoff entry are dead weight.
 			admitAttempts.delete(id);
 			retryAfter.delete(id);
+			recoveryAttempts.delete(id);
 			log.info("subagent stopped", { run: id, kind: stopped.kind });
 			releaseLeases(stopped);
 			notify(stopped);
@@ -2052,10 +2085,21 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 							}
 						: undefined,
 				);
+				// A monitor that observed its submission through is the
+				// only real recovery — this, not recoverRun returning,
+				// is what clears the retry count.
+				recoveryAttempts.delete(rowId);
 			} catch (err) {
 				if (closing || harnessClosed) return;
 				log.error("subagent monitor failed — the run stays owned for recovery", err, {
 					run: rowId,
+				});
+				// The wait's failure is the freshest evidence for an
+				// eventual exhaustion notice; the attempt count itself
+				// belongs to the scan.
+				recoveryAttempts.set(rowId, {
+					count: recoveryAttempts.get(rowId)?.count ?? 0,
+					lastError: err instanceof Error ? err.message : String(err),
 				});
 				recoveryPending.add(rowId);
 			} finally {
@@ -2375,6 +2419,64 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		if (rev !== undefined) await finalize(boot.id, rev);
 	}
 
+	// The ordinary retry budget is spent — but settling terminal is
+	// only allowed once Pi's side is confirmed dead: a recovered step
+	// may have landed a submission that is still executing. Cancelling
+	// is ownership proof, not permission to release — an unconfirmed
+	// cancel keeps the row running, owned and pending. The whole
+	// confirm-and-fail runs in the per-run lane: a send or finalize
+	// holding it must complete (or see the terminal row) rather than
+	// interleave a new submission between the abort and the update.
+	async function exhaustRecovery(
+		id: number,
+		attempts: number,
+		msg: string,
+		err: unknown,
+	): Promise<void> {
+		const settled = await lane(id, async (): Promise<boolean> => {
+			if (closing || harnessClosed) return false;
+			const live = runs.get(id);
+			if (live === null || live.status !== "running" || live.stopRequested) {
+				return true;
+			}
+			if (live.piConversationId !== null && !(await confirmPiIdle(id, live.piConversationId))) {
+				recoveryPending.add(id);
+				log.error(
+					"subagent recovery exhausted but Pi cancellation is unconfirmed — the run stays owned",
+					err,
+					{ run: id, attempts },
+				);
+				return false;
+			}
+			// A close landing during the confirmed cancel keeps the row
+			// owned — the next boot's scan owns the terminal decision,
+			// not a wedged process.
+			if (closing || harnessClosed) {
+				recoveryPending.add(id);
+				return false;
+			}
+			const afterCancel = runs.get(id);
+			if (afterCancel === null || afterCancel.stopRequested || afterCancel.status !== "running") {
+				// A stop landing during the cancel owns the transition.
+				return true;
+			}
+			log.error("subagent recovery exhausted — settling the run failed", err, {
+				run: id,
+				attempts,
+			});
+			const failed = runs.update(id, {
+				status: "failed",
+				error: `recovery failed after ${attempts} attempts: ${msg}`,
+				noticePending: true,
+				finishedAt: Date.now(),
+			});
+			releaseLeases(failed);
+			notify(failed);
+			return true;
+		});
+		if (settled) recoveryAttempts.delete(id);
+	}
+
 	// ---------- queue admission ----------
 
 	// Slots = the union of rows actually executing and rows mid-flight
@@ -2616,6 +2718,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 			for (const id of [...recoveryPending]) {
 				if (closing || harnessClosed) break;
+				let attempts = 0;
+				let lastError = "";
+				let exhausted = false;
 				try {
 					recoveryPending.delete(id);
 					const row = runs.get(id);
@@ -2623,12 +2728,33 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						recoveryAttempts.delete(id);
 						continue;
 					}
-					await recoverRun(row);
-					recoveryAttempts.delete(id);
+					// Every pickup spends one bounded attempt. A recoverRun
+					// that returns is only provisional — it may have merely
+					// attached a replacement monitor or re-parked a blocked
+					// readmit — so the count clears on observed settlement
+					// (a monitor completing, or the row leaving running),
+					// never on the attempt's return alone.
+					const rec = recoveryAttempts.get(id);
+					attempts = (rec?.count ?? 0) + 1;
+					lastError = rec?.lastError ?? "";
+					recoveryAttempts.set(id, { count: attempts, lastError });
+					if (attempts > RECOVERY_MAX_ATTEMPTS) {
+						exhausted = true;
+					} else {
+						await recoverRun(row);
+						const after = runs.get(id);
+						if (after === null || after.status !== "running" || after.stopRequested) {
+							recoveryAttempts.delete(id);
+						}
+					}
 				} catch (err) {
-					const attempts = (recoveryAttempts.get(id) ?? 0) + 1;
-					recoveryAttempts.set(id, attempts);
+					// One lost cycle — counted once whether the failure
+					// landed before or after this scan's own increment.
+					if (attempts === 0) {
+						attempts = (recoveryAttempts.get(id)?.count ?? 0) + 1;
+					}
 					const msg = err instanceof Error ? err.message : String(err);
+					recoveryAttempts.set(id, { count: attempts, lastError: msg });
 					if (attempts < RECOVERY_MAX_ATTEMPTS) {
 						recoveryPending.add(id);
 						log.error("subagent recovery retry failed — stays pending", err, {
@@ -2638,66 +2764,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						});
 						continue;
 					}
-					// The ordinary retry budget is spent — but settling
-					// terminal is only allowed once Pi's side is confirmed
-					// dead: a recovered step may have landed a submission
-					// that is still executing. Cancelling is ownership
-					// proof, not permission to release — an unconfirmed
-					// cancel keeps the row running, owned and pending. The
-					// whole confirm-and-fail runs in the per-run lane: a
-					// send or finalize holding it must complete (or see the
-					// terminal row) rather than interleave a new
-					// submission between the abort and the update.
-					const settled = await lane(id, async (): Promise<boolean> => {
-						if (closing || harnessClosed) return false;
-						const live = runs.get(id);
-						if (live === null || live.status !== "running" || live.stopRequested) {
-							return true;
-						}
-						if (
-							live.piConversationId !== null &&
-							!(await confirmPiIdle(id, live.piConversationId))
-						) {
-							recoveryPending.add(id);
-							log.error(
-								"subagent recovery exhausted but Pi cancellation is unconfirmed — the run stays owned",
-								err,
-								{ run: id, attempts },
-							);
-							return false;
-						}
-						// A close landing during the confirmed cancel keeps
-						// the row owned — the next boot's scan owns the
-						// terminal decision, not a wedged process.
-						if (closing || harnessClosed) {
-							recoveryPending.add(id);
-							return false;
-						}
-						const afterCancel = runs.get(id);
-						if (
-							afterCancel === null ||
-							afterCancel.stopRequested ||
-							afterCancel.status !== "running"
-						) {
-							// A stop landing during the cancel owns the transition.
-							return true;
-						}
-						log.error("subagent recovery exhausted — settling the run failed", err, {
-							run: id,
-							attempts,
-						});
-						const failed = runs.update(id, {
-							status: "failed",
-							error: `recovery failed after ${attempts} attempts: ${msg}`,
-							noticePending: true,
-							finishedAt: Date.now(),
-						});
-						releaseLeases(failed);
-						notify(failed);
-						return true;
-					});
-					if (settled) recoveryAttempts.delete(id);
+					await exhaustRecovery(id, attempts, msg, err);
 					continue;
+				}
+				if (exhausted) {
+					await exhaustRecovery(id, attempts, lastError, undefined);
 				}
 			}
 			await drain();

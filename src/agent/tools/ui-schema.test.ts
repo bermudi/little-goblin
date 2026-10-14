@@ -13,7 +13,10 @@ describe("container leaf caps", () => {
 	test("a tab with 10 leaves passes, 11 is rejected", () => {
 		const tabs = (n: number) => ({
 			type: "tabs",
-			tabs: [{ label: "a", blocks: leaves(n) }, { label: "b", blocks: leaves(1) }],
+			tabs: [
+				{ label: "a", blocks: leaves(n) },
+				{ label: "b", blocks: leaves(1) },
+			],
 		});
 		expect(uiBlockSchema.safeParse(tabs(10)).success).toBe(true);
 		expect(uiBlockSchema.safeParse(tabs(11)).success).toBe(false);
@@ -33,7 +36,10 @@ describe("container leaf caps", () => {
 			blocks: [
 				{
 					type: "tabs",
-					tabs: [{ label: "a", blocks: leaves(11) }, { label: "b", blocks: leaves(1) }],
+					tabs: [
+						{ label: "a", blocks: leaves(11) },
+						{ label: "b", blocks: leaves(1) },
+					],
 				},
 			],
 		};

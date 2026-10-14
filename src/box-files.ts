@@ -8,7 +8,6 @@
 import {
 	closeSync,
 	constants,
-	existsSync,
 	fstatSync,
 	lstatSync,
 	mkdirSync,
@@ -18,7 +17,7 @@ import {
 	statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { durableWriteBytes } from "./durable.ts";
+import { durableWriteBytes, durableWriteBytesExclusive } from "./durable.ts";
 import { writeThroughTarget } from "./agent/tools/paths.ts";
 
 export const BOX_FILE_MAX_BYTES = 100 * 1024 * 1024;
@@ -30,15 +29,14 @@ function inside(root: string, path: string): boolean {
 	return path === root || path.startsWith(root + sep);
 }
 
-/** Unique non-clobbering basename: `name.ext`, `name.1.ext`, … */
-function numberedName(dir: string, base: string): string {
+/** Collision candidate at index i: `name.ext`, `name.1.ext`, … — pure;
+ *  the exclusive write below is what proves the name is free. */
+function numberedCandidate(base: string, i: number): string {
+	if (i === 0) return base;
 	const dot = base.lastIndexOf(".");
 	const stem = dot > 0 ? base.slice(0, dot) : base;
 	const ext = dot > 0 ? base.slice(dot) : "";
-	for (let i = 0; ; i++) {
-		const candidate = i === 0 ? base : `${stem}.${i}${ext}`;
-		if (!existsSync(join(dir, candidate))) return candidate;
-	}
+	return `${stem}.${i}${ext}`;
 }
 
 /** Import side: a workspace path that exists, stays inside the
@@ -188,7 +186,8 @@ export function writeExportBytes(
 	workspace: string,
 	rel: string,
 	data: Uint8Array,
-): { path: string } | { error: string } {
+	opts?: { exclusive?: boolean },
+): { path: string } | { error: string; exists?: true } {
 	if (data.byteLength > BOX_FILE_MAX_BYTES) {
 		return {
 			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
@@ -220,7 +219,20 @@ export function writeExportBytes(
 				error: `refused: ${rel} resolves into ${realParent}, outside the workspace`,
 			};
 		}
-		durableWriteBytes(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
+		try {
+			if (opts?.exclusive === true) {
+				durableWriteBytesExclusive(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
+			} else {
+				durableWriteBytes(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
+			}
+		} catch (err) {
+			// A create-only write losing the race is a verdict, not a
+			// failure — the caller retries on the next numbered name.
+			if (opts?.exclusive === true && (err as NodeJS.ErrnoException).code === "EEXIST") {
+				return { error: `destination exists: ${rel}`, exists: true };
+			}
+			throw err;
+		}
 		return { path: dest.path };
 	} finally {
 		closeSync(fd);
@@ -240,14 +252,19 @@ export function exportBytes(
 			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
 		};
 	}
-	// The real destination dir anchors collision numbering — a leaf
-	// symlink elsewhere in relDir must not steer the check.
-	const dir = resolveExportDir(workspace, relDir);
-	if ("error" in dir) return dir;
-	const base = numberedName(dir.path, basename(sourceBaseName));
-	const written = writeExportBytes(workspace, join(relDir, base), data);
-	if ("error" in written) return written;
-	return { rel: join(relDir, base) };
+	const base = basename(sourceBaseName);
+	// The probe is the exclusive write itself: two parallel exports of
+	// the same basename can't pick one "free" name and rename-clobber
+	// each other — EEXIST hands the loser the next numbered candidate.
+	for (let i = 0; ; i++) {
+		const candidate = numberedCandidate(base, i);
+		const written = writeExportBytes(workspace, join(relDir, candidate), data, {
+			exclusive: true,
+		});
+		if ("error" in written && written.exists === true) continue;
+		if ("error" in written) return written;
+		return { rel: join(relDir, candidate) };
+	}
 }
 
 /** Write exported bytes under `<relDir>/<name>` exactly — the

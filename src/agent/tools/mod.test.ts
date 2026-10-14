@@ -114,6 +114,20 @@ describe("toolNames ↔ makeTools", () => {
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
+			// Same for the subagents pair — the invariant only covers the
+			// tools the call actually mounts.
+			subagent: {
+				conversation: "dm:1",
+				workspace: "/tmp",
+				subagents: {} as never,
+				workerEnabled: true,
+				computerEnabled: true,
+			},
+			desktop: {
+				conversation: "dm:1",
+				workspace: "/tmp",
+				desktops: {} as never,
+			},
 		});
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;

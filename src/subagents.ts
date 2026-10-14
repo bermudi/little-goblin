@@ -316,7 +316,9 @@ export interface Subagents {
 	scan(): Promise<void>;
 	/** Ordered boot: finish persisted stops, reacquire desktops, attach
 	 *  monitors and re-admit pending intents BEFORE any scheduling or
-	 *  wake can run. Call once after every dep is bound. */
+	 *  drain can run. Phase C settle wakes may already deliver to the
+	 *  origin conversation — they ride the origin's own admission, not
+	 *  the harness scheduler. Call once after every dep is bound. */
 	resume(): Promise<void>;
 	/** Pause admission and the ticker, join in-flight operations, then
 	 *  close the harness — pending runs persist; nothing is aborted on
@@ -551,10 +553,13 @@ class SandboxEnv implements ExecutionEnv {
 			this.transferRoot,
 			`w-${Date.now()}-${Math.random().toString(16).slice(2)}`,
 		);
-		await Bun.write(staged, content);
 		const guest = `${STAGE}-${Math.random().toString(16).slice(2)}`;
 		let cleanup: string | null = null;
 		try {
+			if (context.abortSignal?.aborted) return aborted();
+			// Inside the finally's reach: a failed write must not leave
+			// the staged file behind in transferRoot.
+			await Bun.write(staged, content);
 			if (context.abortSignal?.aborted) return aborted();
 			await this.sandboxes.cpIn(
 				this.origin,
@@ -1451,6 +1456,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		cutoff: z.number().int().positive(),
 	});
 
+	// Re-drive input after a transient claim failure aborted a request.
+	// It is goblin-voiced, not operator-voiced: the real input is already
+	// a transcript entry, so the nudge only asks the run to continue.
+	const RECOVERY_NUDGE =
+		"[goblin] The previous model request aborted on transient infrastructure — your input is already in the transcript; continue the task.";
+
 	// inputRev means the input this request consumed, never the newest
 	// admitted intent — the request checkpoint's cutoff plus the newest
 	// placed input at or below it says which one. Binding also clears a
@@ -1505,9 +1516,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 
 	// Computer runs renew their desktop lease at every model request
 	// too — a lost lease fails the request rather than letting input
-	// land under the wrong holder. A committed terminal outcome also
-	// stops generation: an unknown or malformed tool slot can leave a
-	// round "unanswered", and the monitor settles the run from the doc.
+	// land under the wrong holder. A transient claim failure rides the
+	// bounded recovery budget instead: a typed DesktopLeaseError is
+	// lost ownership, anything else keeps the run owned. A committed
+	// terminal outcome also stops generation: an unknown or malformed
+	// tool slot can leave a round "unanswered", and the monitor
+	// settles the run from the doc.
 	const requestGuard = hook(GenerationTask, {
 		beforeRequest: async (_input, api, context) => {
 			let row: SubagentRun | null;
@@ -1568,10 +1582,47 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
 					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
-					log.warn("subagent lost its desktop lease — aborting the request", err, {
-						run: row.id,
-						desktop: row.desktop,
+					if (err instanceof DesktopLeaseError) {
+						// Lost ownership is terminal — the request dies
+						// unanswered and the monitor settles the run failed.
+						log.warn("subagent lost its desktop lease — aborting the request", err, {
+							run: row.id,
+							desktop: row.desktop,
+						});
+						abortPiTask(api);
+						return undefined;
+					}
+					// Any other claim failure is transient podman work —
+					// killing the run for it would burn the recovery ruling.
+					// The request still aborts (the lease is unverifiable),
+					// but a continuation intent persists at a fresh rev
+					// inside the lane: the aborted submission's settle reads
+					// inputIntent and stays out, and the scan's bounded
+					// recovery re-drives the run. The consumed input's
+					// entry is already in the transcript, so the intent is
+					// a nudge to continue — replaying the task brief would
+					// inject a stale duplicate, and the aborted steer or
+					// answer text is not stored to replay.
+					await lane(row.id, async () => {
+						const cur = runs.get(row.id);
+						if (cur === null || cur.status !== "running" || cur.stopRequested) return;
+						// A persisted intent or a newer input already owns
+						// the next submission — the settle early-returns into
+						// it without another intent.
+						if (cur.inputIntent === null && cur.inputRev === bound.inputRev) {
+							runs.update(row.id, {
+								inputRev: cur.inputRev + 1,
+								inputIntent: RECOVERY_NUDGE,
+								inputMode: null,
+							});
+						}
+						recoveryPending.add(row.id);
 					});
+					log.warn(
+						"subagent desktop claim failed — the request aborts; the run stays owned for recovery",
+						err,
+						{ run: row.id, desktop: row.desktop },
+					);
 					abortPiTask(api);
 					return undefined;
 				}
@@ -2153,7 +2204,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						});
 						return { kind: "blocked", reason: msg };
 					}
-					if (/is controlled by/.test(msg)) {
+					if (err instanceof DesktopLeaseError) {
 						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
 						return { kind: "blocked", reason: msg };
 					}
@@ -2900,7 +2951,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					recoveryPending.add(row.id);
 				}
 			}
-			// 5. Only now may scheduling, wakes and drains start.
+			// 5. Only now may scheduling and drains start. Phase C's
+			// settle wakes already ran — a finalize delivering its
+			// notice during recovery is the intended early signal, not
+			// a breach of the ordering.
 			resumed = true;
 			harness.resume();
 			ticker.id = setInterval(() => {

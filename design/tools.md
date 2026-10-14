@@ -5,11 +5,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, eighteen:
+Hand-rolled, zod-validated, twenty:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
 `vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
-`fetch` `history_search` `sandbox` `script` `ui`
+`fetch` `history_search` `sandbox` `script` `subagent` `desktop` `ui`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -87,10 +87,12 @@ read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
 
 External agents arrived as `delegate` (see `Delegation`); MCP arrived
-as a skill over goblin's own mcporter (see `Web access`). Subagent
-tools do not exist — they arrive with the feature that needs them,
-designed then, not spec'd now. `script` composes the other tools inside
-one call and is not a subagent — see `Scripting`.
+as a skill over goblin's own mcporter (see `Web access`). In-process
+subagents arrived as `subagent` and `desktop` (see
+[Subagents & computer use](subagents.md)) — mounted only while the
+`subagents` config block produces a live owner, and deliberately
+outside the `script` callable set. `script` composes the other tools
+inside one call and is not a subagent — see `Scripting`.
 
 ## Scripting
 
@@ -137,9 +139,9 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   `memory_search`). Allowed: `read_file` `write_file` `edit_file`
   `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
   `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
-  sink), `mail` (per-send human approval), `delegate` `program` (spawn
-  agents / standing work), `vision` (a model call). Excluding writes
-  would be theater — `bash` writes.
+  sink), `mail` (per-send human approval), `delegate` `program`
+  `subagent` `desktop` (spawn agents / standing work), `vision` (a
+  model call). Excluding writes would be theater — `bash` writes.
 - **Nested calls are real calls.** Each one is zod-validated against
   the tool's own input schema (the SDK validates direct calls; nothing
   validates inside the VM), runs the tool's live `execute` — looked up

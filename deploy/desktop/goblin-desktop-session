@@ -40,6 +40,12 @@ for _ in $(seq 1 50); do
 	xdpyinfo -display :99 >/dev/null 2>&1 && break
 	sleep 0.2
 done
+# A display that never came up must kill the container, not boot a
+# permanently headless session that surfaces later as cua errors.
+xdpyinfo -display :99 >/dev/null 2>&1 || {
+	echo "Xvfb on :99 never came up — refusing to start a headless session" >&2
+	exit 1
+}
 
 xfce4-session &
 # at-spi bus + registry: at-spi-bus-launcher starts its own daemon for

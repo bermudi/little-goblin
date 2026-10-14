@@ -325,6 +325,9 @@ describe("sandboxes lifecycle", () => {
 		const { sandboxes, store } = rig(engine);
 		const out = await sandboxes.exec(conv, "true", execOpts);
 		expect(out.note).toContain("adopted");
+		// The container was attached at adoption — the note must say so
+		// or the model would run code believing it is isolated.
+		expect(out.note).toContain("network is ON");
 		const row = store.get(conv)!;
 		expect(row.image).toBe("docker.io/library/debian:stable-slim");
 		expect(row.network).toBe(true);

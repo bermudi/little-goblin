@@ -384,6 +384,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 					lastUsedAt: now,
 				};
 				store.put(adopted);
+				// The tool contract says network is OFF until enabled — an
+				// adopted container that happens to be attached must say
+				// so, or the model runs code believing it is isolated.
+				const net = adopted.network ? "; its network is ON" : "";
 				if (ins.state === "stopped") {
 					signal?.throwIfAborted();
 					await podman.start(name, conv);
@@ -391,13 +395,13 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 					log.info("sandbox adopted and started", { conversation: conv, container: name });
 					return {
 						container: name,
-						note: "adopted an existing sandbox container and restarted it",
+						note: `adopted an existing sandbox container and restarted it${net}`,
 					};
 				}
 				log.info("sandbox adopted", { conversation: conv, container: name });
 				return {
 					container: name,
-					note: "adopted an existing sandbox container for this conversation",
+					note: `adopted an existing sandbox container for this conversation${net}`,
 				};
 			}
 			if (ins.state === "stopped") {
@@ -553,8 +557,12 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		dispatch: (container: string) => Promise<T>,
 	): Promise<{ result: T; note?: string }> {
 		await sweepOnce(conv);
-		store.touch(conv, Date.now());
-		const ready = await lane(conv, () => ensureLocked(conv));
+		const ready = await lane(conv, () => {
+			// Inside the lane so a foreign sweep's recheck sees the
+			// fresh row before it can remove this container.
+			store.touch(conv, Date.now());
+			return ensureLocked(conv);
+		});
 		const r = await dispatch(ready.container);
 		let note = ready.note;
 		if (r.timedOut || opts.abortSignal?.aborted === true || r.outputCapped === true) {
@@ -589,8 +597,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
 			opts?.abortSignal?.throwIfAborted();
-			store.touch(conv, Date.now());
-			const ready = await lane(conv, () => ensureLocked(conv, opts?.abortSignal));
+			const ready = await lane(conv, () => {
+				store.touch(conv, Date.now());
+				return ensureLocked(conv, opts?.abortSignal);
+			});
 			opts?.abortSignal?.throwIfAborted();
 			await podman.cp(ready.container, hostPath, containerPath, conv);
 			store.touch(conv, Date.now());
@@ -602,8 +612,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
 			opts?.abortSignal?.throwIfAborted();
-			store.touch(conv, Date.now());
-			const ready = await lane(conv, () => ensureLocked(conv, opts?.abortSignal));
+			const ready = await lane(conv, () => {
+				store.touch(conv, Date.now());
+				return ensureLocked(conv, opts?.abortSignal);
+			});
 			opts?.abortSignal?.throwIfAborted();
 			// -f follows a leaf symlink but the export contract is
 			// regular files only — reject links, dirs and devices alike.
@@ -651,8 +663,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
 			opts?.abortSignal?.throwIfAborted();
-			store.touch(conv, Date.now());
 			const out = await lane(conv, async () => {
+				store.touch(conv, Date.now());
 				const ready = await ensureLocked(conv, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
 				await applyNetwork(ready.container, enabled, conv, opts?.abortSignal);
@@ -675,8 +687,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
 			opts?.abortSignal?.throwIfAborted();
-			store.touch(conv, Date.now());
 			return await lane(conv, async () => {
+				store.touch(conv, Date.now());
 				opts?.abortSignal?.throwIfAborted();
 				// Inside the lane so a racing act can't resurrect a stale
 				// row — a live run would lose its state under reset.

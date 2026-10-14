@@ -7,6 +7,7 @@ import { constants } from "node:fs";
 import {
 	closeSync,
 	fsyncSync,
+	linkSync,
 	openSync,
 	renameSync,
 	statSync,
@@ -16,16 +17,32 @@ import {
 import { dirname, join } from "node:path";
 
 export function durableWriteFile(path: string, content: string, modeIfNew = 0o644): void {
-	durableWriteBuffer(path, Buffer.from(content, "utf8"), modeIfNew);
+	durableWriteBuffer(path, Buffer.from(content, "utf8"), modeIfNew, false);
 }
 
 /** The bytes twin — fetched PDFs and other binary state get the same
  *  tmp+fsync+rename ritual as every other whole-file write. */
 export function durableWriteBytes(path: string, data: Uint8Array, modeIfNew = 0o644): void {
-	durableWriteBuffer(path, Buffer.from(data), modeIfNew);
+	durableWriteBuffer(path, Buffer.from(data), modeIfNew, false);
 }
 
-function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void {
+/** The create-only twin: same durable ritual, but the destination
+ *  appears by link(2) instead of rename(2) — EEXIST where rename
+ *  would silently replace. Collision-numbering callers retry on it. */
+export function durableWriteBytesExclusive(
+	path: string,
+	data: Uint8Array,
+	modeIfNew = 0o644,
+): void {
+	durableWriteBuffer(path, Buffer.from(data), modeIfNew, true);
+}
+
+function durableWriteBuffer(
+	path: string,
+	buf: Buffer,
+	modeIfNew: number,
+	exclusive: boolean,
+): void {
 	let mode = modeIfNew;
 	try {
 		mode = statSync(path).mode & 0o777;
@@ -63,7 +80,24 @@ function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void 
 		}
 		throw err;
 	}
-	renameSync(tmp, path);
+	if (exclusive) {
+		// link(2) is create-only — a taken name fails EEXIST and the
+		// incumbent survives, where rename(2) would clobber it. Same
+		// filesystem as tmp (same dir), so it never crosses devices.
+		try {
+			linkSync(tmp, path);
+		} catch (err) {
+			try {
+				unlinkSync(tmp);
+			} catch {
+				// best-effort cleanup, same bar as the write path
+			}
+			throw err;
+		}
+		unlinkSync(tmp);
+	} else {
+		renameSync(tmp, path);
+	}
 	// fsync the directory so the rename itself is durable, not just the
 	// file's data. Only an explicitly unsupported directory fsync may
 	// degrade; EIO and other failures leave rename durability unknown.

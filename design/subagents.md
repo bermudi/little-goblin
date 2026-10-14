@@ -499,7 +499,15 @@ built once).
   ownership; inspection/start/network errors instead retain the run and
   refuse boot resume, leaving recovery for a later successful startup.
   Request-guard snapshot and routing failures abort the request, not
-  merely throw a hook exception that Pi would report and ignore.
+  merely throw a hook exception that Pi would report and ignore. The
+  same claim split rules a live run's next request: a typed
+  `DesktopLeaseError` settles as lost ownership, while any other claim
+  failure persists a continuation intent at a fresh revision and
+  aborts the request — the consumed input's entry already lives in
+  the transcript, so the intent is a goblin-voiced nudge, not a
+  replayed operator message. The monitor's `inputIntent` preemption
+  hands the run to the same bounded recovery budget instead of
+  terminal-failing on one podman blip.
 - **Shutdown never delivers a retryable notice.** Wakes check runtime
   admission before history submission; the owner fences notices when
   closing begins. A stop completing during close retains `noticePending`

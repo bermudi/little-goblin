@@ -98,6 +98,16 @@ export type DesktopAction =
 	| { kind: "launch"; app: "chromium"; url?: string }
 	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
 
+// cua-driver's list_windows payload — a subprocess boundary, so it is
+// zod-checked like every other external input: a driver upgrade that
+// drifts the shape gets a loud refusal, never a bare TypeError past
+// the tool gate.
+const listWindowsSchema = z.object({
+	windows: z
+		.array(z.object({ pid: z.number(), app_name: z.string(), z_index: z.number() }))
+		.optional(),
+});
+
 export interface DesktopRow {
 	name: string;
 	container: string;
@@ -621,6 +631,17 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			if (row === null) {
 				// A labelled container with no row: adopt — the inspect
 				// tells us its image, network state and boot generation.
+				// Adoption counts against the pool cap exactly like
+				// allocate: a lost database must not re-grow the pool
+				// past max one container at a time.
+				const max = cfg().max;
+				if (store.list().length >= max) {
+					throw refuse(
+						name,
+						"adopt",
+						`desktop pool is full (max ${max}) — refusing to adopt the existing container; destroy a desktop first`,
+					);
+				}
 				const adopted = freshRow(name, {
 					image: ins.image,
 					network: ins.networks.includes(networkName),
@@ -1150,6 +1171,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const container = containerNameForDesktop(name);
 				const ins = await podman.inspect(container);
 				opts?.abortSignal?.throwIfAborted();
+				// Both absent means the name was never a desktop — a false
+				// success on the destructive verb is worse than a refusal.
+				// Either half present stays idempotent: a row/container
+				// skew is exactly what destroy reconciles.
+				if (row === null && ins.state === "missing") {
+					throw refuse(name, "destroy", `no desktop named ${name}`, by);
+				}
 				if (ins.state !== "missing") {
 					requireOurs(name, ins);
 					await podman.rm(container);
@@ -1220,6 +1248,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const path = join(dir, `${ready.row.createdAt}-${ready.row.shotSeq + 1}-${uuid}.png`);
 				durableWriteBytes(path, bytes);
 				const obsId = mintObservation(ready.row, sha256Hex(bytes), uuid);
+				log.info("desktop screenshot", { desktop: name, observation: obsId, path });
 				return {
 					id: obsId,
 					path,
@@ -1235,10 +1264,19 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const ready = await ensureLocked(name);
 				let pid = opts?.pid;
 				if (pid === undefined) {
-					const windows = (await cuaCall(ready.container, "list_windows", {}, name)) as {
-						windows?: Array<{ pid: number; app_name: string; z_index: number }>;
-					};
-					const list = windows.windows ?? [];
+					const parsed = listWindowsSchema.safeParse(
+						await cuaCall(ready.container, "list_windows", {}, name),
+					);
+					if (!parsed.success) {
+						throw refuse(
+							name,
+							"inspect",
+							`cua-driver list_windows returned an unexpected shape on desktop ${name}`,
+							undefined,
+							parsed.error,
+						);
+					}
+					const list = parsed.data.windows ?? [];
 					// The point of inspect is the app the operator is looking
 					// at — skip the desktop chrome (panel, desktop), take the
 					// topmost real window.
@@ -1264,6 +1302,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						: undefined;
 				const hash = typeof shot === "string" ? sha256Hex(shot) : sha256Hex(stableJson(state));
 				const obsId = mintObservation(ready.row, hash, randomUUID());
+				log.info("desktop inspect", { desktop: name, observation: obsId, pid });
 				return {
 					id: obsId,
 					state,
@@ -1564,6 +1603,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						`could not read ${path} from desktop ${name} (exit ${r.timedOut ? "timeout" : r.exitCode})`,
 					);
 				}
+				log.info("desktop export", {
+					desktop: name,
+					path,
+					bytes: r.stdout.byteLength,
+				});
 				return {
 					data: r.stdout,
 					...(ready.note !== undefined ? { note: ready.note } : {}),

@@ -97,6 +97,13 @@ process.on("uncaughtException", (err: unknown) => {
 	process.exit(1);
 });
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// Long enough for the sinks' final flushes and polling's offset
+// confirm; short enough that a wedged Telegram API can't hold a deploy.
+// Declared above boot(): the startup-failure cleanup below budgets a
+// wedged close with the same constant the shutdown drain uses.
+const SHUTDOWN_DRAIN_MS = 10_000;
+
 async function boot() {
 	ensureHomeLayout();
 	// /api/*/status reports from this — uptime and the boot timestamp.
@@ -750,7 +757,24 @@ async function boot() {
 		} catch (err) {
 			log.error("subagents startup failed — closing the owner before disabling", err);
 			if (subagents !== null) {
-				await subagents.close();
+				// close() on a half-open owner can itself throw, or wedge
+				// on a lane/monitor promise that never settles — either
+				// would turn the fail-open catch into the boot failure it
+				// exists to prevent. Same best-effort budget as the
+				// shutdown drain: join it if it lands, disable anyway.
+				const closed = subagents
+					.close()
+					.then(() => true)
+					.catch((closeErr: unknown) => {
+						log.warn("subagents close after failed startup threw — disabling anyway", closeErr);
+						return false;
+					});
+				const joined = await Promise.race([closed, sleep(SHUTDOWN_DRAIN_MS).then(() => false)]);
+				if (!joined) {
+					log.warn("subagents close after failed startup wedged — disabling anyway", {
+						budgetMs: SHUTDOWN_DRAIN_MS,
+					});
+				}
 			}
 			subagents = null;
 			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
@@ -978,10 +1002,6 @@ const {
 	subagents,
 } = booted;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-// Long enough for the sinks' final flushes and polling's offset
-// confirm; short enough that a wedged Telegram API can't hold a deploy.
-const SHUTDOWN_DRAIN_MS = 10_000;
 let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {

@@ -58,6 +58,7 @@ import {
 	type InboxPayload,
 } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
+import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
 
@@ -155,75 +156,10 @@ export interface RunningBot {
 // message drops (the guest router above already took the mentions).
 // Read per-message so mini-app saves apply without a restart.
 // Refusal sends are detached from the middleware path: a stranger DM
-// is denied immediately and the fixed refusal line rides its own
-// bounded send — at most this many actual sends in flight per gate
-// instance. A wedged Telegram boundary can pin slots, never stall
-// grammY polling or delay an operator's next().
-const REFUSAL_SEND_SLOTS = 8;
-const REFUSAL_TIMEOUT_MS = 30_000;
-
-// Grammy's node shim types the signal param as abort-controller's
-// AbortSignal; the runtime takes the global one. A derived alias keeps
-// the call typed without importing the transitive shim package.
-type GrammySignal = NonNullable<Parameters<Api["sendMessage"]>[3]>;
-
-function refusalDispatcher(refusalTimeoutMs: number) {
-	// One entry per user with an unsettled refusal send — dedup and the
-	// slot cap ride the same map. The slot is held until the send ACTUALLY
-	// settles (not merely timed out): a boundary that ignores the abort
-	// keeps its slot, so abandoned requests stay bounded.
-	const pendingRefusals = new Map<number, Promise<void>>();
-	return (api: Api, id: number, chat: number, text: string): void => {
-		if (pendingRefusals.has(id)) {
-			log.info("dm refusal coalesced — already pending", {
-				userId: id,
-				chat,
-				pending: pendingRefusals.size,
-			});
-			return;
-		}
-		if (pendingRefusals.size >= REFUSAL_SEND_SLOTS) {
-			log.warn("dm refusal dropped — refusal send slots exhausted", {
-				userId: id,
-				chat,
-				pending: pendingRefusals.size,
-			});
-			return;
-		}
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), refusalTimeoutMs);
-		timer.unref?.();
-		log.info("telegram refusal scheduled", { userId: id, chat, pending: pendingRefusals.size + 1 });
-		const send = Promise.resolve()
-			.then(() => api.sendMessage(chat, text, {}, controller.signal as unknown as GrammySignal))
-			.then(() => {
-				log.info("telegram refusal delivered", { userId: id, chat, pending: pendingRefusals.size });
-			})
-			.catch((err: unknown) => {
-				log.warn("telegram refusal failed", err, {
-					userId: id,
-					chat,
-					pending: pendingRefusals.size,
-				});
-			})
-			.finally(() => {
-				clearTimeout(timer);
-				pendingRefusals.delete(id);
-			});
-		pendingRefusals.set(id, send);
-	};
-}
-
-const refusalDispatchers = new WeakMap<Api, ReturnType<typeof refusalDispatcher>>();
-function sendRefusal(api: Api, id: number, chat: number, text: string): void {
-	let dispatch = refusalDispatchers.get(api);
-	if (dispatch === undefined) {
-		dispatch = refusalDispatcher(REFUSAL_TIMEOUT_MS);
-		refusalDispatchers.set(api, dispatch);
-	}
-	dispatch(api, id, chat, text);
-}
-
+// is denied immediately and the fixed refusal line rides the bounded
+// dispatcher in refusals.ts — dedup per (user, chat), a global slot
+// cap, one timeout each. A wedged Telegram boundary can pin slots,
+// never stall grammY polling or delay an operator's next().
 export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
 	const dispatch =
 		opts?.refusalTimeoutMs === undefined ? sendRefusal : refusalDispatcher(opts.refusalTimeoutMs);

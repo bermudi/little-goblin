@@ -96,6 +96,30 @@ const sweepFailures: string[] = [];
 const createdContainers = new Set<string>();
 const createdNetworks = new Set<string>();
 
+// The ownership-tracking wrapper the live gate puts over the real
+// adapter: a name joins the sweep sets only after its create returned.
+// The fake-edge tests below exercise this exact function — a re-stated
+// copy would pin the test, not the gate.
+function trackCreatedPodman(base: Podman, containers: Set<string>, networks: Set<string>): Podman {
+	return {
+		...base,
+		create: async (spec, conv) => {
+			await base.create(spec, conv);
+			containers.add(spec.name);
+		},
+		networkEnsure: async (name, conv) => {
+			await base.networkEnsure(name, conv);
+			networks.add(name);
+		},
+	};
+}
+
+// The collision probe — a unique per-run token makes "exists" mean
+// "created by another run". Same extraction rule as the tracker.
+async function refuseCollision(what: string, exists: () => Promise<boolean>): Promise<void> {
+	if (await exists()) throw new Error(`probe ${what} already exists — refusing`);
+}
+
 async function probeExists(name: string): Promise<boolean> {
 	const r = await boundedRun(spawnProc(["podman", "inspect", name]), {
 		timeoutMs: 30_000,
@@ -148,52 +172,51 @@ const desktops: Desktops = {
 	catFile: async () => ({ data: new Uint8Array() }),
 };
 
-// The preflight/ownership invariant itself, on a fake edge: a
-// colliding candidate must be refused before any create and never
-// removed — only names whose create actually succeeded are cleaned.
+// The preflight/ownership invariant itself, on a fake edge — exercised
+// against the real helpers the live beforeAll runs, not a re-statement
+// of them (the previous inline copies could never fail).
 describe("env-gate ownership regression (fake edge)", () => {
-	test("a preexisting candidate container/network is refused and never removed", async () => {
-		const rmCalls: string[] = [];
-		const netRmCalls: string[] = [];
-		const created = new Set<string>();
-		const nets = new Set<string>();
-		const exists = new Set(["collide-sbx"]);
-		const netExists = new Set(["collide-net"]);
-		// Preflight, identical in shape to the live gate's beforeAll.
-		const refused = exists.has("collide-sbx") || netExists.has("collide-net");
-		expect(refused).toBe(true);
-		// The cleanup loop over the (empty) creator sets must call rm
-		// zero times — a refused preflight owns nothing.
-		for (const n of created) {
-			if (exists.has(n)) rmCalls.push(n);
-		}
-		for (const n of nets) netRmCalls.push(n);
-		expect(rmCalls).toEqual([]);
-		expect(netRmCalls).toEqual([]);
+	test("a preexisting candidate is refused by the real collision probe", async () => {
+		await expect(refuseCollision("container c", async () => true)).rejects.toThrow(
+			"already exists",
+		);
+		// A clear probe must pass — the refusal is the probe's verdict,
+		// not a fixed answer.
+		await refuseCollision("container c", async () => false);
 	});
 
 	test("ownership is marked only after a successful create — a failed create is not swept", async () => {
-		const created = new Set<string>();
-		const rmCalls: string[] = [];
-		const fake = {
-			create: async (name: string) => {
-				throw new Error(`create ${name} failed after container start`);
-			},
-			rm: async (name: string) => {
-				rmCalls.push(name);
-			},
-		};
-		// The live gate's wrapper marks ONLY on success.
-		const wrapped = {
-			create: async (name: string) => {
-				await fake.create(name);
-				created.add(name);
-			},
-		};
-		await expect(wrapped.create("partial")).rejects.toThrow("failed");
-		expect(created.size).toBe(0);
-		for (const n of created) await fake.rm(n);
-		expect(rmCalls).toEqual([]);
+		const containers = new Set<string>();
+		const networks = new Set<string>();
+		const failing = trackCreatedPodman(
+			{
+				create: async () => {
+					throw new Error("create failed after container start");
+				},
+				networkEnsure: async () => {
+					throw new Error("network create failed");
+				},
+			} as unknown as Podman,
+			containers,
+			networks,
+		);
+		await expect(failing.create({ name: "partial" } as never, "conv")).rejects.toThrow("failed");
+		await expect(failing.networkEnsure("partial-net", "conv")).rejects.toThrow("failed");
+		expect(containers.size).toBe(0);
+		expect(networks.size).toBe(0);
+		// And the same wrapper DOES mark a create that lands.
+		const ok = trackCreatedPodman(
+			{
+				create: async () => {},
+				networkEnsure: async () => {},
+			} as unknown as Podman,
+			containers,
+			networks,
+		);
+		await ok.create({ name: "landed" } as never, "conv");
+		await ok.networkEnsure("net-landed", "conv");
+		expect([...containers]).toEqual(["landed"]);
+		expect([...networks]).toEqual(["net-landed"]);
 	});
 });
 
@@ -218,27 +241,15 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		mkdirSync(EVIDENCE_DIR, { recursive: true });
 		setLogFile(join(EVIDENCE_DIR, "env.log"));
 		const base = makePodman();
-		podman = {
-			...base,
-			create: async (spec, conv) => {
-				await base.create(spec, conv);
-				createdContainers.add(spec.name);
-			},
-			networkEnsure: async (name, conv) => {
-				await base.networkEnsure(name, conv);
-				createdNetworks.add(name);
-			},
-		};
-		if (await probeExists(CONTAINER)) {
-			throw new Error(`probe container ${CONTAINER} already exists — refusing`);
-		}
-		const net = await boundedRun(spawnProc(["podman", "network", "inspect", NETWORK]), {
-			timeoutMs: 30_000,
-			maxOutput: 1 << 20,
+		podman = trackCreatedPodman(base, createdContainers, createdNetworks);
+		await refuseCollision(`container ${CONTAINER}`, () => probeExists(CONTAINER));
+		await refuseCollision(`network ${NETWORK}`, async () => {
+			const net = await boundedRun(spawnProc(["podman", "network", "inspect", NETWORK]), {
+				timeoutMs: 30_000,
+				maxOutput: 1 << 20,
+			});
+			return net.exitCode === 0;
 		});
-		if (net.exitCode === 0) {
-			throw new Error(`probe network ${NETWORK} already exists — refusing`);
-		}
 		sandboxStore = openSandboxes(join(cwd, "sandboxes.sqlite"));
 		sandboxes = makeSandboxes({
 			podman,

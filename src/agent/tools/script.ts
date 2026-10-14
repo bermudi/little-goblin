@@ -340,6 +340,10 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 			const pieces = result.output
 				.filter((item): item is { type: "text"; text: string } => item.type === "text")
 				.map((item) => item.text);
+			// image() output can't ride a text result (design ruling —
+			// no image bytes out of the tool), but dropping it silently
+			// reads as "the script produced nothing" — count it.
+			const dropped = result.output.length - pieces.length;
 			const value = result.ok ? result.value : undefined;
 			if (value !== undefined) {
 				pieces.push(typeof value === "string" ? value : JSON.stringify(value, null, 2));
@@ -357,9 +361,14 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 				footer = truncatedFooter(file, body.length);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);
-			const status = result.ok
-				? `Script completed in ${seconds}s · ${calls.length} tool calls`
-				: `Script failed (${result.error.kind}) in ${seconds}s · ${calls.length} tool calls`;
+			const status =
+				(result.ok
+					? `Script completed in ${seconds}s`
+					: `Script failed (${result.error.kind}) in ${seconds}s`) +
+				` · ${calls.length} tool calls` +
+				(dropped > 0
+					? ` · ${dropped} non-text output item${dropped === 1 ? "" : "s"} discarded`
+					: "");
 			// Status and footer stay outside the fence — they're ours.
 			const text =
 				status + "\n" + (tainted ? fenceUntrusted("web", TAINT_NOTE, window) : window) + footer;

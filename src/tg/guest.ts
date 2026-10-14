@@ -37,6 +37,7 @@ import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { sendRefusal } from "./refusals.ts";
 
 // ---------- state: summons dedup (rows, not config) ----------
 
@@ -646,7 +647,10 @@ export async function routeMemberGuestMessage(
 			update: updateId,
 			surface: "member",
 		});
-		void sendMemberLine(env, chatId, GUEST_REFUSAL, msg.message_thread_id);
+		// The same bounded dispatcher the DM gate uses — a stranger
+		// mentioning the bot in a group must not amplify into one
+		// unbounded outbound send per mention.
+		sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
 		return true;
 	}
 

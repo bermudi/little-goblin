@@ -748,6 +748,10 @@ async function boot() {
 			// message can reach the tools.
 			await subagents.resume();
 		} catch (err) {
+			log.error("subagents startup failed — closing the owner before disabling", err);
+			if (subagents !== null) {
+				await subagents.close();
+			}
 			subagents = null;
 			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
 		}

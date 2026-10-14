@@ -17,8 +17,7 @@
 // replay-unsafe; only observation and the terminal writes are
 // replay:"safe".
 
-import { mkdirSync, rmSync, statSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
@@ -79,6 +78,7 @@ import type { SubagentsConfig } from "./config.ts";
 import {
 	CUA_TOOLS,
 	DesktopError,
+	DesktopLeaseError,
 	type Desktops,
 	type CuaTool,
 	type LeaseHolder,
@@ -106,7 +106,7 @@ import {
 	WORKER_BASH_DESCRIPTION,
 	WORKER_PROMPT,
 } from "./subagent-prompts.ts";
-import { BOX_FILE_MAX_BYTES, exportNamedBytes, resolveImport } from "./box-files.ts";
+import { exportNamedBytes, readImport } from "./box-files.ts";
 import { log } from "./log.ts";
 
 export class SubagentError extends Error {
@@ -337,13 +337,6 @@ function envErr(
 ): Result<never, FileError> {
 	return err<never, FileError>(new FileError(code, msg, path));
 }
-function procError(stderr: string, path: string): ConstructorParameters<typeof FileError>[0] {
-	if (/no such|cannot stat|not found/i.test(stderr)) return "not_found";
-	if (/Permission denied/i.test(stderr)) return "permission_denied";
-	if (/Not a directory/i.test(stderr)) return "not_directory";
-	if (/Is a directory/i.test(stderr)) return "is_directory";
-	return "unknown";
-}
 function aborted(): Result<never, FileError> {
 	return envErr("aborted", "operation aborted by the run's cancellation context");
 }
@@ -391,7 +384,7 @@ class SandboxEnv implements ExecutionEnv {
 		});
 		return result;
 	}
-	private check(
+	private async check(
 		r: {
 			stdout: string;
 			stderr: string;
@@ -399,8 +392,9 @@ class SandboxEnv implements ExecutionEnv {
 			timedOut: boolean;
 			truncated: boolean;
 		},
-		path?: string,
-	): Result<void, FileError> {
+		path: string | undefined,
+		context: Context,
+	): Promise<Result<void, FileError>> {
 		if (r.timedOut) {
 			return envErr("unknown", "sandbox command timed out", path);
 		}
@@ -412,20 +406,57 @@ class SandboxEnv implements ExecutionEnv {
 		}
 		if (r.exitCode !== 0) {
 			return envErr(
-				procError(r.stderr, path ?? ""),
+				path === undefined ? "unknown" : await this.fileError(path, context),
 				`${path ?? "command"}: ${r.stderr.trim()}`,
 				path,
 			);
 		}
 		return ok<void, FileError>(undefined);
 	}
+	private async fileError(
+		path: string,
+		context: Context,
+	): Promise<ConstructorParameters<typeof FileError>[0]> {
+		// Only our probe's exit statuses classify errors; filenames and localized
+		// command diagnostics never participate in control flow.
+		const probe = await this.run(
+			[
+				"/bin/sh",
+				"-c",
+				'if [ -d "$1" ]; then exit 83; fi; p="$1"; while [ "$p" != / ]; do p=$(dirname -- "$p"); [ ! -e "$p" ] || [ -d "$p" ] || exit 82; [ ! -d "$p" ] || [ -x "$p" ] || exit 81; done; [ -e "$1" ] || [ -L "$1" ] || exit 80; [ -r "$1" ] && [ -w "$1" ] || exit 81; exit 1',
+				"file-error",
+				this.resolve(path),
+			],
+			undefined,
+			context,
+		);
+		if (probe.timedOut || probe.truncated) return "unknown";
+		if (context.abortSignal?.aborted) return "aborted";
+		switch (probe.exitCode) {
+			case 80:
+				return "not_found";
+			case 81:
+				return "permission_denied";
+			case 82:
+				return "not_directory";
+			case 83:
+				return "is_directory";
+			default:
+				return "unknown";
+		}
+	}
 	private async runOut(
 		argv: string[],
 		path: string,
 		context: Context,
+		codes: Readonly<Record<number, ConstructorParameters<typeof FileError>[0]>> = {},
 	): Promise<Result<string, FileError>> {
 		const r = await this.run(argv, undefined, context);
-		const bad = this.check(r, path);
+		const code = r.exitCode === null ? undefined : codes[r.exitCode];
+		if (!r.timedOut && !r.truncated && !context.abortSignal?.aborted && code !== undefined) {
+			return envErr(code, `${path}: ${r.stderr.trim()}`, path);
+		}
+		const bad = await this.check(r, path, context);
 		if (!bad.ok) return bad;
 		return ok<string, FileError>(r.stdout);
 	}
@@ -448,7 +479,7 @@ class SandboxEnv implements ExecutionEnv {
 			return envErr("unknown", `${path} exceeds the 100 MiB read bound — no partial read`, path);
 		}
 		if (result.timedOut || result.exitCode !== 0) {
-			return envErr(procError(result.stderr, path), `${path}: ${result.stderr.trim()}`, path);
+			return envErr(await this.fileError(path, context), `${path}: ${result.stderr.trim()}`, path);
 		}
 		if (context.abortSignal?.aborted) return aborted();
 		return ok<Uint8Array, FileError>(result.stdout);
@@ -513,28 +544,37 @@ class SandboxEnv implements ExecutionEnv {
 	): Promise<Result<void, FileError>> {
 		if (context.abortSignal?.aborted) return aborted();
 		// Content never enters argv: host staging under transferRoot,
-		// cpIn into the guest, an in-guest shell op moves it. The guest
-		// stage is removed inside the same script, success or failure.
+		// cpIn into the guest, an in-guest shell op moves it. Cleanup must
+		// also cover cancellation before that script ever dispatches.
 		mkdirSync(this.transferRoot, { recursive: true });
 		const staged = join(
 			this.transferRoot,
 			`w-${Date.now()}-${Math.random().toString(16).slice(2)}`,
 		);
 		await Bun.write(staged, content);
+		const guest = `${STAGE}-${Math.random().toString(16).slice(2)}`;
 		try {
 			if (context.abortSignal?.aborted) return aborted();
-			const guest = `${STAGE}-${Math.random().toString(16).slice(2)}`;
-			await this.sandboxes.cpIn(this.origin, staged, guest);
+			await this.sandboxes.cpIn(
+				this.origin,
+				staged,
+				guest,
+				context.abortSignal === undefined ? undefined : { abortSignal: context.abortSignal },
+			);
 			if (context.abortSignal?.aborted) return aborted();
 			const r = await this.run(
 				["/bin/sh", "-c", destScript, "env", guest, this.resolve(path)],
 				undefined,
 				context,
 			);
-			const bad = this.check(r, path);
+			const bad = await this.check(r, path, context);
 			if (!bad.ok) return bad;
 			return ok<void, FileError>(undefined);
+		} catch (err) {
+			if (context.abortSignal?.aborted) return aborted();
+			throw err;
 		} finally {
+			await this.guestRm([guest]);
 			rmSync(staged, { force: true });
 		}
 	}
@@ -572,11 +612,11 @@ class SandboxEnv implements ExecutionEnv {
 			undefined,
 			context,
 		);
-		return this.check(r, path);
+		return this.check(r, path, context);
 	}
 	async flushFile(path: string, context: Context): Promise<Result<void, FileError>> {
 		const r = await this.run(["sync"], undefined, context);
-		const bad = this.check(r, path);
+		const bad = await this.check(r, path, context);
 		if (!bad.ok) return envErr("unknown", `sync failed for ${path}`, path);
 		return ok<void, FileError>(undefined);
 	}
@@ -590,7 +630,7 @@ class SandboxEnv implements ExecutionEnv {
 			undefined,
 			context,
 		);
-		return this.check(r, sourcePath);
+		return this.check(r, sourcePath, context);
 	}
 	private parseStat(
 		stdout: string,
@@ -640,6 +680,7 @@ class SandboxEnv implements ExecutionEnv {
 			],
 			path,
 			context,
+			{ 2: "not_found", 3: "not_directory" },
 		);
 		if (!out.ok) return out;
 		const chunks = out.value.split("\0");
@@ -684,7 +725,7 @@ class SandboxEnv implements ExecutionEnv {
 			undefined,
 			context,
 		);
-		return this.check(r, path);
+		return this.check(r, path, context);
 	}
 	async remove(
 		path: string,
@@ -696,7 +737,7 @@ class SandboxEnv implements ExecutionEnv {
 		if (options?.force) argv.push("-f");
 		argv.push("--", this.resolve(path));
 		const r = await this.run(argv, undefined, context);
-		return this.check(r, path);
+		return this.check(r, path, context);
 	}
 	async createTempDir(
 		prefix: string | undefined,
@@ -738,13 +779,14 @@ class SandboxEnv implements ExecutionEnv {
 			});
 			if (result.timedOut || result.exitCode !== 0) {
 				log.warn("sandbox env cleanup failed", {
-					paths: paths.length,
+					conversation: this.origin,
+					paths,
 					exitCode: result.exitCode,
 					timedOut: result.timedOut,
 				});
 			}
 		} catch (e) {
-			log.warn("sandbox env cleanup failed", e, { paths: paths.length });
+			log.warn("sandbox env cleanup failed", e, { conversation: this.origin, paths });
 		}
 	}
 	async exec(
@@ -1436,11 +1478,21 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// round "unanswered", and the monitor settles the run from the doc.
 	const requestGuard = hook(GenerationTask, {
 		beforeRequest: async (_input, api, context) => {
-			const doc = await api.snapshot(RunDoc, api.conversationId, context);
-			const row =
-				doc?.runId !== null && doc !== undefined && doc !== null
-					? runs.get(doc.runId)
-					: rowForConversation(String(api.conversationId));
+			let row: SubagentRun | null;
+			try {
+				const doc = await api.snapshot(RunDoc, api.conversationId, context);
+				row =
+					doc?.runId !== null && doc !== undefined && doc !== null
+						? runs.get(doc.runId)
+						: rowForConversation(String(api.conversationId));
+			} catch (err) {
+				log.error("subagent request guard read failed — aborting", err, {
+					conversation: String(api.conversationId),
+					task: String(api.taskId),
+				});
+				abortPiTask(api);
+				return undefined;
+			}
 			// No throw here — a hook failure is merely reported and the
 			// request would proceed. Every guard refuses through the
 			// real abort mark instead.
@@ -1596,22 +1648,15 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		try {
 			for (const [i, f] of requested.entries()) {
 				throwIfHalted(row.id);
-				const resolved = resolveImport(row.workspace, f);
+				const resolved = readImport(row.workspace, f);
 				if ("error" in resolved) {
 					errors.push(`${f}: ${resolved.error}`);
 					continue;
 				}
 				const base = `${String(i + 1).padStart(2, "0")}-${basename(resolved.path)}`;
 				const staged = join(stageDir, base);
-				await copyFile(resolved.path, staged);
+				writeFileSync(staged, resolved.data);
 				throwIfHalted(row.id);
-				// The source may have grown between the boundary check
-				// and the copy — the cap applies to what actually lands.
-				const stagedSize = statSync(staged).size;
-				if (stagedSize > BOX_FILE_MAX_BYTES) {
-					errors.push(`${f}: exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB import cap`);
-					continue;
-				}
 				const dest =
 					row.kind === "computer"
 						? `/home/desk/inbox/subagents/${row.id}/${base}`
@@ -1738,6 +1783,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	}
 
 	function notify(row: SubagentRun): void {
+		if (closing || harnessClosed) return;
 		const rev = row.noticeRev + 1;
 		const fresh = runs.update(row.id, { noticeRev: rev, noticePending: true });
 		let ok = false;
@@ -1789,10 +1835,14 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					throw new SubagentError("harness closed — stop cannot be confirmed");
 				}
 				const conv = await harness.conversation(asConv(row.piConversationId), ctx);
-				await conv?.abort(ctx);
+				await conv?.abort(ctx, { background: true });
 				await conv?.waitForIdle(ctx);
 			}
-			const stopped = runs.update(id, { status: "stopped", finishedAt: Date.now() });
+			const stopped = runs.update(id, {
+				status: "stopped",
+				finishedAt: Date.now(),
+				noticePending: true,
+			});
 			// A stopped row is never re-admitted — its retry budget and
 			// backoff entry are dead weight.
 			admitAttempts.delete(id);
@@ -2655,7 +2705,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		async resume() {
 			if (closing) throw new SubagentError("subagents are closed");
 			if (resumed) return;
-			resumed = true;
 			// Phase A — row decisions only, before ANY call that could
 			// enable Pi's scheduler (wait/abort submit progress).
 			// A lowered maxRuns never silently exceeds: fail loudly.
@@ -2676,6 +2725,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
 					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
+					if (!(err instanceof DesktopLeaseError)) {
+						log.error("desktop boot reconciliation failed — run retained for recovery", err, {
+							run: row.id,
+							desktop: row.desktop,
+						});
+						throw err;
+					}
 					const msg = err instanceof Error ? err.message : String(err);
 					const failed = runs.update(row.id, {
 						status: "failed",
@@ -2702,33 +2758,48 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					liveConvs.add(String(t.record.conversationId));
 				}
 			}
+			const cancelConvs = new Set(leaseFailedConvs);
+			for (const convId of liveConvs) {
+				const row = runs.byPiConversation(convId);
+				if (
+					row === null ||
+					row.stopRequested ||
+					["done", "failed", "stopped"].includes(row.status)
+				) {
+					cancelConvs.add(convId);
+				}
+			}
+			// abort()/waitForIdle() enable Pi's scheduler. Durably mark ALL
+			// forbidden tasks first, including already-checkpointed compactions
+			// that bypass the generation request hook.
+			for (const task of live.tasks) {
+				if (
+					task.record.conversationId === undefined ||
+					!cancelConvs.has(String(task.record.conversationId))
+				)
+					continue;
+				// Unlike Conversation.abort, abortTask does not resume scheduling.
+				await harness.abortTask(task.record.id, ctx);
+			}
 			// Phase B — aborts (each enables Pi's scheduler, so every
 			// row decision above is already persisted).
-			for (const convId of leaseFailedConvs) {
+			for (const convId of cancelConvs) {
 				try {
 					const conv = await harness.conversation(asConv(convId), ctx);
-					await conv?.abort(ctx);
+					await conv?.abort(ctx, { background: true });
 				} catch (err) {
-					log.warn("lost-lease abort failed", err, { conversation: convId });
+					log.error("subagent boot cancellation unconfirmed — refusing resume", err, {
+						conversation: convId,
+					});
+					throw err;
 				}
 			}
 			for (const row of pendingStopRows) {
 				try {
 					await completeStop(row.id);
 				} catch (err) {
-					log.warn("subagent boot stop failed — stays pending", err, { run: row.id });
-				}
-			}
-			for (const convId of liveConvs) {
-				const row = runs.byPiConversation(convId);
-				if (row !== null && row.status === "stopped") {
-					try {
-						const conv = await harness.conversation(asConv(convId), ctx);
-						await conv?.abort(ctx);
-						log.info("subagent boot aborted leftover work of a stopped run", { run: row.id });
-					} catch (err) {
-						log.warn("stopped run's leftover abort failed", err, { run: row.id });
-					}
+					log.error("subagent boot stop failed — refusing resume", err, { run: row.id });
+					throw err;
 				}
 			}
 			// Phase C — every unfinished row recovers its durable half.
@@ -2751,6 +2822,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				}
 			}
 			// 5. Only now may scheduling, wakes and drains start.
+			resumed = true;
 			harness.resume();
 			ticker.id = setInterval(() => {
 				void owner.scan().catch((err) => log.error("subagent scan failed", err));

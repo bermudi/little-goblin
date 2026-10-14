@@ -79,6 +79,7 @@ export function wake(
 	text: string,
 	opts?: { dmTrigger?: "fire" | "current" },
 ): boolean {
+	if (!deps.runtime.accepting()) return false;
 	let conv: Conversation;
 	if (address.threadId === null && isRollingChat(address.chatId)) {
 		// "current" joins the live DM; "fire" applies normal gap rolling.
@@ -127,6 +128,7 @@ export function wake(
 // The bell fires when the queued turn lands, not at submission. A rejected
 // or failed submit stays retryable; a deleted row is the intentional drop.
 export function wakeApp(deps: WakeDeps, conversationId: string, text: string): boolean {
+	if (!deps.runtime.accepting()) return false;
 	const conv = deps.store.get(conversationId);
 	if (conv === null) {
 		log.warn("delegation notice dropped — app conversation deleted", {
@@ -158,6 +160,7 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 // origin is the intentional drop; a rejected submit returns false so the
 // owner retries on scan.
 export function wakeConversation(deps: WakeDeps, conversationId: string, text: string): boolean {
+	if (!deps.runtime.accepting()) return false;
 	const conv = deps.store.get(conversationId);
 	if (conv === null) {
 		log.warn("subagent notice dropped — origin conversation deleted", {

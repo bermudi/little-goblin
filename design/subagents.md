@@ -335,6 +335,12 @@ through `cat`, written tmp + fsync + rename, 100 MiB cap. A host file
 outside the workspace is copied in first — a deliberate act. Runs carry
 the steps so nobody has to remember them:
 
+Imports across all three consumers (sandbox tool, desktop tool, run
+inboxes) read through `box-files.readImport`: containment and file kind
+are checked on the opened FD, and only its bounded bytes are staged.
+Cancellation propagates through worker staging copies; guest and host
+stages are cleaned even when the destination script never dispatches.
+
 - **In:** `start` takes `files: [workspace paths]`, imported to `/inbox`
   in the run's box before the first model call.
 - **Out:** `finish(result, files: [box paths])` — on settle the owner
@@ -484,6 +490,20 @@ built once).
   EIO/EACCES, transport) throws. No fabricated progress, no notice,
   no terminal row: the run stays running and leased, and the next
   scan's recovery path finishes it once.
+- **Boot cancellation precedes scheduling, including compaction.** Mark
+  every terminal/pending-stop task through `abortTask` while Pi is still
+  paused before calling conversation aborts, which enable scheduling.
+  Cancellation must confirm background tasks too. Any failed boot
+  cancellation refuses resume; startup closes the constructed owner
+  before disabling the feature. A typed `DesktopLeaseError` is lost
+  ownership; inspection/start/network errors instead retain the run and
+  refuse boot resume, leaving recovery for a later successful startup.
+  Request-guard snapshot and routing failures abort the request, not
+  merely throw a hook exception that Pi would report and ignore.
+- **Shutdown never delivers a retryable notice.** Wakes check runtime
+  admission before history submission; the owner fences notices when
+  closing begins. A stop completing during close retains `noticePending`
+  for the next owner without storing the notice twice.
 - **Finalization re-reads before every transition.** After any
   awaited boundary — the doc snapshot, each export iteration, the
   final screenshot, `lastAssistantStopReason` — the row is re-read

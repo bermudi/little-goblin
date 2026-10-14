@@ -13,6 +13,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -21,14 +22,14 @@ import { join, posix } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { Context } from "@earendil-works/chord";
 import type { LanguageModel } from "ai";
-import { Harness } from "@earendil-works/pi-durable";
+import { CompactionTask, Harness, type ConversationId } from "@earendil-works/pi-durable";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { Config, SubagentsConfig } from "./config.ts";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import { wakeConversation, type WakeDeps } from "./wake.ts";
 import type { Desktops, DesktopRow, DesktopAction, LeaseHolder } from "./desktops.ts";
-import { DesktopError } from "./desktops.ts";
+import { DesktopError, DesktopLeaseError } from "./desktops.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import {
@@ -736,6 +737,14 @@ function fakeSandboxes(): MemSandbox {
 			if (cmd === "/bin/sh" && rest[0] === "-c") {
 				const script = rest[1]!;
 				const tag = rest[2];
+				if (tag === "file-error") {
+					const target = fs.norm(rest[3] ?? "");
+					if (fs.isDir(target)) return fail("", 83);
+					for (let parent = posix.dirname(target); parent !== "/"; parent = posix.dirname(parent)) {
+						if (fs.exists(parent) && !fs.isDir(parent)) return fail("", 82);
+					}
+					return fail("", fs.exists(target) ? 1 : 80);
+				}
 				if (tag === "env") {
 					// write/append: guest stage → dest, then remove the stage.
 					const guest = fs.norm(rest[3] ?? "");
@@ -917,7 +926,7 @@ function fakeDesktops(): FakeDesktops {
 				live !== undefined &&
 				(live.kind !== holder.kind || ("id" in live && "id" in holder && live.id !== holder.id))
 			) {
-				throw new DesktopError(
+				throw new DesktopLeaseError(
 					`desktop ${name} is controlled by ${live.kind}${"id" in live ? ` ${live.id}` : ""}`,
 				);
 			}
@@ -3132,6 +3141,184 @@ describe("subagents owner", () => {
 		void o2;
 	});
 
+	test("a transient desktop boot failure retains the run and can recover on a later resume", async () => {
+		const desktops = fakeDesktops();
+		const r1 = rig({ desktops });
+		const o1 = await open(r1);
+		await desktops.allocate("d1");
+		const gate = Promise.withResolvers<void>();
+		r1.model.push({ kind: "hold", gate: gate.promise });
+		const run = await o1.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "recoverable",
+			desktop: "d1",
+		});
+		await until(() => r1.model.seen.length === 1, "request in flight");
+		const closing = o1.close();
+		gate.resolve();
+		await closing;
+		owners = owners.filter((owner) => owner !== o1);
+		const claim = desktops.claim.bind(desktops);
+		desktops.claim = async () => {
+			throw new Error("transient inspection failure");
+		};
+		const r2 = rig({
+			reuse: { dbPath: r1.dbPath, storagePath: r1.storagePath },
+			model: r1.model,
+			desktops,
+			resume: false,
+		});
+		const o2 = await open(r2);
+		await expect(o2.resume()).rejects.toThrow("transient inspection failure");
+		expect(r2.runs.get(run.id)?.status).toBe("running");
+		expect(r2.wakes).toHaveLength(0);
+		expect(r2.model.seen).toHaveLength(1);
+		desktops.claim = claim;
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recovered" } }] });
+		await o2.resume();
+		await until(() => r2.runs.get(run.id)?.status === "done", "retained run recovers");
+		expect(r2.runs.get(run.id)?.result).toBe("recovered");
+	});
+
+	test("a failed boot abort refuses scheduler resume and marks terminal work before any scheduling", async () => {
+		const r1 = rig();
+		const o1 = await open(r1);
+		const gate = Promise.withResolvers<void>();
+		r1.model.push({ kind: "hold", gate: gate.promise });
+		const run = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "stopped",
+		});
+		await until(() => r1.model.seen.length === 1, "request in flight");
+		const closing = o1.close();
+		gate.resolve();
+		await closing;
+		owners = owners.filter((owner) => owner !== o1);
+		r1.runs.update(run.id, { status: "stopped", stopRequested: true });
+		const original = Harness.open;
+		let captured: Awaited<ReturnType<typeof Harness.open>> | undefined;
+		let resumes = 0;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await original(...args);
+			captured = h;
+			await h.commit(async (tx) => {
+				await tx.createTask(
+					CompactionTask,
+					{ reason: "manual" },
+					{
+						ownership: { kind: "conversation" },
+						conversationId: Number(r1.runs.get(run.id)!.piConversationId) as ConversationId,
+						background: true,
+					},
+				);
+			}, {} as Context);
+			const resume = h.resume.bind(h);
+			h.resume = () => {
+				resumes++;
+				resume();
+			};
+			const conversation = h.conversation.bind(h);
+			h.conversation = (async (...cArgs: Parameters<typeof h.conversation>) => {
+				const conv = await conversation(...cArgs);
+				if (conv !== undefined)
+					conv.abort = async () => {
+						throw new Error("boot abort failed");
+					};
+				return conv;
+			}) as typeof h.conversation;
+			return h;
+		}) as typeof Harness.open;
+		try {
+			const r2 = rig({
+				reuse: { dbPath: r1.dbPath, storagePath: r1.storagePath },
+				model: r1.model,
+				resume: false,
+			});
+			const o2 = await open(r2);
+			await expect(o2.resume()).rejects.toThrow("boot abort failed");
+			expect(resumes).toBe(0);
+			const state = await captured!.inspect({} as Context);
+			expect(state.scheduling).toBe("paused");
+			expect(state.tasks.length).toBeGreaterThan(0);
+			expect(state.tasks.some((task) => task.record.kind === "pi.compaction")).toBe(true);
+			expect(state.tasks.every((task) => task.record.abortRequested)).toBe(true);
+			expect(r2.model.seen).toHaveLength(1);
+			await o2.close();
+			expect(r2.wakes).toHaveLength(0);
+		} finally {
+			Harness.open = original;
+		}
+	});
+
+	test("closing fences a stop notice while retaining it for the next owner", async () => {
+		const faults = armConversationFaults();
+		const modelGate = Promise.withResolvers<void>();
+		const stopGate = Promise.withResolvers<void>();
+		try {
+			const r = rig();
+			const owner = await open(r);
+			r.model.push({ kind: "hold", gate: modelGate.promise });
+			const run = await owner.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "stop during close",
+			});
+			await until(() => r.model.seen.length === 1, "request held");
+			faults.abortHold = stopGate.promise;
+			const stop = owner.stop(run.id, WS);
+			await faults.abortEntered;
+			const closing = owner.close();
+			stopGate.resolve();
+			modelGate.resolve();
+			await stop;
+			await closing;
+			expect(r.runs.get(run.id)?.status).toBe("stopped");
+			expect(r.runs.get(run.id)?.noticePending).toBe(true);
+			expect(r.wakes).toHaveLength(0);
+		} finally {
+			modelGate.resolve();
+			stopGate.resolve();
+			faults.restore();
+		}
+	});
+
+	test("a throwing request-guard read aborts before the provider boundary", async () => {
+		const original = Harness.open;
+		let injected = false;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await original(...args);
+			const snapshot = h.snapshot.bind(h);
+			h.snapshot = (async (...sArgs: Parameters<typeof h.snapshot>) => {
+				if (!injected) {
+					injected = true;
+					throw new Error("request guard storage unavailable");
+				}
+				return snapshot(...sArgs);
+			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		try {
+			const r = rig();
+			const owner = await open(r);
+			const run = await owner.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "must not call provider",
+			});
+			await until(() => r.runs.get(run.id)?.status === "failed", "guard abort settles");
+			expect(injected).toBe(true);
+			expect(r.model.seen).toHaveLength(0);
+		} finally {
+			Harness.open = original;
+		}
+	});
+
 	test("stop while the first import cp is held: no second copy, no model submit", async () => {
 		const r = rig();
 		writeFileSync(join(r.workspace, "a.txt"), "A");
@@ -3453,7 +3640,7 @@ describe("subagents owner", () => {
 
 	test("recovery retries are bounded: exhaustion settles the run failed and wakes the origin", async () => {
 		const origOpen = Harness.open;
-		let injected = true;
+		let injected = false;
 		try {
 			Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
 				const h = await origOpen(...args);
@@ -3472,7 +3659,12 @@ describe("subagents owner", () => {
 			}) as typeof Harness.open;
 			const r = rig();
 			const o = await open(r);
-			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "never read" } }] });
+			const gate = Promise.withResolvers<void>();
+			r.model.push({
+				kind: "hold",
+				gate: gate.promise,
+				then: { kind: "tools", calls: [{ name: "finish", args: { result: "never read" } }] },
+			});
 			const a = await o.start({
 				kind: "worker",
 				conversationId: WS,
@@ -3482,6 +3674,8 @@ describe("subagents owner", () => {
 			// The settle's doc read fails — the monitor hands the run to
 			// recovery and the row stays owned (running, no notice).
 			await until(() => r.model.seen.length === 1, "the round completed");
+			injected = true;
+			gate.resolve();
 			await Bun.sleep(200);
 			expect(r.runs.get(a.id)?.status).toBe("running");
 			expect(r.wakes.length).toBe(0);
@@ -4490,6 +4684,75 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
 
 describe("worker shell wall", () => {
 	const CTX = {} as Context; // no abortSignal, no scope
+
+	test.each(["waiting", "copied"] as const)(
+		"a worker write cancelled while %s forwards cancellation and removes both stages",
+		async (when) => {
+			const sb = fakeSandboxes();
+			const root = mkdtempSync(join(tmpdir(), "goblin-stage-abort-"));
+			dirs.push(root);
+			const env = makeSandboxEnv(sb, root, "conv:cancelled-write");
+			const entered = Promise.withResolvers<void>();
+			const gate = Promise.withResolvers<void>();
+			const ctl = new AbortController();
+			const cpIn = sb.cpIn.bind(sb);
+			let guest = "";
+			sb.cpIn = async (conv, host, dest, opts) => {
+				expect(opts?.abortSignal).toBe(ctl.signal);
+				guest = dest;
+				entered.resolve();
+				await gate.promise;
+				if (when === "waiting") opts?.abortSignal?.throwIfAborted();
+				return cpIn(conv, host, dest);
+			};
+			const pending = env.writeFile("/work/out.txt", "cancelled full content", {
+				abortSignal: ctl.signal,
+			} as Context);
+			await entered.promise;
+			ctl.abort();
+			gate.resolve();
+			const result = await pending;
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe("aborted");
+			expect(sb.fs.exists(guest)).toBe(false);
+			expect(sb.fs.exists("/work/out.txt")).toBe(false);
+			expect(readdirSync(root)).toEqual([]);
+		},
+	);
+
+	test("filesystem classifications use controlled probes, not text in hostile filenames", async () => {
+		const root = mkdtempSync(join(tmpdir(), "goblin-fs-errors-"));
+		dirs.push(root);
+		const dir = join(root, "no such directory");
+		const file = join(root, "Permission denied");
+		mkdirSync(dir);
+		writeFileSync(file, "regular");
+		const sb = fakeSandboxes();
+		const run = async (argv: string[]) => {
+			const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			return { stdout, stderr, exitCode, timedOut: false, truncated: false };
+		};
+		sb.execArgv = async (_conv, argv) => ({ result: await run(argv) });
+		sb.execBytesArgv = async (_conv, argv) => {
+			const result = await run(argv);
+			return { result: { ...result, stdout: new TextEncoder().encode(result.stdout) } };
+		};
+		const env = makeSandboxEnv(sb, root, "conv:filesystem-status");
+		for (const [result, code] of [
+			[await env.readBinaryFile(dir, CTX), "is_directory"],
+			[await env.fileInfo(join(root, "Is a directory missing"), CTX), "not_found"],
+			[await env.readBinaryFile(join(file, "no such file"), CTX), "not_directory"],
+			[await env.listDir(file, CTX), "not_directory"],
+		] as const) {
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe(code);
+		}
+	});
 
 	test("exit 153 below the spill cap explains the file-size kill and returns the real exit code", async () => {
 		const sb = fakeSandboxes();

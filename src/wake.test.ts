@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
-import { openStore, type Conversation } from "./conversation.ts";
+import { appAddress, openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
@@ -53,6 +53,7 @@ function harness(gapMinutes: number) {
 		sendChatAction: () => Promise.resolve(true),
 	} as unknown as DeliveryApi;
 	const runtime = {
+		accepting: () => true,
 		busy: () => false,
 		submit: (conv: Conversation) => {
 			submitted.push(conv.id);
@@ -76,7 +77,7 @@ function harness(gapMinutes: number) {
 	return { deps, store, submitted, sends, sinks };
 }
 
-test("wake after runtime close records history but does not report delivery", async () => {
+test("wake after runtime close neither records history nor reports delivery", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-wake-"));
 	dirs.push(dir);
 	const store = openStore(join(dir, "goblin.sqlite"));
@@ -111,9 +112,7 @@ test("wake after runtime close records history but does not report delivery", as
 	);
 	await Promise.resolve(); // closed runtime fences the sink asynchronously
 	expect(landed).toBe(false);
-	expect(store.history("topic:1:42").map((message) => message.parts)).toEqual([
-		[{ type: "text", text: "delegation notice" }],
-	]);
+	expect(store.history("topic:1:42")).toEqual([]);
 	store.close();
 });
 
@@ -233,6 +232,32 @@ test("a refused submit returns false so the owner retries on scan", () => {
 	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
 	store.close();
 });
+
+test.each(["app", "dm"] as const)(
+	"a shutdown %s origin keeps the notice retryable without persisting it",
+	async (channel) => {
+		const { deps, store, submitted, sinks } = harness(45);
+		const conv =
+			channel === "app"
+				? store.resolve(appAddress("closed"), "/w")
+				: store.resolve({ kind: "dm", chatId: 3 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => {
+				throw new Error("closed runtime ran a turn");
+			},
+			makeTools: () => ({}),
+		});
+		await runtime.shutdown();
+		deps.runtime = runtime;
+		expect(wakeConversation(deps, conv.id, "retry after restart")).toBe(false);
+		if (channel === "app") expect(wakeApp(deps, conv.id, "retry after restart")).toBe(false);
+		expect(store.history(conv.id)).toEqual([]);
+		expect(submitted).toEqual([]);
+		expect(sinks).toEqual([]);
+		store.close();
+	},
+);
 
 test("a throwing submit is released and returns false", () => {
 	const { deps, store } = harness(45);

@@ -159,6 +159,8 @@ export function fireScheduled(
 		});
 		return;
 	}
+	let fireFailed = false;
+	let fireErr: unknown;
 	try {
 		fireProgram(
 			deps,
@@ -169,9 +171,26 @@ export function fireScheduled(
 			scheduledFor,
 			scheduleRetrySink(deps, program, scheduledFor, opts?.retryDelaysMs ?? RETRY_DELAYS_MS, 0),
 		);
+	} catch (err) {
+		fireFailed = true;
+		fireErr = err;
 	} finally {
-		deps.programs.markRan(program.id, now);
+		try {
+			deps.programs.markRan(program.id, now);
+		} catch (err) {
+			// A double fault must not eat the fire's error: if the cursor
+			// write replaces it here, log the fire first so the scan line
+			// still reconstructs what happened.
+			if (fireFailed) {
+				log.error("program fire failed", fireErr, {
+					program: program.id,
+					name: program.name,
+				});
+			}
+			throw err;
+		}
 	}
+	if (fireFailed) throw fireErr;
 }
 
 // Webhook: stamp last_run only when the turn landed — the caller owns

@@ -13,6 +13,7 @@ import {
 	realpathSync,
 	readlinkSync,
 	openSync,
+	readSync,
 	renameSync,
 	statSync,
 	unlinkSync,
@@ -49,6 +50,79 @@ export function durableWriteBytes(
 	durableWriteBuffer(path, Buffer.from(data), normalize(options));
 }
 
+// 1 MiB per readSync/writeSync hop — big enough that a multi-MB copy
+// stays a handful of syscalls, small enough that the copy's heap
+// footprint is the chunk, never the file.
+const COPY_CHUNK_BYTES = 1024 * 1024;
+
+/** The streamed copy twin: same ritual as the writes (fresh inode,
+ *  source's mode, stamped times, fsync + rename + directory fsync)
+ *  without ever holding the whole source in memory — a runaway source
+ *  costs latency, not the heap. src and dest may be the same path;
+ *  the rename still lands a fresh inode. */
+export function durableCopyFile(
+	src: string,
+	dest: string,
+	options: Pick<DurableWriteOptions, "times"> = {},
+): void {
+	dest = resolveLeaf(dest);
+	const mode = statSync(src).mode & 0o777;
+	const tmp = join(
+		dirname(dest),
+		`.${Date.now()}-${process.pid}-${randomBytes(6).toString("hex")}.tmp`,
+	);
+	const inFd = openSync(src, constants.O_RDONLY);
+	const outFd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+	try {
+		// open() masks the mode with the umask; a copy must preserve the
+		// source's exactly (the archive is the only copy of the result).
+		fchmodSync(outFd, mode);
+		const chunk = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+		let read: number;
+		while ((read = readSync(inFd, chunk, 0, COPY_CHUNK_BYTES, null)) > 0) {
+			let off = 0;
+			while (off < read) {
+				const n = writeSync(outFd, chunk, off, read - off);
+				if (n === 0) throw new Error(`writeSync wrote 0 bytes to ${tmp}`);
+				off += n;
+			}
+		}
+		if (options.times !== undefined) {
+			futimesSync(outFd, options.times.atime, options.times.mtime);
+		}
+		fsyncSync(outFd);
+		closeSync(outFd);
+		closeSync(inFd);
+	} catch (err) {
+		try {
+			closeSync(outFd);
+		} catch {
+			// already closed
+		}
+		try {
+			closeSync(inFd);
+		} catch {
+			// already closed
+		}
+		discardTmp(tmp);
+		throw err;
+	}
+	try {
+		renameSync(tmp, dest);
+	} catch (err) {
+		discardTmp(tmp);
+		throw err;
+	}
+	try {
+		fsyncDirectory(dirname(dest));
+	} catch (err) {
+		throw new Error(
+			`file replaced at ${dest}, but directory sync failed; durability unknown: ${String(err)}`,
+			{ cause: err },
+		);
+	}
+}
+
 const unsupportedSyncDirs = new Set<string>();
 
 /** fsync a directory so a rename/link/unlink inside it is durable, not
@@ -80,30 +154,33 @@ function normalize(
 	return { ...options, modeIfNew: options.modeIfNew ?? 0o644 };
 }
 
-function durableWriteBuffer(
-	path: string,
-	buf: Buffer,
-	options: Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions,
-): void {
-	// Resolve leaf links before choosing the tmp directory: rename must
-	// replace the managed target, never the link. Dangling links fail closed.
+// Resolve leaf links before choosing the tmp directory: rename must
+// replace the managed target, never the link. Dangling links fail closed.
+function resolveLeaf(path: string): string {
 	let linked = false;
 	try {
 		linked = lstatSync(path).isSymbolicLink();
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
-	if (linked) {
-		try {
-			path = realpathSync(path);
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-			throw new Error(
-				`${path} is a dangling symlink (→ ${readlinkSync(path)}) — refusing to replace it`,
-				{ cause: err },
-			);
-		}
+	if (!linked) return path;
+	try {
+		return realpathSync(path);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		throw new Error(
+			`${path} is a dangling symlink (→ ${readlinkSync(path)}) — refusing to replace it`,
+			{ cause: err },
+		);
 	}
+}
+
+function durableWriteBuffer(
+	path: string,
+	buf: Buffer,
+	options: Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions,
+): void {
+	path = resolveLeaf(path);
 	let mode = options.modeIfNew;
 	let existed = false;
 	try {

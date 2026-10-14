@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { durableWriteBytes, durableWriteFile } from "./durable.ts";
+import { durableCopyFile, durableWriteBytes, durableWriteFile } from "./durable.ts";
 
 const dirs: string[] = [];
 
@@ -136,5 +136,73 @@ describe("durable writes through managed symlinks", () => {
 		expect(lstatSync(join(dir, "dangling")).isSymbolicLink()).toBe(true);
 		expect(lstatSync(join(dir, "cycle")).isSymbolicLink()).toBe(true);
 		expect(readdirSync(dir).sort()).toEqual(["cycle", "dangling"]);
+	});
+});
+
+describe("durableCopyFile", () => {
+	test("copies byte-exact across the chunk boundary and lands a fresh inode", () => {
+		const dir = useDir();
+		const path = join(dir, "report");
+		// Two full 1 MiB chunks plus an odd tail, patterned so a short
+		// read/write off-by-one shifts the bytes and fails the compare.
+		const payload = Buffer.from("0123456789".repeat(220_000));
+		writeFileSync(path, payload);
+		const before = statSync(path).ino;
+
+		durableCopyFile(path, path);
+
+		expect(readFileSync(path).equals(payload)).toBe(true);
+		// The self-copy exists to break inode sharing with writers still
+		// holding the old file open — same path, new inode, every time.
+		expect(statSync(path).ino).not.toBe(before);
+		expect(readdirSync(dir)).toEqual(["report"]);
+	});
+
+	test("preserves the source mode exactly, even bits the umask would strip", () => {
+		const dir = useDir();
+		const src = join(dir, "src");
+		const dest = join(dir, "dest");
+		writeFileSync(src, "payload");
+		chmodSync(src, 0o664);
+		const prior = process.umask(0o022);
+		try {
+			durableCopyFile(src, dest);
+		} finally {
+			process.umask(prior);
+		}
+		expect(readFileSync(dest, "utf8")).toBe("payload");
+		expect(statSync(dest).mode & 0o777).toBe(0o664);
+	});
+
+	test("times stamp the copy so freshness checks read it as the original", () => {
+		const dir = useDir();
+		const src = join(dir, "src");
+		const dest = join(dir, "dest");
+		writeFileSync(src, "old result");
+		const mtime = new Date("2020-01-02T03:04:05Z");
+		durableCopyFile(src, dest, { times: { atime: mtime, mtime } });
+		expect(statSync(dest).mtimeMs).toBe(mtime.getTime());
+	});
+
+	test("a missing source propagates ENOENT without leaving a tmp file", () => {
+		const dir = useDir();
+		expect(() => durableCopyFile(join(dir, "absent"), join(dir, "dest"))).toThrow();
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	test("reaches a chained relative link target without replacing links", () => {
+		const dir = useDir();
+		const managed = join(dir, "managed");
+		mkdirSync(managed);
+		const target = join(managed, "state");
+		writeFileSync(target, "old", { mode: 0o600 });
+		symlinkSync("managed/state", join(dir, "middle"));
+		const link = join(dir, "link");
+		symlinkSync("middle", link);
+		durableCopyFile(target, link);
+		expect(readFileSync(target, "utf8")).toBe("old");
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(lstatSync(join(dir, "middle")).isSymbolicLink()).toBe(true);
+		expect(readdirSync(managed)).toEqual(["state"]);
 	});
 });

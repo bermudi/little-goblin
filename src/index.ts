@@ -72,6 +72,7 @@ import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./sch
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { System1Client } from "./system1.ts";
 import { filterGuestTools } from "./tg/guest.ts";
+import { withTimeout } from "./tg/deadline.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
 import {
@@ -433,7 +434,10 @@ async function boot() {
 							threadId: conv.threadId,
 							publicUrl: () => configRef.current.publicUrl,
 							sendPrivate: makePrivateSender(
-								(id, text) => tg.bot.api.sendMessage(id, text),
+								// The one send composed outside tg/ — same deadline as
+								// every tg/ sender, or a wedged API stalls the
+								// program turn's tool call forever.
+								(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
 								() => configRef.current.operators,
 							),
 						}

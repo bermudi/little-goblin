@@ -24,7 +24,7 @@ import {
 	unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { durableWriteBytes, fsyncDirectory } from "./durable.ts";
+import { durableCopyFile, fsyncDirectory } from "./durable.ts";
 import { log } from "./log.ts";
 import {
 	agentNameFor,
@@ -135,7 +135,8 @@ export interface DelegationLifecycle {
 	list(): Delegation[];
 	/** Run one watcher scan immediately. */
 	tick(): Promise<void>;
-	/** Joins an in-flight scan before store shutdown; herdr owns running agents. */
+	/** Joins the in-flight scan and every in-flight lifecycle op before
+	 *  store shutdown; herdr owns running agents. */
 	stopTicker(): Promise<void>;
 }
 
@@ -185,6 +186,20 @@ export function startDelegationLifecycle(
 	let stopping: Promise<void> | null = null;
 	// Share the in-flight scan so timer ticks never overlap and awaiters observe completion.
 	let current: Promise<void> | null = null;
+	// In-flight launch/send/answer/stop/read promises. Stop joins them:
+	// an op running past store close both throws ("closed database") and
+	// strands its row in its pre-op state, which boot recovery then
+	// misreads — a live agent's row would still say `starting`.
+	const inFlight = new Set<Promise<unknown>>();
+	const tracked = <T>(p: Promise<T>): Promise<T> => {
+		inFlight.add(p);
+		// Eviction tap: rejections reach their awaiter; the tap only
+		// detaches the promise from the join set.
+		void p.finally(() => {
+			inFlight.delete(p);
+		}).catch(() => {});
+		return p;
+	};
 	// `starting` rows are owned by an in-flight launch; only the first scan
 	// can instead interpret one as a launch interrupted by process death.
 	let firstScan = true;
@@ -230,11 +245,11 @@ export function startDelegationLifecycle(
 	}, tickMs);
 	void scan();
 	return {
-		launch: (input) => launch(deps, input),
-		send: (id, text) => send(deps, id, text),
-		answer: (id, key) => answer(deps, id, key),
-		stop: (id) => stop(deps, id),
-		read: (id, lines) => read(deps, id, lines),
+		launch: (input) => tracked(launch(deps, input)),
+		send: (id, text) => tracked(send(deps, id, text)),
+		answer: (id, key) => tracked(answer(deps, id, key)),
+		stop: (id) => tracked(stop(deps, id)),
+		read: (id, lines) => tracked(read(deps, id, lines)),
 		reportPath: (id) => {
 			const d = deps.delegations.get(id);
 			return d === null
@@ -247,7 +262,16 @@ export function startDelegationLifecycle(
 			if (stopping !== null) return stopping;
 			stopped = true;
 			clearInterval(timer);
-			stopping = (current ?? Promise.resolve()).finally(() => {
+			// Join the scan and every in-flight op before releasing
+			// ownership: shutdown closes the store right after this
+			// settles, so an op still holding launch/send progress must
+			// land its row transition (or fail loud) before that close.
+			stopping = (async () => {
+				await (current ?? Promise.resolve());
+				while (inFlight.size > 0) {
+					await Promise.allSettled([...inFlight]);
+				}
+			})().finally(() => {
 				activeWatchers.delete(deps.delegations);
 			});
 			return stopping;
@@ -700,9 +724,10 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 			// Re-copy the archive into a fresh inode so a writer still holding the
 			// old one cannot overwrite it — durably (tmp + fsync + rename, the
 			// archive is the only copy of the previous result) and with the old
-			// mtime, which the freshness check reads.
+			// mtime, which the freshness check reads. Streamed: a runaway
+			// report is copied at chunk pace, never loaded whole.
 			const oldTimes = statSync(destination);
-			durableWriteBytes(destination, readFileSync(destination), {
+			durableCopyFile(destination, destination, {
 				times: { atime: oldTimes.atime, mtime: oldTimes.mtime },
 			});
 			log.info("delegation previous report archived", {
@@ -737,7 +762,7 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 				// The copy is durable with the archive's mtime: restoration must not
 				// look like a new report or make an old result win the next scan.
 				const oldTimes = statSync(archivedPath);
-				durableWriteBytes(restoreTemp, readFileSync(archivedPath), {
+				durableCopyFile(archivedPath, restoreTemp, {
 					times: { atime: oldTimes.atime, mtime: oldTimes.mtime },
 				});
 				// link, not rename: EEXIST is the "a newer report landed" signal.

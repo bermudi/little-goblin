@@ -1472,6 +1472,77 @@ describe("delegation watcher", () => {
 		});
 	});
 
+	describe("shutdown joins in-flight ops", () => {
+		test("stopTicker waits for a launch inside herdr.prompt — no stranded starting row", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
+				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+				prompt: () => gate.then(() => {}),
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const launching = owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it",
+				cwd: "/w",
+				name: "x",
+				address: { chatId: 1, threadId: null },
+			});
+			// Wait for the bind so the launch is parked inside the gated
+			// prompt — the pre-markRunning window a restart used to strand.
+			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
+				await new Promise((r) => setTimeout(r, 1));
+			}
+			let joined = false;
+			const stopping = owner.stopTicker().then(() => {
+				joined = true;
+			});
+			await new Promise((r) => setTimeout(r, 20));
+			expect(joined).toBe(false);
+			release();
+			const out = await launching;
+			await stopping;
+			// The launch landed markRunning before the join released — the
+			// next boot sees `running`, never a doomed `starting` row.
+			expect(out.kind).toBe("started");
+			expect(h.store.get(1)!.status).toBe("running");
+		});
+
+		test("stopTicker waits for a send inside herdr.prompt — its row write lands before close", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			h.deps.herdr = {
+				...h.deps.herdr,
+				prompt: () => gate.then(() => {}),
+			};
+			const row = runningRow(h, "follow-up", 1);
+			h.agents.set(row.agentName, agent(row.agentName, "working", 1));
+			const owner = startDelegationLifecycle(h.deps);
+			const sending = owner.send(row.id, "continue");
+			let joined = false;
+			const stopping = owner.stopTicker().then(() => {
+				joined = true;
+			});
+			await new Promise((r) => setTimeout(r, 20));
+			expect(joined).toBe(false);
+			release();
+			const out = await sending;
+			await stopping;
+			// The send's promptedAt write landed before the join released;
+			// the row reads running, not a stale pre-send state.
+			expect(out.kind).toBe("sent");
+			expect(h.store.get(row.id)!.status).toBe("running");
+		});
+	});
+
 	describe("remote machine mode", () => {
 		test("a machine-target launch preflights the link, targets the remote cwd, keeps nothing local, and seeds through the pane", async () => {
 			const h = harness();

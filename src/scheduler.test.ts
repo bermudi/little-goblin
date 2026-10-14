@@ -527,6 +527,43 @@ describe("scheduler", () => {
 		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 	});
 
+	test("a double fault surfaces the cursor error but logs the fire's error first", () => {
+		const h = harness();
+		h.deps.store = {
+			resolve: () => {
+				throw new Error("db gone");
+			},
+		} as unknown as ConversationStore;
+		const job = h.deps.programs.create(
+			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: -100, threadId: 7 } },
+			new Date(Date.now() - 5 * 60_000),
+		);
+		h.deps.programs = {
+			...h.deps.programs,
+			markRan: () => {
+				throw new Error("disk full");
+			},
+		};
+		const captured: string[] = [];
+		setLogFile("schedule-double-fault-test.log");
+		setLogWriter((_path, line) => captured.push(line));
+		let thrown: unknown;
+		try {
+			fireScheduled(h.deps, h.deps.programs.get(job.id)!, new Date());
+		} catch (err) {
+			thrown = err;
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		// The cursor error wins the throw (the scan's log line carries
+		// it), but the fire's error got its own line before masking.
+		expect((thrown as Error).message).toBe("disk full");
+		const lines = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const fireLine = lines.find((line) => line.msg === "program fire failed");
+		expect(fireLine).toMatchObject({ program: job.id, name: "x", error: "db gone" });
+	});
+
 	test("one job's failure does not stop the scan", async () => {
 		const h = harness();
 		const past = new Date(Date.now() - 5 * 60_000);

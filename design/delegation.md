@@ -199,9 +199,14 @@ Rulings:
   is goblin's judgment.
 - **Watcher ownership and shutdown.** One lifecycle ticker may own a
   delegations store object at a time; duplicate starts throw. `stopTicker`
-  fences new scans and joins existing work before releasing ownership.
+  fences new scans and joins existing work — the in-flight scan plus every
+  in-flight launch/send/answer/stop/read — before releasing ownership.
   Later ticks on the old handle only join that work or do nothing; a new
-  owner may start after the stop promise settles.
+  owner may start after the stop promise settles. Shutdown depends on the
+  join: it closes the store right after `stopTicker` settles, and an op
+  running past that close would throw and strand its row's transition
+  (a live agent's row would stay `starting` and boot recovery would kill
+  the workspace as an interrupted launch).
 - **The watcher is an in-process ticker** (15 s), the scheduler's
   twin: for each `running`/`needs_input` row, `agent get`,
   serialized per target (forwarded calls are ssh round trips —

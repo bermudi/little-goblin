@@ -125,6 +125,22 @@ describe("pass-keys command recognition (installer/doctor shared grammar)", () =
 			expect(passKeysCommandExecutable(value)).toBeUndefined();
 	});
 
+	test("shell assignments and comments are not executable words", () => {
+		for (const value of [
+			"!GOBLIN_PROBE=/missing/pass-keys get goblin-dev KEY",
+			"!_PROBE_2=/missing/pass-keys get goblin-dev KEY",
+			"!#/missing/pass-keys get goblin-dev KEY",
+		]) {
+			expect(passKeysCommandExecutable(value), value).toBeUndefined();
+			expect(parsePassKeysGet(value), value).toBeNull();
+		}
+		expect(parsePassKeysGet("!/opt/lane=local/pass-keys get p K")).toEqual({
+			executable: "/opt/lane=local/pass-keys",
+			profile: "p",
+			key: "K",
+		});
+	});
+
 	test("a single direct get parses profile and key; digit-leading keys are valid", () => {
 		expect(parsePassKeysGet("!pass-keys get goblin-dev BOT_TOKEN")).toEqual({
 			executable: "pass-keys",

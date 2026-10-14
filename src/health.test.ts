@@ -416,6 +416,23 @@ describe("pass-keys status source contract (fixtures, not a live wallet)", () =>
 		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
 		expect(JSON.stringify(report)).not.toContain(marker);
 	});
+	test.each([
+		"!GOBLIN_PROBE=/missing/pass-keys get fixture BOT_TOKEN",
+		"!#/missing/pass-keys get fixture BOT_TOKEN",
+	])("shell non-executables remain unverified without a snapshot probe (%#)", async (value) => {
+		const f = fixture();
+		const calls = join(f.root, "argv");
+		writeFileSync(join(f.home, "auth.jsonl"), JSON.stringify({ name: "telegram", value }));
+		f.script(
+			"pass-keys",
+			`printf '%s\\n' "$*" > '${calls}'; printf 'fixture: READY  age=1s  keys=1  names=BOT_TOKEN\\n'`,
+		);
+		const report = await runHealth(f.options);
+		expect(JSON.stringify(report)).toContain("1 general commands");
+		expect(report.results.some((r) => r.id === "keys.snapshot.1")).toBe(false);
+		expect(existsSync(calls)).toBe(false);
+		expect(JSON.stringify(report)).not.toContain(value);
+	});
 	test("an absolute-path pass-keys get is recognized; only the canonical status probe runs", async () => {
 		const f = fixture(),
 			calls = join(f.root, "argv"),

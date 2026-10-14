@@ -154,7 +154,61 @@ export interface RunningBot {
 // stranger's DM gets the one refusal line; a non-operator's group
 // message drops (the guest router above already took the mentions).
 // Read per-message so mini-app saves apply without a restart.
-export function accessGate(configRef: { current: Config }) {
+// Refusal sends are detached from the middleware path: a stranger DM
+// is denied immediately and the fixed refusal line rides its own
+// bounded send — at most this many actual sends in flight per gate
+// instance. A wedged Telegram boundary can pin slots, never stall
+// grammY polling or delay an operator's next().
+const REFUSAL_SEND_SLOTS = 8;
+const REFUSAL_TIMEOUT_MS = 30_000;
+
+// Grammy's node shim types the signal param as abort-controller's
+// AbortSignal; the runtime takes the global one. A derived alias keeps
+// the call typed without importing the transitive shim package.
+type GrammySignal = NonNullable<Parameters<Api["sendMessage"]>[3]>;
+
+export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
+	const refusalTimeoutMs = opts?.refusalTimeoutMs ?? REFUSAL_TIMEOUT_MS;
+	// One entry per user with an unsettled refusal send — dedup and the
+	// slot cap ride the same map. The slot is held until the send ACTUALLY
+	// settles (not merely timed out): a boundary that ignores the abort
+	// keeps its slot, so abandoned requests stay bounded.
+	const pendingRefusals = new Map<number, Promise<void>>();
+	const sendRefusal = (api: Api, id: number): void => {
+		if (pendingRefusals.has(id)) {
+			log.info("dm refusal coalesced — already pending", {
+				userId: id,
+				pending: pendingRefusals.size,
+			});
+			return;
+		}
+		if (pendingRefusals.size >= REFUSAL_SEND_SLOTS) {
+			log.warn("dm refusal dropped — refusal send slots exhausted", {
+				userId: id,
+				pending: pendingRefusals.size,
+			});
+			return;
+		}
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), refusalTimeoutMs);
+		timer.unref?.();
+		log.info("dm refusal scheduled", { userId: id, pending: pendingRefusals.size + 1 });
+		const send = Promise.resolve()
+			.then(() =>
+				api.sendMessage(id, GUEST_REFUSAL, {}, controller.signal as unknown as GrammySignal),
+			)
+			.then(() => {
+				log.info("dm refusal delivered", { userId: id, pending: pendingRefusals.size });
+			})
+			.catch((err: unknown) => {
+				log.warn("dm refusal failed", err, { userId: id, pending: pendingRefusals.size });
+			})
+			.finally(() => {
+				clearTimeout(timer);
+				pendingRefusals.delete(id);
+			});
+		pendingRefusals.set(id, send);
+	};
 	return async (
 		ctx: {
 			from?: { id: number } | undefined;
@@ -179,14 +233,13 @@ export function accessGate(configRef: { current: Config }) {
 			// approved id's DM refuses exactly like a stranger's.
 			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
 				// A stranger DM is a summons: the fixed refusal line is its
-				// whole answer. A failed send never kills the poller.
+				// whole answer — denied synchronously, sent detached so a
+				// stuck send can never hold the polling lane.
 				log.info("dm refused — not an operator", {
 					userId: id,
 					guest: cfg.guest !== undefined,
 				});
-				await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
-					.then(() => undefined)
-					.catch((err: unknown) => log.warn("dm refusal failed", err, { userId: id }));
+				sendRefusal(ctx.api, id);
 				return;
 			}
 			await next();

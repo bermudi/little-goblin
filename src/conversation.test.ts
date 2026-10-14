@@ -945,6 +945,51 @@ describe("rolling dm", () => {
 		expect(store.lastActivityAt(conv.id) >= created).toBe(true);
 		store.close();
 	});
+
+	// The demotion/reset case: deleting the current row severs the
+	// dm_rolls pointer, but the epoch tombstone keeps the deleted id's
+	// generation outstanding — the next roll must mint past it, never
+	// reuse an ordinal a stale token could still authorize against.
+	test("a deleted current's ordinal is never re-minted — the tombstone carries the high-water mark", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const first = store.rollDm(7, "/w");
+		const second = store.rollDm(7, "/w");
+		expect(second.id).toBe("dm:7:2");
+		store.deleteConversation(second.id);
+		expect(store.currentDm(7)).toBeNull();
+		const third = store.rollDm(7, "/w");
+		expect(third.id).toBe("dm:7:3");
+		expect(store.currentDm(7)?.id).toBe("dm:7:3");
+		// No back link into deleted history: the sever NULLed :1's
+		// forward pointer and the pointer-less mint carries no source.
+		expect(store.previousDm(7)).toBeNull();
+		expect(store.backDm(7)).toBeNull();
+		expect(store.get(second.id)).toBeNull();
+		expect(store.get(first.id)).not.toBeNull();
+		// Repeated deletion climbs off the durable tombstones, reopen or not.
+		store.deleteConversation(third.id);
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.currentDm(7)).toBeNull();
+		expect(reopened.rollDm(7, "/w").id).toBe("dm:7:4");
+		// Deleting every extant row of the lane still never reuses.
+		reopened.deleteConversation(first.id);
+		reopened.deleteConversation("dm:7:4");
+		expect(reopened.rollDm(7, "/w").id).toBe("dm:7:5");
+		// Another chat's counter is untouched.
+		expect(reopened.rollDm(8, "/w").id).toBe("dm:8:1");
+		reopened.close();
+	});
+
+	test("deleting the only row a chat ever minted still advances the ordinal", () => {
+		const store = openStore(tmpdb());
+		const only = store.rollDm(9, "/w");
+		expect(only.id).toBe("dm:9:1");
+		store.deleteConversation(only.id);
+		expect(store.rollDm(9, "/w").id).toBe("dm:9:2");
+		store.close();
+	});
 });
 
 describe("manual rolling DM navigation", () => {

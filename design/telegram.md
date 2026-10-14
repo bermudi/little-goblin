@@ -339,7 +339,11 @@ records its predecessor; existing rolling conversations get their
 creation-order links at migration. `/back` follows that link rather
 than rewinding the id counter: `/back` → `/new` → `/back` returns to
 the conversation the new one came from, and future ids never reuse
-an abandoned conversation. Selecting an old conversation resets the
+an abandoned conversation. A deleted row's ordinal is never re-minted
+either: the epoch tombstone (`conversation_epoch_hwm`) outlives the
+row, so a pointer-less roll — demotion reset, reinstall — recovers the
+high-water mark from extant rows plus tombstones and mints `hwm + 1`.
+Selecting an old conversation resets the
 quiet-gap clock without rewriting historical timestamps; the configured
 gap rule then applies normally. Navigation selection and creation/link
 writes are atomic.
@@ -554,7 +558,11 @@ gate, and summons traffic never hits it. The gate is the Roles
 router's member-surface edge: operators pass to normal intake,
 allowed users pass in the bot DM to their sandbox lane, a stranger
 DM gets the refusal line, non-operator group chatter drops with one
-log line. `guest_message` updates bypass `tg_inbox`
+log line. The refusal send is detached from the gate — the update is
+denied synchronously while the send rides a bounded pool (8 pending,
+deduped per sender, 30s abort); overload drops the send with a log
+line, never queues a backlog and never stalls polling. `guest_message`
+updates bypass `tg_inbox`
 entirely (guest message ids share no namespace with the bot's own
 chats — a `UNIQUE(chat_id, message_id)` hit would exit the process);
 at-most-once rides a `guest_dedup(update_id)` insert-or-ignore

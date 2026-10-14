@@ -842,6 +842,19 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDmRoll = db.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
 		"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
 	);
+	// rollDm's pointer-less recovery: every candidate id that could carry
+	// a rolling ordinal for this chat — extant private rows plus the
+	// delete tombstones (a deleted dm:<chat>:<n> must never re-mint: its
+	// epoch tokens may still be outstanding). Thread rows and other
+	// address pools can't carry a rolling id, so a plain id list fed
+	// through rollingDmOrdinal is enough — malformed, legacy and
+	// foreign-chat ids all decode to null there.
+	const qDmOrdinalCandidates = db.query<{ id: string }, [number, string]>(
+		`SELECT id FROM conversations WHERE chat_id = ? AND thread_id IS NULL
+		 UNION
+		 SELECT conversation_id AS id FROM conversation_epoch_hwm
+		 WHERE conversation_id LIKE 'dm:' || ? || ':%'`,
+	);
 	const qUpsertRoll = db.query(
 		`INSERT INTO dm_rolls (chat_id, current_id, n, selected_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(chat_id) DO UPDATE SET current_id = excluded.current_id,
@@ -1155,7 +1168,23 @@ export function openStore(dbPath: string): ConversationStore {
 			privateChatIdSchema.parse(chatId);
 			return db.transaction(() => {
 				const roll = qDmRoll.get(chatId);
-				const n = (roll?.n ?? 0) + 1;
+				let n = (roll?.n ?? 0) + 1;
+				if (!roll) {
+					// The lane pointer was severed (its current row deleted) —
+					// the stored n went with it, so recover the high-water
+					// mark from extant rows and the delete tombstones; a
+					// re-minted ordinal would collide with outstanding epoch
+					// tokens and silently reconnect a demoted lane.
+					let hwm = 0;
+					for (const { id: candidate } of qDmOrdinalCandidates.all(chatId, String(chatId))) {
+						const ordinal = rollingDmOrdinal(
+							{ id: candidate, chat_id: chatId, thread_id: null },
+							chatId,
+						);
+						if (ordinal !== null && ordinal > hwm) hwm = ordinal;
+					}
+					n = hwm + 1;
+				}
 				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
 				const now = new Date().toISOString();
 				const source = roll ? qGet.get(roll.current_id) : null;

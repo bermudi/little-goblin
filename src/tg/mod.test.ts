@@ -60,7 +60,7 @@ describe("accessGate", () => {
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
-			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL);
+			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL, {}, expect.any(AbortSignal));
 			// Service update, no sender.
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
@@ -92,7 +92,7 @@ describe("accessGate", () => {
 			configRef.current = { ...baseConfig };
 			await gate(dm(2), next);
 			expect(reached).toBe(1);
-			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL);
+			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL, {}, expect.any(AbortSignal));
 			// Operators never need the block.
 			await gate(dm(1), next);
 			expect(reached).toBe(2);
@@ -102,6 +102,126 @@ describe("accessGate", () => {
 		} finally {
 			send.mockRestore();
 		}
+	});
+
+	// The refusal send rides a detached promise so intake/polling never
+	// awaits Telegram — a wedged send must not stall the gate.
+	test("a held refusal send never blocks the gate or an operator's next", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const release = Promise.withResolvers<void>();
+		const calls: number[] = [];
+		const heldApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				await release.promise;
+				return { message_id: 1 };
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: heldApi });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		// Denied synchronously — the gate resolves while the send is held.
+		await gate(dm(9), next);
+		expect(reached).toBe(0);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9]);
+		// Operators pass immediately regardless of pending sends.
+		await gate(dm(1), next);
+		expect(reached).toBe(1);
+		release.resolve();
+		await Bun.sleep(0);
+		// The settled send freed its slot — the next stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9, 10]);
+	});
+
+	test("refusal sends are bounded at 8 pending and deduped per user — overload drops, never queues", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const release = Promise.withResolvers<void>();
+		const calls: number[] = [];
+		const heldApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				await release.promise;
+				return { message_id: 1 };
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: heldApi });
+		const next = async (): Promise<void> => {};
+		// A hundred unique strangers under a wedged boundary: eight real
+		// sends, every later update still denied but never queued.
+		for (let id = 100; id < 200; id++) await gate(dm(id), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(8);
+		// A pending user's repeat coalesces onto the in-flight refusal.
+		await gate(dm(100), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(8);
+		expect(calls.filter((id) => id === 100)).toHaveLength(1);
+		// No backlog — freeing the boundary admits the next stranger.
+		release.resolve();
+		await Bun.sleep(0);
+		await gate(dm(300), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(9);
+	});
+
+	test("the refusal timeout aborts a wedged send and the settled slot frees", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 30 });
+		const signals: AbortSignal[] = [];
+		const wedgedApi = {
+			sendMessage: (async (_id: number, _text: string, _other: unknown, signal: AbortSignal) => {
+				signals.push(signal);
+				return await new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("send aborted")));
+				});
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: wedgedApi });
+		const next = async (): Promise<void> => {};
+		await gate(dm(9), next);
+		await Bun.sleep(0);
+		expect(signals).toHaveLength(1);
+		// The deadline fires even though the send itself never settles.
+		await Bun.sleep(60);
+		expect(signals[0]!.aborted).toBe(true);
+		// The rejection settled the slot — a new stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(signals).toHaveLength(2);
+		await Bun.sleep(60); // drain the second send's abort timer
+	});
+
+	test("a failed refusal send releases its slot without rejecting the gate", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const calls: number[] = [];
+		const failingApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				throw new Error("Telegram 500");
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: failingApi });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		await gate(dm(9), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9]);
+		await gate(dm(1), next);
+		expect(reached).toBe(1);
+		// The failure settled its slot — the next stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9, 10]);
 	});
 });
 
@@ -1367,7 +1487,10 @@ describe("rolling dm", () => {
 		]);
 		// Past the gap and NOT a reply — the follow-up check ran.
 		expect(calls).toHaveLength(1);
-		expect(h.store.currentDm(7)?.id).toBe("dm:7:1");
+		// Chat 7 is no operator: admission demotes the personal dm:7:1
+		// (it has history) — the reset deletes the row and the roll
+		// mints the NEXT ordinal off the tombstone, never reusing :1.
+		expect(h.store.currentDm(7)?.id).toBe("dm:7:2");
 		h.store.close();
 	});
 

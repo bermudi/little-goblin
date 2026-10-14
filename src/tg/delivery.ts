@@ -47,7 +47,15 @@ export function resetMessageEffectsGateForTests(): void {
 }
 
 function isPremiumGateError(err: unknown): boolean {
-	return err instanceof Error && err.message.includes("PREMIUM_ACCOUNT_REQUIRED");
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		// Same rule as isNotModifiedError below: the code is the stable
+		// identifier — the token matches only the definite 400.
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some((h) => typeof h === "string" && h.includes("PREMIUM_ACCOUNT_REQUIRED"));
 }
 // onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;

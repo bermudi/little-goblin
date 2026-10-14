@@ -85,6 +85,18 @@ const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
 // by a later fire (key = `${id}:${occurrenceMs}`).
 const fireRetries = new Map<string, ReturnType<typeof setTimeout>>();
 
+// The consume record is "submit first, then markRan" (design/programs.md
+// — one attempt per occurrence). When the markRan *write* fails after
+// the submit landed, the row stays due and every tick would re-submit
+// the same occurrence — an operator-visible duplicate per scan until
+// the store heals. Fence the occurrence in-process instead: the tick
+// retries the cursor write (with the original fire time, so occurrences
+// that came due during the outage coalesce the usual way) but never
+// re-fires; a restart re-offers the still-due row once — the same
+// at-least-once a crash gets. Keyed per store so test stores can't
+// share fences.
+const pendingCursorWrites = new WeakMap<ProgramsStore, Map<string, Date>>();
+
 // Cron: missed occurrences coalesce against the latest occurrence due
 // at this scan — anchored at the due row's next_run and walked with the
 // same forward steps that persist it (latestFireAtOrBefore documents
@@ -104,6 +116,27 @@ export function fireScheduled(
 ): void {
 	if (program.cron === null || program.nextRun === null) {
 		throw new Error(`due program ${program.id} has no scheduled occurrence`);
+	}
+	const occurrenceKey = `${program.id}:${program.nextRun}`;
+	const pendingMark = pendingCursorWrites.get(deps.programs)?.get(occurrenceKey);
+	if (pendingMark !== undefined) {
+		// The submit landed but the cursor write didn't — retry the write
+		// every tick; the occurrence itself is never re-fired.
+		try {
+			deps.programs.markRan(program.id, pendingMark);
+			pendingCursorWrites.get(deps.programs)?.delete(occurrenceKey);
+			log.info("program run-mark write recovered", {
+				program: program.id,
+				name: program.name,
+			});
+		} catch (err) {
+			log.debug("program run-mark write still failing", {
+				program: program.id,
+				name: program.name,
+				error: String(err),
+			});
+		}
+		return;
 	}
 	const scheduledFor = latestFireAtOrBefore(program.cron, new Date(program.nextRun), now);
 	const lateMs = Math.max(0, now.getTime() - scheduledFor.getTime());
@@ -132,7 +165,21 @@ export function fireScheduled(
 			scheduleRetrySink(deps, program, scheduledFor, opts?.retryDelaysMs ?? RETRY_DELAYS_MS, 0),
 		);
 	} finally {
-		deps.programs.markRan(program.id, now);
+		try {
+			deps.programs.markRan(program.id, now);
+		} catch (err) {
+			let pending = pendingCursorWrites.get(deps.programs);
+			if (pending === undefined) {
+				pending = new Map();
+				pendingCursorWrites.set(deps.programs, pending);
+			}
+			pending.set(occurrenceKey, now);
+			log.error(
+				"program run-mark write failed — occurrence fenced until the store accepts it",
+				err,
+				{ program: program.id, name: program.name, nextRun: program.nextRun },
+			);
+		}
 	}
 }
 

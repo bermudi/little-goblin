@@ -290,6 +290,50 @@ describe("scheduler", () => {
 		await closeSinks(h);
 	});
 
+	test("a markRan write failure after submit fences the occurrence — retried, never refired", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T07:05:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const program = h.deps.programs.create(
+			{
+				name: "fenced check",
+				cron: "*/30 * * * *",
+				charter: "check once",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		let failing = true;
+		const flakyPrograms = {
+			...h.deps.programs,
+			markRan: (id: number, now: Date) => {
+				if (failing) throw new Error("SQLITE_BUSY");
+				h.deps.programs.markRan(id, now);
+			},
+		};
+		const deps: SchedulerDeps = { ...h.deps, programs: flakyPrograms };
+		// The submit lands, the consume write throws: the row stays due.
+		fireScheduled(deps, program, scanAt);
+		expect(h.submitted).toHaveLength(1);
+		const stillDue = h.deps.programs.get(program.id)!;
+		expect(stillDue.nextRun).toBe(program.nextRun);
+		// The next scan sees the same due row — fenced: the write retries,
+		// the occurrence never re-fires.
+		fireScheduled(deps, stillDue, new Date(scanAt.getTime() + 30_000));
+		expect(h.submitted).toHaveLength(1);
+		// Store heals: the retry lands the cursor, still no re-fire.
+		failing = false;
+		fireScheduled(deps, h.deps.programs.get(program.id)!, new Date(scanAt.getTime() + 60_000));
+		expect(h.submitted).toHaveLength(1);
+		const recovered = h.deps.programs.get(program.id)!;
+		expect(recovered.lastRun).not.toBeNull();
+		expect(new Date(recovered.nextRun!).getTime()).toBeGreaterThan(scanAt.getTime());
+		// And the next occurrence fires normally when it comes due.
+		fireScheduled(deps, recovered, new Date(recovered.nextRun!));
+		expect(h.submitted).toHaveLength(2);
+		await closeSinks(h);
+	});
+
 	// DST regression (review 2026-10-12): the grace anchor must be the
 	// scheduler's forward occurrence sequence — the steps that persist
 	// next_run — never a backward lookup, which disagrees across

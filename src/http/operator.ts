@@ -853,7 +853,9 @@ export async function handleOperatorRoute(
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
-		if (!name.success)
+		// Dotfiles are persistAttachment's upload temps — the composer's
+		// read-back refuses them; same refusal, same shape here.
+		if (!name.success || name.data.startsWith("."))
 			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
 		// Matches the upload cap: the viewer never serves more than the
 		// composer accepts, and serving is a whole-file read.

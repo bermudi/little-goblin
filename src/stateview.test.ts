@@ -310,11 +310,21 @@ describe("attachments", () => {
 		expect(ok?.contentType).toBe("application/octet-stream");
 	});
 
-	test("dot-containing attachment names are ordinary; exact dot segments refuse", () => {
+	test("upload temps (dotfiles) are not listed", () => {
+		const now = new Date("2026-10-03T10:00:00Z");
+		writeRel("attachments/.app-uuid.tmp", "partial", now);
+		writeRel("attachments/settled.png", "a", now);
+		const res = listAttachments(join(home, "attachments"));
+		expect(res.files.map((f) => f.name)).toEqual(["settled.png"]);
+	});
+
+	test("interior dots are ordinary; a leading dot is an upload temp and refuses", () => {
 		writeRel("attachments/file..name.txt", "x");
-		writeRel("attachments/.hidden", "x");
+		writeRel("attachments/.app-uuid.tmp", "partial");
 		expect(attachmentPath(join(home, "attachments"), "file..name.txt")).not.toBeNull();
-		expect(attachmentPath(join(home, "attachments"), ".hidden")).not.toBeNull();
+		// persistAttachment stages uploads as dotfile temps — never served.
+		expect(attachmentPath(join(home, "attachments"), ".app-uuid.tmp")).toBeNull();
+		expect(readAttachmentBytes(join(home, "attachments"), ".app-uuid.tmp", 1024)).toBeNull();
 		expect(attachmentPath(join(home, "attachments"), ".")).toBeNull();
 		expect(attachmentPath(join(home, "attachments"), "..")).toBeNull();
 	});

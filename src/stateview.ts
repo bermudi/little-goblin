@@ -222,6 +222,9 @@ export function listAttachments(dir: string): AttachmentsResponse {
 	const files: OperatorAttachmentItem[] = [];
 	for (const entry of entries) {
 		if (!entry.isFile()) continue;
+		// persistAttachment stages uploads as dotfile temps that a later
+		// rename settles — an in-flight temp is not an attachment.
+		if (entry.name.startsWith(".")) continue;
 		const st = statSync(join(dir, entry.name));
 		files.push({ name: entry.name, sizeBytes: st.size, updatedAt: st.mtime.toISOString() });
 	}
@@ -234,7 +237,9 @@ export function listAttachments(dir: string): AttachmentsResponse {
  * is not a plain file directly inside `dir`.
  */
 export function attachmentPath(dir: string, name: string): string | null {
-	if (name.includes("/") || name.includes("\\") || name === "." || name === "..") return null;
+	// Leading-dot names are persistAttachment's upload temps — never
+	// servable, the same rule the composer read-back enforces.
+	if (name.includes("/") || name.includes("\\") || name.startsWith(".")) return null;
 	const full = contained(dir, name);
 	if (full === null) return null;
 	try {

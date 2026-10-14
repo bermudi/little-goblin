@@ -2499,6 +2499,54 @@ describe("app notes", () => {
 		}
 	});
 
+	test("note body caps at NOTE_BODY_MAX on every content door", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const over = "x".repeat(1_000_001);
+			const atCap = "x".repeat(1_000_000);
+
+			const refusedCreate = await create(call, { title: "t", body: over });
+			expect(refusedCreate.status).toBe(422);
+			const created = await create(call, { title: "t", body: atCap });
+			expect(created.status).toBe(201);
+			const note = (await created.json()) as { id: string; rev: number; body: string };
+			expect(note.body).toBe(atCap);
+
+			// A live etag keeps 422 unambiguous — the cap fires before the
+			// concurrency guard could speak (428/409).
+			const refusedPatch = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: over },
+				{ "if-match": `"${note.rev}"` },
+			);
+			expect(refusedPatch.status).toBe(422);
+			const patched = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: "small" },
+				{ "if-match": `"${note.rev}"` },
+			);
+			expect(patched.status).toBe(200);
+
+			const refusedAppend = await postJson(call, `/api/app/notes/${note.id}/append`, {
+				text: over,
+			});
+			expect(refusedAppend.status).toBe(422);
+			const appended = await postJson(call, `/api/app/notes/${note.id}/append`, {
+				text: atCap,
+			});
+			expect(appended.status).toBe(200);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+			};
+			// append joins with a blank line.
+			expect(after.body).toBe(`small\n\n${atCap}`);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a stale combined patch refuses before any flag mutation", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

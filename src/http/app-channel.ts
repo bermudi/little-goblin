@@ -370,6 +370,11 @@ const notePatchBody = z
 
 const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX_CHARS) });
 
+// The index route's own bound — past it the list stops being an index.
+// The store is asked for limit+1 so "is there more" needs no second
+// query; the wire reports it as `truncated`, never a silent cap.
+const NOTE_LIST_LIMIT = 1000;
+
 // design/projects.md → AI rewrite: the selection cap rides a whole
 // note's plausible size; whitespace-only selection can't anchor a
 // rewrite, and a blank instruction is a client bug.
@@ -987,14 +992,24 @@ export async function handleAppApi(
 						? "loose"
 						: projectParam;
 			const q = url.searchParams.get("q");
+			const archivedOnly = url.searchParams.get("archived") === "1";
+			const rows = deps.notes.list({
+				project,
+				...(q !== null && q !== "" ? { q } : {}),
+				...(archivedOnly ? { archived: true } : {}),
+				limit: NOTE_LIST_LIMIT + 1,
+			});
+			const truncated = rows.length > NOTE_LIST_LIMIT;
+			if (truncated) {
+				log.warn("app note list truncated", {
+					project,
+					q: q ?? null,
+					archived: archivedOnly,
+				});
+			}
 			const body: AppNoteList = {
-				notes: deps.notes
-					.list({
-						project,
-						...(q !== null && q !== "" ? { q } : {}),
-						...(url.searchParams.get("archived") === "1" ? { archived: true } : {}),
-					})
-					.map(appNoteSummary),
+				notes: rows.slice(0, NOTE_LIST_LIMIT).map(appNoteSummary),
+				truncated,
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}

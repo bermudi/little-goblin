@@ -333,7 +333,7 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 					}),
 				);
 			return Promise.resolve(
-				new Response(JSON.stringify({ notes: [] }), {
+				new Response(JSON.stringify({ notes: [], truncated: false }), {
 					headers: { "content-type": "application/json" },
 				}),
 			);

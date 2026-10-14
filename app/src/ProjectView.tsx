@@ -225,6 +225,7 @@ function ProjectNotes({
 	onOpenNote: (id: string) => void;
 }) {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [truncated, setTruncated] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
 	useEffect(() => {
@@ -234,6 +235,7 @@ function ProjectNotes({
 				(r) => {
 					if (!live) return;
 					setNotes(r.notes);
+					setTruncated(r.truncated);
 					setError(null);
 				},
 				(err) =>
@@ -275,6 +277,11 @@ function ProjectNotes({
 			{error !== null && (
 				<p className="error" role="alert">
 					{error}
+				</p>
+			)}
+			{truncated && (
+				<p className="cap" role="status">
+					Showing the first {notes?.length} notes. Use the Notes search to find other notes.
 				</p>
 			)}
 			{notes === null ? (

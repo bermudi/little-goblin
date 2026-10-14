@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, forwardRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import type { AppNote } from "../../src/http/app-wire.ts";
+import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
 
 // The lazy editor resolves to Milkdown — its timers outlive this file
 // and fire inside other suites' processes, where the browser globals
@@ -19,7 +19,7 @@ void mock.module("./NoteEditor.tsx", () => ({
 	default: forwardRef((_props: Record<string, unknown>, _ref: unknown) => null),
 }));
 
-import { NoteView } from "./NoteView.tsx";
+import { NoteView, NotesIndex } from "./NoteView.tsx";
 
 const NOTE: AppNote = {
 	id: "n1",
@@ -188,5 +188,137 @@ describe("NoteView", () => {
 		});
 		root = null;
 		expect(reports.at(-1)).toBe(false);
+	});
+});
+
+// The index's truncation contract (design/projects.md → HTTP surface):
+// each list's own `truncated` bit decides the notice — the client
+// never re-derives it from row counts.
+describe("NotesIndex", () => {
+	const SUMMARY: AppNoteSummary = {
+		id: "n1",
+		projectId: null,
+		title: "scratch",
+		rev: 1,
+		pinnedAt: null,
+		archivedAt: null,
+		updatedAt: "2026-10-10T00:00:00Z",
+		preview: "",
+	};
+
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let listBodies: { active: unknown; archived: unknown };
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		listBodies = {
+			active: { notes: [SUMMARY], truncated: false },
+			archived: { notes: [], truncated: false },
+		};
+		for (const [name, value] of [
+			["window", win],
+			["document", win.document],
+			["navigator", win.navigator],
+			["localStorage", win.localStorage],
+			["Event", win.Event],
+			["CustomEvent", win.CustomEvent],
+			["getComputedStyle", win.getComputedStyle],
+		] as const) {
+			installGlobal(name, value);
+		}
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
+				const u = new URL(url, "http://localhost");
+				return Promise.resolve(
+					jsonResponse(
+						u.searchParams.get("archived") === "1" ? listBodies.archived : listBodies.active,
+					),
+				);
+			}
+			return Promise.resolve(jsonResponse({ error: "unstubbed fetch" }, 404));
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+	const waitFor = async (pred: () => boolean, label: string) => {
+		for (let i = 0; i < 100; i++) {
+			if (pred()) return;
+			await settle();
+		}
+		throw new Error(`timed out waiting for ${label}`);
+	};
+	const mount = async (el: ReactNode) => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(el);
+		});
+		// The list's own fetch is debounced — a rendered row is the
+		// loaded marker, not the filters that paint immediately.
+		await waitFor(() => container.querySelector(".idx") !== null, "a rendered note row");
+	};
+
+	test("a capped list says so — active and archived carry their own notice", async () => {
+		listBodies = {
+			active: { notes: [SUMMARY], truncated: true },
+			archived: {
+				notes: [{ ...SUMMARY, id: "n2", title: "gone", archivedAt: "2026-10-11T00:00:00Z" }],
+				truncated: true,
+			},
+		};
+		await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
+		expect(container.textContent).toContain(
+			"Showing the first 1 matching notes — narrow the search or pick a project",
+		);
+		expect(container.textContent).toContain(
+			"Showing the first 1 archived notes — narrow the search or pick a project",
+		);
+		// The collapsed shelf flags it in the count too.
+		expect(container.querySelector("summary")?.textContent).toBe("Archived notes (1+)");
+	});
+
+	test("a complete list carries no notice and a plain archived count", async () => {
+		listBodies = {
+			active: { notes: [SUMMARY], truncated: false },
+			archived: {
+				notes: [{ ...SUMMARY, id: "n2", title: "gone", archivedAt: "2026-10-11T00:00:00Z" }],
+				truncated: false,
+			},
+		};
+		await mount(<NotesIndex token={null} projects={[]} onOpen={() => {}} />);
+		expect(container.textContent).not.toContain("Showing the first");
+		expect(container.querySelector("summary")?.textContent).toBe("Archived notes (1)");
 	});
 });

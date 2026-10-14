@@ -66,6 +66,9 @@ export function NotesIndex({
 	const [filter, setFilter] = useState<string>("all");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [archived, setArchived] = useState<AppNoteSummary[] | null>(null);
+	// Each list carries the wire's own hit-the-bound bit — a capped
+	// shelf must say so, not read as complete.
+	const [truncated, setTruncated] = useState({ active: false, archived: false });
 	const [error, setError] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
 	const seq = useRef(0);
@@ -90,6 +93,7 @@ export function NotesIndex({
 					if (n !== seq.current) return;
 					setNotes(active.notes);
 					setArchived(gone.notes);
+					setTruncated({ active: active.truncated, archived: gone.truncated });
 					setError(null);
 				},
 				(err) => {
@@ -174,9 +178,24 @@ export function NotesIndex({
 					))}
 				</div>
 			)}
+			{notes !== null && notes.length > 0 && truncated.active && (
+				<p className="empty" role="status">
+					Showing the first {notes.length} matching notes — narrow the search or pick a project to
+					find the rest.
+				</p>
+			)}
 			{archived !== null && archived.length > 0 && (
 				<details className="tuning">
-					<summary>Archived notes ({archived.length})</summary>
+					<summary>
+						Archived notes ({archived.length}
+						{truncated.archived ? "+" : ""})
+					</summary>
+					{truncated.archived && (
+						<p className="empty" role="status">
+							Showing the first {archived.length} archived notes — narrow the search or pick a
+							project to find the rest.
+						</p>
+					)}
 					<div className="inner card">
 						{archived.map((n) => (
 							<NoteIndexRow

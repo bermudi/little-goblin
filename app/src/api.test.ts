@@ -10,6 +10,7 @@ import {
 	getMessages,
 	getOperatorConfig,
 	listMemoryDocuments,
+	listNotes,
 	patchConfig,
 	patchConversationConfig,
 	saveOperatorConfig,
@@ -80,6 +81,32 @@ describe("model setting scopes", () => {
 			"unknown provider",
 		);
 		await expect(getConversationConfig(null, "app/missing")).rejects.toBeInstanceOf(ApiError);
+	});
+});
+
+describe("notes", () => {
+	const fakeFetch = (handler: (req: Request) => Response | Promise<Response>) => {
+		const requests: Request[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const req = new Request(new URL(String(input), "http://localhost"), init);
+				requests.push(req);
+				return handler(req);
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		return requests;
+	};
+
+	test("the list encodes project/q/archived and carries the server's truncated flag verbatim", async () => {
+		const requests = fakeFetch(() => Response.json({ notes: [], truncated: true }));
+		const res = await listNotes(null, { project: "p1", q: "pancake", archived: true });
+		expect(res.truncated).toBe(true);
+		const url = new URL(requests[0]!.url);
+		expect(url.pathname).toBe("/api/app/notes");
+		expect(url.searchParams.get("project")).toBe("p1");
+		expect(url.searchParams.get("q")).toBe("pancake");
+		expect(url.searchParams.get("archived")).toBe("1");
 	});
 });
 

@@ -20,7 +20,7 @@ import { openProjects, projectWorkdir } from "../projects.ts";
 import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
-import { setLogFile } from "../log.ts";
+import { setLogFile, setLogLevel } from "../log.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
 // provider edge (the suite's convention). The appApi closure mirrors
@@ -2373,6 +2373,70 @@ describe("app notes", () => {
 			};
 			expect(found.notes.map((n) => n.title)).toEqual(["project note"]);
 		} finally {
+			http.stop();
+		}
+	});
+
+	test("the index serves past the store's 200 default and reports its own bound truthfully", async () => {
+		const { http, call, notes } = setup({ token: APP_TOKEN_NAME });
+		// A thousand fixture creates would flood stdout — info lines go
+		// quiet for the seeding loops only, never for the assertions.
+		try {
+			setLogLevel("error");
+			const ids: string[] = [];
+			for (let i = 0; i < 250; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
+			setLogLevel("info");
+
+			const read = async (path: string) =>
+				(await (await call(path)).json()) as {
+					notes: { id: string }[];
+					truncated: boolean;
+				};
+
+			// Past the old silent cap: all 250 come back.
+			let page = await read("/api/app/notes");
+			expect(page.notes).toHaveLength(250);
+			expect(page.truncated).toBe(false);
+
+			setLogLevel("error");
+			for (let i = 250; i < 1000; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
+			setLogLevel("info");
+
+			// Exactly at the bound is not truncation.
+			page = await read("/api/app/notes");
+			expect(page.notes).toHaveLength(1000);
+			expect(page.truncated).toBe(false);
+
+			setLogLevel("error");
+			ids.push(notes.create({ title: "bulk 1000" }).id);
+			setLogLevel("info");
+
+			// One past: 1000 rows and the flag — a search reports the same.
+			page = await read("/api/app/notes");
+			expect(page.notes).toHaveLength(1000);
+			expect(page.truncated).toBe(true);
+			page = await read("/api/app/notes?q=bulk");
+			expect(page.notes).toHaveLength(1000);
+			expect(page.truncated).toBe(true);
+			page = await read("/api/app/notes?q=zebra");
+			expect(page.notes).toHaveLength(0);
+			expect(page.truncated).toBe(false);
+
+			// The archived shelf is the same contract.
+			setLogLevel("error");
+			for (const id of ids) notes.setArchived(id, true);
+			setLogLevel("info");
+			page = await read("/api/app/notes");
+			expect(page.notes).toHaveLength(0);
+			expect(page.truncated).toBe(false);
+			page = await read("/api/app/notes?archived=1");
+			expect(page.notes).toHaveLength(1000);
+			expect(page.truncated).toBe(true);
+			page = await read("/api/app/notes?archived=1&q=bulk");
+			expect(page.notes).toHaveLength(1000);
+			expect(page.truncated).toBe(true);
+		} finally {
+			setLogLevel("info");
 			http.stop();
 		}
 	});

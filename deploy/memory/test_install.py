@@ -821,6 +821,7 @@ class PreflightTest(unittest.TestCase):
 
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "http_ok", "probe", "goblin_stable", "create_bank", "wire_goblin",
+         "pre_pull_images", "start_stack",
          "time", "CFG_DIR", "SYSTEMD_DIR",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
@@ -961,6 +962,101 @@ class MainFlowTest(unittest.TestCase):
         self.assertEqual(install.POSTGRES_ENV.read_text(),
                          "POSTGRES_PASSWORD=existing\n")
         self.assertFalse(install.HINDSIGHT_ENV.exists())
+
+    def test_postgres_env_refusal_fires_before_prompting(self) -> None:
+        # The fresh path collects two hidden keys and makes live catalog
+        # calls — refusing a stray postgres.env must happen BEFORE any of
+        # that, the ordering --reconfigure already takes.
+        install.preflight = lambda: None
+        calls: list[str] = []
+
+        def guard_answers(goblin_home: Path) -> Answers:
+            calls.append("answers")
+            return synthetic_answers()
+
+        def guard_bank() -> tuple[str, str]:
+            calls.append("bank")
+            return ("goblin", "m")
+
+        install.prompt_answers = guard_answers
+        install.prompt_bank = guard_bank
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        with (contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO())):
+            with self.assertRaises(SystemExit):
+                install.main([])
+        self.assertEqual(calls, [])
+
+    def write_partial_install(self) -> None:
+        """The state a first install dies in: both env files written,
+        stack never started, bank never created, goblin never wired."""
+        install.preflight = lambda: None
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=x\n")
+
+    def test_resume_finishes_a_partial_install(self) -> None:
+        # Without --resume this box took the status path forever — bank
+        # creation and goblin wiring unreachable. Resume runs exactly
+        # that tail and never re-prompts keys.
+        self.write_partial_install()
+        install.prompt_answers = lambda goblin_home: self.fail(
+            "--resume must never re-prompt keys")
+        install.prompt_bank = lambda: ("goblin", "synthetic mission")
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "active\n", "")
+        banks: list[tuple[str, str]] = []
+        wired: list[tuple[Path, str]] = []
+        install.create_bank = lambda bank_id, mission: banks.append((bank_id, mission))
+
+        def fake_wire(home: Path, bank_id: str) -> str:
+            wired.append((home, bank_id))
+            return "live"
+
+        install.wire_goblin = fake_wire
+        pulled: list[bool] = []
+        started: list[bool] = []
+        install.pre_pull_images = lambda: pulled.append(True)
+        install.start_stack = lambda: started.append(True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--resume", "--goblin-home", str(self.goblin_home)])
+        self.assertEqual(banks, [("goblin", "synthetic mission")])
+        self.assertEqual(wired, [(self.goblin_home, "goblin")])
+        # The stack is already active — no start needed.
+        self.assertEqual(pulled, [])
+        self.assertEqual(started, [])
+
+    def test_resume_starts_a_down_stack(self) -> None:
+        self.write_partial_install()
+        install.prompt_bank = lambda: ("goblin", "synthetic mission")
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "inactive\n", "")
+        pulled: list[bool] = []
+        started: list[bool] = []
+        install.pre_pull_images = lambda: pulled.append(True)
+        install.start_stack = lambda: started.append(True)
+        install.create_bank = lambda bank_id, mission: None
+        install.wire_goblin = lambda home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--resume", "--goblin-home", str(self.goblin_home)])
+        self.assertEqual(pulled, [True])
+        self.assertEqual(started, [True])
+
+    def test_resume_refuses_missing_env_files(self) -> None:
+        # Nothing to finish — point at a fresh install rather than
+        # writing a database password under the resume flag.
+        install.preflight = lambda: None
+        with (contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO())):
+            with self.assertRaises(SystemExit):
+                install.main(["--resume", "--goblin-home", str(self.goblin_home)])
+
+    def test_resume_rejects_contradictory_flags(self) -> None:
+        for extra in (["--reconfigure"], ["--no-start"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    install.main(["--resume", *extra])
 
     def test_reconfigure_reuses_password_and_rewrites_only_hindsight(self) -> None:
         self.fake_prompts()

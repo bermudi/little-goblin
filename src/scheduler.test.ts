@@ -82,12 +82,13 @@ function harness(): Harness {
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as DeliveryApi;
 	const runtime = {
+		accepting: () => true,
 		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
 			submitted.push({ conv: conv.id, parts: message.parts, sink });
 			return true;
 		},
 		busy: () => false,
-	} as unknown as Runtime;
+	} satisfies Pick<Runtime, "accepting" | "submit" | "busy"> as unknown as Runtime;
 	const deps: SchedulerDeps = {
 		programs,
 		store,
@@ -129,10 +130,11 @@ function hit(id: string): MailHit {
 // The runtime that always throws — a turn that never lands.
 function deadRuntime(): Runtime {
 	return {
+		accepting: () => true,
 		submit: () => {
 			throw new Error("queue closed");
 		},
-	} as unknown as Runtime;
+	} satisfies Pick<Runtime, "accepting" | "submit"> as unknown as Runtime;
 }
 
 describe("formatMailEvent", () => {
@@ -229,10 +231,11 @@ describe("scheduler", () => {
 	test("a submit failure releases the sink and advances past the occurrence", async () => {
 		const h = harness();
 		h.deps.runtime = {
+			accepting: () => true,
 			submit: (_c: unknown, _m: unknown, _sink: TurnSink) => {
 				throw new Error("queue closed");
 			},
-		} as unknown as Runtime;
+		} satisfies Pick<Runtime, "accepting" | "submit"> as unknown as Runtime;
 		const job = h.deps.programs.create(
 			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
 			new Date(Date.now() - 5 * 60_000),
@@ -286,6 +289,7 @@ describe("scheduler", () => {
 		);
 		let calls = 0;
 		h.deps.runtime = {
+			accepting: () => true,
 			submit: (_c: { id: string }, _m: UIMessage, sink: TurnSink) => {
 				calls++;
 				if (calls === 1) {
@@ -297,7 +301,7 @@ describe("scheduler", () => {
 				h.submitted.push({ conv: _c.id, parts: _m.parts, sink });
 				return true;
 			},
-		} as unknown as Runtime;
+		} satisfies Pick<Runtime, "accepting" | "submit"> as unknown as Runtime;
 		const s = startScheduler(h.deps);
 		s.stop();
 		// Chat 2's pin is a private address — the fire rolled into its

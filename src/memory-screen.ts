@@ -29,7 +29,7 @@ const patterns: readonly { label: string; pattern: RegExp; prefix?: boolean }[] 
 	{
 		label: "secret_assignment",
 		pattern:
-			/((?<![\w-])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|[A-Z][A-Z0-9_]*_(?:API_KEY|TOKEN|PASSWORD|SECRET))["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
+			/((?<![\w-])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|PASSWORD|SECRET))["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
 		prefix: true,
 	},
 ];
@@ -42,7 +42,7 @@ export function screenMemoryText(text: string, boundary: string): string {
 	for (const { label, pattern, prefix } of patterns) {
 		result = result.replace(pattern, (match: string, head: string) => {
 			const value = prefix ? match.slice(head.length) : match;
-			if (value.includes(MARKER) && /^["']?\[REDACTED:[a-z_]+\]["']?$/.test(value)) return match;
+			if (value.includes(MARKER) && /^["']?\[REDACTED:[a-z_]+\]["']?@?$/.test(value)) return match;
 			hits[label] = (hits[label] ?? 0) + 1;
 			return `${prefix ? head : ""}[REDACTED:${label}]${label === "url_credentials" ? "@" : ""}`;
 		});

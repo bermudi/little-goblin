@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { HindsightClient } from "../../hindsight.ts";
 import { memoryReflectTool, type MemoryReflectDeps } from "./memory-reflect.ts";
+import { REFLECTION_LIMITS } from "../../memory-policy.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -21,7 +22,6 @@ const deps = (client: HindsightClient): MemoryReflectDeps => ({
 	budget: "high",
 	timeoutMs: 1000,
 	isExcluded: () => false,
-	noteRecall: () => {},
 });
 const execute = (
 	tool: ReturnType<typeof memoryReflectTool>,
@@ -45,6 +45,74 @@ const evidence = {
 };
 
 describe("memory_reflect", () => {
+	test("oversized synthesis is omitted explicitly without discarding dated evidence", async () => {
+		const client = served(() => Response.json({ ...evidence, text: "x".repeat(40_000) }));
+		for (const bound of [1, 4096]) {
+			const result = await execute(memoryReflectTool({ ...deps(client), maxTokens: bound }), {
+				query: "x",
+			});
+			expect(result).toMatchObject({
+				synthesis: "",
+				synthesisOmitted: true,
+				grounded: true,
+				evidence: { memories: evidence.based_on.memories },
+			});
+			expect(JSON.stringify(result).length).toBeLessThanOrEqual(Math.max(1024, bound * 8));
+		}
+	});
+
+	test("JSON escaping participates in synthesis and complete-result bounds", async () => {
+		const client = served(() => Response.json({ ...evidence, text: "\n".repeat(600) }));
+		const result = await execute(memoryReflectTool(deps(client)), { query: "x", maxTokens: 128 });
+		expect(result).toMatchObject({ synthesisOmitted: true, grounded: true });
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(1024);
+	});
+
+	test("large response evidence reaches whole-item degradation rather than the old 1MiB cap", async () => {
+		const client = served(() =>
+			Response.json({
+				text: "A completed investigation.",
+				based_on: {
+					memories: [
+						...Array.from({ length: 30 }, (_, i) => ({
+							id: `large-${i}`,
+							text: "x".repeat(60_000),
+						})),
+						{ id: "short", text: "A complete dated fact.", occurred_start: "2026-01-01" },
+					],
+				},
+			}),
+		);
+		const result = await execute(memoryReflectTool(deps(client)), { query: "x" });
+		expect(result).toMatchObject({
+			grounded: true,
+			omittedEvidence: 30,
+			evidence: {
+				memories: [{ id: "short", text: "A complete dated fact.", occurred_start: "2026-01-01" }],
+			},
+		});
+	});
+
+	test("response resource limits are actionable, not malformed-wire failures", async () => {
+		for (const response of [
+			() =>
+				Response.json({
+					text: "A synthesis.",
+					based_on: {
+						memories: Array.from({ length: 35 }, (_, i) => ({
+							id: `large-${i}`,
+							text: "x".repeat(64_000),
+						})),
+					},
+				}),
+			() => new Response(new Uint8Array(REFLECTION_LIMITS.responseBytes + 1)),
+		]) {
+			const result = await execute(memoryReflectTool(deps(served(response))), { query: "x" });
+			expect(result).toMatchObject({ reason: "too_large", retryable: false });
+			expect(JSON.stringify(result)).toContain("ask a narrower question");
+		}
+	});
+
 	test("returns synthesis and dated evidence, never service instructions", async () => {
 		const client = served(async (request) => {
 			await Bun.sleep(15); // reflection must not inherit the five-ms recall timeout
@@ -138,11 +206,9 @@ describe("memory_reflect", () => {
 		const outcomes: boolean[] = [];
 		const controller = new AbortController();
 		controller.abort();
+		const dependencies = { ...deps(client), noteRecall: (ok: boolean) => outcomes.push(ok) };
 		const result = await execute(
-			memoryReflectTool({
-				...deps(client),
-				noteRecall: (ok) => outcomes.push(ok),
-			}),
+			memoryReflectTool(dependencies),
 			{ query: "x" },
 			controller.signal,
 		);

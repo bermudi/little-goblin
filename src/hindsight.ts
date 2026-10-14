@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { log } from "./log.ts";
 import { screenMemoryText } from "./memory-screen.ts";
+import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./memory-policy.ts";
 
 // Bank/document identifier vocabulary — shared with the forget
 // protocol (memory-forget.ts validates operator-supplied ids before
@@ -95,41 +96,62 @@ const reflectionFactSchema = z.object({
 	occurred_start: z.string().max(128).nullish(),
 	occurred_end: z.string().max(128).nullish(),
 });
-const reflectionSchema = z.object({
-	text: z.string().max(64_000),
-	based_on: z.object({
-		memories: z.array(reflectionFactSchema).max(1_000).default([]),
-		mental_models: z
-			.array(
-				z.object({
-					id: identifier,
-					text: z.string().max(64_000),
-					context: z.string().max(16_000).nullish(),
-				}),
-			)
-			.max(1_000)
-			.default([]),
-		directives: z
-			.array(
-				z.object({
-					id: identifier,
-					name: z.string().max(256),
-					content: z.string().max(16_000),
-				}),
-			)
-			.max(1_000)
-			.default([]),
-	}),
-	usage: z
-		.object({
-			input_tokens: z.number().int().nonnegative().default(0),
-			output_tokens: z.number().int().nonnegative().default(0),
-			total_tokens: z.number().int().nonnegative().default(0),
-			cached_tokens: z.number().int().nonnegative().default(0),
-			thoughts_tokens: z.number().int().nonnegative().default(0),
-		})
-		.nullish(),
-});
+function totalStringCharacters(value: unknown): number {
+	if (typeof value === "string") return value.length;
+	if (Array.isArray(value))
+		return value.reduce<number>((sum, item: unknown) => sum + totalStringCharacters(item), 0);
+	if (typeof value === "object" && value !== null)
+		return Object.values(value).reduce<number>(
+			(sum, item: unknown) => sum + totalStringCharacters(item),
+			0,
+		);
+	return 0;
+}
+
+const reflectionSchema = z
+	.object({
+		text: z.string().max(64_000),
+		based_on: z.object({
+			memories: z.array(reflectionFactSchema).max(1_000).default([]),
+			mental_models: z
+				.array(
+					z.object({
+						id: identifier,
+						text: z.string().max(64_000),
+						context: z.string().max(16_000).nullish(),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+			directives: z
+				.array(
+					z.object({
+						id: identifier,
+						name: z.string().max(256),
+						content: z.string().max(16_000),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+		}),
+		usage: z
+			.object({
+				input_tokens: z.number().int().nonnegative().default(0),
+				output_tokens: z.number().int().nonnegative().default(0),
+				total_tokens: z.number().int().nonnegative().default(0),
+				cached_tokens: z.number().int().nonnegative().default(0),
+				thoughts_tokens: z.number().int().nonnegative().default(0),
+			})
+			.nullish(),
+	})
+	.superRefine((value, ctx) => {
+		if (totalStringCharacters(value) > REFLECTION_LIMITS.totalCharacters)
+			ctx.addIssue({
+				code: "custom",
+				message: "Memory reflection exceeds the aggregate response limit",
+				params: { memoryResponseTooLarge: true },
+			});
+	});
 export type MemoryReflection = z.infer<typeof reflectionSchema>;
 
 const documentSchema = z.object({
@@ -205,7 +227,14 @@ const operationSchema = z.object({
 });
 export type MemoryOperation = z.infer<typeof operationSchema>;
 
-type FailureKind = "http" | "transport" | "timeout" | "cancelled" | "protocol" | "auth";
+type FailureKind =
+	| "http"
+	| "transport"
+	| "timeout"
+	| "cancelled"
+	| "protocol"
+	| "auth"
+	| "too_large";
 export class HindsightError extends Error {
 	constructor(
 		readonly kind: FailureKind,
@@ -240,7 +269,7 @@ async function readJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Prom
 			size += chunk.value.byteLength;
 			if (size > maxBytes) {
 				await reader.cancel();
-				throw new HindsightError("protocol");
+				throw new HindsightError("too_large");
 			}
 			chunks.push(chunk.value);
 		}
@@ -354,7 +383,12 @@ export class HindsightClient {
 					throw new HindsightError("http", response.status);
 				}
 				const parsed = schema.safeParse(await readJson(response, options.responseBytes));
-				if (!parsed.success) throw new HindsightError("protocol");
+				if (!parsed.success) {
+					const limited = parsed.error.issues.some(
+						(issue) => issue.code === "custom" && issue.params?.memoryResponseTooLarge === true,
+					);
+					throw new HindsightError(limited ? "too_large" : "protocol");
+				}
 				return parsed.data;
 			};
 			const result = await Promise.race([work(), aborted]);
@@ -393,6 +427,7 @@ export class HindsightClient {
 			budget?: "low" | "mid" | "high";
 			preferObservations?: boolean;
 			minScores?: RecallMinScores;
+			timeoutMs?: number;
 		} = {},
 	): Promise<RecalledFact[]> {
 		const input = z
@@ -412,9 +447,16 @@ export class HindsightClient {
 					? { min_scores: options.minScores }
 					: {}),
 			});
+		const timeoutMs = z
+			.number()
+			.int()
+			.min(1)
+			.max(300_000)
+			.parse(options.timeoutMs ?? this.timeoutMs);
 		const result = await this.request("recall", "/memories/recall", "POST", recallSchema, {
 			body: input,
 			signal: options.signal,
+			timeoutMs,
 		});
 		if (!result) throw new HindsightError("protocol");
 		const floors = (["semantic", "keyword", "reranker", "final"] as const).flatMap((stage) => {
@@ -452,19 +494,20 @@ export class HindsightClient {
 			})
 			.parse({
 				query: screenMemoryText(query, "reflect-query"),
-				max_tokens: options.maxTokens ?? 4_096,
-				budget: options.budget ?? "high",
+				max_tokens: options.maxTokens ?? MEMORY_DEFAULTS.reflectMaxTokens,
+				budget: options.budget ?? MEMORY_DEFAULTS.reflectBudget,
 			});
 		const timeoutMs = z
 			.number()
 			.int()
 			.min(1)
 			.max(300_000)
-			.parse(options.timeoutMs ?? 120_000);
+			.parse(options.timeoutMs ?? MEMORY_DEFAULTS.reflectTimeoutMs);
 		const result = await this.request("reflect", "/reflect", "POST", reflectionSchema, {
 			body: { ...input, include: { facts: {} } },
 			signal: options.signal,
 			timeoutMs,
+			responseBytes: REFLECTION_LIMITS.responseBytes,
 		});
 		if (!result) throw new HindsightError("protocol");
 		log.info("memory reflected", {

@@ -119,6 +119,7 @@ describe("draftFromConfig", () => {
 			recallTimeoutMs: 2000,
 			searchMaxTokens: 6000,
 			searchBudget: "mid",
+			searchTimeoutMs: 25_000,
 			reflectTimeoutMs: 90_000,
 			minScores: { semantic: 0.4 },
 		});
@@ -144,6 +145,7 @@ describe("draftFromConfig", () => {
 		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).memory).toMatchObject({
 			searchMaxTokens: 6000,
 			searchBudget: "mid",
+			searchTimeoutMs: 25_000,
 			reflectTimeoutMs: 90_000,
 			minScores: { semantic: 0.4 },
 			preferObservations: true,

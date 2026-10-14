@@ -537,8 +537,16 @@ describe("goblin.json5", () => {
 		expect(mem.minScores).toEqual({ semantic: 0.3 });
 		expect(mem.searchMaxTokens).toBe(4096);
 		expect(mem.searchBudget).toBe("high");
+		expect(mem.searchTimeoutMs).toBe(30_000);
 		expect(mem.searchMinScores).toEqual({});
 		expect(mem.reflectTimeoutMs).toBe(120_000);
+		for (const timeout of [0, 120_001]) {
+			writeFileSync(
+				join(dir, "goblin.json5"),
+				`${base},memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:${timeout}}}`,
+			);
+			expect(() => loadConfig()).toThrow();
+		}
 		// Remote plain HTTP is rejected — loopback or HTTPS only.
 		writeFileSync(
 			join(dir, "goblin.json5"),

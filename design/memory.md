@@ -299,6 +299,14 @@ contract), returns synthesis separately from dated evidence, and identifies
 mental models and directives that shaped it. Missing evidence envelopes are
 protocol failures, not successful text-only answers. Bank disposition and
 directives are service-side interpretation, never new Goblin instructions.
+Reflection's input response is bounded separately: 16 MiB on the wire and
+two million aggregate string characters after validation. A larger response
+is a resource-limit failure with a narrower-question suggestion, not a wire
+protocol violation. The model-facing result remains much smaller. Reserve
+room for whole evidence: if the synthesis exceeds its share, omit it with
+`synthesisOmitted: true` rather than clipping a qualification or discarding
+a completed investigation. Reflection outcomes are logged separately and
+never change the shared recall-health latch.
 No new provider/model, bank creation, automatic reflection, or instruction-file
 generation is introduced. The existing service's configured LLM does the work.
 
@@ -313,7 +321,9 @@ secrecy guarantee, does not rewrite original history, and is not retroactive
 cleanup of old outbox rows or remote storage.
 
 Automatic recall defaults to `mid` / 2048 tokens; explicit search has separate
-`searchBudget` / `searchMaxTokens` defaults of `high` / 4096. Reflection has
+`searchBudget` / `searchMaxTokens` / `searchTimeoutMs` defaults of `high` /
+4096 / 30000; deliberate search does not inherit the automatic-recall deadline.
+Reflection has
 `reflectBudget` / `reflectMaxTokens` / `reflectTimeoutMs` defaults of `high` /
 4096 / 120000. Explicitly configured old recall bounds remain respected.
 `preferObservations` defaults true without excluding fresh raw facts.

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { HindsightClient, HindsightError, type RecallMinScores } from "../../hindsight.ts";
 import { renderRecallEvidence } from "../../memory.ts";
 import { log } from "../../log.ts";
+import { BUDGET_ORDER, MEMORY_DEFAULTS } from "../../memory-policy.ts";
 
 export interface MemorySearchDeps {
 	client: HindsightClient;
@@ -14,6 +15,7 @@ export interface MemorySearchDeps {
 	// them, never widen past the wire cap.
 	maxTokens: number;
 	budget: "low" | "mid" | "high";
+	timeoutMs?: number;
 	preferObservations?: boolean;
 	minScores?: RecallMinScores;
 	// Topic exclusion governs inflow too: excluded conversations may not
@@ -22,10 +24,6 @@ export interface MemorySearchDeps {
 	// Records the outcome for /memory status alongside turn recalls.
 	noteRecall: (ok: boolean) => void;
 }
-
-// low < mid < high — a tool-supplied budget may narrow the configured
-// recall effort, never widen past it (the same rule maxTokens follows).
-const BUDGET_ORDER: Record<MemorySearchDeps["budget"], number> = { low: 0, mid: 1, high: 2 };
 
 export const memorySearchTool = (deps: MemorySearchDeps) =>
 	tool({
@@ -53,6 +51,7 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 			}
 			try {
 				const facts = await deps.client.recall(query, {
+					timeoutMs: deps.timeoutMs ?? MEMORY_DEFAULTS.searchTimeoutMs,
 					...(options?.abortSignal ? { signal: options.abortSignal } : {}),
 					...(deps.minScores ? { minScores: deps.minScores } : {}),
 					preferObservations: deps.preferObservations ?? true,

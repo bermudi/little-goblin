@@ -25,6 +25,7 @@ import { uiTool } from "./ui.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
 import { memoryReflectTool } from "./memory-reflect.ts";
+import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
 import type { MemorySearchDeps } from "./memory.ts";
 import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";
@@ -145,8 +146,13 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 			? {
 					memory_search: memorySearchTool(memory),
 					memory_reflect: memoryReflectTool({
-						...memory,
-						...(memory.reflection ?? { maxTokens: 4096, budget: "high", timeoutMs: 120_000 }),
+						client: memory.client,
+						isExcluded: memory.isExcluded,
+						...(memory.reflection ?? {
+							maxTokens: MEMORY_DEFAULTS.reflectMaxTokens,
+							budget: MEMORY_DEFAULTS.reflectBudget,
+							timeoutMs: MEMORY_DEFAULTS.reflectTimeoutMs,
+						}),
 					}),
 				}
 			: {}),

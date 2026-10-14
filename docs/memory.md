@@ -81,7 +81,9 @@ not auto-deleted.
 ## Memory quality and explicit investigation
 
 New configurations default to automatic recall at `mid` / 2048 tokens, while
-explicit search uses separate `searchBudget: "high"` / `searchMaxTokens: 4096`.
+explicit search uses separate `searchBudget: "high"` / `searchMaxTokens: 4096`
+and `searchTimeoutMs: 30000` (configurable up to 120000). The automatic-recall
+deadline does not limit deliberate search.
 Existing explicit automatic bounds are respected. `preferObservations: true`
 removes duplicate supporting facts when their observation is returned, without
 excluding fresh raw facts. `minScores: {semantic: 0.3}` is an initial automatic
@@ -104,6 +106,14 @@ not callable through `script`. Defaults: `reflectBudget: "high"`,
 `reflectMaxTokens: 4096`, `reflectTimeoutMs: 120000`. It adds model calls, latency,
 and provider cost. A missing evidence envelope is a protocol error. No evidence
 means `grounded: false`; oversized evidence items are omitted whole with a count.
+Synthesis may use at most half the estimated output allowance; if it cannot
+fit whole, `synthesisOmitted: true` and an empty synthesis preserve the supporting
+evidence rather than returning a misleading prefix. The envelope has a 1024
+character minimum so even tiny synthesis-token bounds can return evidence.
+Reflection can receive up to 16 MiB, with a two-million-character aggregate
+string limit. Larger responses return an explicit size-limit error and suggest
+a narrower question, not a malformed-protocol error. Reflection outcomes have
+their own log events and never degrade or recover `/memory status`'s recall latch.
 
 Completed exchanges now preserve their full text for Hindsight's extraction
 chunking. Exchanges over one million characters are rejected for retention with

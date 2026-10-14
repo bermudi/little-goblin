@@ -445,6 +445,7 @@ async function boot() {
 								client: memoryClient,
 								maxTokens: memoryBootConfig.searchMaxTokens,
 								budget: memoryBootConfig.searchBudget,
+								timeoutMs: memoryBootConfig.searchTimeoutMs,
 								minScores: memoryBootConfig.searchMinScores,
 								preferObservations: memoryBootConfig.preferObservations,
 								reflection: {

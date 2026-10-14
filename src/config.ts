@@ -21,6 +21,7 @@ import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./hindsight.ts";
 import { log } from "./log.ts";
+import { MEMORY_DEFAULTS } from "./memory-policy.ts";
 
 // ---------- paths ----------
 
@@ -323,17 +324,23 @@ export const memoryConfigSchema = z.object({
 	baseUrl: hindsightConnectionSchema.shape.baseUrl,
 	bankId: hindsightConnectionSchema.shape.bankId,
 	auth: z.string().min(1).optional(),
-	recallTimeoutMs: z.number().int().min(100).max(10_000).default(5000),
-	maxTokens: z.number().int().min(1).max(8192).default(2048),
-	budget: z.enum(["low", "mid", "high"]).default("mid"),
-	preferObservations: z.boolean().default(true),
-	minScores: minScoresSchema.default({ semantic: 0.3 }),
-	searchMaxTokens: z.number().int().min(1).max(8192).default(4096),
-	searchBudget: z.enum(["low", "mid", "high"]).default("high"),
-	searchMinScores: minScoresSchema.default({}),
-	reflectMaxTokens: z.number().int().min(1).max(8192).default(4096),
-	reflectBudget: z.enum(["low", "mid", "high"]).default("high"),
-	reflectTimeoutMs: z.number().int().min(100).max(300_000).default(120_000),
+	recallTimeoutMs: z.number().int().min(100).max(10_000).default(MEMORY_DEFAULTS.recallTimeoutMs),
+	maxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.maxTokens),
+	budget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.budget),
+	preferObservations: z.boolean().default(MEMORY_DEFAULTS.preferObservations),
+	minScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.minScores })),
+	searchMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.searchMaxTokens),
+	searchBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.searchBudget),
+	searchTimeoutMs: z.number().int().min(100).max(120_000).default(MEMORY_DEFAULTS.searchTimeoutMs),
+	searchMinScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.searchMinScores })),
+	reflectMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.reflectMaxTokens),
+	reflectBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.reflectBudget),
+	reflectTimeoutMs: z
+		.number()
+		.int()
+		.min(100)
+		.max(300_000)
+		.default(MEMORY_DEFAULTS.reflectTimeoutMs),
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 

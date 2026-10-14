@@ -1,6 +1,7 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
-import type { HindsightClient } from "../../hindsight.ts";
+import { HindsightClient } from "../../hindsight.ts";
+import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
 import type { ProgramsStore } from "../../programs.ts";
 import type { Config } from "../../config.ts";
 import type { AuthStore } from "../../auth.ts";
@@ -19,6 +20,59 @@ const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
 
 describe("toolNames ↔ makeTools", () => {
+	test("reflection uses shared defaults and never mutates the recall-health latch", async () => {
+		const outcomes: boolean[] = [];
+		let reflectOk = false;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (new URL(request.url).pathname.endsWith("/reflect")) {
+					expect(await request.json()).toMatchObject({
+						budget: MEMORY_DEFAULTS.reflectBudget,
+						max_tokens: MEMORY_DEFAULTS.reflectMaxTokens,
+					});
+					return reflectOk
+						? Response.json({
+								text: "A synthesis.",
+								based_on: { memories: [{ id: "f", text: "A fact." }] },
+							})
+						: new Response("synthetic failure", { status: 503 });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		try {
+			const tools = makeTools({
+				cwd: "/tmp",
+				memory: {
+					client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+					maxTokens: 256,
+					budget: "low",
+					timeoutMs: 1000,
+					isExcluded: () => false,
+					noteRecall: (ok) => outcomes.push(ok),
+				},
+			});
+			const run = async (name: string) => {
+				const execute = tools[name]?.execute;
+				if (!execute) throw new Error("Expected executable tool");
+				return execute({ query: "x" }, { toolCallId: name, messages: [], context: {} });
+			};
+			await run("memory_search");
+			expect(outcomes).toEqual([true]);
+			expect(await run("memory_reflect")).toMatchObject({
+				error: "memory investigation unavailable",
+			});
+			expect(outcomes).toEqual([true]);
+			reflectOk = true;
+			expect(await run("memory_reflect")).toMatchObject({ synthesis: "A synthesis." });
+			expect(outcomes).toEqual([true]);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	for (const voice of [false, true]) {
 		for (const program of [false, true]) {
 			for (const file of [false, true]) {

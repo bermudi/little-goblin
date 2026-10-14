@@ -313,13 +313,13 @@ describe("Hindsight HTTP boundary", () => {
 	});
 
 	test("invalid, malformed, and oversized responses fail loudly", async () => {
-		for (const response of [
-			() => Response.json({ results: [{ text: "missing id" }] }),
-			() => new Response("{invalid json"),
-			() => new Response("x".repeat(1_048_577)),
-		]) {
+		for (const [response, kind] of [
+			[() => Response.json({ results: [{ text: "missing id" }] }), "protocol"],
+			[() => new Response("{invalid json"), "protocol"],
+			[() => new Response("x".repeat(1_048_577)), "too_large"],
+		] as const) {
 			const client = new HindsightClient({ baseUrl: fake(response), bankId: "g" });
-			await expect(client.recall("query")).rejects.toMatchObject({ kind: "protocol" });
+			await expect(client.recall("query")).rejects.toMatchObject({ kind });
 		}
 	});
 

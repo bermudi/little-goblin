@@ -7,10 +7,17 @@ afterEach(() => {
 	for (const s of servers.splice(0)) s.stop(true);
 });
 
-function served(handler: (request: Request) => Response | Promise<Response>): HindsightClient {
+function served(
+	handler: (request: Request) => Response | Promise<Response>,
+	timeoutMs = 30_000,
+): HindsightClient {
 	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
 	servers.push(server);
-	return new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+	return new HindsightClient({
+		baseUrl: `http://127.0.0.1:${server.port}`,
+		bankId: "g",
+		timeoutMs,
+	});
 }
 
 const exec = (t: ReturnType<typeof memorySearchTool>, input: unknown) =>
@@ -26,6 +33,25 @@ const deps = (client: HindsightClient, excluded = false) => ({
 });
 
 describe("memory_search tool", () => {
+	test("deliberate search does not inherit the automatic-recall timeout", async () => {
+		const client = served(async () => {
+			await Bun.sleep(30);
+			return Response.json({ results: [] });
+		}, 5);
+		const result = await exec(memorySearchTool(deps(client)), { query: "x" });
+		expect(result).toMatchObject({ sources: [] });
+		await expect(client.recall("x")).rejects.toMatchObject({ kind: "timeout" });
+	});
+
+	test("the deliberate-search deadline remains enforced independently", async () => {
+		const client = served(async () => {
+			await Bun.sleep(100);
+			return Response.json({ results: [] });
+		});
+		const result = await exec(memorySearchTool({ ...deps(client), timeoutMs: 5 }), { query: "x" });
+		expect(result).toMatchObject({ error: "memory unavailable", retryable: true });
+	});
+
 	test("the complete output budget includes provenance for selected facts only", async () => {
 		const client = served(() =>
 			Response.json({

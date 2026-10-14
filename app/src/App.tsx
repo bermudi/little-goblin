@@ -402,7 +402,12 @@ function ConversationRow({
 					onBlur={commitRename}
 					onKeyDown={(e) => {
 						if (e.key === "Enter") commitRename();
-						if (e.key === "Escape") setEditing(false);
+						// Escape is a cancel: mark committed so the
+						// unmount's blur doesn't PATCH the half-typed draft.
+						if (e.key === "Escape") {
+							committed.current = true;
+							setEditing(false);
+						}
 					}}
 				/>
 			</div>
@@ -984,10 +989,15 @@ function AppShell() {
 	// One start path for every composer — the empty state passes null,
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
-	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+	// Resolves false when nothing was sent — a declined dirty guard or a
+	// failed create — so the composer keeps the operator's compose.
+	const startChat = async (
+		projectId: string | null,
+		parts: UIMessage["parts"],
+	): Promise<boolean> => {
 		// Guard before createConversation — a declined leave must not
 		// park a server-side empty row in the rail.
-		if (!leaveDirty()) return;
+		if (!leaveDirty()) return false;
 		setStarting(true);
 		setStartFailed(false);
 		try {
@@ -1000,8 +1010,10 @@ function AppShell() {
 			// confirm the still-dirty page a second time.
 			select(created.id, { skipDirtyGuard: true });
 			await refresh();
+			return true;
 		} catch {
 			setStartFailed(true);
+			return false;
 		} finally {
 			setStarting(false);
 		}
@@ -1322,7 +1334,7 @@ function AppShell() {
 										setStaged={setStaged}
 										stagedNotes={stagedNotes}
 										setStagedNotes={setStagedNotes}
-										onSend={(parts) => void startChat(currentProject.id, parts)}
+										onSend={(parts) => startChat(currentProject.id, parts)}
 									/>
 								) : (
 									<p className="empty">
@@ -1356,7 +1368,7 @@ function AppShell() {
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
-								onSend={(parts) => void startConversation(parts)}
+								onSend={startConversation}
 							/>
 						</div>
 					) : (

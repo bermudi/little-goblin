@@ -31,6 +31,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import { bytes } from "./opsShared.tsx";
 import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
@@ -63,12 +64,6 @@ function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 			</ul>
 		</details>
 	);
-}
-
-function formatSize(n: number): string {
-	if (n < 1024) return `${n} B`;
-	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function FileIcon() {
@@ -149,9 +144,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			<a className="attachment image" href={thumb} target="_blank" rel="noreferrer">
 				<img src={thumb} alt={ref.filename} />
 				<span className="attachment-name">{ref.filename}</span>
-				{typeof ref.size === "number" && (
-					<span className="attachment-size">{formatSize(ref.size)}</span>
-				)}
+				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			</a>
 		);
 	}
@@ -188,9 +181,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			) : (
 				<span className="attachment-name">{ref.filename}</span>
 			)}
-			{typeof ref.size === "number" && (
-				<span className="attachment-size">{formatSize(ref.size)}</span>
-			)}
+			{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			{dlError !== null && <span className="msg-err">Download failed: {dlError}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
@@ -702,7 +693,10 @@ function NotePicker({
 // Always present — on an empty conversation too. The draft is local;
 // staged attachments arrive from above so they outlive this instance
 // (#118). onSend hands the assembled parts up, where the caller either
-// streams them into the open conversation or creates one.
+// streams them into the open conversation or creates one; its result
+// says whether the send was accepted — `false` keeps everything the
+// operator composed so a failed lazy create leaves a resendable draft
+// instead of an empty composer and a shrug.
 export function Composer({
 	token,
 	conversationId,
@@ -723,7 +717,7 @@ export function Composer({
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-	onSend: (parts: UIMessage["parts"]) => void;
+	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
 	// A select-to-quote request — `n` bumps per click, so even repeated
@@ -851,7 +845,14 @@ export function Composer({
 						if (busyRef.current) {
 							setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
 						} else {
-							onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+							// A declined send (failed lazy create) re-stages the
+							// note — the upload already landed server-side.
+							void Promise.resolve(
+								onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]),
+							).then((accepted) => {
+								if (accepted === false)
+									setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+							});
 						}
 					} catch {
 						setStaged((p) => [
@@ -960,14 +961,20 @@ export function Composer({
 				type: "data-note",
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
-		setDraft("");
-		// Entries that weren't sent — uploads still in flight, failed
-		// chips — stay staged. Clearing them would drop files the
-		// operator still sees in the composer.
-		for (const e of ready) dropEntry(e);
-		setStaged((p) => p.filter((e) => !ready.includes(e)));
-		setStagedNotes([]);
-		onSend(parts);
+		// Clear only once the send is accepted — the lazy-create path can
+		// fail after this point, and a compose wiped before that failure
+		// leaves nothing to resend (blob URLs are unrecoverable). Typing
+		// that lands mid-flight survives: only the sent prefix comes off.
+		void Promise.resolve(onSend(parts) ?? true).then((accepted) => {
+			if (accepted === false) return;
+			setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
+			// Entries that weren't sent — uploads still in flight, failed
+			// chips — stay staged. Clearing them would drop files the
+			// operator still sees in the composer.
+			for (const e of ready) dropEntry(e);
+			setStaged((p) => p.filter((e) => !ready.includes(e)));
+			setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
+		});
 	};
 
 	const modelName = cfg === null ? null : (cfg.model.split("/").pop() ?? cfg.model);
@@ -1025,7 +1032,7 @@ export function Composer({
 								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
 								{e.ref.filename}
 							</span>
-							<span className="attachment-size">{formatSize(e.ref.size)}</span>
+							<span className="attachment-size">{bytes(e.ref.size)}</span>
 							<button
 								type="button"
 								aria-label="Remove"

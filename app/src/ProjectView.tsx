@@ -226,6 +226,7 @@ function ProjectNotes({
 }) {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [creating, setCreating] = useState(false);
 	useEffect(() => {
 		let live = true;
 		const run = () => {
@@ -250,17 +251,24 @@ function ProjectNotes({
 		};
 	}, [token, project.id]);
 	const newNote = () => {
+		if (creating) return;
+		setCreating(true);
 		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
-			(n) => onOpenNote(n.id),
-			(err) =>
-				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`),
+			(n) => {
+				setCreating(false);
+				onOpenNote(n.id);
+			},
+			(err) => {
+				setCreating(false);
+				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
+			},
 		);
 	};
 	return (
 		<>
 			<div className="row">
 				<h2 className="ops-h2">Notes</h2>
-				<button type="button" className="ghost" onClick={newNote}>
+				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
 					New note
 				</button>
 			</div>
@@ -389,7 +397,12 @@ export function ProjectView({
 						onBlur={commitRename}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") commitRename();
-							if (e.key === "Escape") setRenaming(false);
+							// Escape cancels — without committed the
+							// unmount's blur would PATCH the draft anyway.
+							if (e.key === "Escape") {
+								committed.current = true;
+								setRenaming(false);
+							}
 						}}
 					/>
 				</div>

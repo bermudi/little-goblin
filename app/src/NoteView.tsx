@@ -67,6 +67,7 @@ export function NotesIndex({
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [archived, setArchived] = useState<AppNoteSummary[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [creating, setCreating] = useState(false);
 	const seq = useRef(0);
 
 	const projectName = (id: string | null): string | null =>
@@ -112,13 +113,20 @@ export function NotesIndex({
 	}, [query, filter, token]);
 
 	const newNote = () => {
+		if (creating) return;
+		setCreating(true);
 		void createNote(token, {
 			title: "Untitled note",
 			...(filter !== "all" && filter !== "loose" ? { projectId: filter } : {}),
 		}).then(
-			(n) => onOpen(n.id),
-			(err) =>
-				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`),
+			(n) => {
+				setCreating(false);
+				onOpen(n.id);
+			},
+			(err) => {
+				setCreating(false);
+				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
+			},
 		);
 	};
 
@@ -141,7 +149,7 @@ export function NotesIndex({
 						</option>
 					))}
 				</select>
-				<button type="button" className="ghost" onClick={newNote}>
+				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
 					New note
 				</button>
 			</div>

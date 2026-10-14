@@ -846,11 +846,20 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		);
 	}
 
-	// Called at the top of every entry point: bound the caller's audit
-	// frames, list stale rows (caller exempt) and hand them to the
-	// reaper chain. Synchronous — nothing here can block the call
-	// behind another desktop's lane.
-	function sweepOnce(name: string): void {
+	// Called at the top of every entry point: the name check runs
+	// before pruneShots joins it under shotsRoot — an unvalidated
+	// "../" name would prune outside the audit tree — then bound the
+	// caller's audit frames, list stale rows (caller exempt) and hand
+	// them to the reaper chain. Synchronous — nothing here can block
+	// the call behind another desktop's lane.
+	function sweepOnce(name: string, op: string): void {
+		if (!NAME_RE.test(name)) {
+			throw refuse(
+				name,
+				op,
+				`invalid desktop name ${JSON.stringify(name)} — must match ${NAME_RE.source}`,
+			);
+		}
 		pruneShots(name);
 		const idle = cfg().idleHours;
 		if (idle === 0) return;
@@ -930,14 +939,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 	return {
 		async allocate(name, opts) {
-			sweepOnce(name);
-			if (!NAME_RE.test(name)) {
-				throw refuse(
-					name,
-					"allocate",
-					`invalid desktop name ${JSON.stringify(name)} — must match ${NAME_RE.source}`,
-				);
-			}
+			sweepOnce(name, "allocate");
 			if (opts?.image !== undefined && !imageRefSchema.safeParse(opts.image).success) {
 				throw refuse(
 					name,
@@ -1003,7 +1005,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async claim(name, holder) {
-			sweepOnce(name);
+			sweepOnce(name, "claim");
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				const row = ready.row;
@@ -1042,7 +1044,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		// the lane loses updates to an in-flight act, and skipping the
 		// sweep would let these cut in line ahead of it.
 		async release(name, holder) {
-			sweepOnce(name);
+			sweepOnce(name, "release");
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -1068,7 +1070,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async handoff(name, from, to) {
-			sweepOnce(name);
+			sweepOnce(name, "handoff");
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -1097,7 +1099,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async reserve(name, reserved) {
-			sweepOnce(name);
+			sweepOnce(name, "reserve");
 			await lane(name, async () => {
 				const row = store.get(name);
 				if (row === null) {
@@ -1111,7 +1113,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 		async setNetwork(name, enabled, opts) {
 			opts?.abortSignal?.throwIfAborted();
-			sweepOnce(name);
+			sweepOnce(name, "network");
 			await lane(name, async () => {
 				opts?.abortSignal?.throwIfAborted();
 				const ready = await ensureLocked(name, opts?.abortSignal);
@@ -1132,7 +1134,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 		async destroy(name, by, opts) {
 			opts?.abortSignal?.throwIfAborted();
-			sweepOnce(name);
+			sweepOnce(name, "destroy");
 			await lane(name, async () => {
 				opts?.abortSignal?.throwIfAborted();
 				const row = store.get(name);
@@ -1162,7 +1164,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async screenshot(name) {
-			sweepOnce(name);
+			sweepOnce(name, "screenshot");
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				const inContainer = `/run/desk/.shot-${Date.now()}.png`;
@@ -1228,7 +1230,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async inspect(name, opts) {
-			sweepOnce(name);
+			sweepOnce(name, "inspect");
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				let pid = opts?.pid;
@@ -1271,7 +1273,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		},
 
 		async act(name, holder, obsId, action) {
-			sweepOnce(name);
+			sweepOnce(name, "act");
 			return await lane(name, async () => {
 				const t0 = Date.now();
 				const ready = await ensureLocked(name);
@@ -1394,7 +1396,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 		async cpIn(name, hostPath, containerPath, opts) {
 			opts?.abortSignal?.throwIfAborted();
-			sweepOnce(name);
+			sweepOnce(name, "import");
 			return await lane(name, async () => {
 				opts?.abortSignal?.throwIfAborted();
 				const ready = await ensureLocked(name, opts?.abortSignal);
@@ -1523,7 +1525,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 		async catFile(name, path, opts) {
 			opts?.abortSignal?.throwIfAborted();
-			sweepOnce(name);
+			sweepOnce(name, "export");
 			return await lane(name, async () => {
 				opts?.abortSignal?.throwIfAborted();
 				const ready = await ensureLocked(name, opts?.abortSignal);

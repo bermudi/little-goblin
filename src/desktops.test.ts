@@ -406,6 +406,74 @@ describe("desktops pool", () => {
 		await expect(desktops.allocate("-bad")).rejects.toThrow(/invalid desktop name/);
 	});
 
+	// The audit prune joins the name under shotsRoot — an unchecked
+	// "../" name deletes files outside it. Every named entry point
+	// rides the sweep, so every one must refuse before it runs.
+	const traversalOps: Array<[string, (d: Desktops) => Promise<unknown>]> = [
+		["allocate", (d) => d.allocate("../outside")],
+		["claim", (d) => d.claim("../outside", RUN_A)],
+		["release", (d) => d.release("../outside", RUN_A)],
+		["handoff", (d) => d.handoff("../outside", RUN_A, RUN_B)],
+		["reserve", (d) => d.reserve("../outside", true)],
+		["network", (d) => d.setNetwork("../outside", true)],
+		["destroy", (d) => d.destroy("../outside", RUN_A)],
+		["screenshot", (d) => d.screenshot("../outside")],
+		["inspect", (d) => d.inspect("../outside")],
+		["act", (d) => d.act("../outside", RUN_A, "x:0", CLICK)],
+		["import", (d) => d.cpIn("../outside", "/tmp/seed", "/home/desk/f.bin")],
+		["export", (d) => d.catFile("../outside", "/etc/hostname")],
+	];
+	test.each(traversalOps)(
+		"desktop %s refuses a traversal name before the sweep can prune outside shotsRoot",
+		async (op, run) => {
+			const lines: Record<string, unknown>[] = [];
+			setLogFile("capture");
+			setLogWriter((_path, line) => {
+				lines.push(JSON.parse(line) as Record<string, unknown>);
+			});
+			try {
+				const parent = mkdtempSync(join(tmpdir(), "goblin-desk-trav-"));
+				const shotsRoot = join(parent, "shots-root");
+				// join(shotsRoot, "../outside", "shots") resolves here —
+				// over the 200-file cap, so a swept prune would delete.
+				const outside = join(parent, "outside", "shots");
+				mkdirSync(outside, { recursive: true });
+				for (let i = 0; i < 205; i++) {
+					writeFileSync(join(outside, `keep-${String(i).padStart(4, "0")}.png`), PNG);
+				}
+				const engine = fakeEngine();
+				const desktops = makeDesktops({
+					podman: engine.podman,
+					store: openDesktops(tmpdb()),
+					config: () => ({ ...desktopsConfigSchema.parse({}), image: IMAGE }),
+					shotsRoot,
+					networkName: NETWORK,
+				});
+				await expect(run(desktops)).rejects.toThrow(/invalid desktop name/);
+				// Refusal precedes the sweep: no file removed, no podman
+				// call dispatched, and the refusal hit the log with its op.
+				expect(readdirSync(outside)).toHaveLength(205);
+				expect(engine.calls.length).toBe(0);
+				expect(engine.execCalls.length).toBe(0);
+				expect(
+					lines.some(
+						(l) => l.msg === "desktop refused" && l.desktop === "../outside" && l.op === op,
+					),
+				).toBe(true);
+			} finally {
+				setLogWriter(null);
+				setLogFile(null);
+			}
+		},
+	);
+
+	test("get stays a read-only lookup — a traversal name resolves to no row", async () => {
+		const engine = fakeEngine();
+		const { desktops } = rig(engine);
+		expect(desktops.get("../outside")).toBeNull();
+		expect(engine.calls.length).toBe(0);
+	});
+
 	test("allocate refuses at max and names the pool", async () => {
 		const engine = fakeEngine();
 		const { desktops } = rig(engine, { max: 1 });

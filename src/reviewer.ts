@@ -532,9 +532,28 @@ export function stagingRoot(workspaceDir: string): string {
 	return join(workspaceDir, STAGING_DIRNAME);
 }
 
-/** Boot-time hygiene: staging from a killed run can only be garbage. */
+/** Boot-time hygiene: staging from a killed run is garbage — except
+ * `.replaced-*` entries, which park the displaced half of a two-rename
+ * swap (an undecided proposal here; the *live skill* on the approve
+ * path). Those are recoverable operator state, not garbage: keep them
+ * and say so, never delete silently. */
 export function cleanupStaging(workspaceDir: string): void {
-	rmSync(stagingRoot(workspaceDir), { recursive: true, force: true });
+	const root = stagingRoot(workspaceDir);
+	let names: string[];
+	try {
+		names = readdirSync(root);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
+	}
+	for (const name of names) {
+		const path = join(root, name);
+		if (name.startsWith(".replaced-")) {
+			log.warn("stranded swap backup kept for manual recovery", { path });
+			continue;
+		}
+		rmSync(path, { recursive: true, force: true });
+	}
 }
 
 const REVIEW_SYSTEM =
@@ -932,7 +951,20 @@ function proposeSkill(
 	try {
 		renameSync(join(stagedDir, skill), target);
 	} catch (err) {
-		if (existed) renameSync(trash, target);
+		if (existed) {
+			// The rollback is its own operation — a throw here must not
+			// mask the swap's error; the displaced proposal stays under
+			// .replaced-*, which cleanupStaging preserves.
+			try {
+				renameSync(trash, target);
+			} catch (rbErr) {
+				log.error("reviewer proposal rollback failed — earlier proposal stranded", rbErr, {
+					skill,
+					review_id: reviewId,
+					trash,
+				});
+			}
+		}
 		throw err;
 	}
 	try {

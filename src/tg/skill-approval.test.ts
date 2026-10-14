@@ -260,4 +260,22 @@ describe("skill approval taps", () => {
 			done();
 		}
 	});
+
+	test("a decision that throws still answers the tap", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"]);
+		try {
+			// A regular file where skills/ must be a directory: lstatSync
+			// fails ENOTDIR, which is deliberately not "gone".
+			writeFileSync(h.skillsDir, "not a dir\n");
+			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			expect(h.answers).toEqual(["decision failed — see goblin's log"]);
+			// Nothing was decided: the proposal stands for a retry.
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
 });

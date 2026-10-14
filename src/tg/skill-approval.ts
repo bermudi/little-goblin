@@ -116,7 +116,18 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	try {
 		renameSync(proposed, target);
 	} catch (err) {
-		renameSync(trash, target); // rollback — the live copy and proposal stand
+		// Rollback must not mask the original failure — a second throw
+		// strands the live copy in staging (cleanupStaging keeps
+		// .replaced-* entries precisely so this is recoverable).
+		try {
+			renameSync(trash, target);
+		} catch (rbErr) {
+			log.error("skill approve rollback failed — live copy stranded in staging", rbErr, {
+				skill,
+				trash,
+				target,
+			});
+		}
 		throw err;
 	}
 	try {
@@ -171,13 +182,20 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			await answer("unknown button");
 			return;
 		}
-		if (query.message === undefined) {
-			// The notice died — the action is still decided on disk.
-			await runDecision(parsed, null);
-			await answer();
+		// A decision that throws (fs errors propagate deliberately) still
+		// owes the tap an answer — without one the button spins until
+		// Telegram expires it, and the ✅/🚫 row invites retries.
+		try {
+			// The notice may have died — the action is still decided on disk.
+			await runDecision(parsed, query.message === undefined ? null : query);
+		} catch (err) {
+			log.error("skill proposal decision failed", err, {
+				skill: parsed.skill,
+				conversation: parsed.conversationId,
+			});
+			await answer("decision failed — see goblin's log");
 			return;
 		}
-		await runDecision(parsed, query);
 		await answer();
 	};
 

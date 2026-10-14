@@ -142,6 +142,28 @@ describe("desktop tool", () => {
 		]);
 	});
 
+	test("a claim that reconciled the desktop returns its note; a clean claim returns none", async () => {
+		const note =
+			"desktop container was gone — recreated fresh; its previous contents and lease are gone";
+		const dirty = rig({
+			claim: async () => ({
+				...fakeRow({ leaseKind: "conversation", leaseId: CONV }),
+				note,
+			}),
+		});
+		const out = (await dirty.tool.execute!({ action: "claim", name: "d1" }, opts)) as Record<
+			string,
+			unknown
+		>;
+		expect(out.note).toBe(note);
+		const clean = rig({});
+		const cleanOut = (await clean.tool.execute!({ action: "claim", name: "d1" }, opts)) as Record<
+			string,
+			unknown
+		>;
+		expect(cleanOut.note).toBeUndefined();
+	});
+
 	test("the operator is a handoff destination only, never the acting holder", async () => {
 		const { tool, calls } = rig({});
 		// A forged self holder fails validation in execute's re-parse —

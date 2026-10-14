@@ -7,7 +7,14 @@
 // real-engine check is gated on GOBLIN_DESKTOP_LIVE=1.
 
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix } from "node:path";
 import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
@@ -108,6 +115,10 @@ function fakeEngine(opts?: {
 		failInspectFrom: undefined as number | undefined,
 		failRm: false,
 		failDisconnect: false,
+		// Readback integrity faults — a capped or drain-cut execBytes
+		// read still exits 0 with nonempty bytes.
+		truncatedRead: false,
+		cappedRead: false,
 	};
 
 	const runner = async (args: string[]) => {
@@ -311,7 +322,8 @@ function fakeEngine(opts?: {
 			stderr: "",
 			exitCode: 0,
 			timedOut: false,
-			truncated: false,
+			truncated: flags.truncatedRead,
+			...(flags.cappedRead ? { outputCapped: true } : {}),
 		};
 	};
 
@@ -867,6 +879,40 @@ describe("desktops pool", () => {
 		expect(row.shotSeq).toBe(1);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
 	});
+
+	test("a claim after container loss returns the recreate note — the row stays clean", async () => {
+		const engine = fakeEngine();
+		const { desktops, store, name } = await fresh(engine);
+		engine.containers.delete(containerNameForDesktop(name));
+		const claimed = await desktops.claim(name, RUN_A);
+		expect(claimed.note).toContain("previous contents and lease are gone");
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
+		// The note is per-claim evidence for the caller, never a row
+		// field — the row keeps no trace of it.
+		expect((store.get(name) as unknown as Record<string, unknown>).note).toBeUndefined();
+	});
+
+	test.each(["truncatedRead", "cappedRead"] as const)(
+		"a %s screenshot readback is rejected — no audit file, no observation, no sequence burn",
+		async (flag) => {
+			const engine = fakeEngine();
+			const { desktops, store, name, shotsRoot } = await fresh(engine);
+			engine.flags[flag] = true;
+			await expect(desktops.screenshot(name)).rejects.toThrow(/capped|truncated/);
+			const row = store.get(name)!;
+			expect(row.lastObsId).toBeNull();
+			expect(row.shotSeq).toBe(0);
+			// Nothing reaches the audit dir either — a partial frame
+			// isn't just unbindable, it must not exist on disk.
+			const shotsDir = join(shotsRoot, name, "shots");
+			expect(existsSync(shotsDir) ? readdirSync(shotsDir) : []).toEqual([]);
+			// The next healthy read still works — integrity failures
+			// don't poison the lane.
+			engine.flags[flag] = false;
+			const shot = await desktops.screenshot(name);
+			expect(shot.id).toMatch(/^d1:1:[0-9a-f-]{36}$/);
+		},
+	);
 
 	test("an unlabelled container squatting on the name is refused", async () => {
 		const engine = fakeEngine({

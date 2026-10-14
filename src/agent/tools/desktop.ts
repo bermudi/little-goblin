@@ -190,7 +190,13 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 					}
 					case "claim": {
 						const row = await deps.desktops.claim(input.name, selfHolder());
-						return { desktop: view(row) };
+						return {
+							desktop: view(row),
+							// A recreated/adopted/restarted box loses its
+							// previous files and leases — the claim note is
+							// the caller's only evidence of that.
+							...(row.note !== undefined ? { note: row.note } : {}),
+						};
 					}
 					case "release": {
 						await deps.desktops.release(input.name, selfHolder());

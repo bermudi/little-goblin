@@ -395,7 +395,10 @@ export interface Desktops {
 	allocate(name: string, opts?: { image?: string }): Promise<{ row: DesktopRow; note?: string }>;
 	list(): DesktopRow[];
 	get(name: string): DesktopRow | null;
-	claim(name: string, holder: LeaseHolder): Promise<DesktopRow>;
+	/** The leased row, plus the reconcile's lifecycle note when the
+	 *  ensure adopted/restarted/recreated the container — callers
+	 *  surface it, it is never stored on the row. */
+	claim(name: string, holder: LeaseHolder): Promise<DesktopRow & { note?: string }>;
 	release(name: string, holder: LeaseHolder): Promise<void>;
 	handoff(name: string, from: LeaseHolder, to: LeaseHolder): Promise<void>;
 	reserve(name: string, reserved: boolean): Promise<void>;
@@ -984,7 +987,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					holder: holderLabel(holder),
 					transition,
 				});
-				return row;
+				return { ...row, ...(ready.note !== undefined ? { note: ready.note } : {}) };
 			});
 		},
 
@@ -1138,6 +1141,14 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						path: inContainer,
 						exit: rm.timedOut ? "timeout" : rm.exitCode,
 					});
+				}
+				// A capped or drain-cut readback can still exit 0 with
+				// nonempty bytes — a partial frame must never reach the
+				// audit file or mint an observation id.
+				if (read.truncated || read.outputCapped === true) {
+					throw new DesktopError(
+						`screenshot readback from desktop ${name} was truncated/capped — the frame is incomplete`,
+					);
 				}
 				if (read.timedOut || read.exitCode !== 0 || read.stdout.byteLength === 0) {
 					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);

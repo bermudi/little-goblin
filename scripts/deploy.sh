@@ -30,7 +30,11 @@ marker_dir="$(dirname "$marker")"
 # leave node_modules/app/dist stale against the running rev. Block —
 # the wait is bounded by the holder's own run.
 exec 9>"$marker_dir/.deploy-lock" || fail "cannot open deploy lock: $marker_dir"
-flock 9 || fail "cannot take deploy lock: $marker_dir"
+if ! flock -n 9; then
+	step "deploy lock held by a sibling run — waiting (15m budget)"
+	flock -w 900 9 ||
+		fail "deploy lock still held after 15m — a sibling deploy is hung; inspect $marker_dir/.deploy-lock"
+fi
 old_rev=""
 refresh_all=true
 if [ -e "$marker" ] || [ -L "$marker" ]; then
@@ -111,9 +115,13 @@ fi
 # The gate ran minutes ago against new_rev's tree; a sibling session's
 # commit in between leaves the tree clean (the status check can't see it)
 # and would restart into code the gate never saw, with the marker
-# recording the wrong rev.
+# recording the wrong rev. An *uncommitted* sibling edit is the same hole
+# — the status gate ran before the build, so re-check the tree too.
 [ "$(git rev-parse --verify "HEAD^{commit}")" = "$new_rev" ] ||
 	fail "HEAD moved during the gate — commit it and redeploy"
+tree_status="$(git status --porcelain)" || fail "cannot re-read working tree status"
+[ -z "$tree_status" ] ||
+	fail "working tree dirtied during the gate — inspect and redeploy"
 restart_epoch="$(date +%s)"
 systemctl --user restart goblin
 step "verify: startup acceptance"

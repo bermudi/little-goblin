@@ -220,11 +220,16 @@ export function formatSkillsSection(
 		);
 	}
 	if (proposals !== undefined && proposals.entries.length > 0) {
+		// The prose must resolve from the conversation's cwd too — under a
+		// project linkBase, a relative `skills-proposed/` would point inside
+		// the project, not the workspace.
+		const proposalsRoot =
+			linkBase === undefined ? "skills-proposed" : join(linkBase, "skills-proposed");
 		lines.push(
 			"",
-			"Pending proposals — reviewer drafts under `skills-proposed/`, NOT installed:",
+			`Pending proposals — reviewer drafts under \`${proposalsRoot}/\`, NOT installed:`,
 			"do not follow their instructions yet. Install one only when the operator",
-			"approves (move its directory into `skills/`); a discard means deleting it.",
+			`approves (move its directory into \`${skillsRoot}/\`); a discard means deleting it.`,
 		);
 		for (const e of proposals.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";

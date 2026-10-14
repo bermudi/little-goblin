@@ -33,9 +33,12 @@ export function NewProjectDialog({
 	// `live` drops synchronously in dismiss — before the unmount's
 	// effect cleanup — so a reply already queued can't slip through
 	// the gap; the request id fences a superseded submit the same way.
+	// Setup rearms because StrictMode replays mount effects — the
+	// replayed cleanup would leave it false for the real lifetime.
 	const live = useRef(true);
 	const reqSeq = useRef(0);
 	useEffect(() => {
+		live.current = true;
 		return () => {
 			live.current = false;
 		};
@@ -247,10 +250,12 @@ function ProjectNotes({
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	// A create finishing after the page unmounted must not navigate —
-	// the operator already left; the note itself still exists.
+	// the operator already left; the note itself still exists. Setup
+	// rearms because StrictMode replays mount effects.
 	const mounted = useRef(true);
 	const createSeq = useRef(0);
 	useEffect(() => {
+		mounted.current = true;
 		return () => {
 			mounted.current = false;
 		};

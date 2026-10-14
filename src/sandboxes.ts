@@ -42,6 +42,8 @@ export interface SandboxRow {
 
 export interface SandboxStore {
 	get(conversationId: string): SandboxRow | null;
+	/** Every tracked row — the disable check's "what's still standing". */
+	list(): SandboxRow[];
 	put(row: SandboxRow): void;
 	setNetwork(conversationId: string, enabled: boolean): void;
 	touch(conversationId: string, atMs: number): void;
@@ -84,6 +86,7 @@ export function openSandboxes(dbPath: string): SandboxStore {
 		last_used_at INTEGER NOT NULL
 	)`);
 	const qGet = db.query("SELECT * FROM sandboxes WHERE conversation_id = ?");
+	const qAll = db.query("SELECT * FROM sandboxes");
 	const qPut = db.query(
 		`INSERT INTO sandboxes (conversation_id, container, image, network, created_at, last_used_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
@@ -103,6 +106,7 @@ export function openSandboxes(dbPath: string): SandboxStore {
 			const row = qGet.get(conv);
 			return row === null ? null : toRow(row);
 		},
+		list: () => qAll.all().map(toRow),
 		put: (row) =>
 			void qPut.run(
 				row.conversationId,

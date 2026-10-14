@@ -457,7 +457,7 @@ describe("sandboxes lifecycle", () => {
 		const origExec = engine.podman.exec.bind(engine.podman);
 		engine.podman.exec = async (name, argv, o, c) => {
 			const r = await origExec(name, argv, o, c);
-			if (r.killed) await sandboxes.reset(c);
+			if (r.killed) await sandboxes.reset(conv);
 			return r;
 		};
 		const out = await sandboxes.exec(conv, "sleep 999", execOpts);

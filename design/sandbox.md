@@ -106,6 +106,13 @@ delegated):
   No ticker, no boot hook, no shutdown hook: goblin restarts leave
   containers untouched; a host reboot stops them with their filesystems
   intact.
+- **Disabling the block reaps nothing.** Remove or empty `sandbox` and
+  the tool unmounts — so no call ever runs the sweep again, and tracked
+  containers (possibly network-on) would strand silently. Instead of
+  sweeping on the transition — an experiment may still matter — the
+  config save logs a warning naming each stranded container plus the
+  manual `podman rm -f` line; cleanup is a deliberate operator act
+  (docs/operations.md).
 - **`reset`** destroys and recreates — optionally on another image —
   disconnected.
 

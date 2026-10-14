@@ -343,6 +343,7 @@ it only while the bot is stopped, if ever.
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |
 | `ffmpeg` warnings at boot | install `ffmpeg` — voice features and large-file transcription need it |
 | Thinking levels look wrong for a model | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself |
+| `sandbox disabled with N tracked container(s) still standing` | the `sandbox` block was removed/emptied — the tool is off, so no call ever runs the idle sweep and the containers keep running. Remove them by hand: `podman rm -f <names>` (the warning lists them; `podman ps -a --filter label=goblin.sandbox=1` catches any row-less strays too). Stale rows left behind are inert while the block stays absent — if you'd rather they not seed a recreate on re-enable, `DELETE FROM sandboxes` on the stopped service clears them |
 
 Can't pin it down? Share safe Doctor findings once integrated. If an incident
 needs logs, inspect the relevant `state/goblin.log` excerpt privately and review

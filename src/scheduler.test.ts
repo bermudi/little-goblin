@@ -1,3 +1,4 @@
+import { makeWakeDelivery } from "./tg/wake.ts";
 // The firing owner's boundary contract: a due program becomes a
 // submitted user turn in its pinned conversation, marked ran; a
 // submit failure releases the sink and still advances past the
@@ -109,9 +110,12 @@ function harness(): Harness {
 		programs,
 		store,
 		runtime,
-		api,
-		configRef: { current: config, ttsDown: false },
-		synthesize: () => Promise.resolve([]),
+		...makeWakeDelivery({
+			api,
+			store,
+			configRef: { current: config, ttsDown: false },
+			synthesize: () => Promise.resolve([]),
+		}),
 		// Rolling DM wiring — fires into a private chat roll like intake
 		// does. The fake runtime stands in for busy().
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
@@ -1121,6 +1125,38 @@ describe("schedule fire retry ladder", () => {
 		}
 	});
 
+	test("restarting does not revive an old sink's retry ladder", async () => {
+		const h = harness();
+		h.deps.programs.due = () => [];
+		const old = startScheduler(h.deps, 3_600_000);
+		const program = ladderProgram(h);
+		fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+		old.stop();
+		const next = startScheduler(h.deps, 3_600_000);
+		try {
+			await h.submitted[0]!.sink.onDone({
+				kind: "error",
+				message: "temporary",
+				transient: true,
+				modelCalls: 0,
+			});
+			await Bun.sleep(40);
+			expect(h.submitted).toHaveLength(1);
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[1]!.sink.onDone({
+				kind: "error",
+				message: "temporary",
+				transient: true,
+				modelCalls: 0,
+			});
+			await Bun.sleep(40);
+			expect(h.submitted).toHaveLength(3);
+		} finally {
+			next.stop();
+			await closeSinks(h);
+		}
+	});
+
 	test("stop() clears a pending retry", async () => {
 		const h = harness();
 		// Start the scheduler first: its boot scan must find nothing due —
@@ -1139,4 +1175,32 @@ describe("schedule fire retry ladder", () => {
 			s.stop();
 		}
 	});
+});
+
+test("scheduler rejects duplicate owners and stopped handles cannot scan or stop a new owner", () => {
+	const h = harness();
+	let scans = 0;
+	h.deps.programs.due = () => {
+		scans++;
+		return [];
+	};
+	const s = startScheduler(h.deps, 3_600_000);
+	try {
+		expect(() => startScheduler({ ...h.deps })).toThrow("already active");
+		s.stop();
+		s.tick();
+		expect(scans).toBe(1);
+		const next = startScheduler(h.deps, 3_600_000);
+		try {
+			s.stop();
+			s.tick();
+			next.tick();
+			expect(scans).toBe(3);
+			expect(() => startScheduler(h.deps)).toThrow("already active");
+		} finally {
+			next.stop();
+		}
+	} finally {
+		s.stop();
+	}
 });

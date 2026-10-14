@@ -544,6 +544,7 @@ describe("delegate tool", () => {
 		});
 		h.herdr.startAgent = (name) => gate.then(() => agent(name));
 		const wakes: string[] = [];
+		await h.lifecycle.stopTicker();
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
@@ -680,6 +681,7 @@ describe("delegate tool", () => {
 		})) as { id: number };
 
 		const wakes: string[] = [];
+		await h.lifecycle.stopTicker();
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,

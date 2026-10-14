@@ -36,7 +36,7 @@ export interface MailWatcherDeps {
 }
 
 export interface MailWatcher {
-	/** One scan now — also the test door; production runs it on a timer. */
+	/** One scan now; after stop this only joins existing work (or is a no-op). */
 	tick(): Promise<void>;
 	/** Stops the timer and returns the in-flight scan, if any, so
 	 *  shutdown can join it: a scan parked in a Gmail call must not come
@@ -46,7 +46,15 @@ export interface MailWatcher {
 
 const TICK_MS = 5 * 60_000;
 
+const activeWatchers = new WeakSet<object>();
+
+/** One ticker per store object; duplicate starts fail until the old owner stops. */
 export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailWatcher {
+	if (activeWatchers.has(deps.programs))
+		throw new Error("startMailWatcher already active for this store");
+	activeWatchers.add(deps.programs);
+	let stopped = false;
+	let stopping: Promise<void> | null = null;
 	// Per-program outage episodes: the last error message, present while
 	// failing. A new message re-warns; equality stays silent; success
 	// clears. Map identity is the program id.
@@ -57,6 +65,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
+		if (stopped) return Promise.resolve();
 		// Assign the .finally wrapper, not the work promise: a body that
 		// finishes without awaiting (mail unconfigured, or no enabled
 		// filters) would run its cleanup before the assignment lands,
@@ -108,8 +117,13 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 	return {
 		tick: scan,
 		stop: () => {
+			if (stopping !== null) return stopping;
+			stopped = true;
 			clearInterval(timer);
-			return current ?? Promise.resolve();
+			stopping = (current ?? Promise.resolve()).finally(() => {
+				activeWatchers.delete(deps.programs);
+			});
+			return stopping;
 		},
 	};
 }

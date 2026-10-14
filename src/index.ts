@@ -80,7 +80,7 @@ import {
 	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
-import { makeWakeDeps } from "./wake.ts";
+import { makeWakeDeps } from "./tg/wake.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.

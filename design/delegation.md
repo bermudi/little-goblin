@@ -197,6 +197,11 @@ Rulings:
   hold. **No concurrency cap** (operator, 2026-10-06): `maxRunning`
   is gone — the tool never refuses on volume; how much runs, where,
   is goblin's judgment.
+- **Watcher ownership and shutdown.** One lifecycle ticker may own a
+  delegations store object at a time; duplicate starts throw. `stopTicker`
+  fences new scans and joins existing work before releasing ownership.
+  Later ticks on the old handle only join that work or do nothing; a new
+  owner may start after the stop promise settles.
 - **The watcher is an in-process ticker** (15 s), the scheduler's
   twin: for each `running`/`needs_input` row, `agent get`,
   serialized per target (forwarded calls are ssh round trips —

@@ -9,6 +9,9 @@ import {
 	fchmodSync,
 	fsyncSync,
 	futimesSync,
+	lstatSync,
+	realpathSync,
+	readlinkSync,
 	openSync,
 	renameSync,
 	statSync,
@@ -16,6 +19,8 @@ import {
 	writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+
+import { log } from "./log.ts";
 
 export interface DurableWriteOptions {
 	/** Mode for a file that does not exist yet; an existing file keeps its own. */
@@ -44,10 +49,13 @@ export function durableWriteBytes(
 	durableWriteBuffer(path, Buffer.from(data), normalize(options));
 }
 
+const unsupportedSyncDirs = new Set<string>();
+
 /** fsync a directory so a rename/link/unlink inside it is durable, not
  *  just the data of the file it points at. Only an explicitly
  *  unsupported directory fsync may degrade; EIO and other failures leave
  *  the entry's durability unknown and propagate. */
+
 export function fsyncDirectory(dir: string): void {
 	const dfd = openSync(dir, constants.O_RDONLY);
 	try {
@@ -55,6 +63,12 @@ export function fsyncDirectory(dir: string): void {
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EOPNOTSUPP") throw err;
+		if (!unsupportedSyncDirs.has(dir)) {
+			unsupportedSyncDirs.add(dir);
+			log.warn("directory fsync unsupported — entry durability not guaranteed", err, {
+				directory: dir,
+			});
+		}
 	} finally {
 		closeSync(dfd);
 	}
@@ -72,6 +86,25 @@ function durableWriteBuffer(
 	buf: Buffer,
 	options: Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions,
 ): void {
+	// Resolve leaf links before choosing the tmp directory: rename must
+	// replace the managed target, never the link. Dangling links fail closed.
+	let linked = false;
+	try {
+		linked = lstatSync(path).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (linked) {
+		try {
+			path = realpathSync(path);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			throw new Error(
+				`${path} is a dangling symlink (→ ${readlinkSync(path)}) — refusing to replace it`,
+				{ cause: err },
+			);
+		}
+	}
 	let mode = options.modeIfNew;
 	let existed = false;
 	try {
@@ -127,7 +160,10 @@ function durableWriteBuffer(
 	try {
 		fsyncDirectory(dirname(path));
 	} catch (err) {
-		throw new Error(`directory sync failed for ${path}: ${String(err)}`, { cause: err });
+		throw new Error(
+			`file replaced at ${path}, but directory sync failed; durability unknown: ${String(err)}`,
+			{ cause: err },
+		);
 	}
 }
 

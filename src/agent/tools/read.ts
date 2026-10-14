@@ -164,8 +164,9 @@ export function sniffImage(abs: string): SniffedImage | null {
 	let fd: number;
 	try {
 		fd = openSync(abs, "r");
-	} catch {
-		return null;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw new Error(`cannot open image candidate ${abs}: ${String(err)}`, { cause: err });
 	}
 	try {
 		const buf = Buffer.alloc(SNIFF_HEAD);

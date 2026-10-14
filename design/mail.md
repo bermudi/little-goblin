@@ -122,6 +122,10 @@ token plumbing in-process was a pita, and gws owns it instead — one
   callback can settle the row even without a bound message id; if they
   did not land, the pending row expires after 24 hours. The operator
   checks Telegram before requesting a replacement draft.
+- **Watcher ownership and shutdown.** One mail watcher may own a programs
+  store object at a time. Stop fences new scans immediately and joins
+  existing work; later ticks only join that work or do nothing. Duplicate
+  starts throw until the stop promise settles, when a new owner is legal.
 - **Mail is a program trigger.** A program may carry a `mail` filter
   (Gmail query, e.g. `from:bank is:important`) beside its cron and
   webhook. An in-process ticker (the scheduler's twin, 5 min) runs

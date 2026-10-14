@@ -130,6 +130,11 @@ program's state, never a workspace file.** Rulings:
   every mutation logs. Edits within an existing charter's intent
   (reword, reschedule, toggle) need no go-ahead; new programs and
   widened authority do (above).
+- **Ticker ownership and shutdown.** One scheduler may own a programs
+  store object at a time; duplicate starts throw. Stop is terminal for
+  that handle: later ticks are no-ops. A new owner after stop gets a
+  fresh retry generation, so late completions from the old owner cannot
+  arm retries in the new one.
 - **The scheduler is an in-process ticker** (30s) in the runtime
   process; systemd covers crashes. A schedule's optional
   integer `maxLatenessMinutes` is measured against the **latest

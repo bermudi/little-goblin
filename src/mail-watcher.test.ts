@@ -1,3 +1,4 @@
+import { makeWakeDelivery } from "./tg/wake.ts";
 // The mail watcher's contract: new filters baseline without firing,
 // one tick's matches become one turn, the checkpoint follows fired
 // records (held on a fire that does not land), and outages notice
@@ -133,9 +134,12 @@ function harness(): Harness {
 		programs: h.programs,
 		store,
 		runtime,
-		api,
-		configRef: { current: config, ttsDown: false },
-		synthesize: () => Promise.resolve([]),
+		...makeWakeDelivery({
+			api,
+			store,
+			configRef: { current: config, ttsDown: false },
+			synthesize: () => Promise.resolve([]),
+		}),
 		// Rolling DM wiring — a private-chat fire rolls like intake does.
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 		// Fires never take the app path — wired because WakeDeps requires it.
@@ -625,4 +629,33 @@ describe("mail watcher", () => {
 		expect(h.fired).toHaveLength(1);
 		await closeSinks(h);
 	});
+});
+
+test("mail watcher rejects duplicate owners and never scans through a stopped handle", async () => {
+	const h = harness();
+	let scans = 0;
+	const original = h.programs.withMailFilter;
+	h.programs.withMailFilter = () => {
+		scans++;
+		return original();
+	};
+	const w = start(h);
+	try {
+		expect(() => start(h)).toThrow("already active");
+		await w.stop();
+		const stoppedAt = scans;
+		await w.tick();
+		expect(scans).toBe(stoppedAt);
+		const next = start(h);
+		try {
+			await next.tick();
+			expect(scans).toBeGreaterThan(stoppedAt);
+			await w.stop();
+			expect(() => start(h)).toThrow("already active");
+		} finally {
+			await next.stop();
+		}
+	} finally {
+		await w.stop();
+	}
 });

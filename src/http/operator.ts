@@ -575,7 +575,9 @@ export async function handleOperatorRoute(
 			// rejections so a failed save never poisons the next; each
 			// attempt answers for itself.
 			const attempt = configSaveQueue.then(() => saveConfig(deps, actor, req, body));
-			configSaveQueue = attempt.catch(() => {});
+			configSaveQueue = attempt.catch((err: unknown) => {
+				log.error("config save queue attempt failed", err, who);
+			});
 			return attempt;
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });

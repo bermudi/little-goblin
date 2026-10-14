@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	mkdirSync,
+	lstatSync,
+	symlinkSync,
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
@@ -102,5 +104,37 @@ describe("durableWriteFile — mode and tmp hygiene", () => {
 		durableWriteBytes(path, Buffer.from("copy"), { times: { atime: mtime, mtime } });
 		expect(readFileSync(path, "utf8")).toBe("copy");
 		expect(statSync(path).mtimeMs).toBe(mtime.getTime());
+	});
+});
+
+describe("durable writes through managed symlinks", () => {
+	for (const binary of [false, true]) {
+		test(`${binary ? "bytes" : "text"} reach a chained relative target without replacing links`, () => {
+			const dir = useDir();
+			const managed = join(dir, "managed");
+			mkdirSync(managed);
+			const target = join(managed, "state");
+			writeFileSync(target, "old", { mode: 0o600 });
+			symlinkSync("managed/state", join(dir, "middle"));
+			const link = join(dir, "link");
+			symlinkSync("middle", link);
+			if (binary) durableWriteBytes(link, Buffer.from("new"));
+			else durableWriteFile(link, "new");
+			expect(readFileSync(target, "utf8")).toBe("new");
+			expect(statSync(target).mode & 0o777).toBe(0o600);
+			expect(lstatSync(link).isSymbolicLink()).toBe(true);
+			expect(lstatSync(join(dir, "middle")).isSymbolicLink()).toBe(true);
+			expect(readdirSync(managed)).toEqual(["state"]);
+		});
+	}
+	test("dangling and cyclic links fail without replacing them or leaving tmp files", () => {
+		const dir = useDir();
+		symlinkSync("absent", join(dir, "dangling"));
+		symlinkSync("cycle", join(dir, "cycle"));
+		expect(() => durableWriteFile(join(dir, "dangling"), "new")).toThrow("dangling symlink");
+		expect(() => durableWriteBytes(join(dir, "cycle"), Buffer.from("new"))).toThrow();
+		expect(lstatSync(join(dir, "dangling")).isSymbolicLink()).toBe(true);
+		expect(lstatSync(join(dir, "cycle")).isSymbolicLink()).toBe(true);
+		expect(readdirSync(dir).sort()).toEqual(["cycle", "dangling"]);
 	});
 });

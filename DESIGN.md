@@ -375,8 +375,9 @@ src/
                     their conversation)
   wake.ts           the shared wake path: system messages submit into
                     pinned conversations through the ordinary turn
-                    path — makeWakeDeps owns the routing rules (the
-                    rolling gap, the bell for app conversations)
+                    path over channel-neutral sink/marker ports
+  tg/wake.ts        makeWakeDeps wires Telegram delivery, live voice/rich
+                    settings and app bells without leaking grammy types
   spinoff.ts        the spin-off fork and where a delegation launch
                     pins its notices (launchPin — the Spin-off trigger
                     map, design/app.md → Spin-off)

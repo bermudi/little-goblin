@@ -30,7 +30,7 @@ export interface SchedulerDeps extends WakeDeps {
 }
 
 export interface Scheduler {
-	/** One scan now — also the test door; production runs it on a timer. */
+	/** One scan now; after stop this only joins existing work (or is a no-op). */
 	tick(): void;
 	/** Stops the timer and drops any pending schedule-fire retry — the
 	 *  occurrence's cursor is already advanced, so a dropped retry is
@@ -42,10 +42,20 @@ export type ProgramTrigger = "schedule" | "webhook" | "mail";
 
 const TICK_MS = 30_000;
 
+const activeSchedulers = new WeakSet<ProgramsStore>();
+
+/** One ticker per store object; duplicate starts fail until the old owner stops. */
 export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler {
+	if (activeSchedulers.has(deps.programs))
+		throw new Error("scheduler already active for this store");
+	activeSchedulers.add(deps.programs);
+	// A restarted scheduler gets a fresh generation; old sinks retain the
+	// stopped ladder and cannot schedule retries into the new owner.
+	if (ladders.get(deps)?.stopped) ladders.delete(deps);
 	const ladder = ladderFor(deps);
-	ladder.stopped = false;
+	let stopped = false;
 	const scan = (): void => {
+		if (stopped) return;
 		const now = new Date();
 		// The due query runs from a synchronous interval callback: a throw
 		// here (an I/O error on the programs file) would be an uncaught
@@ -77,6 +87,9 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	return {
 		tick: scan,
 		stop: () => {
+			if (stopped) return;
+			stopped = true;
+			activeSchedulers.delete(deps.programs);
 			clearInterval(timer);
 			ladder.stopped = true;
 			for (const t of ladder.timers.values()) clearTimeout(t);
@@ -378,6 +391,7 @@ function scheduleRetrySink(
 	delays: number[],
 	attempt: number,
 ): (base: TurnSink) => TurnSink {
+	const ladder = ladderFor(deps);
 	return (base) => {
 		let sawModelOutput = false;
 		const wrapper: TurnSink = {
@@ -402,7 +416,7 @@ function scheduleRetrySink(
 				try {
 					return base.onDone(done);
 				} finally {
-					considerRetry(deps, program, scheduledFor, delays, attempt, done, output);
+					considerRetry(deps, ladder, program, scheduledFor, delays, attempt, done, output);
 				}
 			},
 		};
@@ -424,6 +438,7 @@ function scheduleRetrySink(
 // notice already went out.
 function considerRetry(
 	deps: SchedulerDeps,
+	ladder: RetryLadder,
 	program: Program,
 	scheduledFor: Date,
 	delays: number[],
@@ -444,7 +459,6 @@ function considerRetry(
 		});
 		return;
 	}
-	const ladder = ladderFor(deps);
 	if (ladder.stopped) {
 		log.info("schedule fire retry dropped — scheduler stopped", {
 			program: program.id,

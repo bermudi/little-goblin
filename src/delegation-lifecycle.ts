@@ -171,10 +171,18 @@ export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "w
 	};
 }
 
+const activeWatchers = new WeakSet<object>();
+
+/** One ticker per store object; duplicate starts fail until the old owner stops. */
 export function startDelegationLifecycle(
 	deps: DelegationLifecycleDeps,
 	tickMs = TICK_MS,
 ): DelegationLifecycle {
+	if (activeWatchers.has(deps.delegations))
+		throw new Error("startDelegationLifecycle already active for this store");
+	activeWatchers.add(deps.delegations);
+	let stopped = false;
+	let stopping: Promise<void> | null = null;
 	// Share the in-flight scan so timer ticks never overlap and awaiters observe completion.
 	let current: Promise<void> | null = null;
 	// `starting` rows are owned by an in-flight launch; only the first scan
@@ -182,6 +190,7 @@ export function startDelegationLifecycle(
 	let firstScan = true;
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
+		if (stopped) return Promise.resolve();
 		// Assign the finally wrapper, not the work promise: synchronous work can finish
 		// before the assignment lands and otherwise permanently wedge subsequent scans.
 		const work = (async () => {
@@ -235,8 +244,13 @@ export function startDelegationLifecycle(
 		list: () => deps.delegations.list(),
 		tick: scan,
 		stopTicker: () => {
+			if (stopping !== null) return stopping;
+			stopped = true;
 			clearInterval(timer);
-			return current ?? Promise.resolve();
+			stopping = (current ?? Promise.resolve()).finally(() => {
+				activeWatchers.delete(deps.delegations);
+			});
+			return stopping;
 		},
 	};
 }

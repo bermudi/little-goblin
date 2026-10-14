@@ -1,3 +1,4 @@
+import { makeWakeDelivery } from "./tg/wake.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,9 +65,12 @@ function harness(gapMinutes: number) {
 	const deps: WakeDeps = {
 		store,
 		runtime,
-		api,
-		configRef: { current: config, ttsDown: false },
-		synthesize: async () => [],
+		...makeWakeDelivery({
+			api,
+			store,
+			configRef: { current: config, ttsDown: false },
+			synthesize: async () => [],
+		}),
 		roll,
 		bell: () => {
 			sinks.push(nullSink);
@@ -98,9 +102,12 @@ test("wake after runtime close records history but does not report delivery", as
 		{
 			store,
 			runtime,
-			api,
-			configRef: { current: config, ttsDown: false },
-			synthesize: async () => [],
+			...makeWakeDelivery({
+				api,
+				store,
+				configRef: { current: config, ttsDown: false },
+				synthesize: async () => [],
+			}),
 			// A topic address never consults the roller — wired because the
 			// type requires it.
 			roll: { store, runtime, gapMinutes: () => 45 },

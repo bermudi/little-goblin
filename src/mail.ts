@@ -138,7 +138,14 @@ class Gmail {
 			throw new ProviderError("gmail-oauth", `request failed — ${(err as Error).message}`);
 		}
 		if (!res.ok) {
-			const body = (await res.text().catch(() => "")).replace(/\s+/g, " ").trim();
+			const body = (
+				await res.text().catch((err: unknown) => {
+					log.warn("gmail oauth error body read failed", err, { status: res.status });
+					return "";
+				})
+			)
+				.replace(/\s+/g, " ")
+				.trim();
 			throw new ProviderError(
 				"gmail-oauth",
 				`HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ""}`,

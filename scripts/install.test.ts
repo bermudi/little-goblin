@@ -60,6 +60,7 @@ function fixture(
 			join(repo, "scripts", "startup-categories.ts"),
 		);
 		copyFileSync(join(root, "src", "proc.ts"), join(repo, "src", "proc.ts"));
+		copyFileSync(join(root, "src", "log.ts"), join(repo, "src", "log.ts"));
 		if (mode.startsWith("real-")) cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
 		if (mode === "startup-descendant") {
 			copyFileSync(

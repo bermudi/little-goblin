@@ -408,7 +408,7 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.status).toBe(0);
 		const line = result.stdout.split("\n").find((value) => value.startsWith("deploy: rollback:"));
 		expect(line).toBe(
-			`deploy: rollback: git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo ${result.oldRev} > .git/GOBLIN_DEPLOYED_REV`,
+			`deploy: rollback: git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo ${result.oldRev} > .git/GOBLIN_DEPLOYED_REV && sync .git/GOBLIN_DEPLOYED_REV`,
 		);
 	});
 
@@ -433,7 +433,6 @@ describe("local deployment failures and memory probe", () => {
 		"build",
 		"restart",
 		"watch-fail",
-		"journal",
 		"storage",
 		"inspect",
 		"unhealthy",
@@ -446,7 +445,7 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.stderr.length).toBeGreaterThan(0);
 			expect(result.markerValue).toBe(result.oldRev);
 			expect(result.stdout).not.toContain("deploy: done:");
-			if (["typecheck", "install", "build", "restart", "journal"].includes(mode))
+			if (["typecheck", "install", "build", "restart"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
 			if (mode === "typecheck") {
 				// Deps sync precedes the gate (it must read new_rev's tree),
@@ -477,6 +476,17 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.markerValue).toBe(result.newRev);
 		});
 	}
+
+	test("a journal read failure warns but the deploy and marker still land", () => {
+		// journalctl can fail on a rotation race — reported, never fatal:
+		// aborting after the restart would wedge the marker on old_rev.
+		const result = runDeploy(["package.json"], { mode: "journal" });
+		expect(result.status).toBe(0);
+		expect(result.stderr).toContain("journal failed");
+		expect(result.stderr).toContain("could not read the fresh journal");
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).toContain("done: g7");
+	});
 
 	test("fresh journal errors are visible warnings, not hidden or a read failure", () => {
 		const result = runDeploy([], { mode: "journal-errors" });

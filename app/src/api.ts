@@ -82,13 +82,13 @@ export function telegramDoor(): boolean {
 	return /^\/t(\/|$)/.test(pathname);
 }
 
-async function requestMeta<T>(
+async function rawRequest(
 	token: string | null,
 	path: string,
 	init?: RequestInit,
-): Promise<{ data: T; etag: string | null }> {
+): Promise<Response> {
 	const telegram = telegramDoor();
-	const res = await fetch(telegram ? `/api${path.slice("/api/app".length)}` : path, {
+	return fetch(telegram ? `/api${path.slice("/api/app".length)}` : path, {
 		...init,
 		headers: {
 			...(telegram
@@ -99,6 +99,14 @@ async function requestMeta<T>(
 			...(init?.headers ?? {}),
 		},
 	});
+}
+
+async function requestMeta<T>(
+	token: string | null,
+	path: string,
+	init?: RequestInit,
+): Promise<{ data: T; etag: string | null }> {
+	const res = await rawRequest(token, path, init);
 	if (!res.ok) {
 		let detail = `http ${res.status}`;
 		try {
@@ -222,10 +230,9 @@ export async function patchNote(
 	// keepalive: the pagehide flush — the request must outlive the page.
 	opts: { ifMatch?: number; keepalive?: boolean } = {},
 ): Promise<{ data: AppNote; etag: string | null }> {
-	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}`, {
+	const res = await rawRequest(token, `/api/app/notes/${encodeURIComponent(id)}`, {
 		method: "PATCH",
 		headers: {
-			...(token === null ? {} : { authorization: `Bearer ${token}` }),
 			"content-type": "application/json",
 			...(opts.ifMatch !== undefined ? { "if-match": `"${opts.ifMatch}"` } : {}),
 		},

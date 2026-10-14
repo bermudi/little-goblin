@@ -2,7 +2,7 @@
 // skills (installed + proposed) and workspace files (identity +
 // attachments). Everything here renders what the server already
 // validated; the containment wall lives in src/stateview.ts.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchAttachment, getIdentity, getSkillFile, listAttachments, listSkills } from "./api.ts";
 import { describe, KV, ts, useLoad } from "./opsShared.tsx";
 import type {
@@ -47,14 +47,22 @@ function SkillCard({
 	const [file, setFile] = useState<string | null>(null);
 	const [content, setContent] = useState<string | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	// The supersede guard every other fetch in the app has — a slow
+	// file's response must not overwrite a newer pick's.
+	const openSeq = useRef(0);
 
 	const open = (path: string) => {
+		const seq = ++openSeq.current;
 		setFile(path);
 		setContent(null);
 		setErr(null);
 		getSkillFile(token, origin, skill.name, path).then(
-			(d) => setContent(d.content),
-			(e) => setErr(describe(e)),
+			(d) => {
+				if (seq === openSeq.current) setContent(d.content);
+			},
+			(e) => {
+				if (seq === openSeq.current) setErr(describe(e));
+			},
 		);
 	};
 

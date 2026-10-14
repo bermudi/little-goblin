@@ -904,8 +904,8 @@ function AppShell() {
 
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
-	const select = (id: string | null) => {
-		if (!leaveDirty()) return;
+	const select = (id: string | null, opts?: { skipDirtyGuard?: boolean }) => {
+		if (opts?.skipDirtyGuard !== true && !leaveDirty()) return;
 		setPage("chat");
 		setProjectId(null);
 		setNoteId(null);
@@ -985,6 +985,9 @@ function AppShell() {
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
 	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+		// Guard before createConversation — a declined leave must not
+		// park a server-side empty row in the rail.
+		if (!leaveDirty()) return;
 		setStarting(true);
 		setStartFailed(false);
 		try {
@@ -993,7 +996,9 @@ function AppShell() {
 				projectId === null ? undefined : { projectId },
 			);
 			setSeed({ id: created.id, parts });
-			select(created.id);
+			// The guard above already asked — select's own check would
+			// confirm the still-dirty page a second time.
+			select(created.id, { skipDirtyGuard: true });
 			await refresh();
 		} catch {
 			setStartFailed(true);

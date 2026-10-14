@@ -382,7 +382,10 @@ export function NoteView({
 					if (!live) return;
 					const cur = noteRef.current;
 					if (cur === null || data.rev < cur.rev) return;
-					const titleDirty = titleDraftRef.current !== "" && titleDraftRef.current !== cur.title;
+					// A cleared field is a pending erase — dirty, not
+					// clean (load seeds the draft with note.title, so
+					// comparing directly is the whole check).
+					const titleDirty = titleDraftRef.current !== cur.title;
 					const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
 					if (data.rev > cur.rev) {
 						if (bodyDirty || titleDirty) {

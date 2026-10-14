@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import { editorViewCtx } from "@milkdown/kit/core";
+import { Editor, editorViewCtx } from "@milkdown/kit/core";
 import { TextSelection } from "@milkdown/kit/prose/state";
 import { getMarkdown, replaceAll } from "@milkdown/kit/utils";
 import type { AppNote } from "../../src/http/app-wire.ts";
@@ -47,6 +47,7 @@ interface RewriteCall {
 	signal: AbortSignal | null;
 }
 const rewrites: RewriteCall[] = [];
+const realMake = Editor.make;
 const ops: string[] = []; // request order: "patch" | "rewrite"
 let rewriteText = "**rewritten**";
 let holdRewriteFlag = false;
@@ -72,6 +73,10 @@ let conflictOnce: AppNote | null = null;
 // TypeError mimicking a dropped network.
 let failPatchOnce: { status: number; body: unknown } | null = null;
 let rejectPatchOnce = false;
+// The fake's note row — a PATCH mutates it, so an ack always carries
+// the server's real rev/token for the write it just accepted.
+let stored: AppNote = { ...note };
+let pendingCreateRelease: (() => void) | null = null;
 const realFetch = globalThis.fetch;
 
 // Hold the next PATCH's response open so a test can edit mid-flight.
@@ -89,9 +94,30 @@ const releaseRewrite = () => {
 	pendingRewriteRelease?.();
 	pendingRewriteRelease = null;
 };
+
+// Park Editor.create() behind a gate so a test can race a remote
+// answer (reload/conflict) into the window before the editor exists.
+const holdCreate = () => {
+	const gate = Promise.withResolvers<void>();
+	Editor.make = (() => {
+		const ed = realMake();
+		const create = ed.create.bind(ed);
+		// readonly on the type — instance-level swap, restored by
+		// afterEach assigning Editor.make back.
+		Reflect.set(ed, "create", () => gate.promise.then(create));
+		return ed;
+	}) as typeof Editor.make;
+	pendingCreateRelease = () => {
+		gate.resolve();
+		pendingCreateRelease = null;
+	};
+};
 const theirs = (over: Partial<AppNote> = {}): AppNote => ({
 	...note,
 	rev: 5,
+	// Orders ahead of anything the mounted editor has seen — the
+	// token, not the rev, is what stale guards compare.
+	stateRev: 4,
 	body: "theirs body",
 	title: "theirs title",
 	updatedAt: "y",
@@ -114,6 +140,8 @@ beforeEach(() => {
 	conflictOnce = null;
 	failPatchOnce = null;
 	rejectPatchOnce = false;
+	stored = { ...note };
+	pendingCreateRelease = null;
 	rewrites.length = 0;
 	ops.length = 0;
 	rewriteText = "**rewritten**";
@@ -177,6 +205,9 @@ beforeEach(() => {
 			if (conflictOnce !== null) {
 				const c = conflictOnce;
 				conflictOnce = null;
+				// The winning write landed server-side — the row's
+				// token is at least what the conflict answer reports.
+				stored.stateRev = Math.max(stored.stateRev, c.stateRev);
 				return Promise.resolve(jsonResponse({ error: "conflict", note: c }, 409));
 			}
 			if (failPatchOnce !== null) {
@@ -188,7 +219,15 @@ beforeEach(() => {
 				rejectPatchOnce = false;
 				return Promise.reject(new TypeError("fetch failed"));
 			}
-			const next: AppNote = { ...note, rev: note.rev + patches.length, ...body };
+			// Applied at answer time: a held PATCH that comes back 409
+			// never touched the row; a landed one bumps both counters.
+			const apply = (): AppNote => {
+				if (body.title !== undefined) stored.title = body.title;
+				if (body.body !== undefined) stored.body = body.body;
+				stored.rev += 1;
+				stored.stateRev += 1;
+				return { ...stored };
+			};
 			if (holdPatchFlag) {
 				holdPatchFlag = false;
 				return new Promise<Response>((res) => {
@@ -199,14 +238,15 @@ beforeEach(() => {
 						if (conflictOnce !== null) {
 							const c = conflictOnce;
 							conflictOnce = null;
+							stored.stateRev = Math.max(stored.stateRev, c.stateRev);
 							res(jsonResponse({ error: "conflict", note: c }, 409));
 						} else {
-							res(jsonResponse(next));
+							res(jsonResponse(apply()));
 						}
 					};
 				});
 			}
-			return Promise.resolve(jsonResponse(next));
+			return Promise.resolve(jsonResponse(apply()));
 		}
 		return Promise.resolve(jsonResponse({ error: `unfaked ${method} ${url}` }, 500));
 	}) as typeof fetch;
@@ -215,6 +255,9 @@ beforeEach(() => {
 afterEach(async () => {
 	releasePatch();
 	releaseRewrite();
+	pendingCreateRelease?.();
+	pendingCreateRelease = null;
+	Editor.make = realMake;
 	if (root !== null) {
 		await act(async () => root!.unmount());
 		root = null;
@@ -624,14 +667,14 @@ describe("NoteEditor save loop", () => {
 		expect(ref.current?.editor()?.action(getMarkdown())).toContain("agent wrote");
 	});
 
-	test("adoptRev never moves the rev backwards", async () => {
+	test("adoptRev never moves the rev or the token backwards", async () => {
 		root = createRoot(container);
 		const ref = await mount(note.body, 60_000);
 		await notice();
 		// Same body, higher rev — advances.
-		await act(async () => ref.current?.adoptRev({ ...note, rev: 9 }));
-		// Same body, older rev — ignored.
-		await act(async () => ref.current?.adoptRev({ ...note, rev: 2 }));
+		await act(async () => ref.current?.adoptRev({ ...note, rev: 9, stateRev: 9 }));
+		// Same body, older rev and token — dropped at the gate.
+		await act(async () => ref.current?.adoptRev({ ...note, rev: 2, stateRev: 2 }));
 		await edit(ref, "x");
 		await act(async () => ref.current?.flush());
 		await settle();
@@ -707,6 +750,91 @@ describe("NoteEditor save loop", () => {
 		await notice();
 		await settle();
 		expect(patches).toHaveLength(1); // no followup overwrite
+	});
+
+	test("a delayed ack can't clear a same-rev flag conflict — only the token sees it", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // held — answers rev/stateRev 2
+		// A remote ARCHIVE observed mid-flight: same content rev, so a
+		// rev-guard would call the ack newer; the token knows better.
+		await act(async () => ref.current?.conflict({ ...note, archivedAt: "z", stateRev: 5 }));
+		releasePatch();
+		await tick(DELAY * 4);
+		expect(savedNotes).toHaveLength(1); // the write landed — ack still reported
+		expect(container.querySelector(".note-save-status")!.textContent).toBe("Conflict");
+		await edit(ref, "v3");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // nothing automatic under the bar
+	});
+
+	test("an ack older than an observed remote keeps the remote's title ack", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		let verdict!: Promise<boolean>;
+		await act(async () => {
+			verdict = ref.current!.saveTitle("Mine");
+		});
+		await settle();
+		expect(patches).toHaveLength(1);
+		// A newer remote observed mid-flight — its title is the last
+		// acknowledged one, not the delayed echo the write carries.
+		await act(async () => ref.current?.adoptRev({ ...note, title: "Remote", stateRev: 7 }));
+		releasePatch();
+		await act(async () => expect(await verdict).toBe(false));
+		expect(conflicts).toHaveLength(0); // same body — no bar, just stale
+	});
+
+	test("a title save queues behind an in-flight body PATCH and lands on its rev", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // body PATCH held — answers rev 2
+		const verdict = ref.current!.saveTitle("New Title");
+		await tick(0);
+		expect(patches).toHaveLength(1); // queued — not sent on the stale rev
+		releasePatch();
+		await act(async () => expect(await verdict).toBe(true));
+		await settle();
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.title).toBe("New Title");
+		expect(patches[1]!.body.body).toContain("v2");
+		// The queued write guards the landed rev, not the captured one.
+		expect((patches[1]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+	});
+
+	test("a body re-arm behind a queued title merges — the drain sends both", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // body PATCH held
+		const verdict = ref.current!.saveTitle("New Title"); // queues {title}
+		await tick(0);
+		await edit(ref, "v3"); // body intent re-arms while the write hangs
+		await notice();
+		releasePatch();
+		await act(async () => expect(await verdict).toBe(true));
+		await settle();
+		// One drain, not two writes — a re-arm can't drop the queued title.
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.title).toBe("New Title");
+		expect(patches[1]!.body.body).toContain("v3");
 	});
 
 	test("a permanent refusal stops the loop with a visible error", async () => {
@@ -1161,7 +1289,7 @@ describe("NoteEditor durable draft", () => {
 	test("a stale-base draft restores behind the conflict bar; keep-mine writes at the current rev", async () => {
 		seedDraft({ body: "mine local" });
 		root = createRoot(container);
-		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		const ref = await mount("server moved", DELAY, { rev: 2, stateRev: 2, body: "server moved" });
 		await notice();
 		await settle();
 		expect(conflicts).toHaveLength(1);
@@ -1181,7 +1309,7 @@ describe("NoteEditor durable draft", () => {
 	test("a stale-base draft resolving theirs clears only the local record", async () => {
 		seedDraft({ body: "mine local" });
 		root = createRoot(container);
-		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		const ref = await mount("server moved", DELAY, { rev: 2, stateRev: 2, body: "server moved" });
 		await notice();
 		expect(conflicts).toHaveLength(1);
 		await act(async () => ref.current?.resolve("theirs", conflicts[0]!));
@@ -1253,7 +1381,7 @@ describe("NoteEditor durable draft", () => {
 	test("a conflicted draft keeps its ORIGINAL base across edits and remounts — never a silent rebase", async () => {
 		seedDraft({ baseRev: 1, baseBody: note.body, body: "local WIP" });
 		root = createRoot(container);
-		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		const ref = await mount("server moved", DELAY, { rev: 2, stateRev: 2, body: "server moved" });
 		await notice();
 		await settle();
 		expect(conflicts).toHaveLength(1);
@@ -1271,7 +1399,7 @@ describe("NoteEditor durable draft", () => {
 		// Remount against the same moved server: still conflicted,
 		// still no write — only explicit resolution unlocks.
 		root = createRoot(container);
-		const ref2 = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		const ref2 = await mount("server moved", DELAY, { rev: 2, stateRev: 2, body: "server moved" });
 		await notice();
 		await settle();
 		expect(conflicts).toHaveLength(2);
@@ -1306,7 +1434,7 @@ describe("NoteEditor durable draft", () => {
 		// Remount on the same moved server: local v2 restores behind
 		// the bar, still with no write.
 		root = createRoot(container);
-		const ref2 = await mount("remote three", DELAY, { rev: 3, body: "remote three" });
+		const ref2 = await mount("remote three", DELAY, { rev: 3, stateRev: 3, body: "remote three" });
 		await notice();
 		await settle();
 		expect(conflicts[conflicts.length - 1]!.rev).toBe(3);
@@ -1435,5 +1563,119 @@ describe("NoteEditor durable draft", () => {
 		expect((patches[1]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
 		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(bRaw);
 		expect(ref.current?.editor()?.action(getMarkdown())).toContain("v3");
+	});
+});
+
+// A remote answer that beats Editor.create queues on the startup
+// token: the freshest wins, the mounted doc and the draft baseline
+// are judged against it — never the prop the effect captured before
+// the refresh landed.
+describe("NoteEditor startup ordering", () => {
+	async function mountWhileCreating(
+		remote: AppNote | null,
+		seed?: Partial<StoredDraft>,
+	): Promise<{ current: NoteEditorHandle | null }> {
+		if (seed !== undefined) seedDraft(seed);
+		holdCreate();
+		root = createRoot(container);
+		const ref = createRef<NoteEditorHandle>();
+		await act(async () =>
+			root!.render(
+				<NoteEditor
+					ref={ref}
+					token={null}
+					noteId={note.id}
+					initialNote={note}
+					onSaved={(n) => savedNotes.push(n)}
+					onConflict={(n) => conflicts.push(n)}
+					saveDelayMs={DELAY}
+				/>,
+			),
+		);
+		// The refresh lands while create() is still parked — it must
+		// queue, not drop.
+		if (remote !== null) await act(async () => ref.current?.reload(remote));
+		pendingCreateRelease?.();
+		await notice();
+		await settle();
+		return ref;
+	}
+
+	test("a refresh that beats Editor.create lands — doc, rev, and the next save all use it", async () => {
+		const fresh: AppNote = { ...note, body: "fresher body", rev: 3, stateRev: 3 };
+		const ref = await mountWhileCreating(fresh);
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("fresher body");
+		await edit(ref, "typed on fresh");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("typed on fresh");
+		// The write guards the refresh's rev, not the mount prop's.
+		expect((patches[0]!.init.headers as Record<string, string>)["if-match"]).toBe('"3"');
+	});
+
+	test("a queued refresh rebases draft judgment — a matching base resumes the autosave", async () => {
+		const fresh: AppNote = { ...note, body: "server moved", rev: 2, stateRev: 2 };
+		const ref = await mountWhileCreating(fresh, {
+			baseRev: 2,
+			baseBody: "server moved",
+			body: "wip on moved",
+		});
+		// The seed's base IS the freshest state — the restored buffer
+		// resumes as ordinary dirty work on it, no bar.
+		expect(conflicts).toHaveLength(0);
+		await settle();
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("wip on moved");
+		expect((patches[0]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("wip on moved");
+	});
+
+	test("a queued refresh keeps a stale-base draft local behind the bar — original base survives", async () => {
+		const fresh: AppNote = { ...note, body: "server moved", rev: 2, stateRev: 2 };
+		// The seed stands on rev 1 / the prop's body — stale under the
+		// refresh, so it restores local-only and bars instead of
+		// rebasing over the remote.
+		const ref = await mountWhileCreating(fresh, { body: "old wip" });
+		expect(conflicts).toHaveLength(1);
+		expect(conflicts[0]!.rev).toBe(2);
+		expect(patches).toHaveLength(0); // nothing writes under the bar
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("old wip");
+		const d = storedDraft();
+		expect(d?.baseRev).toBe(1);
+		expect(d?.baseBody).toBe(note.body);
+	});
+
+	test("a pre-ready conflict outranks both a queued refresh and a stale-base draft", async () => {
+		const standing = theirs({ stateRev: 9, rev: 9 });
+		holdCreate();
+		root = createRoot(container);
+		const ref = createRef<NoteEditorHandle>();
+		seedDraft({ body: "old wip" });
+		await act(async () =>
+			root!.render(
+				<NoteEditor
+					ref={ref}
+					token={null}
+					noteId={note.id}
+					initialNote={note}
+					onSaved={(n) => savedNotes.push(n)}
+					onConflict={(n) => conflicts.push(n)}
+					saveDelayMs={DELAY}
+				/>,
+			),
+		);
+		// The explicit conflict lands first — the older refresh can't
+		// queue above it, and the draft can't overwrite the bar.
+		await act(async () => ref.current?.conflict(standing));
+		await act(async () =>
+			ref.current?.reload({ ...note, body: "server moved", rev: 2, stateRev: 2 }),
+		);
+		pendingCreateRelease?.();
+		await notice();
+		await settle();
+		expect(conflicts[0]).toBe(standing);
+		expect(conflicts).toHaveLength(1);
+		expect(patches).toHaveLength(0);
 	});
 });

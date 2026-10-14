@@ -1814,12 +1814,29 @@ describe("app projects surface", () => {
 					return Promise.resolve(jsonResponse({ versions: versionRows }));
 				if (/\/versions\/\d+\/restore$/.test(url) && method === "POST") {
 					posts.push({ url, body });
+					// Restore is a guarded content write — app-channel
+					// refuses it without If-Match, and a stale guard 409s
+					// with the live note instead of mutating anything.
+					const target = notes.find((x) => x.id === id);
+					if (!restoreFail && target !== undefined) {
+						const im = ((init?.headers ?? {}) as Record<string, string>)["if-match"];
+						if (im === undefined)
+							return Promise.resolve(jsonResponse({ error: "If-Match required for restore" }, 428));
+						if (Number(im.replaceAll('"', "")) !== target.rev)
+							return Promise.resolve(
+								jsonResponse(
+									{ error: "conflict", note: noteFull(target, noteBodies[target.id] ?? "") },
+									409,
+								),
+							);
+					}
 					// The restore write lands when the POST does — a held
 					// gate can only delay the reply, not the stored state.
 					if (!restoreFail && restoreReply !== null) {
 						const restored = notes.find((x) => x.id === restoreReply!.id);
 						if (restored !== undefined) {
 							restored.rev = restoreReply.rev;
+							restored.stateRev = restoreReply.stateRev;
 							restored.title = restoreReply.title;
 							restored.updatedAt = restoreReply.updatedAt;
 							noteBodies[restored.id] = restoreReply.body;
@@ -1850,9 +1867,14 @@ describe("app projects surface", () => {
 					conflictPatch = false;
 					const n = notes.find((x) => x.id === id);
 					// The write that won already landed server-side — the
-					// stored row moves to the rev the 409 reports.
-					const remote = { ...noteFull(n!, noteBodies[n!.id] ?? ""), rev: 5 };
+					// stored row moves to the state the 409 reports.
+					const remote = {
+						...noteFull(n!, noteBodies[n!.id] ?? ""),
+						rev: 5,
+						stateRev: n!.stateRev + 4,
+					};
 					n!.rev = remote.rev;
+					n!.stateRev = remote.stateRev;
 					n!.updatedAt = remote.updatedAt;
 					return Promise.resolve(jsonResponse({ error: "conflict", note: remote }, 409));
 				}
@@ -1866,7 +1888,8 @@ describe("app projects surface", () => {
 					// app-channel.ts semantics: a content write rides the
 					// If-Match etag (refused before any field mutates), flag
 					// writes apply guard-free, and only an actual title/body
-					// change bumps rev and updatedAt (notes.ts).
+					// change bumps rev and updatedAt — while every accepted
+					// mutation moves stateRev (notes.ts).
 					const req = body as {
 						title?: string;
 						body?: string;
@@ -1900,16 +1923,28 @@ describe("app projects surface", () => {
 					const storedBody = noteBodies[n.id] ?? "";
 					const nextTitle = req.title ?? n.title;
 					const nextBody = req.body ?? storedBody;
-					if (nextTitle !== n.title || nextBody !== storedBody) {
+					const contentMoved = nextTitle !== n.title || nextBody !== storedBody;
+					if (contentMoved) {
 						n.title = nextTitle;
 						noteBodies[n.id] = nextBody;
 						n.rev += 1;
 						n.updatedAt = "2026-10-12T00:00:00.000Z";
 					}
+					if (
+						contentMoved ||
+						req.pinned !== undefined ||
+						req.archived !== undefined ||
+						req.projectId !== undefined
+					) {
+						n.stateRev += 1;
+					}
 				}
-				const reply = () => jsonResponse(noteFull(n, noteBodies[n.id] ?? ""));
+				// The reply carries the state the request landed on — a
+				// held answer must stay stale if the row moved again while
+				// it was parked.
+				const reply = jsonResponse(noteFull(n, noteBodies[n.id] ?? ""));
 				return Promise.resolve(
-					method === "PATCH" && notePatchHold !== null ? notePatchHold.then(reply) : reply(),
+					method === "PATCH" && notePatchHold !== null ? notePatchHold.then(() => reply) : reply,
 				);
 			}
 			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
@@ -2366,6 +2401,7 @@ describe("app projects surface", () => {
 			...noteFull(notes[0]!),
 			title: "Groceries",
 			rev: 2,
+			stateRev: 2,
 			pinnedAt: "2026-10-11T00:00:00.000Z",
 			updatedAt: "2026-10-11T00:00:00.000Z",
 		};
@@ -2385,7 +2421,13 @@ describe("app projects surface", () => {
 		await mount();
 		const title = container.querySelector("input.note-title")!;
 		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
-		noteGetOverride = { ...noteFull(notes[0]!), rev: 2, title: "Remote", updatedAt: "z" };
+		noteGetOverride = {
+			...noteFull(notes[0]!),
+			rev: 2,
+			stateRev: 2,
+			title: "Remote",
+			updatedAt: "z",
+		};
 		await act(async () => {
 			win.dispatchEvent(new win.Event("focus"));
 		});
@@ -2514,9 +2556,10 @@ describe("app projects surface", () => {
 		const pm = container.querySelector(".ProseMirror")!;
 		await editBody("x");
 		expect(notePatches).toHaveLength(0);
-		// The server side archived the note — flag flips don't bump rev
-		// and don't touch the stored body.
+		// The server side archived the note — a flag flip moves only
+		// the token, not rev or the stored body.
 		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.stateRev += 1;
 		await act(async () => {
 			win.dispatchEvent(new win.Event("focus"));
 		});
@@ -2539,6 +2582,7 @@ describe("app projects surface", () => {
 		await editBody("x");
 		// Remote wrote new content AND archived — a real rev bump.
 		notes[0]!.rev = 2;
+		notes[0]!.stateRev = 2;
 		notes[0]!.title = "Remote";
 		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
 		notes[0]!.updatedAt = "2026-10-12T00:00:00.000Z";
@@ -2569,6 +2613,7 @@ describe("app projects surface", () => {
 		const pm = container.querySelector(".ProseMirror")!;
 		await editBody("x");
 		notes[0]!.rev = 2;
+		notes[0]!.stateRev = 2;
 		notes[0]!.title = "Remote";
 		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
 		notes[0]!.updatedAt = "2026-10-12T00:00:00.000Z";
@@ -2596,6 +2641,7 @@ describe("app projects surface", () => {
 		noteBodies = { "n-shopping": "milk" };
 		await notePage("/app/n/n-shopping");
 		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.stateRev += 1;
 		await act(async () => {
 			win.dispatchEvent(new win.Event("focus"));
 		});
@@ -2679,6 +2725,7 @@ describe("app projects surface", () => {
 			const title = container.querySelector("input.note-title")! as HTMLInputElement;
 			await typeInto(title, draft, win.HTMLInputElement.prototype);
 			notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+			notes[0]!.stateRev += 1;
 			await act(async () => {
 				win.dispatchEvent(new win.Event("focus"));
 			});
@@ -2710,12 +2757,100 @@ describe("app projects surface", () => {
 		// Proof: a remote flag flip under a clean page goes readonly —
 		// a stale-dirty draft would have raised the bar instead.
 		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.stateRev += 1;
 		await act(async () => {
 			win.dispatchEvent(new win.Event("focus"));
 		});
 		await settle();
 		expect(container.querySelector(".note-conflict")).toBeNull();
 		expect(container.querySelector(".note-readonly")!.textContent).toContain("milk");
+	});
+
+	const flagBtn = (label: string) =>
+		[...container.querySelectorAll(".note-flags button")].find(
+			(b) => b.textContent === label,
+		) as HTMLButtonElement;
+
+	test("a delayed flag ack can't resurrect the state it left — a newer remote stands", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await click(flagBtn("Pin"));
+		expect(notePatches).toHaveLength(1); // parked, unanswered
+		// While the pin ack hangs, a remote archive lands via focus —
+		// newer than anything the held reply can describe.
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.stateRev += 1;
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-readonly")).not.toBeNull();
+		// The parked pin ack answers a state behind the adopted one —
+		// it can't pull the page back to unarchived.
+		gate.resolve();
+		await settle();
+		expect(container.querySelector(".note-readonly")).not.toBeNull();
+		expect(container.querySelector(".note-conflict")).toBeNull();
+	});
+
+	for (const dirty of [false, true] as const) {
+		test(`a flag ack carrying a remote rename ${dirty ? "keeps the dirty title behind the bar" : "lands the clean title"}`, async () => {
+			notes = [noteRow("Shopping")];
+			noteBodies = { "n-shopping": "milk" };
+			await notePage("/app/n/n-shopping");
+			const title = container.querySelector("input.note-title")! as HTMLInputElement;
+			if (dirty) await typeInto(title, "Local title", win.HTMLInputElement.prototype);
+			// A remote rename+content write landed before our pin PATCH —
+			// the flag ack carries that state.
+			notes[0]!.title = "Renamed Remotely";
+			notes[0]!.rev = 2;
+			notes[0]!.stateRev = 2;
+			notes[0]!.updatedAt = "2026-10-12T00:00:00.000Z";
+			noteBodies["n-shopping"] = "remote body";
+			await click(flagBtn("Pin"));
+			await settle();
+			if (dirty) {
+				// The local draft stands — the remote rename is theirs
+				// to resolve, not ours to overwrite.
+				expect(container.querySelector(".note-conflict")).not.toBeNull();
+				expect(title.value).toBe("Local title");
+			} else {
+				expect(container.querySelector(".note-conflict")).toBeNull();
+				expect(title.value).toBe("Renamed Remotely");
+				expect(container.querySelector(".ProseMirror")!.textContent).toContain("remote body");
+			}
+		});
+	}
+
+	test("edits typed over an in-flight title PATCH aren't stamped over by its ack", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await typeInto(title, "Renamed", win.HTMLInputElement.prototype);
+		await act(async () => {
+			(title as HTMLInputElement).blur();
+		});
+		expect(notePatches).toHaveLength(1); // the "Renamed" write is held
+		// A revert typed while the write hangs is dirty work — the
+		// ack's trimmed echo must not overwrite it back to "Renamed".
+		await typeInto(title, "Shopping", win.HTMLInputElement.prototype);
+		gate.resolve();
+		await settle();
+		expect(title.value).toBe("Shopping");
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		// The revert commits on the next blur like an ordinary edit.
+		await act(async () => {
+			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		expect(notePatches).toHaveLength(2);
+		expect((notePatches[1]!.body as { title?: string }).title).toBe("Shopping");
 	});
 
 	const openVersions = async () => {
@@ -2732,7 +2867,7 @@ describe("app projects surface", () => {
 	// fresh rev — the fixture store reflects that the moment the POST
 	// lands, so GETs and held replies stay coherent.
 	const restoreFixture = () => {
-		notes = [noteRow("Shopping", { rev: 5 })];
+		notes = [noteRow("Shopping", { rev: 5, stateRev: 5 })];
 		noteBodies = { "n-shopping": "current" };
 		versionRows = [{ rev: 1, source: "app", conversation: null, at: "x", bytes: 4 }];
 		versionPreview = {
@@ -2747,6 +2882,7 @@ describe("app projects surface", () => {
 		restoreReply = {
 			...noteFull(notes[0]!, "old"),
 			rev: 6,
+			stateRev: 6,
 			title: "Old Title",
 			updatedAt: "2026-10-12T00:00:00.000Z",
 		};
@@ -3534,7 +3670,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 				}
 				const g = Promise.withResolvers<Response>();
 				gets.push(g);
-						return g.promise;
+				return g.promise;
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));

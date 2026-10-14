@@ -194,6 +194,7 @@ function VersionsPanel({
 	canRestore,
 	canRestoreNow,
 	onRestored,
+	onConflict,
 }: {
 	token: string | null;
 	note: AppNote;
@@ -204,6 +205,9 @@ function VersionsPanel({
 	// that landed between render and the tap.
 	canRestoreNow: () => boolean;
 	onRestored: (note: AppNote) => void;
+	// A stale-panel 409 hands back the live note — route it into the
+	// same conflict path a remote write would raise.
+	onConflict: (theirs: AppNote) => void;
 }) {
 	const [versions, setVersions] = useState<AppNoteVersionMeta[] | null>(null);
 	const [preview, setPreview] = useState<AppNoteVersion | null>(null);
@@ -237,6 +241,10 @@ function VersionsPanel({
 			},
 			(err) => {
 				setRestoring(false);
+				if (err instanceof NoteConflictError) {
+					onConflict(err.note);
+					return;
+				}
 				setError(`Couldn't restore: ${err instanceof Error ? err.message : String(err)}`);
 			},
 		);
@@ -433,21 +441,105 @@ export function NoteView({
 	// body, or the body's stale If-Match lands behind the rename and
 	// 409s into a conflict over the operator's own edit.
 	const titleFlightRef = useRef<Promise<void> | null>(null);
+	// What the field held when the in-flight title write left — an
+	// ack's server-trimmed echo may sync the draft only while the
+	// field still carries exactly that; edits typed over the flight
+	// (a retype, a revert) are dirty work, not whitespace.
+	const titleSentFieldRef = useRef<string | null>(null);
 	noteRef.current = note;
 	titleDraftRef.current = titleDraft;
 	conflictRef.current = conflict;
 	rewriteBusyRef.current = rewriteBusy;
 
-	// Adopt remote state only forward — a delayed response must never
-	// roll the page's rev (or flags) backwards.
-	const adoptRemote = (data: AppNote) =>
-		setNote((cur) =>
-			cur === null ||
-			data.rev > cur.rev ||
-			(data.rev === cur.rev && data.updatedAt >= cur.updatedAt)
-				? data
-				: cur,
-		);
+	// A conflict note behind state the page already accepted — or
+	// strictly older than the bar already standing — is a late reply,
+	// not new information: it can neither raise nor move the bar. An
+	// equal token is the same state (the editor's own conflict()
+	// echoes the very note that just raised the bar here).
+	const staleConflict = (theirs: AppNote): boolean => {
+		const cur = noteRef.current;
+		if (cur !== null && theirs.id === cur.id && theirs.stateRev < cur.stateRev) return true;
+		const standing = conflictRef.current;
+		return standing !== null && theirs.stateRev < standing.stateRev;
+	};
+
+	// Raise the conflict bar: the editor's own conflict() keeps its
+	// autosave blocked and echoes through onConflict — which mirrors
+	// conflict state/ref without re-entering the handle.
+	const raiseConflict = (theirs: AppNote): void => {
+		if (staleConflict(theirs)) return;
+		conflictRef.current = theirs;
+		const h = editorRef.current;
+		if (h === null) setConflict(theirs);
+		else h.conflict(theirs);
+	};
+
+	// Forward-only adoption of a server note — the single reconcile
+	// path for focus refreshes, flag acks, restore acks, and own-save
+	// acks (own = true: our own write's answer never reads as a remote
+	// conflict). `stateRev` is the order token — content `rev` can't
+	// see flag writes, so a response that isn't strictly newer is
+	// ignored entirely (no adoptRev, no flag merge, no conflict clear).
+	// Before the row moves, the title draft reconciles: a clean draft
+	// takes the landed title, a dirty draft meeting a remote rename
+	// keeps its text behind the conflict bar, and a dirty draft that
+	// trim-matches the acked title syncs — leftover whitespace isn't
+	// an unsaved edit.
+	const adoptRemote = (data: AppNote, own = false): void => {
+		const cur = noteRef.current;
+		if (cur !== null && data.id === cur.id && data.stateRev <= cur.stateRev) return;
+		const standing = conflictRef.current;
+		if (standing !== null && data.id === standing.id && data.stateRev < standing.stateRev) return;
+		const draft = titleDraftRef.current;
+		const titleDirty = cur !== null && draft !== cur.title;
+		// While a title write is in flight, "untouched" is judged
+		// against what the field held at dispatch — an edit typed over
+		// the flight (retype or revert) must not be stamped over by the
+		// ack's trimmed echo.
+		const flightEdited = titleSentFieldRef.current !== null && draft !== titleSentFieldRef.current;
+		const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
+		// Moves a local buffer must answer for: a content write, an
+		// archive flip, or a rename while the title draft is dirty.
+		const diverged =
+			cur !== null &&
+			(data.rev !== cur.rev ||
+				data.archivedAt !== cur.archivedAt ||
+				(titleDirty && data.title !== cur.title && draft.trim() !== data.title));
+		if (!own && diverged && (bodyDirty || titleDirty)) {
+			noteRef.current = data;
+			setNote(data);
+			raiseConflict(data);
+			return;
+		}
+		if (
+			cur !== null &&
+			data.title !== draft &&
+			(draft.trim() === data.title || (!titleDirty && !flightEdited))
+		) {
+			// A clean draft adopts a remote rename; an acked own title
+			// syncs the draft to the server's trimmed store. The ref
+			// moves now — the state mirror lands next render, and the
+			// same-tick focus/title checks must already see it.
+			titleDraftRef.current = data.title;
+			setTitleDraft(data.title);
+		}
+		noteRef.current = data;
+		setNote(data);
+		if (standing !== null) {
+			if (own && data.stateRev >= standing.stateRev) {
+				// Our write landed on (or past) the conflicted state —
+				// Keep mine's forced save resolves the bar.
+				conflictRef.current = null;
+				setConflict(null);
+			} else if (data.stateRev > standing.stateRev) {
+				// The bar stands, but "theirs" names the newest remote.
+				conflictRef.current = data;
+				setConflict(data);
+			}
+		}
+		const h = editorRef.current;
+		if (h !== null && !h.dirty()) h.adoptRev(data);
+	};
 
 	useEffect(() => {
 		let live = true;
@@ -472,38 +564,17 @@ export function NoteView({
 	}, [token, noteId]);
 
 	// Refetch on window focus — refresh without push (design →
-	// Refresh). A newer rev under a clean page loads silently; under a
-	// dirty title or body it raises the conflict bar. Archiving doesn't
-	// bump the rev, so a flag flip under a dirty buffer counts as the
-	// same "changed elsewhere" — silently flipping to readonly would
-	// strand the edits.
+	// Refresh). stateRev orders the check: a flag flip moves it without
+	// touching rev/updatedAt, so an archive arriving under a dirty
+	// buffer raises the same conflict a remote write does, and a clean
+	// page swaps to the readonly view — while a delayed same-state
+	// response is ignored entirely.
 	useEffect(() => {
 		let live = true;
 		const check = () => {
 			void getNote(token, noteId).then(
 				({ data }) => {
 					if (!live) return;
-					const cur = noteRef.current;
-					if (cur === null || data.rev < cur.rev) return;
-					// A cleared title is still an in-progress edit — no
-					// empty-string exemption or remote flips slip under it.
-					const titleDirty = titleDraftRef.current !== cur.title;
-					const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
-					if (data.rev > cur.rev || data.archivedAt !== cur.archivedAt) {
-						if (bodyDirty || titleDirty) {
-							// Hand the block to the editor — autosave must stop,
-							// not just show a bar. No editor (archived note) →
-							// the bar alone.
-							const h = editorRef.current;
-							if (h === null) setConflict(data);
-							else h.conflict(data);
-						} else {
-							editorRef.current?.reload(data);
-							setTitleDraft(data.title);
-						}
-					} else if (!titleDirty) {
-						setTitleDraft(data.title);
-					}
 					adoptRemote(data);
 				},
 				(err) => {
@@ -531,7 +602,6 @@ export function NoteView({
 			({ data }) => {
 				setBusy(false);
 				adoptRemote(data);
-				editorRef.current?.adoptRev(data);
 			},
 			(err) => {
 				setBusy(false);
@@ -547,6 +617,7 @@ export function NoteView({
 		if (cur === null || conflictRef.current !== null) return;
 		const t = titleDraftRef.current.trim();
 		if (t === "" || t === cur.title) {
+			titleDraftRef.current = cur.title;
 			setTitleDraft(cur.title);
 			return;
 		}
@@ -554,39 +625,38 @@ export function NoteView({
 			titlePendingRef.current = true;
 			return;
 		}
+		const h = editorRef.current;
+		if (h === null) {
+			// The editor is still creating — the draft stays in the
+			// field and the failure is visible, never a silent drop.
+			setOpError("The editor isn't ready yet — your title edit is still in the field.");
+			return;
+		}
+		// Title writes ride the editor's own save loop — one lane for
+		// title AND body, so a title PATCH can never overtake or land
+		// under an in-flight body write on the same rev.
 		titleSavingRef.current = true;
-		titleFlightRef.current = patchNote(token, cur.id, { title: t }, { ifMatch: cur.rev }).then(
-			({ data }) => {
-				titleSavingRef.current = false;
-				adoptRemote(data);
-				// noteRef mirrors on render — the pending re-run below
-				// needs the landed rev's If-Match now, not next render.
-				noteRef.current = data;
-				// The server stored the trimmed title — sync the draft so
-				// leftover whitespace doesn't read as an unsaved edit,
-				// unless the operator typed again while the PATCH flew.
-				if (titleDraftRef.current.trim() === data.title) setTitleDraft(data.title);
-				// The body didn't change — advance the If-Match rev only;
-				// reload() would discard unsaved body edits.
-				editorRef.current?.adoptRev(data);
-				if (titlePendingRef.current) {
-					titlePendingRef.current = false;
-					saveTitle();
-				}
-			},
-			(err) => {
-				titleSavingRef.current = false;
-				// A dropped pending commit belongs to the failure path —
-				// the conflict bar or the error now owns the UX.
+		titleSentFieldRef.current = titleDraftRef.current;
+		const settle = (ok: boolean, err?: unknown) => {
+			titleSavingRef.current = false;
+			titleSentFieldRef.current = null;
+			titleFlightRef.current = null;
+			if (!ok && conflictRef.current === null) {
+				// A thrown save carries its cause; a false verdict is
+				// only "the write didn't land" — either way the draft
+				// stays in the field.
+				setOpError(
+					err !== undefined
+						? `Couldn't save the title: ${err instanceof Error ? err.message : String(err)}`
+						: "Couldn't save the title — your edit is still in the field.",
+				);
+			}
+			if (titlePendingRef.current) {
 				titlePendingRef.current = false;
-				if (err instanceof NoteConflictError) {
-					conflictRef.current = err.note;
-					const h = editorRef.current;
-					if (h === null) setConflict(err.note);
-					else h.conflict(err.note);
-				} else setOpError(`Couldn't rename: ${err instanceof Error ? err.message : String(err)}`);
-			},
-		);
+				saveTitle();
+			}
+		};
+		titleFlightRef.current = h.saveTitle(t).then(settle, (err: unknown) => settle(false, err));
 	};
 
 	const remove = () => {
@@ -668,8 +738,11 @@ export function NoteView({
 						disabled={rewriteApplying}
 						onClick={() => {
 							editorRef.current?.resolve("theirs", conflict);
+							noteRef.current = conflict;
 							setNote(conflict);
+							titleDraftRef.current = conflict.title;
 							setTitleDraft(conflict.title);
+							conflictRef.current = null;
 							setConflict(null);
 						}}
 					>
@@ -771,14 +844,18 @@ export function NoteView({
 						token={token}
 						noteId={note.id}
 						initialNote={note}
-						onSaved={(n) => {
-							adoptRemote(n);
-							// A landed write clears the bar unless a newer
-							// remote was observed after this PATCH left — the
-							// delayed response doesn't resolve that.
-							setConflict((cur) => (cur !== null && cur.rev > n.rev ? cur : null));
+						// Own save acks reconcile through the same forward
+						// guard — they can resolve the bar (Keep mine's write
+						// landing on the conflicted state) but can never read
+						// as a fresh remote conflict.
+						onSaved={(n) => adoptRemote(n, true)}
+						onConflict={(theirs) => {
+							// Same fence as raiseConflict — a late 409 must
+							// not roll a newer bar (or accepted state) back.
+							if (staleConflict(theirs)) return;
+							conflictRef.current = theirs;
+							setConflict(theirs);
 						}}
-						onConflict={(theirs) => setConflict(theirs)}
 						onDirty={(d) => {
 							dirtyRef.current = d;
 							setDirty(d);
@@ -803,28 +880,13 @@ export function NoteView({
 							!(dirtyRef.current || (editorRef.current?.dirty() ?? false))
 						);
 					}}
-					onRestored={(n) => {
-						const cur = noteRef.current;
-						// A restore answering late must not roll a newer rev back.
-						if (cur === null || n.rev < cur.rev) return;
-						// A focus refresh already adopted (and reloaded) this
-						// exact state — edits on top of it are not a conflict.
-						if (n.rev === cur.rev && n.updatedAt === cur.updatedAt) return;
-						const titleDirty = titleDraftRef.current !== cur.title;
-						const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
-						if (bodyDirty || titleDirty) {
-							// Edits landed while the restore flew — keep them,
-							// adopt the metadata, let the bar carry the swap.
-							adoptRemote(n);
-							const h = editorRef.current;
-							if (h === null) setConflict(n);
-							else h.conflict(n);
-							return;
-						}
-						adoptRemote(n);
-						setTitleDraft(n.title);
-						editorRef.current?.reload(n);
-					}}
+					// A landed restore rides the same forward guard as a
+					// focus refresh — a delayed or already-adopted ack is
+					// ignored, edits that landed mid-flight get the bar.
+					onRestored={(n) => adoptRemote(n)}
+					// The restore 409 carries the live note — the same
+					// conflict path as a remote write.
+					onConflict={raiseConflict}
 				/>
 			)}
 		</div>

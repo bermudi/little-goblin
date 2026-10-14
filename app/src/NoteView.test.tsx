@@ -100,7 +100,10 @@ beforeEach(() => {
 				patches.push({ body, init: init ?? {} });
 				if (body.body !== undefined) stored.body = body.body;
 				if (body.title !== undefined) stored.title = body.title;
+				// Every accepted mutation moves the token — rev orders
+				// content only.
 				stored.rev += 1;
+				stored.stateRev += 1;
 				return Promise.resolve(jsonResponse(stored));
 			}
 			return Promise.resolve(jsonResponse(stored));

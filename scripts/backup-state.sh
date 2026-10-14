@@ -21,6 +21,10 @@ command -v sqlite3 >/dev/null || { echo "backup-state: sqlite3 not on PATH" >&2;
 mkdir -p "$dir"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="$dir/goblin-$stamp.sqlite"
+# Second-resolution stamps collide on a same-second rerun, and .backup
+# truncates an existing target — a lost snapshot must be loud, not silent.
+[[ -e $out ]] &&
+	{ echo "backup-state: $out already exists — refusing to overwrite" >&2; exit 1; }
 sqlite3 "$db" ".backup '$out'"
 [[ $(sqlite3 "$out" "PRAGMA quick_check(1)") == ok ]] ||
 	{ echo "backup-state: $out failed quick_check" >&2; exit 1; }

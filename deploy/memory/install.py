@@ -353,6 +353,20 @@ def write_file_atomic(path: Path, content: str, mode: int) -> None:
         raise
 
 
+def validate_embed_relay_config(cfg_dir: Path) -> None:
+    """Fail loud on a present-but-invalid embed-relay.env BEFORE any
+    durable state is written — an invalid opt-in must not coexist with
+    half-installed units or env files. Absent switch = remote embeddings,
+    always valid; a good switch is left untouched."""
+    switch = cfg_dir / EMBED_RELAY_ENV.name
+    if not switch.is_file():
+        return
+    try:
+        parse_embed_relay_env(switch.read_text())
+    except (OSError, ValueError) as error:
+        fail(f"{switch}: {error}")
+
+
 def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
                     user_unit_dir: Path,
                     skip_existing_quadlets: bool = False) -> list[Path]:
@@ -363,6 +377,7 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     failure message), so a refresh hands over new assets without clobbering
     operator edits. Fresh installs keep overwrite semantics — deleting a
     Quadlet before a fresh install is the reset path."""
+    validate_embed_relay_config(cfg_dir)
     systemd_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     user_unit_dir.mkdir(parents=True, exist_ok=True)
@@ -414,12 +429,9 @@ def install_embed_units(memory_dir: Path, cfg_dir: Path,
     present-but-invalid switch fails BEFORE any unit lands, so the relay
     can't come up half-configured."""
     switch = cfg_dir / EMBED_RELAY_ENV.name
+    validate_embed_relay_config(cfg_dir)
     if not switch.is_file():
         return []
-    try:
-        parse_embed_relay_env(switch.read_text())
-    except (OSError, ValueError) as error:
-        fail(f"{switch}: {error}")
     user_unit_dir.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     for name in EMBED_UNITS:
@@ -1107,6 +1119,10 @@ def main(argv: list[str] | None = None) -> None:
 
     print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
     preflight()
+    # A present-but-invalid embed-relay switch fails here, before any
+    # prompt, env write or unit copy in ANY branch below — the refusal
+    # must leave zero durable state behind.
+    validate_embed_relay_config(CFG_DIR)
 
     if args.reconfigure:
         # Check BEFORE prompting: collecting two hidden keys and then

@@ -189,7 +189,10 @@ cost confirmation gates the first start, not every reboot. A deferred
 start (`--no-start` or a declined confirmation) only prints the
 continuation — daemon-reload, the embed relay when opted in, the API
 start, then the watch timer — the same sequence a confirmed start runs,
-never executed early. The original
+never executed early. A present `embed-relay.env` opt-in switch is
+validated before any durable state — prompts, env writes, unit copies —
+so an invalid switch refuses the install cleanly; absent stays
+remote-only. The original
 "operator starts it explicitly" ruling died the first nightly shutdown:
 the box went down, goblin came back with memory on, the stack did not,
 and the bot quietly retried a dead port for a day. Health probes gate

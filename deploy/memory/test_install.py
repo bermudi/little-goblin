@@ -1251,6 +1251,96 @@ class MainFlowTest(unittest.TestCase):
             "Quadlet, not the installer, owns the generated boot link",
         )
 
+    def test_invalid_relay_switch_fails_before_any_durable_state(self) -> None:
+        # A present-but-invalid opt-in must refuse the whole install
+        # before prompts or a single durable write — never prompts
+        # answered and secrets written on top of a switch the relay
+        # units would then fail on.
+        install.preflight = lambda: None
+        install.CFG_DIR.mkdir(parents=True)
+        (install.CFG_DIR / "embed-relay.env").write_text(
+            "GOBLIN_EMBED_RELAY_ADDR=\nGOBLIN_EMBED_MODEL=m\n")
+        asked = {"prompts": False}
+
+        def fake_answers(goblin_home: Path) -> Answers:
+            asked["prompts"] = True
+            return synthetic_answers()
+
+        install.prompt_answers = fake_answers
+        with self.assertRaises(SystemExit):
+            install.main([])
+        self.assertFalse(asked["prompts"], "must refuse before collecting answers")
+        self.assertFalse(install.POSTGRES_ENV.exists())
+        self.assertFalse(install.HINDSIGHT_ENV.exists())
+        for name in install.EMBED_UNITS + install.WATCH_UNITS:
+            self.assertFalse((install.USER_UNIT_DIR / name).exists(), name)
+        self.assertFalse(install.USER_UNIT_DIR.exists(), "no unit dir created")
+
+        # Correct the switch and rerun: the fresh path proceeds — relay
+        # enabled before the API start, env files and units in place.
+        (install.CFG_DIR / "embed-relay.env").write_text(EmbedRelayEnvTest.VALID)
+        self.fake_prompts()
+        self.fake_yes()
+        commands: list[list[str]] = []
+
+        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        install.run = record
+
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if "is-active" in command:
+                return subprocess.CompletedProcess(command, 0, "active\n", "")
+            if "inspect" in command:
+                return subprocess.CompletedProcess(command, 0, "healthy\n", "")
+            if "show" in command:
+                return subprocess.CompletedProcess(
+                    command, 0, f"Wants={install.API_UNIT}\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        banks: list[str] = []
+        install.create_bank = lambda bank_id, mission: banks.append(bank_id)
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertTrue(install.POSTGRES_ENV.is_file())
+        self.assertTrue(install.HINDSIGHT_ENV.is_file())
+        self.assertEqual(banks, ["goblin"])
+        for name in install.EMBED_UNITS:
+            self.assertTrue((install.USER_UNIT_DIR / name).is_file(), name)
+        enable_cmd = ["systemctl", "--user", "enable", "--now",
+                      install.RELAY_UNIT, install.PIN_TIMER]
+        api_start = ["systemctl", "--user", "start", install.API_UNIT]
+        self.assertIn(enable_cmd, commands)
+        self.assertIn(api_start, commands)
+        self.assertLess(commands.index(enable_cmd), commands.index(api_start))
+
+    def test_no_start_refuses_invalid_relay_switch_early(self) -> None:
+        # The deferred-start branch shares the same early guard: an
+        # invalid switch fails before prompts and durable state even
+        # when no stack would be started.
+        install.preflight = lambda: None
+        install.CFG_DIR.mkdir(parents=True)
+        (install.CFG_DIR / "embed-relay.env").write_text(
+            "GOBLIN_EMBED_RELAY_ADDR=not-an-ip\nGOBLIN_EMBED_MODEL=m\n")
+        asked = {"prompts": False}
+
+        def fake_answers(goblin_home: Path) -> Answers:
+            asked["prompts"] = True
+            return synthetic_answers()
+
+        install.prompt_answers = fake_answers
+        with self.assertRaises(SystemExit):
+            install.main(["--no-start"])
+        self.assertFalse(asked["prompts"], "must refuse before collecting answers")
+        self.assertFalse(install.POSTGRES_ENV.exists())
+        self.assertFalse(install.HINDSIGHT_ENV.exists())
+        self.assertFalse(install.USER_UNIT_DIR.exists(), "no unit dir created")
+
     def deferred_output(self, argv: list[str]) -> str:
         """Run a fresh install that defers the start; capture stdout and
         prove nothing at the system edge actually ran."""

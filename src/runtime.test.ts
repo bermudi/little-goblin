@@ -14,18 +14,14 @@ import { z } from "zod";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
-import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
+import { appAddress, captureConversationSettings } from "./conversation.ts";
 import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
+import { fakeModel, openStore, RecordingSink, tmpdb } from "./testkit.ts";
 
 let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-rt-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 afterEach(() => {
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
@@ -35,106 +31,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Fake the model provider at the edge: a LanguageModelV2 that streams the
 // given deltas with a delay between each.
-function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(options: { abortSignal?: AbortSignal }) {
-			const signal = options.abortSignal;
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
-						if (signal?.aborted) break;
-						await sleep(delayMs);
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
-
-class RecordingSink implements TurnSink {
-	text = "";
-	// The raw pass-through hook, recorded verbatim — the app channel's
-	// SSE surface is built on this stream.
-	chunkTypes: string[] = [];
-	chunks: UIMessageChunk[] = [];
-	done: Promise<TurnDone>;
-	// Resolves when the runtime admits the turn — setAuthorityCheck
-	// fires before any model work, the deterministic moment for tests
-	// that bump the epoch against a live turn.
-	admitted: Promise<void>;
-	// Resolves on the first observed text delta — the turn is admitted
-	// and mid-stream.
-	firstDelta: Promise<void>;
-	private resolveDone: (d: TurnDone) => void;
-	private markAdmitted: () => void = () => {};
-	private markFirstDelta: () => void = () => {};
-	constructor() {
-		let r: (d: TurnDone) => void = () => {};
-		this.done = new Promise<TurnDone>((res) => {
-			r = res;
-		});
-		this.resolveDone = r;
-		this.admitted = new Promise<void>((res) => {
-			this.markAdmitted = res;
-		});
-		this.firstDelta = new Promise<void>((res) => {
-			this.markFirstDelta = res;
-		});
-	}
-	setAuthorityCheck() {
-		this.markAdmitted();
-	}
-	onTextDelta(d: string) {
-		this.text += d;
-		this.markFirstDelta();
-	}
-	onReasoningDelta() {}
-	onToolCall() {}
-	onStreamChunk(chunk: UIMessageChunk) {
-		this.chunkTypes.push(chunk.type);
-		this.chunks.push(chunk);
-	}
-	onDone(d: TurnDone) {
-		this.resolveDone(d);
-	}
-}
 
 // The bell's shape (design/app.md → Spin-off): delivery hooks only —
 // no onStreamChunk, so the streaming-lane boundary treats it as
@@ -183,7 +79,7 @@ function setup(deltas: string[], delayMs = 15) {
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(deltas, delayMs), system: "test" }),
+		buildStep: () => ({ model: fakeModel(deltas, { delayMs }), system: "test" }),
 		makeTools: () => ({}),
 	});
 	return { store, conv, runtime };

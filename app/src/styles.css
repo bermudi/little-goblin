@@ -900,6 +900,9 @@ h6.md-h {
 /* ---------- code blocks ---------- */
 
 .codeblock {
+	/* Read by the fence clip's max-height calc in markdown.tsx — the
+	   stylesheet stays the single source for the pre's metrics. */
+	--codeblock-pad-b: 0.75rem;
 	border-radius: 8px;
 	overflow: hidden;
 	background: color-mix(in oklab, var(--app-fg) 3%, transparent);
@@ -933,7 +936,7 @@ h6.md-h {
 }
 .codeblock pre {
 	margin: 0;
-	padding: 0 1rem 0.75rem;
+	padding: 0 1rem var(--codeblock-pad-b);
 	overflow-x: auto;
 	font-family: var(--font-mono);
 	font-size: 13px;
@@ -945,15 +948,16 @@ h6.md-h {
 	margin: 0;
 	background: none;
 }
-/* Long operator-pasted fences clip to a preview (markdown.tsx CLIP_*):
-   pre.overflow-x computes overflow-y to auto, so the clip must pin
-   overflow hidden outright; the fade sells the cut and the footer
+/* Long operator-pasted fences clip to a preview (markdown.tsx CLIP_*).
+   overflow-y must pin hidden — a visible y next to the pre's
+   overflow-x: auto computes to auto — while x stays untouched so wide
+   lines keep their scrollbar; the fade sells the cut and the footer
    expands it. */
 .codeblock-body {
 	position: relative;
 }
 .codeblock pre.clip {
-	overflow: hidden;
+	overflow-y: hidden;
 }
 .codeblock-fade {
 	position: absolute;

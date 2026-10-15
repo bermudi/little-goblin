@@ -146,14 +146,14 @@ function CodeBlock({
 			</div>
 			<div className="codeblock-body">
 				{/* The cap is a visual clip, not a cut — the pre always holds the
-				    full code so copy and select-all stay honest. max-height
-				    rides inline so the line count lives in CLIP_LINES, not a
-				    second constant in styles.css. */}
+				    full code so copy and select-all stay honest. lh resolves
+				    against the pre's own line-height and --codeblock-pad-b its
+				    bottom padding, so styles.css keeps owning both metrics. */}
 				<pre
 					className={clipped && !open ? "clip" : undefined}
 					style={
 						clipped && !open
-							? { maxHeight: `calc(${CLIP_LINES} * 1.5em + 0.75rem)` }
+							? { maxHeight: `calc(${CLIP_LINES}lh + var(--codeblock-pad-b))` }
 							: undefined
 					}
 				>

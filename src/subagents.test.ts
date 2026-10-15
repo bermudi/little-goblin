@@ -1542,6 +1542,119 @@ describe("subagents owner", () => {
 		expect(r.desktops.actCalls).toBe(0);
 	});
 
+	test("a request claim rejecting after stop begins cannot deadlock cancellation", async () => {
+		const r = rig({ maxRuns: 1 });
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const claimEntered = Promise.withResolvers<void>();
+		const rejectClaim = Promise.withResolvers<void>();
+		const claim = r.desktops.claim.bind(r.desktops);
+		let calls = 0;
+		r.desktops.claim = async (name, holder) => {
+			if (++calls === 2) {
+				claimEntered.resolve();
+				await rejectClaim.promise;
+				throw new DesktopError("request renewal failed");
+			}
+			return claim(name, holder);
+		};
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await claimEntered.promise;
+		let stopped = false;
+		const stopping = o.stop(a.id, WS).then((row) => {
+			expect(row.status).toBe("stopped");
+			stopped = true;
+		});
+		await until(() => r.runs.get(a.id)?.stopRequested === true, "stop intent");
+		await Bun.sleep(50);
+		rejectClaim.resolve();
+		await until(() => stopped, "stop completes after rejected request claim");
+		await stopping;
+		await until(() => !r.desktops.held.has("d1"), "desktop released");
+		expect(r.model.seen).toHaveLength(0);
+		expect(r.runs.get(a.id)?.inputIntent).toBeNull();
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "slot freed" } }] });
+		const b = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "next",
+		});
+		await until(() => r.runs.get(b.id)?.status === "done", "global slot released");
+	});
+
+	test("request recovery survives a concurrent steer whose provisional intent is rolled back", async () => {
+		const original = Harness.open;
+		let captured: Awaited<ReturnType<typeof Harness.open>> | undefined;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			captured = await original(...args);
+			return captured;
+		}) as typeof Harness.open;
+		const r = rig();
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const requestEntered = Promise.withResolvers<void>();
+		const steerEntered = Promise.withResolvers<void>();
+		const requestGate = Promise.withResolvers<void>();
+		const steerGate = Promise.withResolvers<void>();
+		const claim = r.desktops.claim.bind(r.desktops);
+		let claims = 0;
+		r.desktops.claim = async (name, holder) => {
+			const call = ++claims;
+			if (call === 2 || call === 3) {
+				(call === 2 ? requestEntered : steerEntered).resolve();
+				await (call === 2 ? requestGate : steerGate).promise;
+				throw new DesktopError("transient claim failure");
+			}
+			return claim(name, holder);
+		};
+		try {
+			const a = await o.start({
+				kind: "computer",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+				desktop: "d1",
+			});
+			await requestEntered.promise;
+			const steering = o.send(a.id, WS, "refused steer").then(
+				() => null,
+				(err: unknown) => err,
+			);
+			await steerEntered.promise;
+			expect(r.runs.get(a.id)?.inputIntent).toBe("refused steer");
+			requestGate.resolve();
+			await Bun.sleep(50);
+			steerGate.resolve();
+			const rejected = await steering;
+			expect(rejected).toBeInstanceOf(Error);
+			expect((rejected as Error).message).toContain("cannot be steered");
+			await until(
+				() => (r.runs.get(a.id)?.inputIntent ?? "").includes("[goblin]"),
+				"recovery intent replaces rolled-back steer",
+			);
+			expect(r.runs.get(a.id)?.status).toBe("running");
+			expect(r.desktops.held.has("d1")).toBe(true);
+			expect(r.wakes).toHaveLength(0);
+			await captured!.waitForIdle({} as Context);
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recovered" } }] });
+			await o.scan();
+			await until(() => r.runs.get(a.id)?.status === "done", "recovered run finishes");
+			expect(r.runs.get(a.id)?.result).toBe("recovered");
+			expect(JSON.stringify(r.model.seen)).not.toContain("refused steer");
+		} finally {
+			requestGate.resolve();
+			steerGate.resolve();
+			Harness.open = original;
+		}
+	});
+
 	test("stop during an act tool's lease renewal fences the dispatch", async () => {
 		const r = rig();
 		const o = await open(r);
@@ -4306,6 +4419,8 @@ describe("subagents owner", () => {
 		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("saw note");
+		expect(r.runs.get(a.id)?.lifecycleNote).toBe(NOTE);
+		expect(r.wakes[0]?.text).toContain(NOTE);
 		// The admission claim's warning survived to the run row and rode
 		// the first screenshot's diagnostics into the next request.
 		expect(
@@ -4313,6 +4428,27 @@ describe("subagents owner", () => {
 				JSON.stringify(s.messages).includes("previous files and lease state are gone"),
 			),
 		).toBe(true);
+	});
+
+	test("a recreation warning survives an immediate finish without being repeated by the model", async () => {
+		const r = rig();
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const claim = r.desktops.claim.bind(r.desktops);
+		const note = "desktop was recreated — previous files and processes were lost";
+		r.desktops.claim = async (name, holder) => ({ ...(await claim(name, holder)), note });
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "finished" } }] });
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(() => r.runs.get(a.id)?.status === "done", "done");
+		expect(r.runs.get(a.id)?.result).toBe("finished");
+		expect(r.runs.get(a.id)?.lifecycleNote).toBe(note);
+		expect(r.wakes[0]?.text).toContain(`Lifecycle warning: ${note}`);
 	});
 });
 
@@ -4360,6 +4496,96 @@ const TINY_PROFILE: SubagentModelProfile = subagentModelProfileSchema.parse({
 });
 
 describe("compaction through the owner", () => {
+	test("recovery exhaustion cancels threshold-triggered background compaction before releasing capacity", async () => {
+		const original = Harness.open;
+		let captured: Awaited<ReturnType<typeof Harness.open>> | undefined;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			captured = await original(...args);
+			return captured;
+		}) as typeof Harness.open;
+		const fault = armConversationFaults();
+		const compactionGate = Promise.withResolvers<void>();
+		const generationGate = Promise.withResolvers<void>();
+		try {
+			const model = startFakeModel();
+			servers.push(model);
+			const r = rig({
+				model,
+				maxRuns: 1,
+				configOverrides: { computer: haikuConfig("computer", model.url) },
+				modelProfiles: { computer: TINY_PROFILE },
+				harnessSettings: {
+					compaction: {
+						reserveTokens: 1000,
+						keepRecentTokens: 200,
+						backgroundTokens: 2000,
+					},
+				},
+			});
+			model.onRequest = (body) =>
+				JSON.stringify(body).includes("context summarization assistant")
+					? { kind: "hold", gate: compactionGate.promise }
+					: null;
+			const o = await open(r);
+			await r.desktops.allocate("d1");
+			model.push({
+				kind: "tools",
+				calls: [{ name: "inspect", args: {} }],
+				usage: { prompt_tokens: 1500, completion_tokens: 5, total_tokens: 1505 },
+			});
+			model.push({
+				kind: "tools",
+				calls: [{ name: "inspect", args: {} }],
+				usage: { prompt_tokens: 2000, completion_tokens: 5, total_tokens: 2005 },
+			});
+			model.push({ kind: "hold", gate: generationGate.promise });
+			const a = await o.start({
+				kind: "computer",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "inspect windows",
+				desktop: "d1",
+			});
+			await until(
+				() =>
+					model.seen.some((s) =>
+						JSON.stringify(s.messages).includes("context summarization assistant"),
+					) &&
+					model.seen.filter(
+						(s) => !JSON.stringify(s.messages).includes("context summarization assistant"),
+					).length === 3,
+				"background compaction and generation requests in flight",
+			);
+			const before = await captured!.inspect({} as Context);
+			expect(
+				before.tasks.some((task) => task.record.kind === "pi.compaction" && task.record.background),
+			).toBe(true);
+			fault.submitArmed = true;
+			await expect(o.send(a.id, WS, "cannot submit")).rejects.toThrow(
+				/stays persisted and retries/,
+			);
+			for (let i = 0; i < 10; i++) await o.scan();
+			expect(r.runs.get(a.id)?.status).toBe("failed");
+			const after = await captured!.inspect({} as Context);
+			expect(after.tasks).toHaveLength(0);
+			await until(() => !r.desktops.held.has("d1"), "desktop released after cancellation");
+			fault.submitArmed = false;
+			model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
+			const b = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "next",
+			});
+			await until(() => r.runs.get(b.id)?.status === "done", "global slot released");
+		} finally {
+			compactionGate.resolve();
+			generationGate.resolve();
+			fault.restore();
+			Harness.open = original;
+		}
+	}, 30_000);
+
 	test("reported overflow triggers summarization; compacted view keeps the tail and the run still finishes", async () => {
 		const model = startFakeModel();
 		servers.push(model);

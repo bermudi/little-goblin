@@ -19,7 +19,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, posix } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import {
 	createModels,
@@ -1596,34 +1596,47 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					// killing the run for it would burn the recovery ruling.
 					// The request still aborts (the lease is unverifiable),
 					// but a continuation intent persists at a fresh rev
-					// inside the lane: the aborted submission's settle reads
+					// before returning: the aborted submission's settle reads
 					// inputIntent and stays out, and the scan's bounded
 					// recovery re-drives the run. The consumed input's
 					// entry is already in the transcript, so the intent is
 					// a nudge to continue — replaying the task brief would
 					// inject a stale duplicate, and the aborted steer or
 					// answer text is not stored to replay.
-					await lane(row.id, async () => {
-						const cur = runs.get(row.id);
-						if (cur === null || cur.status !== "running" || cur.stopRequested) return;
-						// A persisted intent or a newer input already owns
-						// the next submission — the settle early-returns into
-						// it without another intent.
-						if (cur.inputIntent === null && cur.inputRev === bound.inputRev) {
-							runs.update(row.id, {
-								inputRev: cur.inputRev + 1,
-								inputIntent: RECOVERY_NUDGE,
-								inputMode: null,
-							});
-						}
-						recoveryPending.add(row.id);
-					});
 					log.warn(
 						"subagent desktop claim failed — the request aborts; the run stays owned for recovery",
 						err,
 						{ run: row.id, desktop: row.desktop },
 					);
-					abortPiTask(api);
+					try {
+						// Cancellation may hold the lane while joining this
+						// hook. Cancel only the waiter, not the lane operation;
+						// it must still serialize behind any provisional steer.
+						await awaitWithContext(
+							lane(row.id, async () => {
+								const cur = runs.get(row.id);
+								if (
+									context.abortSignal?.aborted ||
+									cur === null ||
+									cur.status !== "running" ||
+									cur.stopRequested
+								)
+									return;
+								if (cur.inputIntent === null && cur.inputRev === bound.inputRev) {
+									runs.update(row.id, {
+										inputRev: cur.inputRev + 1,
+										inputIntent: RECOVERY_NUDGE,
+										inputMode: null,
+									});
+								}
+								recoveryPending.add(row.id);
+							}),
+							context,
+						);
+					} finally {
+						// A failed intent write must also refuse the request.
+						abortPiTask(api);
+					}
 					return undefined;
 				}
 			}
@@ -1846,6 +1859,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// paths, export refusals and the final screenshot all live inside
 	// the event fence; only id/kind/status sit outside it.
 	function noticeBody(row: SubagentRun): string {
+		const body = noticeResult(row);
+		return row.lifecycleNote === null ? body : `${body}\nLifecycle warning: ${row.lifecycleNote}`;
+	}
+
+	function noticeResult(row: SubagentRun): string {
 		switch (row.status) {
 			case "needs_input":
 				return `Question: ${row.question ?? ""}`;
@@ -1948,7 +1966,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		try {
 			const conv = await harness.conversation(asConv(piConversationId), ctx);
 			if (conv === undefined) return true;
-			await conv.abort(ctx);
+			await conv.abort(ctx, { background: true });
 			await conv.waitForIdle(ctx);
 			return true;
 		} catch (err) {
@@ -2067,7 +2085,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					exportErrors: errors,
 					noticePending: true,
 					finishedAt: Date.now(),
-					lifecycleNote: null,
 				});
 				releaseLeases(done);
 				notify(done);

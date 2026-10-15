@@ -478,6 +478,7 @@ built once).
   persisted/retry wording. A `failed` transition is allowed only after
   Pi cancellation is confirmed — `harness.conversation()` lookup (a
   missing conversation is proof no work exists), then `conv.abort`
+  with `{ background: true }` (joining background compaction too)
   and `conv.waitForIdle`. A closed harness or a failed lookup, abort
   or idle-join keeps the row running and owned; cancellation failure
   is safety-critical, never permission to release. And a `stop` that
@@ -507,7 +508,9 @@ built once).
   the transcript, so the intent is a goblin-voiced nudge, not a
   replayed operator message. The monitor's `inputIntent` preemption
   hands the run to the same bounded recovery budget instead of
-  terminal-failing on one podman blip.
+  terminal-failing on one podman blip. The hook's run-lane wait is
+  cancellation-aware: cancellation can hold the lane while joining
+  the hook, without deadlocking or bypassing provisional steer writes.
 - **Shutdown never delivers a retryable notice.** Wakes check runtime
   admission before history submission; the owner fences notices when
   closing begins. A stop completing during close retains `noticePending`
@@ -526,7 +529,9 @@ built once).
   before proceeding (respecting `stopRequested`), never onto the
   desktop row. The note reaches the operator through the run's
   diagnostic/final notice so the first screenshot after a recreate
-  discloses the lost contents and lease.
+  discloses the lost contents and lease. Settlement retains the note;
+  completion notices and native status/list output include it inside
+  the event fence even when the child model does not repeat it.
 - **A truncated screenshot is no screenshot.** A screenshot readback
   whose process result carries `truncated` or `outputCapped` is
   rejected before any durable write or observation mint — exit 0 and

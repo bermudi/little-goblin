@@ -95,11 +95,28 @@ export function inline(text: string): ReactNode[] {
 	return out;
 }
 
+// A fence longer than this clips to CLIP_LINES plus a show-all tail
+// (opt-in via clipFences — operator messages carry pastes that would
+// otherwise own the transcript).
+const CLIP_MIN = 20;
+const CLIP_LINES = 15;
+
 // Fenced block → a card: mono language label, copy button, then the
 // code with syntax coloring. An unknown language falls back to plain
 // text — a model's made-up fence tag must never blank the code.
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
+function CodeBlock({
+	lang,
+	code,
+	clip,
+}: {
+	lang: string;
+	code: string;
+	clip?: boolean | undefined;
+}) {
 	const { copied, failed, copy } = useCopy();
+	const [open, setOpen] = useState(false);
+	const lines = code.split("\n").length;
+	const clipped = clip === true && lines > CLIP_MIN;
 	// highlight() throws on a grammar bug or unregistered language —
 	// hljs escapes markup in its output, so the value is safe HTML.
 	const html = useMemo(() => {
@@ -127,13 +144,37 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
 					{copied ? "✓" : failed ? "copy failed" : "copy"}
 				</button>
 			</div>
-			<pre>
-				{html === null ? (
-					<code>{code}</code>
-				) : (
-					<code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
-				)}
-			</pre>
+			<div className="codeblock-body">
+				{/* The cap is a visual clip, not a cut — the pre always holds the
+				    full code so copy and select-all stay honest. max-height
+				    rides inline so the line count lives in CLIP_LINES, not a
+				    second constant in styles.css. */}
+				<pre
+					className={clipped && !open ? "clip" : undefined}
+					style={
+						clipped && !open
+							? { maxHeight: `calc(${CLIP_LINES} * 1.5em + 0.75rem)` }
+							: undefined
+					}
+				>
+					{html === null ? (
+						<code>{code}</code>
+					) : (
+						<code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
+					)}
+				</pre>
+				{clipped && !open && <div className="codeblock-fade" />}
+			</div>
+			{clipped && (
+				<button
+					type="button"
+					className="codeblock-more"
+					aria-expanded={open}
+					onClick={() => setOpen((o) => !o)}
+				>
+					{open ? "show less" : `show all ${lines} lines`}
+				</button>
+			)}
 		</div>
 	);
 }
@@ -171,6 +212,7 @@ function NoteAppendCard({
 	onOpenNote,
 	unfinished,
 	streaming,
+	clipFences,
 }: {
 	title: string | null;
 	body: string;
@@ -185,6 +227,7 @@ function NoteAppendCard({
 	unfinished?: boolean | undefined;
 	// The message this card lives in is still arriving.
 	streaming?: boolean | undefined;
+	clipFences?: boolean | undefined;
 }) {
 	const [open, setOpen] = useState(false);
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
@@ -264,6 +307,7 @@ function NoteAppendCard({
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
 					streaming={streaming}
+					clipFences={clipFences}
 				/>
 			</div>
 			{unfinished === true && streaming === true ? null : status === "done" ? (
@@ -338,8 +382,11 @@ export function Markdown({
 	noteProjectId,
 	onOpenNote,
 	streaming,
+	clipFences,
 }: {
 	text: string;
+	// Host opt-in: long fences clip to a preview with a show-all tail.
+	clipFences?: boolean | undefined;
 } & MarkdownNoteContext) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
@@ -393,12 +440,13 @@ export function Markdown({
 							onOpenNote={onOpenNote}
 							unfinished={!closed}
 							streaming={streaming}
+							clipFences={clipFences}
 						/>,
 					);
 					continue;
 				}
 			}
-			blocks.push(<CodeBlock key={key++} lang={info} code={body} />);
+			blocks.push(<CodeBlock key={key++} lang={info} code={body} clip={clipFences} />);
 			continue;
 		}
 
@@ -442,6 +490,7 @@ export function Markdown({
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
 						streaming={streaming}
+						clipFences={clipFences}
 					/>
 				</blockquote>,
 			);

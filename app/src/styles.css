@@ -945,6 +945,42 @@ h6.md-h {
 	margin: 0;
 	background: none;
 }
+/* Long operator-pasted fences clip to a preview (markdown.tsx CLIP_*):
+   pre.overflow-x computes overflow-y to auto, so the clip must pin
+   overflow hidden outright; the fade sells the cut and the footer
+   expands it. */
+.codeblock-body {
+	position: relative;
+}
+.codeblock pre.clip {
+	overflow: hidden;
+}
+.codeblock-fade {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 3em;
+	pointer-events: none;
+	background: linear-gradient(
+		to bottom,
+		transparent,
+		color-mix(in oklab, var(--app-fg) 3%, transparent)
+	);
+}
+.codeblock-more {
+	display: block;
+	width: 100%;
+	padding: 0.25rem 0;
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	border-top: 1px solid color-mix(in oklab, var(--app-fg) 6%, transparent);
+	transition: background-color 100ms;
+}
+.codeblock-more:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
 
 /* ---------- reasoning + worked rows ---------- */
 

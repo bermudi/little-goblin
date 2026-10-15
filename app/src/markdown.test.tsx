@@ -104,4 +104,29 @@ describe("Markdown", () => {
 		expect(html).toContain("inner code");
 		expect(html).toContain("tail of note");
 	});
+
+	test("clipFences caps a fence over 20 lines with a show-all tail", () => {
+		const body = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+		const html = renderToStaticMarkup(<Markdown text={`\`\`\`text\n${body}\n\`\`\``} clipFences />);
+		expect(html).toContain('class="clip"');
+		expect(html).toContain("max-height");
+		expect(html).toContain("codeblock-fade");
+		expect(html).toContain("show all 30 lines");
+		// The clip is visual — the pre still carries every line.
+		expect(html).toContain("line 30");
+	});
+
+	test("clipFences leaves fences at the threshold whole", () => {
+		const body = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n");
+		const html = renderToStaticMarkup(<Markdown text={`\`\`\`\n${body}\n\`\`\``} clipFences />);
+		expect(html).not.toContain("codeblock-more");
+		expect(html).not.toContain('class="clip"');
+	});
+
+	test("a long fence stays whole without clipFences — model output is untouched", () => {
+		const body = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+		const html = renderToStaticMarkup(<Markdown text={`\`\`\`text\n${body}\n\`\`\``} />);
+		expect(html).not.toContain("codeblock-more");
+		expect(html).not.toContain('class="clip"');
+	});
 });

@@ -596,3 +596,81 @@ describe("MessageParts note-fence affordance (happy-dom)", () => {
 		expect(container.querySelector(".note-card-append")).not.toBeNull();
 	});
 });
+
+// Operator-sent fences over 20 lines clip to a preview with a
+// show-all tail — the user branch sets clipFences; model output
+// renders whole. The toggle itself lives in markdown.tsx's CodeBlock.
+describe("MessageParts fence clipping (happy-dom)", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("Event", win.Event);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const parts: UIMessage["parts"] = [
+		{
+			type: "text",
+			text: `\`\`\`text\n${Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n")}\n\`\`\``,
+		},
+	];
+	const click = async (el: Element) => {
+		await act(async () => {
+			el.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+	};
+
+	test("a clipped fence expands on demand and clips again", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} clipFences />);
+		});
+		const pre = container.querySelector("pre")!;
+		const more = container.querySelector(".codeblock-more")!;
+		expect(pre.classList.contains("clip")).toBe(true);
+		expect(more.textContent).toBe("show all 30 lines");
+		await click(more);
+		expect(pre.classList.contains("clip")).toBe(false);
+		expect(more.textContent).toBe("show less");
+		await click(more);
+		expect(pre.classList.contains("clip")).toBe(true);
+	});
+
+	test("the same fence renders whole without clipFences", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} />);
+		});
+		expect(container.querySelector(".codeblock-more")).toBeNull();
+		expect(container.querySelector("pre")!.classList.contains("clip")).toBe(false);
+	});
+});

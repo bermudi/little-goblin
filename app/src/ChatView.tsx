@@ -236,6 +236,7 @@ export function MessageParts({
 	noteProjectId,
 	onAction,
 	onOpenNote,
+	clipFences,
 	busy,
 	streaming,
 	messages,
@@ -249,6 +250,9 @@ export function MessageParts({
 	onAction?: ((text: string) => void) | undefined;
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
+	// Operator messages: long pasted fences clip to a preview. Model
+	// output renders whole — its fences are the answer, not clutter.
+	clipFences?: boolean | undefined;
 	busy?: boolean | undefined;
 	// This message is still arriving; older cards stay actionable during later turns.
 	streaming?: boolean | undefined;
@@ -300,6 +304,7 @@ export function MessageParts({
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
 					streaming={streaming}
+					clipFences={clipFences}
 				/>,
 			);
 		// Empty reasoning parts exist in history — providers that seal
@@ -1638,6 +1643,7 @@ function Chat({
 										token={token}
 										noteProjectId={noteProjectId}
 										onOpenNote={onOpenNote}
+										clipFences
 									/>
 								</div>
 							);

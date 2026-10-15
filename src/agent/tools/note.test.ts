@@ -4,17 +4,16 @@
 // comes back as tool output — never a thrown turn. The guest filter
 // test pins that `note` never mounts on a guest turn.
 
-import { openStore, useHome } from "../../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
-
 import { join } from "node:path";
 import { z } from "zod";
 import { setLogFile } from "../../log.ts";
 import { noteFence, openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";
+import { openStore, useHome } from "../../testkit.ts";
 import { GUEST_CHANNEL_EXCLUDED, SANDBOX_TOOLS } from "../../tg/guest.ts";
-import { noteInputSchema, noteTool, type NoteToolDeps } from "./note.ts";
+import { type NoteToolDeps, noteInputSchema, noteTool } from "./note.ts";
 
 setLogFile("/dev/null");
 
@@ -44,19 +43,28 @@ describe("note tool input schema", () => {
 			type: "string",
 			enum: ["list", "read", "create", "append", "replace", "replace_range"],
 		});
-		expect(noteInputSchema.safeParse({}).success).toBe(false);
-		expect(noteInputSchema.safeParse({ action: "read" }).success).toBe(false);
-		expect(noteInputSchema.safeParse({ action: "read", id: "n1" }).success).toBe(true);
-		expect(
-			noteInputSchema.safeParse({
+	});
+
+	test.each([
+		["requires an action", {}, false],
+		["read requires an id", { action: "read" }, false],
+		["read accepts an id", { action: "read", id: "n1" }, true],
+		[
+			"replace_range accepts a non-empty edit list",
+			{
 				action: "replace_range",
 				id: "n1",
 				edits: [{ start: 0, end: 1, expected: "a", text: "b" }],
-			}).success,
-		).toBe(true);
-		expect(
-			noteInputSchema.safeParse({ action: "replace_range", id: "n1", edits: [] }).success,
-		).toBe(false);
+			},
+			true,
+		],
+		[
+			"replace_range rejects an empty edit list",
+			{ action: "replace_range", id: "n1", edits: [] },
+			false,
+		],
+	] as const)("input schema %s", (_name, input, accepted) => {
+		expect(noteInputSchema.safeParse(input).success).toBe(accepted);
 	});
 });
 

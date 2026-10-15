@@ -54,11 +54,13 @@ describe("speak", () => {
 });
 
 describe("speak input rule", () => {
-	test("input is exactly one of text or path", () => {
-		expect(speakInputSchema().safeParse({ text: "hi" }).success).toBe(true);
-		expect(speakInputSchema().safeParse({ path: "note.md" }).success).toBe(true);
-		expect(speakInputSchema().safeParse({ text: "hi", path: "note.md" }).success).toBe(false);
-		expect(speakInputSchema().safeParse({}).success).toBe(false);
+	test.each([
+		["text input", { text: "hi" }, true],
+		["path input", { path: "note.md" }, true],
+		["text and path together", { text: "hi", path: "note.md" }, false],
+		["neither text nor path", {}, false],
+	] as const)("input schema: %s", (_name, input, accepted) => {
+		expect(speakInputSchema().safeParse(input).success).toBe(accepted);
 	});
 });
 
@@ -98,15 +100,19 @@ describe("speak voice choice", () => {
 		expect(calls).toEqual([{ text: "hi", voice: undefined }]);
 	});
 
-	test("a voice outside the allowlist fails schema validation", () => {
-		const parsed = speakInputSchema(allow).safeParse({ text: "hola", voice: "es-MX-DaliaNeural" });
-		expect(parsed.success).toBe(false);
-	});
-
-	test("a voice without configured alternates fails schema validation", () => {
-		expect(speakInputSchema().safeParse({ text: "hi", voice: "es-ES-ElviraNeural" }).success).toBe(
-			false,
-		);
+	test.each([
+		[
+			"outside the allowlist",
+			speakInputSchema(allow),
+			{ text: "hola", voice: "es-MX-DaliaNeural" },
+		],
+		[
+			"without configured alternates",
+			speakInputSchema(),
+			{ text: "hi", voice: "es-ES-ElviraNeural" },
+		],
+	] as const)("a voice %s fails schema validation", (_name, schema, input) => {
+		expect(schema.safeParse(input).success).toBe(false);
 	});
 
 	test("the description offers the configured voices, and stays bare without them", () => {

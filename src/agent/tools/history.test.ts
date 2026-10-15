@@ -1,10 +1,9 @@
-import { openStore, tmpdb } from "../../testkit.ts";
 import { describe, expect, test } from "bun:test";
-
 import { join } from "node:path";
 import type { UIMessage } from "ai";
-import { type ConversationStore } from "../../conversation.ts";
 import { z } from "zod";
+import { type ConversationStore } from "../../conversation.ts";
+import { openStore, tmpdb } from "../../testkit.ts";
 import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
 
 const exec = (t: ReturnType<typeof historySearchTool>, input: unknown) =>
@@ -23,20 +22,25 @@ const msg = (text: string): UIMessage => ({
 });
 
 describe("history_search tool", () => {
-	test("provider sees an object schema; missing action arguments still fail validation", () => {
+	test("provider sees an object schema with an action discriminator", () => {
 		const wire = z.toJSONSchema(historyInputSchema);
 		expect(wire.type).toBe("object");
 		expect(wire.properties?.action).toEqual({ type: "string", enum: ["search", "context"] });
 		expect(wire.required).toContain("action");
-		expect(historyInputSchema.safeParse({}).success).toBe(false);
-		expect(historyInputSchema.safeParse({ action: "search" }).success).toBe(false);
-		expect(historyInputSchema.safeParse({ action: "search", query: "x" }).success).toBe(true);
-		expect(historyInputSchema.safeParse({ action: "context", conversation: "c" }).success).toBe(
-			false,
-		);
-		expect(
-			historyInputSchema.safeParse({ action: "context", conversation: "c", seq: 1 }).success,
-		).toBe(true);
+	});
+
+	test.each([
+		["requires an action", {}, false],
+		["search requires a query", { action: "search" }, false],
+		["search accepts a query", { action: "search", query: "x" }, true],
+		["context requires a sequence", { action: "context", conversation: "c" }, false],
+		[
+			"context accepts a conversation and sequence",
+			{ action: "context", conversation: "c", seq: 1 },
+			true,
+		],
+	] as const)("input schema %s", (_name, input, accepted) => {
+		expect(historyInputSchema.safeParse(input).success).toBe(accepted);
 	});
 	test("search returns addressable hits with a paging footer", async () => {
 		const store = openStore(tmpdb());

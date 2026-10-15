@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTools } from "./mod.ts";
-import { sendFileInputSchema, sendFileTool, DeliveryUncertainError } from "./send.ts";
 import type { OutgoingFile } from "./send.ts";
+import { DeliveryUncertainError, sendFileInputSchema, sendFileTool } from "./send.ts";
 
 const dirs: string[] = [];
 const opts = { toolCallId: "t1", messages: [], context: {} };
@@ -97,12 +97,12 @@ describe("send_file", () => {
 });
 
 describe("send_file input rule", () => {
-	test("caption is optional and capped at 1024 chars", () => {
-		expect(sendFileInputSchema.safeParse({ path: "a.txt" }).success).toBe(true);
-		expect(sendFileInputSchema.safeParse({ path: "a.txt", caption: "hi" }).success).toBe(true);
-		expect(
-			sendFileInputSchema.safeParse({ path: "a.txt", caption: "x".repeat(1025) }).success,
-		).toBe(false);
-		expect(sendFileInputSchema.safeParse({}).success).toBe(false);
+	test.each([
+		["path with omitted caption", { path: "a.txt" }, true],
+		["path and caption", { path: "a.txt", caption: "hi" }, true],
+		["caption over 1024 characters", { path: "a.txt", caption: "x".repeat(1025) }, false],
+		["missing path", {}, false],
+	] as const)("input schema %s", (_name, input, accepted) => {
+		expect(sendFileInputSchema.safeParse(input).success).toBe(accepted);
 	});
 });

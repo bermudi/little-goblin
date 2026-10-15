@@ -9,11 +9,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDelegations, type DelegationsStore } from "../../delegations.ts";
-import { startDelegationLifecycle, type DelegationLifecycle } from "../../delegation-lifecycle.ts";
-import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
 import { z } from "zod";
-import { delegateInputSchema, delegateTool, type DelegateToolDeps } from "./delegate.ts";
+import { type DelegationLifecycle, startDelegationLifecycle } from "../../delegation-lifecycle.ts";
+import { type DelegationsStore, openDelegations } from "../../delegations.ts";
+import { type AgentInfo, type Herdr, HerdrError } from "../../herdr.ts";
+import { type DelegateToolDeps, delegateInputSchema, delegateTool } from "./delegate.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -149,7 +149,7 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
-	test("provider sees an object schema; missing action arguments still fail validation", () => {
+	test("provider sees an object schema with the documented actions", () => {
 		const wire = z.toJSONSchema(delegateInputSchema);
 		expect(wire.type).toBe("object");
 		expect(wire.properties?.action).toEqual({
@@ -157,22 +157,25 @@ describe("delegate tool", () => {
 			enum: ["start", "list", "read", "send", "answer", "stop"],
 		});
 		expect(wire.required).toContain("action");
-		expect(delegateInputSchema.safeParse({}).success).toBe(false);
-		expect(delegateInputSchema.safeParse({ action: "start" }).success).toBe(false);
-		expect(
-			delegateInputSchema.safeParse({ action: "start", harness: "codex", task: "do it" }).success,
-		).toBe(true);
-		expect(delegateInputSchema.safeParse({ action: "read", id: 1 }).success).toBe(true);
-		expect(delegateInputSchema.safeParse({ action: "send", id: 1 }).success).toBe(false);
-		// 'answer' takes a whitelisted key — free-text keystroke input is
-		// not a thing this tool does.
-		expect(delegateInputSchema.safeParse({ action: "answer", id: 1 }).success).toBe(false);
-		expect(delegateInputSchema.safeParse({ action: "answer", id: 1, key: "enter" }).success).toBe(
+	});
+
+	// Answer accepts only a whitelisted key — free-text keystroke input is
+	// not a thing this tool does.
+	test.each([
+		["requires an action", {}, false],
+		["start requires its arguments", { action: "start" }, false],
+		[
+			"start accepts a harness and task",
+			{ action: "start", harness: "codex", task: "do it" },
 			true,
-		);
-		expect(
-			delegateInputSchema.safeParse({ action: "answer", id: 1, key: "rm -rf /" }).success,
-		).toBe(false);
+		],
+		["read accepts an id", { action: "read", id: 1 }, true],
+		["send requires text", { action: "send", id: 1 }, false],
+		["answer requires a key", { action: "answer", id: 1 }, false],
+		["answer accepts a whitelisted key", { action: "answer", id: 1, key: "enter" }, true],
+		["answer rejects free-text keystrokes", { action: "answer", id: 1, key: "rm -rf /" }, false],
+	] as const)("input schema %s", (_name, input, accepted) => {
+		expect(delegateInputSchema.safeParse(input).success).toBe(accepted);
 	});
 	test("the wire schema preserves 'on' — a parsed start still resolves its target", async () => {
 		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();

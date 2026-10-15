@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { mailInputSchema, mailTool, type MailDraftInput, type MailToolDeps } from "./mail.ts";
+import { type MailDraftInput, type MailToolDeps, mailInputSchema, mailTool } from "./mail.ts";
 
 // The gate's request closure is a passthrough unless a test overrides
 // it — send-path behavior lives in the gate's tests.
@@ -27,39 +27,33 @@ describe("mail tool", () => {
 		expect(wire.type).toBe("object");
 		expect(wire.properties?.action).toEqual({ type: "string", const: "send" });
 		expect(wire.required).toContain("action");
-		expect(mailInputSchema.safeParse({}).success).toBe(false);
-		expect(mailInputSchema.safeParse({ action: "send", body: "hello" }).success).toBe(false);
-		expect(
-			mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello" }).success,
-		).toBe(true);
-		// No read surface: search/read actions are rejected at the schema.
-		expect(mailInputSchema.safeParse({ action: "search", q: "in:inbox" }).success).toBe(false);
-		expect(mailInputSchema.safeParse({ action: "read", id: "m1" }).success).toBe(false);
+	});
+
+	test.each([
+		["requires an action", {}, false],
+		["send requires a recipient", { action: "send", body: "hello" }, false],
+		["send accepts recipient and body", { action: "send", to: ["a@x.com"], body: "hello" }, true],
+		["does not expose search", { action: "search", q: "in:inbox" }, false],
+		["does not expose read", { action: "read", id: "m1" }, false],
+	] as const)("input schema %s", (_name, input, accepted) => {
+		expect(mailInputSchema.safeParse(input).success).toBe(accepted);
 	});
 
 	// Header injection is closed at the schema, not by encodeSubject's
-	// accident (CR/LF happens to force the encoded-word branch) — the
-	// raw text must never reach the approval draft or the wire (#103).
-	test("a subject containing CR/LF fails validation at the boundary", () => {
-		for (const subject of ["hi\r\nBcc: x@evil.com", "hi\rBcc: x@evil.com", "hi\nBcc: x@evil.com"]) {
-			expect(
-				mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello", subject })
-					.success,
-			).toBe(false);
-		}
-		// The remaining legal inputs still pass: plain and non-ASCII text.
+	// accidental encoded-word branch — raw text must never reach the
+	// approval draft or the wire (#103).
+	test.each([
+		["CRLF injection", "hi\r\nBcc: x@evil.com", false],
+		["CR injection", "hi\rBcc: x@evil.com", false],
+		["LF injection", "hi\nBcc: x@evil.com", false],
+		["plain text", "hi", true],
+		["non-ASCII text", "Hellóz ☕", true],
+	] as const)("subject boundary: %s", (_name, subject, accepted) => {
+		// Legal plain and Unicode subjects remain valid.
 		expect(
-			mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello", subject: "hi" })
+			mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello", subject })
 				.success,
-		).toBe(true);
-		expect(
-			mailInputSchema.safeParse({
-				action: "send",
-				to: ["a@x.com"],
-				body: "hello",
-				subject: "Hellóz ☕",
-			}).success,
-		).toBe(true);
+		).toBe(accepted);
 	});
 
 	test("the description routes reads to the goblin-mail wrapper", () => {

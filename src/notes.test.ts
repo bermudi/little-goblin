@@ -3,13 +3,13 @@
 // coalescing, expected-rev conflicts, range-edit refusals that write
 // nothing, FTS freshness, and flag writes that bump nothing.
 
-import { useHome } from "./testkit.ts";
+import { openStore, useHome } from "./testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 
 import { join } from "node:path";
 import { setLogFile } from "./log.ts";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import { type ConversationStore } from "./conversation.ts";
 import {
 	NoteConflictError,
 	NoteInputError,

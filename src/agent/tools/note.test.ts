@@ -4,13 +4,12 @@
 // comes back as tool output — never a thrown turn. The guest filter
 // test pins that `note` never mounts on a guest turn.
 
-import { useHome } from "../../testkit.ts";
+import { openStore, useHome } from "../../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 
 import { join } from "node:path";
 import { z } from "zod";
-import { openStore } from "../../conversation.ts";
 import { setLogFile } from "../../log.ts";
 import { noteFence, openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";

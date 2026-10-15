@@ -1,10 +1,9 @@
-import { tmpdb } from "./testkit.ts";
+import { openStore, tmpdb } from "./testkit.ts";
 import { describe, expect, test } from "bun:test";
 
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import { openStore } from "./conversation.ts";
 import { System1Client, System1Error, FALLBACK_MODEL, type System1Question } from "./system1.ts";
 import {
 	FRESH_BELOW,

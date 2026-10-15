@@ -1,11 +1,10 @@
 // The tap record: round-trip through the real store, append-only with
 // latest-wins reads — including across a reopened handle (a restart).
 
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 
 import { join } from "node:path";
-import { openStore } from "../conversation.ts";
 import { openRatings } from "./ratings.ts";
 
 describe("reply ratings", () => {

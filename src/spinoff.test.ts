@@ -4,11 +4,10 @@
 // through the shared titler — still implicit so an operator rename
 // always wins.
 
-import { tmpdb } from "./testkit.ts";
+import { openStore, tmpdb } from "./testkit.ts";
 import { describe, expect, test } from "bun:test";
 
 import { join } from "node:path";
-import { openStore } from "./conversation.ts";
 import { discardSpinOff, launchPin, spinOff, type SpinOffDeps } from "./spinoff.ts";
 
 describe("spinOff", () => {

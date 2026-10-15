@@ -1,10 +1,10 @@
-import { useHome } from "./testkit.ts";
+import { openStore, useHome } from "./testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "./config.ts";
-import { appAddress, type ConversationStore, openStore } from "./conversation.ts";
+import { appAddress, type ConversationStore } from "./conversation.ts";
 import {
 	openProjects,
 	ProjectInputError,

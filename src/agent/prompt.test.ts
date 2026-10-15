@@ -3,14 +3,14 @@
 // prompt varies turn-to-turn on its own. A test failing here usually means
 // someone added a clock, counter, or random value to the prompt.
 
-import { useHome } from "../testkit.ts";
+import { openStore, useHome } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 import { paths } from "../config.ts";
 import { setLogFile } from "../log.ts";
-import { openStore, type Conversation } from "../conversation.ts";
+import { type Conversation } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
 
 const conv: Conversation = {

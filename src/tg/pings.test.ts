@@ -4,11 +4,11 @@
 // store.get(hit) !== null and falls through to ordinary DM routing),
 // so it is deleted opportunistically on the next record (#110).
 
+import { openStore } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore } from "../conversation.ts";
 import { openPings } from "./pings.ts";
 
 describe("ping map", () => {

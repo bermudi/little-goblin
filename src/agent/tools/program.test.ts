@@ -3,11 +3,11 @@
 // model never passes chat ids), and every action round-trips through
 // the store the scheduler reads.
 
+import { openStore } from "../../testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore } from "../../conversation.ts";
 import { z } from "zod";
 import { hookTokenHash, makePrivateSender, programInputSchema, programTool } from "./program.ts";
 import { openPrograms } from "../../programs.ts";

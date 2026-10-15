@@ -1,9 +1,8 @@
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 
 import { join } from "node:path";
-import { openStore } from "../conversation.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 function fakeApi(calls: unknown[]): Pick<Api, "editForumTopic"> {

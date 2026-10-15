@@ -1,4 +1,4 @@
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
 import { memoryConfigSchema, type Config } from "../config.ts";
@@ -164,7 +164,7 @@ import type { Message } from "grammy/types";
 import type { UIMessage } from "ai";
 
 import { join } from "node:path";
-import { openStore, type ConversationStore } from "../conversation.ts";
+import { type ConversationStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";

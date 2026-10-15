@@ -7,14 +7,13 @@
 // The update shape is per @grammyjs/types 5.0.0 (MessageGenerationStopped),
 // not yet observed on a live wire — label any claim about the wire unverified.
 
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
 
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { parseConfig, type Config, type ConfigRef } from "../config.ts";
-import { openStore } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
 import { createBot, type BotDeps, type RunningBot } from "./mod.ts";

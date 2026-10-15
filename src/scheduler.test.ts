@@ -1,3 +1,4 @@
+import { openStore } from "./testkit.ts";
 import { makeWakeDelivery } from "./tg/wake.ts";
 // The firing owner's boundary contract: a due program becomes a
 // submitted user turn in its pinned conversation, marked ran; a
@@ -12,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
-import { openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 import { openPrograms } from "./programs.ts";

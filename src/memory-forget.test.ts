@@ -6,12 +6,13 @@
 // UUID is durable from enqueue, so forget must reconcile every in-flight
 // UUID — pending rows included — before cancelling tracking or reporting
 // success (#86; the same window as #99's crash-between-accept-and-write).
+import { openStore } from "./testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "./auth.ts";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import { type ConversationStore } from "./conversation.ts";
 import { HindsightClient, type MemoryDocument, type MemoryOperation } from "./hindsight.ts";
 import { buildDestinationClient } from "./memory.ts";
 import { forgetDocument, type ForgetSource, type HindsightInstance } from "./memory-forget.ts";

@@ -3,11 +3,11 @@
 // always agree), auth key names update in place, unknown targets read
 // as null, and a corrupted row fails loud rather than silently
 // degrading into forget refusals.
+import { openStore } from "./testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore } from "./conversation.ts";
 import { HindsightClient, hindsightTarget } from "./hindsight.ts";
 import { buildDestinationClient } from "./memory.ts";
 

@@ -1,10 +1,11 @@
+import { openStore } from "./testkit.ts";
 import { makeWakeDelivery } from "./tg/wake.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
-import { openStore, type Conversation } from "./conversation.ts";
+import { type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";

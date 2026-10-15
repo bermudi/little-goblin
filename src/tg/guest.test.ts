@@ -4,17 +4,12 @@
 // (persona-driven), dedup, and the placeholder-then-edit delivery
 // shape — Telegram faked at the api edge like every other tg test.
 
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, spyOn, test } from "bun:test";
 
 import { join } from "node:path";
 
-import {
-	guestAddress,
-	openStore,
-	type Conversation,
-	type ConversationStore,
-} from "../conversation.ts";
+import { guestAddress, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";

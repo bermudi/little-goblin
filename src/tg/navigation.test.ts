@@ -1,8 +1,9 @@
+import { openStore } from "../testkit.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type ConversationStore } from "../conversation.ts";
+import { type ConversationStore } from "../conversation.ts";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "../runtime.ts";
 import { openTelegramInbox } from "./inbox.ts";

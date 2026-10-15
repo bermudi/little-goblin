@@ -1,3 +1,4 @@
+import { openStore } from "./testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
@@ -14,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import { type ConversationStore } from "./conversation.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import {

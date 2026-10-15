@@ -1,3 +1,4 @@
+import { openStore } from "./testkit.ts";
 import { makeWakeDelivery } from "./tg/wake.ts";
 // The mail watcher's contract: new filters baseline without firing,
 // one tick's matches become one turn, the checkpoint follows fired
@@ -20,7 +21,6 @@ import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
 import { fireMail, type SchedulerDeps } from "./scheduler.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
-import { openStore } from "./conversation.ts";
 import type { Runtime, TurnSink } from "./runtime.ts";
 import type { Config } from "./config.ts";
 

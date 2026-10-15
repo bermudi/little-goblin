@@ -1,4 +1,4 @@
-import { useHome } from "../testkit.ts";
+import { openStore, useHome } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,8 +11,7 @@ import { startHttp, type HttpDeps } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
-import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
-
+import { appAddress, prepareAppSettingsForConfig } from "../conversation.ts";
 const TOKEN = "test-bot-token";
 
 function makeInitData(fields: Record<string, string>): string {

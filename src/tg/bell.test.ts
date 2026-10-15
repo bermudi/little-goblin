@@ -7,11 +7,11 @@
 // bells its turn carried. Fenced turns are silent; one wedged send
 // never silences the rest. Fake Telegram API at the edge, real store.
 
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, test } from "bun:test";
 
 import { join } from "node:path";
-import { openStore, type ConversationStore } from "../conversation.ts";
+import { type ConversationStore } from "../conversation.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import { openPings } from "./pings.ts";
 import { makeBellSink, type BellDeps } from "./bell.ts";

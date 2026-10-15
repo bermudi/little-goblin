@@ -1,9 +1,9 @@
-import { tmpdb } from "../../testkit.ts";
+import { openStore, tmpdb } from "../../testkit.ts";
 import { describe, expect, test } from "bun:test";
 
 import { join } from "node:path";
 import type { UIMessage } from "ai";
-import { openStore, type ConversationStore } from "../../conversation.ts";
+import { type ConversationStore } from "../../conversation.ts";
 import { z } from "zod";
 import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
 

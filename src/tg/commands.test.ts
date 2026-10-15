@@ -1,10 +1,9 @@
-import { tmpdb } from "../testkit.ts";
+import { openStore, tmpdb } from "../testkit.ts";
 import { describe, expect, jest, spyOn, test } from "bun:test";
 
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { memoryConfigSchema, type Config } from "../config.ts";
-import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
 import { startMemoryWorker } from "../memory.ts";
 import type { Runtime } from "../runtime.ts";

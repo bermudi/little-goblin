@@ -24,6 +24,7 @@ import {
 	runHealth,
 	type HealthReport,
 } from "./health.ts";
+import { waitUntil } from "./testkit.ts";
 
 const roots: string[] = [];
 const savedPath = process.env.PATH;
@@ -93,7 +94,7 @@ function installLayout(home: string) {
 }
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function waitFile(path: string) {
-	for (let i = 0; i < 200 && !existsSync(path); i++) await sleep(5);
+	await waitUntil(() => existsSync(path), "health fixture file lands", 2_000);
 	expect(existsSync(path)).toBe(true);
 }
 function running(pid: number): boolean {

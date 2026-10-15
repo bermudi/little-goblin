@@ -28,7 +28,7 @@ import {
 	type ReviewerDeps,
 	type ToolCallDigest,
 } from "./reviewer.ts";
-import { tmpDir } from "./testkit.ts";
+import { tmpDir, waitUntil } from "./testkit.ts";
 
 afterEach(() => {
 	setLogFile(null);
@@ -1105,7 +1105,7 @@ describe("review queue", () => {
 		const reviewer = new Reviewer(deps);
 		const p1 = reviewer.considerTurn(turn());
 		const p2 = reviewer.considerTurn(turn({ turnSeq: 2 }));
-		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
+		await waitUntil(() => parked, "review parks");
 		expect(parked).toBe(true);
 		await Bun.sleep(20);
 		expect(events).toEqual(["review 1 started"]);
@@ -1158,7 +1158,7 @@ describe("review queue", () => {
 			reviewer.considerTurn(turn({ turnSeq: 3 })),
 			reviewer.considerTurn(turn({ turnSeq: 4 })),
 		];
-		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
+		await waitUntil(() => parked, "review parks");
 		const dropped = readFileSync(logFile, "utf8")
 			.trim()
 			.split("\n")
@@ -1405,7 +1405,7 @@ describe("/stop cancellation", () => {
 		const reviewer = new Reviewer(deps);
 		const pending = reviewer.considerTurn(turn());
 		try {
-			for (let i = 0; i < 2000 && !existsSync(started); i++) await Bun.sleep(1);
+			await waitUntil(() => existsSync(started), "gate starts", 2_000);
 			// Await the marker rather than a timer: the validator has started.
 			expect(existsSync(started)).toBe(true);
 			expect(reviewer.cancelReviews(h.convId)).toBe(1);
@@ -1436,7 +1436,7 @@ describe("/stop cancellation", () => {
 		};
 		const reviewer = new Reviewer(deps);
 		const pending = reviewer.considerTurn(turn());
-		for (let i = 0; i < 500 && !resolving; i++) await Bun.sleep(1);
+		await waitUntil(() => resolving, "resolution starts");
 		expect(resolving).toBe(true);
 		expect(reviewer.cancelReviews(h.convId)).toBe(1);
 		release();
@@ -1488,7 +1488,7 @@ describe("/stop cancellation", () => {
 		};
 		const reviewer = new Reviewer(deps);
 		const p1 = reviewer.considerTurn(turn({ turnSeq: 1 }));
-		for (let i = 0; i < 500 && resolves < 1; i++) await Bun.sleep(1);
+		await waitUntil(() => resolves >= 1, "resolution lands");
 		await Bun.sleep(20); // review 1 in-flight at its write step
 		const p2 = reviewer.considerTurn(turn({ turnSeq: 2 }));
 		await Bun.sleep(20); // review 2 queued behind the parked one

@@ -19,7 +19,7 @@ import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { setLogFile } from "../log.ts";
-import { fakeModel, sleep, useHome } from "../testkit.ts";
+import { fakeModel, sleep, useHome, waitUntil } from "../testkit.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
 // provider edge (the suite's convention). The appApi closure mirrors
@@ -1299,7 +1299,7 @@ describe("app channel http", () => {
 		try {
 			await createAndChat(call, "what is the meaning of this");
 			// titleFor fires beside the turn — poll briefly for the write.
-			for (let i = 0; i < 50 && store.get("app/chat-01")?.title === null; i++) await sleep(10);
+			await waitUntil(() => store.get("app/chat-01")?.title !== null, "title lands");
 			const conv = store.get("app/chat-01");
 			expect(conv?.title).toBe("First Burst Title");
 			expect(conv?.titleImplicit).toBe(true);

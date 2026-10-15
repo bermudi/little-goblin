@@ -108,9 +108,10 @@ only offers the levels the current model supports.
 TTS is on by default with Edge's `en-US-AriaNeural` voice; configure `tts`
 to change the voice or rate, set `kind: "openrouter"` for OpenRouter's
 cloud speech models (`fish-audio/s2.1-pro-free:free` by default, needs the
-`openrouter` auth record) or `kind: "logfare"` for Logfare's (Deepgram
-Aura, `aura-2-en` by default, needs the `logfare` auth record), or set
-`tts: ""` to turn it off. It powers
+`openrouter` auth record), `kind: "logfare"` for Logfare's (Deepgram
+Aura, `aura-2-en` by default, needs the `logfare` auth record), or
+`kind: "mimo"` for Xiaomi's (`mimo-v2.5-tts` by default, needs the `mimo`
+auth record), or set `tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`
@@ -118,8 +119,8 @@ tool for other audio files on request. `kind: "whistle"` runs locally
 (keyless, private — artifacts auto-download once); groq, openai,
 openrouter, mistral, elevenlabs, gemini, mimo, and logfare are the cloud
 kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
-whistle transcription needs it always (it is the decoder), cloud kinds
-only over the upload cap. Details in [Voice](voice.md).
+whistle and mimo transcription need it always (their wav profile is the
+decoder), other cloud kinds only over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
 

@@ -1238,7 +1238,7 @@ export function SettingsView({
 							<>
 								<Row
 									label="Engine"
-									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint."
+									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint, mimo through Xiaomi's chat-completions speech."
 								>
 									<select
 										className="mono"
@@ -1255,6 +1255,7 @@ export function SettingsView({
 										<option value="edge">edge</option>
 										<option value="openrouter">openrouter</option>
 										<option value="logfare">logfare</option>
+										<option value="mimo">mimo</option>
 									</select>
 								</Row>
 								{draft.tts.kind !== "edge" && (
@@ -1297,7 +1298,9 @@ export function SettingsView({
 											? "Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
 											: draft.tts.kind === "openrouter"
 												? "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
-												: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
+												: draft.tts.kind === "mimo"
+													? "A MiMo built-in voice — Mia, Chloe, Milo, Dean, or a Chinese name like 冰糖. Blank speaks mimo_default."
+													: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
 									}
 								/>
 								{draft.tts.kind === "edge" && (

@@ -4,8 +4,7 @@
 // (persona-driven), dedup, and the placeholder-then-edit delivery
 // shape — Telegram faked at the api edge like every other tg test.
 
-import { beforeEach, afterEach, describe, expect, spyOn, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import {
 	guestAddress,
@@ -37,11 +36,6 @@ import {
 import { sharedChatPart } from "./mod.ts";
 import { log } from "../log.ts";
 import { tmpDb } from "../testkit.ts";
-
-const dirs: string[] = [];
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
 
 const baseConfig = (over: Partial<Config> = {}): Config =>
 	({

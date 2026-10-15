@@ -28,7 +28,8 @@ Config blocks reference secrets by record *name* — a join key between
 `goblin.json5` (UI-written, shareable) and `auth.jsonl` (0600, the only
 place values live). Names cannot be deleted from the config: two
 providers of one kind with different keys, and one record serving many
-features (transcription `mimo` rides `openrouter`), need the indirection.
+features (the `mimo` record keys both mimo transcription and mimo TTS),
+need the indirection.
 But a typed, required name in every settings field restates what the
 config already knows, so blank means "derive":
 

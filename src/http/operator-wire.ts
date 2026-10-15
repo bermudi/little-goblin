@@ -46,7 +46,7 @@ export interface ConfigPostBody {
 	tts:
 		| ""
 		| { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined }
-		| { kind: "openrouter" | "logfare"; model?: string; auth?: string; voice?: string };
+		| { kind: "openrouter" | "logfare" | "mimo"; model?: string; auth?: string; voice?: string };
 	// Absent/blank fields mean "the kind's default" (model, auth) or
 	// "detect" (language); keywords/engine/weights are whistle-only and
 	// round-tripped untouched so a page save never drops hand edits.

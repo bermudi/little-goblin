@@ -269,12 +269,17 @@ async function boot() {
 	// Probe ffmpeg at boot: TTS is default-on with ffmpeg as its only
 	// dependency — a missing binary takes TTS down for the run instead of
 	// failing per message; transcription needs it only over the upload cap
-	// (for whistle, always — it is the ogg→wav decoder).
+	// (for the wav-profile kinds, always — whistle's ogg→wav decode,
+	// mimo's wav-only input contract).
 	if (config.transcription || config.tts) {
+		const wavKind =
+			config.transcription?.kind === "whistle" || config.transcription?.kind === "mimo"
+				? config.transcription.kind
+				: undefined;
 		const feature = config.tts
 			? "tts"
-			: config.transcription?.kind === "whistle"
-				? "transcription (whistle)"
+			: wavKind !== undefined
+				? `transcription (${wavKind})`
 				: "transcription";
 		// Edge's remux is a stream copy; the cloud kinds' mp3 must
 		// re-encode to opus, so a binary without libopus would die per

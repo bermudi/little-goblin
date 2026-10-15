@@ -1,16 +1,17 @@
 // Cloud speech synthesis — hand-rolled HTTP like transcription
-// (transcribe-cloud.ts), no provider SDK. Both gateways take OpenAI's
-// speech POST — {model, input, voice?, response_format} — except
-// logfare, whose documented speech table stops at `voice`, so its arm
-// omits response_format (mp3 is the endpoint default either way). Raw
-// audio bytes out — never JSON on success; errors are the usual
-// {"error": {code, message}} envelope. The wire contract is pinned
-// verbatim in tts-cloud.test.ts against the OpenRouter TTS docs (mp3
-// is the self-describing container — pcm needs rate/channels parsed
-// out of Content-Type to be usable); the logfare arm pins the
-// documented shape and is unverified live until a key is provisioned.
-// Resolved keys never enter logs.
+// (transcribe-cloud.ts), no provider SDK. openrouter/logfare take
+// OpenAI's speech POST — {model, input, voice?, response_format} —
+// except logfare, whose documented speech table stops at `voice`, so
+// its arm omits response_format (mp3 is the endpoint default either
+// way). Raw audio bytes out — never JSON on success; errors are the
+// usual {"error": {code, message}} envelope. The wire contract is
+// pinned verbatim in tts-cloud.test.ts against the OpenRouter TTS
+// docs (mp3 is the self-describing container — pcm needs
+// rate/channels parsed out of Content-Type to be usable); the
+// logfare and mimo arms pin the documented shape and are unverified
+// live until a key is provisioned. Resolved keys never enter logs.
 
+import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
@@ -20,6 +21,7 @@ import type { ChunkSynthesizer } from "./tts.ts";
 
 const OPENROUTER_SPEECH_URL = "https://openrouter.ai/api/v1/audio/speech";
 const LOGFARE_SPEECH_URL = "https://logfare.ai/v1/audio/speech";
+const MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1/chat/completions";
 // A 10k-char chunk of mp3 speech is single-digit MiB; the cap only
 // guards a misbehaving gateway streaming garbage into memory.
 const RESPONSE_CAP = 32 * 1024 * 1024;
@@ -35,7 +37,7 @@ function timeoutMs(chars: number): number {
 	return Math.min(TIMEOUT_BASE_MS + chars * TIMEOUT_PER_CHAR_MS, TIMEOUT_MAX_MS);
 }
 
-type CloudTtsCfg = Extract<TtsConfig, { kind: "openrouter" | "logfare" }>;
+type CloudTtsCfg = Extract<TtsConfig, { kind: "openrouter" | "logfare" | "mimo" }>;
 
 export function openrouterSpeech(
 	cfg: CloudTtsCfg,
@@ -109,6 +111,87 @@ function openaiShapeSpeech(
 			chars: text.length,
 			bytes: bytes.byteLength,
 			...(generation !== null ? { generation } : {}),
+		});
+		return bytes;
+	};
+}
+
+// ---------- mimo (chat-completions speech) ----------
+
+// MiMo speaks through chat completions, not the /audio/speech shape:
+// the target text rides an assistant message, an optional user message
+// carries style direction (unused — read-aloud stays neutral), and the
+// synthesized audio comes back base64 in choices[0].message.audio.data.
+// Voice is a built-in id (mimo_default, Mia, …) — blank omits the field
+// for the model default. format is the caller's outputFormat (mp3).
+const mimoChatResponse = z.object({
+	choices: z
+		.array(
+			z.object({
+				finish_reason: z.string().optional(),
+				message: z.object({
+					audio: z.object({ data: z.string() }).optional(),
+					final_text_preview: z.string().optional(),
+				}),
+			}),
+		)
+		.min(1),
+});
+
+export function mimoSpeech(
+	cfg: CloudTtsCfg,
+	auth: AuthStore,
+	deps: { fetchFn?: typeof fetch | undefined } = {},
+): ChunkSynthesizer {
+	const fetchFn = deps.fetchFn ?? fetch;
+	return async (text, options) => {
+		const key = await auth.resolve(cfg.auth);
+		let res: Response;
+		try {
+			res = await fetchFn(MIMO_CHAT_URL, {
+				method: "POST",
+				headers: {
+					"api-key": key,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					model: cfg.model,
+					messages: [{ role: "assistant", content: text }],
+					audio: {
+						format: options.outputFormat,
+						...(options.voice !== "" ? { voice: options.voice } : {}),
+					},
+				}),
+				signal: AbortSignal.timeout(timeoutMs(text.length)),
+			});
+		} catch (err) {
+			throw new Error(`mimo: request failed (${MIMO_CHAT_URL}) — ${(err as Error).message}`);
+		}
+		const { tooLarge, text: body } = await readTextCapped(res, RESPONSE_CAP);
+		if (tooLarge) throw new Error(`mimo: response over ${RESPONSE_CAP} bytes`);
+		if (!res.ok) throw renderError("mimo", res.status, body);
+		let parsed: z.output<typeof mimoChatResponse>;
+		try {
+			parsed = mimoChatResponse.parse(JSON.parse(body));
+		} catch {
+			throw new Error(
+				`mimo: unexpected response shape — ${body.replace(/\s+/g, " ").trim().slice(0, 300)}`,
+			);
+		}
+		const message = parsed.choices[0]?.message;
+		const data = message?.audio?.data;
+		if (message === undefined || data === undefined) {
+			throw new Error("mimo: no audio in response");
+		}
+		const bytes = Buffer.from(data, "base64");
+		if (bytes.byteLength === 0) throw new Error("mimo: empty audio response");
+		log.debug("mimo speech chunk synthesized", {
+			model: cfg.model,
+			chars: text.length,
+			bytes: bytes.byteLength,
+			...(message.final_text_preview !== undefined
+				? { finalTextPreview: message.final_text_preview }
+				: {}),
 		});
 		return bytes;
 	};

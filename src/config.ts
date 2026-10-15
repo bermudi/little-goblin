@@ -285,6 +285,7 @@ export const authDefaults = {
 	parallel: "parallel",
 	openrouter: "openrouter",
 	logfare: "logfare",
+	mimo: "mimo",
 } as const;
 
 // Single source: config.test.ts pins this array against the schema
@@ -389,6 +390,7 @@ export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 export const ttsCloudDefaults = {
 	openrouter: { model: "fish-audio/s2.1-pro-free:free", auth: authDefaults.openrouter },
 	logfare: { model: "aura-2-en", auth: authDefaults.logfare },
+	mimo: { model: "mimo-v2.5-tts", auth: authDefaults.mimo },
 } as const;
 
 // Delegation to external harnesses via herdr — absent = no delegate
@@ -590,6 +592,10 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today. Its
 	// documented speech table drops response_format (see tts-cloud.ts).
 	cloudTtsSchema("logfare"),
+	// Xiaomi MiMo first-party — chat-completions speech (see
+	// tts-cloud.ts), not the /audio/speech shape. voice is a built-in
+	// id (mimo_default, Mia, Chloe, Milo, Dean, 冰糖, 茉莉, 苏打, 白桦).
+	cloudTtsSchema("mimo"),
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
@@ -609,8 +615,7 @@ export const transcriptionKinds = [
 ] as const;
 
 // Cloud-kind defaults — model is the UI's placeholder, auth defaults to
-// the kind's own auth.jsonl record name. mimo rides openrouter because
-// Xiaomi serves MiMo through OpenRouter; there is no first-party API.
+// the kind's own auth.jsonl record name.
 export const transcriptionDefaults = {
 	groq: { model: "whisper-large-v3-turbo", auth: "groq" },
 	openai: { model: "gpt-4o-mini-transcribe", auth: "openai" },
@@ -618,7 +623,7 @@ export const transcriptionDefaults = {
 	mistral: { model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" },
 	elevenlabs: { model: "scribe_v2", auth: "elevenlabs" },
 	gemini: { model: "gemini-flash-latest", auth: "gemini" },
-	mimo: { model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+	mimo: { model: "mimo-v2.5-asr", auth: "mimo" },
 	// Logfare's transcription catalog is Whisper and Deepgram Nova.
 	logfare: { model: "whisper-large-v3-turbo", auth: "logfare" },
 } as const;
@@ -628,7 +633,7 @@ const transcriptionLanguage = z
 	.regex(/^[a-z]{2}$/, 'language must be an ISO-639-1 code like "es"');
 
 const cloudTranscriptionSchema = (
-	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" | "logfare",
+	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "logfare",
 ) =>
 	z.object({
 		kind: z.literal(kind),
@@ -654,7 +659,14 @@ export const transcriptionSchema = z.union([
 	cloudTranscriptionSchema("mistral"),
 	cloudTranscriptionSchema("elevenlabs"),
 	cloudTranscriptionSchema("gemini"),
-	cloudTranscriptionSchema("mimo"),
+	// MiMo first-party (api.xiaomimimo.com) — its asr_options.language
+	// vocabulary is closed, so it gets the enum, not the ISO free string.
+	z.object({
+		kind: z.literal("mimo"),
+		model: z.string().min(1).default(transcriptionDefaults.mimo.model),
+		auth: z.string().min(1).default(transcriptionDefaults.mimo.auth),
+		language: z.enum(["auto", "zh", "en"]).optional(),
+	}),
 	cloudTranscriptionSchema("logfare"),
 ]);
 

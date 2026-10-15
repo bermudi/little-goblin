@@ -4,7 +4,7 @@ import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
-import { logfareSpeech, openrouterSpeech } from "./tts-cloud.ts";
+import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
@@ -638,6 +638,10 @@ function defaultSynthesizer(config: TtsConfig, deps: SpeechDeps): ChunkSynthesiz
 		case "logfare": {
 			if (deps.auth === undefined) throw new Error("logfare tts needs an auth store");
 			return logfareSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
+		case "mimo": {
+			if (deps.auth === undefined) throw new Error("mimo tts needs an auth store");
+			return mimoSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
 		}
 	}
 }

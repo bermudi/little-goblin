@@ -32,6 +32,11 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 	const wait = opts.sleep ?? sleep;
+	// The *cumulative* honored wait must stay under the outer withTimeout
+	// (API_CALL_TIMEOUT_MS) — otherwise a second 429 after the first wait
+	// can make the call appear timed-out mid-sleep and fire as a ghost send.
+	// Budget the remaining time per call, not each wait in isolation.
+	let remainingMs = maxWaitMs;
 	// False when the demanded wait is out of budget — the caller then
 	// returns/throws the original failure untouched.
 	const honored = async (
@@ -40,7 +45,7 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 		method: string,
 	): Promise<boolean> => {
 		const demanded = retryAfterS * 1000;
-		if (demanded > maxWaitMs) {
+		if (demanded > remainingMs) {
 			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
 			return false;
 		}
@@ -49,6 +54,7 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 			return false;
 		}
 		log.warn("telegram flood wait", { method, retryAfterS, attempt: attempt + 1 });
+		remainingMs -= demanded;
 		await wait(demanded);
 		return true;
 	};

@@ -2,7 +2,8 @@
 // flush on completion, typing indicator while a turn runs. This is a
 // TurnSink: the runtime streams into it, grammy does the sending.
 
-import { GrammyError, InputFile, type Api } from "grammy";
+import { GrammyError, HttpError, InputFile, type Api } from "grammy";
+import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
 import { channelOf, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
@@ -454,8 +455,8 @@ export function makeDeliverySink(
 		q: QueuedPhoto,
 		thread: { message_thread_id?: number },
 	): Promise<void> {
-		if (q.bytes > 2 * 1024 * 1024 * 1024)
-			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${2 * 1024 * 1024 * 1024})`);
+		if (q.bytes > MAX_SEND_BYTES)
+			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${MAX_SEND_BYTES})`);
 		try {
 			const sent = await withTimeout(
 				api.sendPhoto(conv.chatId, new InputFile(q.file.path, q.file.filename), {
@@ -581,8 +582,8 @@ export function makeDeliverySink(
 	}
 
 	async function sendDocumentSolo(file: OutgoingFile, bytes: number): Promise<void> {
-		if (bytes > 2 * 1024 * 1024 * 1024)
-			throw new Error(`file too large: ${file.path} (${bytes} bytes, max ${2 * 1024 * 1024 * 1024})`);
+		if (bytes > MAX_SEND_BYTES)
+			throw new Error(`file too large: ${file.path} (${bytes} bytes, max ${MAX_SEND_BYTES})`);
 		// The chain never rejects (onDone awaits it bare), so a failed
 		// send can't travel through it. The link records the failure and
 		// rethrows — the chain's catch still warn-logs it — and the
@@ -815,12 +816,16 @@ export function makeDeliverySink(
 						// Telegram may have committed the message before the
 						// response was lost (audit D2). A generic Error stays
 						// a definite failure so test/edge callers keep retry.
+						// A grammy HttpError wraps the underlying fetch/transport
+						// failure in `.error`; treat only those as ambiguous, so a
+						// programming throw (bad payload, etc.) fails fast instead
+						// of stopping the drain as "uncertain" (audit P1).
+						const transportCause =
+							err instanceof HttpError ? (err.error as { code?: unknown } | null) : null;
 						const transportError =
-							err instanceof TypeError ||
-							(err instanceof Error &&
-								/ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|ETIMEDOUT|socket hang up|fetch failed|network/i.test(
-									err.message,
-								));
+							transportCause !== null &&
+							typeof transportCause === "object" &&
+							typeof transportCause.code === "string";
 						if (err instanceof TelegramTimeoutError || (!(err instanceof GrammyError) && transportError)) {
 							markUncertain(err, "sendMessage", idx);
 						} else {

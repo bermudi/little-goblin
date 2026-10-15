@@ -1,33 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import {
-	existsSync,
-	lstatSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { existsSync, lstatSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileTool } from "./write.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-write-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../../testkit.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
 
 describe("write_file", () => {
 	test("creates a new file with the requested content", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-write-");
 		const out = (await writeFileTool(dir).execute!(
 			{ path: "f.txt", content: "hello\n" },
 			opts,
@@ -46,7 +27,7 @@ describe("write_file through leaf symlinks", () => {
 	// managed target, never replaced — tmp+rename over the link path
 	// silently forks the config and the dots store stops propagating.
 	test("relative leaf symlink: write lands on the target, link survives", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-write-");
 		writeFileSync(join(dir, "real.txt"), "old\n");
 		symlinkSync("real.txt", join(dir, "link.txt"));
 		const out = (await writeFileTool(dir).execute!(
@@ -64,7 +45,7 @@ describe("write_file through leaf symlinks", () => {
 	});
 
 	test("absolute leaf symlink: write lands on the target", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-write-");
 		writeFileSync(join(dir, "real.txt"), "old\n");
 		symlinkSync(join(dir, "real.txt"), join(dir, "abs-link.txt"));
 		const out = (await writeFileTool(dir).execute!(
@@ -77,7 +58,7 @@ describe("write_file through leaf symlinks", () => {
 	});
 
 	test("symlink chain resolves to the file it manages", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-write-");
 		writeFileSync(join(dir, "real.txt"), "old\n");
 		symlinkSync("real.txt", join(dir, "link1.txt"));
 		symlinkSync("link1.txt", join(dir, "link2.txt"));
@@ -94,7 +75,7 @@ describe("write_file through leaf symlinks", () => {
 	});
 
 	test("dangling leaf symlink fails loudly and the link is untouched", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-write-");
 		symlinkSync("missing.txt", join(dir, "dangling.txt"));
 		const out = (await writeFileTool(dir).execute!(
 			{ path: "dangling.txt", content: "new\n" },

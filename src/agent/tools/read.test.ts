@@ -1,37 +1,24 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
 	closeSync,
 	existsSync,
 	ftruncateSync,
-	mkdtempSync,
 	openSync,
 	readdirSync,
 	readFileSync,
-	rmSync,
 	writeFileSync,
 	symlinkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { readFileTool, readTextFile, sniffImage } from "./read.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-read-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../../testkit.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
 
 describe("read_file", () => {
 	test("reads a file with line numbers", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), "one\ntwo\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt" }, opts)) as {
@@ -45,7 +32,7 @@ describe("read_file", () => {
 	});
 
 	test("oversized file is refused before it is read", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// Sparse file: ftruncate sets size without writing real bytes.
 		const fd = openSync(join(dir, "big.log"), "w");
 		ftruncateSync(fd, 9 * 1024 * 1024);
@@ -56,7 +43,7 @@ describe("read_file", () => {
 	});
 
 	test("byte-cap truncation emits complete lines plus a continuation notice", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// ~126KB across 3000 lines — blows past the 64KB output cap.
 		writeFileSync(
 			join(dir, "f.txt"),
@@ -84,7 +71,7 @@ describe("read_file", () => {
 	});
 
 	test("an offset past EOF is an error carrying the real line count", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), "a\nb\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: 99 }, opts)) as { error?: string };
@@ -92,7 +79,7 @@ describe("read_file", () => {
 	});
 
 	test("a single line bigger than the cap gets a bash fallback, not a marker", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "min.txt"), `x`.repeat(100 * 1024)); // one 100KB line
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "min.txt" }, opts)) as {
@@ -105,7 +92,7 @@ describe("read_file", () => {
 	});
 
 	test("a user limit that stops early says how many lines remain", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n"));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: 2, limit: 3 }, opts)) as {
@@ -117,7 +104,7 @@ describe("read_file", () => {
 	});
 
 	test("a NUL past the first 8KB still marks the file binary", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.bin"), Buffer.concat([Buffer.alloc(9000, 0x61), Buffer.from([0])]));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
@@ -125,7 +112,7 @@ describe("read_file", () => {
 	});
 
 	test("invalid utf-8 is refused, not lossily decoded", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.bin"), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
@@ -133,7 +120,7 @@ describe("read_file", () => {
 	});
 
 	test("missing file and directory errors", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		const t = readFileTool(dir);
 		const missing = (await t.execute!({ path: "nope" }, opts)) as { error?: string };
 		expect(missing.error).toContain("file not found");
@@ -144,7 +131,7 @@ describe("read_file", () => {
 
 describe("read_file special files", () => {
 	test("a FIFO is refused, not blocked on forever", () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		const fifo = join(dir, "pipe");
 		execFileSync("mkfifo", [fifo]);
 		const out = readTextFile(fifo, fifo);
@@ -155,7 +142,7 @@ describe("read_file special files", () => {
 
 describe("read_file line clamping", () => {
 	test("jumbo lines are clamped with a truncation marker", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(
 			join(dir, "wide.txt"),
 			Array.from({ length: 30 }, (_, i) => `${i}:` + "x".repeat(3000)).join("\n"),
@@ -179,7 +166,7 @@ describe("read_file line clamping", () => {
 
 describe("read_file negative offsets", () => {
 	test("offset=-5 shows exactly the last 5 lines with real line numbers", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), Array.from({ length: 30 }, (_, i) => `l${i}`).join("\n"));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: -5 }, opts)) as { content?: string };
@@ -187,7 +174,7 @@ describe("read_file negative offsets", () => {
 	});
 
 	test("offset=-1 on a trailing-newline file returns the last real line, not a blank", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), "a\nb\nc\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: -1 }, opts)) as { content?: string };
@@ -195,7 +182,7 @@ describe("read_file negative offsets", () => {
 	});
 
 	test("a negative offset beyond the file clamps to the whole file, no error", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), "a\nb\nc\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: -500 }, opts)) as {
@@ -213,7 +200,7 @@ describe("read_file negative offsets", () => {
 
 describe("read_file empty files", () => {
 	test("a 0-byte file gets the empty note instead of a blank numbered line", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "empty.txt"), "");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "empty.txt" }, opts)) as {
@@ -227,7 +214,7 @@ describe("read_file empty files", () => {
 	});
 
 	test("a whitespace-only file is not empty and keeps numbering", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "ws.txt"), " \n\t\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "ws.txt" }, opts)) as {
@@ -241,7 +228,7 @@ describe("read_file empty files", () => {
 
 describe("read_file did-you-mean", () => {
 	test("a near-miss gets a suggestion", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "AGENTS.md"), "x");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "AGENT.md" }, opts)) as { error?: string };
@@ -250,7 +237,7 @@ describe("read_file did-you-mean", () => {
 	});
 
 	test("a totally unrelated miss gets no suggestion", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "AGENTS.md"), "x");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "zzzzzzzzz" }, opts)) as { error?: string };
@@ -260,7 +247,7 @@ describe("read_file did-you-mean", () => {
 
 describe("read_file images", () => {
 	test("a PNG gets a structured image note with dimensions", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// Hand-crafted PNG header: signature + IHDR chunk with 8x4 dims.
 		const png = Buffer.concat([
 			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -285,7 +272,7 @@ describe("read_file images", () => {
 	});
 
 	test("the image note points at the vision tool when it is configured", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		const png = Buffer.concat([
 			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
 			Buffer.from([0x00, 0x00, 0x00, 0x0d]),
@@ -300,7 +287,7 @@ describe("read_file images", () => {
 	});
 
 	test("a non-image binary still errors plainly", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.bin"), Buffer.from([0xff, 0x00, 0xfe, 0x62]));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
@@ -314,7 +301,7 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 	const nfd = "cafe\u0301.txt";
 
 	test("read_file resolves an NFD-named file from its NFC spelling", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, nfd), "hola\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: nfc }, opts)) as { content?: string };
@@ -322,7 +309,7 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 	});
 
 	test("edit_file resolves the twin too — one file, content changed in place", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, nfd), "one\ntwo\n");
 		const { editFileTool } = await import("./edit.ts");
 		const out = (await editFileTool(dir).execute!(
@@ -340,7 +327,7 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 	});
 
 	test("write_file targets the twin instead of forking a second file", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, nfd), "old");
 		const { writeFileTool } = await import("./write.ts");
 		const out = (await writeFileTool(dir).execute!({ path: nfc, content: "new" }, opts)) as {
@@ -358,7 +345,7 @@ describe("sniffImage — JPEG marker walk", () => {
 	]);
 
 	test("SOF0 within the first 64 bytes yields dimensions", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "a.jpg"), jpegWithSof);
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "a.jpg" }, opts)) as { content?: string };
@@ -366,7 +353,7 @@ describe("sniffImage — JPEG marker walk", () => {
 	});
 
 	test("EXIF pushing SOF past 64 bytes still names the type, without dims", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// SOI + APP1 (EXIF) declaring a length that runs past 64 bytes, zeros
 		// after — no SOF marker inside the sniff window. The walk must give
 		// up on dims, not on the media type.
@@ -384,7 +371,7 @@ describe("sniffImage — JPEG marker walk", () => {
 	});
 
 	test("EXIF-sized prefix before SOF — dims found within the 4KB window", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// SOI + APP1 declaring a 200-byte segment, SOF0 at offset 204 — past
 		// the old 64-byte window, routine for real JPEGs. The walk must reach
 		// it and report dimensions.
@@ -407,7 +394,7 @@ describe("sniffImage — JPEG marker walk", () => {
 	});
 
 	test("the 2000-line ceiling caps short-line files before bytes do", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-read-");
 		// Short lines: the line-count ceiling must hit while the output is
 		// still far under the 64KB byte cap — the one ceiling of the three
 		// the others can't stand in for.
@@ -435,7 +422,7 @@ describe("sniffImage — JPEG marker walk", () => {
 });
 
 test("image sniffing distinguishes missing/non-image files from an open failure", () => {
-	const dir = tmpdir_();
+	const dir = tmpDir("goblin-read-");
 	expect(sniffImage(join(dir, "missing"))).toBeNull();
 	writeFileSync(join(dir, "text"), "not an image");
 	expect(sniffImage(join(dir, "text"))).toBeNull();

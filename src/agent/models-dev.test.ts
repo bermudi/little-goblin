@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	_resetModelsDevForTest,
@@ -11,25 +10,7 @@ import {
 	contextLimit,
 	readOpenRouterCache,
 } from "./models-dev.ts";
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-mdev-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { useHome } from "../testkit.ts";
 
 describe("models.dev catalog", () => {
 	// Module-level catalog state persists across tests in this file — the
@@ -37,7 +18,7 @@ describe("models.dev catalog", () => {
 	// covers the invariant that was broken: a down endpoint is hit once,
 	// then the disk cache serves without another network attempt.
 	test("a failed fetch serves the disk cache and backs off the endpoint", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		writeFileSync(
 			join(dir, "state", "models.dev.json"),
@@ -70,7 +51,7 @@ describe("models.dev catalog", () => {
 	// every boot ran without a contextWindow. The gate keeps the fetch
 	// pending until both callers have entered ensure.
 	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		_resetModelsDevForTest();
 		const prevFetch = globalThis.fetch;
@@ -115,7 +96,7 @@ describe("models.dev catalog", () => {
 	// warm reads match the async path, including the cross-provider
 	// fallback scan and the text-only default for unlisted models.
 	test("inputModalitiesCached: cold → null + kicks fetch; warm → the async answer", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		_resetModelsDevForTest();
 		const prevFetch = globalThis.fetch;
@@ -152,7 +133,7 @@ describe("models.dev catalog", () => {
 
 describe("openrouter catalog", () => {
 	test("fetches, caches to disk, and serves that cache when the endpoint is down", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		_resetOpenRouterForTest();
 		const prevFetch = globalThis.fetch;
@@ -188,7 +169,7 @@ describe("openrouter catalog", () => {
 	// arms its backoff synchronously, so a second same-tick caller must
 	// join the flight rather than take the early null.
 	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		_resetOpenRouterForTest();
 		const prevFetch = globalThis.fetch;
@@ -227,7 +208,7 @@ describe("readOpenRouterCache", () => {
 	// to null with a warn — the old blind cast built a Set of characters
 	// out of a params string and reasoning ladders went silently wrong.
 	test("a wrong-shape cache degrades to null, not a Set of characters", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		writeFileSync(
 			join(dir, "state", "openrouter-models.json"),
@@ -237,7 +218,7 @@ describe("readOpenRouterCache", () => {
 	});
 
 	test("a well-formed cache round-trips into per-model param sets", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		writeFileSync(
 			join(dir, "state", "openrouter-models.json"),
@@ -248,7 +229,7 @@ describe("readOpenRouterCache", () => {
 	});
 
 	test("no cache file: ENOENT → null, cold and silent", () => {
-		useHome();
+		useHome("goblin-mdev-");
 		expect(readOpenRouterCache()).toBeNull();
 	});
 });

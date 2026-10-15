@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import {
@@ -9,17 +8,7 @@ import {
 	ATTACHMENT_PART,
 	materializeAttachments,
 } from "./attachments.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-att-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../testkit.ts";
 
 describe("acceptsMedia", () => {
 	test("media types map to their own modality; documents need file or pdf", () => {
@@ -43,7 +32,7 @@ const msg = (path: string, size = 4): UIMessage => ({
 
 describe("materializeAttachments", () => {
 	test("a capable model gets the file part with the payload inline", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
 		const out = await materializeAttachments([msg(f)], new Set(["text", "image"]));
@@ -56,7 +45,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("an incapable model gets the path reference instead", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
 		const out = await materializeAttachments([msg(f)], new Set(["text"]));
@@ -67,7 +56,7 @@ describe("materializeAttachments", () => {
 
 	test("a missing attachment file degrades to the path reference", async () => {
 		const out = await materializeAttachments(
-			[msg(join(tmpdir_(), "gone.png"))],
+			[msg(join(tmpDir("goblin-att-"), "gone.png"))],
 			new Set(["text", "image"]),
 		);
 		expect(out[0]!.parts[0]!.type).toBe("text");
@@ -76,12 +65,15 @@ describe("materializeAttachments", () => {
 	test("a non-ENOENT read failure degrades to the path reference too", async () => {
 		// A directory stats fine but readFile throws EISDIR — the error
 		// must degrade, not crash the turn.
-		const out = await materializeAttachments([msg(tmpdir_())], new Set(["text", "image"]));
+		const out = await materializeAttachments(
+			[msg(tmpDir("goblin-att-"))],
+			new Set(["text", "image"]),
+		);
 		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
 	test("a file that grew past the cap since intake degrades to the path reference", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "x".repeat(64));
 		// ref.size says 4 — the recorded size is not authoritative.
@@ -90,7 +82,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("each item is judged alone — no shared budget between attachments", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const a = join(dir, "a.png");
 		const b = join(dir, "b.png");
 		writeFileSync(a, "12345678");
@@ -113,7 +105,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("an over-cap item degrades while a small one inlines — decisions are independent", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const old = join(dir, "old.png");
 		const fresh = join(dir, "fresh.png");
 		writeFileSync(old, "x".repeat(64));
@@ -140,7 +132,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("cache stability — adding attachments never changes how old ones materialize", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const a = join(dir, "a.png");
 		const b = join(dir, "b.png");
 		writeFileSync(a, "pngdata");
@@ -182,7 +174,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("a model that can't consume audio gets the transcript, not the bare path", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
 		const m: UIMessage = {
@@ -205,7 +197,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("an audio-capable model still gets the file part for a recording", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
 		const m: UIMessage = {
@@ -227,7 +219,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("attached audio never inlines — a hearing model gets the path, not a song's bytes", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "song.mp3");
 		writeFileSync(f, "mp3data");
 		const m: UIMessage = {
@@ -249,7 +241,7 @@ describe("materializeAttachments", () => {
 	});
 
 	test("the transcript also beats the path when the payload doesn't fit", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "x".repeat(64));
 		const m: UIMessage = {
@@ -276,7 +268,7 @@ describe("materializeAttachments", () => {
 	test(`${ATTACHMENT_PART} round-trips through stored JSON shape`, async () => {
 		// The stored part is plain JSON — what comes back from SQLite must
 		// materialize the same way as the in-memory object.
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
 		const stored = JSON.parse(JSON.stringify(msg(f))) as UIMessage;
@@ -286,7 +278,7 @@ describe("materializeAttachments", () => {
 });
 
 test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {
-	const dir = tmpdir_();
+	const dir = tmpDir("goblin-att-");
 	const f = join(dir, "doc.pdf");
 	writeFileSync(f, "pdfbytes");
 	const history: UIMessage[] = [

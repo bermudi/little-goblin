@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import {
@@ -13,6 +12,7 @@ import {
 	openaiEngine,
 	openrouterEngine,
 } from "./transcribe-cloud.ts";
+import { tmpDir } from "../testkit.ts";
 
 const auth: AuthStore = {
 	resolve: async (name) => {
@@ -22,17 +22,6 @@ const auth: AuthStore = {
 	has: () => true,
 	names: () => ["groq"],
 };
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-cloud-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 interface SeenRequest {
 	url: string;
@@ -62,7 +51,7 @@ const fakeFetch = (status: number, body: string) => {
 };
 
 function voiceFile(): { path: string; mediaType: string; filename: string } {
-	const f = join(tmpdir_(), "v.ogg");
+	const f = join(tmpDir("goblin-cloud-"), "v.ogg");
 	writeFileSync(f, "ogg-bytes");
 	return { path: f, mediaType: "audio/ogg", filename: "v.ogg" };
 }
@@ -355,7 +344,7 @@ describe("openrouterEngine", () => {
 			["n.oga", "ogg"],
 			["n.wav", "wav"],
 		] as const) {
-			const f = join(tmpdir_(), name);
+			const f = join(tmpDir("goblin-cloud-"), name);
 			writeFileSync(f, "x");
 			await engine.transcribe({ path: f, mediaType: "audio/ogg", filename: name });
 			const body = JSON.parse(String(last().body)) as { input_audio: { format: string } };
@@ -363,7 +352,7 @@ describe("openrouterEngine", () => {
 		}
 		// A video note's .mp4: ffmpeg extracts the audio track and the
 		// extracted bytes ride input_audio as ogg.
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-cloud-");
 		const mp4 = join(dir, "video-note-u1.mp4");
 		const gen = Bun.spawnSync([
 			"ffmpeg",
@@ -407,7 +396,7 @@ describe("openrouterEngine", () => {
 				fetchFn: fn,
 			},
 		);
-		const f = join(tmpdir_(), "junk.mp4");
+		const f = join(tmpDir("goblin-cloud-"), "junk.mp4");
 		writeFileSync(f, "definitely not media");
 		await expect(
 			engine.transcribe({ path: f, mediaType: "video/mp4", filename: "junk.mp4" }),
@@ -609,7 +598,7 @@ describe("mimoEngine", () => {
 				fetchFn: fn,
 			},
 		);
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-cloud-");
 		const mp4 = join(dir, "video-note-u1.mp4");
 		const gen = Bun.spawnSync([
 			"ffmpeg",

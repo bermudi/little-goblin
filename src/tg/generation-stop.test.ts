@@ -7,10 +7,10 @@
 // The update shape is per @grammyjs/types 5.0.0 (MessageGenerationStopped),
 // not yet observed on a live wire — label any claim about the wire unverified.
 
+import { tmpdb } from "../testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { parseConfig, type Config, type ConfigRef } from "../config.ts";
@@ -86,13 +86,6 @@ function stopUpdate(fields: { threadId?: number }): Update {
 
 const lines: string[] = [];
 const cleanups: Array<() => void> = [];
-let tempDirs: string[] = [];
-
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-generation-stop-"));
-	tempDirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 
 function captureLog(): void {
 	setLogFile("/tmp/generation-stop-test.log");
@@ -119,7 +112,6 @@ afterEach(() => {
 	setLogWriter(null);
 	setLogFile(null);
 	for (const fn of cleanups.splice(0)) fn();
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("stopped_message_generation", () => {

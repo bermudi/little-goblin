@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { useHome } from "./testkit.ts";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import {
 	chmodSync,
 	lstatSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	readlinkSync,
 	rmSync,
@@ -12,7 +12,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import {
 	authReferences,
@@ -80,25 +80,6 @@ test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () =
 	expect(parseConfig({ ...config, publicUrl: "https://example.org" }).publicUrl).toBe(
 		"https://example.org",
 	);
-});
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-cfg-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
 });
 
 const valid: Config = {

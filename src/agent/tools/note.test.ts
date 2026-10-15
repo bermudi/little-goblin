@@ -4,9 +4,10 @@
 // comes back as tool output — never a thrown turn. The guest filter
 // test pins that `note` never mounts on a guest turn.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { useHome } from "../../testkit.ts";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+
 import { join } from "node:path";
 import { z } from "zod";
 import { openStore } from "../../conversation.ts";
@@ -16,22 +17,6 @@ import { openProjects } from "../../projects.ts";
 import { GUEST_CHANNEL_EXCLUDED, SANDBOX_TOOLS } from "../../tg/guest.ts";
 import { noteInputSchema, noteTool, type NoteToolDeps } from "./note.ts";
 
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-notetool-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 setLogFile("/dev/null");
 
 function setup(projectId: string | null = null): {

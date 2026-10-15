@@ -1,27 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { useHome } from "./testkit.ts";
+import { describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import { invokesPassCliDirectly, loadAuth } from "./auth.ts";
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-auth-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 // auth.jsonl must be mode 0600 to load at all — write, then harden.
 function writeAuth(dir: string, content: string): void {

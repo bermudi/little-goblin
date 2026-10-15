@@ -1,23 +1,12 @@
 // The tap record: round-trip through the real store, append-only with
 // latest-wins reads — including across a reopened handle (a restart).
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdb } from "../testkit.ts";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import { openStore } from "../conversation.ts";
 import { openRatings } from "./ratings.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-ratings-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 describe("reply ratings", () => {
 	test("record → latest round-trips all fields", () => {

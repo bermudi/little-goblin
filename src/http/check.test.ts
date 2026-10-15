@@ -1,9 +1,9 @@
 // POST /api/check-injection — loopback-only scoring through the shared
 // System One gate. Fake the gate at the edge, drive real HTTP; no model, no
 // network, no Telegram.
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { useHome } from "../testkit.ts";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { System1Error, type System1Client } from "../system1.ts";
@@ -12,22 +12,6 @@ import { startHttp } from "./mod.ts";
 import { readBodyBytesCapped, type InjectionCheckResponse } from "./check.ts";
 
 const TOKEN = "test-bot-token";
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): void {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-check-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const baseConfig: Config = {
 	providers: {

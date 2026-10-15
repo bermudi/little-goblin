@@ -7,9 +7,9 @@
 // pending with the reason in the chat), and the sweep settles expired
 // drafts without ever claiming a row mid-send.
 
+import { tmpdb } from "../testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { TelegramTimeoutError } from "./deadline.ts";
@@ -32,18 +32,11 @@ test("draft chunk boundaries never split an emoji", () => {
 	expect(chunks[1]?.startsWith("🙂")).toBe(true);
 });
 
-let dirs: string[] = [];
 let gates: MailApproval[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-mailtap-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
+
 afterEach(() => {
 	for (const g of gates) g.stop();
 	gates = [];
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
 });
 
 const NOW = new Date("2026-09-26T10:00:00.000Z");

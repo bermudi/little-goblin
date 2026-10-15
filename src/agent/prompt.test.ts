@@ -3,25 +3,15 @@
 // prompt varies turn-to-turn on its own. A test failing here usually means
 // someone added a clock, counter, or random value to the prompt.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { useHome } from "../testkit.ts";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import { paths } from "../config.ts";
 import { setLogFile } from "../log.ts";
 import { openStore, type Conversation } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
-
-let dirs: string[] = [];
-function useHome(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-prompt-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const conv: Conversation = {
 	id: "dm-1",

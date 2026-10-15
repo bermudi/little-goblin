@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { tmpdb } from "../testkit.ts";
+import { describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
 import { memoryConfigSchema, type Config } from "../config.ts";
 import {
@@ -161,8 +162,7 @@ describe("applyMenuButton", () => {
 
 import type { Message } from "grammy/types";
 import type { UIMessage } from "ai";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
@@ -183,18 +183,6 @@ import { openTelegramInbox, type InboxPayload } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
-
-let intakeDirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-intake-"));
-	intakeDirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-
-afterEach(() => {
-	for (const d of intakeDirs) rmSync(d, { recursive: true, force: true });
-	intakeDirs = [];
-});
 
 function tgMsg(p: Record<string, unknown>): Message {
 	return { date: 0, ...p } as unknown as Message;

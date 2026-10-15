@@ -7,26 +7,14 @@
 // bells its turn carried. Fenced turns are silent; one wedged send
 // never silences the rest. Fake Telegram API at the edge, real store.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdb } from "../testkit.ts";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import { openPings } from "./pings.ts";
 import { makeBellSink, type BellDeps } from "./bell.ts";
-
-let dirs: string[] = [];
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
-
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-bell-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 
 interface Sent {
 	chat: number;

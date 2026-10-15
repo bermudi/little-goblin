@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { useHome } from "../testkit.ts";
+import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
@@ -25,22 +26,6 @@ function makeInitData(fields: Record<string, string>): string {
 	params.set("hash", hash);
 	return params.toString();
 }
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): void {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-http-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const baseConfig: Config = {
 	providers: {

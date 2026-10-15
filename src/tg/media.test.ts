@@ -1,15 +1,8 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { useHome } from "../testkit.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import { paths } from "../config.ts";
@@ -20,25 +13,6 @@ import {
 	unhandledMediaKind,
 	type IncomingMedia,
 } from "./media.ts";
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-media-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const media: IncomingMedia = {
 	fileId: "f1",

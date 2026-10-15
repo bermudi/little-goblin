@@ -6,10 +6,10 @@
 // itself is being created, otherwise they archive to recovery without
 // activating, and the table drops either way.
 
+import { tmpdb } from "./testkit.ts";
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import {
 	latestFireAtOrBefore,
@@ -18,17 +18,6 @@ import {
 	ProgramRuleError,
 	type ProgramsStore,
 } from "./programs.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-programs-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 function store(): ProgramsStore {
 	return openPrograms(tmpdb());

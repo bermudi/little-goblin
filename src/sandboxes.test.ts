@@ -6,9 +6,9 @@
 // runs here; the real-engine integration file is gated on
 // GOBLIN_TEST_PODMAN=1.
 
+import { tmpdb } from "./testkit.ts";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
@@ -26,10 +26,6 @@ interface FakeContainer {
 	networks: Set<string>;
 	labels: Record<string, string>;
 	files: Map<string, Uint8Array>;
-}
-
-function tmpdb(): string {
-	return join(mkdtempSync(join(tmpdir(), "goblin-sbx-")), "goblin.sqlite");
 }
 
 // A fake podman engine: runner routes on argv shape, holding container

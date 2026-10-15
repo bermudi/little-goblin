@@ -4,23 +4,12 @@
 // through the shared titler — still implicit so an operator rename
 // always wins.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdb } from "./testkit.ts";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
 import { discardSpinOff, launchPin, spinOff, type SpinOffDeps } from "./spinoff.ts";
-
-let dirs: string[] = [];
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-spinoff-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 
 describe("spinOff", () => {
 	test("forks a uuid app copy, links off publicUrl, and retitles through titleFor", async () => {

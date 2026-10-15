@@ -3,9 +3,10 @@
 // coalescing, expected-rev conflicts, range-edit refusals that write
 // nothing, FTS freshness, and flag writes that bump nothing.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { useHome } from "./testkit.ts";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+
 import { join } from "node:path";
 import { setLogFile } from "./log.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
@@ -20,22 +21,7 @@ import { openProjects, type ProjectStore } from "./projects.ts";
 
 // Each test gets a fresh $GOBLIN_HOME — the env var resolves per call
 // (projects.test.ts's pattern), so the domain sees the tmp layout.
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-notes-test-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+
 setLogFile("/dev/null");
 
 function setup(): {

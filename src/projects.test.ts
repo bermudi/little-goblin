@@ -1,3 +1,4 @@
+import { useHome } from "./testkit.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,18 +18,8 @@ import {
 // resolve through the env var per call, so the domain sees the tmp
 // layout without any module reset.
 let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-projects-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
+
 afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });

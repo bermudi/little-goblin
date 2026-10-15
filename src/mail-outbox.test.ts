@@ -2,22 +2,11 @@
 // decisions are compare-and-set (one winner between a tap and the
 // sweeper), and expiry only ever takes pending rows.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdb } from "./testkit.ts";
+import { describe, expect, test } from "bun:test";
+
 import { join } from "node:path";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "./mail-outbox.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-outbox-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const NOW = new Date("2026-09-26T10:00:00.000Z");
 const ADDRESS = { chatId: -100, threadId: 7 };

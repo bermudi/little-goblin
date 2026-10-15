@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { tmpdb } from "./testkit.ts";
+import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import {
@@ -14,17 +14,6 @@ import {
 	type ConversationStore,
 	type ParsedAddress,
 } from "./conversation.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-test-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const msg = (text: string): UIMessage => ({
 	id: "m1",

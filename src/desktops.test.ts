@@ -510,6 +510,38 @@ describe("desktops pool", () => {
 		expect(store.get("d2")).toBeNull();
 	});
 
+	test("adoption counts a pending allocation against the pool cap", async () => {
+		const name = "orphan";
+		const engine = fakeEngine({
+			containers: [
+				{
+					name: containerNameForDesktop(name),
+					labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
+				},
+			],
+		});
+		const { desktops, store } = rig(engine, { max: 1 });
+		const gate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const create = engine.podman.create.bind(engine.podman);
+		engine.podman.create = async (spec, conv) => {
+			entered.resolve();
+			await gate.promise;
+			return create(spec, conv);
+		};
+		const allocating = desktops.allocate("d1");
+		try {
+			await entered.promise;
+			expect(store.list()).toHaveLength(0);
+			await expect(desktops.claim(name, RUN_A)).rejects.toThrow(/pool is full/);
+			expect(store.get(name)).toBeNull();
+		} finally {
+			gate.resolve();
+			await allocating;
+		}
+		expect(store.list().map((row) => row.name)).toEqual(["d1"]);
+	});
+
 	test("a failed allocation releases the reservation; a same-name duplicate is refused while held", async () => {
 		const gate = Promise.withResolvers<void>();
 		const engine = fakeEngine();

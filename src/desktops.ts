@@ -635,7 +635,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				// allocate: a lost database must not re-grow the pool
 				// past max one container at a time.
 				const max = cfg().max;
-				if (store.list().length >= max) {
+				const held = new Set(store.list().map((r) => r.name));
+				for (const pending of pendingAllocs) held.add(pending);
+				if (!held.has(name) && held.size >= max) {
 					throw refuse(
 						name,
 						"adopt",

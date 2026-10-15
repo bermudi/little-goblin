@@ -1,109 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { LanguageModel, UIMessage } from "ai";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { memoryConfigSchema } from "./config.ts";
-import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
+import { Runtime, userMessage } from "./runtime.ts";
+import { fakeModel, RecordingSink, tmpDb } from "./testkit.ts";
 
-let dirs: string[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-memturn-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop(true);
-	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-	dirs = [];
 });
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream() {
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
-						await sleep(delayMs);
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: 1, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
-
-class RecordingSink implements TurnSink {
-	text = "";
-	done: Promise<TurnDone>;
-	// Resolves on the first observed text delta — proof the turn was
-	// admitted (epoch captured) and is mid-stream. Fence-timing tests
-	// await this instead of sleeping a guess.
-	firstDelta: Promise<void>;
-	private resolveDone: (d: TurnDone) => void;
-	private markFirstDelta: () => void = () => {};
-	constructor() {
-		let r: (d: TurnDone) => void = () => {};
-		this.done = new Promise<TurnDone>((res) => {
-			r = res;
-		});
-		this.resolveDone = r;
-		this.firstDelta = new Promise<void>((res) => {
-			this.markFirstDelta = res;
-		});
-	}
-	onTextDelta(d: string) {
-		this.text += d;
-		this.markFirstDelta();
-	}
-	onReasoningDelta() {}
-	onToolCall() {}
-	onDone(d: TurnDone) {
-		this.resolveDone(d);
-	}
-}
 
 const memConfig = memoryConfigSchema.parse({
 	baseUrl: "http://127.0.0.1:1",
@@ -174,7 +79,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 		},
 	});
 	servers.push(server);
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-memturn-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const client = new HindsightClient({
 		baseUrl: `http://127.0.0.1:${server.port}`,
@@ -297,7 +202,7 @@ describe("memory turn integration", () => {
 	});
 
 	test("fenced turns commit no memory", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-memturn-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
@@ -344,7 +249,7 @@ describe("memory turn integration", () => {
 	});
 
 	test("a late recall after forgetting cannot reinsert a redacted source", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-memturn-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let recallStarted!: () => void;
 		let release!: () => void;

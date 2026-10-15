@@ -499,19 +499,30 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 			(stdout) => workspaceListSchema.parse(parseJson("workspace list", stdout)),
 			{ ...(signal !== undefined ? { signal } : {}) },
 		);
-		const workspaces = new Map(ws.result.workspaces.map((w) => [w.workspace_id, w.label] as const));
+		const workspaces = new Map<string, string>();
 		// Per-workspace tab list: the unscoped form covers all
 		// workspaces today, but the scoped form cannot regress.
 		const tabs = new Map<string, string>();
 		for (const w of ws.result.workspaces) {
-			const listed = await call(
-				"tab list",
-				w.workspace_id,
-				["tab", "list", "--workspace", w.workspace_id],
-				(stdout) => tabListSchema.parse(parseJson("tab list", stdout)),
-				{ ...(signal !== undefined ? { signal } : {}) },
-			);
-			for (const tab of listed.result.tabs) tabs.set(tab.tab_id, tab.label);
+			try {
+				const listed = await call(
+					"tab list",
+					w.workspace_id,
+					["tab", "list", "--workspace", w.workspace_id],
+					(stdout) => tabListSchema.parse(parseJson("tab list", stdout)),
+					{ ...(signal !== undefined ? { signal } : {}) },
+				);
+				workspaces.set(w.workspace_id, w.label);
+				for (const tab of listed.result.tabs) tabs.set(tab.tab_id, tab.label);
+			} catch (err) {
+				// A workspace can close after list; omit its stale labels.
+				// Every other failure was logged by call and must propagate.
+				if (!(err instanceof HerdrError) || err.code !== "workspace_not_found") throw err;
+				log.info("herdr topology workspace vanished", {
+					workspace: w.workspace_id,
+					session: OPERATOR_SESSION,
+				});
+			}
 		}
 		return { workspaces, tabs };
 	}

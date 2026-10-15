@@ -455,6 +455,93 @@ describe("operator herdr adapter", () => {
 		});
 	});
 
+	test("list skips a workspace closed during tab collection and continues joining labels", async () => {
+		const other = { ...OP_AGENT, pane_id: "w8B:p1", workspace_id: "w8B", tab_id: "w8B:t1" };
+		const f = opRunner([
+			opOk({ result: { agents: [OP_AGENT, other] } }),
+			TOPOLOGY[0]!,
+			opFail("workspace_not_found", "workspace w1 not found"),
+			TOPOLOGY[2]!,
+		]);
+		const agents = await makeOperatorHerdr(f.run).list();
+		expect(agents).toHaveLength(2);
+		expect(agents[0]).toMatchObject({
+			pane_id: "w1:p1",
+			workspace_label: null,
+			tab_label: null,
+		});
+		expect(agents[1]).toMatchObject({
+			pane_id: "w8B:p1",
+			workspace_label: "scratch",
+			tab_label: "other",
+		});
+		expect(f.calls.map((c) => c.args)).toEqual([
+			["--session", "default", "agent", "list"],
+			["--session", "default", "workspace", "list"],
+			["--session", "default", "tab", "list", "--workspace", "w1"],
+			["--session", "default", "tab", "list", "--workspace", "w8B"],
+		]);
+	});
+
+	test("prompt still sends once to an unaffected pane when another workspace closes during topology collection", async () => {
+		const other = {
+			...OP_AGENT,
+			pane_id: "w8B:p1",
+			workspace_id: "w8B",
+			tab_id: "w8B:t1",
+			agent_status: "working",
+		};
+		const f = opRunner([
+			TOPOLOGY[0]!,
+			opFail("workspace_not_found", "workspace w1 not found"),
+			TOPOLOGY[2]!,
+			opOk({ result: { agent: other } }),
+			opOk({ result: { agent: other } }),
+		]);
+		const out = await makeOperatorHerdr(f.run).prompt("w8B:p1", "pi", "hello");
+		expect(out).toMatchObject({
+			pane_id: "w8B:p1",
+			workspace_label: "scratch",
+			tab_label: "other",
+		});
+		expect(f.calls.map((c) => verbOf(c.args))).toEqual([
+			"workspace list",
+			"tab list",
+			"tab list",
+			"agent get",
+			"agent prompt",
+		]);
+		expect(prompts(f.calls)).toHaveLength(1);
+		expect(prompts(f.calls)[0]!.slice(-2)).toEqual(["w8B:p1", "hello"]);
+	});
+
+	test.each(["list", "prompt"] as const)(
+		"%s fails fast on other tab-list errors and malformed topology",
+		async (verb) => {
+			for (const failure of [
+				opFail("timeout", "workspace_not_found"),
+				{ code: 0, stdout: "not json", stderr: "" },
+				opOk({ result: { tabs: null } }),
+			]) {
+				const f = opRunner([
+					...(verb === "list" ? [opOk({ result: { agents: [OP_AGENT] } })] : []),
+					TOPOLOGY[0]!,
+					failure,
+				]);
+				const h = makeOperatorHerdr(f.run);
+				const result = verb === "list" ? h.list() : h.prompt("w1:p1", "pi", "hello");
+				if (failure.code !== 0) await expect(result).rejects.toMatchObject({ code: "timeout" });
+				else await expect(result).rejects.toThrow();
+				expect(f.calls.map((c) => verbOf(c.args))).toEqual([
+					...(verb === "list" ? ["agent list"] : []),
+					"workspace list",
+					"tab list",
+				]);
+				expect(prompts(f.calls)).toEqual([]);
+			}
+		},
+	);
+
 	test("read sends the bounded argv and returns raw screen text", async () => {
 		const f = opRunner([{ code: 0, stdout: "a\nb\n", stderr: "" }]);
 		const h = makeOperatorHerdr(f.run);

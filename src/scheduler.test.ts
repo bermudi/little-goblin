@@ -30,6 +30,7 @@ import {
 	type SchedulerDeps,
 } from "./scheduler.ts";
 import { System1Error } from "./system1.ts";
+import { waitUntil } from "./testkit.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -493,10 +494,10 @@ describe("scheduler", () => {
 		);
 		const s = startScheduler(h.deps); // boot scan: submit throws
 		s.stop();
-		await Bun.sleep(10);
-		expect(
-			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
-		).toBe(true);
+		await waitUntil(
+			() => h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
+			"queue-closed notice lands",
+		);
 		// Marked ran anyway — one attempt per occurrence; a persistent
 		// submit failure must not refire (and re-deliver the error) every
 		// tick.
@@ -1007,7 +1008,7 @@ describe("schedule fire retry ladder", () => {
 			const lastRunAfterFire = h.deps.programs.get(program.id)!.lastRun;
 			expect(lastRunAfterFire).not.toBeNull();
 			await h.submitted[0]!.sink.onDone(transientDone);
-			await Bun.sleep(10);
+			await waitUntil(() => h.submitted.length >= 2, "retry submits");
 			// The retry submitted through fireProgram's ordinary path —
 			// same program tag, same wake shape.
 			expect(h.submitted).toHaveLength(2);
@@ -1040,13 +1041,13 @@ describe("schedule fire retry ladder", () => {
 		try {
 			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
 			await h.submitted[0]!.sink.onDone(transientDone);
-			await Bun.sleep(10);
+			await waitUntil(() => h.submitted.length >= 2, "submit #2 lands");
 			expect(h.submitted).toHaveLength(2);
 			await h.submitted[1]!.sink.onDone(transientDone);
-			await Bun.sleep(10);
+			await waitUntil(() => h.submitted.length >= 3, "submit #3 lands");
 			expect(h.submitted).toHaveLength(3);
 			await h.submitted[2]!.sink.onDone(transientDone);
-			await Bun.sleep(10);
+			await waitUntil(() => h.submitted.length >= 3, "submit #3 lands");
 			expect(h.submitted).toHaveLength(3);
 			const exhausted = lines(captured).filter((l) => l.msg === "schedule fire retries exhausted");
 			expect(exhausted).toHaveLength(1);
@@ -1072,7 +1073,7 @@ describe("schedule fire retry ladder", () => {
 		const program = ladderProgram(h);
 		fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
 		await h.submitted[0]!.sink.onDone(done);
-		await Bun.sleep(10);
+		await Bun.sleep(10); // negative window: 5× the 2ms retry delay — a rung would have landed
 		expect(h.submitted).toHaveLength(1);
 	});
 
@@ -1083,7 +1084,7 @@ describe("schedule fire retry ladder", () => {
 		const sink = h.submitted[0]!.sink;
 		sink.onTextDelta("partial answer");
 		await sink.onDone(transientDone);
-		await Bun.sleep(10);
+		await Bun.sleep(10); // negative window: 5× the 2ms retry delay — a retry would have landed
 		expect(h.submitted).toHaveLength(1);
 	});
 
@@ -1099,7 +1100,7 @@ describe("schedule fire retry ladder", () => {
 		const now2 = new Date(new Date(second.nextRun!).getTime() + 500);
 		fireScheduled(h.deps, second, now2, { retryDelaysMs: DELAYS });
 		await h.submitted[1]!.sink.onDone(transientDone);
-		await Bun.sleep(10);
+		await waitUntil(() => h.submitted.length >= 4, "submit #4 lands");
 		expect(h.submitted).toHaveLength(4);
 	});
 
@@ -1116,7 +1117,10 @@ describe("schedule fire retry ladder", () => {
 			h.deps.programs.get = () => {
 				throw new Error("db read failed");
 			};
-			await Bun.sleep(10);
+			await waitUntil(
+				() => lines(captured).some((l) => l.msg === "schedule fire retry failed"),
+				"retry failure lands in the log",
+			);
 			expect(h.submitted).toHaveLength(1);
 			expect(lines(captured).find((l) => l.msg === "schedule fire retry failed")).toMatchObject({
 				program: program.id,
@@ -1135,7 +1139,11 @@ describe("schedule fire retry ladder", () => {
 			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
 			await h.submitted[0]!.sink.onDone(transientDone);
 			h.deps.programs.update(program.id, { enabled: false });
-			await Bun.sleep(10);
+			await waitUntil(
+				() =>
+					lines(captured).some((l) => l.msg === "schedule fire retry dropped — program disabled"),
+				"drop lands in the log",
+			);
 			expect(h.submitted).toHaveLength(1);
 			expect(
 				lines(captured).find((l) => l.msg === "schedule fire retry dropped — program disabled"),
@@ -1155,7 +1163,7 @@ describe("schedule fire retry ladder", () => {
 			// (a sink's onDone can trail the stop by a full drain budget).
 			s.stop();
 			await h.submitted[0]!.sink.onDone(transientDone);
-			await Bun.sleep(10);
+			await Bun.sleep(10); // negative window: 5× the 2ms retry delay — no retry may land
 			expect(h.submitted).toHaveLength(1);
 		} finally {
 			s.stop();
@@ -1177,7 +1185,7 @@ describe("schedule fire retry ladder", () => {
 				transient: true,
 				modelCalls: 0,
 			});
-			await Bun.sleep(40);
+			await Bun.sleep(10); // negative window: 5× the 2ms retry delay — no retry may land
 			expect(h.submitted).toHaveLength(1);
 			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
 			await h.submitted[1]!.sink.onDone({
@@ -1186,7 +1194,7 @@ describe("schedule fire retry ladder", () => {
 				transient: true,
 				modelCalls: 0,
 			});
-			await Bun.sleep(40);
+			await waitUntil(() => h.submitted.length >= 3, "submit #3 lands");
 			expect(h.submitted).toHaveLength(3);
 		} finally {
 			next.stop();
@@ -1206,7 +1214,7 @@ describe("schedule fire retry ladder", () => {
 			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
 			await h.submitted[0]!.sink.onDone(transientDone);
 			s.stop();
-			await Bun.sleep(10);
+			await Bun.sleep(10); // negative window: 5× the 2ms retry delay — no retry may land
 			expect(h.submitted).toHaveLength(1);
 		} finally {
 			s.stop();

@@ -1047,7 +1047,7 @@ describe("schedule fire retry ladder", () => {
 			await waitUntil(() => h.submitted.length >= 3, "submit #3 lands");
 			expect(h.submitted).toHaveLength(3);
 			await h.submitted[2]!.sink.onDone(transientDone);
-			await waitUntil(() => h.submitted.length >= 3, "submit #3 lands");
+			await Bun.sleep(10); // negative window: 5× the 2ms retry delay — no 4th submit may land
 			expect(h.submitted).toHaveLength(3);
 			const exhausted = lines(captured).filter((l) => l.msg === "schedule fire retries exhausted");
 			expect(exhausted).toHaveLength(1);

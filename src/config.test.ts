@@ -78,6 +78,23 @@ const parseValues: [string, unknown, (c: Config) => unknown, unknown][] = [
 		(c) => c.publicUrl,
 		"https://example.org",
 	],
+	["sandbox absent means no sandbox tool", objBase, (c) => c.sandbox, undefined],
+	["sandbox '' means no sandbox tool", { ...objBase, sandbox: "" }, (c) => c.sandbox, undefined],
+	[
+		"sandbox empty block fills the defaults",
+		{ ...objBase, sandbox: {} },
+		(c) => c.sandbox,
+		{ image: "docker.io/library/alpine:latest", idleHours: 24, memory: "2g", cpus: 2, pids: 512 },
+	],
+	[
+		"sandbox explicit values parse",
+		{
+			...objBase,
+			sandbox: { image: "docker.io/library/debian:stable-slim", idleHours: 0, pids: 64 },
+		},
+		(c) => [c.sandbox?.image, c.sandbox?.idleHours],
+		["docker.io/library/debian:stable-slim", 0],
+	],
 ];
 for (const [name, input, pick, expected] of parseValues) {
 	test(name, () => {
@@ -95,6 +112,11 @@ const parseThrows: [string, unknown][] = [
 		{ ...ocBase, publicUrl: "http://example.org" },
 	],
 ];
+parseThrows.push(
+	["sandbox flag-shaped image refs fail loud", { ...objBase, sandbox: { image: "--privileged" } }],
+	["sandbox small pids fail loud", { ...objBase, sandbox: { pids: 4 } }],
+	["sandbox negative idleHours fail loud", { ...objBase, sandbox: { idleHours: -1 } }],
+);
 for (const [name, input] of parseThrows) {
 	test(name, () => {
 		expect(() => parseConfig(input)).toThrow();
@@ -953,39 +975,6 @@ describe("transcriptionKinds", () => {
 		expect(
 			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(100).fill("x") }).success,
 		).toBe(true);
-	});
-});
-
-describe("sandbox block", () => {
-	const base = {
-		providers: { test: { kind: "codex" } },
-		model: "test/m",
-		operators: [7],
-		allowedUsers: [7],
-	};
-	test("absent and '' mean no sandbox tool", () => {
-		expect(parseConfig(base).sandbox).toBeUndefined();
-		expect(parseConfig({ ...base, sandbox: "" }).sandbox).toBeUndefined();
-	});
-	test("an empty block fills the defaults", () => {
-		expect(parseConfig({ ...base, sandbox: {} }).sandbox).toEqual({
-			image: "docker.io/library/alpine:latest",
-			idleHours: 24,
-			memory: "2g",
-			cpus: 2,
-			pids: 512,
-		});
-	});
-	test("explicit values parse; bad image refs and small pids fail loud", () => {
-		const cfg = parseConfig({
-			...base,
-			sandbox: { image: "docker.io/library/debian:stable-slim", idleHours: 0, pids: 64 },
-		}).sandbox;
-		expect(cfg?.image).toBe("docker.io/library/debian:stable-slim");
-		expect(cfg?.idleHours).toBe(0);
-		expect(() => parseConfig({ ...base, sandbox: { image: "--privileged" } })).toThrow();
-		expect(() => parseConfig({ ...base, sandbox: { pids: 4 } })).toThrow();
-		expect(() => parseConfig({ ...base, sandbox: { idleHours: -1 } })).toThrow();
 	});
 });
 

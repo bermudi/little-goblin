@@ -73,8 +73,7 @@ export function openTestStore(prefix?: string): {
 
 // ---------- timing: event awaits, not guesses ----------
 
-export const sleep = (ms: number) =>
-	new Promise<void>((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * Poll `cond` until it holds, failing loud after `timeoutMs`. Replaces
@@ -201,7 +200,10 @@ export type GenerateResponder = (
 ) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
 
 /** Generate-arm fake (doGenerate): records the call, answers via `respond`. */
-export function fakeGenerateModel(calls: GenerateCall[], respond: GenerateResponder): LanguageModel {
+export function fakeGenerateModel(
+	calls: GenerateCall[],
+	respond: GenerateResponder,
+): LanguageModel {
 	return {
 		specificationVersion: "v4",
 		provider: "fake",

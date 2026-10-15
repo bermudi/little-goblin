@@ -7,9 +7,7 @@
 // activating, and the table drops either way.
 
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
 	latestFireAtOrBefore,
@@ -18,20 +16,10 @@ import {
 	ProgramRuleError,
 	type ProgramsStore,
 } from "./programs.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-programs-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "./testkit.ts";
 
 function store(): ProgramsStore {
-	return openPrograms(tmpdb());
+	return openPrograms(tmpDb("goblin-programs-"));
 }
 
 // Fixed "now" so cron math is deterministic: 2026-09-20T10:00:00 local.
@@ -365,7 +353,7 @@ describe("programs store", () => {
 	});
 
 	test("rows survive a reopen — same file, fresh connection", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		const a = openPrograms(path);
 		const p = a.create({ name: "x", cron: "* * * * *", charter: "c", address: ADDRESS }, NOW);
 		a.close();
@@ -376,7 +364,7 @@ describe("programs store", () => {
 	});
 
 	test("a pre-mail DB migrates in place — old rows read, new trigger works", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		const db = new Database(path);
 		db.exec(`CREATE TABLE programs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -424,7 +412,7 @@ describe("programs store", () => {
 	// synchronous interval — a throw there is a process exit and a
 	// restart loop on the same row).
 	test("due() and withMailFilter() skip an undecodable row and keep the rest", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		const s = openPrograms(path);
 		const good = s.create(
 			{ name: "good", cron: "* * * * *", charter: "c", address: ADDRESS },
@@ -496,7 +484,7 @@ describe("mail trigger", () => {
 	});
 
 	test("a second connection cannot change the filter between an edit's read and write", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		const a = openPrograms(path);
 		const b = openPrograms(path);
 		const p = a.create({ name: "w", charter: "old", mailFilter: "from:a", address: ADDRESS }, NOW);
@@ -606,7 +594,7 @@ function createLegacyJobs(path: string, rows: number): void {
 
 describe("mail revision upgrade", () => {
 	test("adds a default revision to existing rows; legacy rows beside them archive, never activate", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 1);
 		const db = new Database(path);
 		db.exec(`CREATE TABLE programs (
@@ -649,7 +637,7 @@ describe("mail revision upgrade", () => {
 
 describe("legacy jobs purge", () => {
 	test("unparsable jobs preserve complete recovery data before the legacy table drops", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 2);
 		const fixture = new Database(path);
 		fixture.exec("ALTER TABLE jobs ADD COLUMN recovery_blob BLOB");
@@ -673,7 +661,7 @@ describe("legacy jobs purge", () => {
 	});
 
 	test("failed preservation aborts the purge and retains every original job", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 2);
 		const fixture = new Database(path);
 		fixture.exec(`UPDATE jobs SET cron = 'bad cron' WHERE id = 2;
@@ -694,7 +682,7 @@ describe("legacy jobs purge", () => {
 	});
 
 	test("failed copy rolls back the purge so the next boot can retry", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 2);
 		const fixture = new Database(path);
 		fixture.exec("ALTER TABLE jobs RENAME COLUMN prompt TO missing_prompt");
@@ -720,7 +708,7 @@ describe("legacy jobs purge", () => {
 	});
 
 	test("jobs rows copy in keeping ids, then the table drops; re-opens are no-ops", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 2);
 
 		const a = openPrograms(path);
@@ -759,7 +747,7 @@ describe("legacy jobs purge", () => {
 	});
 
 	test("a jobs row whose id already sits in programs is ignored, not duplicated", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 1);
 		const db = new Database(path);
 		db.exec(`CREATE TABLE programs (
@@ -788,7 +776,7 @@ describe("legacy jobs purge", () => {
 	});
 
 	test("an empty legacy table drops with nothing copied", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 0);
 		const s = openPrograms(path);
 		expect(s.list()).toEqual([]);
@@ -805,7 +793,7 @@ describe("legacy jobs purge", () => {
 		// reflects the operator's deletions (job 2's program is gone). The
 		// open must archive the leftovers, not re-activate them — a revived
 		// row with a past next_run would fire on the next scheduler tick.
-		const path = tmpdb();
+		const path = tmpDb("goblin-programs-");
 		createLegacyJobs(path, 2);
 		const db = new Database(path);
 		db.exec(`CREATE TABLE programs (

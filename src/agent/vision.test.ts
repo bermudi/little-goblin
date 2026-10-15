@@ -7,13 +7,9 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
-import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from "@ai-sdk/provider";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { setLogFile } from "../log.ts";
-import {
-	fakeGenerateModel,
-	type GenerateCall,
-	type GenerateResponder,
-} from "../testkit.ts";
+import { fakeGenerateModel, type GenerateCall, type GenerateResponder } from "../testkit.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import {
 	_resetVisionThreadsForTest,

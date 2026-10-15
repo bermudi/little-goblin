@@ -4,27 +4,15 @@
 // through the shared titler — still implicit so an operator rename
 // always wins.
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
 import { discardSpinOff, launchPin, spinOff, type SpinOffDeps } from "./spinoff.ts";
-
-let dirs: string[] = [];
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-spinoff-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
+import { tmpDb } from "./testkit.ts";
 
 describe("spinOff", () => {
 	test("forks a uuid app copy, links off publicUrl, and retitles through titleFor", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.setMeta(src.id, { model: "test/telegram", thinking: "max" });
 		store.append(src.id, [
@@ -61,7 +49,7 @@ describe("spinOff", () => {
 	});
 
 	test("no publicUrl — the pin renders no link", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		const { link } = spinOff(
 			{
@@ -77,7 +65,7 @@ describe("spinOff", () => {
 	});
 
 	test("an explicit title already on the row is never overwritten", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [{ id: "m", role: "user", parts: [{ type: "text", text: "hi" }] }]);
 		const { conv } = spinOff(
@@ -106,7 +94,7 @@ describe("launchPin", () => {
 	});
 
 	test("an app conversation pins to itself — no fork", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		const app = store.forkToApp(src.id, "x1", "/w", "job");
 		expect(launchPin(deps(store), app, "the work")).toEqual({
@@ -117,7 +105,7 @@ describe("launchPin", () => {
 	});
 
 	test("a rolling DM gets the fork, and discard undoes an unstarted launch", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const dm = store.rollDm(7, "/w");
 		store.append(dm.id, [
 			{ id: "m", role: "user", parts: [{ type: "text", text: "deploy the thing" }] },
@@ -137,7 +125,7 @@ describe("launchPin", () => {
 	});
 
 	test("a group topic keeps its Telegram address", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const topic = store.resolve({ kind: "topic", chatId: 3, threadId: 42 }, "/w");
 		expect(launchPin(deps(store), topic, "the work")).toEqual({
 			address: { chatId: 3, threadId: 42 },
@@ -159,7 +147,7 @@ describe("discardSpinOff", () => {
 	});
 
 	test("an untouched fork is deleted", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [user("deploy it")]);
 		const { conv } = spinOff(deps(store), src, "the work");
@@ -170,7 +158,7 @@ describe("discardSpinOff", () => {
 	});
 
 	test("a fork the operator wrote into is kept — input never rides the discard", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-spinoff-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [user("deploy it")]);
 		const { conv } = spinOff(deps(store), src, "the work");

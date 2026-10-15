@@ -245,7 +245,14 @@ const NoteEditor = forwardRef<
 	// persistent alert, so a broken draft never masquerades as
 	// recovery. No note body or token ever enters either.
 	function reportDraftError(verb: "preserved" | "loaded" | "cleared", e: unknown): void {
-		const msg = e instanceof Error ? e.message : String(e);
+		// A raw SyntaxError message can quote its input (V8) — stored
+		// bytes are note content and never reach the alert/diagnostic.
+		const msg =
+			e instanceof SyntaxError
+				? "stored record is malformed"
+				: e instanceof Error
+					? e.message
+					: String(e);
 		window.dispatchEvent(new ErrorEvent("error", { message: `note draft ${verb} failed: ${msg}` }));
 		if (!unmountedRef.current) setDraftError(`Local draft could not be ${verb}: ${msg}`);
 	}
@@ -326,7 +333,9 @@ const NoteEditor = forwardRef<
 		a.href = url;
 		a.download = `goblin-note-draft-${noteId}.txt`;
 		a.click();
-		URL.revokeObjectURL(url);
+		// Some engines start the download on a later task — a same-tick
+		// revoke can cancel it, and this is the only salvage path.
+		setTimeout(() => URL.revokeObjectURL(url), 0);
 	}
 
 	function discardPreservedDraft(): void {

@@ -9,8 +9,6 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { parseConfig, type Config, type ConfigRef } from "../config.ts";
 import { openStore } from "../conversation.ts";
@@ -86,7 +84,6 @@ function stopUpdate(fields: { threadId?: number }): Update {
 
 const lines: string[] = [];
 const cleanups: Array<() => void> = [];
-let tempDirs: string[] = [];
 
 function captureLog(): void {
 	setLogFile("/tmp/generation-stop-test.log");
@@ -113,7 +110,6 @@ afterEach(() => {
 	setLogWriter(null);
 	setLogFile(null);
 	for (const fn of cleanups.splice(0)) fn();
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("stopped_message_generation", () => {

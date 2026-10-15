@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { transcribeAudio, type EngineTranscript, type SpeechEngine } from "./transcribe.ts";
 import { tmpDir } from "../testkit.ts";

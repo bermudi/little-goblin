@@ -8,7 +8,6 @@
 // drafts without ever claiming a row mid-send.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { TelegramTimeoutError } from "./deadline.ts";

@@ -513,16 +513,33 @@ describe("geminiEngine", () => {
 	});
 });
 
+// The mimo first-party wire (api.xiaomimimo.com/v1/chat/completions,
+// api-key header, dedicated ASR model, wav-only input through the
+// orchestrator's wav profile) — pinned from the published API docs,
+// unverified live until an operator provisions a mimo auth record.
 describe("mimoEngine", () => {
-	test("chats the audio with the transcription prompt and returns the content", async () => {
-		// Verbatim 200 from the 2026-10-10 live probe (trimmed to the
-		// fields the parser reads).
+	function wavFile(): { path: string; mediaType: string; filename: string } {
+		const f = join(tmpDir("goblin-cloud-"), "seg_0000.wav");
+		writeFileSync(f, "wav-bytes");
+		return { path: f, mediaType: "audio/wav", filename: "seg_0000.wav" };
+	}
+
+	test("asks for 16 kHz mono wav segments sized under the base64 cap", () => {
+		const engine = mimoEngine({ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" }, auth);
+		expect(engine.prep).toEqual({ container: "wav", sampleRateHz: 16_000, mono: true });
+		// MiMo caps the base64 data field at 10 MB — 180 s of 16 kHz
+		// mono pcm_s16le encodes to ≈7.7 MB.
+		expect(engine.limits.maxSeconds).toBe(180);
+	});
+
+	test("posts the documented request and returns the content", async () => {
 		const { fn, last } = fakeFetch(
 			200,
 			JSON.stringify({
-				id: "gen-1791572519-U3sXL3ZIm5uQZcFJrw0w",
+				id: "chatcmpl-8k2f9d1a3b4c",
 				object: "chat.completion",
-				model: "xiaomi/mimo-v2.6-flash",
+				created: 1760000000,
+				model: "mimo-v2.5-asr",
 				choices: [
 					{
 						index: 0,
@@ -530,22 +547,20 @@ describe("mimoEngine", () => {
 						message: { role: "assistant", content: "call me back" },
 					},
 				],
-				usage: { prompt_tokens: 54, completion_tokens: 2, total_tokens: 56, cost: 0.00000758 },
+				usage: { prompt_tokens: 128, completion_tokens: 3, total_tokens: 131, seconds: 4 },
 			}),
 		);
 		const engine = mimoEngine(
-			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" },
 			auth,
-			{
-				fetchFn: fn,
-			},
+			{ fetchFn: fn },
 		);
-		expect((await engine.transcribe(voiceFile())).text).toBe("call me back");
+		expect((await engine.transcribe(wavFile())).text).toBe("call me back");
 		const req = last();
-		expect(req.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+		expect(req.url).toBe("https://api.xiaomimimo.com/v1/chat/completions");
+		expect(req.headers["api-key"]).toBe("test-key-material");
 		const body = JSON.parse(String(req.body)) as {
 			model: string;
-			temperature: number;
 			messages: Array<{
 				role: string;
 				content: Array<{
@@ -554,14 +569,37 @@ describe("mimoEngine", () => {
 					text?: string;
 				}>;
 			}>;
+			asr_options?: { language: string };
 		};
-		expect(body.model).toBe("xiaomi/mimo-v2.6-flash");
-		expect(body.temperature).toBe(0);
-		const [audioPart, textPart] = body.messages[0]?.content ?? [];
-		expect(audioPart?.type).toBe("input_audio");
-		expect(audioPart?.input_audio?.format).toBe("ogg");
-		expect(audioPart?.input_audio?.data).toBe(Buffer.from("ogg-bytes").toString("base64"));
-		expect(textPart?.type).toBe("text");
+		expect(body.model).toBe("mimo-v2.5-asr");
+		expect(body.messages).toHaveLength(1);
+		const parts = body.messages[0]?.content ?? [];
+		// The dedicated ASR model takes one audio part and no text part.
+		expect(parts).toHaveLength(1);
+		expect(parts[0]?.type).toBe("input_audio");
+		expect(parts[0]?.input_audio?.format).toBe("wav");
+		expect(parts[0]?.input_audio?.data).toBe(Buffer.from("wav-bytes").toString("base64"));
+		expect(body.asr_options).toBeUndefined();
+	});
+
+	test("a configured language rides as asr_options.language", async () => {
+		const { fn, last } = fakeFetch(
+			200,
+			JSON.stringify({
+				choices: [
+					{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hola" } },
+				],
+			}),
+		);
+		const engine = mimoEngine(
+			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo", language: "en" },
+			auth,
+			{ fetchFn: fn },
+		);
+		await engine.transcribe(wavFile());
+		expect(JSON.parse(String(last().body))).toMatchObject({
+			asr_options: { language: "en" },
+		});
 	});
 
 	test("empty model output is silence, not failure", async () => {
@@ -572,80 +610,21 @@ describe("mimoEngine", () => {
 			}),
 		);
 		const engine = mimoEngine(
-			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" },
 			auth,
-			{
-				fetchFn: fn,
-			},
+			{ fetchFn: fn },
 		);
-		expect(await engine.transcribe(voiceFile())).toEqual({ text: "" });
+		expect(await engine.transcribe(wavFile())).toEqual({ text: "" });
 	});
 
-	test("a video note's .mp4 extracts before the chat call", async () => {
-		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const { fn, last } = fakeFetch(
-			200,
-			JSON.stringify({
-				choices: [
-					{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hola" } },
-				],
-			}),
-		);
+	test("a missing auth record propagates before any request", async () => {
+		const { fn, seen } = fakeFetch(200, JSON.stringify({ choices: [] }));
 		const engine = mimoEngine(
-			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "gone" },
 			auth,
-			{
-				fetchFn: fn,
-			},
+			{ fetchFn: fn },
 		);
-		const dir = tmpDir("goblin-cloud-");
-		const mp4 = join(dir, "video-note-u1.mp4");
-		const gen = Bun.spawnSync([
-			"ffmpeg",
-			"-hide_banner",
-			"-loglevel",
-			"error",
-			"-f",
-			"lavfi",
-			"-i",
-			"sine=frequency=440:duration=1",
-			"-f",
-			"lavfi",
-			"-i",
-			"testsrc=duration=1:size=64x64:rate=10",
-			"-c:v",
-			"libx264",
-			"-pix_fmt",
-			"yuv420p",
-			"-c:a",
-			"aac",
-			"-shortest",
-			mp4,
-		]);
-		if (gen.exitCode !== 0) throw new Error(`test mp4 gen: ${gen.stderr.toString()}`);
-		expect(
-			(
-				await engine.transcribe({
-					path: mp4,
-					mediaType: "video/mp4",
-					filename: "video-note-u1.mp4",
-				})
-			).text,
-		).toBe("hola");
-		const req = last();
-		expect(req.url).toBe("https://openrouter.ai/api/v1/chat/completions");
-		const body = JSON.parse(String(req.body)) as {
-			messages: Array<{
-				content: Array<{ type: string; input_audio?: { data: string; format: string } }>;
-			}>;
-		};
-		const [audioPart] = body.messages[0]?.content ?? [];
-		expect(audioPart?.type).toBe("input_audio");
-		expect(audioPart?.input_audio?.format).toBe("ogg");
-		expect(
-			Buffer.from(audioPart?.input_audio?.data ?? "", "base64")
-				.subarray(0, 4)
-				.toString(),
-		).toBe("OggS");
+		await expect(engine.transcribe(wavFile())).rejects.toThrow("no such secret: gone");
+		expect(seen.length).toBe(0);
 	});
 });

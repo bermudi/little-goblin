@@ -3,8 +3,8 @@
 Voice works in both directions: the bot listens (transcription) and speaks
 (text-to-speech). Transcription is opt-in; speech is on by default, but can
 be turned off independently with `tts: ""`. Speech needs `ffmpeg` in the
-bot's `PATH`; transcription needs it for the whistle engine (always — it is
-the decoder) and for cloud files over the provider upload cap.
+bot's `PATH`; transcription needs it for whistle and mimo (always — it is
+the wav decoder/converter) and for cloud files over the provider upload cap.
 
 ## Hearing you: transcription
 
@@ -35,14 +35,15 @@ transcription: { kind: "openai" },     // gpt-4o-mini-transcribe
 transcription: { kind: "mistral" },    // voxtral
 transcription: { kind: "elevenlabs" }, // scribe_v2
 transcription: { kind: "gemini" },     // gemini-flash-latest
-transcription: { kind: "mimo" },       // xiaomi/mimo-v2.6-flash, via openrouter
+transcription: { kind: "mimo" },       // mimo-v2.5-asr, Xiaomi first-party — billed per audio hour
 transcription: { kind: "openrouter", model: "elevenlabs/scribe-v2" }, // the STT catalog
 transcription: { kind: "logfare" },    // whisper-large-v3-turbo; model: "nova-3" also works
 ```
 
 Each kind defaults its `model` and its `auth` (the `auth.jsonl` record
-name — usually the kind's own name; mimo reuses `openrouter`). Override
-either explicitly, and add `language: "es"` to skip detection. Long
+name — the kind's own name). Override
+either explicitly, and add `language: "es"` to skip detection (mimo's
+vocabulary is narrower: `en`, `zh`, or `auto`). Long
 files are segmented automatically whatever the kind; openrouter warns
 of ~60 s upstream processing per request, so prefer whistle or groq
 for hour-long recordings.
@@ -67,8 +68,9 @@ Practical notes:
 - Files over the provider's upload cap (25 MB for the cloud kinds; the
   chat-based kinds cap lower) are split into chunks, transcribed piece by
   piece, and joined — video notes shrink a lot here, since the audio
-  track alone is a fraction of the file. Whistle always converts to its
-  native format and splits at its 30 s ceiling.
+  track alone is a fraction of the file. Whistle and mimo always convert
+  to 16 kHz mono wav first — whistle splits at its 30 s ceiling, mimo at
+  3 minutes (sized so every request stays under its base64 cap).
 - If transcription fails (provider down, `ffmpeg` missing, corrupt file),
   the attachment stays as a file reference and the log says why. A failed
   transcript never eats your message.
@@ -90,7 +92,7 @@ break, and `ffmpeg` must be installed (it repackages the audio into a real
 Telegram voice-note bubble). A synthesis failure is always reported, never
 silent — and never fails the whole reply because of it.
 
-### Cloud voices via OpenRouter
+### Cloud voices
 
 `kind: "openrouter"` speaks through OpenRouter's text-to-speech endpoint
 instead — one request shape for every speech model they route. It needs an
@@ -108,9 +110,9 @@ tts: {
 
 Omit `voice` to use the model's default voice. The `voices` language cast
 is edge-only — upstream voice ids carry no language to match on, so one
-voice speaks everything (Fish S2 is multilingual on its own). OpenRouter
-returns mp3 that must be re-encoded to ogg/opus, so the boot ffmpeg probe
-additionally requires the `libopus` encoder for this kind.
+voice speaks everything (Fish S2 is multilingual on its own). Every cloud
+kind returns mp3 that must be re-encoded to ogg/opus, so the boot ffmpeg
+probe additionally requires the `libopus` encoder for these kinds.
 
 `kind: "logfare"` speaks through Logfare's speech endpoint — the same
 request shape, a `logfare` key in `auth.jsonl`, and its catalog is
@@ -119,6 +121,16 @@ Deepgram Aura (`aura-2-en` by default; voice ids look like
 
 ```json5
 tts: { kind: "logfare", model: "aura-2-en", voice: "aura-2-asteria-en" },
+```
+
+`kind: "mimo"` speaks through Xiaomi's first-party MiMo API — same
+`mimo` auth record as mimo transcription. Its catalog is `mimo-v2.5-tts`
+with built-in voices: `Mia`, `Chloe`, `Milo`, `Dean` for English;
+`冰糖`, `茉莉`, `苏打`, `白桦` for Chinese; blank `voice` uses
+`mimo_default`.
+
+```json5
+tts: { kind: "mimo", voice: "Mia" },
 ```
 
 Three ways to hear the bot:

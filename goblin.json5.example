@@ -88,6 +88,10 @@
   // Logfare's speech endpoint (same POST shape) — its catalog is
   // Deepgram Aura; voice ids look like "aura-2-asteria-en".
   // tts: { kind: "logfare", model: "aura-2-en", auth: "logfare" },
+  // Xiaomi MiMo first-party (needs a "mimo" auth.jsonl record — the
+  // same record keys mimo transcription below). Built-in voices:
+  // Mia, Chloe, Milo, Dean (en); 冰糖, 茉莉, 苏打, 白桦 (zh).
+  // tts: { kind: "mimo", voice: "Mia" },
 
   // Speech → text for voice and video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript
@@ -105,14 +109,14 @@
   //   for managed installs.
   // },
   // Cloud kinds (auth defaults to the kind name — the auth.jsonl
-  // record to add; mimo rides the openrouter key):
+  // record to add):
   // transcription: { kind: "groq" },       // whisper-large-v3-turbo
   // transcription: { kind: "openai" },    // gpt-4o-mini-transcribe
   // transcription: { kind: "openrouter", model: "elevenlabs/scribe-v2" }, // STT catalog
   // transcription: { kind: "mistral" },   // voxtral
   // transcription: { kind: "elevenlabs" }, // scribe_v2
   // transcription: { kind: "gemini" },    // gemini-flash-latest
-  // transcription: { kind: "mimo" },      // xiaomi/mimo-v2.6-flash
+  // transcription: { kind: "mimo" },      // mimo-v2.5-asr — Xiaomi first-party
   // transcription: { kind: "logfare" },   // whisper-large-v3-turbo (or nova-3)
 
   // --- Vision (image Q&A) ---

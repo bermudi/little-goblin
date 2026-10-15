@@ -967,6 +967,13 @@ describe("transcriptionKinds", () => {
 		expect(transcriptionSchema.safeParse({ kind: "groq", language: "ES" }).success).toBe(false);
 	});
 
+	test("mimo's language is the closed asr_options vocabulary", () => {
+		expect(transcriptionSchema.safeParse({ kind: "mimo", language: "en" }).success).toBe(true);
+		expect(transcriptionSchema.safeParse({ kind: "mimo", language: "zh" }).success).toBe(true);
+		expect(transcriptionSchema.safeParse({ kind: "mimo", language: "auto" }).success).toBe(true);
+		expect(transcriptionSchema.safeParse({ kind: "mimo", language: "es" }).success).toBe(false);
+	});
+
 	test("whistle keywords cap at 100 non-empty entries", () => {
 		expect(
 			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(101).fill("x") }).success,

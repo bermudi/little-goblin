@@ -80,7 +80,7 @@ export interface ProvDraft {
 	baseUrl: string;
 	auth: string;
 }
-export type TtsKind = "edge" | "openrouter" | "logfare";
+export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo";
 // Widened like TrDraft: edge-only fields (rate/voices) and
 // cloud-only fields (model/auth) all ride the draft so a save
 // never drops a hand edit; bodyFromDraft emits each kind's own arm.

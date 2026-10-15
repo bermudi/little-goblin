@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AuthStore } from "../auth.ts";
 import { synthesizeSpeech } from "./tts.ts";
-import { logfareSpeech, openrouterSpeech } from "./tts-cloud.ts";
+import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const auth: AuthStore = {
 	resolve: async (name) => {
@@ -197,6 +197,82 @@ describe("synthesizeSpeech openrouter dispatch", () => {
 		await expect(synthesizeSpeech("hi", cfg, { fetchFn: fn })).rejects.toThrow(
 			"openrouter tts needs an auth store",
 		);
+		expect(seen.length).toBe(0);
+	});
+});
+
+// MiMo's chat-completions speech wire — doc-pinned
+// (api.xiaomimimo.com/v1/chat/completions, api-key auth, assistant
+// message carries the target text, audio comes back base64), unverified
+// live until an operator provisions a mimo auth record.
+describe("mimoSpeech", () => {
+	const mimoCfg = { kind: "mimo" as const, model: "mimo-v2.5-tts", auth: "mimo" };
+	const mimoBody = JSON.stringify({
+		id: "chatcmpl-8k2f9d1a3b4c",
+		object: "chat.completion",
+		model: "mimo-v2.5-tts",
+		choices: [
+			{
+				index: 0,
+				finish_reason: "stop",
+				message: {
+					role: "assistant",
+					audio: { id: "audio-1", data: Buffer.from(MP3).toString("base64") },
+				},
+			},
+		],
+	});
+
+	test("posts the documented request and decodes the base64 audio", async () => {
+		const { fn, last } = fakeFetch(200, mimoBody);
+		const synth = mimoSpeech(mimoCfg, auth, { fetchFn: fn });
+		const audio = await synth("Say the thing.", options);
+		expect(audio).toEqual(MP3);
+		const req = last();
+		expect(req.url).toBe("https://api.xiaomimimo.com/v1/chat/completions");
+		expect(req.headers["api-key"]).toBe("test-key-material");
+		expect(JSON.parse(req.body)).toEqual({
+			model: "mimo-v2.5-tts",
+			messages: [{ role: "assistant", content: "Say the thing." }],
+			audio: { format: "mp3" },
+		});
+	});
+
+	test("a configured voice rides the audio object; blank omits it", async () => {
+		const { fn, last } = fakeFetch(200, mimoBody);
+		const synth = mimoSpeech({ ...mimoCfg, voice: "Mia" }, auth, { fetchFn: fn });
+		await synth("hi", { ...options, voice: "Mia" });
+		expect(JSON.parse(last().body)).toMatchObject({ audio: { format: "mp3", voice: "Mia" } });
+		await synth("hi", options);
+		expect((JSON.parse(last().body) as { audio: { voice?: string } }).audio.voice).toBeUndefined();
+	});
+
+	test("a 200 without audio fails loud", async () => {
+		const { fn } = fakeFetch(
+			200,
+			JSON.stringify({
+				choices: [
+					{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "text only" } },
+				],
+			}),
+		);
+		const synth = mimoSpeech(mimoCfg, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow("mimo: no audio in response");
+	});
+
+	test("the error envelope renders as a loud, named error", async () => {
+		const { fn } = fakeFetch(
+			401,
+			JSON.stringify({ error: { message: "Invalid API Key", type: "invalid_request_error" } }),
+		);
+		const synth = mimoSpeech(mimoCfg, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow("mimo: HTTP 401 — Invalid API Key");
+	});
+
+	test("a resolve failure propagates before the wire", async () => {
+		const { fn, seen } = fakeFetch(200, mimoBody);
+		const synth = mimoSpeech({ ...mimoCfg, auth: "gone" }, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow("no such secret: gone");
 		expect(seen.length).toBe(0);
 	});
 });

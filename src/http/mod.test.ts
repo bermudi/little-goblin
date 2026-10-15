@@ -1341,8 +1341,8 @@ describe("transcription config", () => {
 			};
 			expect(body.transcriptionKinds[0]).toBe("whistle");
 			expect(body.transcriptionDefaults.mimo).toEqual({
-				model: "xiaomi/mimo-v2.6-flash",
-				auth: "openrouter",
+				model: "mimo-v2.5-asr",
+				auth: "mimo",
 			});
 			// Logfare rides the shared cloud defaults like every other kind.
 			expect(body.transcriptionKinds).toContain("logfare");

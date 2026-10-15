@@ -4,12 +4,15 @@
 //   OpenAI-compatible multipart — groq, openai, mistral, logfare: one
 //     implementation, four URLs, {"text": …} back.
 //   Bespoke — elevenlabs (multipart, xi-api-key), openrouter (JSON
-//     base64 STT), gemini + mimo (chat-with-audio by instruction).
+//     base64 STT), gemini (chat-with-audio by instruction), mimo
+//     (first-party chat-completions ASR — a dedicated model, no prompt).
 //
 // Response and error shapes are pinned verbatim in transcribe-cloud
 // .test.ts (probed live 2026-10-09/10 — design/asr.md → Verbatim
-// contracts; openrouter-ogg and mimo verified live during
-// implementation). Resolved keys never enter logs.
+// contracts; openrouter-ogg verified live during implementation, the
+// mimo first-party wire is doc-pinned, unverified live until an
+// operator provisions a mimo auth record). Resolved keys never enter
+// logs.
 
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -103,7 +106,10 @@ const chatResponse = z.object({
 			}),
 		)
 		.min(1),
-	usage: z.object({ cost: z.number().optional() }).optional(),
+	// cost is OpenRouter's; seconds is MiMo's billed audio duration.
+	usage: z
+		.object({ cost: z.number().optional(), seconds: z.number().optional() })
+		.optional(),
 });
 
 // ---------- OpenAI-compatible multipart ----------
@@ -432,62 +438,66 @@ export function geminiEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = 
 	};
 }
 
-// mimo rides OpenRouter's chat completions with inline audio — Xiaomi
-// serves the model there; there is no first-party API.
+// ---------- mimo first-party (api.xiaomimimo.com) ----------
+
+// MiMo's dedicated ASR model answers chat completions whose only
+// content part is the audio — no transcription prompt, no text part.
+// Input accepts wav/mp3 only, ≤10 MB base64, so the engine rides the
+// wav prep profile: the orchestrator hands it 16 kHz mono segments,
+// and MIMO_SEGMENT_SECONDS keeps every request's data field under
+// the cap (180 s × 32 kB/s × 4/3 ≈ 7.7 MB).
+const MIMO_URL = "https://api.xiaomimimo.com/v1/chat/completions";
+const MIMO_SEGMENT_SECONDS = 180;
+
 export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
 	return {
 		id: `mimo/${cfg.model}`,
-		limits: { maxBytes: CHAT_MAX_BYTES, maxSeconds: CHAT_SEGMENT_SECONDS },
-		prep: { container: "keep" },
+		limits: { maxSeconds: MIMO_SEGMENT_SECONDS },
+		prep: { container: "wav", sampleRateHz: 16_000, mono: true },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const key = await auth.resolve(cfg.auth);
-			const prepared = await preparedInputAudio("mimo", file);
-			try {
-				const res = await httpPost("mimo", "https://openrouter.ai/api/v1/chat/completions", {
-					headers: {
-						authorization: `Bearer ${key}`,
-						"content-type": "application/json",
-					},
-					body: JSON.stringify({
-						model: cfg.model,
-						temperature: 0,
-						max_tokens: CHAT_OUTPUT_TOKEN_CAP,
-						messages: [
-							{
-								role: "user",
-								content: [
-									{
-										type: "input_audio",
-										input_audio: {
-											data: await base64Audio(prepared.path),
-											format: prepared.format,
-										},
+			const res = await httpPost("mimo", MIMO_URL, {
+				headers: {
+					"api-key": key,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					model: cfg.model,
+					messages: [
+						{
+							role: "user",
+							content: [
+								{
+									type: "input_audio",
+									input_audio: {
+										data: await base64Audio(file.path),
+										format: "wav",
 									},
-									{ type: "text", text: TRANSCRIBE_PROMPT },
-								],
-							},
-						],
-					}),
-					deps,
-					timeoutMs: CHAT_TIMEOUT_MS,
+								},
+							],
+						},
+					],
+					...(cfg.language !== undefined
+						? { asr_options: { language: cfg.language } }
+						: {}),
+				}),
+				deps,
+				timeoutMs: CHAT_TIMEOUT_MS,
+			});
+			const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
+			if (tooLarge) throw new Error(`mimo: response over ${RESPONSE_CAP} bytes`);
+			if (!res.ok) throw renderError("mimo", res.status, text);
+			const parsed = parseBody("mimo", text, chatResponse);
+			const choice = parsed.choices[0];
+			if (choice === undefined) throw new Error("mimo: unexpected response shape — no choices");
+			if (choice.finish_reason === "length") {
+				log.warn("transcription hit the chat output cap — transcript is truncated", {
+					engine: `mimo/${cfg.model}`,
+					file: file.filename,
 				});
-				const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
-				if (tooLarge) throw new Error(`mimo: response over ${RESPONSE_CAP} bytes`);
-				if (!res.ok) throw renderError("mimo", res.status, text);
-				const parsed = parseBody("mimo", text, chatResponse);
-				const choice = parsed.choices[0];
-				if (choice === undefined) throw new Error("mimo: unexpected response shape — no choices");
-				if (choice.finish_reason === "length") {
-					log.warn("transcription hit the chat output cap — transcript is truncated", {
-						engine: `mimo/${cfg.model}`,
-						file: file.filename,
-					});
-				}
-				logUsage(`mimo/${cfg.model}`, parsed.usage);
-				return { text: choice.message.content.trim() };
-			} finally {
-				await prepared.cleanup();
 			}
+			logUsage(`mimo/${cfg.model}`, parsed.usage);
+			return { text: choice.message.content.trim() };
 		},
 	};
 }

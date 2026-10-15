@@ -92,16 +92,24 @@ model/thinking (history still copies, as specified in design/app.md).
 - **TTS**: default-on — absent config means
   `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
   explicit off (it parses to `false` so the mini app's whole-file
-  rewrite can't silently lose it and reload as on). Three kinds: `edge`
+  rewrite can't silently lose it and reload as on). Four kinds: `edge`
   is the Edge read-aloud websocket (no auth, unofficial, it can break);
   `openrouter` is OpenRouter's `POST /api/v1/audio/speech` — one
   JSON shape for every upstream speech model (`model`, `input`,
   `voice?`, `response_format`), raw mp3 back, resolved via its `auth`
-  record like every cloud provider — and `logfare` is the same call
+  record like every cloud provider — `logfare` is the same call
   against `logfare.ai/v1/audio/speech` minus `response_format`, which
   its documented speech table doesn't list (mp3 is the endpoint
   default; Deepgram Aura catalog, `aura-2-en` default; doc-pinned,
-  unverified live). Failures
+  unverified live) — and `mimo` is Xiaomi's first-party
+  chat-completions speech (`api.xiaomimimo.com/v1/chat/completions`,
+  `api-key` header): the target text rides an `assistant` message,
+  `audio:{format:"mp3", voice?}` asks for a built-in voice id
+  (`mimo_default`, Mia, Chloe, Milo, Dean, 冰糖, 茉莉, 苏打, 白桦 — blank
+  omits it for the model default), and the synthesized bytes come back
+  base64 in `choices[0].message.audio.data` (doc-pinned, unverified
+  live; the voice-design and voice-clone models' extra message roles
+  are not exercised). Failures
   surface as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the

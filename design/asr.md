@@ -71,29 +71,34 @@ Kinds (`zod` discriminated union in `config.ts`):
 | `mistral` | `mistralai/voxtral-mini-3b-2507` | `mistral` | multipart `POST api.mistral.ai/v1/audio/transcriptions` | multilingual, detected |
 | `elevenlabs` | `scribe_v2` | `elevenlabs` | multipart `POST api.elevenlabs.io/v1/speech-to-text` | 90+, detected |
 | `gemini` | `gemini-flash-latest` | `gemini` | REST `generateContent` with inline audio + verbatim-transcription prompt | per model |
-| `mimo` | `xiaomi/mimo-v2.6-flash` | `openrouter` | OpenRouter chat completions with `input_audio` + transcription prompt | per model |
+| `mimo` | `mimo-v2.5-asr` | `mimo` | first-party `POST api.xiaomimimo.com/v1/chat/completions` — dedicated ASR model, `input_audio` wav/mp3, no prompt | auto zh en |
 | `logfare` | `whisper-large-v3-turbo` | `logfare` | multipart `POST logfare.ai/v1/audio/transcriptions` | 99, detected |
 
 - `auth` optional on cloud kinds, defaulting to the kind name — the
   auth.jsonl record the operator is expected to add (`groq` precedent).
-  `mimo` defaults to `openrouter` because Xiaomi serves MiMo through
-  OpenRouter; no first-party Xiaomi API exists.
+  `mimo` rides Xiaomi's first-party Open Platform API
+  (api.xiaomimimo.com); billing is per input-audio hour, reported back
+  as `usage.seconds`.
 - `openrouter` is the metaprovider: its STT catalog (verified 2026-10-09:
   elevenlabs scribe-v2, gemini-3.5-transcribe, chirp-3, voxtral, qwen3-asr,
   whisper, gpt-transcribe, mai-transcribe, grok-stt, nova-3 …) is one
   `model:` string away. The dedicated kinds (elevenlabs, gemini, mistral,
   openai) exist for direct billing/privacy control — same data, no
   middleman.
-- Chat-family kinds (`gemini`, `mimo`) transcribe by instruction: system
+- Chat-by-instruction kinds (`gemini`) transcribe by instruction: system
   prompt demands verbatim transcript only, temperature 0, output capped.
   They inherit the chat model's language coverage and its price per
   output token; they do NOT get special parsing — `choices[0].message
   .content` / `candidates[0].content.parts[].text`, trimmed, treated as
   the transcript. A model that answers with commentary produces
   commentary; the config names the model, the model is the operator's
-  choice.
+  choice. `mimo` shares the chat-completions envelope but is a
+  *dedicated* ASR model: the audio part alone is the whole request, and
+  its `asr_options.language` vocabulary is closed (auto/zh/en), so its
+  `language` field is that enum, not the ISO free string.
 - Optional `language` passthrough on every kind (ISO-639-1; whistle's
-  enum, elevenlabs also accepts 639-3). Omitted = detect everywhere.
+  enum, elevenlabs also accepts 639-3, mimo its own closed enum).
+  Omitted = detect everywhere.
 - **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are
   doc-pinned, not live-probed (no local key at implementation time).
   Logfare is an OpenAI-compatible relay — its docs note requests may be
@@ -113,8 +118,8 @@ reads `error.message ?? detail ?? body`.
 
 **Bespoke** (whistle engine binary, elevenlabs multipart with
 `xi-api-key` + `model_id`, gemini generateContent, openrouter JSON with
-base64 `input_audio`, mimo chat). Each is small, each pinned verbatim in
-tests with the shapes recorded in the appendix.
+base64 `input_audio`, mimo first-party chat completions). Each is small,
+each pinned verbatim in tests with the shapes recorded in the appendix.
 
 Borrowed from openclaw (MIT, `src/media-understanding/`): the *shape*,
 not the code — local CLI transcription as a first-class provider kind
@@ -180,8 +185,11 @@ speech anywhere, throw = failure. The size-cap decision generalizes:
 - `container:"keep"` engines (all cloud): today's behavior — under
   `maxBytes` (default 25 MiB, OpenAI/groq/mistral multipart cap) pass
   the original bytes; over it, 15-minute 48 kHz mono opus segments.
-- `container:"wav"` engines (whistle): always the 16 kHz mono wav
-  segment pass above; `maxSeconds: 28` per segment.
+- `container:"wav"` engines (whistle, mimo): always the 16 kHz mono wav
+  segment pass above; `maxSeconds` per segment — 28 for whistle's 30 s
+  engine cap, 180 for mimo (its contract is wav/mp3 and a 10 MB base64
+  ceiling; 180 s of pcm_s16le encodes to ≈7.7 MB, so the profile makes
+  request size deterministic whatever the source container or bitrate).
 - Chat-family inline-base64 engines cap bytes lower (gemini
   `inlineData` request budget ≈ 20 MB total): `maxBytes` 12 MiB with
   10-minute segments keeps the base64-inflated body safely under.
@@ -254,9 +262,12 @@ Probed live 2026-10-09; the test fixtures copy these bodies exactly.
 Gemini (`generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`,
 header `x-goog-api-key`, `contents[].parts[].inlineData {mimeType, data}`)
 rides the docs' shape; its fixtures stay doc-pinned until the first live
-call at operator setup (no local key). mimo (OpenRouter `chat/completions`,
-user content `[{type:"input_audio", input_audio:{data,format:"ogg"}},
-{type:"text",…}]`) was verified live during implementation — 200,
-`choices[0].message.content`, finish_reason stop — its fixture is the
-verbatim response.
+call at operator setup (no local key). The mimo arm
+(`api.xiaomimimo.com/v1/chat/completions`, header `api-key`,
+`{model:"mimo-v2.5-asr", messages:[{role:"user", content:[{type:
+"input_audio", input_audio:{data,format:"wav"}}]}], asr_options?}` →
+`choices[0].message.content`, `usage.seconds` = billed audio duration)
+is doc-pinned the same way until a `mimo` auth record exists — the
+OpenRouter chat probe that justified this kind's original shape is
+retired along with that wire.
 

@@ -164,7 +164,7 @@ describe("conversation store", () => {
 	});
 
 	test("bumpEpoch advances past a deleted address's previous authority", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const addr = { kind: "dm" as const, chatId: 1 };
 		const c = store.resolve(addr, "/w");
 		const previous = store.bumpEpoch(c.id);

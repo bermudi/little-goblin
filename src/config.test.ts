@@ -917,21 +917,25 @@ describe("transcriptionKinds", () => {
 		expect(new Set(schemaKinds)).toEqual(new Set(transcriptionKinds));
 	});
 
-	test("cloud language passthrough validates as ISO-639-1", () => {
-		expect(transcriptionSchema.safeParse({ kind: "groq", language: "es" }).success).toBe(true);
-		expect(transcriptionSchema.safeParse({ kind: "groq", language: "esp" }).success).toBe(false);
-		expect(transcriptionSchema.safeParse({ kind: "groq", language: "ES" }).success).toBe(false);
-	});
+	for (const [language, accepted] of [
+		["es", true],
+		["esp", false],
+		["ES", false],
+	] as const) {
+		test(`cloud language ${JSON.stringify(language)} is ${accepted ? "accepted" : "rejected"}`, () => {
+			expect(transcriptionSchema.safeParse({ kind: "groq", language }).success).toBe(accepted);
+		});
+	}
 
-	test("whistle keywords cap at 100 non-empty entries", () => {
-		expect(
-			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(101).fill("x") }).success,
-		).toBe(false);
-		expect(transcriptionSchema.safeParse({ kind: "whistle", keywords: [""] }).success).toBe(false);
-		expect(
-			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(100).fill("x") }).success,
-		).toBe(true);
-	});
+	for (const [name, keywords, accepted] of [
+		["100 non-empty entries", Array(100).fill("x"), true],
+		["101 entries", Array(101).fill("x"), false],
+		["an empty entry", [""], false],
+	] as const) {
+		test(`whistle keywords ${accepted ? "accept" : "reject"} ${name}`, () => {
+			expect(transcriptionSchema.safeParse({ kind: "whistle", keywords }).success).toBe(accepted);
+		});
+	}
 });
 
 describe("sandbox block", () => {

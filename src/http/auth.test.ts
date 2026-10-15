@@ -17,54 +17,29 @@ function makeInitData(fields: Record<string, string>): string {
 }
 
 const allowed = new Set([42]);
+const nowSeconds = Math.floor(Date.now() / 1000);
+const signedUser = (id = 42, authDate = nowSeconds) =>
+	makeInitData({ auth_date: String(authDate), user: JSON.stringify({ id }) });
+const tamperedUser = new URLSearchParams(signedUser());
+tamperedUser.set("user", JSON.stringify({ id: 7 }));
+
+type RejectedCase = readonly [name: string, data: string, token: string, operators: Set<number>];
+const rejectedCases: RejectedCase[] = [
+	["tampered fields fail the HMAC", tamperedUser.toString(), TOKEN, allowed],
+	["wrong token fails", signedUser(), "other-token", allowed],
+	["allowed HMAC but disallowed user fails", signedUser(99), TOKEN, allowed],
+	["stale auth_date fails", signedUser(42, nowSeconds - 90_000), TOKEN, allowed],
+	["auth_date far in the future fails", signedUser(42, nowSeconds + 3600), TOKEN, allowed],
+];
 
 describe("initData validation", () => {
 	test("valid initData returns the user", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000)),
-			user: JSON.stringify({ id: 42 }),
-		});
-		expect(validateInitData(data, TOKEN, allowed)).toEqual({ id: 42 });
+		expect(validateInitData(signedUser(), TOKEN, allowed)).toEqual({ id: 42 });
 	});
 
-	test("tampered fields fail the HMAC", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000)),
-			user: JSON.stringify({ id: 42 }),
+	for (const [name, data, token, operators] of rejectedCases) {
+		test(name, () => {
+			expect(validateInitData(data, token, operators)).toBeNull();
 		});
-		const tampered = data.replace("42", "7");
-		expect(validateInitData(tampered, TOKEN, allowed)).toBeNull();
-	});
-
-	test("wrong token fails", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000)),
-			user: JSON.stringify({ id: 42 }),
-		});
-		expect(validateInitData(data, "other-token", allowed)).toBeNull();
-	});
-
-	test("allowed HMAC but disallowed user fails", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000)),
-			user: JSON.stringify({ id: 99 }),
-		});
-		expect(validateInitData(data, TOKEN, allowed)).toBeNull();
-	});
-
-	test("stale auth_date fails", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000) - 90000),
-			user: JSON.stringify({ id: 42 }),
-		});
-		expect(validateInitData(data, TOKEN, allowed)).toBeNull();
-	});
-
-	test("auth_date far in the future fails", () => {
-		const data = makeInitData({
-			auth_date: String(Math.floor(Date.now() / 1000) + 3600),
-			user: JSON.stringify({ id: 42 }),
-		});
-		expect(validateInitData(data, TOKEN, allowed)).toBeNull();
-	});
+	}
 });

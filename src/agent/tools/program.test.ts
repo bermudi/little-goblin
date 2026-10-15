@@ -53,7 +53,7 @@ const exec = (t: ReturnType<typeof programTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("program tool", () => {
-	test("provider sees an object schema; missing action arguments still fail validation", () => {
+	test("provider sees an object schema with the documented actions", () => {
 		const wire = z.toJSONSchema(programInputSchema);
 		expect(wire.type).toBe("object");
 		expect(wire.properties?.action).toEqual({
@@ -61,50 +61,58 @@ describe("program tool", () => {
 			enum: ["list", "create", "update", "delete", "toggle", "hook"],
 		});
 		expect(wire.required).toContain("action");
-		expect(programInputSchema.safeParse({}).success).toBe(false);
-		expect(programInputSchema.safeParse({ action: "create" }).success).toBe(false);
-		expect(programInputSchema.safeParse({ action: "create", name: "x" }).success).toBe(false);
-		// null only clears on update — never on create.
-		expect(
-			programInputSchema.safeParse({ action: "create", name: "x", charter: "y", cron: null })
-				.success,
-		).toBe(false);
-		expect(
-			programInputSchema.safeParse({ action: "create", name: "x", charter: "y" }).success,
-		).toBe(true);
-		expect(programInputSchema.safeParse({ action: "update", id: 1, cron: null }).success).toBe(
-			true,
-		);
-		expect(
-			programInputSchema.safeParse({
+	});
+
+	const schemaCases: Array<readonly [name: string, input: unknown, accepted: boolean]> = [
+		["requires an action", {}, false],
+		["create requires arguments", { action: "create" }, false],
+		["create requires a charter", { action: "create", name: "x" }, false],
+		[
+			"create cannot clear cron with null",
+			{ action: "create", name: "x", charter: "y", cron: null },
+			false,
+		],
+		["create accepts an omitted cron", { action: "create", name: "x", charter: "y" }, true],
+		["update can clear cron", { action: "update", id: 1, cron: null }, true],
+		[
+			"create accepts a valid lateness limit",
+			{
 				action: "create",
 				name: "x",
 				charter: "y",
 				cron: "0 9 * * *",
 				maxLatenessMinutes: 30,
-			}).success,
-		).toBe(true);
-		expect(
-			programInputSchema.safeParse({ action: "update", id: 1, maxLatenessMinutes: null }).success,
-		).toBe(true);
-		expect(
-			programInputSchema.safeParse({
+			},
+			true,
+		],
+		[
+			"update can clear the lateness limit",
+			{ action: "update", id: 1, maxLatenessMinutes: null },
+			true,
+		],
+		[
+			"create rejects a negative lateness limit",
+			{
 				action: "create",
 				name: "x",
 				charter: "y",
 				cron: "0 9 * * *",
 				maxLatenessMinutes: -1,
-			}).success,
-		).toBe(false);
-		expect(
-			programInputSchema.safeParse({
-				action: "update",
-				id: 1,
-				maxLatenessMinutes: 1.5,
-			}).success,
-		).toBe(false);
-		expect(programInputSchema.safeParse({ action: "toggle", id: 3 }).success).toBe(true);
-	});
+			},
+			false,
+		],
+		[
+			"update rejects a fractional lateness limit",
+			{ action: "update", id: 1, maxLatenessMinutes: 1.5 },
+			false,
+		],
+		["toggle accepts an id", { action: "toggle", id: 3 }, true],
+	];
+	for (const [name, input, accepted] of schemaCases) {
+		test(`input schema ${name}`, () => {
+			expect(programInputSchema.safeParse(input).success).toBe(accepted);
+		});
+	}
 	test("create pins the live conversation's address onto the program", async () => {
 		const { tool, programs } = toolFor(-100, 7);
 		const out = (await exec(tool, {

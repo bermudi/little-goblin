@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,29 +12,14 @@ import {
 	resolveLinkedDir,
 	slugify,
 } from "./projects.ts";
+import { tmpDir, useHome } from "./testkit.ts";
 
 // Each test gets a fresh $GOBLIN_HOME — paths.projects()/paths.state()
 // resolve through the env var per call, so the domain sees the tmp
 // layout without any module reset.
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-projects-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 function fixture(): { home: string; store: ConversationStore; projects: ProjectStore } {
-	const home = useHome();
+	const home = useHome("goblin-projects-");
 	mkdirSync(join(home, "state"), { recursive: true });
 	const store = openStore(join(home, "state", "goblin.sqlite"));
 	return { home, store, projects: openProjects(store) };
@@ -68,7 +53,7 @@ describe("resolveLinkedDir", () => {
 	});
 
 	test("refuses a missing path and a regular file", () => {
-		const home = useHome();
+		const home = useHome("goblin-projects-");
 		expect(() => resolveLinkedDir(join(home, "nope"))).toThrow("does not exist");
 		const file = join(home, "file.txt");
 		writeFileSync(file, "x");
@@ -76,7 +61,7 @@ describe("resolveLinkedDir", () => {
 	});
 
 	test("refuses anything under goblin's state directory", () => {
-		const home = useHome();
+		const home = useHome("goblin-projects-");
 		const state = join(home, "state");
 		mkdirSync(state, { recursive: true });
 		expect(() => resolveLinkedDir(state)).toThrow("state");
@@ -94,7 +79,7 @@ describe("resolveLinkedDir", () => {
 	});
 
 	test("a symlinked dir stores the realpath — repoints can't surprise a cwd", () => {
-		const home = useHome();
+		const home = useHome("goblin-projects-");
 		const target = join(home, "real-target");
 		mkdirSync(target, { recursive: true });
 		const link = join(home, "the-link");
@@ -103,7 +88,7 @@ describe("resolveLinkedDir", () => {
 	});
 
 	test("a symlink INTO the state directory is refused as state", () => {
-		const home = useHome();
+		const home = useHome("goblin-projects-");
 		const state = join(home, "state");
 		mkdirSync(state, { recursive: true });
 		const link = join(home, "state-link");
@@ -150,8 +135,7 @@ describe("project store", () => {
 
 	test("a linked project keeps its resolved dir and reads unmanaged", () => {
 		const { home, store, projects } = fixture();
-		const elsewhere = mkdtempSync(join(tmpdir(), "goblin-linked-"));
-		dirs.push(elsewhere);
+		const elsewhere = tmpDir("goblin-linked-");
 		const p = projects.create({ name: "linked", dir: elsewhere });
 		expect(p.dir).toBe(elsewhere);
 		expect(p.home).toBe(join(home, "projects", "linked"));

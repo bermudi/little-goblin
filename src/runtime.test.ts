@@ -26,6 +26,7 @@ import {
 	recordingModel,
 	sleep,
 	tmpDb,
+	waitUntil,
 	tmpDir,
 } from "./testkit.ts";
 
@@ -132,7 +133,7 @@ describe("provider-filter retry", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "Discuss German politics" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			await runtime.shutdown();
 			expect(requests).toHaveLength(2);
 			expect(requests[0]).toBe(requests[1]);
@@ -169,7 +170,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "Do the action then answer" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(executions).toBe(1);
 		expect(requests).toHaveLength(3);
@@ -211,7 +212,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "Use the tool then answer" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(executions).toBe(1);
 		expect(requests).toHaveLength(2);
@@ -242,7 +243,7 @@ describe("provider-filter retry", () => {
 			modelCalls: 1,
 			transient: false,
 		});
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(3);
 		expect(sink.chunkTypes.filter((type) => type === "error")).toHaveLength(1);
@@ -262,7 +263,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(1);
 		expect(sink.text).toBe(warning);
@@ -299,7 +300,7 @@ describe("provider-filter retry", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 			expect((await sink.done).kind).toBe("error");
-			while (runtime.busy(conv.id)) await sleep(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			await runtime.shutdown();
 			expect(requests).toHaveLength(2);
 			expect(executions).toBe(0);
@@ -319,7 +320,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(sink.text).toBe("Recovered answer");
@@ -348,7 +349,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(sink.chunkTypes).not.toContain("error");
@@ -401,7 +402,7 @@ describe("provider-filter retry", () => {
 		runtime.stop(conv.id);
 		release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toBe(1);
 		expect(sink.chunkTypes).not.toContain("error");
@@ -428,7 +429,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(requests[0]).toBe(requests[1]);
@@ -471,7 +472,7 @@ describe("provider-filter retry", () => {
 		runtime.stop(conv.id);
 		release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests).toHaveLength(1);
 		expect(sink.text).toBe("");
@@ -2286,7 +2287,7 @@ describe("cache stability", () => {
 		await sink.firstDelta;
 		// Let the turn reach onDone, then revoke its authority while the
 		// delivery remains parked.
-		for (let i = 0; i < 100 && store.history(conv.id).length < 2; i++) await sleep(1);
+		await waitUntil(() => store.history(conv.id).length >= 2, "assistant reply lands");
 		expect(store.history(conv.id)).toHaveLength(2);
 		runtime.stop(conv.id);
 		release();
@@ -3183,7 +3184,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "dig everywhere" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		// 80 tool steps then the answer step — no forced landing.
 		expect(requests).toHaveLength(81);
@@ -3205,7 +3206,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed", forced: "repeat" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		// 20 tool steps: warn appended at the request after the 10th
 		// result, cut lands tools-off on the request after the 20th.
@@ -3283,9 +3284,7 @@ describe("loop landings", () => {
 			return {
 				decide,
 				states,
-				settled: async () => {
-					while (pending > 0) await sleep(1);
-				},
+				settled: () => waitUntil(() => pending <= 0, "reviews settle"),
 			};
 		}
 
@@ -3302,7 +3301,7 @@ describe("loop landings", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed", forced: "watchdog" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			await runtime.shutdown();
 			// Checks at calls 2 and 4: the first warns (lands in the next
 			// boundary's request, tools still on), the second cuts — the
@@ -3336,7 +3335,7 @@ describe("loop landings", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			await runtime.shutdown();
 			await settled(); // the last check can outlive the answer step
 			// warn, reset, warn — never two consecutive stuck verdicts.
@@ -3361,7 +3360,7 @@ describe("loop landings", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			await runtime.shutdown();
 			await settled();
 			expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
@@ -3375,7 +3374,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "fill me" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed", forced: "context" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		// Step 1's 900/1000 input crossed the line — request 2 is the
 		// tools-off landing with the context nudge, not call 5.
@@ -3426,7 +3425,7 @@ describe("loop landings", () => {
 		// errored its own delivery and the forced step went tools-off.
 		expect(await s1.done).toEqual({ kind: "completed", forced: "context" });
 		expect((await s2.done).kind).toBe("error");
-		while (runtime.busy(conv.id)) await sleep(1);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		expect(requests.at(-1)!.toolChoice).toBe("none");
 		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");

@@ -130,7 +130,10 @@ export interface FakeModelOptions {
 	modelId?: string;
 }
 
-export function fakeModel(deltas: string[], options: FakeModelOptions | number = {}): LanguageModel {
+export function fakeModel(
+	deltas: string[],
+	options: FakeModelOptions | number = {},
+): LanguageModel {
 	const opts = typeof options === "number" ? { delayMs: options } : options;
 	return {
 		specificationVersion: "v4",

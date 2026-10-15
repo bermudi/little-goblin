@@ -550,11 +550,9 @@ describe("mimoEngine", () => {
 				usage: { prompt_tokens: 128, completion_tokens: 3, total_tokens: 131, seconds: 4 },
 			}),
 		);
-		const engine = mimoEngine(
-			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" },
-			auth,
-			{ fetchFn: fn },
-		);
+		const engine = mimoEngine({ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" }, auth, {
+			fetchFn: fn,
+		});
 		expect((await engine.transcribe(wavFile())).text).toBe("call me back");
 		const req = last();
 		expect(req.url).toBe("https://api.xiaomimimo.com/v1/chat/completions");
@@ -609,21 +607,17 @@ describe("mimoEngine", () => {
 				choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "" } }],
 			}),
 		);
-		const engine = mimoEngine(
-			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" },
-			auth,
-			{ fetchFn: fn },
-		);
+		const engine = mimoEngine({ kind: "mimo", model: "mimo-v2.5-asr", auth: "mimo" }, auth, {
+			fetchFn: fn,
+		});
 		expect(await engine.transcribe(wavFile())).toEqual({ text: "" });
 	});
 
 	test("a missing auth record propagates before any request", async () => {
 		const { fn, seen } = fakeFetch(200, JSON.stringify({ choices: [] }));
-		const engine = mimoEngine(
-			{ kind: "mimo", model: "mimo-v2.5-asr", auth: "gone" },
-			auth,
-			{ fetchFn: fn },
-		);
+		const engine = mimoEngine({ kind: "mimo", model: "mimo-v2.5-asr", auth: "gone" }, auth, {
+			fetchFn: fn,
+		});
 		await expect(engine.transcribe(wavFile())).rejects.toThrow("no such secret: gone");
 		expect(seen.length).toBe(0);
 	});

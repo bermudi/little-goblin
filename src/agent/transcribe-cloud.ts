@@ -107,9 +107,7 @@ const chatResponse = z.object({
 		)
 		.min(1),
 	// cost is OpenRouter's; seconds is MiMo's billed audio duration.
-	usage: z
-		.object({ cost: z.number().optional(), seconds: z.number().optional() })
-		.optional(),
+	usage: z.object({ cost: z.number().optional(), seconds: z.number().optional() }).optional(),
 });
 
 // ---------- OpenAI-compatible multipart ----------
@@ -477,9 +475,7 @@ export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}
 							],
 						},
 					],
-					...(cfg.language !== undefined
-						? { asr_options: { language: cfg.language } }
-						: {}),
+					...(cfg.language !== undefined ? { asr_options: { language: cfg.language } } : {}),
 				}),
 				deps,
 				timeoutMs: CHAT_TIMEOUT_MS,

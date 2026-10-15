@@ -316,7 +316,7 @@ export async function routeDmMessage(
 			cost: decision.cost,
 		});
 		const pinned2 = deps.store.currentDm(chatId);
-		return { conv: (pinned2 ?? current), rolled: false, decidedBy: "command", probability };
+		return { conv: pinned2 ?? current, rolled: false, decidedBy: "command", probability };
 	}
 	const fresh = probability < FRESH_BELOW;
 	log.info("follow-up check", {

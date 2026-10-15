@@ -1222,7 +1222,10 @@ export function openStore(dbPath: string): ConversationStore {
 					id,
 				]);
 				qUpsertRoll.run(chatId, id, n, now);
-				db.run("INSERT INTO dm_roll_highwater (chat_id, n) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET n = excluded.n", [chatId, n]);
+				db.run(
+					"INSERT INTO dm_roll_highwater (chat_id, n) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET n = excluded.n",
+					[chatId, n],
+				);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);

@@ -195,9 +195,11 @@ export function startDelegationLifecycle(
 		inFlight.add(p);
 		// Eviction tap: rejections reach their awaiter; the tap only
 		// detaches the promise from the join set.
-		void p.finally(() => {
-			inFlight.delete(p);
-		}).catch(() => {});
+		void p
+			.finally(() => {
+				inFlight.delete(p);
+			})
+			.catch(() => {});
 		return p;
 	};
 	// `starting` rows are owned by an in-flight launch; only the first scan

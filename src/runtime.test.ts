@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	APICallError,
@@ -19,167 +18,19 @@ import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-rt-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Fake the model provider at the edge: a LanguageModelV2 that streams the
-// given deltas with a delay between each.
-function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(options: { abortSignal?: AbortSignal }) {
-			const signal = options.abortSignal;
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
-						if (signal?.aborted) break;
-						await sleep(delayMs);
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
-
-class RecordingSink implements TurnSink {
-	text = "";
-	// The raw pass-through hook, recorded verbatim — the app channel's
-	// SSE surface is built on this stream.
-	chunkTypes: string[] = [];
-	chunks: UIMessageChunk[] = [];
-	done: Promise<TurnDone>;
-	// Resolves when the runtime admits the turn — setAuthorityCheck
-	// fires before any model work, the deterministic moment for tests
-	// that bump the epoch against a live turn.
-	admitted: Promise<void>;
-	// Resolves on the first observed text delta — the turn is admitted
-	// and mid-stream.
-	firstDelta: Promise<void>;
-	private resolveDone: (d: TurnDone) => void;
-	private markAdmitted: () => void = () => {};
-	private markFirstDelta: () => void = () => {};
-	constructor() {
-		let r: (d: TurnDone) => void = () => {};
-		this.done = new Promise<TurnDone>((res) => {
-			r = res;
-		});
-		this.resolveDone = r;
-		this.admitted = new Promise<void>((res) => {
-			this.markAdmitted = res;
-		});
-		this.firstDelta = new Promise<void>((res) => {
-			this.markFirstDelta = res;
-		});
-	}
-	setAuthorityCheck() {
-		this.markAdmitted();
-	}
-	onTextDelta(d: string) {
-		this.text += d;
-		this.markFirstDelta();
-	}
-	onReasoningDelta() {}
-	onToolCall() {}
-	onStreamChunk(chunk: UIMessageChunk) {
-		this.chunkTypes.push(chunk.type);
-		this.chunks.push(chunk);
-	}
-	onDone(d: TurnDone) {
-		this.resolveDone(d);
-	}
-}
-
-// The bell's shape (design/app.md → Spin-off): delivery hooks only —
-// no onStreamChunk, so the streaming-lane boundary treats it as
-// headless. It only ever sees the turn's terminal outcome.
-class HeadlessSink implements TurnSink {
-	done: Promise<TurnDone>;
-	private resolveDone: (d: TurnDone) => void;
-	constructor() {
-		let r: (d: TurnDone) => void = () => {};
-		this.done = new Promise<TurnDone>((res) => {
-			r = res;
-		});
-		this.resolveDone = r;
-	}
-	onTextDelta() {}
-	onReasoningDelta() {}
-	onToolCall() {}
-	onDone(d: TurnDone) {
-		this.resolveDone(d);
-	}
-}
-
-// The delivery-completion park: the turn finished and its onDone
-// is held on a gate, so the drain loop is still "running" while new
-// submits only queue (#82's repro shape — a slow Telegram send or
-// bell delivery holding the lane open).
-class ParkedDoneSink implements TurnSink {
-	done: Promise<TurnDone>;
-	private resolveDone: (d: TurnDone) => void = () => {};
-	constructor(private gate: Promise<void>) {
-		this.done = new Promise<TurnDone>((res) => {
-			this.resolveDone = res;
-		});
-	}
-	onTextDelta() {}
-	onReasoningDelta() {}
-	onToolCall() {}
-	async onDone(d: TurnDone) {
-		this.resolveDone(d);
-		await this.gate;
-	}
-}
+import {
+	fakeModel,
+	HeadlessSink,
+	ParkedDoneSink,
+	RecordingSink,
+	recordingModel,
+	sleep,
+	tmpDb,
+	tmpDir,
+} from "./testkit.ts";
 
 function setup(deltas: string[], delayMs = 15) {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
@@ -271,7 +122,7 @@ describe("provider-filter retry", () => {
 	] satisfies [string, LanguageModelV4StreamPart[] | Error | { readError: Error }][]) {
 		test(`${name}: retries identical request, hides first error from both delivery hooks and history`, async () => {
 			const { model, requests } = scripted([failure, answer()]);
-			const store = openStore(tmpdb());
+			const store = openStore(tmpDb("goblin-rt-"));
 			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 			const runtime = new Runtime({
 				store,
@@ -299,7 +150,7 @@ describe("provider-filter retry", () => {
 			[{ ...call, toolCallId: "blocked-call" }, blocked],
 			answer(),
 		]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("filter-retry"), "/w");
 		let executions = 0;
 		const runtime = new Runtime({
@@ -341,7 +192,7 @@ describe("provider-filter retry", () => {
 			],
 			answer(),
 		]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executions = 0;
 		const runtime = new Runtime({
@@ -375,7 +226,7 @@ describe("provider-filter retry", () => {
 			[call, finish("tool-calls")],
 			[finish("content-filter")],
 		]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -401,7 +252,7 @@ describe("provider-filter retry", () => {
 
 	test("ordinary assistant refusal text is an answer, not a retry signal", async () => {
 		const { model, requests } = scripted([answer(warning)]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -429,7 +280,7 @@ describe("provider-filter retry", () => {
 				[call, failure],
 				[call, failure],
 			]);
-			const store = openStore(tmpdb());
+			const store = openStore(tmpDb("goblin-rt-"));
 			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 			let executions = 0;
 			const runtime = new Runtime({
@@ -458,7 +309,7 @@ describe("provider-filter retry", () => {
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
 		const { model, requests } = scripted([{ cancelError: new Error("cancel failed") }, answer()]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -487,7 +338,7 @@ describe("provider-filter retry", () => {
 			}),
 			answer(),
 		]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -537,7 +388,7 @@ describe("provider-filter retry", () => {
 				};
 			},
 		};
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("filter-cleanup"), "/w");
 		const runtime = new Runtime({
 			store,
@@ -567,7 +418,7 @@ describe("provider-filter retry", () => {
 			],
 			answer(),
 		]);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("late-filter"), "/w");
 		const runtime = new Runtime({
 			store,
@@ -607,7 +458,7 @@ describe("provider-filter retry", () => {
 				return model.doStream(options);
 			},
 		};
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -628,23 +479,6 @@ describe("provider-filter retry", () => {
 		store.close();
 	});
 });
-
-// Records the prompt each doStream call receives — JSON-stringified so
-// requests compare bytewise across turns (cache-stability tests).
-function recordingModel(deltas: string[], delayMs = 15) {
-	const prompts: string[] = [];
-	const base = fakeModel(deltas, delayMs) as unknown as {
-		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
-	};
-	const model = {
-		...base,
-		doStream(o: { prompt: unknown }) {
-			prompts.push(JSON.stringify(o.prompt));
-			return base.doStream(o);
-		},
-	} as unknown as LanguageModel;
-	return { model, prompts };
-}
 
 describe("turn authority", () => {
 	test("clean turn completes and persists the assistant message", async () => {
@@ -673,7 +507,7 @@ describe("turn authority", () => {
 	});
 
 	test("a settings fence aborts the provider stream, not just the turn loop", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let seen: AbortSignal | undefined;
 		const base = fakeModel(["a", "b", "c", "d", "e"], 20) as unknown as {
@@ -837,7 +671,7 @@ describe("turn authority", () => {
 	});
 
 	test("a tool call under stale authority never executes", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executed = false;
 		const runtime = new Runtime({
@@ -926,7 +760,7 @@ describe("turn authority", () => {
 	});
 
 	test("submits queued behind a running turn coalesce into ONE successor turn", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["answer"], 30);
 		const runtime = new Runtime({
@@ -972,7 +806,7 @@ describe("turn authority", () => {
 		// SDK's streamText rejects system messages in `messages`, so the
 		// runtime renders the event as a user-role note in position —
 		// the stored role is untouched.
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const event =
 			"proposed skill: talk-first — parked in skills-proposed/talk-first/, not installed; " +
@@ -1024,7 +858,7 @@ describe("turn authority", () => {
 		// A multi-step turn (text, tool call, more text) emits several text
 		// parts. The chat bubble must show them as blocks, not one run-on —
 		// "yo 👋 what's up" + "Workspace…" streamed as "upWorkspace" once.
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -1090,7 +924,7 @@ describe("turn authority", () => {
 		// continues in step 2. Providers synthesizing part ids per request
 		// can hand step 2 the SAME id ("t1") — the seam must survive that,
 		// so the step boundary itself has to reset the tracker.
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executed = false;
 		let call = 0;
@@ -1175,7 +1009,7 @@ describe("turn authority", () => {
 	});
 
 	test("a failed model stream reports error — no silent completion, no partial append", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -1216,7 +1050,7 @@ describe("turn authority", () => {
 	});
 
 	test("an attachment part the model can't consume degrades to its path reference", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// Stored intake record: path + metadata, no payload.
 		store.append(conv.id, [
@@ -1251,11 +1085,10 @@ describe("turn authority", () => {
 	});
 
 	test("an attachment part materializes inline for a capable model", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-att-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(conv.id, [
 			{
@@ -1382,7 +1215,7 @@ function seedExchanges(store: ReturnType<typeof openStore>, convId: string): voi
 
 describe("context overflow recovery", () => {
 	test("an overflow on the first call compacts and resumes — one stored reply", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const { model, prompts } = scriptedModel([overflowError(), textReply("the answer")]);
@@ -1422,7 +1255,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("a mid-turn overflow resumes without re-running tools — one merged reply", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const toolCallScript: LanguageModelV4StreamPart[] = [
@@ -1495,7 +1328,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("an overflow with nothing left to compact ends with a plain message", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
 		let summarizeCalls = 0;
@@ -1525,7 +1358,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("a second overflow on the resumed attempt ends the turn", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const { model, prompts } = scriptedModel([
@@ -1560,7 +1393,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("a non-overflow provider error does not compact or resume", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const auth = new APICallError({
@@ -1590,7 +1423,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("/stop during the overflow compaction fences the turn — no resume", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
@@ -1627,7 +1460,7 @@ describe("context overflow recovery", () => {
 	});
 
 	test("a store read failure after the resume claim settles the claimed joiner too (#114)", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		seedExchanges(store, conv.id);
 		const { model } = scriptedModel([overflowError(), textReply("not reached")]);
@@ -1707,7 +1540,7 @@ describe("cache stability", () => {
 	}
 
 	test("turn N+1's request is turn N's request with content appended", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["hello world"], 5);
 		const runtime = new Runtime({
@@ -1729,13 +1562,12 @@ describe("cache stability", () => {
 	});
 
 	test("inlined image bytes don't move when new media arrives later", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-cache-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-cache-");
 		const a = join(dir, "a.png");
 		const b = join(dir, "b.png");
 		writeFileSync(a, "pngdata-a");
 		writeFileSync(b, "pngdata-b");
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const runtime = new Runtime({
@@ -1771,10 +1603,9 @@ describe("cache stability", () => {
 	});
 
 	test("window gauge and cached split land in the log", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-log-");
 		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// One step, reporting a warm cache (700 of 900 input tokens cached)
 		// against a 1000-token window — 90% utilization must warn.
@@ -1854,10 +1685,9 @@ describe("cache stability", () => {
 		// The Sep 28 outage class: a provider that cannot fill a tool
 		// schema emits {} and the call dies in validation — before the
 		// fix, nothing was logged and the only witness was the model.
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-log-");
 		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let call = 0;
 		const model = {
@@ -1934,10 +1764,9 @@ describe("cache stability", () => {
 	});
 
 	test("a throwing tool execute leaves a trace in the log", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-log-");
 		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let call = 0;
 		const model = {
@@ -2016,7 +1845,7 @@ describe("cache stability", () => {
 	});
 
 	test("a completed turn at ≥75% of the window compacts; below it does not", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// Seed three big exchanges + the turn's own: the compactor must fold
 		// the first three into a summary and keep the live one whole.
@@ -2118,7 +1947,7 @@ describe("cache stability", () => {
 		store.close();
 
 		// Just below the threshold (74%): no compaction, no pointer.
-		const store2 = openStore(tmpdb());
+		const store2 = openStore(tmpDb("goblin-rt-"));
 		const conv2 = store2.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime2 = new Runtime({
 			store: store2,
@@ -2139,7 +1968,7 @@ describe("cache stability", () => {
 	});
 
 	test("/compact serializes behind a running turn — no orphaned exchange", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const big = "x".repeat(600);
 		for (let i = 0; i < 3; i++) {
@@ -2189,7 +2018,7 @@ describe("cache stability", () => {
 	});
 
 	test("/stop drops a queued /compact — it resolves as a noop", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -2216,7 +2045,7 @@ describe("cache stability", () => {
 	});
 
 	test("/stop during a pending buildStep aborts the compaction — no pointer written", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const big = "x".repeat(600);
 		for (let i = 0; i < 3; i++) {
@@ -2270,7 +2099,7 @@ describe("cache stability", () => {
 	});
 
 	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const big = "x".repeat(600);
 		for (let i = 0; i < 3; i++) {
@@ -2386,7 +2215,7 @@ describe("cache stability", () => {
 	});
 
 	test("a settings epoch change fences a manual /compact mid-summary — it rejects, no pointer", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const big = "x".repeat(600);
 		for (let i = 0; i < 3; i++) {
@@ -2431,7 +2260,7 @@ describe("cache stability", () => {
 	});
 
 	test("/stop while completion delivery is pending prevents a new auto-compaction", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let builds = 0;
 		let release!: () => void;
@@ -2469,10 +2298,9 @@ describe("cache stability", () => {
 	});
 
 	test("provider warnings are logged, not dropped", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-log-");
 		const logFile = join(dir, "goblin.log");
 		const model = {
 			specificationVersion: "v4",
@@ -2539,7 +2367,7 @@ describe("cache stability", () => {
 
 describe("skill reviewer hook", () => {
 	test("shutdown fences a held gate after its conversation lane has drained", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -2693,7 +2521,7 @@ function gatedToolModel(secondText: string) {
 }
 
 function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: Set<string>) {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
@@ -2812,7 +2640,7 @@ describe("steering", () => {
 	});
 
 	test("a submit during the turn's startup steers into the first call", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["done"], 5);
 		let releaseStep: () => void = () => {};
@@ -2888,8 +2716,7 @@ describe("steering", () => {
 		// deterministic window to land a follow-up while the boundary is
 		// mid-conversion. The mark must claim the photo (injected) and
 		// never the follow-up (still pending, never read).
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-fifo-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-fifo-");
 		const fifo = join(dir, "photo.png");
 		execSync(`mkfifo '${fifo}'`);
 		let releaseTool: () => void = () => {};
@@ -2998,8 +2825,7 @@ describe("steering", () => {
 	});
 
 	test("an epoch change during a successful steer conversion fences it before join or replay (#115)", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-fifo-"));
-		dirs.push(dir);
+		const dir = tmpDir("goblin-rt-fifo-");
 		const fifo = join(dir, "photo.png");
 		execSync(`mkfifo '${fifo}'`);
 		let releaseTool: () => void = () => {};
@@ -3055,7 +2881,7 @@ describe("app channel", () => {
 	// steers, fences and persists exactly like a telegram one — the only
 	// difference is the sink it streams into (DESIGN.md, App channel).
 	test("an app conversation runs a turn and streams raw chunks to its sink", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("chat-01"), "/w");
 		const runtime = new Runtime({
 			store,
@@ -3077,7 +2903,7 @@ describe("app channel", () => {
 	});
 
 	test("steering into a running app turn works through the same queue", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("chat-01"), "/w");
 		const { model, prompts } = recordingModel(["done"], 0);
 		let releaseStep: () => void = () => {};
@@ -3193,7 +3019,7 @@ describe("streaming lane boundary", () => {
 	// admission, not arrivals during the model loop.
 	test("admission never reads a queued streaming submit — the client keeps its own turn", async () => {
 		const { model, prompts } = recordingModel(["answer"], 5);
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
@@ -3320,7 +3146,7 @@ describe("loop landings", () => {
 			contextWindow?: number;
 		} = {},
 	) {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("loop"), "/w");
 		let executions = 0;
 		const runtime = new Runtime({
@@ -3610,7 +3436,7 @@ describe("loop landings", () => {
 });
 
 test("model/thinking changes do not interrupt admitted turns; next turn and manual compaction resolve latest channel settings", async () => {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-rt-"));
 	let cfg = parseConfig({
 		providers: { test: { kind: "codex" } },
 		model: "test/app",
@@ -3689,7 +3515,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 });
 
 test("overflow compaction and resumed model call keep the admitted selection across settings edits", async () => {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(appAddress("overflow-settings"), "/work");
 	seedExchanges(store, conv.id);
 	const cfg = parseConfig({
@@ -3738,7 +3564,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 });
 
 test("invalid durable app settings report admission error exactly once without starting a model call", async () => {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(appAddress("bad-settings"), "/work");
 	store.setMeta(conv.id, { thinking: "corrupt-disk-value" });
 	const cfg = parseConfig({

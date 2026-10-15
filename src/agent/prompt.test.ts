@@ -3,25 +3,14 @@
 // prompt varies turn-to-turn on its own. A test failing here usually means
 // someone added a clock, counter, or random value to the prompt.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config.ts";
 import { setLogFile } from "../log.ts";
 import { openStore, type Conversation } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
-
-let dirs: string[] = [];
-function useHome(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-prompt-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { useHome } from "../testkit.ts";
 
 const conv: Conversation = {
 	id: "dm-1",
@@ -46,7 +35,7 @@ const tools = ["read_file", "write_file", "edit_file", "bash", "program", "send_
 
 describe("buildSystemPrompt", () => {
 	test("memory evidence is framed when the tool is present — and only then", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const plain = buildSystemPrompt(conv, tools);
@@ -65,7 +54,7 @@ describe("buildSystemPrompt", () => {
 		}
 	});
 	test("no clock — the prompt carries no date and points at `date` instead", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const { text } = buildSystemPrompt(conv, tools);
@@ -79,7 +68,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	test("the channel line names the conversation's own door", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const tg = buildSystemPrompt(conv, tools);
@@ -98,7 +87,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	test("stable across calls — same inputs, identical bytes", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -112,7 +101,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	test("missing SOUL.md falls back to the default identity — loudly", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		const logFile = join(home, "goblin.log");
 		setLogFile(logFile);
@@ -136,7 +125,7 @@ describe("buildSystemPrompt", () => {
 
 	test("an operator edit to a prompt source logs the cache boundary", () => {
 		_resetPromptSourcesForTest();
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		const logFile = join(home, "goblin.log");
 		setLogFile(logFile);
@@ -163,7 +152,7 @@ describe("buildSystemPrompt", () => {
 	});
 	describe("tool list", () => {
 		test("rendered verbatim from the wiring; program prose gated on presence", () => {
-			const home = useHome();
+			const home = useHome("goblin-prompt-");
 			process.env.GOBLIN_HOME = home;
 			try {
 				const full = buildSystemPrompt(conv, [
@@ -192,7 +181,7 @@ describe("buildSystemPrompt", () => {
 
 describe("workspace file injection", () => {
 	test("USER.md becomes its own section and source", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -209,7 +198,7 @@ describe("workspace file injection", () => {
 	});
 
 	test("no USER.md — no section, no source", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -223,7 +212,7 @@ describe("workspace file injection", () => {
 	});
 
 	test("an oversized file keeps head and tail, warns, and names the drop", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		const logFile = join(home, "goblin.log");
 		setLogFile(logFile);
@@ -254,7 +243,7 @@ describe("workspace file injection", () => {
 	});
 
 	test("a file past the read bound still yields its real tail", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		const logFile = join(home, "goblin.log");
 		setLogFile(logFile);
@@ -287,7 +276,7 @@ describe("workspace file injection", () => {
 	});
 
 	test("USER.md is capped tighter — a profile stays directive-sized", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -307,7 +296,7 @@ describe("workspace file injection", () => {
 	});
 
 	test("systemPromptFor freezes per conversation — edits load only at boundaries", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		const store = openStore(join(home, "goblin.sqlite"));
 		// A real conversation row — the snapshot references it.
@@ -334,7 +323,7 @@ describe("workspace file injection", () => {
 		}
 	});
 	test("the shell carries the memory model, verify, and act-vs-ask rules", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const { text } = buildSystemPrompt(conv, tools);
@@ -349,7 +338,7 @@ describe("workspace file injection", () => {
 	// persona build touches no operator file — SOUL, USER, skills, none
 	// of it — and says so in its own words.
 	test("a guest persona prompt reads nothing private", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const guest = { ...conv, id: "guest:-100:9", persona: "guest" as const };
@@ -366,7 +355,7 @@ describe("workspace file injection", () => {
 	// The operator's own guest summons keep the personal persona but
 	// must know the room has readers (design/telegram.md → Guest mode).
 	test("a personal guest-channel prompt says who can read it", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			const guestChannel = { ...conv, id: "guest:-100:7" };
@@ -382,7 +371,7 @@ describe("workspace file injection", () => {
 	// skills-proposed scan, an approve request in a fresh conversation
 	// meets a model that has never heard of the drafts.
 	test("pending proposals ride the skills section and count as a skills source", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(join(home, "workspace", "skills-proposed", "pdf-tables"), {
@@ -425,7 +414,7 @@ describe("project prompts", () => {
 	});
 
 	test("a managed project names its dir, carries instructions, and goes absolute", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -471,7 +460,7 @@ describe("project prompts", () => {
 	});
 
 	test("a linked dir contributes its own AGENTS.md", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -505,7 +494,7 @@ describe("project prompts", () => {
 	});
 
 	test("an empty-instructions project still names itself; no project is byte-identical", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -527,7 +516,7 @@ describe("project prompts", () => {
 	});
 
 	test("the notes index renders under the project section — pointers, not bodies", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
@@ -553,7 +542,7 @@ describe("project prompts", () => {
 
 describe("the app fence convention", () => {
 	test("the bullet rides the note tool on app — nowhere else", () => {
-		const home = useHome();
+		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });

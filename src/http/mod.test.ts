@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
@@ -11,6 +10,7 @@ import type { MemoryStatusResponse } from "./operator-wire.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
+import { useHome } from "../testkit.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -25,22 +25,6 @@ function makeInitData(fields: Record<string, string>): string {
 	params.set("hash", hash);
 	return params.toString();
 }
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-function useHome(): void {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-http-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-}
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
 
 const baseConfig: Config = {
 	providers: {
@@ -64,7 +48,7 @@ function setup(
 	beforeConfigWritten?: HttpDeps["beforeConfigWritten"],
 	authNames?: () => string[],
 ) {
-	useHome();
+	useHome("goblin-http-");
 	const memoryBlock: MemoryConfig | undefined = memory
 		? memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "goblin" })
 		: undefined;
@@ -125,7 +109,7 @@ describe("http door", () => {
 	});
 
 	test("an unexpected handler throw is a logged 500, not a framework error page", async () => {
-		useHome();
+		useHome("goblin-http-");
 		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");
 		setLogFile(logFile);
 		const http = startHttp({
@@ -318,7 +302,7 @@ describe("http door", () => {
 	});
 
 	test("a post-write apply failure reports that the settings were saved, not invalid", async () => {
-		useHome();
+		useHome("goblin-http-");
 		const configRef = { current: { ...baseConfig } };
 		const http = startHttp({
 			configRef,
@@ -352,7 +336,7 @@ describe("http door", () => {
 	});
 
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
-		useHome();
+		useHome("goblin-http-");
 		const delegation = {
 			machines: { g7: { machine: "g7", root: "~/build" } },
 			harnesses: { codex: { kind: "codex", args: ["--x"] } },
@@ -684,7 +668,7 @@ describe("client serving", () => {
 // faked at the seam; the store is real.
 describe("program webhooks", () => {
 	function hookSetup(enabled = true, accepting: () => boolean = () => true) {
-		useHome();
+		useHome("goblin-http-");
 		const dir = process.env.GOBLIN_HOME!;
 		const programs: ProgramsStore = openPrograms(join(dir, "goblin.sqlite"));
 		const token = "test-token-" + Math.random().toString(36).slice(2);
@@ -788,7 +772,7 @@ describe("program webhooks", () => {
 	});
 
 	test("wake failure → 500 with the window unconsumed; the retry can land", async () => {
-		useHome();
+		useHome("goblin-http-");
 		const dir = process.env.GOBLIN_HOME!;
 		const programs = openPrograms(join(dir, "goblin.sqlite"));
 		const token = "tok-fail";

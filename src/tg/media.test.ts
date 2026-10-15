@@ -1,15 +1,6 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import { paths } from "../config.ts";
@@ -20,25 +11,7 @@ import {
 	unhandledMediaKind,
 	type IncomingMedia,
 } from "./media.ts";
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-media-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
-}
-
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { useHome } from "../testkit.ts";
 
 const media: IncomingMedia = {
 	fileId: "f1",
@@ -172,7 +145,7 @@ describe("mediaParts", () => {
 
 describe("saveAttachment", () => {
 	test("local-mode file is copied into attachments, never fetched", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "payload");
 		const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
@@ -182,7 +155,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("downloaded bytes also pass through the sync boundary without contacting Telegram", async () => {
-		useHome();
+		useHome("goblin-media-");
 		const fetched = spyOn(globalThis, "fetch").mockResolvedValue(new Response("downloaded"));
 		const realOpen = fsPromises.open;
 		const synced: string[] = [];
@@ -218,7 +191,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("syncs the complete temp file before rename and the directory before returning", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "payload");
 		const events: string[] = [];
@@ -254,7 +227,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("a new attachments directory needs its parent synced before any file is published", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "payload");
 		const realOpen = fsPromises.open;
@@ -278,7 +251,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("temp sync failure rejects without replacing the previous attachment", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "replacement");
 		mkdirSync(paths.attachments(), { recursive: true });
@@ -314,7 +287,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("directory sync failure rejects after rename without removing the destination", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "replacement");
 		mkdirSync(paths.attachments(), { recursive: true });
@@ -342,7 +315,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("failed partial local copy preserves the previous attachment and removes temp", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "replacement");
 		mkdirSync(paths.attachments(), { recursive: true });
@@ -365,7 +338,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("successful replay atomically replaces the previous local attachment", async () => {
-		const dir = useHome();
+		const dir = useHome("goblin-media-");
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "replacement");
 		mkdirSync(paths.attachments(), { recursive: true });
@@ -378,7 +351,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("rejects a unique id that could escape the attachments directory", async () => {
-		useHome();
+		useHome("goblin-media-");
 		await expect(
 			saveAttachment(
 				{ ...media, fileUniqueId: "../escape" },
@@ -391,7 +364,7 @@ describe("saveAttachment", () => {
 	});
 
 	test("a missing file_path fails loud", async () => {
-		useHome();
+		useHome("goblin-media-");
 		await expect(saveAttachment(media, {} as TgFile, undefined, "token")).rejects.toThrow(
 			"no file_path",
 		);

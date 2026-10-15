@@ -22,8 +22,9 @@ const exec = (t: ReturnType<typeof historySearchTool>, input: unknown) =>
 	// biome-ignore lint: the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
-const deps = (store: ConversationStore, excluded = false) => ({
+const deps = (store: ConversationStore, excluded = false, conversationId = "self") => ({
 	store,
+	conversationId,
 	isExcluded: () => excluded,
 });
 
@@ -115,17 +116,65 @@ describe("history_search tool", () => {
 		store.close();
 	});
 
-	test("excluded callers recall nothing by either action", async () => {
+	test("an excluded caller recalls nothing — except context on its own conversation", async () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		store.append(c.id, [msg("needle here")]);
-		const tool = historySearchTool(deps(store, true));
+		store.append(c.id, [msg("needle here"), msg("folded era detail")]);
+		store.setMeta(c.id, { memoryExcluded: true });
+		const other = store.resolve({ kind: "topic", chatId: -100, threadId: 9 }, "/w");
+		store.append(other.id, [msg("their needle")]);
+		// The caller is the excluded conversation itself.
+		const tool = historySearchTool(deps(store, true, c.id));
 		const s = (await exec(tool, { action: "search", query: "needle" })) as { error: string };
 		expect(s.error).toContain("excluded");
-		const ctx = (await exec(tool, { action: "context", conversation: c.id, seq: 1 })) as {
-			error: string;
-		};
-		expect(ctx.error).toContain("excluded");
+		// Context on another id stays refused — own-context is the only
+		// exception (design/tools.md → Chat search).
+		const ctxOther = (await exec(tool, {
+			action: "context",
+			conversation: other.id,
+			seq: 1,
+		})) as { error: string };
+		expect(ctxOther.error).toContain("excluded");
+		// Context on the caller's own id always proceeds — the compaction
+		// recovery path the summary marker names.
+		const own = (await exec(tool, {
+			action: "context",
+			conversation: c.id,
+			seq: 1,
+			window: 1,
+		})) as string;
+		expect(own).toContain("needle here");
+		expect(own).toContain("folded era detail");
+		store.close();
+	});
+
+	test("context renders tool calls with their input and result — the fold's evidence", async () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const asst = {
+			id: "a1",
+			role: "assistant",
+			parts: [
+				{ type: "text", text: "checking" },
+				{
+					type: "tool-bash",
+					toolCallId: "t1",
+					state: "output-available",
+					input: { command: "ls -la" },
+					output: "total 0",
+				},
+			],
+		} as unknown as UIMessage;
+		store.append(c.id, [msg("run ls"), asst]);
+		const out = (await exec(historySearchTool(deps(store, false, c.id)), {
+			action: "context",
+			conversation: c.id,
+			seq: 2,
+		})) as string;
+		expect(out).toContain("checking");
+		expect(out).toContain("[tool-bash]");
+		expect(out).toContain("ls -la");
+		expect(out).toContain("total 0");
 		store.close();
 	});
 });

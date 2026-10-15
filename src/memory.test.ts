@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { memoryConfigSchema } from "./config.ts";
+import { summaryMessage } from "./conversation.ts";
 import {
 	buildMemoryClient,
 	buildRecallQuery,
@@ -353,7 +354,20 @@ describe("cache-stable materialization", () => {
 		// The synthetic summary takes the boundary event's seq — a block
 		// anchored there belongs to the message the summary replaced.
 		const view = [
-			{ seq: 2, message: user("compact-2", "[history compacted] …") },
+			{
+				seq: 2,
+				message: summaryMessage(
+					{
+						boundarySeq: 2,
+						summary: "…",
+						summaryEligible: true,
+						tokensBefore: 0,
+						model: "m",
+						createdAt: "",
+					},
+					"dm:1",
+				),
+			},
 			{ seq: 3, message: user("u3", "fresh question") },
 		];
 		const stale = { anchorSeq: 2, content: "stale evidence", sourceIds: ["e1"] };
@@ -381,7 +395,20 @@ describe("memory-bound projection", () => {
 		// The synthetic summary rides at the boundary event's seq — its
 		// eligibility is the folded span's, never the boundary row's.
 		const view = [
-			{ seq: 2, message: user("compact-2", "[history compacted] distilled from excluded text") },
+			{
+				seq: 2,
+				message: summaryMessage(
+					{
+						boundarySeq: 2,
+						summary: "distilled from excluded text",
+						summaryEligible: true,
+						tokensBefore: 0,
+						model: "m",
+						createdAt: "",
+					},
+					"dm:1",
+				),
+			},
 			{ seq: 3, message: user("u3", "fresh") },
 		];
 		const elig = { eligibleSeqs: new Set([2, 3]), summaryEligible: false };

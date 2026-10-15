@@ -321,7 +321,7 @@ export interface ConversationStore {
 	// like "app/%") scopes the pool.
 	searchHistory(query: string, limit: number, channelPrefix?: string): HistoryHit[];
 	// Arrival-ordered window around one event. No exclusion check here —
-	// the tool checks the live flag before calling.
+	// the tool owns exclusion (with its own-conversation exception).
 	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
 	// The app channel's own pool, most recently active first — filtered
 	// on the id prefix.
@@ -350,7 +350,9 @@ export interface HistoryHit {
 export interface HistoryContextRow {
 	seq: number;
 	role: string;
-	text: string;
+	// The parsed event, rendered by the tool (the compaction serializer's
+	// projection — tool calls included, design/model.md → Compaction).
+	message: UIMessage;
 	createdAt: string;
 }
 
@@ -463,15 +465,19 @@ function envelopeOf(raw: unknown): unknown {
 
 // The compacted view's synthetic first message: user role, explicit
 // framing — carried context, not a forged transcript. seq = the
-// boundary, so causal sorting keeps it first.
-export function summaryMessage(compaction: Compaction): UIMessage {
+// boundary, so causal sorting keeps it first. The marker names the
+// recovery path — this conversation's id and the boundary seq, pageable
+// with history_search (design/model.md → Compaction, "Recovery is
+// named"). Deterministic per conversation: read-time minting must be
+// byte-stable across turns (DESIGN.md → Cache stability).
+export function summaryMessage(compaction: Compaction, conversationId: string): UIMessage {
 	return {
 		id: compactionSummaryId(compaction.boundarySeq),
 		role: "user",
 		parts: [
 			{
 				type: "text",
-				text: `[history compacted — the summary below replaces everything before seq ${compaction.boundarySeq}; treat it as accurate carried context, not as a message anyone sent]\n\n${compaction.summary}`,
+				text: `[history compacted — conversation ${conversationId}: the summary below replaces everything before seq ${compaction.boundarySeq}; treat it as accurate carried context, not as a message anyone sent. The full record is kept: history_search action="context" with this conversation id and a seq below ${compaction.boundarySeq} pages it, tool calls and results included, when that tool is in your set]\n\n${compaction.summary}`,
 			},
 		],
 	};
@@ -1412,7 +1418,7 @@ export function openStore(dbPath: string): ConversationStore {
 				rows.push({
 					seq: r.seq,
 					role: r.role,
-					text: messageText(message),
+					message,
 					createdAt: r.created_at,
 				});
 			}
@@ -1538,7 +1544,7 @@ export function openStore(dbPath: string): ConversationStore {
 				.map((e) => ({ seq: e.seq, message: e.message }));
 			return compaction === null
 				? entries
-				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction) }, ...entries];
+				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction, id) }, ...entries];
 		},
 
 		close() {

@@ -324,7 +324,13 @@ describe("compaction pointers", () => {
 		expect(view).toHaveLength(2);
 		expect(view[0]!.seq).toBe(2);
 		expect(view[0]!.message.role).toBe("user");
-		expect((view[0]!.message.parts[0] as { text: string }).text).toContain("newer fold");
+		const marker = (view[0]!.message.parts[0] as { text: string }).text;
+		expect(marker).toContain("newer fold");
+		// The marker names the recovery path: this conversation's id and
+		// the boundary seq (design/model.md → Compaction).
+		expect(marker).toContain(`conversation ${c.id}`);
+		expect(marker).toContain("before seq 2");
+		expect(marker).toContain('history_search action="context"');
 		expect(view[0]!.message.id).toBe("compact-2");
 		expect((view[1]!.message.parts[0] as { text: string }).text).toBe("three");
 		store.close();
@@ -492,12 +498,20 @@ describe("forkToApp (Spin-off)", () => {
 		// created_at stamps, not a re-append.
 		expect(eventRows(store, app.id)).toEqual(eventRows(store, src.id));
 		// Only the latest pointer steers the model view — the audit
-		// trail stays behind, and the fork's model view equals the DM's.
+		// trail stays behind, and the fork's model view equals the DM's
+		// except for the summary marker, which names each conversation's
+		// own id (the recovery path pages that conversation's own copy).
 		expect(store.getCompaction(app.id)).toMatchObject({
 			boundarySeq: 2,
 			summary: "latest fold",
 		});
-		expect(store.modelEntries(app.id)).toEqual(store.modelEntries(src.id));
+		const appView = store.modelEntries(app.id);
+		const srcView = store.modelEntries(src.id);
+		expect(appView.slice(1)).toEqual(srcView.slice(1));
+		const appMarker = (appView[0]!.message.parts[0] as { text: string }).text;
+		const srcMarker = (srcView[0]!.message.parts[0] as { text: string }).text;
+		expect(appMarker).toContain(`conversation ${app.id}`);
+		expect(srcMarker).toContain(`conversation ${src.id}`);
 		// Contexts swap only the conversation id.
 		expect(store.memoryContexts.load(app.id)).toEqual(store.memoryContexts.load(src.id));
 		// The DM is a copy source, never a move victim.
@@ -663,7 +677,7 @@ describe("chat search", () => {
 		expect(store.eventContext(c.id, 99, 3)).toEqual([]);
 		const mid = store.eventContext(c.id, 3, 0);
 		expect(mid).toHaveLength(1);
-		expect(mid[0]!.text).toBe("three");
+		expect((mid[0]!.message.parts[0] as { text: string }).text).toBe("three");
 		store.close();
 	});
 });

@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attachmentPart } from "../agent/attachments.ts";
+import { summaryMessage } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory.ts";
 import {
@@ -106,13 +107,27 @@ describe("the model view", () => {
 		// modelEntries mints the summary at the boundary event's seq — a
 		// recall block anchored there belongs to the message the summary
 		// replaced, and must not ride ahead of it.
+		const summary = summaryMessage(
+			{
+				boundarySeq: 2,
+				summary: "earlier days",
+				summaryEligible: true,
+				tokensBefore: 0,
+				model: "m",
+				createdAt: "",
+			},
+			"dm:1",
+		);
 		const boundary = [
-			{ seq: 2, message: user("compact-2", "[history compacted] earlier days") },
+			{ seq: 2, message: summary },
 			{ seq: 3, message: user("u3", "fresh question") },
 		];
 		const view = await build(boundary, [recall(2, "stale evidence")], null);
 		expect(view.map((m) => m.role)).toEqual(["user"]);
-		expect(texts(view)).toEqual(["[history compacted] earlier days", "fresh question"]);
+		const marker = (summary.parts[0] as { text: string }).text;
+		expect(marker).toContain("conversation dm:1");
+		expect(marker).toContain("before seq 2");
+		expect(texts(view)).toEqual([marker, "fresh question"]);
 	});
 
 	test("turn N+1's view is turn N's view with content appended", async () => {

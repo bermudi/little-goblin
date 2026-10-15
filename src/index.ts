@@ -481,7 +481,7 @@ async function boot() {
 									}),
 							}
 						: undefined,
-				history: { store, isExcluded: () => conv.memoryExcluded },
+				history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
 				// Notes mount for every operator conversation — guests are
 				// excluded by the filter below, never by dep absence.
 				note: { notes, projects, conversation: conv.id, projectId: conv.projectId },

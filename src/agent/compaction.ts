@@ -115,7 +115,10 @@ export const SUMMARY_SYSTEM = `You are summarizing your own conversation history
 - File paths, attachment names, and identifiers that matter for continuity
 Omit small talk and process chatter. Plain text with short labeled bullets. Never invent anything not present in the span.`;
 
-function messageText(message: UIMessage): string {
+// The event renderer history_search's context action shares — reading
+// back a folded span must return the tool evidence the fold took
+// (design/model.md → Compaction, "Recovery is named").
+export function renderEventText(message: UIMessage): string {
 	const parts: string[] = [];
 	const brief = (value: unknown): string => {
 		if (value === undefined) return "(not recorded)";
@@ -167,7 +170,7 @@ function messageText(message: UIMessage): string {
 }
 
 export function serializeEvent(e: CompactionEvent): string {
-	return `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${messageText(e.message)}`;
+	return `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${renderEventText(e.message)}`;
 }
 
 export function serializeSpan(detail: CompactionEvent[]): string {

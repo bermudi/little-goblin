@@ -1,21 +1,31 @@
 // The history-search tool — full-text search over goblin's own past
 // conversations (DESIGN.md, Chat search). Search returns topic · date ·
 // role · snippet lines with the addressing to page context around a
-// hit; context returns the arrival-ordered window around one event.
-// Memory-excluded topics are never searched (filtered in SQL against
-// the live flag) and refuse the tool outright, the way memory_search
-// does — exclusion means a topic recalls nothing.
+// hit; context returns the arrival-ordered window around one event,
+// rendered with the compaction serializer's projection — text,
+// attachment refs, and tool calls with their results — so a folded
+// span's recovery returns the evidence the fold took. Memory-excluded
+// topics are never searched (filtered in SQL against the live flag) and
+// refuse the tool outright, the way memory_search does — exclusion
+// means a topic recalls nothing. One exception (design/tools.md → Chat
+// search, ruling 2026-10-14): context on the calling conversation's
+// own id always proceeds — reading your own transcript recalls nothing
+// from another topic, and without it a compacted excluded topic could
+// never get its folded span back.
 
 import { tool } from "ai";
 import { z } from "zod";
 import type { ConversationStore } from "../../conversation.ts";
 import { log } from "../../log.ts";
+import { renderEventText } from "../compaction.ts";
 import { windowText } from "./truncate.ts";
 
 export interface HistorySearchDeps {
 	store: Pick<ConversationStore, "searchHistory" | "eventContext" | "get">;
+	// The calling conversation — the own-id exception's reference.
+	conversationId: string;
 	// Topic exclusion governs recall too: excluded conversations may not
-	// search the shared past by any path.
+	// search the shared past by any path but their own context.
 	isExcluded: () => boolean;
 }
 
@@ -100,13 +110,19 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 		description:
 			'Search goblin\'s own past conversations across every topic ("what did we decide about X?"). ' +
 			"Search returns topic · role · date · snippet lines, each with its conversation id and event seq — " +
-			"page context around a hit with the context action. Topics excluded from memory are never searched.",
+			"page context around a hit with the context action. Topics excluded from memory are never searched. " +
+			"Context on this conversation's own id always works, including reading back history folded by compaction (the compaction marker names the id and seq).",
 		inputSchema: historyInputSchema,
 		execute: async (raw) => {
-			if (deps.isExcluded()) {
+			const input = actionSchema.parse(raw);
+			// The one ruled exception (design/tools.md → Chat search):
+			// context on the caller's own conversation proceeds even when
+			// excluded — the compaction marker names the id, and refusing
+			// it would seal the folded span forever.
+			const own = input.action === "context" && input.conversation === deps.conversationId;
+			if (deps.isExcluded() && !own) {
 				return { error: "memory is excluded in this conversation" };
 			}
-			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "search": {
 					const started = Date.now();
@@ -123,7 +139,7 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 				case "context": {
 					const conv = deps.store.get(input.conversation);
 					if (!conv) return { error: `no conversation "${input.conversation}"` };
-					if (conv.memoryExcluded) {
+					if (conv.memoryExcluded && !own) {
 						return { error: "that conversation is excluded from memory" };
 					}
 					const rows = deps.store.eventContext(input.conversation, input.seq, input.window ?? 3);
@@ -132,6 +148,7 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 						seq: input.seq,
 						window: input.window ?? 3,
 						messages: rows.length,
+						own,
 					});
 					if (rows.length === 0) {
 						return `No messages at conversation "${input.conversation}" near seq ${input.seq}.`;
@@ -140,7 +157,9 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 					const last = rows[rows.length - 1]!.seq;
 					const header = `[${conv.title ?? "(untitled)"}] (${conv.id}) — seq ${first}–${last}`;
 					const body = rows.map((r) => {
-						const text = r.text === "" ? "[(no text content)]" : windowText(r.text, 2000).window;
+						const rendered = renderEventText(r.message);
+						const text =
+							rendered === "" ? "[(no text content)]" : windowText(rendered, 3000).window;
 						return `#${r.seq} · ${r.role} · ${r.createdAt.slice(0, 10)}:\n${text}`;
 					});
 					return [header, ...body].join("\n\n");

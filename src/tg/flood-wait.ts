@@ -32,33 +32,31 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 	const wait = opts.sleep ?? sleep;
-	// The *cumulative* honored wait must stay under the outer withTimeout
-	// (API_CALL_TIMEOUT_MS) — otherwise a second 429 after the first wait
-	// can make the call appear timed-out mid-sleep and fire as a ghost send.
-	// Budget the remaining time per call, not each wait in isolation.
-	let remainingMs = maxWaitMs;
-	// False when the demanded wait is out of budget — the caller then
-	// returns/throws the original failure untouched.
-	const honored = async (
-		retryAfterS: number,
-		attempt: number,
-		method: string,
-	): Promise<boolean> => {
-		const demanded = retryAfterS * 1000;
-		if (demanded > remainingMs) {
-			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
-			return false;
-		}
-		if (attempt >= maxRetries) {
-			log.warn("telegram flood wait retries exhausted", { method, retryAfterS });
-			return false;
-		}
-		log.warn("telegram flood wait", { method, retryAfterS, attempt: attempt + 1 });
-		remainingMs -= demanded;
-		await wait(demanded);
-		return true;
-	};
 	return async (prev, method, payload, signal) => {
+		// Per-call budget (not process-wide): each API call starts with a
+		// fresh maxWaitMs and tracks its own honored waits.
+		let remainingMs = maxWaitMs;
+		// False when the demanded wait is out of budget — the caller then
+		// returns/throws the original failure untouched.
+		const honored = async (
+			retryAfterS: number,
+			attempt: number,
+			method: string,
+		): Promise<boolean> => {
+			const demanded = retryAfterS * 1000;
+			if (demanded > remainingMs) {
+				log.warn("telegram flood wait beyond cap", { method, retryAfterS });
+				return false;
+			}
+			if (attempt >= maxRetries) {
+				log.warn("telegram flood wait retries exhausted", { method, retryAfterS });
+				return false;
+			}
+			log.warn("telegram flood wait", { method, retryAfterS, attempt: attempt + 1 });
+			remainingMs -= demanded;
+			await wait(demanded);
+			return true;
+		};
 		for (let attempt = 0; ; attempt++) {
 			// grammy resolves the raw ApiResponse through the transformer
 			// chain — a 429 rides back as a resolved {ok:false} VALUE; the

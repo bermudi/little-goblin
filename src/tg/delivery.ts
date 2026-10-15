@@ -823,16 +823,12 @@ export function makeDeliverySink(
 						repingTyping();
 					} catch (err) {
 						// API-level Grammy errors (400s etc.) provably never
-						// landed, so retry on the next flush. Transport-level
-						// failures — a TypeError from fetch, or a known
-						// network error such as ECONNRESET — are ambiguous:
-						// Telegram may have committed the message before the
-						// response was lost (audit D2). A generic Error stays
-						// a definite failure so test/edge callers keep retry.
-						// A grammy HttpError wraps the underlying fetch/transport
-						// failure in `.error`; treat only those as ambiguous, so a
-						// programming throw (bad payload, etc.) fails fast instead
-						// of stopping the drain as "uncertain" (audit P1).
+						// landed, so retry on the next flush. Other Error results
+						// (including programming throws) are definite failures.
+						// Transport ambiguity is recognized only when a grammy
+						// HttpError carries a coded transport failure (e.g.
+						// ECONNRESET) — Telegram may have committed the message
+						// before the response was lost (audit D2, P1).
 						const transportCause =
 							err instanceof HttpError ? (err.error as { code?: unknown } | null) : null;
 						const transportError =

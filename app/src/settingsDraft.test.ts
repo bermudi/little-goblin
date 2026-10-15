@@ -487,6 +487,90 @@ describe("transcription block", () => {
 		});
 	});
 
+	test.each([
+		["whistle", "es"],
+		["groq", "es"],
+		["groq", ""],
+		["groq", "auto"],
+		["groq", "zh"],
+		["groq", "en"],
+	] as const)(
+		"entering MiMo from %s normalizes language %s and saves through the server schema",
+		(kind, language) => {
+			const c = baseConfig();
+			const { draft: d, providers } = draftFromConfig(c);
+			const switched = switchTranscriptionKind(
+				{ ...emptyTranscription(kind), language, model: "old-model", auth: "OLD_KEY" },
+				"mimo",
+			);
+			const expected = language === "es" ? "" : language;
+			expect(switched).toMatchObject({ language: expected, model: "", auth: "" });
+			const body = bodyFromDraft({ ...d, transcription: switched }, providers, authDefaults);
+			expect(parseConfig({ ...c, ...body }).transcription).toEqual({
+				kind: "mimo",
+				model: "mimo-v2.5-asr",
+				auth: "mimo",
+				...(expected === "" ? {} : { language: expected }),
+			});
+		},
+	);
+
+	test.each(["auto", "zh", "en", ""])(
+		"leaving MiMo for Whistle normalizes language %s without losing local fields",
+		(language) => {
+			const c = baseConfig();
+			const { draft: d, providers } = draftFromConfig(c);
+			const switched = switchTranscriptionKind(
+				{
+					...emptyTranscription("mimo"),
+					language,
+					model: "mimo-v2.5-asr",
+					auth: "MIMO_KEY",
+					keywords: ["goblin"],
+					engine: "/opt/needle",
+					weights: "/opt/whistle.cact",
+				},
+				"whistle",
+			);
+			expect(switched).toMatchObject({
+				language: language === "en" ? "en" : "",
+				model: "",
+				auth: "",
+			});
+			const body = bodyFromDraft({ ...d, transcription: switched }, providers, authDefaults);
+			expect(parseConfig({ ...c, ...body }).transcription).toEqual({
+				kind: "whistle",
+				keywords: ["goblin"],
+				engine: "/opt/needle",
+				weights: "/opt/whistle.cact",
+				...(language === "en" ? { language: "en" } : {}),
+			});
+		},
+	);
+
+	test("other cloud switches preserve ISO languages, but not MiMo's explicit auto", () => {
+		const c = baseConfig();
+		const { draft: d, providers } = draftFromConfig(c);
+		for (const language of ["auto", "zh", "en", ""]) {
+			const switched = switchTranscriptionKind({ ...emptyTranscription("mimo"), language }, "groq");
+			expect(switched.language).toBe(language === "auto" ? "" : language);
+			const body = bodyFromDraft({ ...d, transcription: switched }, providers, authDefaults);
+			expect(parseConfig({ ...c, ...body }).transcription).toEqual({
+				kind: "groq",
+				model: "whisper-large-v3-turbo",
+				auth: "groq",
+				...(switched.language === "" ? {} : { language: switched.language }),
+			});
+		}
+		expect(
+			switchTranscriptionKind({ ...emptyTranscription("groq"), language: "es" }, "openai").language,
+		).toBe("es");
+		expect(
+			switchTranscriptionKind({ ...emptyTranscription("whistle"), language: "es" }, "groq")
+				.language,
+		).toBe("es");
+	});
+
 	test("re-selecting the current kind keeps what the operator typed", () => {
 		const groq = { ...emptyTranscription("groq"), model: "my-model", auth: "MY_KEY" };
 		expect(switchTranscriptionKind(groq, "groq")).toEqual(groq);

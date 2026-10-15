@@ -927,7 +927,12 @@ export function Composer({
 								onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]),
 							).then((accepted) => {
 								if (accepted === false)
-									setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+									// Cancellation can restore this ref before onSend settles.
+									setStaged((p) =>
+										p.some((e) => e.ref.path === ref.path)
+											? p
+											: [...p, { key: crypto.randomUUID(), ref, speech: true }],
+									);
 							});
 						}
 					} catch {

@@ -1427,14 +1427,29 @@ export function SettingsView({
 										/>
 									</>
 								)}
-								<Field
-									label="Language"
-									value={draft.transcription.language}
-									onChange={(v) => patchTranscription({ language: v })}
-									placeholder="detect"
-									mono
-									cap="An ISO code like es. Blank lets the engine detect it."
-								/>
+								{draft.transcription.kind === "mimo" ? (
+									<Row label="Language" cap="Blank lets the engine detect it.">
+										<select
+											aria-label="Transcription language"
+											value={draft.transcription.language}
+											onChange={(e) => patchTranscription({ language: e.target.value })}
+										>
+											<option value="">Detect</option>
+											<option value="auto">Auto</option>
+											<option value="zh">Chinese</option>
+											<option value="en">English</option>
+										</select>
+									</Row>
+								) : (
+									<Field
+										label="Language"
+										value={draft.transcription.language}
+										onChange={(v) => patchTranscription({ language: v })}
+										placeholder="detect"
+										mono
+										cap="An ISO code like es. Blank lets the engine detect it."
+									/>
+								)}
 							</>
 						)}
 					</div>

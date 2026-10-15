@@ -129,7 +129,15 @@ export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft
 // them on the whistle arm only — they cannot leak into a cloud save.
 export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): TrDraft {
 	if (kind === t.kind) return t;
-	return { ...t, kind, model: "", auth: "" };
+	let language = t.language;
+	// MiMo has a closed vocabulary; its explicit auto is not an ISO code
+	// for other cloud kinds, and Whistle cannot accept Chinese either.
+	if (
+		(kind === "mimo" && !["auto", "zh", "en"].includes(language)) ||
+		(t.kind === "mimo" && (language === "auto" || (kind === "whistle" && language === "zh")))
+	)
+		language = "";
+	return { ...t, kind, model: "", auth: "", language };
 }
 
 // Same rule as transcription kinds above: the auth reference is

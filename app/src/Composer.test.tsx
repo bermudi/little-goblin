@@ -125,7 +125,13 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 
 	// The staged list is owned above the composer (#118); for direct
 	// mounts this harness is that owner.
-	function ComposerHarness({ onSend }: { onSend: (parts: UIMessage["parts"]) => void }) {
+	function ComposerHarness({
+		onSend,
+		draftRestore = null,
+	}: {
+		onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
+		draftRestore?: { parts: UIMessage["parts"] } | null;
+	}) {
 		const [staged, setStaged] = useState<StagedUpload[]>([]);
 		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
 		return (
@@ -137,6 +143,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				stagedNotes={stagedNotes}
 				setStagedNotes={setStagedNotes}
 				onSend={onSend}
+				draftRestore={draftRestore}
 			/>
 		);
 	}
@@ -144,7 +151,13 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	const mount = () => {
 		root = createRoot(container);
 		act(() => {
-			root?.render(<ComposerHarness onSend={(parts) => sent.push(parts)} />);
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
 		});
 	};
 
@@ -169,6 +182,76 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			);
 		});
 	};
+
+	test.each([false, true])(
+		"a declined voice send stages one resendable chip (restored while pending: %s)",
+		async (restoreWhilePending) => {
+			class FakeMediaRecorder {
+				static isTypeSupported() {
+					return true;
+				}
+				mimeType = "audio/ogg;codecs=opus";
+				ondataavailable: ((event: { data: Blob }) => void) | null = null;
+				onstop: (() => void) | null = null;
+				start() {}
+				stop() {
+					this.ondataavailable?.({ data: new Blob(["voice"], { type: this.mimeType }) });
+					this.onstop?.();
+				}
+			}
+			installGlobal("MediaRecorder", FakeMediaRecorder);
+			installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+			Object.defineProperty(win.navigator, "mediaDevices", {
+				value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+			});
+			let decline!: (accepted: boolean) => void;
+			const pendingSend = new Promise<boolean>((resolve) => {
+				decline = resolve;
+			});
+			const onSend = (parts: UIMessage["parts"]) => {
+				sent.push(parts);
+				return sent.length === 1 ? pendingSend : true;
+			};
+			root = createRoot(container);
+			await act(async () => {
+				root?.render(<ComposerHarness onSend={onSend} />);
+			});
+			const click = async (label: string) => {
+				const button = container.querySelector(`button[aria-label="${label}"]`);
+				expect(button).not.toBeNull();
+				await act(async () => {
+					button?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				});
+			};
+			await click("Record a voice note");
+			await click("Stop and send");
+			expect(uploads.length).toBe(1);
+			const ref = {
+				path: "attachments/voice",
+				mediaType: "audio/ogg;codecs=opus",
+				filename: "voice-note.ogg",
+				size: 5,
+			};
+			await act(async () => {
+				uploads[0]?.settle.ok(ref);
+			});
+			expect(sent).toEqual([[{ type: "data-attachment", data: { ...ref, speech: true } }]]);
+			if (restoreWhilePending) {
+				// Lazy-create cancellation restores the scoped draft before its
+				// cleanup request finishes and onSend resolves false.
+				await act(async () => {
+					root?.render(<ComposerHarness onSend={onSend} draftRestore={{ parts: sent[0]! }} />);
+				});
+				expect(container.querySelectorAll(".attachment").length).toBe(1);
+			}
+			await act(async () => decline(false));
+			expect(container.querySelectorAll(".attachment").length).toBe(1);
+			await submit();
+			expect(sent.length).toBe(2);
+			expect(sent[1]).toEqual([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+			expect(container.querySelectorAll(".attachment").length).toBe(0);
+		},
+	);
 
 	test("overlapping same-name uploads each resolve to their own ref (stage order)", async () => {
 		await mount();

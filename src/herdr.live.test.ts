@@ -16,15 +16,26 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, makeHerdr, type Herdr } from "./herdr.ts";
+import {
+	HerdrError,
+	HerdrRefusal,
+	makeHerdr,
+	makeOperatorHerdr,
+	type Herdr,
+	type HerdrCallOpts,
+	type HerdrRunResult,
+	type OperatorHerdr,
+} from "./herdr.ts";
 import { setLogFile } from "./log.ts";
-import { boundedRun, spawnProc } from "./proc.ts";
+import { boundedRun } from "./proc.ts";
 
 // Hard-pinned throwaway name: the operator owns `default`, prod
 // delegation owns `goblin`, this file owns goblin-drift. Widened to
 // string so the guard below stays a live invariant, not dead code —
 // editing SESSION to a live name must fail the run, not boot prod.
-const SESSION: string = "goblin-drift";
+// Unique per run — never a preexisting name; the guard stays a live
+// invariant so editing it to a live session fails the run, not boots prod.
+const SESSION: string = `goblin-drift-${process.pid}-${Date.now().toString(36)}`;
 if (SESSION === "default" || SESSION === "goblin") {
 	throw new Error("herdr.live.test.ts: SESSION must be a throwaway name");
 }
@@ -40,8 +51,22 @@ interface CliResult {
 	stderr: string;
 }
 
+// Inherited HERDR_* (socket paths, session/caller ids) must not leak
+// into the throwaway server or its CLI calls (herdr-throwaway-repro).
+const CLEAN_ENV = Object.fromEntries(
+	Object.entries(process.env).filter(([k]) => !k.startsWith("HERDR_")),
+) as Record<string, string>;
+const spawnClean = (argv: string[]): Bun.ReadableSubprocess =>
+	Bun.spawn(argv, {
+		env: CLEAN_ENV,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+		detached: true,
+	});
+
 async function cli(args: string[]): Promise<CliResult> {
-	const r = await boundedRun(spawnProc(["herdr", "--session", SESSION, ...args]), {
+	const r = await boundedRun(spawnClean(["herdr", "--session", SESSION, ...args]), {
 		timeoutMs: 15_000,
 		maxOutput: 1 << 20,
 	});
@@ -68,17 +93,10 @@ let cwd = "";
 
 describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 	beforeAll(async () => {
-		// Self-heal a stale server from an aborted prior run — both
-		// miss cleanly when nothing is there.
-		try {
-			await cli(["session", "stop", SESSION]);
-			await cli(["session", "delete", SESSION]);
-		} catch {
-			// best effort only
-		}
 		// Ignored stdio: the server outlives this process's interest in
 		// its logs, and piped-but-undrained streams would fill and block.
 		server = Bun.spawn(["herdr", "--session", SESSION, "server"], {
+			env: CLEAN_ENV,
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -154,9 +172,93 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 	test("usage errors exit 2 with non-JSON stderr (the fallback contract)", async () => {
 		const r = await cli(["agent", "get"]);
 		expect(r.code).toBe(2);
-		expect(r.stderr.trim()).toStartWith("usage:");
 		expect(() => JSON.parse(r.stderr)).toThrow();
+		expect(r.stderr).toContain("the following required arguments were not provided:");
+		expect(r.stderr).toContain("Usage: herdr agent get <TARGET>");
 	}, 15_000);
+
+	test("prompt argv: a --help body is a literal positional, never a flag", async () => {
+		// On a missing pane the server rejects before consuming text —
+		// agent_not_found proves the CLI parsed `--help` as TEXT.
+		const r = await cli([
+			"agent",
+			"prompt",
+			"--wait",
+			"--until",
+			"working",
+			"--until",
+			"blocked",
+			"--timeout",
+			"120000",
+			"--",
+			"w99:p99",
+			"--help",
+		]);
+		expect(r.code).toBe(1);
+		expect(JSON.parse(r.stderr).error.code).toBe("agent_not_found");
+	}, 15_000);
+
+	// ---- operator adapter (the `herdr` tool's backend) ----
+	//
+	// makeOperatorHerdr pins --session default; this runner rewrites the
+	// pinned session to the throwaway one — the ONLY seam the adapter
+	// leaves open. It also records argv so the prompt-refusal test can
+	// prove nothing was sent.
+	let opHerdr: OperatorHerdr;
+	const opCalls: string[][] = [];
+	{
+		const run = async (args: string[], opts?: HerdrCallOpts): Promise<HerdrRunResult> => {
+			opCalls.push(args);
+			expect(args[0]).toBe("--session");
+			const rewritten = args.map((a) => (a === "default" ? SESSION : a));
+			const r = await boundedRun(spawnClean(["herdr", ...rewritten]), {
+				timeoutMs: opts?.timeoutMs ?? 45_000,
+				maxOutput: 1 << 20,
+				...(opts?.signal !== undefined ? { abortSignal: opts.signal } : {}),
+			});
+			return { code: r.exitCode ?? -1, stdout: r.stdout, stderr: r.stderr };
+		};
+		opHerdr = makeOperatorHerdr(run);
+	}
+
+	test("operator list: empty session yields [] with a single call", async () => {
+		opCalls.length = 0;
+		expect(await opHerdr.list()).toEqual([]);
+		expect(opCalls.map((c) => c.slice(2).join(" "))).toEqual(["agent list"]);
+	}, 30_000);
+
+	test("operator prompt on a missing pane refuses agent_not_found and never sends", async () => {
+		opCalls.length = 0;
+		try {
+			await opHerdr.prompt("w99:p99", "pi", "never sent");
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrRefusal);
+			expect((err as HerdrRefusal).code).toBe("agent_not_found");
+		}
+		expect(opCalls.some((c) => c.slice(2, 4).join(" ") === "agent prompt")).toBe(false);
+	}, 30_000);
+
+	test("operator read on a missing agent throws the envelope code", async () => {
+		await expectHerdrError(opHerdr.read("w99:p99", 5), "agent_not_found");
+	}, 30_000);
+
+	test("operator prompt on the drift workspace's shell pane: topology parsed, then agent_not_found refusal", async () => {
+		// The workspace's root pane (paneId, set by the create test) is a
+		// shell — agent get must refuse it AFTER the topology reads, and
+		// nothing is sent. This pins workspace/tab list wire shapes live.
+		opCalls.length = 0;
+		try {
+			await opHerdr.prompt(paneId, "pi", "never sent");
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrRefusal);
+			expect((err as HerdrRefusal).code).toBe("agent_not_found");
+		}
+		const verbs = opCalls.map((c) => c.slice(2).join(" "));
+		expect(verbs).toContain(`tab list --workspace ${workspaceId}`);
+		expect(opCalls.some((c) => c.slice(2, 4).join(" ") === "agent prompt")).toBe(false);
+	}, 30_000);
 
 	test("workspace close resolves the ok envelope", async () => {
 		await h!.closeWorkspace(workspaceId);

@@ -9,7 +9,7 @@ import type { Runtime } from "../runtime.ts";
 import { handleCommand, type CommandDeps } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
-import { tmpDb } from "../testkit.ts";
+import { tmpDb, waitUntil } from "../testkit.ts";
 
 const config: Config = {
 	providers: {
@@ -251,7 +251,7 @@ function blockOne(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(sent: string[], n: number): Promise<void> {
-	for (let i = 0; i < 100 && sent.length < n; i++) await sleep(10);
+	await waitUntil(() => sent.length >= n, "sends land");
 	expect(sent.length).toBeGreaterThanOrEqual(n);
 }
 

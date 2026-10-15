@@ -17,6 +17,7 @@ import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
 import { endLive, type LiveChunks, openLive, type WireEnd, type WireMember } from "./stream.ts";
+import { waitUntil } from "../testkit.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -603,7 +604,7 @@ describe("submitTurnReview", () => {
 	}
 
 	async function awaitPrompt(prompts: string[]): Promise<void> {
-		for (let i = 0; i < 500 && prompts.length === 0; i++) await sleep(2);
+		await waitUntil(() => prompts.length > 0, "prompt lands");
 	}
 
 	test("the turn's tool digest reaches the review payload", async () => {

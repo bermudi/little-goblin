@@ -19,6 +19,7 @@ import {
 } from "./doctor.ts";
 import type { HealthReport } from "./health.ts";
 import { bashTool } from "./agent/tools/bash.ts";
+import { waitUntil } from "./testkit.ts";
 
 const report: HealthReport = {
 	version: 1,
@@ -100,7 +101,7 @@ describe("doctor process boundary", () => {
 				{ command: `exec "${process.execPath}" "${controllerFile}"`, timeout_ms: 8000 },
 				{ toolCallId: "cancel-doctor", messages: [], context: {}, abortSignal: abort.signal },
 			);
-			for (let i = 0; i < 200 && !existsSync(pids); i++) await Bun.sleep(5);
+			await waitUntil(() => existsSync(pids), "worker pid file lands", 2_000);
 			expect(existsSync(pids)).toBe(true);
 			ids = JSON.parse(readFileSync(pids, "utf8")) as number[];
 			abort.abort();

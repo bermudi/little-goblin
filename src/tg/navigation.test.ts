@@ -7,6 +7,7 @@ import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provide
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "../runtime.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { navigateDm } from "./navigation.ts";
+import { waitUntil } from "../testkit.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -372,7 +373,7 @@ test("receipt failure leaves a real held Runtime provider un-aborted and able to
 			"user",
 			"assistant",
 		]);
-		while (turn.runtime.busy(turn.conv.id)) await Bun.sleep(1);
+		await waitUntil(() => !turn.runtime.busy(turn.conv.id), "lane drains");
 	} finally {
 		turn.release();
 		await turn.runtime.shutdown();
@@ -408,7 +409,7 @@ test("successful navigation cancels a real Runtime at the committed fence withou
 		expect(turn.calls()).toBe(1);
 		expect(deps.store.history(turn.conv.id).map((message) => message.role)).toEqual(["user"]);
 		expect(deps.store.history(result.toId!)).toEqual([]);
-		while (turn.runtime.busy(turn.conv.id)) await Bun.sleep(1);
+		await waitUntil(() => !turn.runtime.busy(turn.conv.id), "lane drains");
 	} finally {
 		turn.release();
 		await turn.runtime.shutdown();

@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
@@ -175,6 +175,21 @@ describe("fetch tool — local", () => {
 		expect(existsSync(file)).toBe(true);
 		// The cached file carries the full text, not the window.
 		expect(readFileSync(file, "utf8")).toContain("line 200 ");
+	});
+
+	test("a failed webcache write still returns the window — the footer reports the lost save", async () => {
+		// A regular file where webcache belongs: mkdirSync can't recover.
+		mkdirSync(join(home, "state"), { recursive: true });
+		writeFileSync(join(home, "state", "webcache"), "x");
+		const long = Array.from({ length: 400 }, (_, i) => `line ${i} ${"x".repeat(40)}`).join("\n");
+		const base = serve(() => new Response(long, { headers: { "content-type": "text/plain" } }));
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/big` })) as string;
+		expect(out).toContain(`Source: ${base}/big`);
+		expect(out).toContain("[TRUNCATED");
+		expect(out).toContain("line 0 ");
+		expect(out).toContain("line 399 ");
+		expect(out).toContain("could not be saved");
+		expect(out).not.toContain("saved to:");
 	});
 
 	test("page text rides fenced — a page can't close its own fence", async () => {

@@ -352,8 +352,16 @@ export function shapeResult(
 	if (!truncated) return header + fenced;
 	const file = cachePath(url);
 	const full = `${header}${title}${extracted.text}`;
-	mkdirSync(paths.webcache(), { recursive: true });
-	durableWriteFile(file, full);
+	// The extraction is already done — a failed cache write degrades to
+	// the no-file footer; throwing here would lose the page for a
+	// recovery aid.
+	try {
+		mkdirSync(paths.webcache(), { recursive: true });
+		durableWriteFile(file, full);
+	} catch (err) {
+		log.warn("web fetch cache write failed", err, { url, file });
+		return header + fenced + truncatedFooter(null, extracted.text.length);
+	}
 	return header + fenced + truncatedFooter(file, extracted.text.length);
 }
 

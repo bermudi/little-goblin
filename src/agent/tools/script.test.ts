@@ -5,7 +5,14 @@
 // spilled like fetch's, and web-tainted output rides fenced.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type ToolSet } from "ai";
@@ -333,6 +340,24 @@ return "tail marker";`,
 	const full = readFileSync(file, "utf8");
 	expect(full).toContain("line 300 ");
 	expect(full).toContain("tail marker");
+});
+
+test("a failed output spill still returns the window — the footer reports the lost save", async () => {
+	// A regular file where scriptcache belongs: mkdirSync can't recover.
+	mkdirSync(join(home, "state"), { recursive: true });
+	writeFileSync(join(home, "state", "scriptcache"), "x");
+	const tools = composed({ bash: counter(() => "ok") });
+	const out = await exec(scriptToolOf(tools), {
+		code: `const lines = [];
+for (let i = 0; i < 600; i++) lines.push("line " + i + " " + "x".repeat(40));
+text(lines.join("\\n"));
+return "tail marker";`,
+	});
+	expect(out.error).toBeUndefined();
+	expect(out.text).toContain("Script completed");
+	expect(out.text).toContain("tail marker");
+	expect(out.text).toContain("could not be saved");
+	expect(out.text).not.toContain("saved to:");
 });
 
 describe("guest composition (index.ts's order: filter → withScript → refilter)", () => {

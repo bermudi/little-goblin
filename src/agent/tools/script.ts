@@ -17,7 +17,7 @@ import {
 import { paths } from "../../config.ts";
 import { log } from "../../log.ts";
 import { summarize } from "../../reviewer.ts";
-import { spillFile, truncatedFooter, windowText } from "./truncate.ts";
+import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 import { fenceUntrusted } from "./web.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -325,7 +325,7 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 			const { window, truncated } = windowText(body, OUTPUT_BUDGET);
 			let footer = "";
 			if (truncated) {
-				footer = truncatedFooter(spillFile(paths.scriptcache(), body), body.length);
+				footer = truncatedFooter(trySpill(paths.scriptcache(), body), body.length);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);
 			const status =

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spillFile, truncateTail, windowText } from "./truncate.ts";
+import { spillFile, truncatedFooter, truncateTail, trySpill, windowText } from "./truncate.ts";
 
 describe("windowText", () => {
 	test("under budget passes through untruncated", () => {
@@ -73,6 +73,29 @@ describe("spillFile", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("trySpill", () => {
+	test("a blocked cache dir degrades to null instead of throwing", () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-spill-"));
+		try {
+			// A regular file where the dir belongs: mkdirSync can't
+			// recover, on any user.
+			const blocker = join(dir, "cache");
+			writeFileSync(blocker, "x");
+			expect(trySpill(blocker, "body")).toBeNull();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a null file footers as a failed save, naming no path to look up", () => {
+		const footer = truncatedFooter(null, 42_000);
+		expect(footer).toContain("could not be saved");
+		expect(footer).toContain("42000");
+		expect(footer).not.toContain("saved to:");
+		expect(footer).not.toContain("read_file");
 	});
 });
 

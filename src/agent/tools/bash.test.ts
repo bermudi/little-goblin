@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../config.ts";
@@ -87,6 +87,20 @@ describe("bash", () => {
 		expect(readFileSync(file, "utf8")).toBe(
 			`${Array.from({ length: 20000 }, (_, i) => `${i + 1}`).join("\n")}\n`,
 		);
+	});
+
+	test("a failed spill keeps the window and exit code — the footer reports the lost save", async () => {
+		// A regular file where bashcache belongs: mkdirSync can't recover.
+		mkdirSync(join(home, "state"), { recursive: true });
+		writeFileSync(join(home, "state", "bashcache"), "x");
+		const t = bashTool("/tmp");
+		const out = (await t.execute!({ command: "seq 1 20000" }, opts)) as BashResult;
+		expect(out.exit_code).toBe(0);
+		expect(out.truncated).toBe(true);
+		expect(out.output).toContain("[…]");
+		expect(out.output).toContain("\n20000\n");
+		expect(out.output).toContain("could not be saved");
+		expect(out.output).not.toContain("saved to:");
 	});
 
 	test("a long newline-terminated line retains its final status in the display and spill", async () => {

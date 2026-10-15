@@ -3,7 +3,7 @@ import { z } from "zod";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
 import { paths } from "../../config.ts";
 import { log } from "../../log.ts";
-import { spillFile, truncatedFooter, windowText } from "./truncate.ts";
+import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 
 // The runaway guard, not the output budget: a stream over the cap still
 // kills the process (proc.ts). 4 MiB keeps the spill file inside
@@ -50,12 +50,14 @@ export const bashTool = (cwd: string) =>
 			let truncated = result.truncated;
 			if (combined.length > OUTPUT_BUDGET) {
 				const window = windowText(combined, OUTPUT_BUDGET, 0.25).window;
-				const file = spillFile(paths.bashcache(), combined);
-				log.info("bash output spilled", {
-					file,
-					chars: combined.length,
-					captureCut: result.truncated,
-				});
+				const file = trySpill(paths.bashcache(), combined);
+				if (file !== null) {
+					log.info("bash output spilled", {
+						file,
+						chars: combined.length,
+						captureCut: result.truncated,
+					});
+				}
 				output = window + truncatedFooter(file, combined.length);
 				truncated = true;
 			}

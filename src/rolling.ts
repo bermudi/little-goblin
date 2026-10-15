@@ -289,7 +289,13 @@ export async function routeDmMessage(
 			ms: Date.now() - started,
 			kind: err instanceof System1Error ? err.kind : "deadline",
 		});
-		if (!stillRouteable()) return { conv: current, rolled: false, decidedBy: "command" };
+		if (!stillRouteable()) {
+			// Re-read the pin; navigation may have moved it after admission
+			// of this check. The caller re-checks anyway, but log/read as
+			// current to avoid carrying a stale conv (audit R2).
+			const pinned = deps.store.currentDm(chatId);
+			return { conv: pinned ?? current, rolled: false, decidedBy: "command" };
+		}
 		// The address can still have rolled while the failed check ran
 		// — same re-read as the resolved path: join the new current
 		// rather than answering the superseded one.
@@ -309,7 +315,8 @@ export async function routeDmMessage(
 			inputTokens: decision.inputTokens,
 			cost: decision.cost,
 		});
-		return { conv: current, rolled: false, decidedBy: "command", probability };
+		const pinned2 = deps.store.currentDm(chatId);
+		return { conv: (pinned2 ?? current), rolled: false, decidedBy: "command", probability };
 	}
 	const fresh = probability < FRESH_BELOW;
 	log.info("follow-up check", {

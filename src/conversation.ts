@@ -747,6 +747,16 @@ export function openStore(dbPath: string): ConversationStore {
 			current_id TEXT NOT NULL REFERENCES conversations(id),
 			n INTEGER NOT NULL
 		)`);
+	// High-water for a lane's rolling ordinal, retained even after its
+	// current conversation is deleted (e.g. persona demotion clearing
+	// personal history). deleteConversation drops the (FK-enforced)
+	// dm_rolls row but first copies its n here, so the next rollDm
+	// never reuses an abandoned id or collides with a surviving one.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS dm_roll_highwater (
+			chat_id INTEGER PRIMARY KEY,
+			n INTEGER NOT NULL
+		)`);
 	// Manual DM navigation is additive. The presence of the link column
 	// is the one-time migration marker: never rebuild links on later boots,
 	// or a /back → /new branch would silently become chronological again.
@@ -839,6 +849,9 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qDmRoll = db.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
 		"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
+	);
+	const qDmRollHighwater = db.query<{ n: number }, [number]>(
+		"SELECT n FROM dm_roll_highwater WHERE chat_id = ?",
 	);
 	const qUpsertRoll = db.query(
 		`INSERT INTO dm_rolls (chat_id, current_id, n, selected_at) VALUES (?, ?, ?, ?)
@@ -1153,7 +1166,8 @@ export function openStore(dbPath: string): ConversationStore {
 			privateChatIdSchema.parse(chatId);
 			return db.transaction(() => {
 				const roll = qDmRoll.get(chatId);
-				const n = (roll?.n ?? 0) + 1;
+				const highwater = qDmRollHighwater.get(chatId);
+				const n = Math.max(roll?.n ?? 0, highwater?.n ?? 0) + 1;
 				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
 				const now = new Date().toISOString();
 				const source = roll ? qGet.get(roll.current_id) : null;
@@ -1163,6 +1177,7 @@ export function openStore(dbPath: string): ConversationStore {
 					id,
 				]);
 				qUpsertRoll.run(chatId, id, n, now);
+				db.run("INSERT INTO dm_roll_highwater (chat_id, n) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET n = excluded.n", [chatId, n]);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);
@@ -1465,9 +1480,21 @@ export function openStore(dbPath: string): ConversationStore {
 				// lane's persona reset is the one caller that deletes a
 				// rolled conversation; /back must not reach it anyway).
 				db.run("UPDATE conversations SET previous_dm_id = NULL WHERE previous_dm_id = ?", [id]);
+				// Preserve the lane's rolling ordinal high-water before
+				// dropping the FK-enforced dm_rolls row, so a demoted lane
+				// re-mints a fresh id instead of colliding with (or reusing)
+				// the deleted conversation. See audit R1.
+				db.run(
+					`INSERT INTO dm_roll_highwater (chat_id, n)
+					SELECT chat_id, n FROM dm_rolls WHERE current_id = ?
+					ON CONFLICT(chat_id) DO UPDATE SET
+						n = MAX(dm_roll_highwater.n, excluded.n)`,
+					[id],
+				);
 				// The lane pointer is NOT NULL — dropping the deleted row's
-				// dm_rolls entry is the sever; the next rollDm re-mints the
-				// lane (the reset flow calls it immediately).
+				// dm_rolls entry is the sever; the high-water survives in
+				// dm_roll_highwater and rollDm re-mints the lane (the reset
+				// flow calls it immediately).
 				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);

@@ -14,7 +14,11 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Waits stay bounded so a drain or one-shot send cannot park on the
 // clock indefinitely — beyond the cap the failure propagates to the
 // caller's existing uncertainty/failure handling, fail loud.
-const DEFAULT_MAX_WAIT_MS = 60_000;
+// Must stay below API_CALL_TIMEOUT_MS (30s): an honored wait that
+// outlives the outer timeout turns into a ghost send — the drain stops
+// tracking the call while the transformer still fires it. Keep a
+// margin for the API call itself.
+const DEFAULT_MAX_WAIT_MS = 25_000;
 // Honored waits per api call — a cap, not a promise to succeed.
 const DEFAULT_MAX_RETRIES = 2;
 

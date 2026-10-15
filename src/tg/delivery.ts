@@ -2,7 +2,7 @@
 // flush on completion, typing indicator while a turn runs. This is a
 // TurnSink: the runtime streams into it, grammy does the sending.
 
-import { InputFile, type Api } from "grammy";
+import { GrammyError, InputFile, type Api } from "grammy";
 import { stat } from "node:fs/promises";
 import { channelOf, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
@@ -225,7 +225,7 @@ export function makeDeliverySink(
 	let uncertain = false;
 	const mayDeliver = () => !cancelled && !uncertain && authoritative();
 
-	function markUncertain(error: TelegramTimeoutError, kind: string, chunk?: number): void {
+	function markUncertain(error: unknown, kind: string, chunk?: number): void {
 		uncertain = true;
 		log.warn("telegram delivery uncertain — not retrying", error, {
 			conversation: conv.id,
@@ -233,7 +233,7 @@ export function makeDeliverySink(
 			thread: conv.threadId,
 			kind,
 			...(chunk !== undefined ? { chunk } : {}),
-			timeoutMs: error.ms,
+			...(error instanceof TelegramTimeoutError ? { timeoutMs: error.ms } : {}),
 		});
 	}
 
@@ -454,6 +454,8 @@ export function makeDeliverySink(
 		q: QueuedPhoto,
 		thread: { message_thread_id?: number },
 	): Promise<void> {
+		if (q.bytes > 2 * 1024 * 1024 * 1024)
+			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${2 * 1024 * 1024 * 1024})`);
 		try {
 			const sent = await withTimeout(
 				api.sendPhoto(conv.chatId, new InputFile(q.file.path, q.file.filename), {
@@ -579,6 +581,8 @@ export function makeDeliverySink(
 	}
 
 	async function sendDocumentSolo(file: OutgoingFile, bytes: number): Promise<void> {
+		if (bytes > 2 * 1024 * 1024 * 1024)
+			throw new Error(`file too large: ${file.path} (${bytes} bytes, max ${2 * 1024 * 1024 * 1024})`);
 		// The chain never rejects (onDone awaits it bare), so a failed
 		// send can't travel through it. The link records the failure and
 		// rethrows — the chain's catch still warn-logs it — and the
@@ -804,7 +808,20 @@ export function makeDeliverySink(
 						// the finalize drain (sinkDone) stays silent.
 						repingTyping();
 					} catch (err) {
-						if (err instanceof TelegramTimeoutError) {
+						// API-level Grammy errors (400s etc.) provably never
+						// landed, so retry on the next flush. Transport-level
+						// failures — a TypeError from fetch, or a known
+						// network error such as ECONNRESET — are ambiguous:
+						// Telegram may have committed the message before the
+						// response was lost (audit D2). A generic Error stays
+						// a definite failure so test/edge callers keep retry.
+						const transportError =
+							err instanceof TypeError ||
+							(err instanceof Error &&
+								/ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|ETIMEDOUT|socket hang up|fetch failed|network/i.test(
+									err.message,
+								));
+						if (err instanceof TelegramTimeoutError || (!(err instanceof GrammyError) && transportError)) {
 							markUncertain(err, "sendMessage", idx);
 						} else {
 							replyTo = undefined; // never retry the reply link

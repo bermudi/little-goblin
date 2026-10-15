@@ -185,7 +185,6 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			await answer("internal error — nothing applied; check goblin logs");
 			throw err;
 		}
-		await answer();
 	};
 
 	const runDecision = async (

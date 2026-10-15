@@ -75,6 +75,10 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 		// Outside the guarded boundaries below — a programming error, not
 		// an edge failure. Registration can't surface it, so it lands here.
 		log.error("rate button handler failed", err, { query: query.id });
+		await withTimeout(
+			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
+			"answerCallbackQuery",
+		).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
 	}
 }
 

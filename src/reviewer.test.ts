@@ -622,7 +622,10 @@ describe("review run — staging and publication", () => {
 			),
 		});
 		const p = new Reviewer(deps).considerTurn(turn());
-		await waitUntil(() => readdirSync(h.staging).length > 0, "staged write lands");
+		await waitUntil(
+			() => existsSync(h.staging) && readdirSync(h.staging).length > 0,
+			"staged write lands",
+		);
 		const stagedFile = join(h.staging, readdirSync(h.staging)[0]!, "skills", "fresh", "SKILL.md");
 		// The staged write exists; the live catalog has never seen it.
 		expect(readFileSync(stagedFile!, "utf8")).toContain("name: fresh");

@@ -10,6 +10,7 @@ import {
 } from "./mod.ts";
 import { GUEST_REFUSAL } from "./guest.ts";
 import { COMMANDS, DM_COMMANDS } from "./commands.ts";
+import { tmpDb } from "../testkit.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -161,7 +162,7 @@ describe("applyMenuButton", () => {
 
 import type { Message } from "grammy/types";
 import type { UIMessage } from "ai";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
@@ -185,11 +186,6 @@ import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
 
 let intakeDirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-intake-"));
-	intakeDirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 
 afterEach(() => {
 	for (const d of intakeDirs) rmSync(d, { recursive: true, force: true });
@@ -225,7 +221,7 @@ interface RouterHarness {
 type SendOpts = { disable_notification?: boolean; message_thread_id?: number };
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-intake-"));
 	const pushed: RouterHarness["pushed"] = [];
 	const apiCalls: RouterHarness["apiCalls"] = [];
 	const stopped: string[] = [];

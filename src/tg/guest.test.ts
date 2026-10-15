@@ -5,9 +5,8 @@
 // shape — Telegram faked at the api edge like every other tg test.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
 	guestAddress,
 	openStore,
@@ -36,13 +35,9 @@ import {
 } from "./guest.ts";
 import { sharedChatPart } from "./mod.ts";
 import { log } from "../log.ts";
+import { tmpDb } from "../testkit.ts";
 
 const dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-guest-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 afterEach(() => {
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
@@ -282,7 +277,7 @@ describe("filterGuestTools — the sandbox invariant", () => {
 
 describe("openGuestStore", () => {
 	test("seen is true once per update id", () => {
-		const store = openGuestStore(openStore(tmpdb()).db);
+		const store = openGuestStore(openStore(tmpDb("goblin-guest-")).db);
 		expect(store.seen(500)).toBe(true);
 		expect(store.seen(500)).toBe(false);
 		expect(store.seen(501)).toBe(true);
@@ -532,7 +527,7 @@ interface Submitted {
 }
 
 function makeEnv(over: { busy?: boolean; guest?: boolean } = {}) {
-	const db = openStore(tmpdb());
+	const db = openStore(tmpDb("goblin-guest-"));
 	const store: ConversationStore = db;
 	const guestStore = openGuestStore(db.db);
 	const submitted: Submitted[] = [];

@@ -8,8 +8,7 @@
 // drafts without ever claiming a row mid-send.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { TelegramTimeoutError } from "./deadline.ts";
@@ -23,6 +22,7 @@ import {
 	type MailApproval,
 	type MailApprovalDeps,
 } from "./mail-approval.ts";
+import { tmpDb } from "../testkit.ts";
 
 test("draft chunk boundaries never split an emoji", () => {
 	const chunks = chunkDraft(`${"x".repeat(3799)}🙂tail`);
@@ -32,18 +32,10 @@ test("draft chunk boundaries never split an emoji", () => {
 	expect(chunks[1]?.startsWith("🙂")).toBe(true);
 });
 
-let dirs: string[] = [];
 let gates: MailApproval[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-mailtap-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 afterEach(() => {
 	for (const g of gates) g.stop();
 	gates = [];
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
 });
 
 const NOW = new Date("2026-09-26T10:00:00.000Z");
@@ -109,7 +101,7 @@ function fakeReader(
 function setup(
 	sender: MailSender | null = fakeSender(),
 	reader: MailPoller | null = fakeReader(),
-	outbox: OutboxStore = openOutbox(tmpdb()),
+	outbox: OutboxStore = openOutbox(tmpDb("goblin-mailtap-")),
 ): {
 	outbox: OutboxStore;
 	calls: ApiCalls;
@@ -261,7 +253,7 @@ describe("draft requests", () => {
 	});
 
 	test("a timeout before the buttons chunk cancels — no tap can ever decide the row", async () => {
-		const store = openOutbox(tmpdb());
+		const store = openOutbox(tmpDb("goblin-mailtap-"));
 		let seenId = 0;
 		const outbox: OutboxStore = {
 			...store,
@@ -296,7 +288,7 @@ describe("draft requests", () => {
 	});
 
 	test("a failed draft post cancels the row and returns a retryable error", async () => {
-		const store = openOutbox(tmpdb());
+		const store = openOutbox(tmpDb("goblin-mailtap-"));
 		let seenId = 0;
 		const outbox: OutboxStore = {
 			...store,
@@ -622,7 +614,7 @@ describe("the expiry sweep", () => {
 	});
 
 	test("a restart: a fresh gate over the same store settles what expired while down", async () => {
-		const outbox = openOutbox(tmpdb());
+		const outbox = openOutbox(tmpDb("goblin-mailtap-"));
 		// Left behind by the previous process: one past its fuse, one
 		// still pending with live buttons.
 		const stale = outbox.queue(

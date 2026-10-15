@@ -9,8 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { parseConfig, type Config, type ConfigRef } from "../config.ts";
@@ -18,6 +17,7 @@ import { openStore } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
 import { createBot, type BotDeps, type RunningBot } from "./mod.ts";
+import { tmpDb } from "../testkit.ts";
 
 // parseConfig rather than a hand-copied literal — the schema owns the shape.
 function testConfig(apiRoot?: string): Config {
@@ -59,7 +59,7 @@ function testDeps(configRef: ConfigRef): BotDeps {
 	return {
 		configRef,
 		auth: { resolve: () => Promise.resolve("test-token") } as unknown as AuthStore,
-		store: openStore(tmpdb()),
+		store: openStore(tmpDb("goblin-generation-stop-")),
 		runtime: {
 			hasActiveTurn: () => false,
 			submitPersisted: () => {},
@@ -87,12 +87,6 @@ function stopUpdate(fields: { threadId?: number }): Update {
 const lines: string[] = [];
 const cleanups: Array<() => void> = [];
 let tempDirs: string[] = [];
-
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-generation-stop-"));
-	tempDirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
 
 function captureLog(): void {
 	setLogFile("/tmp/generation-stop-test.log");

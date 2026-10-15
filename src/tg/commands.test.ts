@@ -1,6 +1,4 @@
-import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, jest, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { memoryConfigSchema, type Config } from "../config.ts";
@@ -11,17 +9,7 @@ import type { Runtime } from "../runtime.ts";
 import { handleCommand, type CommandDeps } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-cmd-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "../testkit.ts";
 
 const config: Config = {
 	providers: {
@@ -39,7 +27,7 @@ const config: Config = {
 };
 
 function setup(overrides?: { compact?: Runtime["compact"] }) {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-cmd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const sent: string[] = [];
 	const stopped: string[] = [];

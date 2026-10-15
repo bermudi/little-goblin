@@ -1101,7 +1101,28 @@ function AppShell() {
 					</>
 				) : (
 					<>
-						{/* The Projects section sits above the chat list — header
+						{/* The conversation list sits directly below New +
+							search — its own labeled group, so the action and
+							its rows read as one. Projects and Notes wait
+							below it, never wedged between. */}
+						<div className="rail-convs">
+							<div className="rail-label">Conversations</div>
+							<ul>{rail.map(renderRow)}</ul>
+							{archived.length > 0 && (
+								<>
+									<button
+										type="button"
+										className="rail-archived"
+										aria-expanded={archivedOpen}
+										onClick={() => setArchivedOpen((v) => !v)}
+									>
+										Archived ({archived.length})
+									</button>
+									{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
+								</>
+							)}
+						</div>
+						{/* The Projects section sits below the chat list — header
 							links to the /app/projects index. */}
 						{projects !== null && (
 							<div className="rail-projects">
@@ -1134,20 +1155,6 @@ function AppShell() {
 									Notes
 								</button>
 							</div>
-						)}
-						<ul>{rail.map(renderRow)}</ul>
-						{archived.length > 0 && (
-							<>
-								<button
-									type="button"
-									className="rail-archived"
-									aria-expanded={archivedOpen}
-									onClick={() => setArchivedOpen((v) => !v)}
-								>
-									Archived ({archived.length})
-								</button>
-								{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
-							</>
 						)}
 					</>
 				)}

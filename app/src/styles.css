@@ -2735,7 +2735,30 @@ select.ui-input option {
 
 /* ---------- projects (design/projects.md) ---------- */
 
-/* The rail section above the chat list: an uppercase section head (the
+/* The conversations group sits directly below New + search, so the
+   action and its rows read as one — Projects and Notes wait below,
+   never wedged between. */
+.rail-convs {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+/* A non-interactive section label — the same type as .rail-section
+   below, but a div: no hover, no pointer, so it never reads as a
+   missed tap. */
+.rail-label {
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.45rem 0.6rem;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+}
+
+/* The rail section below the chat list: an uppercase section head (the
    /app/projects link), single-line project rows, then New project. */
 .rail-projects {
 	display: flex;

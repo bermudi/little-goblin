@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import {
 	chmodSync,
 	lstatSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	readlinkSync,
 	rmSync,
@@ -12,7 +11,6 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	authReferences,
@@ -34,72 +32,74 @@ import {
 	writeConfig,
 } from "./config.ts";
 import { setLogFile } from "./log.ts";
+import { useHome } from "./testkit.ts";
 
-test("mini-app clearing an absent public URL does not throw or retain an empty URL", () => {
-	expect(
-		parseConfig({
-			providers: { test: { kind: "codex" } },
-			model: "test/m",
-			operators: [7],
-			allowedUsers: [7],
-			publicUrl: "",
-		}).publicUrl,
-	).toBeUndefined();
-});
+// ----- parseConfig (object input): value/throw tables -----
+// One row per case keeps every original assertion; the loop is the
+// only boilerplate. Bespoke multi-step cases stay as plain tests.
 
-// The same convention as publicUrl: "" is the form's explicit clear. The
-// JSON body can't carry `undefined`, so an absent key would mean "keep".
-test("the bot API root: '' clears to unset, and a non-URL still fails loud", () => {
-	const config = {
-		providers: { test: { kind: "codex" } },
-		model: "test/m",
-		operators: [7],
-		allowedUsers: [7],
-	};
-	const withRoot = (apiRoot: string) => ({
-		...config,
-		telegram: { dmGapMinutes: 45, apiRoot },
-	});
-	expect(parseConfig(withRoot("http://127.0.0.1:8081")).telegram.apiRoot).toBe(
+const objBase = {
+	providers: { test: { kind: "codex" } },
+	model: "test/m",
+	operators: [7],
+	allowedUsers: [7],
+};
+const ocBase = {
+	providers: {
+		test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
+	},
+	model: "test/m",
+	operators: [42],
+	allowedUsers: [42],
+};
+
+const parseValues: [string, unknown, (c: Config) => unknown, unknown][] = [
+	[
+		"mini-app clearing an absent public URL does not throw or retain an empty URL",
+		{ ...objBase, publicUrl: "" },
+		(c) => c.publicUrl,
+		undefined,
+	],
+	[
+		"the bot API root parses a local URL",
+		{ ...objBase, telegram: { dmGapMinutes: 45, apiRoot: "http://127.0.0.1:8081" } },
+		(c) => c.telegram.apiRoot,
 		"http://127.0.0.1:8081",
-	);
-	expect(parseConfig(withRoot("")).telegram.apiRoot).toBeUndefined();
-	expect(() => parseConfig(withRoot("127.0.0.1:8081"))).toThrow();
-});
-
-test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () => {
-	const config = {
-		providers: {
-			test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
-		},
-		model: "test/m",
-		operators: [42],
-		allowedUsers: [42],
-	};
-	expect(() => parseConfig({ ...config, publicUrl: "http://example.org" })).toThrow();
-	expect(parseConfig({ ...config, publicUrl: "https://example.org" }).publicUrl).toBe(
+	],
+	[
+		"the bot API root: '' clears to unset",
+		{ ...objBase, telegram: { dmGapMinutes: 45, apiRoot: "" } },
+		(c) => c.telegram.apiRoot,
+		undefined,
+	],
+	[
+		"the mini-app public URL accepts HTTPS",
+		{ ...ocBase, publicUrl: "https://example.org" },
+		(c) => c.publicUrl,
 		"https://example.org",
-	);
-});
-
-let dirs: string[] = [];
-let prevHome: string | undefined;
-
-function useHome(): string {
-	prevHome = process.env.GOBLIN_HOME;
-	const dir = mkdtempSync(join(tmpdir(), "goblin-cfg-"));
-	dirs.push(dir);
-	process.env.GOBLIN_HOME = dir;
-	return dir;
+	],
+];
+for (const [name, input, pick, expected] of parseValues) {
+	test(name, () => {
+		expect(pick(parseConfig(input))).toEqual(expected);
+	});
 }
 
-afterEach(() => {
-	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
-	else process.env.GOBLIN_HOME = prevHome;
-	prevHome = undefined;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+const parseThrows: [string, unknown][] = [
+	[
+		"the bot API root: a non-URL still fails loud",
+		{ ...objBase, telegram: { dmGapMinutes: 45, apiRoot: "127.0.0.1:8081" } },
+	],
+	[
+		"the mini-app public URL must be HTTPS, unlike the local bot API URL",
+		{ ...ocBase, publicUrl: "http://example.org" },
+	],
+];
+for (const [name, input] of parseThrows) {
+	test(name, () => {
+		expect(() => parseConfig(input)).toThrow();
+	});
+}
 
 const valid: Config = {
 	providers: {
@@ -116,19 +116,30 @@ const valid: Config = {
 	logLevel: "info",
 };
 
+// ----- goblin.json5 (disk input): shared writer + tables -----
+
+const P_ZAI = `zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}`;
+const P_BOTH = `${P_ZAI},openrouter:{kind:"openrouter",auth:"openrouter"}`;
+const disk = (providers: string, extra: string) =>
+	`{providers:{${providers}},model:"zai/glm-4.6",operators:[7]${extra}}`;
+
+function load(content: string): Config {
+	const dir = useHome("goblin-cfg-");
+	writeFileSync(join(dir, "goblin.json5"), content);
+	return loadConfig()!;
+}
+const loadExtra = (extra: string, providers = P_ZAI) => load(disk(providers, extra));
+const Z = (extra: string) => disk(P_ZAI, extra);
+const B = (extra: string) => disk(P_BOTH, extra);
+
 describe("goblin.json5", () => {
 	test("ENOENT → null", () => {
-		useHome();
+		useHome("goblin-cfg-");
 		expect(loadConfig()).toBeNull();
 	});
 
 	test("valid config loads with defaults applied", () => {
-		const dir = useHome();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]}`,
-		);
-		const c = loadConfig()!;
+		const c = loadExtra("");
 		expect(c.thinking).toBe("medium");
 		expect(c.http.port).toBe(8787);
 		expect(c.operators).toEqual([7]);
@@ -137,7 +148,7 @@ describe("goblin.json5", () => {
 	});
 
 	test("disk loads warn about retired delegation keys without activating them", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		const logPath = join(dir, "config.log");
 		writeFileSync(
 			join(dir, "goblin.json5"),
@@ -168,347 +179,396 @@ describe("goblin.json5", () => {
 		}
 	});
 
-	test("delegation.machines parses saved-machine and local-session targets; bad roots and both-kind targets are rejected", () => {
-		const dir = useHome();
-		const cfg = (machines: unknown) =>
-			`{machines:${JSON.stringify(machines)},harnesses:{pi:{kind:"pi"}}}`;
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:`;
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base}${cfg({ g7: { machine: "g7", root: "~/build" }, bench: { session: "bench", harnesses: { devin: { kind: "devin" } } } })}}`,
-		);
-		const c = loadConfig()!;
-		expect(c.delegation?.machines?.["g7"]).toEqual({ machine: "g7", root: "~/build" });
-		expect(c.delegation?.machines?.["bench"]?.session).toBe("bench");
-		expect(c.delegation?.machines?.["bench"]?.harnesses?.["devin"]?.kind).toBe("devin");
+	// Per-block tables: [case name, extra fragment, expected] — the
+	// field under test is the call's pick. Every row keeps the exact
+	// value/error its bespoke test asserted.
+	const valueRows = (
+		block: string,
+		providers: string,
+		pick: (c: Config) => unknown,
+		rows: [string, string, unknown][],
+	) => {
+		for (const [name, extra, expected] of rows) {
+			test(`${block} ${name}`, () => {
+				expect(pick(loadExtra(extra, providers))).toEqual(expected);
+			});
+		}
+	};
+	const throwRows = (
+		block: string,
+		providers: string,
+		rows: [string, string, (string | undefined)?][],
+	) => {
+		for (const [name, extra, message] of rows) {
+			test(`${block} ${name}`, () => {
+				expect(() => loadExtra(extra, providers)).toThrow(message);
+			});
+		}
+	};
+
+	valueRows("titleModel", P_BOTH, (c) => c.titleModel, [
+		[
+			"parses a provider-validated ref",
+			`,titleModel:"openrouter/openrouter/free"`,
+			"openrouter/openrouter/free",
+		],
+		['"" clears to unset', `,titleModel:""`, undefined],
+	]);
+	throwRows("titleModel", P_BOTH, [
+		["is provider-validated like model", `,titleModel:"other/x"`, "titleModel: custom"],
+	]);
+
+	valueRows("vision", P_BOTH, (c) => c.vision, [
+		["is absent by default", "", undefined],
+		[
+			"defaults maxTokens and mode",
+			`,vision:{model:"openrouter/google/gemini-2.5-flash"}`,
+			{ model: "openrouter/google/gemini-2.5-flash", maxTokens: 2000, mode: "auto" },
+		],
+		[
+			"parses explicit maxTokens and mode",
+			`,vision:{model:"zai/glm-4.6",maxTokens:512,mode:"always"}`,
+			{ model: "zai/glm-4.6", maxTokens: 512, mode: "always" },
+		],
+		['"" clears to unset', `,vision:""`, undefined],
+	]);
+	throwRows("vision", P_BOTH, [
+		["model is provider-validated", `,vision:{model:"other/x"}`, "vision: custom"],
+		["maxTokens must be positive", `,vision:{model:"zai/glm-4.6",maxTokens:0}`],
+		["mode is an enum", `,vision:{model:"zai/glm-4.6",mode:"sometimes"}`],
+	]);
+
+	valueRows("image", P_BOTH, (c) => c.image, [
+		["is absent by default", "", undefined],
+		["parses its model", `,image:{model:"zai/flux-2-dev"}`, { model: "zai/flux-2-dev" }],
+		[
+			"parses an explicit size",
+			`,image:{model:"zai/flux-2-dev",size:"1024x768"}`,
+			{ model: "zai/flux-2-dev", size: "1024x768" },
+		],
+		['"" clears to unset', `,image:""`, undefined],
+	]);
+	throwRows("image", P_BOTH, [
+		["model is provider-validated", `,image:{model:"other/x"}`, "image: custom"],
+		// The provider must exist AND carry a baseUrl — the images POST needs one.
+		["provider must carry a baseUrl", `,image:{model:"openrouter/flux-2-dev"}`, "image: custom"],
+		["size is a WxH shape", `,image:{model:"zai/flux-2-dev",size:"big"}`],
+	]);
+
+	valueRows("reviewer", P_ZAI, (c) => c.reviewer, [
+		["is absent by default", "", undefined],
+		[
+			"defaults threshold, queueCap and evidence",
+			`,reviewer:{auth:"openrouter"}`,
+			{
+				threshold: 0.8,
+				queueCap: 3,
+				evidence: { calls: 8, argChars: 300, outChars: 300 },
+				auth: "openrouter",
+			},
+		],
+		[
+			"parses thresholds, queueCap and evidence overrides",
+			`,reviewer:{auth:"openrouter",thresholds:{correction:0.7},queueCap:5,evidence:{calls:12}}`,
+			{
+				threshold: 0.8,
+				thresholds: { correction: 0.7 },
+				queueCap: 5,
+				evidence: { calls: 12, argChars: 300, outChars: 300 },
+				auth: "openrouter",
+			},
+		],
+	]);
+	throwRows("reviewer", P_ZAI, [
+		["queueCap must be positive", `,reviewer:{auth:"openrouter",queueCap:0}`],
+		[
+			"model is provider-validated",
+			`,reviewer:{auth:"openrouter",model:"other/x"}`,
+			"reviewer: custom",
+		],
+		["auth is required", `,reviewer:{threshold:0.5}`],
+	]);
+
+	valueRows("system1", P_ZAI, (c) => c.system1, [
+		["is absent by default", "", undefined],
+		[
+			"parses model and baseUrl as-is",
+			`,system1:{auth:"x",model:"jev-latest",baseUrl:"https://example.com"}`,
+			{ auth: "x", model: "jev-latest", baseUrl: "https://example.com" },
+		],
+		// system1.model is a bare decision-model id, NOT a
+		// <provider>/<model-id> chat ref — it is NOT provider-validated
+		// (unlike reviewer.model).
+		[
+			"model is not provider-validated",
+			`,system1:{auth:"x",model:"other/x"}`,
+			{ auth: "x", model: "other/x" },
+		],
+	]);
+	throwRows("system1", P_ZAI, [["auth is required", `,system1:{model:"jev-latest"}`]]);
+
+	valueRows("search", P_ZAI, (c) => c.search, [
+		[
+			"object form normalizes to a one-entry chain",
+			`,search:{kind:"brave",auth:"brave"}`,
+			[{ kind: "brave", auth: "brave" }],
+		],
+		[
+			"list form preserves chain order",
+			`,search:[{kind:"brave",auth:"brave"},{kind:"ddg"}]`,
+			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+		],
+		['"" clears to unset', `,search:""`, undefined],
+		// An omitted step auth defaults at parse (jina stays
+		// keyless-blank: no default — see the kinds suites).
+		[
+			"step auth defaults to the kind's record name",
+			`,search:[{kind:"brave"},{kind:"jina"}]`,
+			[{ kind: "brave", auth: "brave" }, { kind: "jina" }],
+		],
+	]);
+	throwRows("search", P_ZAI, [["an empty chain is no chain", `,search:[]`]]);
+
+	valueRows("fetch", P_ZAI, (c) => c.fetch, [
+		[
+			"list form preserves chain order",
+			`,fetch:[{kind:"parallel",auth:"parallel"},{kind:"local"}]`,
+			[{ kind: "parallel", auth: "parallel" }, { kind: "local" }],
+		],
+		["object form normalizes to a one-entry chain", `,fetch:{kind:"local"}`, [{ kind: "local" }]],
+	]);
+
+	valueRows("tts", P_ZAI, (c) => c.tts, [
+		["defaults to edge", "", { kind: "edge", voice: "en-US-AriaNeural" }],
+		[
+			"edge parses rate",
+			`,tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}`,
+			{ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" },
+		],
+		[
+			"edge parses the voice list",
+			`,tts:{kind:"edge",voice:"en-US-AriaNeural",voices:["es-ES-ElviraNeural","es-MX-JorgeNeural"]}`,
+			{
+				kind: "edge",
+				voice: "en-US-AriaNeural",
+				voices: ["es-ES-ElviraNeural", "es-MX-JorgeNeural"],
+			},
+		],
+		['"" is an explicit off', `,tts:""`, false],
+		[
+			"openrouter defaults model and auth; voice is optional",
+			`,tts:{kind:"openrouter"}`,
+			{ kind: "openrouter", model: "fish-audio/s2.1-pro-free:free", auth: "openrouter" },
+		],
+		[
+			"openrouter parses explicit model, auth and voice",
+			`,tts:{kind:"openrouter",model:"fish-audio/s2.1-pro",auth:"or-tts",voice:"b347db033a6549378b48d00acb0d06cd"}`,
+			{
+				kind: "openrouter",
+				model: "fish-audio/s2.1-pro",
+				auth: "or-tts",
+				voice: "b347db033a6549378b48d00acb0d06cd",
+			},
+		],
+	]);
+	throwRows("tts", P_ZAI, [
+		[
+			"voices must be non-empty",
+			`,tts:{kind:"edge",voice:"en-US-AriaNeural",voices:[""]}`,
+			"goblin.json5",
+		],
+		["voice must be non-empty", `,tts:{kind:"edge",voice:""}`, "goblin.json5"],
+		["openrouter model must be non-empty", `,tts:{kind:"openrouter",model:""}`, "goblin.json5"],
+		["openrouter voice must be non-blank", `,tts:{kind:"openrouter",voice:" "}`, "goblin.json5"],
+	]);
+
+	valueRows("transcription", P_ZAI, (c) => c.transcription, [
+		["is absent by default", "", undefined],
+		[
+			"defaults its model and auth",
+			`,transcription:{kind:"groq"}`,
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+		],
+		['"" clears to unset', `,transcription:""`, undefined],
+		[
+			"parses the pre-union groq block with explicit fields",
+			`,transcription:{kind:"groq",model:"whisper-large-v3",auth:"groq"}`,
+			{ kind: "groq", model: "whisper-large-v3", auth: "groq" },
+		],
+		[
+			"whistle parses with keywords and its language set",
+			`,transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}`,
+			{ kind: "whistle", keywords: ["goblin", "bermudi"], language: "es" },
+		],
+	]);
+	throwRows("transcription", P_ZAI, [
+		// Whistle's language is an enum, not any 2-letter code.
+		[
+			"whistle language is an enum",
+			`,transcription:{kind:"whistle",language:"ja"}`,
+			"goblin.json5",
+		],
+	]);
+
+	valueRows("memory", P_ZAI, (c) => c.memory, [
+		["is absent by default", "", undefined],
+		['"" clears to unset', `,memory:""`, undefined],
+	]);
+	throwRows("memory", P_ZAI, [
+		[
+			"searchTimeoutMs has a floor",
+			`,memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:0}`,
+		],
+		[
+			"searchTimeoutMs has a ceiling",
+			`,memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:120001}`,
+		],
+		// Remote plain HTTP is rejected — loopback or HTTPS only.
+		[
+			"baseUrl rejects remote plain HTTP",
+			`,memory:{baseUrl:"http://memory.example",bankId:"goblin"}`,
+			"goblin.json5",
+		],
+	]);
+
+	valueRows("mail", P_ZAI, (c) => c.mail, [
+		["is absent by default", "", undefined],
+		// Reads ride gws's own auth — the block holds only the send
+		// credential (plus client id and secret ref).
+		[
+			"parses all three fields",
+			`,mail:{clientId:"x.apps.googleusercontent.com",clientSecretAuth:"gmail-secret",sendAuth:"gmail-send"}`,
+			{
+				clientId: "x.apps.googleusercontent.com",
+				clientSecretAuth: "gmail-secret",
+				sendAuth: "gmail-send",
+			},
+		],
+	]);
+	throwRows("mail", P_ZAI, [
+		// A half-configured block is a boot error, not a silent half.
+		["requires all three fields when present", `,mail:{clientId:"x"}`, "goblin.json5"],
+	]);
+
+	// Cases whose pick spans fields or whose content is not a BASE
+	// fragment stay individual rows: [name, content, pick, expected].
+	const singles: [string, string, (c: Config) => unknown, unknown][] = [
+		[
+			"system1 block alone enables it; reviewer stays off",
+			Z(`,system1:{auth:"x"}`),
+			(c) => [c.system1, c.reviewer],
+			[{ auth: "x" }, undefined],
+		],
+		[
+			"memory fills its recall/search/reflect defaults",
+			Z(`,memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin"}`),
+			(c) => [
+				c.memory?.bankId,
+				c.memory?.recallTimeoutMs,
+				c.memory?.maxTokens,
+				c.memory?.budget,
+				c.memory?.preferObservations,
+				c.memory?.minScores,
+				c.memory?.searchMaxTokens,
+				c.memory?.searchBudget,
+				c.memory?.searchTimeoutMs,
+				c.memory?.searchMinScores,
+				c.memory?.reflectTimeoutMs,
+			],
+			["goblin", 5000, 2048, "mid", true, { semantic: 0.3 }, 4096, "high", 30_000, {}, 120_000],
+		],
+		[
+			"delegation.machines parses a saved-machine target",
+			Z(
+				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{kind:"pi"}}}`,
+			),
+			(c) => c.delegation?.machines?.["g7"],
+			{ machine: "g7", root: "~/build" },
+		],
+		[
+			"delegation.machines parses a local-session target",
+			Z(
+				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{kind:"pi"}}}`,
+			),
+			(c) => [
+				c.delegation?.machines?.["bench"]?.session,
+				c.delegation?.machines?.["bench"]?.harnesses?.["devin"]?.kind,
+			],
+			["bench", "devin"],
+		],
+		// Session names ride herdr's session contract, not the harness
+		// charset: dots and case are real (goblin.dev, side-session).
+		[
+			"delegation.machines session names allow dots and case",
+			Z(`,delegation:{machines:{dev:{session:"goblin.dev"}},harnesses:{pi:{kind:"pi"}}}`),
+			(c) => c.delegation?.machines?.["dev"]?.session,
+			"goblin.dev",
+		],
+	];
+	for (const [name, content, pick, expected] of singles) {
+		test(name, () => {
+			expect(pick(load(content))).toEqual(expected);
+		});
+	}
+
+	const rawThrows: [string, string, string?][] = [
+		[
+			"invalid config throws with file path",
+			`{providers:{},model:"x",operators:[]}`,
+			"goblin.json5",
+		],
+		["a port outside 0–65535 is rejected", Z(`,http:{port:70000}`), "goblin.json5"],
+		[
+			"a model naming a missing provider is rejected",
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",operators:[7]}`,
+			"model: custom",
+		],
+		[
+			"a malformed model ref is rejected",
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",operators:[7]}`,
+			"model: custom",
+		],
 		// A relative root names nothing on a remote host — reject at parse.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
-		);
-		expect(() => loadConfig()).toThrow("delegation: invalid_format");
+		[
+			"delegation.machines rejects a relative root",
+			Z(
+				`,delegation:{machines:{g7:{machine:"g7",root:"relative/path"}},harnesses:{pi:{kind:"pi"}}}`,
+			),
+			"delegation: invalid_format",
+		],
 		// `~user` is shell user-expansion the tool does NOT perform —
 		// accepting it would stat it under the operator's home while the
 		// literal path reaches herdr. Fail loud at this boundary.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base}${cfg({ g7: { machine: "g7", root: "~other/build" } })}}`,
-		);
-		expect(() => loadConfig()).toThrow("delegation: invalid_format");
+		[
+			"delegation.machines rejects ~user roots",
+			Z(
+				`,delegation:{machines:{g7:{machine:"g7",root:"~other/build"}},harnesses:{pi:{kind:"pi"}}}`,
+			),
+			"delegation: invalid_format",
+		],
 		// machine + session on one target is a contradiction — herdr's
 		// CLI treats --machine and --session as mutually exclusive.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
-		);
-		expect(() => loadConfig()).toThrow("delegation: custom");
-		// Session names ride herdr's session contract, not the harness
-		// charset: dots and case are real (goblin.dev, side-session).
-		writeFileSync(join(dir, "goblin.json5"), `${base}${cfg({ dev: { session: "goblin.dev" } })}}`);
-		expect(loadConfig()!.delegation?.machines?.["dev"]?.session).toBe("goblin.dev");
-	});
-
-	test("invalid config throws with file path", () => {
-		const dir = useHome();
-		writeFileSync(join(dir, "goblin.json5"), `{providers:{},model:"x",operators:[]}`);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
-
-	test("a port outside 0–65535 is rejected", () => {
-		const dir = useHome();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],http:{port:70000}}`,
-		);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
-
-	test("a model naming a missing provider is rejected", () => {
-		const dir = useHome();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",operators:[7]}`,
-		);
-		expect(() => loadConfig()).toThrow("model: custom");
-	});
-
-	test("a malformed model ref is rejected", () => {
-		const dir = useHome();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",operators:[7]}`,
-		);
-		expect(() => loadConfig()).toThrow("model: custom");
-	});
-
-	test('titleModel is provider-validated like model; "" clears to unset', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"openrouter/openrouter/free"}`);
-		expect(loadConfig()!.titleModel).toBe("openrouter/openrouter/free");
-		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:""}`);
-		expect(loadConfig()!.titleModel).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"other/x"}`);
-		expect(() => loadConfig()).toThrow("titleModel: custom");
-	});
-
-	test('vision: absent by default, defaults + mode, "" clears, model provider-validated', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.vision).toBeUndefined();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},vision:{model:"openrouter/google/gemini-2.5-flash"}}`,
-		);
-		expect(loadConfig()!.vision).toEqual({
-			model: "openrouter/google/gemini-2.5-flash",
-			maxTokens: 2000,
-			mode: "auto",
+		[
+			"delegation.machines rejects machine+session targets",
+			Z(`,delegation:{machines:{both:{machine:"g7",session:"goblin"}},harnesses:{pi:{kind:"pi"}}}`),
+			"delegation: custom",
+		],
+	];
+	for (const [name, content, message] of rawThrows) {
+		test(name, () => {
+			expect(() => load(content)).toThrow(message);
 		});
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},vision:{model:"zai/glm-4.6",maxTokens:512,mode:"always"}}`,
-		);
-		expect(loadConfig()!.vision).toEqual({ model: "zai/glm-4.6", maxTokens: 512, mode: "always" });
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:""}`);
-		expect(loadConfig()!.vision).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"other/x"}}`);
-		expect(() => loadConfig()).toThrow("vision: custom");
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:0}}`);
-		expect(() => loadConfig()).toThrow();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},vision:{model:"zai/glm-4.6",mode:"sometimes"}}`,
-		);
-		expect(() => loadConfig()).toThrow();
-	});
+	}
 
-	test('image: absent by default, provider must carry a baseUrl, "" clears', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.image).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev"}}`);
-		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev" });
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},image:{model:"zai/flux-2-dev",size:"1024x768"}}`,
-		);
-		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev", size: "1024x768" });
-		writeFileSync(join(dir, "goblin.json5"), `${base},image:""}`);
-		expect(loadConfig()!.image).toBeUndefined();
-		// Provider must exist AND carry a baseUrl — the images POST needs one.
-		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"other/x"}}`);
-		expect(() => loadConfig()).toThrow("image: custom");
-		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"openrouter/flux-2-dev"}}`);
-		expect(() => loadConfig()).toThrow("image: custom");
-		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev",size:"big"}}`);
-		expect(() => loadConfig()).toThrow();
-	});
-
-	test("reviewer: threshold defaults, model is provider-validated, auth required", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.reviewer).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter"}}`);
-		expect(loadConfig()!.reviewer).toEqual({
-			threshold: 0.8,
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			auth: "openrouter",
-		});
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},reviewer:{auth:"openrouter",thresholds:{correction:0.7},queueCap:5,evidence:{calls:12}}}`,
-		);
-		expect(loadConfig()!.reviewer).toEqual({
-			threshold: 0.8,
-			thresholds: { correction: 0.7 },
-			queueCap: 5,
-			evidence: { calls: 12, argChars: 300, outChars: 300 },
-			auth: "openrouter",
-		});
-		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",queueCap:0}}`);
-		expect(() => loadConfig()).toThrow();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},reviewer:{auth:"openrouter",model:"other/x"}}`,
-		);
-		expect(() => loadConfig()).toThrow("reviewer: custom");
-		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{threshold:0.5}}`);
-		expect(() => loadConfig()).toThrow();
-	});
-
-	test("system1: optional block, model/baseUrl free-form, its own switch", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		// Absent → undefined; the block alone enables the shared client.
-		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x"}}`);
-		expect(loadConfig()!.system1).toEqual({ auth: "x" });
-		expect(loadConfig()!.reviewer).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.system1).toBeUndefined();
-		// Full block parses as-is.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},system1:{auth:"x",model:"jev-latest",baseUrl:"https://example.com"}}`,
-		);
-		expect(loadConfig()!.system1).toEqual({
-			auth: "x",
-			model: "jev-latest",
-			baseUrl: "https://example.com",
-		});
-		// system1.model is a bare decision-model id, NOT a <provider>/<model-id> chat
-		// ref — it is NOT provider-validated (unlike reviewer.model).
-		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x",model:"other/x"}}`);
-		expect(loadConfig()!.system1?.model).toBe("other/x");
-		// auth stays required.
-		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{model:"jev-latest"}}`);
-		expect(() => loadConfig()).toThrow();
-	});
-
-	test("search/fetch: single entry, chain list, and rejection shapes", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		// Object form normalizes to a one-entry chain (back-compat).
-		writeFileSync(join(dir, "goblin.json5"), `${base},search:{kind:"brave",auth:"brave"}}`);
-		expect(loadConfig()!.search).toEqual([{ kind: "brave", auth: "brave" }]);
-		// List form preserves order — the chain is config order.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},search:[{kind:"brave",auth:"brave"},{kind:"ddg"}]}`,
-		);
-		expect(loadConfig()!.search).toEqual([{ kind: "brave", auth: "brave" }, { kind: "ddg" }]);
-		// Empty chain is no chain.
-		writeFileSync(join(dir, "goblin.json5"), `${base},search:[]}`);
-		expect(() => loadConfig()).toThrow();
-		// "" clears; fetch takes the same two forms.
-		writeFileSync(join(dir, "goblin.json5"), `${base},search:""}`);
-		expect(loadConfig()!.search).toBeUndefined();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},fetch:[{kind:"parallel",auth:"parallel"},{kind:"local"}]}`,
-		);
-		expect(loadConfig()!.fetch).toEqual([
-			{ kind: "parallel", auth: "parallel" },
-			{ kind: "local" },
-		]);
-		writeFileSync(join(dir, "goblin.json5"), `${base},fetch:{kind:"local"}}`);
-		expect(loadConfig()!.fetch).toEqual([{ kind: "local" }]);
-		// An omitted step auth defaults at parse, and writeConfig
-		// materializes it into the file — the saved config stays
-		// self-describing (jina stays keyless-blank: no default).
-		writeFileSync(join(dir, "goblin.json5"), `${base},search:[{kind:"brave"},{kind:"jina"}]}`);
-		const defaulted = loadConfig()!;
-		expect(defaulted.search).toEqual([{ kind: "brave", auth: "brave" }, { kind: "jina" }]);
+	test("search defaults materialize into the saved file — the saved config stays self-describing", () => {
+		const defaulted = loadExtra(`,search:[{kind:"brave"},{kind:"jina"}]`);
 		writeConfig(defaulted);
+		const dir = process.env.GOBLIN_HOME!;
 		expect(readFileSync(join(dir, "goblin.json5"), "utf8")).toContain("auth: 'brave'");
 	});
 
-	test('tts defaults to edge; "" is an explicit off that round-trips', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`,
-		);
-		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" });
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",voices:["es-ES-ElviraNeural","es-MX-JorgeNeural"]}}`,
-		);
-		expect(loadConfig()!.tts).toEqual({
-			kind: "edge",
-			voice: "en-US-AriaNeural",
-			voices: ["es-ES-ElviraNeural", "es-MX-JorgeNeural"],
-		});
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",voices:[""]}}`,
-		);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:""}`);
-		expect(loadConfig()!.tts).toBe(false);
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:""}}`);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
-
-	test("tts openrouter defaults model and auth; voice is optional", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter"}}`);
-		expect(loadConfig()!.tts).toEqual({
-			kind: "openrouter",
-			model: "fish-audio/s2.1-pro-free:free",
-			auth: "openrouter",
-		});
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},tts:{kind:"openrouter",model:"fish-audio/s2.1-pro",auth:"or-tts",voice:"b347db033a6549378b48d00acb0d06cd"}}`,
-		);
-		expect(loadConfig()!.tts).toEqual({
-			kind: "openrouter",
-			model: "fish-audio/s2.1-pro",
-			auth: "or-tts",
-			voice: "b347db033a6549378b48d00acb0d06cd",
-		});
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",model:""}}`);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",voice:" "}}`);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
-
-	test('transcription defaults its model; "" clears to unset', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.transcription).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"groq"}}`);
-		expect(loadConfig()!.transcription).toEqual({
-			kind: "groq",
-			model: "whisper-large-v3-turbo",
-			auth: "groq",
-		});
-		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:""}`);
-		expect(loadConfig()!.transcription).toBeUndefined();
-		// Back-compat: the pre-union groq block, fields explicit.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},transcription:{kind:"groq",model:"whisper-large-v3",auth:"groq"}}`,
-		);
-		expect(loadConfig()!.transcription).toEqual({
-			kind: "groq",
-			model: "whisper-large-v3",
-			auth: "groq",
-		});
-	});
-
-	test("whistle parses with keywords and its language set", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}}`,
-		);
-		expect(loadConfig()!.transcription).toEqual({
-			kind: "whistle",
-			keywords: ["goblin", "bermudi"],
-			language: "es",
-		});
-		// Its language is an enum, not any 2-letter code.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},transcription:{kind:"whistle",language:"ja"}}`,
-		);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
-
 	test("writeConfig preserves a hardened file mode", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		const p = join(dir, "goblin.json5");
 		writeFileSync(p, "{}");
 		chmodSync(p, 0o600);
@@ -518,68 +578,11 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
 		expect(loadConfig()!.tts).toBe(false);
 	});
-
-	test('memory is optional, validated, and "" clears to unset', () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.memory).toBeUndefined();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin"}}`,
-		);
-		const mem = loadConfig()!.memory!;
-		expect(mem.bankId).toBe("goblin");
-		expect(mem.recallTimeoutMs).toBe(5000);
-		expect(mem.maxTokens).toBe(2048);
-		expect(mem.budget).toBe("mid");
-		expect(mem.preferObservations).toBe(true);
-		expect(mem.minScores).toEqual({ semantic: 0.3 });
-		expect(mem.searchMaxTokens).toBe(4096);
-		expect(mem.searchBudget).toBe("high");
-		expect(mem.searchTimeoutMs).toBe(30_000);
-		expect(mem.searchMinScores).toEqual({});
-		expect(mem.reflectTimeoutMs).toBe(120_000);
-		for (const timeout of [0, 120_001]) {
-			writeFileSync(
-				join(dir, "goblin.json5"),
-				`${base},memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:${timeout}}}`,
-			);
-			expect(() => loadConfig()).toThrow();
-		}
-		// Remote plain HTTP is rejected — loopback or HTTPS only.
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},memory:{baseUrl:"http://memory.example",bankId:"goblin"}}`,
-		);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-		writeFileSync(join(dir, "goblin.json5"), `${base},memory:""}`);
-		expect(loadConfig()!.memory).toBeUndefined();
-	});
-
-	test("mail is optional; all three fields required when present", () => {
-		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
-		expect(loadConfig()!.mail).toBeUndefined();
-		// Reads ride gws's own auth — the block holds only the send
-		// credential (plus the public client id and secret ref).
-		const block = `mail:{clientId:"x.apps.googleusercontent.com",clientSecretAuth:"gmail-secret",sendAuth:"gmail-send"}`;
-		writeFileSync(join(dir, "goblin.json5"), `${base},${block}}`);
-		expect(loadConfig()!.mail).toEqual({
-			clientId: "x.apps.googleusercontent.com",
-			clientSecretAuth: "gmail-secret",
-			sendAuth: "gmail-send",
-		});
-		// A half-configured block is a boot error, not a silent half.
-		writeFileSync(join(dir, "goblin.json5"), `${base},mail:{clientId:"x"}}`);
-		expect(() => loadConfig()).toThrow("goblin.json5");
-	});
 });
 
 describe("ensureHomeLayout", () => {
 	test("first-boot directory names are synced before state and attachments are used", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		const opened = new Map<number, string>();
 		const synced: string[] = [];
 		const realOpen = fs.openSync;
@@ -605,19 +608,19 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("a file masquerading as a required directory fails boot", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		writeFileSync(join(dir, "state"), "not a directory");
 		expect(() => ensureHomeLayout()).toThrow("layout directory is not a directory");
 	});
 
 	test("first boot creates the reviewer's proposals directory", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		ensureHomeLayout();
 		expect(statSync(join(dir, "workspace", "skills-proposed")).isDirectory()).toBe(true);
 	});
 
 	test("first boot seeds SOUL.md and the AGENTS.md stub", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		ensureHomeLayout();
 		const soul = readFileSync(join(dir, "workspace", "SOUL.md"), "utf8");
 		expect(soul).toContain("You are goblin");
@@ -632,7 +635,7 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("first boot seeds the browser skill — capability plumbing survives a rebuild", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		ensureHomeLayout();
 		const skill = readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8");
 		// The compatibility line is what the system prompt's catalog
@@ -659,7 +662,7 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("existing identity files are never clobbered", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		mkdirSync(join(dir, "workspace"), { recursive: true });
 		writeFileSync(join(dir, "workspace", "AGENTS.md"), "my notes");
 		writeFileSync(join(dir, "workspace", "USER.md"), "my user model");
@@ -669,7 +672,7 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("an evolved browser skill is never clobbered by the seed", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		mkdirSync(join(dir, "workspace", "skills", "browser"), { recursive: true });
 		writeFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "my evolution");
 		ensureHomeLayout();
@@ -679,7 +682,7 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("first boot seeds the mcp skill and an empty, import-free mcporter.json", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		ensureHomeLayout();
 		const skill = readFileSync(join(dir, "workspace", "skills", "mcp", "SKILL.md"), "utf8");
 		expect(skill).toContain("name: mcp");
@@ -700,14 +703,14 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("an operator's mcporter.json is never clobbered by the seed", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		writeFileSync(join(dir, "mcporter.json"), '{"mcpServers": {"x": {}}, "imports": []}');
 		ensureHomeLayout();
 		expect(readFileSync(join(dir, "mcporter.json"), "utf8")).toContain('"x"');
 	});
 
 	test("first boot links the mcp shim at the home root, and a repo move heals it", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		ensureHomeLayout();
 		const shim = join(dir, "mcp");
 		expect(lstatSync(shim).isSymbolicLink()).toBe(true);
@@ -737,7 +740,7 @@ describe("ensureHomeLayout", () => {
 	});
 
 	test("a real file at the shim path is never clobbered", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		writeFileSync(join(dir, "mcp"), "operator's own");
 		writeFileSync(join(dir, "goblin-mail"), "operator's own mail");
 		writeFileSync(join(dir, "doctor"), "operator's own doctor");
@@ -892,7 +895,7 @@ describe("authReferences", () => {
 });
 
 test("legacy Telegram selection pins independently from app-default patches and survives saves", () => {
-	useHome();
+	useHome("goblin-cfg-");
 	const legacy = parseConfig({
 		providers: { test: { kind: "codex" } },
 		model: "test/old",
@@ -1032,7 +1035,7 @@ describe("config parser safety", () => {
 	test.each(invalidFiles)(
 		"disk parser and helper CLI stderr omit synthetic input (%#)",
 		async (raw) => {
-			const dir = useHome();
+			const dir = useHome("goblin-cfg-");
 			writeFileSync(join(dir, "goblin.json5"), raw);
 			safeFailure(() => loadConfig());
 			// An inert helper exercises Bun's uncaught-error renderer without boot.
@@ -1057,7 +1060,7 @@ describe("config parser safety", () => {
 	);
 
 	test("JSON5 syntax errors retain only a safe numeric line", () => {
-		const dir = useHome();
+		const dir = useHome("goblin-cfg-");
 		writeFileSync(join(dir, "goblin.json5"), `{\nmodel: ${sentinel}\n}`);
 		expect(safeFailure(() => loadConfig()).message).toBe(
 			`${join(dir, "goblin.json5")}:2: invalid JSON5`,

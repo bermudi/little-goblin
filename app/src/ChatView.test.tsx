@@ -167,25 +167,69 @@ describe("MessageParts", () => {
 	});
 });
 
+// Shared rig for the mounted describes below: one fresh happy-dom
+// window per test with the DOM globals React touches installed on
+// globalThis; afterEach unmounts the root, closes the window, deletes
+// every installed global, and restores globalThis.fetch (the mounted
+// tests fake the network edge there). Call it first inside a describe —
+// its hooks must run before the describe's own, or a beforeEach that
+// installs a fake fetch would be captured as realFetch.
+function mountDom() {
+	const dom = {
+		win: undefined as unknown as Window,
+		container: undefined as unknown as HTMLElement,
+		root: null as Root | null,
+		realFetch: globalThis.fetch,
+	};
+	const installed: string[] = [];
+	const install = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		dom.realFetch = globalThis.fetch;
+		dom.win = new Window();
+		const div = dom.win.document.createElement("div");
+		dom.win.document.body.appendChild(div);
+		dom.container = div as unknown as HTMLElement;
+		installed.length = 0;
+		install("window", dom.win);
+		install("document", dom.win.document);
+		install("navigator", dom.win.navigator);
+		install("localStorage", dom.win.localStorage);
+		install("Event", dom.win.Event);
+		install("CustomEvent", dom.win.CustomEvent);
+		install("getComputedStyle", dom.win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+	});
+
+	afterEach(async () => {
+		if (dom.root !== null) {
+			await act(async () => {
+				dom.root?.unmount();
+			});
+			dom.root = null;
+		}
+		await dom.win.happyDOM.close();
+		globalThis.fetch = dom.realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed.length = 0;
+	});
+	return dom;
+}
+
 // The reload window (#79): history is fetched once on mount, then the
 // SDK's resume reconnects to a live turn. A reply that completes between
 // those two operations makes the reconnect answer 204 — and the SDK
 // leaves the stale snapshot standing, hiding a reply that is durably
-// stored. Mounted with happy-dom like Composer.test.tsx; the network
-// edge (api.ts + the transport) is faked at globalThis.fetch, with the
-// reconnect's 204 held back so the test owns the ordering that is the
-// bug: history snapshot → turn completes → idle reconnect.
+// stored. The network edge (api.ts + the transport) is faked at
+// globalThis.fetch, with the reconnect's 204 held back so the test owns
+// the ordering that is the bug: history snapshot → turn completes →
+// idle reconnect.
 describe("ChatView reload window (issue #79)", () => {
-	let win: Window;
-	let container: HTMLElement;
-	let root: Root | null = null;
-	let installed: string[] = [];
-	const realFetch = globalThis.fetch;
-
-	const installGlobal = (name: string, value: unknown) => {
-		Reflect.set(globalThis, name, value);
-		installed.push(name);
-	};
+	const dom = mountDom();
 
 	const jsonResponse = (body: unknown, status = 200): Response =>
 		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -200,36 +244,6 @@ describe("ChatView reload window (issue #79)", () => {
 		role: "assistant",
 		parts: [{ type: "text", text }],
 		metadata: { model: "prov/model", durationMs: 10 },
-	});
-
-	beforeEach(() => {
-		win = new Window();
-		const div = win.document.createElement("div");
-		win.document.body.appendChild(div);
-		container = div as unknown as HTMLElement;
-		installed = [];
-		installGlobal("window", win);
-		installGlobal("document", win.document);
-		installGlobal("navigator", win.navigator);
-		installGlobal("localStorage", win.localStorage);
-		installGlobal("Event", win.Event);
-		installGlobal("CustomEvent", win.CustomEvent);
-		installGlobal("getComputedStyle", win.getComputedStyle);
-		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-	});
-
-	afterEach(async () => {
-		if (root !== null) {
-			await act(async () => {
-				root?.unmount();
-			});
-			root = null;
-		}
-		await win.happyDOM.close();
-		globalThis.fetch = realFetch;
-		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
-		installed = [];
 	});
 
 	test("a reply that completes between history fetch and reconnect becomes visible", async () => {
@@ -263,9 +277,9 @@ describe("ChatView reload window (issue #79)", () => {
 			);
 		}) as typeof fetch;
 
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		act(() => {
-			root?.render(
+			dom.root?.render(
 				<ChatView
 					token={null}
 					conversationId="app/chat-01"
@@ -297,7 +311,7 @@ describe("ChatView reload window (issue #79)", () => {
 		await act(async () => {});
 		await act(async () => {});
 
-		expect(container.textContent).toContain("COMPLETED ANSWER");
+		expect(dom.container.textContent).toContain("COMPLETED ANSWER");
 		// The mechanism, pinned: one snapshot, one reconnect, one reconcile.
 		expect(historyFetches).toBe(2);
 		expect(reconnects).toBe(1);
@@ -336,11 +350,11 @@ describe("ChatView reload window (issue #79)", () => {
 					thinkingLevels: ["off"],
 				});
 			},
-			{ preconnect: realFetch.preconnect },
+			{ preconnect: dom.realFetch.preconnect },
 		);
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () =>
-			root?.render(
+			dom.root?.render(
 				<ChatView
 					token={null}
 					conversationId="app/chat-01"
@@ -355,12 +369,12 @@ describe("ChatView reload window (issue #79)", () => {
 				/>,
 			),
 		);
-		for (let i = 0; i < 100 && container.querySelectorAll(".note-card").length < 2; i++) {
+		for (let i = 0; i < 100 && dom.container.querySelectorAll(".note-card").length < 2; i++) {
 			await act(async () => {
 				await new Promise((resolve) => setTimeout(resolve, 15));
 			});
 		}
-		const cards = [...container.querySelectorAll(".note-card")];
+		const cards = [...dom.container.querySelectorAll(".note-card")];
 		expect(cards).toHaveLength(2);
 		expect(cards[0]!.textContent).toContain("saved note");
 		expect(cards[0]!.querySelector(".note-card-append")).not.toBeNull();
@@ -372,7 +386,7 @@ describe("ChatView reload window (issue #79)", () => {
 			live.enqueue(encoder.encode("data: [DONE]\n\n"));
 			live.close();
 		});
-		expect(container.querySelectorAll(".note-card-append")).toHaveLength(2);
+		expect(dom.container.querySelectorAll(".note-card-append")).toHaveLength(2);
 	});
 });
 
@@ -442,53 +456,17 @@ describe("appendQuote", () => {
 // as a dead button). Mounted with happy-dom like Composer.test.tsx;
 // the attachment GET is faked at globalThis.fetch.
 describe("AttachmentChip download failure", () => {
-	let win: Window;
-	let container: HTMLElement;
-	let root: Root | null = null;
-	let installed: string[] = [];
-	const realFetch = globalThis.fetch;
-
-	const installGlobal = (name: string, value: unknown) => {
-		Reflect.set(globalThis, name, value);
-		installed.push(name);
-	};
+	const dom = mountDom();
 
 	beforeEach(() => {
-		win = new Window();
-		const div = win.document.createElement("div");
-		win.document.body.appendChild(div);
-		container = div as unknown as HTMLElement;
-		installed = [];
-		installGlobal("window", win);
-		installGlobal("document", win.document);
-		installGlobal("navigator", win.navigator);
-		installGlobal("localStorage", win.localStorage);
-		installGlobal("Event", win.Event);
-		installGlobal("CustomEvent", win.CustomEvent);
-		installGlobal("getComputedStyle", win.getComputedStyle);
-		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((_input: RequestInfo | URL) =>
 			Promise.resolve(new Response("gone", { status: 404 })) as unknown) as typeof fetch;
 	});
 
-	afterEach(async () => {
-		if (root !== null) {
-			await act(async () => {
-				root?.unmount();
-			});
-			root = null;
-		}
-		await win.happyDOM.close();
-		globalThis.fetch = realFetch;
-		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
-		installed = [];
-	});
-
 	test("a failed click shows the error instead of doing nothing", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		act(() => {
-			root?.render(
+			dom.root?.render(
 				<MessageParts
 					parts={[
 						{
@@ -506,14 +484,14 @@ describe("AttachmentChip download failure", () => {
 			);
 		});
 		await act(async () => {});
-		const button = container.querySelector("button.attachment-name");
+		const button = dom.container.querySelector("button.attachment-name");
 		expect(button).not.toBeNull();
-		expect(container.querySelector(".msg-err")).toBeNull();
+		expect(dom.container.querySelector(".msg-err")).toBeNull();
 		await act(async () => {
-			button?.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			button?.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
 		});
 		await act(async () => {});
-		const err = container.querySelector(".msg-err");
+		const err = dom.container.querySelector(".msg-err");
 		expect(err).not.toBeNull();
 		expect(err?.textContent).toContain("http 404");
 	});
@@ -525,75 +503,38 @@ describe("AttachmentChip download failure", () => {
 // transcript is reloaded, which always mounts settled — the truncated
 // body is all there is, so the affordance shows.
 describe("MessageParts note-fence affordance (happy-dom)", () => {
-	let win: Window;
-	let container: HTMLElement;
-	let root: Root | null = null;
-	let installed: string[] = [];
-
-	const installGlobal = (name: string, value: unknown) => {
-		Reflect.set(globalThis, name, value);
-		installed.push(name);
-	};
-
-	beforeEach(() => {
-		win = new Window();
-		const div = win.document.createElement("div");
-		win.document.body.appendChild(div);
-		container = div as unknown as HTMLElement;
-		installed = [];
-		installGlobal("window", win);
-		installGlobal("document", win.document);
-		installGlobal("navigator", win.navigator);
-		installGlobal("localStorage", win.localStorage);
-		installGlobal("Event", win.Event);
-		installGlobal("CustomEvent", win.CustomEvent);
-		installGlobal("getComputedStyle", win.getComputedStyle);
-		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-	});
-
-	afterEach(async () => {
-		if (root !== null) {
-			await act(async () => {
-				root?.unmount();
-			});
-			root = null;
-		}
-		await win.happyDOM.close();
-		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
-		installed = [];
-	});
+	const dom = mountDom();
 
 	const parts: UIMessage["parts"] = [{ type: "text", text: "```note\npartial body" }];
 
 	test("busy hides the append affordance; settling exposes it", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} busy streaming />);
+			dom.root?.render(<MessageParts parts={parts} busy streaming />);
 		});
-		expect(container.querySelector(".note-card")).not.toBeNull();
-		expect(container.querySelector(".note-card")?.textContent).toContain("partial body");
-		expect(container.querySelector(".note-card-append")).toBeNull();
+		expect(dom.container.querySelector(".note-card")).not.toBeNull();
+		expect(dom.container.querySelector(".note-card")?.textContent).toContain("partial body");
+		expect(dom.container.querySelector(".note-card-append")).toBeNull();
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} busy={false} streaming={false} />);
+			dom.root?.render(<MessageParts parts={parts} busy={false} streaming={false} />);
 		});
-		expect(container.querySelector(".note-card-append")).not.toBeNull();
+		expect(dom.container.querySelector(".note-card-append")).not.toBeNull();
 	});
 
 	test("a mounted-settled render (the reload shape) shows the affordance", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} />);
+			dom.root?.render(<MessageParts parts={parts} />);
 		});
-		expect(container.querySelector(".note-card-append")).not.toBeNull();
+		expect(dom.container.querySelector(".note-card-append")).not.toBeNull();
 	});
 
 	test("a later busy turn leaves a settled message's affordance visible", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} busy streaming={false} />);
+			dom.root?.render(<MessageParts parts={parts} busy streaming={false} />);
 		});
-		expect(container.querySelector(".note-card-append")).not.toBeNull();
+		expect(dom.container.querySelector(".note-card-append")).not.toBeNull();
 	});
 });
 
@@ -601,41 +542,7 @@ describe("MessageParts note-fence affordance (happy-dom)", () => {
 // show-all tail — the user branch sets clipFences; model output
 // renders whole. The toggle itself lives in markdown.tsx's CodeBlock.
 describe("MessageParts fence clipping (happy-dom)", () => {
-	let win: Window;
-	let container: HTMLElement;
-	let root: Root | null = null;
-	let installed: string[] = [];
-
-	const installGlobal = (name: string, value: unknown) => {
-		Reflect.set(globalThis, name, value);
-		installed.push(name);
-	};
-
-	beforeEach(() => {
-		win = new Window();
-		const div = win.document.createElement("div");
-		win.document.body.appendChild(div);
-		container = div as unknown as HTMLElement;
-		installed = [];
-		installGlobal("window", win);
-		installGlobal("document", win.document);
-		installGlobal("navigator", win.navigator);
-		installGlobal("Event", win.Event);
-		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-	});
-
-	afterEach(async () => {
-		if (root !== null) {
-			await act(async () => {
-				root?.unmount();
-			});
-			root = null;
-		}
-		await win.happyDOM.close();
-		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
-		installed = [];
-	});
+	const dom = mountDom();
 
 	const parts: UIMessage["parts"] = [
 		{
@@ -645,17 +552,17 @@ describe("MessageParts fence clipping (happy-dom)", () => {
 	];
 	const click = async (el: Element) => {
 		await act(async () => {
-			el.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
 		});
 	};
 
 	test("a clipped fence expands on demand and clips again", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} clipFences />);
+			dom.root?.render(<MessageParts parts={parts} clipFences />);
 		});
-		const pre = container.querySelector("pre")!;
-		const more = container.querySelector(".codeblock-more")!;
+		const pre = dom.container.querySelector("pre")!;
+		const more = dom.container.querySelector(".codeblock-more")!;
 		expect(pre.classList.contains("clip")).toBe(true);
 		expect(more.textContent).toBe("show all 30 lines");
 		await click(more);
@@ -666,11 +573,11 @@ describe("MessageParts fence clipping (happy-dom)", () => {
 	});
 
 	test("the same fence renders whole without clipFences", async () => {
-		root = createRoot(container);
+		dom.root = createRoot(dom.container);
 		await act(async () => {
-			root?.render(<MessageParts parts={parts} />);
+			dom.root?.render(<MessageParts parts={parts} />);
 		});
-		expect(container.querySelector(".codeblock-more")).toBeNull();
-		expect(container.querySelector("pre")!.classList.contains("clip")).toBe(false);
+		expect(dom.container.querySelector(".codeblock-more")).toBeNull();
+		expect(dom.container.querySelector("pre")!.classList.contains("clip")).toBe(false);
 	});
 });

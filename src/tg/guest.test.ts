@@ -24,6 +24,7 @@ import { fetchTool } from "../agent/tools/fetch.ts";
 import {
 	type GuestEnv,
 	classifySummon,
+	ensurePersonaClass,
 	filterGuestTools,
 	GuestSink,
 	GUEST_REFUSAL,
@@ -743,6 +744,50 @@ describe("handleGuestUpdate", () => {
 		expect(store.history("guest:-100:8")).toHaveLength(1);
 		expect(store.modelEntries("guest:-100:8")).toHaveLength(1);
 	});
+
+	test.each([1, 4])(
+		"demotion fences epoch %i while terminal delivery awaits an inline edit",
+		async (epoch) => {
+			const { env, store, api } = makeEnv();
+			const conv = store.resolve(guestAddress(-100, 8), "/w");
+			for (let i = 0; i < epoch; i++) store.bumpEpoch(conv.id);
+			store.append(conv.id, [
+				{ id: "personal", role: "user", parts: [{ type: "text", text: "private question" }] },
+			]);
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			api.editMessageTextInline = (async (_id: string, text: string) => {
+				started.resolve();
+				await release.promise;
+				api.edits.push(text);
+				return true;
+			}) as never;
+			const sink = new GuestSink(api as never, "im-1", 3500, 1);
+			sink.setAuthorityCheck(() => store.get(conv.id)?.epoch === epoch);
+			sink.onTextDelta("already publishing");
+			await started.promise;
+			sink.onTextDelta(" PRIVATE BUFFERED TAIL");
+			const done = sink.onDone({ kind: "completed" });
+			env.runtime.hasActiveTurn = () => true;
+			const stopped: string[] = [];
+			env.runtime.stop = (id) => {
+				stopped.push(id);
+				store.bumpEpoch(id);
+				return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
+			};
+			try {
+				const demoted = ensurePersonaClass(env, store.get(conv.id)!, "guest", true);
+				expect(demoted.epoch).toBeGreaterThan(epoch);
+				expect(demoted.persona).toBe("guest");
+				expect(store.history(conv.id)).toEqual([]);
+				expect(stopped).toEqual([conv.id]);
+			} finally {
+				release.resolve();
+				await done;
+			}
+			expect(api.edits).toEqual(["already publishing", "already publishing\n\n⏹ superseded"]);
+		},
+	);
 
 	test("a promotion to personal keeps prior sandbox history", async () => {
 		const { env, store, submitted } = makeEnv();

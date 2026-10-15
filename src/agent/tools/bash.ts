@@ -61,7 +61,7 @@ export const bashTool = (cwd: string) =>
 			}
 			if (result.truncated) {
 				output +=
-					"\n\n[output exceeded the capture cap or was cut before it finished — the process was stopped; the output above and any saved file are incomplete]";
+					"\n\n[output exceeded the capture cap or was cut before it finished — the output above and any saved file are incomplete; background processes may still be running]";
 			}
 			return {
 				exit_code: result.timedOut ? null : result.exitCode,

@@ -175,6 +175,18 @@ describe("conversation store", () => {
 		reopened.close();
 	});
 
+	test("bumpEpoch advances past a deleted address's previous authority", () => {
+		const store = openStore(tmpdb());
+		const addr = { kind: "dm" as const, chatId: 1 };
+		const c = store.resolve(addr, "/w");
+		const previous = store.bumpEpoch(c.id);
+		store.deleteConversation(c.id);
+		store.resolve(addr, "/w");
+		expect(store.bumpEpoch(c.id, previous)).toBe(previous + 1);
+		expect(store.bumpEpoch(c.id, 0)).toBe(previous + 2);
+		store.close();
+	});
+
 	test("applySettings patches meta and bumps epoch atomically", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");

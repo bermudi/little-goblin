@@ -272,8 +272,8 @@ export interface ConversationStore {
 	// their running turns.
 	listGuestConversationIds(chatId: number): string[];
 	// Settings changes and cancellation bump the epoch; in-flight turns
-	// fence on it.
-	bumpEpoch(id: string): number;
+	// fence on it. A recreated address must advance past its deleted row.
+	bumpEpoch(id: string, previousEpoch?: number): number;
 	// Frozen system-prompt snapshot; null = none yet (first turn, or cleared by compaction).
 	promptSnapshot(id: string): { text: string; sources: string[] } | null;
 	savePromptSnapshot(id: string, text: string, sources: string[]): void;
@@ -1079,8 +1079,8 @@ export function openStore(dbPath: string): ConversationStore {
 		return settings;
 	}
 
-	function bump(id: string): number {
-		db.run("UPDATE conversations SET epoch = epoch + 1 WHERE id = ?", [id]);
+	function bump(id: string, previousEpoch = 0): number {
+		db.run("UPDATE conversations SET epoch = max(epoch, ?) + 1 WHERE id = ?", [previousEpoch, id]);
 		const row = qEpoch.get(id);
 		if (!row) throw new Error(`conversation ${id} not found`);
 		return row.epoch;
@@ -1274,8 +1274,8 @@ export function openStore(dbPath: string): ConversationStore {
 			applyPatch(id, patch);
 		},
 
-		bumpEpoch(id) {
-			return bump(id);
+		bumpEpoch(id, previousEpoch) {
+			return bump(id, previousEpoch);
 		},
 
 		promptSnapshot(id) {

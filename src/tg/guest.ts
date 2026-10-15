@@ -429,19 +429,12 @@ export function ensurePersonaClass(
 	// events would stay readable to the sandboxed caller, who could
 	// prompt their disclosure. Reset to a fresh conversation —
 	// history, compaction, and snapshot gone — after fencing any
-	// running turn (delete requires a fenced lane; the fresh row's
-	// epoch 0 fences the old turn's authority check, and stop's abort
-	// keeps its trailing reply out of the new history). Promotion
-	// keeps history: sandbox exchanges are safe for the operator to
-	// see.
+	// running turn. The replacement must advance past the old epoch:
+	// abort alone cannot fence delivery already awaiting Telegram.
+	// Promotion keeps history: sandbox exchanges are safe for the operator.
 	if (conv.persona === "personal" && want === "guest") {
 		const hasHistory = store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
-		// Fence any running turn: after demotion the lane is sandboxed, so
-		// an active personal turn must not keep executing tool calls as
-		// the operator (audit G1). The epoch advance is lost on a full
-		// reset below and re-minted at 1 — the old turn's epoch no longer
-		// matches either way.
-		store.bumpEpoch(conv.id);
+		const fencedEpoch = store.bumpEpoch(conv.id);
 		if (hasHistory) {
 			if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
 			const addr = parseAddress(conv.id);
@@ -451,7 +444,7 @@ export function ensurePersonaClass(
 				addr.kind === "rolling"
 					? (resetLane?.() ?? throwReset(conv.id))
 					: store.resolve(addr, paths.workspace());
-			store.bumpEpoch(conv.id);
+			store.bumpEpoch(conv.id, fencedEpoch);
 			log.info("conversation reset on demotion — personal history cleared", {
 				conversation: conv.id,
 			});

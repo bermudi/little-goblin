@@ -56,11 +56,10 @@ describe("bash", () => {
 		// ~15 MB of output — the 4 MiB per-stream capture cap kills the
 		// process long before it finishes.
 		const out = (await t.execute!({ command: "seq 1 2000000" }, opts)) as BashResult;
-		// The reader kills the process at the cap — the result must say so,
-		// or the model reads partial output as complete.
+		// The reader kills at the cap; its partial capture must not read as complete.
 		expect(Date.now() - started).toBeLessThan(15_000);
 		expect(out.truncated).toBe(true);
-		expect(out.output).toContain("the process was stopped");
+		expect(out.output).toContain("output exceeded the capture cap or was cut");
 		expect(out.output).toContain("incomplete");
 		// The capture still spills — the model gets a window plus the file.
 		expect(out.output).toContain("[TRUNCATED");
@@ -90,6 +89,20 @@ describe("bash", () => {
 		);
 	});
 
+	test("a long newline-terminated line retains its final status in the display and spill", async () => {
+		const t = bashTool("/tmp");
+		const out = (await t.execute!(
+			{
+				command: "printf '%20000sFINAL_STATUS\\n' ''",
+			},
+			opts,
+		)) as BashResult;
+		expect(out.truncated).toBe(true);
+		expect(out.output).toContain("FINAL_STATUS\n");
+		const file = /saved to: (\S+)/.exec(out.output!)![1]!;
+		expect(readFileSync(file, "utf8")).toBe(`${" ".repeat(20_000)}FINAL_STATUS\n`);
+	});
+
 	test("small output stays whole — no footer, and the cache dir is never created", async () => {
 		const t = bashTool("/tmp");
 		const out = (await t.execute!({ command: "echo hi" }, opts)) as BashResult;
@@ -104,18 +117,25 @@ describe("bash", () => {
 		expect(out.exit_code).toBe(3);
 	});
 
-	test("a backgrounded child holding the pipe can't outlive the command", async () => {
+	test("a pipe-drain cutoff reports incomplete capture without claiming the surviving child stopped", async () => {
 		const t = bashTool("/tmp");
 		const started = Date.now();
 		// The shell exits instantly; the orphaned sleep would hold stdout's
-		// write end open for 60s — EOF must not outlive the command.
-		const out = (await t.execute!({ command: "sleep 60 & echo hi" }, opts)) as BashResult;
-		expect(Date.now() - started).toBeLessThan(5_000);
-		expect(out.output).toContain("hi");
-		expect(out.exit_code).toBe(0);
-		// The drain was cut while a writer was still alive — partial output
-		// must be flagged, not presented as complete.
-		expect(out.truncated).toBe(true);
+		// write end open for 10s — capture must return without waiting for EOF.
+		const out = (await t.execute!({ command: "sleep 10 & echo $!" }, opts)) as BashResult;
+		const pid = Number(out.output!.split("\n")[0]);
+		expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+		try {
+			expect(Date.now() - started).toBeLessThan(5_000);
+			expect(out.exit_code).toBe(0);
+			expect(process.kill(pid, 0)).toBe(true);
+			expect(out.truncated).toBe(true);
+			expect(out.output).toContain("incomplete");
+			expect(out.output).toContain("background processes may still be running");
+			expect(out.output).not.toContain("the process was stopped");
+		} finally {
+			process.kill(pid, "SIGTERM");
+		}
 	});
 
 	test("a SIGTERM-ignoring process is escalated to SIGKILL", async () => {

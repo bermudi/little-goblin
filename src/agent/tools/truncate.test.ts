@@ -19,6 +19,18 @@ describe("windowText", () => {
 		expect(window).not.toContain("line-50\n");
 	});
 
+	test.each([0.75, 0.25])(
+		"retains a long line's tail before its terminating newline (head share %p)",
+		(headShare) => {
+			const text = `${"x".repeat(20_000)}FINAL_STATUS\n`;
+			const { window, truncated } = windowText(text, 15_000, headShare);
+			expect(truncated).toBe(true);
+			const tail = window.split("\n\n[…]\n\n")[1]!;
+			expect(tail).toBe(text.slice(-(15_000 - Math.round(15_000 * headShare))));
+			expect(tail).toEndWith("FINAL_STATUS\n");
+		},
+	);
+
 	test("an explicit 0.75 headShare renders identically to the default", () => {
 		const text = Array.from({ length: 200 }, (_, i) => `row-${String(i).padStart(4, "0")}`).join(
 			"\n",

@@ -28,7 +28,7 @@ export function windowText(
 	const tailBudget = budget - head.length;
 	let tail = text.slice(text.length - tailBudget);
 	const tailCut = tail.indexOf("\n");
-	if (tailCut !== -1 && tail.length - tailCut > 0) tail = tail.slice(tailCut + 1);
+	if (tailCut !== -1 && tailCut < tail.length - 1) tail = tail.slice(tailCut + 1);
 	return { window: `${head}\n\n[…]\n\n${tail}`, truncated: true };
 }
 

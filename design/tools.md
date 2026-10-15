@@ -314,3 +314,5 @@ history — "what did we decide about X last month?".
   text, attachment refs, and bounded tool calls with their results —
   windowed to 3k chars per event: the tool evidence a compaction folded
   is exactly what recovery has to give back (Compaction, design/model.md).
+  Each recovered event is fenced as historical data after projection and
+  windowing, which may have removed a tool result's original untrusted fence.

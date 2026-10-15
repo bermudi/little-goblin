@@ -114,13 +114,28 @@ export function deferred<T = void>(): {
 /**
  * Streaming fake: emits `deltas` as one text part, one per `delayMs`,
  * then a stop finish. Respects the abort signal between deltas — a
- * fence must be able to kill the stream mid-flight.
+ * fence must be able to kill the stream mid-flight. `beforeDelta`
+ * replaces the delay with an event-controlled pause point, so a race
+ * test holds the stream at a known delta instead of racing the clock.
  */
-export function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
+export interface FakeModelOptions {
+	/** Optional pause before each emitted delta. Prefer beforeDelta for gated tests. */
+	delayMs?: number;
+	/** Event-controlled pause point for deterministic stream/race tests. */
+	beforeDelta?: (
+		delta: string,
+		index: number,
+		signal: AbortSignal | undefined,
+	) => void | Promise<void>;
+	modelId?: string;
+}
+
+export function fakeModel(deltas: string[], options: FakeModelOptions | number = {}): LanguageModel {
+	const opts = typeof options === "number" ? { delayMs: options } : options;
 	return {
 		specificationVersion: "v4",
 		provider: "fake",
-		modelId: "fake-1",
+		modelId: opts.modelId ?? "fake-1",
 		supportedUrls: {},
 		doGenerate() {
 			throw new Error("unimplemented");
@@ -138,9 +153,12 @@ export function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 					};
 					push({ type: "stream-start", warnings: [] });
 					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
+					for (const [index, d] of deltas.entries()) {
 						if (signal?.aborted) break;
-						await sleep(delayMs);
+						await opts.beforeDelta?.(d, index, signal);
+						if (signal?.aborted) break;
+						if (opts.delayMs !== undefined && opts.delayMs > 0) await sleep(opts.delayMs);
+						if (signal?.aborted) break;
 						push({ type: "text-delta", id: "t1", delta: d });
 					}
 					push({ type: "text-end", id: "t1" });
@@ -167,6 +185,24 @@ export function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 			return { stream };
 		},
 	} as unknown as LanguageModel;
+}
+
+/** Hold a provider stream at one delta until a test releases it. */
+export function pauseFakeModelAtDelta(
+	deltas: string[],
+	index = 0,
+): { model: LanguageModel; entered: Promise<void>; release(): void } {
+	const entered = deferred<void>();
+	const gate = deferred<void>();
+	const model = fakeModel(deltas, {
+		beforeDelta: async (_delta, current) => {
+			if (current === index) {
+				entered.resolve();
+				await gate.promise;
+			}
+		},
+	});
+	return { model, entered: entered.promise, release: () => gate.resolve() };
 }
 
 /** fakeModel that also records each request's prompt, JSON-stringified. */

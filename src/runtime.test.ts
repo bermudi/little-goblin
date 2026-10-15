@@ -19,9 +19,11 @@ import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import {
+	deferred,
 	fakeModel,
 	HeadlessSink,
 	ParkedDoneSink,
+	pauseFakeModelAtDelta,
 	RecordingSink,
 	recordingModel,
 	sleep,
@@ -30,12 +32,12 @@ import {
 	tmpDir,
 } from "./testkit.ts";
 
-function setup(deltas: string[], delayMs = 15) {
+function setup(deltas: string[], delayMs = 15, model?: LanguageModel) {
 	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(deltas, delayMs), system: "test" }),
+		buildStep: () => ({ model: model ?? fakeModel(deltas, delayMs), system: "test" }),
 		makeTools: () => ({}),
 	});
 	return { store, conv, runtime };
@@ -494,11 +496,14 @@ describe("turn authority", () => {
 	});
 
 	test("epoch advance mid-turn fences it — quietly, no assistant append", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20, gated.model);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta; // first delta observed — turn is mid-stream
+		await gated.entered; // the next delta is held inside the provider stream
 		store.bumpEpoch(conv.id); // settings change, e.g. /think
+		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(sink.text.length).toBeGreaterThan(0);
 		expect(sink.text.length).toBeLessThan(5);
@@ -511,7 +516,8 @@ describe("turn authority", () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let seen: AbortSignal | undefined;
-		const base = fakeModel(["a", "b", "c", "d", "e"], 20) as unknown as {
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const base = gated.model as unknown as {
 			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }): {
 				stream: ReadableStream<LanguageModelV4StreamPart>;
 			};
@@ -531,7 +537,9 @@ describe("turn authority", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta; // mid-stream
+		await gated.entered; // the next delta is held inside the provider stream
 		store.bumpEpoch(conv.id); // /voice or /memory toggle — no /stop, no abort
+		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		// the fence must kill the model call itself: the provider stream
 		// cannot keep generating into a stream nobody reads
@@ -675,6 +683,10 @@ describe("turn authority", () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executed = false;
+		// The stream holds its tool-call part on a gate the test releases
+		// after the epoch bump — the call is emitted entirely under the
+		// stale epoch, by construction, not by clock.
+		const bumpLanded = deferred<void>();
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({
@@ -697,7 +709,7 @@ describe("turn authority", () => {
 									}
 								};
 								push({ type: "stream-start", warnings: [] });
-								await sleep(30); // epoch bump lands before the tool call
+								await bumpLanded.promise;
 								push({
 									type: "tool-call",
 									toolCallId: "c1",
@@ -743,6 +755,7 @@ describe("turn authority", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.admitted; // turn holds its epoch — bump cannot race admission
 		store.bumpEpoch(conv.id); // settings change mid-turn
+		bumpLanded.resolve(); // only now may the stale-epoch tool call flow
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran
 		store.close();

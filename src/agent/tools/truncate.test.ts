@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { truncateTail, windowText } from "./truncate.ts";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spillFile, truncateTail, windowText } from "./truncate.ts";
 
 describe("windowText", () => {
 	test("under budget passes through untruncated", () => {
@@ -14,6 +17,50 @@ describe("windowText", () => {
 		expect(window).toContain("line-99");
 		expect(window).toContain("[…]");
 		expect(window).not.toContain("line-50\n");
+	});
+
+	test("an explicit 0.75 headShare renders identically to the default", () => {
+		const text = Array.from({ length: 200 }, (_, i) => `row-${String(i).padStart(4, "0")}`).join(
+			"\n",
+		);
+		expect(windowText(text, 400)).toEqual(windowText(text, 400, 0.75));
+	});
+
+	test("a tail-heavy headShare keeps a short head and a long tail — bash's split", () => {
+		const text = Array.from({ length: 200 }, (_, i) => `row-${String(i).padStart(4, "0")}`).join(
+			"\n",
+		);
+		const { window, truncated } = windowText(text, 400, 0.25);
+		expect(truncated).toBe(true);
+		const [head, tail] = window.split("\n\n[…]\n\n");
+		// ~25% head: the first rows survive, cut on a line boundary.
+		expect(head).toBe(text.slice(0, text.lastIndexOf("\n", 100)));
+		expect(head!.endsWith("row-0010")).toBe(true);
+		expect(head!.length).toBeLessThan(120);
+		// The tail carries the rest of the budget, whole lines only.
+		expect(tail).toContain("row-0199");
+		expect(text.endsWith(`\n${tail}`)).toBe(true);
+		expect(window).not.toContain("row-0100\n");
+	});
+});
+
+describe("spillFile", () => {
+	test("content-addressed: same body lands the same path holding the body", () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-spill-"));
+		try {
+			const body = "the full output\nwith several lines\n";
+			const cache = join(dir, "cache");
+			const a = spillFile(cache, body);
+			const b = spillFile(cache, body);
+			expect(a).toBe(b);
+			expect(a.startsWith(`${cache}/`)).toBe(true);
+			expect(a.endsWith(".txt")).toBe(true);
+			expect(readFileSync(a, "utf8")).toBe(body);
+			// A different body addresses a different file.
+			expect(spillFile(cache, "other")).not.toBe(a);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

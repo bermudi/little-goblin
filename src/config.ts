@@ -54,6 +54,7 @@ export const paths = {
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
+	bashcache: () => join(goblinHome(), "state", "bashcache"),
 	// Project homes (design/projects.md) — lazy: created on the first
 	// project create, not by ensureHomeLayout.
 	projects: () => join(goblinHome(), "projects"),

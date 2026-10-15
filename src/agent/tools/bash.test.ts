@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { paths } from "../../config.ts";
 import { bashTool } from "./bash.ts";
 
@@ -10,6 +13,16 @@ interface BashResult {
 	truncated?: boolean;
 	output?: string;
 }
+
+let home: string;
+beforeEach(() => {
+	home = mkdtempSync(join(tmpdir(), "goblin-bash-"));
+	process.env.GOBLIN_HOME = home;
+});
+afterEach(() => {
+	delete process.env.GOBLIN_HOME;
+	rmSync(home, { recursive: true, force: true });
+});
 
 describe("bash", () => {
 	test("advertises the read-only doctor — the workspace form keeps ../doctor, other cwds get the shim absolute", () => {
@@ -39,26 +52,50 @@ describe("bash", () => {
 
 	test("a flooded stream is reported as truncated, not silently cut", async () => {
 		const t = bashTool("/tmp");
-		const out = (await t.execute!({ command: "seq 1 500000" }, opts)) as BashResult;
+		const started = Date.now();
+		// ~15 MB of output — the 4 MiB per-stream capture cap kills the
+		// process long before it finishes.
+		const out = (await t.execute!({ command: "seq 1 2000000" }, opts)) as BashResult;
 		// The reader kills the process at the cap — the result must say so,
 		// or the model reads partial output as complete.
+		expect(Date.now() - started).toBeLessThan(15_000);
 		expect(out.truncated).toBe(true);
-		expect(out.output!.length).toBeLessThanOrEqual(100 * 1024);
+		expect(out.output).toContain("the process was stopped");
+		expect(out.output).toContain("incomplete");
+		// The capture still spills — the model gets a window plus the file.
+		expect(out.output).toContain("[TRUNCATED");
+		const file = /saved to: (\S+)/.exec(out.output!)?.[1] ?? "";
+		expect(file.startsWith(join(home, "state", "bashcache"))).toBe(true);
+		// The saved file is the partial capture — under the cap.
+		expect(readFileSync(file, "utf8").length).toBeLessThanOrEqual(4 * 1024 * 1024);
 	});
 
-	test("over-cap output is tail-truncated at whole lines with a skip notice", async () => {
+	test("over-budget output is windowed head+tail and spills the full text to state/bashcache", async () => {
 		const t = bashTool("/tmp");
-		// Each stream is capped at 100KB on its own, so this stays under the
-		// per-stream kill — the sum crosses the cap and the helper does the cut.
-		const out = (await t.execute!({ command: "seq 1 12000; seq 1 12000 >&2" }, opts)) as BashResult;
+		const out = (await t.execute!({ command: "seq 1 20000" }, opts)) as BashResult;
 		expect(out.truncated).toBe(true);
-		const lines = out.output!.split("\n");
-		expect(lines[0]).toMatch(/^\[… \d+ bytes of earlier output skipped — showing the tail\]$/);
-		// First content line is a whole input line, not a partial cut.
-		expect(lines[1]).toMatch(/^\d+$/);
-		expect(Number(lines[1])).toBeGreaterThan(1);
-		// Tail is intact (stderr concatenates after stdout).
-		expect(out.output!.endsWith("12000\n")).toBe(true);
+		// Tail-heavy window: the head survives (the old tail cut dropped it
+		// for good), the middle elides on line boundaries.
+		expect(out.output!.startsWith("1\n")).toBe(true);
+		expect(out.output).toContain("[…]");
+		expect(out.output).toContain("\n20000\n");
+		expect(out.output).not.toContain("the process was stopped");
+		const match = /saved to: (\S+)/.exec(out.output!);
+		expect(match).not.toBeNull();
+		const file = match![1]!;
+		expect(file.startsWith(join(home, "state", "bashcache"))).toBe(true);
+		expect(file.endsWith(".txt")).toBe(true);
+		expect(readFileSync(file, "utf8")).toBe(
+			`${Array.from({ length: 20000 }, (_, i) => `${i + 1}`).join("\n")}\n`,
+		);
+	});
+
+	test("small output stays whole — no footer, and the cache dir is never created", async () => {
+		const t = bashTool("/tmp");
+		const out = (await t.execute!({ command: "echo hi" }, opts)) as BashResult;
+		expect(out.output).toBe("hi\n");
+		expect(out.truncated).toBeUndefined();
+		expect(existsSync(join(home, "state", "bashcache"))).toBe(false);
 	});
 
 	test("nonzero exit propagates", async () => {

@@ -4,9 +4,6 @@
 // pi-codemode, a worker thread per execute) has no filesystem, network,
 // timers or process — its only capability is the injected tools.
 
-import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
@@ -18,10 +15,9 @@ import {
 	type CodemodeTool,
 } from "@earendil-works/pi-codemode";
 import { paths } from "../../config.ts";
-import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { summarize } from "../../reviewer.ts";
-import { truncatedFooter, windowText } from "./truncate.ts";
+import { spillFile, truncatedFooter, windowText } from "./truncate.ts";
 import { fenceUntrusted } from "./web.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -112,13 +108,6 @@ function errorMessage(result: unknown): string | null {
 	if (typeof error !== "string") return null;
 	const kind = (result as { kind?: unknown }).kind;
 	return typeof kind === "string" ? `${error} (${kind})` : error;
-}
-
-// The overflow file: content-addressed so a result's saved copy is
-// byte-stable, same rule as fetch's PDF refs.
-function scriptCachePath(body: string): string {
-	const hash = createHash("sha256").update(body).digest("hex").slice(0, 24);
-	return join(paths.scriptcache(), `${hash}.txt`);
 }
 
 const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
@@ -336,10 +325,7 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 			const { window, truncated } = windowText(body, OUTPUT_BUDGET);
 			let footer = "";
 			if (truncated) {
-				const file = scriptCachePath(body);
-				mkdirSync(paths.scriptcache(), { recursive: true });
-				durableWriteFile(file, body);
-				footer = truncatedFooter(file, body.length);
+				footer = truncatedFooter(spillFile(paths.scriptcache(), body), body.length);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);
 			const status =

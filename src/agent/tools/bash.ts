@@ -2,9 +2,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
 import { paths } from "../../config.ts";
-import { truncateTail } from "./truncate.ts";
+import { log } from "../../log.ts";
+import { spillFile, truncatedFooter, windowText } from "./truncate.ts";
 
-const MAX_OUTPUT = 100 * 1024;
+// The runaway guard, not the output budget: a stream over the cap still
+// kills the process (proc.ts). 4 MiB keeps the spill file inside
+// read_file's 8 MiB ceiling (design/tools.md → Bounded output).
+const MAX_CAPTURE = 4 * 1024 * 1024;
+const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
@@ -31,21 +36,38 @@ export const bashTool = (cwd: string) =>
 			}
 			const result: BoundedProc = await boundedRun(proc, {
 				timeoutMs: Math.min(timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
-				maxOutput: MAX_OUTPUT,
+				maxOutput: MAX_CAPTURE,
 				...(abortSignal ? { abortSignal } : {}),
 			});
 			const combined = result.stdout + result.stderr;
-			// Truncation must reach the model: a capped stream killed the
-			// process, a cut drain dropped output, and the tail cut drops
-			// the head — either way the output is incomplete and must not
-			// look like a clean result.
-			const tail = truncateTail(combined, MAX_OUTPUT);
-			const truncated = result.truncated || tail.truncated;
+			// Incompleteness must reach the model: over-budget output
+			// arrives as a tail-heavy window with the full text spilled to
+			// bashcache (a command with side effects can't be re-run to see
+			// its head), and a capture-cap kill or a cut drain means even
+			// the saved file is partial — either way the result must not
+			// read as a clean result.
+			let output = combined;
+			let truncated = result.truncated;
+			if (combined.length > OUTPUT_BUDGET) {
+				const window = windowText(combined, OUTPUT_BUDGET, 0.25).window;
+				const file = spillFile(paths.bashcache(), combined);
+				log.info("bash output spilled", {
+					file,
+					chars: combined.length,
+					captureCut: result.truncated,
+				});
+				output = window + truncatedFooter(file, combined.length);
+				truncated = true;
+			}
+			if (result.truncated) {
+				output +=
+					"\n\n[output exceeded the capture cap or was cut before it finished — the process was stopped; the output above and any saved file are incomplete]";
+			}
 			return {
 				exit_code: result.timedOut ? null : result.exitCode,
 				timed_out: result.timedOut || undefined,
 				truncated: truncated || undefined,
-				output: tail.content,
+				output,
 			};
 		},
 	});

@@ -96,11 +96,22 @@ work.
 miss (long files, wide files, minified one-liners); output stops at
 complete numbered lines only, and every stop names its own recovery
 (`Use offset=N`, sed fallback for a giant line, did-you-mean on a miss,
-tail reads via negative offset). Bash: tail-truncation at complete lines,
-UTF-8 boundary-safe, with the dropped-byte count stated — the single
-exception being a final line that alone exceeds the whole budget, whose
-last bytes are kept with an ellipsis prefix so a mid-line start is never
-mistaken for a whole line. Special files (devices, FIFOs, sockets) are
+tail reads via negative offset). Bash offloads, never truncates (ruling
+2026-10-14 — Deep Agents' "large outputs are offloaded, not truncated";
+the spill-and-name rule fetch and script already follow): combined
+output over a 15k-char budget becomes a tail-heavy head+tail window
+(25/75, cut on line boundaries, visible `[…]` elision) and the full
+output lands content-addressed in `state/bashcache/<sha>.txt`, the
+footer naming the absolute path and the `read_file` call. The old tail
+cut dropped the head for good, and a command with side effects can't
+be re-run to see it. Capture stays capped — 4 MiB per stream, so the
+spill always fits `read_file`'s 8 MiB ceiling — and overflowing it
+still kills the process (the runaway guard); the output then says the
+saved file is incomplete. The spill file is a recovery aid, never
+replayed: the result string is fixed when the call returns (Cache
+stability). Like webcache and scriptcache it is never pruned. The
+`sandbox` tool keeps its tail cut for now — container output is a
+separate surface. Special files (devices, FIFOs, sockets) are
 refused before any I/O — `read_file` on `/dev/zero` is a hang, not a
 read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
@@ -292,6 +303,14 @@ history — "what did we decide about X last month?".
   at query time against the live `memoryExcluded` flag — `/memory off`
   means off for search too, retroactively. Excluded topics also can't
   wield the tool: exclusion means a topic recalls nothing, the same
-  rule as `memory_search`.
+  rule as `memory_search`. One exception (ruling 2026-10-14): `context`
+  on the calling conversation's own id always works — reading your
+  own transcript recalls nothing from another topic, and without it a
+  compacted excluded topic could never get its folded span back.
+  Search and `context` on any other id stay refused.
 - Output: bounded list of topic title · date · role · snippet, plus
-  the address/event id to page context around a hit.
+  the address/event id to page context around a hit. `context`
+  renders each event with the compaction serializer's projection —
+  text, attachment refs, and bounded tool calls with their results —
+  windowed to 3k chars per event: the tool evidence a compaction folded
+  is exactly what recovery has to give back (Compaction, design/model.md).

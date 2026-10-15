@@ -224,7 +224,9 @@ the orphaned turn to the operator, don't replay it.
   gate); a fenced
   or failed turn leaves its user message unanswered, and the successor
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
-  placeholder is a repair, not drift. Everything else that moves the hash
+  placeholder is a repair, not drift; a deploy that changes the read-time
+  compaction marker's wording rewrites it once in every compacted
+  conversation. Everything else that moves the hash
   is a bug.
 
 ## Design areas

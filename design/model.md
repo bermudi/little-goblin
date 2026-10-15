@@ -103,7 +103,15 @@ agent loop.
   table (boundary seq, summary, tokens before, model, timestamp); the latest
   row is the conversation's active pointer and earlier rows are the audit
   trail. The event stream is untouched — arrival-order storage stays the
-  truth, and the full record remains queryable forever. The model view
+  truth, and the full record remains queryable forever. Recovery is
+  named, not implied (ruling 2026-10-14 — Deep Agents' "compaction
+  should be recoverable"): the summary marker carries the conversation
+  id and boundary seq and says the folded span is pageable with
+  `history_search` action=context, which renders tool calls and results
+  too and works on the conversation's own id even when it is
+  memory-excluded (design/tools.md → Chat search). No folded-span dump
+  file — the event stream already is the record, and a copy would
+  drift. The model view
   becomes [summary message] + events whose causal position follows the
   boundary — `anchorSeq ?? seq`, the same key the causal sort uses, so a
   late answer to a folded question rides into the summary with it rather

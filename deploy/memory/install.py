@@ -658,10 +658,10 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"bank creation failed (HTTP {error.code}): {detail}")
     except OSError as error:
         fail(f"bank creation failed: {error}")
-    # Goblin never calls reflect(), so the generic mission only reaches
-    # reflect_mission; extraction reads retain_mission and consolidation
-    # reads observations_mission (docs/memory.md). Point both at the
-    # canonical texts — without this the mission is dead config.
+    # The PUT mission above lands as reflect_mission; extraction reads
+    # retain_mission and consolidation reads observations_mission
+    # (docs/memory.md). Point both at the canonical texts — without
+    # this the mission is dead config for those two paths.
     patch = json.dumps({
         "updates": {
             "retain_mission": mission,

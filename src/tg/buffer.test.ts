@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { CoalescingBuffer } from "./buffer.ts";
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
+
+async function advance(ms: number): Promise<void> {
+	jest.advanceTimersByTime(ms);
+	await Promise.resolve();
+}
 
 describe("coalescing buffer", () => {
 	test("rapid pushes merge into one flush", async () => {
@@ -10,11 +16,13 @@ describe("coalescing buffer", () => {
 			flushes.push(items);
 		});
 		buf.push("c1", "a");
-		await sleep(15);
+		await advance(15);
 		buf.push("c1", "b");
-		await sleep(15);
+		await advance(15);
 		buf.push("c1", "c");
-		await sleep(80);
+		await advance(39);
+		expect(flushes).toEqual([]);
+		await advance(1);
 		expect(flushes).toEqual([["a", "b", "c"]]);
 	});
 
@@ -25,7 +33,9 @@ describe("coalescing buffer", () => {
 		});
 		buf.push("c1", "a");
 		buf.push("c2", "x");
-		await sleep(60);
+		await advance(29);
+		expect(seen).toEqual({});
+		await advance(1);
 		expect(seen.c1).toEqual(["a"]);
 		expect(seen.c2).toEqual(["x"]);
 	});
@@ -39,7 +49,7 @@ describe("coalescing buffer", () => {
 		buf.push("c2", "x");
 		await buf.drain();
 		expect(flushes).toEqual([["a"], ["x"]]);
-		await sleep(80); // disarmed timers must not re-fire
+		await advance(80); // disarmed timers must not re-fire
 		expect(flushes).toEqual([["a"], ["x"]]);
 	});
 
@@ -49,9 +59,10 @@ describe("coalescing buffer", () => {
 			flushes.push(items);
 		});
 		buf.push("c1", "first");
-		await sleep(60);
+		await advance(30);
+		expect(flushes).toEqual([["first"]]);
 		buf.push("c1", "second");
-		await sleep(60);
+		await advance(30);
 		expect(flushes).toEqual([["first"], ["second"]]);
 	});
 
@@ -67,16 +78,18 @@ describe("coalescing buffer", () => {
 			70,
 		);
 		buf.push("c1", "a");
-		await sleep(25);
+		await advance(25);
 		buf.push("c1", "b");
-		await sleep(25);
+		await advance(25);
 		buf.push("c1", "c");
-		// Ceiling fires ~70ms after the first push, mid-dribble.
-		await sleep(30);
+		// Ceiling fires exactly 70ms after the first push, mid-dribble.
+		await advance(19);
+		expect(flushes).toEqual([]);
+		await advance(1);
 		expect(flushes).toEqual([["a", "b", "c"]]);
 		// The post-ceiling dribble starts a fresh bucket on its own timer.
 		buf.push("c1", "d");
-		await sleep(60);
+		await advance(40);
 		expect(flushes).toEqual([["a", "b", "c"], ["d"]]);
 	});
 
@@ -92,7 +105,7 @@ describe("coalescing buffer", () => {
 		buf.push("c1", "a");
 		await buf.drain();
 		expect(flushes).toEqual([["a"]]);
-		await sleep(120); // neither timer may re-fire
+		await advance(120); // neither timer may re-fire
 		expect(flushes).toEqual([["a"]]);
 	});
 
@@ -126,16 +139,15 @@ describe("coalescing buffer", () => {
 			70,
 		);
 		buf.push("c1", "first");
-		// Two failures back to back: the pending retry is re-armed at the
-		// doubled delay (~2s), not the old constant max(window, 1s) = 1s.
+		// Two failures back to back: the pending retry is re-armed at 2s,
+		// not the old constant max(window, 1s) = 1s.
 		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
 		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
-		await sleep(1_200); // past 1s — the constant delay would have fired
+		await advance(1_999);
 		expect(flushes).toEqual([]);
-		// The batch is still intact and complete for the next attempt.
-		await buf.drain();
+		await advance(1);
 		expect(flushes).toEqual([["first"]]);
-	}, 10_000);
+	});
 
 	test("a rejected async flush retains the batch and the retry re-runs it", async () => {
 		const flushes: string[][] = [];
@@ -157,10 +169,24 @@ describe("coalescing buffer", () => {
 		let overlap = false;
 		let inflight = false;
 		let release: () => void = () => {};
+		let secondStarted!: () => void;
+		let releaseSecond: () => void = () => {};
+		const secondFlush = new Promise<void>((resolve) => {
+			releaseSecond = resolve;
+		});
+		const second = new Promise<void>((resolve) => {
+			secondStarted = resolve;
+		});
 		const buf = new CoalescingBuffer<string>(30, (_key, items) => {
 			if (inflight) overlap = true;
 			inflight = true;
 			calls.push(items);
+			if (calls.length === 2) {
+				secondStarted();
+				return secondFlush.finally(() => {
+					inflight = false;
+				});
+			}
 			return new Promise<void>((resolve) => {
 				release = () => {
 					inflight = false;
@@ -169,15 +195,15 @@ describe("coalescing buffer", () => {
 			});
 		});
 		buf.push("c1", "first");
-		await sleep(50); // quiet window elapsed — flush 1 in flight
+		await advance(30); // quiet window elapsed — flush 1 in flight
 		buf.push("c1", "second");
-		await sleep(60); // its quiet AND max timers elapsed during flight
-		expect(calls).toEqual([["first"]]); // the second batch never fired early
+		await advance(30); // the next bucket becomes due while flush 1 is in flight
+		expect(calls).toEqual([["first"]]);
 		release();
-		await sleep(20); // deferred fire lands right after the settle
+		await second;
 		expect(calls).toEqual([["first"], ["second"]]);
 		expect(overlap).toBe(false);
-		release(); // let flush 2 settle — it was captured by the deferred fire
+		releaseSecond();
 		await buf.drain();
 	});
 
@@ -242,24 +268,36 @@ describe("coalescing buffer", () => {
 
 	test("drain awaits an in-flight async flush and its deferred successor", async () => {
 		const flushes: string[][] = [];
-		let release: () => void = () => {};
+		let releaseFirst: () => void = () => {};
+		let releaseSecond: () => void = () => {};
+		let secondStarted!: () => void;
+		const second = new Promise<void>((resolve) => {
+			secondStarted = resolve;
+		});
+		const firstFlush = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const secondFlush = new Promise<void>((resolve) => {
+			releaseSecond = resolve;
+		});
 		const buf = new CoalescingBuffer<string>(20, (_key, items) => {
-			if (flushes.length === 0) {
-				return new Promise<void>((resolve) => {
-					release = () => {
-						flushes.push(items);
-						resolve();
-					};
-				});
-			}
 			flushes.push(items);
+			if (flushes.length === 1) return firstFlush;
+			secondStarted();
+			return secondFlush;
 		});
 		buf.push("c1", "first");
-		await sleep(40); // flush 1 in flight
+		await advance(20); // flush 1 in flight
 		buf.push("c1", "second");
 		const drained = buf.drain(); // disarms timers; second fire defers
-		await sleep(50);
-		release();
+		let drainFinished = false;
+		void drained.then(() => {
+			drainFinished = true;
+		});
+		releaseFirst();
+		await second;
+		expect(drainFinished).toBe(false);
+		releaseSecond();
 		await drained;
 		expect(flushes).toEqual([["first"], ["second"]]);
 	});

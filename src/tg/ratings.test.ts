@@ -1,27 +1,15 @@
 // The tap record: round-trip through the real store, append-only with
 // latest-wins reads — including across a reopened handle (a restart).
 
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openStore } from "../conversation.ts";
 import { openRatings } from "./ratings.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-ratings-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "../testkit.ts";
 
 describe("reply ratings", () => {
 	test("record → latest round-trips all fields", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-ratings-"));
 		try {
 			const ratings = openRatings(store.db);
 			ratings.record({
@@ -53,7 +41,7 @@ describe("reply ratings", () => {
 	});
 
 	test("a vote change appends a second row; latest wins", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-ratings-"));
 		try {
 			const ratings = openRatings(store.db);
 			const base = { conversationId: "dm:1:2", anchorSeq: 7, chatId: 1, messageId: 42 };
@@ -71,7 +59,7 @@ describe("reply ratings", () => {
 	});
 
 	test("the record survives a reopened handle — a process restart", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-ratings-");
 		const first = openStore(path);
 		openRatings(first.db).record({
 			conversationId: "topic:-100:9",
@@ -90,7 +78,7 @@ describe("reply ratings", () => {
 	});
 
 	test("a row joins back to its reply through events", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-ratings-"));
 		try {
 			store.resolve({ kind: "topic", chatId: -100, threadId: 9 }, "/tmp");
 			store.append("topic:-100:9", [{ id: "u1", role: "user", parts: [] }]);

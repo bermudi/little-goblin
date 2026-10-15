@@ -1,7 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import {
@@ -14,17 +12,7 @@ import {
 	type ConversationStore,
 	type ParsedAddress,
 } from "./conversation.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-test-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "./testkit.ts";
 
 const msg = (text: string): UIMessage => ({
 	id: "m1",
@@ -34,14 +22,14 @@ const msg = (text: string): UIMessage => ({
 
 describe("conversation store", () => {
 	test("acknowledged inbox writes use WAL FULL sync on the shared connection", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const result = store.db.query<{ synchronous: number }, []>("PRAGMA synchronous").get();
 		expect(result?.synchronous).toBe(2);
 		store.close();
 	});
 
 	test("history preserves valid top-level UI message metadata after reopening", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(conv.id, [{ ...msg("hello"), metadata: { source: "test" } }]);
@@ -52,7 +40,7 @@ describe("conversation store", () => {
 	});
 
 	test("resolve creates then returns the same conversation", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		expect(a.id).toBe(formatAddress({ kind: "topic", chatId: -100, threadId: 7 }));
 		expect(a.epoch).toBe(0);
@@ -62,7 +50,7 @@ describe("conversation store", () => {
 	});
 
 	test("append + history round-trips UIMessages in order", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		store.append(c.id, [msg("one"), msg("two")]);
 		store.append(c.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] }]);
@@ -73,7 +61,7 @@ describe("conversation store", () => {
 	});
 
 	test("history interleaves an anchored response after its user event", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		const asst = (text: string): UIMessage => ({
 			id: `a-${text}`,
@@ -94,7 +82,7 @@ describe("conversation store", () => {
 	});
 
 	test("unanchored events keep pure arrival order", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		store.append(c.id, [msg("one"), msg("two")]);
 		store.append(c.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] }]);
@@ -103,7 +91,7 @@ describe("conversation store", () => {
 	});
 
 	test("a pre-anchor DB migrates in place — old rows read, new anchors work", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		// Hand-build the old schema: events without anchor_seq.
 		const old = new Database(path);
 		old.run(`CREATE TABLE conversations (
@@ -164,7 +152,7 @@ describe("conversation store", () => {
 	});
 
 	test("bumpEpoch advances monotonically and persists", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		expect(store.bumpEpoch(c.id)).toBe(1);
@@ -176,7 +164,7 @@ describe("conversation store", () => {
 	});
 
 	test("applySettings patches meta and bumps epoch atomically", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		expect(store.applySettings(c.id, { model: "zai/glm-4.5", voice: true })).toBe(1);
 		const after = store.get(c.id)!;
@@ -187,7 +175,7 @@ describe("conversation store", () => {
 	});
 
 	test("history degrades a corrupt row to a placeholder instead of failing", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// Corrupt disk state — bypass the store's own writer.
@@ -208,7 +196,7 @@ describe("conversation store", () => {
 	});
 
 	test("titleImplicit flag round-trips through setMeta", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
 		expect(c.titleImplicit).toBe(false);
 		store.setMeta(c.id, { title: "New Chat", titleImplicit: true });
@@ -221,7 +209,7 @@ describe("conversation store", () => {
 	});
 
 	test("setMeta patches fields", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.setMeta(c.id, { model: "zai/glm-4.6", thinking: "high" });
 		const after = store.get(c.id)!;
@@ -235,7 +223,7 @@ describe("conversation store", () => {
 
 describe("history payload envelope", () => {
 	test("append writes versioned envelopes that read back intact", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("one")]);
@@ -249,7 +237,7 @@ describe("history payload envelope", () => {
 	});
 
 	test("bare legacy rows are wrapped once at next open; the read itself is envelope-only", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("legacy")]);
@@ -276,7 +264,7 @@ describe("history payload envelope", () => {
 		twice.close();
 	});
 	test("a corrupt bare row is left unmigrated and still placeholder-degrades", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("good")]);
@@ -295,7 +283,7 @@ describe("history payload envelope", () => {
 
 describe("compaction pointers", () => {
 	test("getCompaction returns the latest row; modelEntries is summary + tail", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [
 			msg("one"),
@@ -331,7 +319,7 @@ describe("compaction pointers", () => {
 	});
 
 	test("a late answer to a folded question rides into the summary — never orphaned in the tail", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// Interleaved burst (arrival order): a question, three more while
 		// its turn ran, then the answer — high seq, anchored to seq 1.
@@ -359,7 +347,7 @@ describe("compaction pointers", () => {
 	});
 
 	test("without a pointer, modelEntries is exactly the causal view", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("one")]);
 		expect(store.modelEntries(c.id)).toEqual(store.historyEntries(c.id));
@@ -373,7 +361,7 @@ describe("compaction pointers", () => {
 // and the memory queue never re-enqueues what was already retained.
 describe("memory eligibility", () => {
 	test("eligibility is stamped at append time and survives re-enabling", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("while included")]); // seq 1
@@ -392,7 +380,7 @@ describe("memory eligibility", () => {
 	});
 
 	test("a summary is eligible only when its folded span is", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("one")]); // seq 1
 		store.setCompaction(c.id, {
@@ -430,7 +418,7 @@ describe("memory eligibility", () => {
 	});
 
 	test("forkToApp copies eligibility stamps verbatim", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(src.id, [msg("included")]); // seq 1
 		store.setMeta(src.id, { memoryExcluded: true });
@@ -464,7 +452,7 @@ describe("forkToApp (Spin-off)", () => {
 			.all(id);
 
 	test("copies events verbatim with anchors, only the latest compaction, and memory contexts — source untouched", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [msg("one")]);
 		store.append(src.id, [asst("reply")], { anchorSeq: 1 });
@@ -507,7 +495,7 @@ describe("forkToApp (Spin-off)", () => {
 	});
 
 	test("the memory queue never re-enqueues a copied exchange", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [msg("one")]);
 		const before = store.db.query("SELECT COUNT(*) AS n FROM memory_outbox").get() as {
@@ -522,7 +510,7 @@ describe("forkToApp (Spin-off)", () => {
 	});
 
 	test("an uncompacted source forks a clean, empty copy", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		const app = store.forkToApp(src.id, "empty-1", "/w", "quiet");
 		expect(app.id).toBe("app/empty-1");
@@ -533,7 +521,7 @@ describe("forkToApp (Spin-off)", () => {
 	});
 
 	test("the memory exclusion copies — an excluded DM's fork stays unsearchable", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
 		store.append(src.id, [msg("a secret only memory forgets")]);
 		store.setMeta(src.id, { memoryExcluded: true });
@@ -555,7 +543,7 @@ describe("chat search", () => {
 	});
 
 	test("finds user and assistant text across conversations, bounded by limit", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		const b = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		store.setMeta(a.id, { title: "Pizza plans" });
@@ -576,7 +564,7 @@ describe("chat search", () => {
 	});
 
 	test("tool payloads and system events are never indexed", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [
 			{
@@ -602,7 +590,7 @@ describe("chat search", () => {
 	});
 
 	test("memory exclusion hides retroactively", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("the retroactive hiddenword plans")]);
 		expect(store.searchHistory("hiddenword", 10)).toHaveLength(1);
@@ -614,7 +602,7 @@ describe("chat search", () => {
 	});
 
 	test("deletes stay honest through the delete trigger", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("the transient forgetmeword note")]);
 		expect(store.searchHistory("forgetmeword", 10)).toHaveLength(1);
@@ -624,7 +612,7 @@ describe("chat search", () => {
 	});
 
 	test("upgrading DBs backfill the index at open", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const first = openStore(path);
 		const c = first.resolve({ kind: "dm", chatId: 1 }, "/w");
 		first.append(c.id, [msg("the backfill checkword plans")]);
@@ -644,7 +632,7 @@ describe("chat search", () => {
 	});
 
 	test("query syntax is literal — operators never throw, empties answer empty", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("plain hello world note")]);
 		expect(store.searchHistory('" OR *:', 10)).toEqual([]);
@@ -655,7 +643,7 @@ describe("chat search", () => {
 	});
 
 	test("eventContext pages an arrival-ordered window", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("one"), msg("two"), msg("three"), msg("four"), msg("five")]);
 		expect(store.eventContext(c.id, 3, 1).map((r) => r.seq)).toEqual([2, 3, 4]);
@@ -753,7 +741,7 @@ describe("address codec", () => {
 
 describe("app channel store", () => {
 	test("resolve creates an app conversation with no telegram coordinates", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const a = store.resolve(appAddress("chat-01"), "/w");
 		expect(a.id).toBe("app/chat-01");
 		expect(a.chatId).toBe(0);
@@ -765,7 +753,7 @@ describe("app channel store", () => {
 	});
 
 	test("app and telegram pools never mix in the same store", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const tg = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		const app = store.resolve(appAddress("chat-01"), "/w");
 		expect(store.listAppConversations().map((c) => c.id)).toEqual([app.id]);
@@ -784,7 +772,7 @@ describe("app channel store", () => {
 	});
 
 	test("listAppConversations: newest activity first, preview off the last event", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const idle = store.resolve(appAddress("chat-01"), "/w");
 		const active = store.resolve(appAddress("chat-02"), "/w");
 		expect(store.listAppConversations().map((c) => c.id)).toEqual([idle.id, active.id]);
@@ -799,7 +787,7 @@ describe("app channel store", () => {
 	});
 
 	test("list rows flatten markdown — raw syntax never reaches the sidebar", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve(appAddress("chat-01"), "/w");
 		store.append(c.id, [
 			{
@@ -816,7 +804,7 @@ describe("app channel store", () => {
 	});
 
 	test("archive: setMeta toggles the stamp, the list carries it, any event resurrects", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve(appAddress("chat-01"), "/w");
 		expect(c.archivedAt).toBeNull();
 
@@ -838,7 +826,7 @@ describe("app channel store", () => {
 	});
 
 	test("pin: the stamp floats the row above activity, survives activity, dies with archive", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const a = store.resolve(appAddress("chat-01"), "/w");
 		const b = store.resolve(appAddress("chat-02"), "/w");
 		expect(a.pinnedAt).toBeNull();
@@ -888,7 +876,7 @@ describe("app channel store", () => {
 
 describe("rolling dm", () => {
 	test("rollDm ids increment dm:<chat>:<n> and currentDm follows", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		expect(store.currentDm(7)).toBeNull();
 		const first = store.rollDm(7, "/w");
 		expect(first.id).toBe("dm:7:1");
@@ -905,7 +893,7 @@ describe("rolling dm", () => {
 	});
 
 	test("the legacy dm:<chat> conversation stays history, never current", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const legacy = store.resolve({ kind: "dm", chatId: 9 }, "/w");
 		expect(legacy.id).toBe("dm:9");
 		expect(store.currentDm(9)).toBeNull();
@@ -916,7 +904,7 @@ describe("rolling dm", () => {
 	});
 
 	test("lastActivityAt is the newest event's stamp, else created_at", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const conv = store.rollDm(3, "/w");
 		const created = store.lastActivityAt(conv.id);
 		expect(created).toBe(conv.createdAt);
@@ -935,7 +923,7 @@ describe("manual rolling DM navigation", () => {
 			.get(chatId);
 
 	test("no current or predecessor is a read-only no-op; repeated back walks the source chain", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		expect(store.previousDm(7)).toBeNull();
 		expect(store.backDm(7)).toBeNull();
 		expect(pin(store, 7)).toBeNull();
@@ -961,7 +949,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("back → new → back returns to the selected source, never an abandoned sibling; ids stay unique", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
 		const first = store.rollDm(7, "/w");
 		const sibling = store.rollDm(7, "/w");
@@ -989,7 +977,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("navigation preserves events, settings, compaction audits and recall without copying or replay", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const first = store.rollDm(7, "/w");
 		store.append(
 			first.id,
@@ -1056,7 +1044,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("predecessors cannot cross chats or select legacy DM, retired topic, app, or self identities", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const first = store.rollDm(7, "/w");
 		const current = store.rollDm(7, "/w");
 		const other = store.rollDm(8, "/w");
@@ -1095,7 +1083,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("same-chat forward links and unsafe ordinals cannot change the selection", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const first = store.rollDm(7, "/w");
 		const second = store.rollDm(7, "/w");
 		const third = store.rollDm(7, "/w");
@@ -1129,7 +1117,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("back resets only the selected DM quiet-gap clock, without touching stored timestamps", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const first = store.rollDm(7, "/w");
 		store.append(first.id, [msg("older event"), msg("newer event")]);
 		const second = store.rollDm(7, "/w");
@@ -1165,7 +1153,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("failed selection rolls back new creation/link and back selection; enclosing transactions also own navigation", () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const first = store.rollDm(7, "/w");
 		const second = store.rollDm(7, "/w");
 		const before = pin(store, 7);
@@ -1192,7 +1180,7 @@ describe("manual rolling DM navigation", () => {
 	});
 
 	test("old schema migrates numeric creation-order links despite reversed timestamps, once and without changing the pin", () => {
-		const path = tmpdb();
+		const path = tmpDb("goblin-test-");
 		const old = new Database(path);
 		old.run(`CREATE TABLE conversations (
 			id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, thread_id INTEGER,
@@ -1263,7 +1251,7 @@ describe("manual rolling DM navigation", () => {
 });
 
 test("app settings initialize once, survive reopening, and spin-offs snapshot app defaults", () => {
-	const path = tmpdb();
+	const path = tmpDb("goblin-test-");
 	let store = openStore(path);
 	const old = store.resolve(appAddress("old-settings"), "/work");
 	const defaults = { model: "test/app", thinking: "high" as const };
@@ -1285,7 +1273,7 @@ test("app settings initialize once, survive reopening, and spin-offs snapshot ap
 });
 
 test("app resolve commits creation and its initial settings atomically and never resets an existing selection", () => {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-test-"));
 	try {
 		expect(() =>
 			store.resolve(appAddress("invalid-create"), "/work", { model: "", thinking: "high" }),

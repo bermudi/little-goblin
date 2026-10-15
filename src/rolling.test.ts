@@ -1,6 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { z } from "zod";
@@ -14,17 +12,7 @@ import {
 	routeDmMessage,
 	type RollDeps,
 } from "./rolling.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-roll-test-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "./testkit.ts";
 
 interface GateCall {
 	state: string;
@@ -53,7 +41,7 @@ function harness(opts?: {
 	busy?: (id: string) => boolean;
 	checkDeadlineMs?: number;
 }) {
-	const store = openStore(tmpdb());
+	const store = openStore(tmpDb("goblin-roll-test-"));
 	const deps: RollDeps = {
 		store,
 		runtime: { busy: opts?.busy ?? (() => false) },
@@ -315,7 +303,7 @@ describe("routeDmMessage", () => {
 	});
 
 	test("a roll that happened during the check is joined, never doubled", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-roll-test-"));
 		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// A fire rolled meanwhile — the pin now points elsewhere.
@@ -340,7 +328,7 @@ describe("routeDmMessage", () => {
 	});
 
 	test("a roll during a failing check joins the new current, not the stale one", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-roll-test-"));
 		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// A fire rolled while the check was in flight — then the
@@ -365,7 +353,7 @@ describe("routeDmMessage", () => {
 	});
 
 	test("a lane that went busy during the check absorbs instead of rolling", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-roll-test-"));
 		let wentBusy = false;
 		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {
@@ -393,7 +381,7 @@ describe("routeDmMessage", () => {
 	});
 
 	test("fresh activity during the check joins the gap instead of rolling", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-roll-test-"));
 		let now = anHourHence();
 		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {

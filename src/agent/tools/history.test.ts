@@ -1,22 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { openStore, type ConversationStore } from "../../conversation.ts";
 import { z } from "zod";
 import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
-
-let dirs: string[] = [];
-function tmpdb(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-test-"));
-	dirs.push(dir);
-	return join(dir, "goblin.sqlite");
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDb } from "../../testkit.ts";
 
 const exec = (t: ReturnType<typeof historySearchTool>, input: unknown) =>
 	// biome-ignore lint: the tool's execute is the boundary under test
@@ -50,7 +38,7 @@ describe("history_search tool", () => {
 		).toBe(true);
 	});
 	test("search returns addressable hits with a paging footer", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		store.setMeta(c.id, { title: "Pizza plans" });
 		store.append(c.id, [msg("we decided pineapple belongs on pizza")]);
@@ -67,7 +55,7 @@ describe("history_search tool", () => {
 	});
 
 	test("empty is an answer, not an error", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const out = (await exec(historySearchTool(deps(store)), {
 			action: "search",
 			query: "nothing matches this",
@@ -77,7 +65,7 @@ describe("history_search tool", () => {
 	});
 
 	test("context pages the window around a hit", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.setMeta(c.id, { title: "Plans" });
 		store.append(c.id, [msg("first"), msg("second needle"), msg("third")]);
@@ -96,7 +84,7 @@ describe("history_search tool", () => {
 	});
 
 	test("context refuses unknown and excluded conversations", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("needle here")]);
 		const missing = (await exec(historySearchTool(deps(store)), {
@@ -116,7 +104,7 @@ describe("history_search tool", () => {
 	});
 
 	test("excluded callers recall nothing by either action", async () => {
-		const store = openStore(tmpdb());
+		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("needle here")]);
 		const tool = historySearchTool(deps(store, true));

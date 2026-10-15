@@ -184,21 +184,34 @@ function windowEnd(body: string, start: number): number {
 // Telegram adapter type; domain wake ports expose only TurnSink.
 export type DeliveryApi = Api;
 
+export interface DeliverySinkOptions {
+	replyTo?: number;
+	editIntervalMs?: number;
+	voice?: DeliveryVoiceDeps;
+	typingIntervalMs?: number;
+	maxDrainIterations?: number;
+	rating?: DeliveryRatingDeps;
+	rich?: RichSinkOpts;
+	/** How long a photo-path file waits for burst siblings before delivery. */
+	mediaGroupWindowMs?: number;
+	/** Age at which an unchanged rich draft is re-pushed (TTL keep-alive). */
+	draftTtlMs?: number;
+}
+
 export function makeDeliverySink(
 	api: Api,
 	conv: Conversation,
-	replyToMessageId: number | undefined,
-	editIntervalMs = EDIT_INTERVAL_MS,
-	voice?: DeliveryVoiceDeps,
-	typingIntervalMs = TYPING_INTERVAL_MS,
-	maxDrainIterations = MAX_DRAIN_ITERATIONS,
-	rating?: DeliveryRatingDeps,
-	rich?: RichSinkOpts,
-	// How long a photo-path file holds for burst siblings before its
-	// album (or solo send) goes out.
-	mediaGroupWindowMs = 400,
-	// Age at which an unchanged rich draft is re-pushed (TTL keep-alive).
-	draftTtlMs = DRAFT_TTL_MS,
+	{
+		replyTo: replyToMessageId,
+		editIntervalMs = EDIT_INTERVAL_MS,
+		voice,
+		typingIntervalMs = TYPING_INTERVAL_MS,
+		maxDrainIterations = MAX_DRAIN_ITERATIONS,
+		rating,
+		rich,
+		mediaGroupWindowMs = 400,
+		draftTtlMs = DRAFT_TTL_MS,
+	}: DeliverySinkOptions = {},
 ): TurnSink {
 	// Routing bug alarm (DESIGN.md, App channel): app conversations have
 	// no Telegram door — their sink is the HTTP stream. A silent send

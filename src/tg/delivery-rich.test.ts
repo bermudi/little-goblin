@@ -148,17 +148,11 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, actions } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				2, // typingIntervalMs — the tick drives both ping and refresh
-				undefined,
-				undefined,
-				{ enabled: true },
-			);
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				typingIntervalMs: 2, // the tick drives both ping and refresh
+				rich: { enabled: true },
+			});
 			await sleep(12);
 			// The placeholder draft went out AND typing pings keep coming.
 			expect(drafts.length).toBeGreaterThan(0);
@@ -182,19 +176,13 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, actions } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				2, // typingIntervalMs — powers the recording tick while synthesis runs
-				undefined,
-				undefined,
-				{ enabled: true },
-				400,
-				10, // draftTtlMs — the unchanged draft goes stale almost immediately
-			);
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				typingIntervalMs: 2, // powers the recording tick while synthesis runs
+				rich: { enabled: true },
+				mediaGroupWindowMs: 400,
+				draftTtlMs: 10, // the unchanged draft goes stale almost immediately
+			});
 			// One sync block: text lands, the typing interval is cleared, and
 			// the recording tick is armed before any timer can fire.
 			sink.onTextDelta("hold");
@@ -215,21 +203,16 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs, edits, reactions, markups } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				77,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				replyTo: 77,
+				editIntervalMs: 0,
+				rating: {
 					lastReplyAnchor: () => 42,
 				},
-				{
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("hello ");
 			sink.onTextDelta("world");
 			await sink.onDone({ kind: "completed" });
@@ -264,19 +247,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, richSends, msgs } = fakeApi({ failRichDrafts: true });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("plain again");
 			await sink.onDone({ kind: "completed" });
 			expect(richSends).toHaveLength(0);
@@ -293,19 +269,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs } = fakeApi({ timeoutNextRichDraft: true });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("first");
 			sink.onTextDelta("second");
 			await sink.onDone({ kind: "completed" });
@@ -324,19 +293,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs } = fakeApi({ failRichSend: true });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("still delivered");
 			await sink.onDone({ kind: "completed" });
 			expect(drafts.length).toBeGreaterThan(0);
@@ -351,20 +313,13 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 					reasoning: true,
 				},
-			);
+			});
 			sink.onReasoningDelta("hidden thought");
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
@@ -385,20 +340,13 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 					reasoning: true,
 				},
-			);
+			});
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
 			// Exactly one plain draft — the answer's "Thinking…" — not two.
@@ -414,19 +362,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onReasoningDelta("secret");
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
@@ -446,17 +387,7 @@ describe("rich delivery", () => {
 				[groupConv, true],
 			] as const) {
 				const { api, drafts, richSends, msgs } = fakeApi();
-				const sink = makeDeliverySink(
-					api,
-					c,
-					undefined,
-					0,
-					undefined,
-					undefined,
-					undefined,
-					undefined,
-					{ enabled },
-				);
+				const sink = makeDeliverySink(api, c, { editIntervalMs: 0, rich: { enabled } });
 				sink.onTextDelta("plain");
 				await sink.onDone({ kind: "completed" });
 				expect(drafts).toEqual([]);
@@ -472,19 +403,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.setAuthorityCheck!(() => false);
 			sink.onTextDelta("never delivered");
 			await sink.onDone({ kind: "fenced" });
@@ -500,19 +424,12 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, richSends, msgs } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("x".repeat(33_000));
 			await sink.onDone({ kind: "completed" });
 			expect(richSends).toHaveLength(0);
@@ -547,34 +464,17 @@ describe("rich delivery", () => {
 		try {
 			resetMessageEffectsGateForTests();
 			const { api, richSends } = fakeApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("done");
 			await sink.onDone({ kind: "completed" });
 			expect(richSends[0]!.other.message_effect_id).toBe("4913930782671635058");
 
-			const errSink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{ enabled: true },
-			);
+			const errSink = makeDeliverySink(api, conv, { editIntervalMs: 0, rich: { enabled: true } });
 			errSink.onTextDelta("failed");
 			await errSink.onDone({ kind: "error", message: "boom" });
 			expect(richSends[1]!.other.message_effect_id).toBeUndefined();
@@ -589,19 +489,13 @@ describe("rich delivery", () => {
 		try {
 			resetMessageEffectsGateForTests();
 			const { api, richSends, sendAttempts } = fakeApi({ rejectEffect: true });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				{ lastReplyAnchor: () => 7 },
-				{
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				rating: { lastReplyAnchor: () => 7 },
+				rich: {
 					enabled: true,
 				},
-			);
+			});
 			sink.onTextDelta("first");
 			await sink.onDone({ kind: "completed" });
 			// First turn: attempt with effect, definite 400, safe retry without.
@@ -620,17 +514,7 @@ describe("rich delivery", () => {
 			});
 
 			// Later turns in the same process skip the param entirely.
-			const sink2 = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				{ enabled: true },
-			);
+			const sink2 = makeDeliverySink(api, conv, { editIntervalMs: 0, rich: { enabled: true } });
 			sink2.onTextDelta("second");
 			await sink2.onDone({ kind: "completed" });
 			expect(sendAttempts()).toBe(3);

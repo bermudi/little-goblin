@@ -684,7 +684,7 @@ export async function routeMemberGuestMessage(
 	const sink = makeDeliverySink(
 		env.api,
 		{ ...conv, threadId: msg.message_thread_id ?? null },
-		msg.message_id,
+		{ replyTo: msg.message_id },
 	);
 	const admitted = env.runtime.submit(conv, summonMessage(msg), {
 		...sink,

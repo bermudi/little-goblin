@@ -1,6 +1,6 @@
 // Engine invariants (DESIGN.md, Tools → Vision), tested through the
 // real SDK seam: the fake sits at the LanguageModel provider edge
-// (house pattern — runtime.test.ts's fakeModel), so generateText, the
+// (house pattern — testkit's fakeGenerateModel), so generateText, the
 // ModelMessage→prompt conversion, the observed middleware, and the
 // abort/timeout wiring all run as production code. What the fake
 // captures is what a provider would actually receive.
@@ -9,6 +9,11 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
 import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { setLogFile } from "../log.ts";
+import {
+	fakeGenerateModel,
+	type GenerateCall,
+	type GenerateResponder,
+} from "../testkit.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import {
 	_resetVisionThreadsForTest,
@@ -65,35 +70,6 @@ function _testConfig(vision: { model: string; maxTokens?: number }): Config {
 	};
 }
 
-/** Everything the fake provider observed, per call. */
-interface Recorded {
-	prompt: LanguageModelV4CallOptions["prompt"];
-	maxOutputTokens: number | undefined;
-	abortSignal: AbortSignal | undefined;
-}
-
-type Responder = (
-	opts: LanguageModelV4CallOptions,
-) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
-
-/** The provider-edge fake (runtime.test.ts's fakeModel, generate arm). */
-function fakeModel(calls: Recorded[], respond: Responder): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		async doGenerate(opts: LanguageModelV4CallOptions) {
-			calls.push({
-				prompt: opts.prompt,
-				maxOutputTokens: opts.maxOutputTokens,
-				abortSignal: opts.abortSignal,
-			});
-			return respond(opts);
-		},
-	} as unknown as LanguageModel;
-}
-
 const answer = (text: string): LanguageModelV4GenerateResult => ({
 	content: [{ type: "text", text }],
 	finishReason: { unified: "stop", raw: undefined },
@@ -107,8 +83,8 @@ const answer = (text: string): LanguageModelV4GenerateResult => ({
 /** deps with the fake at the provider edge; resolves it per call. */
 function deps(
 	vision: { model: string; maxTokens?: number },
-	calls: Recorded[],
-	respond: Responder = () => answer("a chart"),
+	calls: GenerateCall[],
+	respond: GenerateResponder = () => answer("a chart"),
 	conversation = "c1",
 	extra: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Parameters<typeof askVision>[1] {
@@ -117,7 +93,7 @@ function deps(
 		configRef,
 		auth: { resolve: async (name: string) => `key-for-${name}` } as never,
 		conversation,
-		resolve: async () => fakeModel(calls, respond),
+		resolve: async () => fakeGenerateModel(calls, respond),
 		...(extra.signal ? { signal: extra.signal } : {}),
 		...(extra.timeoutMs !== undefined ? { timeoutMs: extra.timeoutMs } : {}),
 	};
@@ -211,7 +187,7 @@ describe("buildVisionMessages", () => {
 describe("askVision — provider edge", () => {
 	test("the converted prompt is what a provider receives", async () => {
 		_resetVisionThreadsForTest();
-		const calls: Recorded[] = [];
+		const calls: GenerateCall[] = [];
 		const result = await askVision(query(), deps({ model: "zai/glm-5.3-flash" }, calls));
 		expect(result.answer).toBe("a chart");
 		expect(result.model).toBe("zai/glm-5.3-flash");
@@ -241,7 +217,7 @@ describe("askVision — provider edge", () => {
 
 	test("followUp replays the thread as text roles before the final turn", async () => {
 		_resetVisionThreadsForTest();
-		const calls: Recorded[] = [];
+		const calls: GenerateCall[] = [];
 		const d = deps({ model: "zai/glm-5.3-flash" }, calls, undefined, "c1");
 		await askVision(query({ prompt: "q1" }), d);
 		const second = await askVision(query({ prompt: "q2", followUp: true }), d);
@@ -254,8 +230,8 @@ describe("askVision — provider edge", () => {
 
 	test("threads never cross conversations — B must not replay A", async () => {
 		_resetVisionThreadsForTest();
-		const a: Recorded[] = [];
-		const b: Recorded[] = [];
+		const a: GenerateCall[] = [];
+		const b: GenerateCall[] = [];
 		const q = query();
 		await askVision(q, deps({ model: "zai/glm-5.3-flash" }, a, undefined, "conv-a"));
 		// Same image, same stat — only the conversation differs.
@@ -276,7 +252,7 @@ describe("askVision — provider edge", () => {
 
 	test("a rewritten file (new stat) starts a clean thread", async () => {
 		_resetVisionThreadsForTest();
-		const calls: Recorded[] = [];
+		const calls: GenerateCall[] = [];
 		const d = deps({ model: "zai/glm-5.3-flash" }, calls);
 		await askVision(query({ prompt: "q1" }), d);
 		const second = await askVision(
@@ -288,8 +264,8 @@ describe("askVision — provider edge", () => {
 
 	test("a vision-model switch drops the threads", async () => {
 		_resetVisionThreadsForTest();
-		const a: Recorded[] = [];
-		const b: Recorded[] = [];
+		const a: GenerateCall[] = [];
+		const b: GenerateCall[] = [];
 		await askVision(query({ prompt: "q1" }), deps({ model: "zai/glm-5.3-flash" }, a));
 		const second = await askVision(
 			query({ prompt: "q2", followUp: true }),
@@ -327,7 +303,7 @@ describe("askVision — provider edge", () => {
 		// A provider that hangs until its abort signal fires — what a real
 		// fetch does under Esc. The SDK passes the combined signal through
 		// and relies on the provider honoring it; it does not race it.
-		const hang: Responder = (opts) =>
+		const hang: GenerateResponder = (opts) =>
 			new Promise((_resolve, reject) => {
 				opts.abortSignal?.addEventListener("abort", () => {
 					const err = new Error("Operation aborted");
@@ -351,7 +327,7 @@ describe("askVision — provider edge", () => {
 		// Same provider shape (rejects on abort) — here the engine's own
 		// timeout door fires the combined signal at 40ms, so the wedge
 		// cannot outlive the call.
-		const wedge: Responder = (opts) =>
+		const wedge: GenerateResponder = (opts) =>
 			new Promise((_resolve, reject) => {
 				opts.abortSignal?.addEventListener("abort", () => {
 					const err = new Error("Operation aborted");

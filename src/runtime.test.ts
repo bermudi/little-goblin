@@ -543,7 +543,7 @@ describe("turn authority", () => {
 		const { store, conv, runtime } = setup(["x", "y", "z", "w"], 30);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(40);
+		await sink.firstDelta; // mid-stream
 		runtime.stop(conv.id);
 		const d = await sink.done;
 		expect(d.kind).toBe("fenced");
@@ -571,7 +571,7 @@ describe("turn authority", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10); // first turn is running
+		await s1.firstDelta; // first turn is mid-stream
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2); // queued
 		const { stopped, settled } = runtime.stop(conv.id);
 		expect(stopped).toBe(true);
@@ -590,7 +590,7 @@ describe("turn authority", () => {
 		expect(store.get(conv.id)!.epoch).toBe(1);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(5); // admitted and running
+		await sink.firstDelta; // admitted and mid-stream
 		const live = runtime.stop(conv.id);
 		expect(live.stopped).toBe(true);
 		store.close();
@@ -600,7 +600,7 @@ describe("turn authority", () => {
 		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
 		const running = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), running);
-		await sleep(10); // first turn is running
+		await running.firstDelta; // first turn is mid-stream
 		// A queued sink whose onDone does a slow final flush.
 		let flushed = false;
 		const flush = new Promise<void>((r) =>
@@ -626,8 +626,8 @@ describe("turn authority", () => {
 		await sleep(15); // stop has run; the flush has not finished
 		expect(flushed).toBe(false);
 		expect(settledDone).toBe(false);
-		await flush;
-		await sleep(15);
+		await settled;
+		expect(flushed).toBe(true);
 		expect(settledDone).toBe(true);
 		store.close();
 	});
@@ -637,7 +637,7 @@ describe("turn authority", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.done;
-		await sleep(10); // lane fully drained
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		expect(runtime.stop(conv.id).stopped).toBe(false);
 		store.close();
 	});
@@ -649,7 +649,7 @@ describe("turn authority", () => {
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
 		runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
-		await sleep(30); // both turns mid-stream
+		await Promise.all([s1.firstDelta, s2.firstDelta]); // both turns mid-stream
 		await runtime.shutdown();
 		expect(await s1.done).toEqual({ kind: "fenced" });
 		expect(await s2.done).toEqual({ kind: "fenced" });
@@ -773,7 +773,7 @@ describe("turn authority", () => {
 		const s2 = new RecordingSink();
 		const s3 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+2?" }]), s1);
-		await sleep(15); // turn 1 is mid-stream
+		await s1.firstDelta; // turn 1 mid-stream — its admission snapshot is taken
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+5?" }]), s2);
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+8?" }]), s3);
 		// Two queued submits, one successor turn — every sink still gets
@@ -1133,7 +1133,8 @@ describe("turn authority", () => {
 				throw new Error("sink blew up");
 			},
 		});
-		await sleep(100);
+		await waitUntil(() => calls >= 1, "onDone called");
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		expect(calls).toBe(1);
 		store.close();
 	});
@@ -1453,8 +1454,9 @@ describe("context overflow recovery", () => {
 		await started;
 		runtime.stop(conv.id);
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		// The compaction died with the stop; no resume call ever ran.
-		await sleep(30);
+		// The compaction died with the stop; no resume call ever ran —
+		// shutdown bounds every lane, so a resume would have had to run.
+		await runtime.shutdown();
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -1513,10 +1515,10 @@ describe("context overflow recovery", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "joined during compact" }]), joiner);
 		release();
 		expect((await head.done).kind).toBe("error");
-		await sleep(40);
 		// The claim must have put the joiner on a settlement surface: the
 		// crash may not strand a claimed-but-untracked submit — its stream
-		// would hang forever, shutdown included.
+		// would hang forever, shutdown included. Awaiting done is the proof.
+		await joiner.done;
 		expect(joinerSettled).toBe(true);
 		// Unstamped: the crash died in admission, before the attempt's try —
 		// drain's last-ditch settlement cannot know modelCalls/transient.
@@ -1917,9 +1919,7 @@ describe("cache stability", () => {
 		// The compaction runs in-lane AFTER the sinks are notified — done
 		// resolving only means the reply landed. Poll for the pointer,
 		// bounded, instead of a fixed sleep.
-		for (let i = 0; i < 100 && store.getCompaction(conv.id) === null; i++) {
-			await sleep(10);
-		}
+		await waitUntil(() => store.getCompaction(conv.id) !== null, "compaction pointer lands");
 		// Exactly 75% is inclusive — the trigger fired.
 		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
 		// next queued turn's snapshot — here, before done resolves.
@@ -2292,7 +2292,7 @@ describe("cache stability", () => {
 		runtime.stop(conv.id);
 		release();
 		await sink.done;
-		await sleep(20);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		expect(builds).toBe(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -2352,7 +2352,10 @@ describe("cache stability", () => {
 			expect(await sink.done).toEqual({ kind: "completed" });
 			// The warn rides the same turn's log trail — a warning that never
 			// lands was the fail-quiet seam this guards against.
-			await Bun.sleep(20);
+			await waitUntil(
+				() => readFileSync(logFile, "utf8").includes("model warnings"),
+				"warnings land in the log",
+			);
 			const lines = readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
@@ -2410,11 +2413,11 @@ describe("skill reviewer hook", () => {
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await atGate;
 		// A settled drain removes the lane; shutdown must still find the gate.
-		await sleep(20);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 		store.close();
 		release();
-		await sleep(20);
+		await sleep(20); // settle window: the released gate's continuation has no handle
 	});
 	// The finish-side behaviors (snapshot construction, exclusion,
 	// prior-turn chain, the digest payload) moved to turn/finish.test.ts
@@ -2557,7 +2560,7 @@ describe("steering", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
 		// Turn 1 is mid-tool-call (step 1 done, tool gated). Submit —
 		// this is the steer.
-		await sleep(20);
+		await s1.firstToolCall;
 		runtime.submit(conv, userMessage([{ type: "text", text: "actually pivot" }]), s2);
 		releaseTool();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2608,7 +2611,7 @@ describe("steering", () => {
 				),
 			).toBeNull();
 			runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), s1);
-			await sleep(20); // step 1 (the tool call) is on the wire, tool gated
+			await s1.firstToolCall; // step 1 (the tool call) is on the wire, tool gated
 			const seen: UIMessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
 			const replay = runtime.subscribeLiveChunks(
@@ -2660,7 +2663,6 @@ describe("steering", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10);
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2698,7 +2700,7 @@ describe("steering", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(20); // mid-tool-call
+		await s1.firstToolCall; // mid-tool-call
 		store.bumpEpoch(conv.id); // fence, without stop()'s queue drop
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseTool();
@@ -2708,7 +2710,7 @@ describe("steering", () => {
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("two");
-		await sleep(20); // let the successor's post-completion authority check land before close
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		store.close();
 	});
 
@@ -2728,7 +2730,7 @@ describe("steering", () => {
 		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall; // parked mid-tool-call
 		const s2 = new RecordingSink();
 		runtime.submit(
 			conv,
@@ -2745,7 +2747,7 @@ describe("steering", () => {
 			s2,
 		);
 		releaseTool(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
-		await sleep(30);
+		await sleep(30); // park window: a blocked FIFO read has no event surface to await
 		const s3 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), s3);
 		// Unpark the photo and let the turn finish.
@@ -2787,7 +2789,7 @@ describe("steering", () => {
 		const { store, conv, runtime } = steeringSetup(model, gate);
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall; // parked mid-tool-call
 		// Poison: a file part with an invalid URL — materializeAttachments
 		// passes it through untouched, convertToModelMessages throws.
 		const s2 = new RecordingSink();
@@ -2844,7 +2846,7 @@ describe("steering", () => {
 		}
 		const joiner = new JoiningSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
-		await sleep(30); // parked mid-tool-call
+		await head.firstToolCall; // parked mid-tool-call
 		// The steer's conversion parks reading the FIFO; the epoch dies
 		// while it waits, and the conversion then SUCCEEDS — the fence
 		// must still hold on the success path, before join/replay/fold.
@@ -2863,7 +2865,7 @@ describe("steering", () => {
 			joiner,
 		);
 		releaseTool();
-		await sleep(40);
+		await sleep(40); // park window: conversion is blocked on the FIFO read (see above)
 		store.bumpEpoch(conv.id);
 		await writeFile(fifo, "pngdata");
 		expect(await head.done).toEqual({ kind: "fenced" });
@@ -2872,7 +2874,7 @@ describe("steering", () => {
 		// fence, and no model request ever carried its content.
 		expect(joinerChunks).toHaveLength(0);
 		expect(prompts.every((p) => !p.includes("photo.png"))).toBe(true);
-		await sleep(20);
+		await sleep(20); // settle window before close: successor work has no handle here
 		store.close();
 	});
 });
@@ -2924,7 +2926,6 @@ describe("app channel", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10);
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2956,7 +2957,7 @@ describe("streaming lane boundary", () => {
 		const headless = new HeadlessSink();
 		const streaming = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), headless);
-		await sleep(20); // parked mid-tool-call
+		await waitUntil(() => prompts.length >= 1, "step 1 on the wire"); // tool gated
 		runtime.submit(conv, userMessage([{ type: "text", text: "watch me" }]), streaming);
 		releaseTool();
 		expect(await headless.done).toEqual({ kind: "completed" });
@@ -2980,7 +2981,7 @@ describe("streaming lane boundary", () => {
 		const streaming = new RecordingSink();
 		const headless = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), streaming);
-		await sleep(20); // parked mid-tool-call
+		await streaming.firstToolCall; // parked mid-tool-call
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), headless);
 		releaseTool();
 		expect(await streaming.done).toEqual({ kind: "completed" });
@@ -3001,7 +3002,7 @@ describe("streaming lane boundary", () => {
 		const first = new HeadlessSink();
 		const second = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), first);
-		await sleep(20); // parked mid-tool-call
+		await waitUntil(() => prompts.length >= 1, "step 1 on the wire"); // tool gated
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), second);
 		releaseTool();
 		expect(await first.done).toEqual({ kind: "completed" });
@@ -3406,7 +3407,7 @@ describe("loop landings", () => {
 		});
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall; // parked mid-tool-call
 		const s2 = new RecordingSink();
 		runtime.submit(
 			conv,

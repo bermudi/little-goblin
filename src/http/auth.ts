@@ -14,15 +14,29 @@ export interface InitDataUser {
 	id: number;
 }
 
-// Returns the Telegram user id on success, null on any failure.
+// Refusal categories — the only thing logs may say about a rejected
+// request. initData fragments, the presented hash and the claimed user
+// id are credential material and never leave this function.
+export type InitDataRefusal =
+	| "no-hash"
+	| "bad-hmac"
+	| "bad-auth-date"
+	| "stale"
+	| "future"
+	| "no-user"
+	| "bad-user"
+	| "not-operator";
+export type InitDataResult = { ok: true; user: InitDataUser } | { ok: false; why: InitDataRefusal };
+
 export function validateInitData(
 	initData: string,
 	botToken: string,
 	operators: Set<number>,
-): InitDataUser | null {
+): InitDataResult {
+	const deny = (why: InitDataRefusal): InitDataResult => ({ ok: false, why });
 	const params = new URLSearchParams(initData);
 	const hash = params.get("hash");
-	if (!hash) return null;
+	if (!hash) return deny("no-hash");
 	params.delete("hash");
 
 	const checkString = [...params.entries()]
@@ -34,25 +48,22 @@ export function validateInitData(
 	const computed = createHmac("sha256", secret).update(checkString).digest("hex");
 	const a = Buffer.from(computed, "utf8");
 	const b = Buffer.from(hash, "utf8");
-	if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+	if (a.length !== b.length || !timingSafeEqual(a, b)) return deny("bad-hmac");
 
-	const authDateMs = Number(params.get("auth_date") ?? 0) * 1000;
-	if (
-		!Number.isFinite(authDateMs) ||
-		Date.now() - authDateMs > MAX_AGE_MS ||
-		authDateMs - Date.now() > MAX_FUTURE_SKEW_MS
-	) {
-		return null;
-	}
+	const authDate = params.get("auth_date");
+	const authDateMs = authDate === null ? NaN : Number(authDate) * 1000;
+	if (!Number.isFinite(authDateMs)) return deny("bad-auth-date");
+	if (Date.now() - authDateMs > MAX_AGE_MS) return deny("stale");
+	if (authDateMs - Date.now() > MAX_FUTURE_SKEW_MS) return deny("future");
 
 	const userRaw = params.get("user");
-	if (!userRaw) return null;
+	if (!userRaw) return deny("no-user");
 	let id: number;
 	try {
 		id = (JSON.parse(userRaw) as { id?: number }).id ?? 0;
 	} catch {
-		return null;
+		return deny("bad-user");
 	}
-	if (!operators.has(id)) return null;
-	return { id };
+	if (!operators.has(id)) return deny("not-operator");
+	return { ok: true, user: { id } };
 }

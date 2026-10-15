@@ -492,10 +492,10 @@ construction; the mini app door validates initData against
 
 **Config.** `operators: number[]` (min 1) + `allowedUsers: number[]`
 (default `[]`), both editable from the app's config editor. The
-legacy single `allowedUsers` key meant operator class; the live file
-migrates at deploy (`allowedUsers: [x]` → `operators: [x]`,
-`allowedUsers: []`), and boot fails loud naming the key when
-`operators` is missing.
+legacy single `allowedUsers` key meant operator class; migration is a
+hand-edit at deploy (`allowedUsers: [x]` → `operators: [x]`,
+`allowedUsers: []`) — no code migrates it, and an unmigrated file
+fails boot loud naming the key.
 
 **The mid-flight recheck is DM-scoped.** The gate's verdict is
 intake-time truth; a save landing while a burst coalesces is

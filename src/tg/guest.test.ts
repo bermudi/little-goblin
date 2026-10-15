@@ -4,7 +4,7 @@
 // (persona-driven), dedup, and the placeholder-then-edit delivery
 // shape — Telegram faked at the api edge like every other tg test.
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -27,6 +27,7 @@ import {
 	filterGuestTools,
 	GuestSink,
 	GUEST_REFUSAL,
+	resetRefusalLatchForTests,
 	handleGuestUpdate,
 	mentionsBot,
 	openGuestStore,
@@ -955,6 +956,24 @@ describe("routeMemberGuestMessage", () => {
 		expect(api.sends).toHaveLength(1);
 		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
 	});
+
+	test("repeat stranger mentions in one window send one refusal", async () => {
+		const { env, submitted, api } = makeEnv();
+		expect(await routeMemberGuestMessage(env, memberMsg({}), 24)).toBe(true);
+		expect(await routeMemberGuestMessage(env, memberMsg({}), 25)).toBe(true);
+		expect(submitted.length).toBe(0);
+		expect(api.sends).toHaveLength(1);
+		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+		// A different stranger chat is not latched by the first.
+		expect(
+			await routeMemberGuestMessage(
+				env,
+				memberMsg({ chat: { id: -200, type: "supergroup" } as never }),
+				26,
+			),
+		).toBe(true);
+		expect(api.sends).toHaveLength(2);
+	});
 	test("a bare operator command is ordinary intake, not guest machinery", async () => {
 		const { env } = makeEnv();
 		expect(
@@ -1011,3 +1030,5 @@ describe("sharedChatPart — the audience note", () => {
 		expect(sharedChatPart("guest:-100:9", -100)).toBeNull();
 	});
 });
+
+beforeEach(() => resetRefusalLatchForTests());

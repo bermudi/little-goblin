@@ -289,7 +289,8 @@ async function appAuth(
 	const header = req.headers.get("authorization") ?? "";
 	const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
 	if (!bearerMatches(presented, expected)) {
-		log.warn("app auth failed", { path: pathname });
+		// `presented` is only whether a Bearer header arrived — never its value.
+		log.warn("app auth failed", { path: pathname, presented: presented !== "" });
 		return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 	}
 	return null;
@@ -369,6 +370,11 @@ const notePatchBody = z
 	);
 
 const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
+
+// The index route's own bound — past it the list stops being an index.
+// The store is asked for limit+1 so "is there more" needs no second
+// query; the wire reports it as `truncated`, never a silent cap.
+const NOTE_LIST_LIMIT = 1000;
 
 // design/projects.md → AI rewrite: the selection cap rides a whole
 // note's plausible size; whitespace-only selection can't anchor a
@@ -989,14 +995,24 @@ export async function handleAppApi(
 						? "loose"
 						: projectParam;
 			const q = url.searchParams.get("q");
+			const archivedOnly = url.searchParams.get("archived") === "1";
+			const rows = deps.notes.list({
+				project,
+				...(q !== null && q !== "" ? { q } : {}),
+				...(archivedOnly ? { archived: true } : {}),
+				limit: NOTE_LIST_LIMIT + 1,
+			});
+			const truncated = rows.length > NOTE_LIST_LIMIT;
+			if (truncated) {
+				log.warn("app note list truncated", {
+					project,
+					q: q ?? null,
+					archived: archivedOnly,
+				});
+			}
 			const body: AppNoteList = {
-				notes: deps.notes
-					.list({
-						project,
-						...(q !== null && q !== "" ? { q } : {}),
-						...(url.searchParams.get("archived") === "1" ? { archived: true } : {}),
-					})
-					.map(appNoteSummary),
+				notes: rows.slice(0, NOTE_LIST_LIMIT).map(appNoteSummary),
+				truncated,
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}
@@ -1229,6 +1245,11 @@ export async function handleAppApi(
 				return noteError(new NoteConflictError(note))!;
 			}
 			expectedRev = rev;
+			// The shelf is read-only — refuse up front, before the flag
+			// writes below can move a patch whose content won't land.
+			if (note.archivedAt !== null) {
+				return noteError(new NoteInputError("note is archived"))!;
+			}
 		}
 		try {
 			// One store transaction: the flag/move mutations and the
@@ -1480,12 +1501,18 @@ export async function handleAppApi(
 		if (req.method !== "GET") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		const q = (url.searchParams.get("q") ?? "").slice(0, 256);
+		// An overlong q refuses rather than silently truncating — the
+		// operator log route's ruling.
+		const q = z
+			.string()
+			.max(256)
+			.safeParse(url.searchParams.get("q") ?? "");
+		if (!q.success) return Response.json({ error: "bad q" }, { status: 400, headers: NO_STORE });
 		const limitParam = Number(url.searchParams.get("limit") ?? "");
 		const limit =
 			Number.isFinite(limitParam) && limitParam >= 1 ? Math.min(25, Math.floor(limitParam)) : 10;
-		const hits = store.searchHistory(q, limit, "app/%");
-		log.debug("app history search", { q, hits: hits.length });
+		const hits = store.searchHistory(q.data, limit, "app/%");
+		log.debug("app history search", { q: q.data, hits: hits.length });
 		const body: AppSearchResponse = { hits };
 		return Response.json(body, { headers: NO_STORE });
 	}

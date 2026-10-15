@@ -138,7 +138,14 @@ describe("podman adapter argv", () => {
 		const podman = makePodman({
 			execRunner: async (args) => {
 				execCalls.push([...args]);
-				return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+				return {
+					stdout: "",
+					stderr: "",
+					exitCode: 0,
+					timedOut: false,
+					killed: false,
+					truncated: false,
+				};
 			},
 		});
 		await podman.exec("c", ["true"], {

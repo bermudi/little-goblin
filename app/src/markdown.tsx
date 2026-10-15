@@ -99,7 +99,7 @@ export function inline(text: string): ReactNode[] {
 // code with syntax coloring. An unknown language falls back to plain
 // text — a model's made-up fence tag must never blank the code.
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
-	const { copied, copy } = useCopy();
+	const { copied, failed, copy } = useCopy();
 	// highlight() throws on a grammar bug or unregistered language —
 	// hljs escapes markup in its output, so the value is safe HTML.
 	const html = useMemo(() => {
@@ -117,8 +117,14 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
 		<div className="codeblock">
 			<div className="codeblock-head">
 				<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
-				<button type="button" className="codeblock-copy" onClick={() => copy(code)}>
-					{copied ? "✓" : "copy"}
+				<button
+					type="button"
+					className="codeblock-copy"
+					aria-label={failed ? "Copy failed" : undefined}
+					aria-live="polite"
+					onClick={() => copy(code)}
+				>
+					{copied ? "✓" : failed ? "copy failed" : "copy"}
 				</button>
 			</div>
 			<pre>
@@ -163,6 +169,8 @@ function NoteAppendCard({
 	token,
 	noteProjectId,
 	onOpenNote,
+	unfinished,
+	streaming,
 }: {
 	title: string | null;
 	body: string;
@@ -170,9 +178,19 @@ function NoteAppendCard({
 	// A project-bound conversation files new notes in its project.
 	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
+	// The fence never closed — the body may be a prefix. It only
+	// withholds the append affordance while the message is still
+	// streaming; once settled (or reloaded from history) this prefix
+	// is all there is, so the affordance shows.
+	unfinished?: boolean | undefined;
+	// The message this card lives in is still arriving.
+	streaming?: boolean | undefined;
 }) {
 	const [open, setOpen] = useState(false);
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	// The wire's hit-the-bound bit — a capped list must say so, not
+	// read as complete (same contract as the notes index).
+	const [truncated, setTruncated] = useState(false);
 	const [listFailed, setListFailed] = useState(false);
 	const [query, setQuery] = useState("");
 	const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
@@ -188,6 +206,7 @@ function NoteAppendCard({
 				(r) => {
 					if (seq !== searchSeq.current) return;
 					setNotes(r.notes);
+					setTruncated(r.truncated);
 					setListFailed(false);
 				},
 				() => {
@@ -239,9 +258,15 @@ function NoteAppendCard({
 				<span className="note-card-tag">note{title !== null ? ` — ${title}` : ""}</span>
 			</div>
 			<div className="note-card-body">
-				<Markdown text={body} token={token} noteProjectId={noteProjectId} onOpenNote={onOpenNote} />
+				<Markdown
+					text={body}
+					token={token}
+					noteProjectId={noteProjectId}
+					onOpenNote={onOpenNote}
+					streaming={streaming}
+				/>
 			</div>
-			{status === "done" ? (
+			{unfinished === true && streaming === true ? null : status === "done" ? (
 				<p className="note-card-status">
 					{done!.created ? "Created" : "Appended to"}{" "}
 					<button type="button" className="link" onClick={() => onOpenNote?.(done!.id)}>
@@ -273,6 +298,11 @@ function NoteAppendCard({
 							</button>
 						</li>
 					</ul>
+					{truncated && notes !== null && notes.length > 0 && (
+						<p className="empty" role="status">
+							Showing the first {notes.length} matching notes — narrow the search to find the rest.
+						</p>
+					)}
 				</div>
 			) : (
 				<button
@@ -295,6 +325,8 @@ function NoteAppendCard({
 // conversation's project (a card-created note binds to it), and note
 // navigation — threaded through every markdown-rendering container.
 export interface MarkdownNoteContext {
+	// An unfinished note fence cannot append until its stream settles.
+	streaming?: boolean | undefined;
 	token?: string | null | undefined;
 	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
@@ -305,6 +337,7 @@ export function Markdown({
 	token,
 	noteProjectId,
 	onOpenNote,
+	streaming,
 }: {
 	text: string;
 } & MarkdownNoteContext) {
@@ -343,8 +376,10 @@ export function Markdown({
 			if (closed) i++; // consume the closing fence
 			const body = codeLines.join("\n");
 			// A `note` fence (the prompt's append convention) renders as a
-			// card — content plus the append affordance, never code.
-			if (closed && (info === "note" || info.startsWith("note "))) {
+			// card — content plus the append affordance, never code. An
+			// unclosed fence mid-stream is a prefix: the card shows but
+			// its affordance waits for the stream to settle.
+			if (info === "note" || info.startsWith("note ")) {
 				const titled = /^note\s+title="([^"]*)"\s*$/.exec(info);
 				const bare = info === "note";
 				if (bare || titled !== null) {
@@ -356,6 +391,8 @@ export function Markdown({
 							token={token ?? null}
 							noteProjectId={noteProjectId}
 							onOpenNote={onOpenNote}
+							unfinished={!closed}
+							streaming={streaming}
 						/>,
 					);
 					continue;
@@ -404,6 +441,7 @@ export function Markdown({
 						token={token}
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
+						streaming={streaming}
 					/>
 				</blockquote>,
 			);

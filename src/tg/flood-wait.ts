@@ -8,17 +8,18 @@
 
 import { GrammyError, type Transformer } from "grammy";
 import { log } from "../log.ts";
+import { API_CALL_TIMEOUT_MS } from "./deadline.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Waits stay bounded so a drain or one-shot send cannot park on the
-// clock indefinitely — beyond the cap the failure propagates to the
-// caller's existing uncertainty/failure handling, fail loud.
-// Must stay below API_CALL_TIMEOUT_MS (30s): an honored wait that
-// outlives the outer timeout turns into a ghost send — the drain stops
-// tracking the call while the transformer still fires it. Keep a
-// margin for the API call itself.
-const DEFAULT_MAX_WAIT_MS = 25_000;
+// Waits stay bounded under the caller's own deadline — every caller
+// wraps api in withTimeout (API_CALL_TIMEOUT_MS for sends; guest inline
+// answers run tighter at 8s, so answer* methods get their own cap), and
+// an honored wait that outlives it reports failure while still
+// delivering in the background. Beyond the cap the failure propagates
+// to the caller's existing uncertainty/failure handling, fail loud.
+const DEFAULT_MAX_WAIT_MS = API_CALL_TIMEOUT_MS - 10_000;
+const ANSWER_MAX_WAIT_MS = 5_000;
 // Honored waits per api call — a cap, not a promise to succeed.
 const DEFAULT_MAX_RETRIES = 2;
 
@@ -35,7 +36,9 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	return async (prev, method, payload, signal) => {
 		// Per-call budget (not process-wide): each API call starts with a
 		// fresh maxWaitMs and tracks its own honored waits.
-		let remainingMs = maxWaitMs;
+		let remainingMs = method.startsWith("answer")
+			? Math.min(maxWaitMs, ANSWER_MAX_WAIT_MS)
+			: maxWaitMs;
 		// False when the demanded wait is out of budget — the caller then
 		// returns/throws the original failure untouched.
 		const honored = async (

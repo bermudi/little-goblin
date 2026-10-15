@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi } from "../testkit/fake-api.ts";
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "../log.ts";
 import {
@@ -60,25 +61,27 @@ function harness(initialProposals: string[], initialSkills: string[] = []): Harn
 	const strips: number[] = [];
 	const answers: Array<string | undefined> = [];
 	const appends: Harness["appends"] = [];
-	const api = {
-		answerCallbackQuery: async (_id: string, other?: { text?: string }) => {
-			answers.push(other?.text);
-			return true;
+	const api = fakeApi({
+		handlers: {
+			answerCallbackQuery: async (_id: string, other?: { text?: string }) => {
+				answers.push(other?.text);
+				return true;
+			},
+			editMessageText: async (
+				chatId: number,
+				messageId: number,
+				text: string,
+				other?: { reply_markup?: unknown },
+			) => {
+				edits.push({ chatId, messageId, text, keyboard: other?.reply_markup });
+				return true;
+			},
+			editMessageReplyMarkup: async (_chatId: number, messageId: number, _m: unknown) => {
+				strips.push(messageId);
+				return true;
+			},
 		},
-		editMessageText: async (
-			chatId: number,
-			messageId: number,
-			text: string,
-			other?: { reply_markup?: unknown },
-		) => {
-			edits.push({ chatId, messageId, text, keyboard: other?.reply_markup });
-			return true;
-		},
-		editMessageReplyMarkup: async (_chatId: number, messageId: number, _m: unknown) => {
-			strips.push(messageId);
-			return true;
-		},
-	} as unknown as Api;
+	}).api;
 	const approval = startSkillApproval({
 		api,
 		store: {
@@ -295,6 +298,24 @@ describe("skill approval taps", () => {
 			expect(existsSync(join(h.skillsDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(h.edits).toEqual([]);
 			expect(h.appends).toHaveLength(1);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a decision that throws still answers the tap", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"]);
+		try {
+			// A regular file where skills/ must be a directory: lstatSync
+			// fails ENOTDIR, which is deliberately not "gone".
+			writeFileSync(h.skillsDir, "not a dir\n");
+			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			expect(h.answers).toEqual(["internal error — nothing applied; check goblin logs"]);
+			// Nothing was decided: the proposal stands for a retry.
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(h.appends).toEqual([]);
 		} finally {
 			h.cleanup();
 			done();

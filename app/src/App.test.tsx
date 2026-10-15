@@ -1627,6 +1627,7 @@ describe("app projects surface", () => {
 	let convs: AppConversationList["conversations"];
 	let projs: AppProject[];
 	let notes: AppNoteSummary[];
+	let notesTruncated: boolean;
 	let stored: UIMessage[];
 	let conflictPatch: boolean;
 	// Conversation creation control: POST /api/app/conversations 500s.
@@ -1728,6 +1729,7 @@ describe("app projects surface", () => {
 		convs = [];
 		projs = [];
 		notes = [];
+		notesTruncated = false;
 		stored = [];
 		conflictPatch = false;
 		failCreate = false;
@@ -1997,6 +1999,7 @@ describe("app projects surface", () => {
 				const scope = u.searchParams.get("project");
 				return Promise.resolve(
 					jsonResponse({
+						truncated: notesTruncated,
 						notes: notes.filter(
 							(n) =>
 								(n.archivedAt !== null) === archivedOnly &&
@@ -2266,6 +2269,76 @@ describe("app projects surface", () => {
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 	});
 
+	test("a refused lazy create keeps the compose and note chip ready for one retry", async () => {
+		notes = [noteRow("Shopping")];
+		failCreate = true;
+		await mount();
+		await click(container.querySelector('button[aria-label="Attach a note"]'));
+		await settleSlow();
+		await click(
+			[...container.querySelectorAll(".composer-pick li button")].find(
+				(b) => b.textContent === "Shopping",
+			),
+		);
+		await sendComposer("keep this compose");
+		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
+			"keep this compose",
+		);
+		expect(container.querySelectorAll("form.composer .note-chip")).toHaveLength(1);
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
+		failCreate = false;
+		await act(async () =>
+			container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				),
+		);
+		await settle();
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
+		const chats = posts.filter((p) => p.url === "/api/app/chat");
+		expect(chats).toHaveLength(1);
+		expect((chats[0]!.body as { message: { parts: unknown[] } }).message.parts).toEqual([
+			{ type: "text", text: "keep this compose" },
+			{ type: "data-note", data: { id: "n-shopping", title: "Shopping" } },
+		]);
+		expect(container.querySelector("form.composer .note-chip")).toBeNull();
+	});
+
+	test("a fenced lazy create restores text without duplicating the still-staged note chip", async () => {
+		notes = [noteRow("Shopping")];
+		projs = [projRow("Goblin")];
+		await mount();
+		await click(container.querySelector('button[aria-label="Attach a note"]'));
+		await settleSlow();
+		await click(
+			[...container.querySelectorAll(".composer-pick li button")].find(
+				(b) => b.textContent === "Shopping",
+			),
+		);
+		const gate = hold();
+		createHold = gate.promise;
+		await sendComposer("come back to this");
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Goblin",
+			),
+		);
+		gate.resolve();
+		await settle();
+		await click(
+			[...container.querySelectorAll("nav button.new")].find(
+				(b) => b.textContent === "New conversation",
+			),
+		);
+		await settle();
+		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
+			"come back to this",
+		);
+		expect(container.querySelectorAll("form.composer .note-chip")).toHaveLength(1);
+		expect(posts.filter((p) => p.url === "/api/app/chat")).toHaveLength(0);
+	});
+
 	test("the note picker's Enter and Escape stay picker-local — no send, draft kept", async () => {
 		notes = [noteRow("Shopping")];
 		await mount();
@@ -2303,6 +2376,23 @@ describe("app projects surface", () => {
 		expect(escape.defaultPrevented).toBe(true);
 		expect(container.querySelector(".composer-pick")).toBeNull();
 		expect(draft.value).toBe("keep me");
+	});
+
+	test("the attachment note picker discloses truncation until a complete search returns", async () => {
+		notes = [noteRow("Shopping")];
+		notesTruncated = true;
+		await mount();
+		await click(container.querySelector('button[aria-label="Attach a note"]'));
+		await settleSlow();
+		const picker = container.querySelector(".composer-pick")!;
+		expect(picker.querySelector('[role="status"]')?.textContent).toContain(
+			"Showing the first 1 matching notes",
+		);
+		notesTruncated = false;
+		await typeInto(picker.querySelector("input")!, "Shopping", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(picker.querySelector('[role="status"]')).toBeNull();
+		expect(picker.textContent).toContain("Shopping");
 	});
 
 	test("a stored data-note part renders as a chip that opens the note", async () => {
@@ -2406,6 +2496,32 @@ describe("app projects surface", () => {
 		expect(win.location.pathname).toBe("/app/n/n-new");
 	});
 
+	test("the append note picker discloses truncation until a complete search returns", async () => {
+		notes = [noteRow("Shopping")];
+		notesTruncated = true;
+		convs = [convRow("fence chat")];
+		stored = [
+			{
+				id: "m1",
+				role: "assistant",
+				parts: [{ type: "text", text: "```note\nbread" }],
+			},
+		];
+		win.history.replaceState(null, "", "/app/c/fence");
+		await mount();
+		await click(container.querySelector(".note-card-append"));
+		await settleSlow();
+		const picker = container.querySelector(".note-pick")!;
+		expect(picker.querySelector('[role="status"]')?.textContent).toContain(
+			"Showing the first 1 matching notes",
+		);
+		notesTruncated = false;
+		await typeInto(picker.querySelector("input")!, "Shopping", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(picker.querySelector('[role="status"]')).toBeNull();
+		expect(picker.textContent).toContain("Shopping");
+	});
+
 	test("the note page shows the conflict bar when a title save hits a newer rev", async () => {
 		notes = [noteRow("Shopping")];
 		conflictPatch = true;
@@ -2426,6 +2542,43 @@ describe("app projects surface", () => {
 		expect(bar!.textContent).toContain("rev 5");
 		expect(bar!.textContent).toContain("Load theirs");
 		expect(bar!.textContent).toContain("Keep mine");
+	});
+
+	test("confirming a dirty note's discard drops the unmount save; declining keeps the draft", async () => {
+		notes = [noteRow("Shopping")];
+		noteGetOverride = noteFull(notes[0]!, "original");
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		let pm: Element | null = null;
+		for (let i = 0; i < 30 && pm === null; i++) {
+			await settle();
+			pm = container.querySelector(".ProseMirror");
+		}
+		expect(pm).not.toBeNull();
+		await act(async () => {
+			pm!.querySelector("p")!.firstChild!.textContent = "paragraph to discard";
+			await new Promise((resolve) => setTimeout(resolve, 280));
+		});
+		let accept = false;
+		const prompts: string[] = [];
+		Reflect.set(win, "confirm", (message?: string) => {
+			prompts.push(message ?? "");
+			return accept;
+		});
+		const notesButton = () =>
+			[...container.querySelectorAll(".rail-projects .rail-section")].find(
+				(button) => button.textContent === "Notes",
+			);
+		await click(notesButton());
+		expect(prompts).toEqual(["Discard unsaved note edits and any conflict?"]);
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		expect(container.querySelector(".ProseMirror")?.textContent).toContain("paragraph to discard");
+		accept = true;
+		await click(notesButton());
+		expect(prompts).toHaveLength(2);
+		expect(win.location.pathname).toBe("/app/notes");
+		await settleSlow();
+		expect(patchCalls).toBe(0);
 	});
 
 	test("a clean focus refresh updates the title and flags", async () => {

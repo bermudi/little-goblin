@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
-import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import { channelOf, type Conversation, type ConversationStore, flatLine } from "../conversation.ts";
 import type { Project } from "../projects.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
@@ -293,7 +293,12 @@ export function buildSystemPrompt(
 		const parts: string[] = [];
 		if (projectInstructions !== "") parts.push(projectInstructions);
 		if (notesIndex !== undefined && notesIndex.length > 0) {
-			parts.push(`### notes\n\n${notesIndex.map((n) => `- ${n.title} (id ${n.id})`).join("\n")}`);
+			// Model-authored titles are arbitrary text — a newline would
+			// restructure the section, so they render as one flat line
+			// (same rule the app's list titles follow).
+			parts.push(
+				`### notes\n\n${notesIndex.map((n) => `- ${flatLine(n.title).slice(0, 200)} (id ${n.id})`).join("\n")}`,
+			);
 		}
 		if (projectAgents !== null) {
 			parts.push(`### AGENTS.md in ${project.dir}\n\n${projectAgents.trim()}`);

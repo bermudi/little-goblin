@@ -57,6 +57,7 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	const scan = (): void => {
 		if (stopped) return;
 		const now = new Date();
+		reconcilePendingMarks(deps);
 		// The due query runs from a synchronous interval callback: a throw
 		// here (an I/O error on the programs file) would be an uncaught
 		// exception — exit(1), and the same throw again five seconds into
@@ -123,6 +124,57 @@ function ladderFor(deps: SchedulerDeps): RetryLadder {
 	return ladder;
 }
 
+interface PendingCursorWrite {
+	/** The fenced occurrence — the due row's next_run at fire time. */
+	nextRun: string;
+	/** The original fire time the retried markRan must still write with. */
+	at: Date;
+}
+
+// The consume record is "submit first, then markRan" (design/programs.md
+// — one attempt per occurrence). When the markRan *write* fails after
+// the submit landed, the row stays due and every tick would re-submit
+// the same occurrence — an operator-visible duplicate per scan until
+// the store heals. Fence the occurrence in-process instead: the tick
+// retries the cursor write (with the original fire time, so occurrences
+// that came due during the outage coalesce the usual way) but never
+// re-fires; a restart re-offers the still-due row once — the same
+// at-least-once a crash gets. One record per program id — a second
+// fence for the same program cannot arise while the first holds (the
+// row stays due, and every due pass takes the retry branch) — and the
+// scan drops entries whose row was deleted, disabled, or rescheduled
+// underneath them, so a fence can't outlive the program that created
+// it. Keyed per store so test stores can't share fences.
+const pendingCursorWrites = new WeakMap<ProgramsStore, Map<number, PendingCursorWrite>>();
+
+// A fence goes moot when its row moves past it — deleted, disabled, or
+// rescheduled — because due() never surfaces it for the retry branch
+// again. The scan drops those entries itself so a dead program id can't
+// linger; a still-due row keeps its fence for the retry below. Writing
+// a stale markRan back is NOT the cleanup: it would clobber the new
+// next_run with a cursor computed off the old fire time.
+function reconcilePendingMarks(deps: SchedulerDeps): void {
+	const pending = pendingCursorWrites.get(deps.programs);
+	if (pending === undefined) return;
+	for (const [id, mark] of pending) {
+		let fresh: Program | null;
+		try {
+			fresh = deps.programs.get(id);
+		} catch (err) {
+			// A wedged read keeps the entry — the next scan retries.
+			log.error("program run-mark reconcile failed", err, { program: id });
+			continue;
+		}
+		if (fresh !== null && fresh.enabled && fresh.nextRun === mark.nextRun) continue;
+		pending.delete(id);
+		log.info("program run-mark fence dropped — program deleted, disabled, or rescheduled", {
+			program: id,
+			...(fresh === null ? {} : { name: fresh.name }),
+			fencedNextRun: mark.nextRun,
+		});
+	}
+}
+
 // Cron: missed occurrences coalesce against the latest occurrence due
 // at this scan — anchored at the due row's next_run and walked with the
 // same forward steps that persist it (latestFireAtOrBefore documents
@@ -142,6 +194,39 @@ export function fireScheduled(
 ): void {
 	if (program.cron === null || program.nextRun === null) {
 		throw new Error(`due program ${program.id} has no scheduled occurrence`);
+	}
+	const pendingMark = pendingCursorWrites.get(deps.programs)?.get(program.id);
+	if (pendingMark !== undefined) {
+		if (pendingMark.nextRun === program.nextRun) {
+			// The submit landed but the cursor write didn't — retry the
+			// write every tick; the occurrence itself is never re-fired.
+			try {
+				deps.programs.markRan(program.id, pendingMark.at);
+				pendingCursorWrites.get(deps.programs)?.delete(program.id);
+				log.info("program run-mark write recovered", {
+					program: program.id,
+					name: program.name,
+				});
+			} catch (err) {
+				log.debug("program run-mark write still failing", {
+					program: program.id,
+					name: program.name,
+					error: String(err),
+				});
+			}
+			return;
+		}
+		// The fenced occurrence is gone — an edit or re-enable rewrote
+		// next_run while the write was pending. Retrying the stale write
+		// would clobber the new schedule; this due row is a different
+		// occurrence and fires normally.
+		pendingCursorWrites.get(deps.programs)?.delete(program.id);
+		log.info("program run-mark fence dropped — the row's occurrence moved", {
+			program: program.id,
+			name: program.name,
+			fencedNextRun: pendingMark.nextRun,
+			nextRun: program.nextRun,
+		});
 	}
 	const scheduledFor = latestFireAtOrBefore(program.cron, new Date(program.nextRun), now);
 	const lateMs = Math.max(0, now.getTime() - scheduledFor.getTime());
@@ -178,16 +263,24 @@ export function fireScheduled(
 		try {
 			deps.programs.markRan(program.id, now);
 		} catch (err) {
-			// A double fault must not eat the fire's error: if the cursor
-			// write replaces it here, log the fire first so the scan line
-			// still reconstructs what happened.
+			let pending = pendingCursorWrites.get(deps.programs);
+			if (pending === undefined) {
+				pending = new Map();
+				pendingCursorWrites.set(deps.programs, pending);
+			}
+			pending.set(program.id, { nextRun: program.nextRun, at: now });
+			log.error(
+				"program run-mark write failed — occurrence fenced until the store accepts it",
+				err,
+				{ program: program.id, name: program.name, nextRun: program.nextRun },
+			);
 			if (fireFailed) {
 				log.error("program fire failed", fireErr, {
 					program: program.id,
 					name: program.name,
 				});
+				throw err;
 			}
-			throw err;
 		}
 	}
 	if (fireFailed) throw fireErr;
@@ -451,10 +544,11 @@ function scheduleRetrySink(
 }
 
 // The ladder decision, from the terminal status: retry only a transient
-// failure the provider spent nothing on — modelCalls 0 (no step
-// produced output) and no model output through this sink. Completed,
-// fenced, non-transient, or unknown cause ends the ladder; the error
-// notice already went out.
+// failure the provider spent nothing on — modelCalls 0 on the shared
+// outcome (stamped at the turn level, so coalesced members that saw no
+// sink output still read the spending correctly) and no model output
+// through this sink. Completed, fenced, non-transient, or unknown cause
+// ends the ladder; the error notice already went out.
 function considerRetry(
 	deps: SchedulerDeps,
 	ladder: RetryLadder,

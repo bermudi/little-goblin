@@ -11,6 +11,7 @@ import { setLogFile } from "./log.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import {
 	ensureNotesSchema,
+	NOTE_BODY_MAX,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
@@ -89,6 +90,7 @@ describe("the write path", () => {
 		expect(versions.map((v) => v.source)).toEqual(["restore", "append", "agent"]);
 		expect(notes.getVersion(n.id, 3)!.body).toBe(beforeRestore.body);
 		expect(versions[2]!.conversation).toBe("app/c1");
+		expect(versions[2]!.bytes).toBe(4); // "milk"
 		const v1 = notes.getVersion(n.id, 1)!;
 		expect(v1.body).toBe("milk");
 		expect(v1.title).toBe("groceries");
@@ -161,6 +163,40 @@ describe("the write path", () => {
 		expect(versions).toHaveLength(100);
 		expect(versions[0]!.rev).toBe(105);
 		expect(versions[99]!.rev).toBe(6);
+	});
+
+	test("the body cap is enforced at the store — create, write, and accreting appends", () => {
+		const { notes } = setup();
+		const over = "x".repeat(NOTE_BODY_MAX + 1);
+		expect(() => notes.create({ title: "t", body: over })).toThrow(NoteInputError);
+		const n = notes.create({ title: "t" });
+		expect(() => notes.write(n.id, { body: over }, "app")).toThrow(NoteInputError);
+		// A legal single append that crosses the cap in aggregate
+		// refuses the same way — versioning amplifies every byte.
+		const almost = "y".repeat(NOTE_BODY_MAX - 4);
+		notes.write(n.id, { body: almost }, "agent");
+		expect(() => notes.append(n.id, "z".repeat(10), "agent")).toThrow(NoteInputError);
+		expect(notes.get(n.id)!.body).toBe(almost);
+	});
+
+	test("an archived note is read-only — every content door refuses, unarchive lifts it", () => {
+		const { notes } = setup();
+		const n = notes.create({ title: "t", body: "x" });
+		notes.append(n.id, "more", "agent"); // leaves a version to attempt restoring
+		notes.setArchived(n.id, true);
+		for (const attempt of [
+			() => notes.write(n.id, { body: "y" }, "app"),
+			() => notes.append(n.id, "y", "append"),
+			() => notes.replaceRanges(n.id, [{ start: 0, end: 1, expected: "x", text: "y" }]),
+			() => notes.restore(n.id, 1, 2),
+		]) {
+			expect(attempt).toThrow(NoteInputError);
+			expect(attempt).toThrow(/archived/);
+		}
+		expect(notes.get(n.id)!.body).toBe("x\n\nmore");
+		// Flags bypass write() — unarchive makes it writable again.
+		notes.setArchived(n.id, false);
+		expect(notes.write(n.id, { body: "y" }, "app").body).toBe("y");
 	});
 });
 
@@ -334,6 +370,7 @@ describe("the state_rev ordering token", () => {
 		expect(written.rev).toBe(2);
 		expect(written.stateRev).toBe(6);
 		expect(written.updatedAt).not.toBe(flagged.updatedAt);
+		expect(notes.list({ project: p.id })[0]!.stateRev).toBe(written.stateRev);
 	});
 
 	test("a refused combined patch rolls the flags AND the token back", () => {
@@ -346,6 +383,26 @@ describe("the state_rev ordering token", () => {
 		expect(after.rev).toBe(1);
 		expect(after.stateRev).toBe(1);
 		expect(after.pinnedAt).toBeNull();
+	});
+
+	test("content and archive commit together; editing an archived note rolls flags back", () => {
+		const { notes } = setup();
+		const n = notes.create({ title: "t", body: "x" });
+		const archived = notes.patch(n.id, { body: "v2", archived: true }, "app", {
+			expectedRev: n.rev,
+		});
+		expect(archived).toEqual(notes.get(n.id)!);
+		expect(archived.body).toBe("v2");
+		expect(archived.rev).toBe(2);
+		expect(archived.stateRev).toBe(3);
+		expect(archived.archivedAt).not.toBeNull();
+		expect(() =>
+			notes.patch(n.id, { body: "v3", archived: false, pinned: true }, "app", {
+				expectedRev: archived.rev,
+			}),
+		).toThrow("archived");
+		expect(notes.get(n.id)).toEqual(archived);
+		expect(notes.listVersions(n.id)).toHaveLength(1);
 	});
 
 	test("a stale restore conflicts and writes nothing; the current rev advances", () => {

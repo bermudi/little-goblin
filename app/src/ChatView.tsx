@@ -31,6 +31,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import { bytes } from "./opsShared.tsx";
 import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
@@ -63,12 +64,6 @@ function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 			</ul>
 		</details>
 	);
-}
-
-function formatSize(n: number): string {
-	if (n < 1024) return `${n} B`;
-	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function FileIcon() {
@@ -149,9 +144,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			<a className="attachment image" href={thumb} target="_blank" rel="noreferrer">
 				<img src={thumb} alt={ref.filename} />
 				<span className="attachment-name">{ref.filename}</span>
-				{typeof ref.size === "number" && (
-					<span className="attachment-size">{formatSize(ref.size)}</span>
-				)}
+				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			</a>
 		);
 	}
@@ -188,9 +181,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			) : (
 				<span className="attachment-name">{ref.filename}</span>
 			)}
-			{typeof ref.size === "number" && (
-				<span className="attachment-size">{formatSize(ref.size)}</span>
-			)}
+			{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			{dlError !== null && <span className="msg-err">Download failed: {dlError}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
@@ -246,6 +237,7 @@ export function MessageParts({
 	onAction,
 	onOpenNote,
 	busy,
+	streaming,
 	messages,
 }: {
 	parts: UIMessage["parts"];
@@ -258,6 +250,8 @@ export function MessageParts({
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
 	busy?: boolean | undefined;
+	// This message is still arriving; older cards stay actionable during later turns.
+	streaming?: boolean | undefined;
 	// The full transcript, when the caller has it: ui surfaces re-derive
 	// their picked choice row from persisted [ui] messages.
 	messages?: readonly UIMessage[] | undefined;
@@ -279,6 +273,7 @@ export function MessageParts({
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
 						messages={messages}
+						streaming={streaming}
 					/>,
 				);
 				continue;
@@ -304,6 +299,7 @@ export function MessageParts({
 					token={token}
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
+					streaming={streaming}
 				/>,
 			);
 		// Empty reasoning parts exist in history — providers that seal
@@ -478,12 +474,17 @@ function ActionBar({
 	token: string | null;
 }) {
 	const text = messageText(message);
-	const { copied, copy } = useCopy();
+	const { copied, failed, copy } = useCopy();
 	const { speech, play, err: speechErr } = useSpeech(token);
 	return (
 		<div className="msg-actions">
-			<button type="button" onClick={() => copy(text)} aria-label="Copy">
-				{copied ? "✓ copied" : "copy"}
+			<button
+				type="button"
+				onClick={() => copy(text)}
+				aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
+				aria-live="polite"
+			>
+				{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
 			</button>
 			{text !== "" && (
 				<button
@@ -645,6 +646,9 @@ function NotePicker({
 }) {
 	const [query, setQuery] = useState("");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	// The wire's hit-the-bound bit — a capped list must say so, not
+	// read as complete (same contract as the notes index).
+	const [truncated, setTruncated] = useState(false);
 	const [failed, setFailed] = useState(false);
 	const seq = useRef(0);
 	useEffect(() => {
@@ -654,6 +658,7 @@ function NotePicker({
 				(r) => {
 					if (n === seq.current) {
 						setNotes(r.notes);
+						setTruncated(r.truncated);
 						setFailed(false);
 					}
 				},
@@ -706,6 +711,11 @@ function NotePicker({
 					<li className="empty">{query === "" ? "No notes yet." : "No matches."}</li>
 				)}
 			</ul>
+			{truncated && notes !== null && notes.length > 0 && (
+				<p className="empty" role="status">
+					Showing the first {notes.length} matching notes — narrow the search to find the rest.
+				</p>
+			)}
 		</div>
 	);
 }
@@ -713,7 +723,10 @@ function NotePicker({
 // Always present — on an empty conversation too. The draft is local;
 // staged attachments arrive from above so they outlive this instance
 // (#118). onSend hands the assembled parts up, where the caller either
-// streams them into the open conversation or creates one.
+// streams them into the open conversation or creates one; its result
+// says whether the send was accepted — `false` keeps everything the
+// operator composed so a failed lazy create leaves a resendable draft
+// instead of an empty composer and a shrug.
 export function Composer({
 	token,
 	conversationId,
@@ -736,7 +749,7 @@ export function Composer({
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
-	onSend: (parts: UIMessage["parts"]) => void;
+	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
 	// A select-to-quote request — `n` bumps per click, so even repeated
@@ -750,6 +763,8 @@ export function Composer({
 	onDraftRestored?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
+	const sendingRef = useRef(false);
+	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -792,8 +807,13 @@ export function Composer({
 				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
 			}
 		}
-		if (uploads.length > 0) setStaged((prev) => [...prev, ...uploads]);
-		if (notes.length > 0) setStagedNotes((prev) => [...prev, ...notes]);
+		if (uploads.length > 0)
+			setStaged((prev) => [
+				...prev,
+				...uploads.filter((u) => !prev.some((e) => e.ref.path === u.ref.path)),
+			]);
+		if (notes.length > 0)
+			setStagedNotes((prev) => [...prev, ...notes.filter((n) => !prev.some((e) => e.id === n.id))]);
 		onDraftRestored?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -901,7 +921,14 @@ export function Composer({
 						if (busyRef.current) {
 							setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
 						} else {
-							onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+							// A declined send (failed lazy create) re-stages the
+							// note — the upload already landed server-side.
+							void Promise.resolve(
+								onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]),
+							).then((accepted) => {
+								if (accepted === false)
+									setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+							});
 						}
 					} catch {
 						setStaged((p) => [
@@ -991,7 +1018,7 @@ export function Composer({
 		// The button is disabled while busy; Enter and form submit are
 		// not — gate here so a mid-turn send can't fork a second request
 		// (or a second conversation from the empty state).
-		if (busy || configSaving) return;
+		if (busy || configSaving || sendingRef.current) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
@@ -1009,15 +1036,30 @@ export function Composer({
 				type: "data-note",
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
-		setDraft("");
-		editedAfterSend.current = false;
-		// Entries that weren't sent — uploads still in flight, failed
-		// chips — stay staged. Clearing them would drop files the
-		// operator still sees in the composer.
-		for (const e of ready) dropEntry(e);
-		setStaged((p) => p.filter((e) => !ready.includes(e)));
-		setStagedNotes([]);
-		onSend(parts);
+		// Clear only once the send is accepted — the lazy-create path can
+		// fail after this point, and a compose wiped before that failure
+		// leaves nothing to resend (blob URLs are unrecoverable). Typing
+		// that lands mid-flight survives: only the sent prefix comes off.
+		sendingRef.current = true;
+		setSendError(null);
+		void Promise.resolve()
+			.then(() => onSend(parts) ?? true)
+			.then((accepted) => {
+				if (accepted === false) return;
+				setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
+				// Entries that weren't sent — uploads still in flight, failed
+				// chips — stay staged. Clearing them would drop files the
+				// operator still sees in the composer.
+				for (const e of ready) dropEntry(e);
+				setStaged((p) => p.filter((e) => !ready.includes(e)));
+				setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
+			})
+			.catch((err: unknown) => {
+				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);
+			})
+			.finally(() => {
+				sendingRef.current = false;
+			});
 	};
 
 	const modelName = cfg === null ? null : (cfg.model.split("/").pop() ?? cfg.model);
@@ -1075,7 +1117,7 @@ export function Composer({
 								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
 								{e.ref.filename}
 							</span>
-							<span className="attachment-size">{formatSize(e.ref.size)}</span>
+							<span className="attachment-size">{bytes(e.ref.size)}</span>
 							<button
 								type="button"
 								aria-label="Remove"
@@ -1286,6 +1328,11 @@ export function Composer({
 					</button>
 				)}
 			</div>
+			{sendError !== null && (
+				<p className="error" role="alert">
+					{sendError}
+				</p>
+			)}
 			{notePickerOpen && (
 				<NotePicker
 					token={token}
@@ -1597,6 +1644,7 @@ function Chat({
 									token={token}
 									noteProjectId={noteProjectId}
 									busy={busy}
+									streaming={status === "streaming" && m.id === lastAssistantId}
 									messages={messages}
 									onOpenNote={onOpenNote}
 									onAction={(text) => {

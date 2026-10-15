@@ -52,7 +52,15 @@ export function resetMessageEffectsGateForTests(): void {
 }
 
 function isPremiumGateError(err: unknown): boolean {
-	return err instanceof Error && err.message.includes("PREMIUM_ACCOUNT_REQUIRED");
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		// Same rule as isNotModifiedError below: the code is the stable
+		// identifier — the token matches only the definite 400.
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some((h) => typeof h === "string" && h.includes("PREMIUM_ACCOUNT_REQUIRED"));
 }
 // onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;
@@ -87,6 +95,23 @@ export function isNotModifiedError(err: unknown): boolean {
 	}
 	return haystacks.some(
 		(h) => typeof h === "string" && h.toLowerCase().includes("message is not modified"),
+	);
+}
+
+// The edit target is gone — Telegram answers 400 "message to edit not
+// found". Same gate as above: a present non-400 error_code wins over
+// the phrase, so a wrapped proxy/fetch error can't freeze a sink.
+export function isMessageGoneError(err: unknown): boolean {
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some(
+		(h) =>
+			typeof h === "string" &&
+			(h.includes("message to edit not found") || h.includes("message not found")),
 	);
 }
 
@@ -299,6 +324,10 @@ export function makeDeliverySink(
 	const answerDraftId = nextDraftId++;
 	const reasonDraftId = nextDraftId++;
 	let richMode = richOpts?.enabled === true && conv.id.startsWith("dm:") && !voice?.voiceMode;
+	// The reasoning surface is operator-only: a guest-persona DM (the
+	// standing sandbox lane) never shows thinking, whatever
+	// telegram.showReasoning says (design/telegram.md → Roles).
+	const reasoningOn = richOpts?.reasoning === true && conv.persona !== "guest";
 	let reasoningText = "";
 	let reasoningPushed = 0;
 	let reasoningSentAt = 0;
@@ -470,6 +499,10 @@ export function makeDeliverySink(
 	): Promise<void> {
 		if (q.bytes > MAX_SEND_BYTES)
 			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${MAX_SEND_BYTES})`);
+		// Authority is re-checked at the send, not at batch entry: /stop
+		// landing mid-burst must fence the next photo, and an earlier
+		// uncertain timeout fences everything after it.
+		if (!mayDeliver()) return;
 		try {
 			const sent = await withTimeout(
 				api.sendPhoto(conv.chatId, new InputFile(q.file.path, q.file.filename), {
@@ -497,6 +530,14 @@ export function makeDeliverySink(
 	}
 
 	async function sendPhotoBatch(batch: QueuedPhoto[]): Promise<void> {
+		// A batch queued behind an uncertain send reports not-sent, same
+		// as the doc link — an error-free claim would read as delivered.
+		if (uncertain) {
+			for (const q of batch) {
+				q.error = new Error("not sent — delivery stopped after an uncertain timeout");
+			}
+			return;
+		}
 		if (!mayDeliver()) return; // entries stay error-free: fenced = skipped
 		const thread = conv.threadId !== null ? { message_thread_id: conv.threadId } : {};
 		// Late stat — the joiner pushed before any await, so the vanished-
@@ -511,23 +552,59 @@ export function makeDeliverySink(
 				q.error = new Error(`file unreadable: ${q.file.path}`);
 			}
 		}
-		try {
-			// Telegram caps an album at 10 items; a bigger burst splits.
-			for (let at = 0; at < sendable.length; at += 10) {
-				const group = sendable.slice(at, at + 10);
-				if (group.length === 1) {
-					await sendPhotoSolo(group[0]!, thread);
-					continue;
+		// Files whose send provably landed — a later group's failure must
+		// never resend them, and an uncertain close must not mark them
+		// failed.
+		const delivered = new Set<QueuedPhoto>();
+		// A fence is silent for a dead turn, but uncertainty is not dead:
+		// files that never attempted must report not-sent, not delivered.
+		const markUnsent = (): void => {
+			if (!uncertain) return;
+			for (const q of sendable) {
+				if (!delivered.has(q) && q.error === undefined) {
+					q.error = new Error("not sent — delivery stopped after an uncertain timeout");
 				}
-				const media = group.map((q) => ({
-					type: "photo" as const,
-					media: new InputFile(q.file.path, q.file.filename),
-					...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
-				}));
+			}
+		};
+		let fallback: QueuedPhoto[] | null = null;
+		for (let at = 0; at < sendable.length; at += 10) {
+			// Per-request authority: the fence can land between albums,
+			// not only before the batch.
+			if (!mayDeliver()) {
+				markUnsent();
+				return;
+			}
+			const group = sendable.slice(at, at + 10);
+			if (group.length === 1) {
+				try {
+					await sendPhotoSolo(group[0]!, thread);
+					delivered.add(group[0]!);
+				} catch (err) {
+					if (err instanceof DeliveryUncertainError) {
+						// Ambiguous — the photo may have landed (the sink is
+						// already marked uncertain); the burst stops here and
+						// nothing resends.
+						for (const q of sendable) if (!delivered.has(q)) q.error = err;
+						return;
+					}
+					// A definite solo failure is this file's — the rest of
+					// the burst still goes out.
+					group[0]!.error = err;
+					delivered.add(group[0]!);
+				}
+				continue;
+			}
+			const media = group.map((q) => ({
+				type: "photo" as const,
+				media: new InputFile(q.file.path, q.file.filename),
+				...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
+			}));
+			try {
 				const sent = await withTimeout(
 					api.sendMediaGroup(conv.chatId, media, thread),
 					"sendMediaGroup",
 				);
+				for (const q of group) delivered.add(q);
 				log.debug("media group delivered", {
 					conversation: conv.id,
 					messages: sent.length,
@@ -535,34 +612,46 @@ export function makeDeliverySink(
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
 				repingTyping();
-			}
-			return;
-		} catch (err) {
-			if (!(err instanceof TelegramTimeoutError)) {
-				// Definite failure: the album provably never landed, so the
-				// whole burst degrades to solo sends — one bad photo doesn't
-				// take the rest down. Solo failures (including their own
-				// timeouts) record per file below.
+			} catch (err) {
+				if (err instanceof TelegramTimeoutError) {
+					// A group timeout is as ambiguous as a solo one — the album
+					// may have landed. Mark the sink so the remaining delivery
+					// stops, and fail every not-provably-delivered file as
+					// uncertain.
+					markUncertain(err, "sendMediaGroup");
+					const wrapped = new DeliveryUncertainError(err);
+					for (const q of sendable) if (!delivered.has(q)) q.error = wrapped;
+					return;
+				}
+				// Definite failure: this album provably never landed, so the
+				// failed group plus anything never attempted degrades to
+				// solo sends — delivered groups do not go out twice.
 				log.warn("media group failed — falling back to solo sends", err, {
 					conversation: conv.id,
 					chat: conv.chatId,
-					files: sendable.length,
+					files: sendable.length - delivered.size,
 				});
-			} else {
-				// A group timeout is as ambiguous as a solo one — the album
-				// may have landed. Mark the sink so the remaining delivery
-				// stops, and fail every file in the burst as uncertain.
-				markUncertain(err, "sendMediaGroup");
-				const wrapped = new DeliveryUncertainError(err);
-				for (const q of sendable) q.error = wrapped;
-				return;
+				fallback = sendable.filter((q) => !delivered.has(q));
+				break;
 			}
 		}
-		for (const q of sendable) {
+		if (fallback === null) return;
+		for (const q of fallback) {
+			// Per-send authority again — the fence can land mid-fallback.
+			if (!mayDeliver()) {
+				markUnsent();
+				return;
+			}
 			try {
 				await sendPhotoSolo(q, thread);
 			} catch (err) {
 				q.error = err;
+				if (err instanceof DeliveryUncertainError) {
+					// The uncertain fence now governs — the rest of the
+					// fallback never goes out.
+					for (const rest of fallback) if (rest.error === undefined) rest.error = err;
+					return;
+				}
 			}
 		}
 	}
@@ -606,7 +695,16 @@ export function makeDeliverySink(
 		// the operator never saw.
 		let failure: { err: unknown } | undefined;
 		enqueue(async () => {
-			if (!authoritative()) return;
+			// Authority is checked at the send itself: a doc queued behind
+			// an uncertain send must not slip out after it — and must not
+			// silently claim it did.
+			if (uncertain) {
+				failure = {
+					err: new Error("not sent — delivery stopped after an uncertain timeout"),
+				};
+				return;
+			}
+			if (!mayDeliver()) return;
 			const extra = {
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 				...(file.caption !== undefined ? { caption: file.caption } : {}),
@@ -679,7 +777,7 @@ export function makeDeliverySink(
 		// refreshing. The enqueued fns re-check richMode — a mid-turn
 		// degrade must not fire queued drafts at a dead path.
 		if (
-			richOpts?.reasoning === true &&
+			reasoningOn &&
 			reasoningText !== "" &&
 			(reasoningText.length !== reasoningPushed || Date.now() - reasoningSentAt > 20_000)
 		) {
@@ -737,7 +835,7 @@ export function makeDeliverySink(
 	// never pushes the combined markdown over the cap — drops out
 	// entirely when there's no room.
 	function reasoningBlock(budget: number): string {
-		if (richOpts?.reasoning !== true) return "";
+		if (!reasoningOn) return "";
 		const trimmed = reasoningText.trim();
 		if (trimmed === "") return "";
 		// Escape before measuring — entities expand up to 5x.
@@ -835,7 +933,10 @@ export function makeDeliverySink(
 							transportCause !== null &&
 							typeof transportCause === "object" &&
 							typeof transportCause.code === "string";
-						if (err instanceof TelegramTimeoutError || (!(err instanceof GrammyError) && transportError)) {
+						if (
+							err instanceof TelegramTimeoutError ||
+							(!(err instanceof GrammyError) && transportError)
+						) {
 							markUncertain(err, "sendMessage", idx);
 						} else {
 							replyTo = undefined; // never retry the reply link
@@ -949,7 +1050,7 @@ export function makeDeliverySink(
 			// Off or plain path: thinking stays in history, not in the chat
 			// stream — unchanged. Rich + showReasoning streams it into its
 			// own draft bubble (design/telegram.md).
-			if (!richMode || richOpts?.reasoning !== true) return;
+			if (!richMode || !reasoningOn) return;
 			reasoningText += delta;
 			if (!voice?.voiceMode) maybeFlush();
 		},
@@ -1217,6 +1318,10 @@ export function makeDeliverySink(
 									conversation: conv.id,
 									chat: conv.chatId,
 								});
+								// The gated send's settle may have outlived
+								// the turn — the retry is a new side effect,
+								// fenced like any other.
+								if (!mayDeliver()) return;
 								sent = await withTimeout(
 									api.sendRichMessage(conv.chatId, { markdown: md }, { ...base, ...markup }),
 									"sendRichMessage",
@@ -1231,14 +1336,19 @@ export function makeDeliverySink(
 							});
 							if (done.kind === "completed") {
 								if (voice) rememberReply(conv.chatId, sent.message_id, text);
-								await withTimeout(
-									api.setMessageReaction(conv.chatId, sent.message_id, [
-										{ type: "emoji", emoji: "🫡" },
-									]),
-									"setMessageReaction",
-								).catch((err: unknown) => {
-									log.debug("rich reaction failed", { error: String(err) });
-								});
+								// Same recheck per side effect — the reaction and
+								// the keyboard are new calls made after the send
+								// resolved, not part of it.
+								if (mayDeliver()) {
+									await withTimeout(
+										api.setMessageReaction(conv.chatId, sent.message_id, [
+											{ type: "emoji", emoji: "🫡" },
+										]),
+										"setMessageReaction",
+									).catch((err: unknown) => {
+										log.debug("rich reaction failed", { error: String(err) });
+									});
+								}
 							}
 							return;
 						} catch (err) {

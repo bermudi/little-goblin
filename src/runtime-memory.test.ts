@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { UIMessage } from "ai";
+import { textModel } from "./testkit/fake-model.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { memoryConfigSchema } from "./config.ts";
@@ -88,7 +90,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	const recallOk = { current: null as boolean | null };
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+		buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 		makeTools: () => ({}),
 		memory: {
 			client,
@@ -222,7 +224,10 @@ describe("memory turn integration", () => {
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["a", "b", "c", "d", "e"], 20), system: "test" }),
+			buildStep: () => ({
+				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
+				system: "test",
+			}),
 			makeTools: () => ({}),
 			memory: {
 				client,
@@ -281,7 +286,7 @@ describe("memory turn integration", () => {
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),
 			memory: {
 				client,

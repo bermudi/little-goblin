@@ -3,6 +3,7 @@
 // string, a structured refusal, or a PDF ref), so the summary is host +
 // size, not "200".
 
+import { isHttpUrl } from "../url.ts";
 import { Clip, ErrBox, Icon, PathChip, type ToolView } from "./bits.tsx";
 import {
 	clipHead,
@@ -46,11 +47,16 @@ export const fetchView: ToolView = {
 				summary: joinSummary(hostOf(target), fmtChars(f.chars)),
 				detail: (
 					<div className="tool-body">
-						{target !== null && (
-							<a href={target} target="_blank" rel="noreferrer" className="fetch-src">
-								{target}
-							</a>
-						)}
+						{target !== null &&
+							// Tool output is provider-shaped data — the shared
+							// isHttpUrl decides what earns an anchor.
+							(isHttpUrl(target) ? (
+								<a href={target} target="_blank" rel="noreferrer" className="fetch-src">
+									{target}
+								</a>
+							) : (
+								<span className="fetch-src">{target}</span>
+							))}
 						{meta !== "" && <span className="tool-meta">{meta}</span>}
 						<Clip text={clipHead(f.body, 3000)} />
 					</div>
@@ -63,9 +69,13 @@ export const fetchView: ToolView = {
 				summary: joinSummary(hostOf(pdf.url), `pdf ${fmtBytes(pdf.size)}`),
 				detail: (
 					<div className="tool-body">
-						<a href={pdf.url} target="_blank" rel="noreferrer" className="fetch-src">
-							{pdf.url}
-						</a>
+						{isHttpUrl(pdf.url) ? (
+							<a href={pdf.url} target="_blank" rel="noreferrer" className="fetch-src">
+								{pdf.url}
+							</a>
+						) : (
+							<span className="fetch-src">{pdf.url}</span>
+						)}
 						<div className="meta-row">
 							<PathChip path={pdf.path} />
 							<span className="tool-meta">{fmtBytes(pdf.size)}</span>

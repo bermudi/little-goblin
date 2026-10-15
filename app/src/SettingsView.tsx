@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse } from "../../src/http/operator-wire.ts";
 import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
+import { saveFailure, shouldAutosave } from "./settingsSave.ts";
 import {
 	bodyFromDraft,
 	type ChainEntry,
@@ -964,18 +965,7 @@ export function SettingsView({
 			);
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
-			// A 409 is a stale etag — the same save retries it forever;
-			// only a reload fixes it, so it gets no retry button.
-			setNotice({
-				text:
-					e instanceof ApiError && e.status === 409
-						? "The config changed since this tab loaded — reload the page to see the latest."
-						: e instanceof ApiError
-							? e.message
-							: "Save failed — check the tailnet.",
-				kind: "err",
-				retryable: !(e instanceof ApiError && e.status === 409),
-			});
+			setNotice({ kind: "err", ...saveFailure(e) });
 		} finally {
 			setSaving(false);
 		}
@@ -993,7 +983,8 @@ export function SettingsView({
 	useEffect(() => {
 		if (!dirty || stagedDirty || namePending || invalidReason !== null || saving) return;
 		const sig = serialize(draft, provs);
-		if (sig === attempted.current) return;
+		if (!shouldAutosave({ dirty, invalidReason, saving, sig, attempted: attempted.current }))
+			return;
 		const t = setTimeout(() => {
 			attempted.current = sig;
 			void save();

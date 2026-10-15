@@ -241,6 +241,7 @@ type ExecResult = {
 	exitCode: number | null;
 	timedOut: boolean;
 	truncated: boolean;
+	killed: boolean;
 };
 
 type MemNode = { data: Uint8Array; mtime: number } | { dir: true };
@@ -694,10 +695,17 @@ function fakeSandboxes(): MemSandbox {
 		}
 	}
 	function fail(msg: string, code = 1): ExecResult {
-		return { stdout: "", stderr: msg, exitCode: code, timedOut: false, truncated: false };
+		return {
+			stdout: "",
+			stderr: msg,
+			exitCode: code,
+			timedOut: false,
+			killed: false,
+			truncated: false,
+		};
 	}
 	function okOut(stdout: string): ExecResult {
-		return { stdout, stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		return { stdout, stderr: "", exitCode: 0, timedOut: false, truncated: false, killed: false };
 	}
 	function dispatchString(command: string, opts: { maxOutput: number }): ExecResult {
 		const r = shEval(command, fs, "/work");
@@ -706,6 +714,7 @@ function fakeSandboxes(): MemSandbox {
 			stderr: "",
 			exitCode: r.code,
 			timedOut: false,
+			killed: false,
 			truncated: r.out.length > opts.maxOutput,
 		};
 	}
@@ -778,11 +787,19 @@ function fakeSandboxes(): MemSandbox {
 						stderr: "",
 						exitCode: fs.exists(target) ? 0 : 1,
 						timedOut: false,
+						killed: false,
 						truncated: false,
 					};
 				}
 				const r = shEval(script, fs, "/work");
-				return { stdout: r.out, stderr: "", exitCode: r.code, timedOut: false, truncated: false };
+				return {
+					stdout: r.out,
+					stderr: "",
+					exitCode: r.code,
+					timedOut: false,
+					killed: false,
+					truncated: false,
+				};
 			}
 			const p = (x: string | undefined) => fs.norm(x ?? "");
 			switch (cmd) {
@@ -853,6 +870,7 @@ function fakeSandboxes(): MemSandbox {
 						stderr: "",
 						exitCode: hit ? 0 : 1,
 						timedOut: false,
+						killed: false,
 						truncated: false,
 					};
 				}
@@ -5036,7 +5054,14 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
 			sb.fs.write(sb.fs.norm(spill), enc.encode(spillText));
 			sb.fs.write(sb.fs.norm(rcPath), enc.encode(String(rc)));
 			return {
-				result: { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false },
+				result: {
+					stdout: "",
+					stderr: "",
+					exitCode: 0,
+					timedOut: false,
+					killed: false,
+					truncated: false,
+				},
 			};
 		}
 		return real(conv, argv, opts);
@@ -5096,7 +5121,7 @@ describe("worker shell wall", () => {
 				new Response(child.stderr).text(),
 				child.exited,
 			]);
-			return { stdout, stderr, exitCode, timedOut: false, truncated: false };
+			return { stdout, stderr, exitCode, timedOut: false, truncated: false, killed: false };
 		};
 		sb.execArgv = async (_conv, argv) => ({ result: await run(argv) });
 		sb.execBytesArgv = async (_conv, argv) => {
@@ -5160,6 +5185,7 @@ describe("worker shell wall", () => {
 						stderr: "rm: simulated cleanup failure",
 						exitCode: 1,
 						timedOut: false,
+						killed: false,
 						truncated: false,
 					},
 				};
@@ -5188,6 +5214,7 @@ describe("worker shell wall", () => {
 						stderr: "rm dead",
 						exitCode: 1,
 						timedOut: false,
+						killed: false,
 						truncated: false,
 					},
 				};

@@ -54,6 +54,16 @@ function Pie({
 		<>
 			{values.map((v, i) => {
 				const next = angle + (v / total) * Math.PI * 2;
+				// A 100% slice's arc endpoints coincide — SVG renders nothing
+				// for a zero-length arc, so a single full share needs a circle.
+				if (next - angle >= Math.PI * 2 - 1e-9) {
+					angle = next;
+					return (
+						<circle key={i} className={`ui-chart-pie ui-chart-s${i % 5}`} cx={cx} cy={cy} r={r}>
+							<title>{`${labels[i]}: ${unit !== undefined ? `${v} ${unit}` : `${v}`} (${pcts[i]}%)`}</title>
+						</circle>
+					);
+				}
 				const large = next - angle > Math.PI ? 1 : 0;
 				const d = `M${cx},${cy} L${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)} A${r},${r} 0 ${large} 1 ${cx + r * Math.cos(next)},${cy + r * Math.sin(next)} Z`;
 				angle = next;

@@ -17,6 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveAppDist } from "./http/app-dist.ts";
 import { openStore } from "./conversation.ts";
+import { openDelegations } from "./delegations.ts";
+import { openOutbox } from "./mail-outbox.ts";
+import { openPrograms } from "./programs.ts";
+import { openSandboxes } from "./sandboxes.ts";
+import { openGuestStore } from "./tg/guest.ts";
+import { openTelegramInbox } from "./tg/inbox.ts";
+import { openPings } from "./tg/pings.ts";
 import {
 	checkAppAssets,
 	healthReportSchema,
@@ -114,7 +121,10 @@ describe("diagnostic boundary and phases", () => {
 		expect(report.target).toEqual({ home: f.home, checkout: f.checkout });
 		for (const id of [
 			"sqlite",
+			"sqlite.subsystems",
 			"service.goblin",
+			"service.goblin-herdr",
+			"sandbox.engine",
 			"app.assets",
 			"workspace.workspace",
 			"workspace.workspace.USER.md",
@@ -485,6 +495,79 @@ describe("read-only WAL-aware SQL worker", () => {
 			store.close();
 		}
 	});
+	// The worker's argv contract, exercised in a real process: a present
+	// but malformed or wrongly-shaped expected-table list fails the probe
+	// (open-or-query) instead of silently degrading to a skipped check.
+	describe("worker argv contract (real worker process)", () => {
+		const WORKER = join(import.meta.dir, "health-sqlite.ts");
+		const probe = (
+			...args: string[]
+		): { code: number; report: Record<string, unknown>; raw: string } => {
+			const r = Bun.spawnSync([process.execPath, "--no-install", WORKER, ...args], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const raw = r.stdout.toString();
+			return { code: r.exitCode, report: JSON.parse(raw) as Record<string, unknown>, raw };
+		};
+		function baseSchema(): { path: string; close(): void } {
+			const dir = mkdtempSync(join(tmpdir(), "goblin-health-worker-"));
+			roots.push(dir);
+			const path = join(dir, "probe.sqlite");
+			const store = openStore(path);
+			return { path, close: () => store.close() };
+		}
+		test("a missing expected-list arg runs the probe with no expectations", () => {
+			const { path, close } = baseSchema();
+			try {
+				const { report } = probe(path);
+				expect(report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: [],
+				});
+			} finally {
+				close();
+			}
+		});
+		test("valid empty and populated lists report missingExpected honestly", () => {
+			const { path, close } = baseSchema();
+			try {
+				expect(probe(path, "[]").report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: [],
+				});
+				// openStore's schema covers notes but not the later
+				// subsystem tables — the split is reported by name.
+				expect(probe(path, '["programs","notes","mail_outbox"]').report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: ["programs", "mail_outbox"],
+				});
+			} finally {
+				close();
+			}
+		});
+		for (const arg of [
+			"{not json",
+			'{"tables":["programs"]}',
+			'["programs","BAD TABLE"]',
+			'["ok",5]',
+			'"programs"',
+		])
+			test(`invalid arg ${JSON.stringify(arg)} fails open-or-query, never a false pass`, () => {
+				const { path, close } = baseSchema();
+				try {
+					expect(probe(path, arg).report).toEqual({
+						status: "fail",
+						category: "open-or-query",
+					});
+				} finally {
+					close();
+				}
+			});
+	});
 	test("structure mismatch is diagnostic compatibility, not installed corruption; extra schema is permitted", async () => {
 		const f = fixture();
 		installLayout(f.home);
@@ -502,6 +585,112 @@ describe("read-only WAL-aware SQL worker", () => {
 		const corrupt = await runHealth({ ...f.options, phase: "installed" });
 		expect(finding(corrupt, "sqlite").status).toBe("fail");
 		expect(JSON.stringify(corrupt)).not.toContain(secret);
+	});
+});
+
+describe("delegation host, subsystem tables and configured sandbox", () => {
+	// openStore plus the unconditional open* calls = the boot table set.
+	function bootSchema(path: string): { close(): void } {
+		const store = openStore(path);
+		const extras = [openPrograms(path), openOutbox(path), openSandboxes(path)];
+		openPings(store.db);
+		openTelegramInbox(store.db);
+		openGuestStore(store.db);
+		return {
+			close() {
+				for (const extra of extras) extra.close();
+				store.close();
+			},
+		};
+	}
+	test("a dead delegation host warns unconfigured and fails once delegation is configured", async () => {
+		const f = fixture();
+		f.script(
+			"systemctl",
+			`if [ "$3" = "goblin-herdr.service" ]; then printf 'LoadState=loaded\\nActiveState=failed\\nSubState=failed\\n';
+			else printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nWorkingDirectory=${f.checkout}\\n'; fi`,
+		);
+		const plain = await runHealth({ ...f.options, phase: "installed" });
+		expect(finding(plain, "service.goblin").status).toBe("pass");
+		expect(finding(plain, "service.goblin-herdr").status).toBe("warn");
+		expect(finding(plain, "service.goblin-herdr").detail).toContain("no delegation block");
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				...f.config,
+				delegation: { harnesses: { devin: { kind: "devin" } } },
+			}),
+		);
+		const delegated = await runHealth({ ...f.options, phase: "installed" });
+		expect(finding(delegated, "service.goblin-herdr").status).toBe("fail");
+		expect(JSON.stringify(delegated)).not.toContain(secret);
+	});
+	test("missing boot-created subsystem tables warn by name; a full boot schema passes", async () => {
+		const f = fixture();
+		installLayout(f.home);
+		assets(f.checkout);
+		const path = join(f.home, "state/goblin.sqlite");
+		// openStore alone = a pre-revision store: base schema compatible,
+		// but the later subsystem tables are absent.
+		const partial = openStore(path);
+		const report = await runHealth({ ...f.options, phase: "installed" });
+		const subsystems = finding(report, "sqlite.subsystems");
+		expect(subsystems.status).toBe("warn");
+		for (const table of ["programs", "mail_outbox", "sandboxes", "tg_inbox", "guest_dedup"])
+			expect(subsystems.detail).toContain(table);
+		// Wording is revision-scoped expectation drift, never a
+		// corruption or store-loss claim without evidence.
+		expect(subsystems.detail).toContain("diagnostic revision");
+		expect(subsystems.detail).toContain("not evidence of corruption or store loss");
+		expect(subsystems.detail).not.toContain("a lost store");
+		// Lazy tables are absent from the expectation entirely.
+		expect(subsystems.detail).not.toContain("forget_listings");
+		expect(subsystems.detail).not.toContain("tg_dm_navigation");
+		// Config-gated tables join the expectation with their config block.
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, delegation: { harnesses: { devin: { kind: "devin" } } } }),
+		);
+		const gated = finding(
+			await runHealth({ ...f.options, phase: "installed" }),
+			"sqlite.subsystems",
+		);
+		expect(gated.detail).toContain("delegations");
+		partial.close();
+		const complete = bootSchema(path);
+		const delegations = openDelegations(path);
+		try {
+			const full = await runHealth({ ...f.options, phase: "installed" });
+			expect(finding(full, "sqlite.subsystems").status).toBe("pass");
+		} finally {
+			delegations.close();
+			complete.close();
+		}
+	});
+	test("sandbox probes stay skip until configured; engine and image readiness split", async () => {
+		const f = fixture();
+		expect(finding(await runHealth(f.options), "sandbox.engine").status).toBe("skip");
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, sandbox: { image: "example/img:1" } }),
+		);
+		// No podman on PATH: the engine check fails, the image check skips.
+		const dead = await runHealth(f.options);
+		expect(finding(dead, "sandbox.engine").status).toBe("fail");
+		expect(finding(dead, "sandbox.image").status).toBe("skip");
+		// Engine answers but the configured image is absent: image fails
+		// with the manual-pull hint, never an auto-pull.
+		f.script("podman", `case "$1" in info) exit 0 ;; image) exit 1 ;; esac; exit 1`);
+		const missing = await runHealth(f.options);
+		expect(finding(missing, "sandbox.engine").status).toBe("pass");
+		const image = finding(missing, "sandbox.image");
+		expect(image.status).toBe("fail");
+		expect(image.detail).toContain("example/img:1");
+		// Image in the local store: both pass. The engine probe is read-only.
+		f.script("podman", "exit 0");
+		const ready = await runHealth(f.options);
+		expect(finding(ready, "sandbox.image").status).toBe("pass");
+		expect(existsSync(join(f.home, "state"))).toBe(false);
 	});
 });
 

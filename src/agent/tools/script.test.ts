@@ -517,6 +517,9 @@ return "tail marker";`,
 	expect(out.text).toContain("[TRUNCATED");
 	expect(out.text).toContain("line 0 ");
 	expect(out.text).toContain("tail marker");
+	// The footer must say the retained spill is temporary — the sweep
+	// can reclaim it on a later call.
+	expect(out.text).toContain("sweep may reclaim");
 	const match = /saved to: (\S+)/.exec(out.text);
 	expect(match).not.toBeNull();
 	const file = match?.[1] ?? "";

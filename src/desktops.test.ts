@@ -227,6 +227,7 @@ function fakeEngine(opts?: {
 				stderr: "exists as directory",
 				exitCode: 3,
 				timedOut: false,
+				killed: false,
 				truncated: false,
 			};
 		}
@@ -236,11 +237,25 @@ function fakeEngine(opts?: {
 			args.includes("stat") ||
 			args.includes("chmod")
 		) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		// The cpIn post-verify probe (regular file, not a symlink).
 		if (args.some((a) => a.startsWith("{ [ -f"))) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		// The desk-side stage→dest copy: desk cannot write under a
 		// rootDirs parent — that refusal is the import's governance.
@@ -252,25 +267,68 @@ function fakeEngine(opts?: {
 					stderr: "Permission denied",
 					exitCode: 1,
 					timedOut: false,
+					killed: false,
 					truncated: false,
 				};
 			}
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args[0] === "/bin/sh" && args[1] === "-c" && args[2]?.startsWith("if [ -e")) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args[0] === "/bin/sh" && args[1] === "-c" && args[2]?.includes("chown")) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args.includes("scrot")) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args.includes("rm")) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args.includes("goblin-launch")) {
-			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				killed: false,
+				truncated: false,
+			};
 		}
 		if (args.includes("list_windows")) {
 			return {
@@ -280,6 +338,7 @@ function fakeEngine(opts?: {
 				stderr: "",
 				exitCode: 0,
 				timedOut: false,
+				killed: false,
 				truncated: false,
 			};
 		}
@@ -289,6 +348,7 @@ function fakeEngine(opts?: {
 				stderr: "",
 				exitCode: 0,
 				timedOut: false,
+				killed: false,
 				truncated: false,
 			};
 		}
@@ -300,6 +360,7 @@ function fakeEngine(opts?: {
 				stderr: opts.failCuaStdout !== undefined ? "" : "driver exploded",
 				exitCode: 1,
 				timedOut: false,
+				killed: false,
 				truncated: false,
 			};
 		}
@@ -308,6 +369,7 @@ function fakeEngine(opts?: {
 			stderr: "",
 			exitCode: 0,
 			timedOut: false,
+			killed: false,
 			truncated: false,
 		};
 	};
@@ -322,6 +384,7 @@ function fakeEngine(opts?: {
 			stderr: "",
 			exitCode: 0,
 			timedOut: false,
+			killed: false,
 			truncated: flags.truncatedRead,
 			...(flags.cappedRead ? { outputCapped: true } : {}),
 		};

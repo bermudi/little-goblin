@@ -56,21 +56,6 @@ const CUT_NUDGE: Record<ForcedKind, string> = {
 	context: CONTEXT_CUT,
 };
 
-// Chunks that carry stream mechanics, not generated output: start,
-// finish, and their step-level twins mark boundaries, metadata rides
-// the finish, abort is control, and error carries a failure — none of
-// them billed provider work. Everything else in a step is content the
-// model produced.
-const FRAMING_CHUNKS = new Set([
-	"start",
-	"start-step",
-	"finish-step",
-	"finish",
-	"message-metadata",
-	"abort",
-	"error",
-]);
-
 // The script tool's stored output (design/tools.md → Scripting): the
 // nested-call record rides `calls`, each entry already summarized by
 // the tool. The stream expands them into the digest as script.<tool>
@@ -658,6 +643,11 @@ export async function driveStream<M extends WireMember>(
 	// phantom "\n\n" before its first delta.
 	let lastTextPartId: string | null = null;
 	let seenText = deps.seenText;
+	// Opened by start-step, spent by the step's first real part — the
+	// SDK emits start-step before an error part, so an error-only step
+	// (a mid-stream 429 wearing a 200, the scheduler ladder's target
+	// failure shape) must leave modelCalls at 0.
+	let pendingStep = false;
 	// Stream errors arrive as `error` chunks — they don't throw. The
 	// authoritative signal is the finish outcome: "failed" means the
 	// turn must surface an error, not commit partial output as a
@@ -668,10 +658,6 @@ export async function driveStream<M extends WireMember>(
 	// — and every chunk after it — stays off the client's stream
 	// because the resumed attempt continues the same message.
 	let holdForRecovery = false;
-	// Whether the current step already yielded generated content. Any
-	// chunk outside the framing set is output the provider produced;
-	// error is framing here because it carries a failure, not work.
-	let stepSawOutput = false;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,
@@ -747,15 +733,6 @@ export async function driveStream<M extends WireMember>(
 	};
 	for await (const chunk of uiStream) {
 		deps.assertAuthority();
-		// A step that yielded content spent provider work — even chunks
-		// held for recovery came from a real call, while a step whose
-		// only yield is an error part billed nothing. The terminal-error
-		// stamp reads this so a trigger owner retries only zero-spend
-		// failures, whatever they looked like on the wire.
-		if (!stepSawOutput && !FRAMING_CHUNKS.has(chunk.type)) {
-			stepSawOutput = true;
-			state.noteModelCall();
-		}
 		if (chunk.type === "error") {
 			// A classified overflow on an attempt that may still
 			// recover (first attempt, compaction wired): hold the
@@ -780,6 +757,17 @@ export async function driveStream<M extends WireMember>(
 		if (!holdForRecovery) {
 			emitChunk(convId, members, live, chunk);
 		}
+		// The step's provider call is spent on its first non-error
+		// chunk — a clean finish-step included, since an empty step was
+		// still a served request. A blacklist, not a payload whitelist,
+		// on purpose: modelCalls gates the scheduler's retry ladder, so
+		// an unrecognized chunk type must fail closed (no retry on a
+		// turn that may have produced output), never open. An error
+		// part never spends (see pendingStep).
+		if (pendingStep && chunk.type !== "error") {
+			state.noteModelCall();
+			pendingStep = false;
+		}
 		switch (chunk.type) {
 			case "start-step":
 				// A new step is always a new block — and id comparison
@@ -787,7 +775,7 @@ export async function driveStream<M extends WireMember>(
 				// synthesize part ids per request, so step 2 can reuse
 				// step 1's id verbatim. Reset instead of trusting ids.
 				lastTextPartId = null;
-				stepSawOutput = false;
+				pendingStep = true;
 				break;
 			case "text-delta":
 				// Distinct text parts are distinct blocks. A multi-step
@@ -913,6 +901,9 @@ export async function driveStream<M extends WireMember>(
 				noteCompletedCall(chunk.toolCallId, chunk.errorText, true);
 				break;
 			case "error":
+				// An error before any part is the step's whole output —
+				// the call spent nothing the retry gate should see.
+				pendingStep = false;
 				streamError = chunk.errorText;
 				break;
 		}

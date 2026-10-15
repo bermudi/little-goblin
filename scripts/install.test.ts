@@ -75,7 +75,7 @@ function fixture(
 		for (const name of [
 			"goblin.service",
 			"goblin-herdr.service",
-			"goblin-keys.service",
+			"goblin-keys.service.in",
 			"goblin-keys.timer",
 		])
 			copyFileSync(join(root, "deploy", name), join(repo, "deploy", name));

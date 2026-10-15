@@ -14,7 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import {
+	APICallError,
+	type LanguageModelV4,
+	type LanguageModelV4CallOptions,
+	type LanguageModelV4StreamPart,
+} from "@ai-sdk/provider";
+import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
@@ -72,28 +78,14 @@ test("a failed attach subscriber is logged and detached without losing the share
 function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
 	const prompts: string[] = [];
 	const toolChoices: string[] = [];
-	let calls = 0;
+	const edge = scriptedEdge(scripts, { extra: textReply("ok") });
+	const inner = edge.model as unknown as LanguageModelV4;
 	const model = {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(o: { prompt: unknown; toolChoice?: unknown }) {
+		...inner,
+		doStream(o: LanguageModelV4CallOptions) {
 			prompts.push(JSON.stringify(o.prompt));
 			toolChoices.push(JSON.stringify(o.toolChoice ?? null));
-			const script = scripts[calls++] ?? textReply("ok");
-			if (script instanceof Error) throw script;
-			return {
-				stream: new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						for (const p of script) controller.enqueue(p);
-						controller.close();
-					},
-				}),
-			};
+			return inner.doStream(o);
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts, toolChoices };

@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { Bot, type Api } from "grammy";
+import { fakeApi, type RecordedCall } from "../testkit/fake-api.ts";
 import type { Update } from "grammy/types";
 import {
 	handleRateButton,
@@ -13,25 +14,7 @@ import {
 } from "./rate-button.ts";
 import type { ReplyRatings, ReplyRatingWrite } from "./ratings.ts";
 
-interface ApiCall {
-	method: string;
-	args: unknown[];
-}
-
-function fakeApi(calls: ApiCall[]): Api {
-	return {
-		answerCallbackQuery: (id: string, opts?: unknown) => {
-			calls.push({ method: "answerCallbackQuery", args: [id, opts] });
-			return Promise.resolve(true);
-		},
-		editMessageReplyMarkup: (chat: number, messageId: number, opts?: unknown) => {
-			calls.push({ method: "editMessageReplyMarkup", args: [chat, messageId, opts] });
-			return Promise.resolve(true);
-		},
-	} as unknown as Api;
-}
-
-function answers(calls: ApiCall[]): (string | undefined)[] {
+function answers(calls: RecordedCall[]): (string | undefined)[] {
 	return calls
 		.filter((c) => c.method === "answerCallbackQuery")
 		.map((c) => (c.args[1] as { text?: string } | undefined)?.text);
@@ -66,7 +49,7 @@ function query(
 	};
 }
 
-function markups(calls: ApiCall[]): Array<Array<Array<Record<string, unknown>>>> {
+function markups(calls: RecordedCall[]): Array<Array<Array<Record<string, unknown>>>> {
 	return calls
 		.filter((c) => c.method === "editMessageReplyMarkup")
 		.map(
@@ -78,10 +61,10 @@ function markups(calls: ApiCall[]): Array<Array<Array<Record<string, unknown>>>>
 
 describe("rate button", () => {
 	test("a tap records the row with the payload's target, then toasts", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		await handleRateButton(query(rateCallbackData("up", "dm:1:3", 7), 42, 10), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
 		expect(ratings.records).toEqual([
@@ -93,52 +76,52 @@ describe("rate button", () => {
 				rating: "up",
 			},
 		]);
-		expect(answers(calls)).toEqual(["👍 recorded"]);
+		expect(answers(fake.calls)).toEqual(["👍 recorded"]);
 	});
 
 	test("a landed reply with no user anchor records a null anchor", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		await handleRateButton(query(rateCallbackData("down", "topic:-100:9", null)), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
 		expect(ratings.records[0]).toMatchObject({ anchorSeq: null, rating: "down" });
-		expect(answers(calls)).toEqual(["👎 recorded"]);
+		expect(answers(fake.calls)).toEqual(["👎 recorded"]);
 	});
 
 	test("a malformed payload is answered stale, nothing recorded", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
-		await handleRateButton(query("rate:sideways|dm:1|7"), { api: fakeApi(calls), ratings });
-		await handleRateButton(query(undefined), { api: fakeApi(calls), ratings });
+		await handleRateButton(query("rate:sideways|dm:1|7"), { api: fake.api, ratings });
+		await handleRateButton(query(undefined), { api: fake.api, ratings });
 		expect(ratings.records).toEqual([]);
-		expect(answers(calls)).toEqual(["that button is stale", "that button is stale"]);
+		expect(answers(fake.calls)).toEqual(["that button is stale", "that button is stale"]);
 	});
 
 	test("a query without a message can't record", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		await handleRateButton(
 			{ id: "q1", data: rateCallbackData("up", "dm:1", 1) },
-			{ api: fakeApi(calls), ratings },
+			{ api: fake.api, ratings },
 		);
 		expect(ratings.records).toEqual([]);
-		expect(answers(calls)).toEqual(["nothing to rate here"]);
+		expect(answers(fake.calls)).toEqual(["nothing to rate here"]);
 	});
 
 	test("a store failure still answers — the toast carries the outcome", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings(true);
 		await handleRateButton(query(rateCallbackData("up", "dm:1", 1)), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
-		expect(answers(calls)).toEqual(["rating not recorded — check the log"]);
+		expect(answers(fake.calls)).toEqual(["rating not recorded — check the log"]);
 	});
 
 	test("a tap retires the rating row — the vote stays visible, 🔊 stays live", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		const markup = {
 			inline_keyboard: [
@@ -150,17 +133,17 @@ describe("rate button", () => {
 			],
 		};
 		await handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 10, markup), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
-		expect(markups(calls)).toEqual([
+		expect(markups(fake.calls)).toEqual([
 			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
 		]);
-		expect(answers(calls)).toEqual(["👍 recorded"]);
+		expect(answers(fake.calls)).toEqual(["👍 recorded"]);
 	});
 
 	test("a rating-only keyboard strips to empty", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		const markup = {
 			inline_keyboard: [
@@ -171,30 +154,30 @@ describe("rate button", () => {
 			],
 		};
 		await handleRateButton(query(rateCallbackData("down", "dm:1", 7), 42, 10, markup), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
-		expect(markups(calls)).toEqual([[]]);
+		expect(markups(fake.calls)).toEqual([[]]);
 	});
 
 	test("no rate row or no markup at all — no edit call, still recorded", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		const speakOnly = { inline_keyboard: [[{ text: "🔊", callback_data: "speak_reply" }]] };
 		await handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 10, speakOnly), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
 		await handleRateButton(query(rateCallbackData("up", "dm:1", 7)), {
-			api: fakeApi(calls),
+			api: fake.api,
 			ratings,
 		});
-		expect(markups(calls)).toEqual([]);
+		expect(markups(fake.calls)).toEqual([]);
 		expect(ratings.records).toHaveLength(2);
 	});
 
 	test("registration routes a rate update through a real bot — non-rate updates don't reach it", async () => {
-		const calls: ApiCall[] = [];
+		const fake = fakeApi();
 		const ratings = fakeRatings();
 		const bot = new Bot("test-token", {
 			botInfo: {
@@ -213,7 +196,7 @@ describe("rate button", () => {
 				supports_join_request_queries: false,
 			},
 		});
-		registerRateButton(bot, { api: fakeApi(calls), ratings });
+		registerRateButton(bot, { api: fake.api, ratings });
 		const tap = (data: string): Update =>
 			({
 				update_id: 1,
@@ -235,6 +218,6 @@ describe("rate button", () => {
 		expect(ratings.records).toEqual([
 			{ conversationId: "dm:1:3", anchorSeq: 7, chatId: 42, messageId: 10, rating: "down" },
 		]);
-		expect(answers(calls)).toEqual(["👎 recorded"]);
+		expect(answers(fake.calls)).toEqual(["👎 recorded"]);
 	});
 });

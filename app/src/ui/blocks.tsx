@@ -308,15 +308,15 @@ export function Leaf({
 }: { leaf: UiLeaf } & UiActionProps) {
 	switch (leaf.type) {
 		case "text":
-			return <Text leaf={leaf} {...note} />;
+			return <Text leaf={leaf} streaming={streaming} {...note} />;
 		case "callout":
-			return <Callout leaf={leaf} {...note} />;
+			return <Callout leaf={leaf} streaming={streaming} {...note} />;
 		case "stats":
 			return <Stats leaf={leaf} />;
 		case "table":
 			return <Table leaf={leaf} />;
 		case "steps":
-			return <Steps leaf={leaf} {...note} />;
+			return <Steps leaf={leaf} streaming={streaming} {...note} />;
 		case "chart":
 			return <Chart leaf={leaf} />;
 		case "choices":

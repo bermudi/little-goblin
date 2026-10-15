@@ -320,10 +320,43 @@ Goblin's own state is under `~/goblin/`:
 
 | What | Where | Notes |
 |---|---|---|
-| Conversations + history | `state/goblin.sqlite` | SQLite, WAL mode — copy it while the bot is stopped, or use `sqlite3 goblin.sqlite ".backup main backup.sqlite"` live |
-| Settings | `goblin.json5` | plain text |
-| Secrets | `auth.jsonl` | guard this copy like the original |
+| Conversations + history | `state/goblin.sqlite` | SQLite, WAL mode — snapshot with `scripts/backup-state.sh` (see below) |
+| Settings | `goblin.json5` | plain text — the backup script copies it beside each DB snapshot |
+| Secrets | `auth.jsonl` | guard this copy like the original — plain `cp` while readable |
 | Identity, notes, skills, attachments | `workspace/` | plain files |
+
+The state database snapshot is manual, not scheduled:
+
+```sh
+scripts/backup-state.sh        # snapshot + keep the newest 10
+scripts/backup-state.sh 30     # snapshot + keep the newest 30
+```
+
+It runs sqlite3's `.backup` — the online-safe copy that reads the live
+WAL consistently without checkpointing or mutating the source —
+`quick_check`s the result, names it `state/backups/goblin-<UTC>.sqlite`,
+copies `goblin.json5` beside it, and prunes only its own stamp-shaped
+files to the newest *keep* (hand-named backups are never touched). Run
+it before risky operations and as often as feels useful; the DB is a few
+megabytes, so a snapshot is instant.
+
+Never `cp` `goblin.sqlite` or its `-wal`/`-shm` sidecars while the bot
+runs — a raw copy can split a WAL commit mid-flight and restore nothing.
+A `.backup` file is a complete standalone database: no sidecars needed.
+WAL checkpointing is left to SQLite's autocheckpoint; a manual
+`PRAGMA wal_checkpoint(TRUNCATE)` or `VACUUM` rewrites state and belongs
+only to a stopped service — neither is routine maintenance.
+
+To restore: stop the service, move the live `goblin.sqlite*` files aside,
+copy the chosen backup to `state/goblin.sqlite` (make sure no stale
+`-wal`/`-shm` sidecars remain), restore `goblin.json5` alongside it if
+needed, start, and watch the boot log.
+
+Strays observed in `state/` (audit, 2026-10-12): `goblin.db` (0 bytes, an
+earlier database name) and `goblin.sqlite.pre-requeue.bak` (a one-off
+manual snapshot), plus the dated `pre-legacy-purge` set already under
+`state/backups/`. None are live; archive or delete them by hand if you
+want them gone — nothing removes them automatically.
 
 Pass-keys bootstrap credentials and encrypted profile snapshots live in
 the persistent OS wallet, outside `~/goblin/`. Include the wallet's
@@ -367,6 +400,7 @@ it only while the bot is stopped, if ever.
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |
 | `ffmpeg` warnings at boot | install `ffmpeg` — voice features and large-file transcription need it |
 | Thinking levels look wrong for a model | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself |
+| `sandbox disabled with N tracked container(s) still standing` | the `sandbox` block was removed/emptied — the tool is off, so no call ever runs the idle sweep and the containers keep running. Remove them by hand: `podman rm -f <names>` (the warning lists them; `podman ps -a --filter label=goblin.sandbox=1` catches any row-less strays too). Stale rows left behind are inert while the block stays absent — if you'd rather they not seed a recreate on re-enable, `DELETE FROM sandboxes` on the stopped service clears them |
 
 Can't pin it down? Share safe Doctor findings once integrated. If an incident
 needs logs, inspect the relevant `state/goblin.log` excerpt privately and review

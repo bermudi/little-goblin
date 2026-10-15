@@ -47,7 +47,7 @@ from `workspace/` exactly as before.
 - `dir` = the working directory. Defaults to `home` (app-managed). The
   operator may instead link an existing directory on goblin's host: an
   absolute path (`~/` expanded server-side), validated at creation —
-  exists, is a directory, `realpath`ed, not under `$GOBLIN_HOME/state`.
+  exists, is a directory, `realpath`ed, outside `$GOBLIN_HOME`.
   A validated path field, not a server-side folder browser: no new
   filesystem-listing HTTP surface (operator ruling).
 
@@ -195,6 +195,10 @@ and rely on the draft.
 Quota-denied or malformed storage surfaces a persistent alert plus a
 diagnostic — the failure is shown, a corrupt record is left in place,
 and no recovery guarantee is claimed that can't be delivered.
+Leaving a dirty note asks before discarding. Confirmation drops unsent
+body/title work, including the editor's debounce and unmount drain;
+already-sent PATCHes cannot be recalled. Declining keeps the draft.
+Reopening the same note neither asks nor adds a history entry.
 
 **The agent edits through a `note` tool**, mounted on every operator
 conversation (Telegram included — "add this to my groceries note" is
@@ -202,8 +206,11 @@ natural there; guests never). Actions: `list`, `search`, `read`,
 `create`, `append`, `replace` (whole body), `replace_range` (`start`,
 `end` character offsets into `body_md`, required `expected` — the text
 currently at that range; mismatch refuses with the current text so the
-model can retry). Ranges in one call must not overlap and apply
-back-to-front. `list`/`search` default to the conversation's project
+model can retry). `read` windows long bodies; its footer reports the
+returned absolute character range (final window included), and
+`replace_range` offsets always count into the full body — a paged
+window's base plus the position inside it. Ranges in one call must not
+overlap and apply back-to-front. `list`/`search` default to the conversation's project
 (loose notes outside a project); `scope: "all"` widens. `create`
 defaults to the current project. Results ride fenced like other
 operator data; note bodies are the operator's words, not instructions
@@ -274,6 +281,9 @@ the fence body is appended — never the surrounding "OK, here's…"
 prose. The append is an ordinary note write (`source: append`, version
 first). One prompt line on app conversations states the convention;
 it loads at each conversation's next boundary.
+An unclosed fence hides its append action only while its message is
+streaming, including inside UI blocks. Once settled or reloaded, its
+visible body is final and may be appended even without a closing fence.
 
 **AI rewrite on selection.** The editor serializes the selection to
 markdown and posts `{selection, instruction}` to
@@ -314,7 +324,16 @@ trust-mode origin check; JSON bodies require `application/json`.
   the conversation archive pattern), `notes/<id>/versions` (GET),
   `notes/<id>/versions/<rev>/restore` (POST — a content write like any
   other: `If-Match` on the live rev, the current body versioned first),
-  `notes/<id>/rewrite` (POST).
+  `notes/<id>/rewrite` (POST). The list
+  is bounded at 1000 rows per filtered read, and the response carries
+  `truncated`: true when the filter
+  matched beyond the bound (the store is asked for limit+1, so the
+  flag needs no second query), telling the client to say so rather
+  than show a capped shelf as complete. No pagination: a narrower
+  `project`/`q` is how the rest is reached. Content writes refuse on
+  archived notes and PATCH applies the archive flag after the content
+  write, so `{body, archived: true}` lands in one request while
+  unarchive-and-edit is two (`{archived: false}`, then the edit).
 - `conversations` POST accepts `projectId`; the list payload carries
   `projectId` per summary.
 
@@ -326,8 +345,9 @@ memory); `project memory off propagated` (project, conversation count);
 `note conflict` (note, expected rev, current rev); `note range refused`
 (note, conversation, reason); `note restored` (note, from rev, new rev);
 `note rewrite` (note, model, selection bytes, outcome, ms) — the model
-call also rides the shared observed-model line. `prompt snapshot built`
-carries the project sources.
+call also rides the shared observed-model line. `app note list
+truncated` (project, q, archived) marks a capped index read. `prompt
+snapshot built` carries the project sources.
 
 ### Phases
 

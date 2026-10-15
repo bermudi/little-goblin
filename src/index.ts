@@ -142,9 +142,10 @@ async function boot() {
 	// configured — the tool gate is the per-turn config read, and the
 	// store is an additive table. Config is read live: resource limits
 	// and idleHours apply to the next sandbox call, not the boot set.
+	const sandboxStore = openSandboxes(paths.db());
 	const sandboxes = makeSandboxes({
 		podman,
-		store: openSandboxes(paths.db()),
+		store: sandboxStore,
 		config: () => configRef.current.sandbox,
 		// A live worker run pins its sandbox: the reaper skips it and
 		// reset refuses while a lease stands (design/subagents.md).
@@ -153,6 +154,23 @@ async function boot() {
 		// worker on its next tool result — persisted until carried.
 		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
+	// Removing or emptying the block turns the tool off but never the
+	// containers — the idle sweep only rides sandbox calls, and a boot
+	// sweep would break the "restarts never kill experiments" ruling
+	// (design/sandbox.md). So a disable surfaces the stranded rows and
+	// the manual rm line; the operator decides what the containers are.
+	const sandboxConfigured = (c: Config) => typeof c.sandbox === "object";
+	const warnStrandedSandboxes = () => {
+		const rows = sandboxStore.list();
+		if (rows.length === 0) return;
+		log.warn(
+			`sandbox disabled with ${rows.length} tracked container(s) still standing — ` +
+				`no sweep will fire while the block is absent. Remove them: ` +
+				`podman rm -f ${rows.map((r) => r.container).join(" ")}`,
+			{ containers: rows.map((r) => r.container) },
+		);
+	};
+	if (!sandboxConfigured(config)) warnStrandedSandboxes();
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — gws owns its own auth, no OAuth secret here.
 	const mailPoller = (): MailPoller | null => {
@@ -846,6 +864,7 @@ async function boot() {
 	// boundary (DESIGN.md → Web access) — so each flip gets its own log line.
 	let searchInSet = config.search !== undefined;
 	let transcribeInSet = config.transcription !== undefined;
+	let sandboxInSet = sandboxConfigured(config);
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
@@ -873,6 +892,9 @@ async function boot() {
 			);
 			transcribeInSet = transcribeNow;
 		}
+		const sandboxNow = sandboxConfigured(configRef.current);
+		if (sandboxInSet && !sandboxNow) warnStrandedSandboxes();
+		sandboxInSet = sandboxNow;
 		// Memory is a boot-time snapshot (queue rows bind to the endpoint+bank hash).
 		if (
 			JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)

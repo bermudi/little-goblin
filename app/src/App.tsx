@@ -403,7 +403,12 @@ function ConversationRow({
 					onBlur={commitRename}
 					onKeyDown={(e) => {
 						if (e.key === "Enter") commitRename();
-						if (e.key === "Escape") setEditing(false);
+						// Escape is a cancel: mark committed so the
+						// unmount's blur doesn't PATCH the half-typed draft.
+						if (e.key === "Escape") {
+							committed.current = true;
+							setEditing(false);
+						}
 					}}
 				/>
 			</div>
@@ -679,6 +684,12 @@ function AppShell() {
 	// editor mounted), not which page rendered the callback.
 	const pageRef = useRef(page);
 	pageRef.current = page;
+	// The note editor reports here too — unsaved body/title edits or a
+	// standing 409 conflict bar. Its draft lives only in that
+	// component; an unguarded navigation destroys it silently.
+	const noteDirty = useRef(false);
+	// Confirmed discards must reach the editor before its unmount drain.
+	const noteDiscard = useRef<(() => void) | null>(null);
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
@@ -687,10 +698,17 @@ function AppShell() {
 		segment: position?.segment ?? newHistorySegment(),
 		key: navigation?.currentEntry.key ?? null,
 	});
-	const leaveDirtySettings = () =>
-		pageRef.current !== "settings" ||
-		!settingsDirty.current ||
-		window.confirm("Discard unsaved settings changes?");
+	// Leaving a dirty page asks once, with the page's own wording.
+	const leaveDirty = () => {
+		if (pageRef.current === "settings" && settingsDirty.current)
+			return window.confirm("Discard unsaved settings changes?");
+		if (pageRef.current === "note" && noteDirty.current) {
+			if (!window.confirm("Discard unsaved note edits and any conflict?")) return false;
+			noteDiscard.current?.();
+			return true;
+		}
+		return true;
+	};
 	const pushRoute = (path: string) => {
 		const actual = historyPosition(window.history.state);
 		// A declined legacy traversal can leave the browser at a different
@@ -788,13 +806,19 @@ function AppShell() {
 		const onPop = () => {
 			const p = pageFromPath(window.location.pathname);
 			const nextPosition = historyPosition(window.history.state);
-			if (p !== "settings" && !leaveDirtySettings()) {
+			// Only a pop that actually leaves the dirty page asks — the
+			// guard's own restoration below lands right back on it, and a
+			// second ask there would double every decline.
+			const stillHome =
+				(page === "settings" && p === "settings") ||
+				(page === "note" && noteFromPath(window.location.pathname) === noteId);
+			if (!stillHome && !leaveDirty()) {
 				// popstate arrives after traversal. Undo it rather than push a
 				// replacement entry, which would erase the forward history.
 				if (navigation !== null && route.current.key !== null) {
 					const failed = (err: unknown) =>
 						setNavigationError(
-							`Couldn't restore settings history: ${err instanceof Error ? err.message : String(err)}`,
+							`Couldn't restore history: ${err instanceof Error ? err.message : String(err)}`,
 						);
 					try {
 						const { committed, finished } = navigation.traverseTo(route.current.key);
@@ -810,7 +834,7 @@ function AppShell() {
 					window.history.go(route.current.index - nextPosition.index);
 				} else {
 					setNavigationError(
-						"Your unsaved settings are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
+						"Your unsaved edits are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
 					);
 				}
 				return;
@@ -852,13 +876,15 @@ function AppShell() {
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [page]);
+	}, [page, noteId]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {
-			if (page !== "settings" || !settingsDirty.current) return;
+			const dirty =
+				page === "settings" ? settingsDirty.current : page === "note" && noteDirty.current;
+			if (!dirty) return;
 			event.preventDefault();
-			event.returnValue = "Unsaved settings";
+			event.returnValue = "Unsaved edits";
 		};
 		window.addEventListener("beforeunload", onUnload);
 		return () => window.removeEventListener("beforeunload", onUnload);
@@ -939,8 +965,8 @@ function AppShell() {
 
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
-	const select = (id: string | null) => {
-		if (!leaveDirtySettings()) return;
+	const select = (id: string | null, opts?: { skipDirtyGuard?: boolean }) => {
+		if (opts?.skipDirtyGuard !== true && !leaveDirty()) return;
 		clearStartFailure();
 		setPage("chat");
 		setProjectId(null);
@@ -951,7 +977,7 @@ function AppShell() {
 	};
 
 	const openProject = (id: string) => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage("project");
 		setProjectId(id);
@@ -961,7 +987,7 @@ function AppShell() {
 	};
 
 	const openProjectsIndex = () => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage("projects");
 		setProjectId(null);
@@ -971,7 +997,7 @@ function AppShell() {
 	};
 
 	const openNotesIndex = () => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage("notes");
 		setProjectId(null);
@@ -981,7 +1007,11 @@ function AppShell() {
 	};
 
 	const openNote = (id: string) => {
-		if (!leaveDirtySettings()) return;
+		if (page === "note" && noteId === id) {
+			setNavOpen(false);
+			return;
+		}
+		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage("note");
 		setProjectId(null);
@@ -1001,7 +1031,7 @@ function AppShell() {
 			setNavOpen(false);
 			return;
 		}
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage(p);
 		setNavOpen(false);
@@ -1029,7 +1059,8 @@ function AppShell() {
 		projectId: string | null,
 		parts: UIMessage["parts"],
 		composerScope?: string,
-	) => {
+	): Promise<boolean> => {
+		if (!leaveDirty()) return false;
 		if (startBusyRef.current) {
 			// Refuse loudly — a silent no-op reads as success to awaited
 			// callers (the note page's chat surfaces this rejection as an
@@ -1066,13 +1097,17 @@ function AppShell() {
 						`Couldn't remove the cancelled conversation: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				}
-				return;
+				return false;
 			}
 			setSeed({ id: created.id, parts });
-			select(created.id);
+			// The guard above already asked — select's own check would
+			// confirm the still-dirty page a second time.
+			select(created.id, { skipDirtyGuard: true });
 			await refresh();
+			return true;
 		} catch {
 			if (seq === startSeq.current) setStartFailed(true);
+			return false;
 		} finally {
 			startBusyRef.current = false;
 			setStarting(false);
@@ -1348,6 +1383,7 @@ function AppShell() {
 									token={token}
 									noteId={noteId}
 									projects={projectList}
+									discardRef={noteDiscard}
 									onChat={(note: AppNote) =>
 										startChat(note.projectId, [
 											{
@@ -1356,7 +1392,15 @@ function AppShell() {
 											} as UIMessage["parts"][number],
 										])
 									}
-									onDeleted={openNotesIndex}
+									// A deleted note has no draft left to guard — clear
+									// the bit before the index navigation runs the check.
+									onDeleted={() => {
+										noteDirty.current = false;
+										openNotesIndex();
+									}}
+									onDirtyChange={(d) => {
+										noteDirty.current = d;
+									}}
 								/>
 								{startFailed && (
 									<p className="error" role="alert">
@@ -1399,8 +1443,11 @@ function AppShell() {
 										draftRestore={draftRestores[currentProject.id] ?? null}
 										onDraftRestored={() => consumeRestore(currentProject.id)}
 										onSend={(parts) =>
-											void startChat(currentProject.id, parts, currentProject.id).catch(
-												reportStartRefusal,
+											startChat(currentProject.id, parts, currentProject.id).catch(
+												(err: unknown) => {
+													reportStartRefusal(err);
+													return false;
+												},
 											)
 										}
 									/>
@@ -1438,7 +1485,12 @@ function AppShell() {
 								focusSignal={composerFocus}
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
-								onSend={(parts) => void startConversation(parts).catch(reportStartRefusal)}
+								onSend={(parts) =>
+									startConversation(parts).catch((err: unknown) => {
+										reportStartRefusal(err);
+										return false;
+									})
+								}
 							/>
 						</div>
 					) : (

@@ -45,6 +45,10 @@ export interface BoundedProc {
 	// still fire while the cap-kill drain is in flight). Optional so
 	// external fakes building this shape stay valid.
 	outputCapped?: boolean;
+	// The process was killed (deadline, abort, or output cap) rather than
+	// exiting on its own — distinct from truncated because a kill can
+	// leave work running that a post-exit drain cut cannot.
+	killed: boolean;
 }
 
 // Binary variant for callers whose stdout isn't text (TTS remux returns
@@ -57,6 +61,7 @@ export interface BoundedProcBytes {
 	timedOut: boolean;
 	truncated: boolean;
 	outputCapped?: boolean;
+	killed: boolean;
 }
 
 // Fixed stdio for callers: both pipes captured, the daemon's environment
@@ -172,12 +177,14 @@ async function runBounded<S>(
 	timedOut: boolean;
 	truncated: boolean;
 	outputCapped?: boolean;
+	killed: boolean;
 }> {
 	const { timeoutMs, maxOutput, abortSignal } = opts;
 	const readers = new Set<CancellableReader>();
 	let timedOut = false;
 	let drainCut = false;
 	let outputCapped = false;
+	let killed = false;
 
 	const killAndReap = async (): Promise<number | null> => {
 		killProc(proc, "SIGTERM", opts.processGroup);
@@ -195,7 +202,7 @@ async function runBounded<S>(
 		stopDeadline = () => clearTimeout(t);
 	});
 	let triggerKill!: () => void;
-	const killed = new Promise<"killed">((res) => {
+	const killP = new Promise<"killed">((res) => {
 		triggerKill = () => res("killed");
 	});
 	const onAbort = () => triggerKill();
@@ -203,10 +210,11 @@ async function runBounded<S>(
 	else abortSignal?.addEventListener("abort", onAbort, { once: true });
 
 	const exitP: Promise<number | null> = (async () => {
-		const first = await Promise.race([proc.exited, deadline, killed]);
+		const first = await Promise.race([proc.exited, deadline, killP]);
 		stopDeadline();
 		abortSignal?.removeEventListener("abort", onAbort);
 		if (typeof first === "number") return first;
+		killed = true;
 		if (first === "timeout") timedOut = true;
 		return killAndReap();
 	})();
@@ -248,6 +256,7 @@ async function runBounded<S>(
 		timedOut,
 		truncated: out.truncated || err.truncated || drainCut,
 		outputCapped,
+		killed,
 	};
 }
 

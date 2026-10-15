@@ -27,6 +27,7 @@ const okRes = {
 	stderr: "",
 	exitCode: 0 as number | null,
 	timedOut: false,
+	killed: false,
 	truncated: false,
 };
 

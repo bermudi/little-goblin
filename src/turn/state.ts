@@ -46,9 +46,9 @@ export interface LoopTurnState {
 	watchdogStrikes: number;
 	// Completed tool calls this turn — the watchdog's cadence counter.
 	completedCalls: number;
-	// Steps the provider answered with output — the schedule retry's
-	// spend marker. A call whose stream yielded only an error part is
-	// not counted: it billed nothing and is safe to re-fire.
+	// Steps that produced output or finished cleanly — the schedule's
+	// retry spend marker. Error-only steps stay at zero, permitting
+	// a retry when the provider did no work.
 	modelCalls: number;
 	warnings: string[];
 	cutKind: ForcedKind | null;
@@ -158,10 +158,11 @@ export class TurnState {
 		return unsent;
 	}
 
-	// A step that produced provider output. Stamped on terminal errors so
-	// a trigger owner can tell a zero-spend transport blip from a failure
-	// the provider already billed; carried across a resume like every
-	// other spend marker.
+	// One provider call spent — the stream fires this on a step's
+	// first payload part or clean finish, so an error-only step stays
+	// at 0; a retry gate reads that to tell "nothing ran" from
+	// "partial work happened". Text deltas are not the measure:
+	// coalesced members see no sink deltas at all.
 	noteModelCall(): void {
 		this.modelCalls++;
 	}

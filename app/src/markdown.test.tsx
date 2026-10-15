@@ -60,32 +60,42 @@ describe("Markdown", () => {
 		expect(html).toContain("<strong>bold</strong>");
 	});
 
-	test("a note fence cut off at EOF renders as code — no card until the closer arrives", () => {
-		const partial = "```note\nappend this body";
-		const open = renderToStaticMarkup(<Markdown text={partial} />);
-		expect(open).not.toContain("note-card");
-		expect(open).toContain('class="codeblock"');
-		expect(open).toContain("append this body");
-		const closed = renderToStaticMarkup(<Markdown text={`${partial}\n\`\`\``} />);
-		expect(closed).toContain("note-card");
-		expect(closed).toContain("append this body");
+	// A note fence mid-stream is a prefix — appending it now would
+	// save content the chunks after it silently drop. Once the reply
+	// settles (or lands from history) the prefix is all there is, so
+	// the affordance shows even without the closing fence.
+	test("an unclosed note fence withholds the affordance only while streaming", () => {
+		const streaming = renderToStaticMarkup(<Markdown text={"```note\npartial body"} streaming />);
+		expect(streaming).toContain("note-card");
+		expect(streaming).toContain("partial body");
+		expect(streaming).not.toContain("note-card-append");
+		// Settled — the default for callers with no stream. The card's
+		// truncated body is final, so the affordance appears anyway.
+		const settled = renderToStaticMarkup(<Markdown text={"```note\npartial body"} />);
+		expect(settled).toContain("note-card-append");
+		// A closed fence shows it even mid-stream.
+		const closed = renderToStaticMarkup(<Markdown text={"```note\nfull body\n```"} streaming />);
+		expect(closed).toContain("note-card-append");
+	});
+	test("an unfinished titled note hides append until its message settles", () => {
+		const text = '```note title="Draft"\nsome body';
+		const live = renderToStaticMarkup(<Markdown text={text} streaming />);
+		expect(live).toContain("note-card");
+		expect(live).not.toContain("note-card-append");
+		expect(renderToStaticMarkup(<Markdown text={text} />)).toContain("note-card-append");
 	});
 
-	test("a note fence with a title cut off at EOF renders as code — no card", () => {
-		const html = renderToStaticMarkup(<Markdown text={'```note title="Draft"\nsome body'} />);
-		expect(html).not.toContain("note-card");
-		expect(html).toContain('class="codeblock"');
+	test("a shorter fence inside a four-backtick note never enables append mid-stream", () => {
+		const text = "````note\nkeep this\n```\ninner triple\n";
+		const live = renderToStaticMarkup(<Markdown text={text} streaming />);
+		expect(live).toContain("note-card");
+		expect(live).not.toContain("note-card-append");
+		const closed = renderToStaticMarkup(<Markdown text={`${text}\n\`\`\`\``} streaming />);
+		expect(closed).toContain("note-card-append");
+		expect(closed).toContain("inner triple");
 	});
 
-	test("a shorter fence inside a four-backtick note fence never closes it", () => {
-		const html = renderToStaticMarkup(
-			<Markdown text={"````note\nkeep this\n```\ninner triple\n"} />,
-		);
-		expect(html).not.toContain("note-card");
-		expect(html).toContain('class="codeblock"');
-	});
-
-	test("a completed four-backtick note fence holds triple-backtick code intact", () => {
+	test("a completed four-backtick note holds triple-backtick code intact", () => {
 		const html = renderToStaticMarkup(
 			<Markdown text={"````note\nkeep this\n```\ninner code\n```\ntail of note\n````"} />,
 		);

@@ -162,6 +162,10 @@ program's state, never a workspace file.** Rulings:
   never landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
   failure cannot refire (and re-deliver) on every tick.
+  If that cursor write fails, an in-process occurrence fence suppresses
+  resubmission and each scan retries the write with the original fire
+  time. Deleting, disabling, or rescheduling the program drops its stale
+  fence; a restart loses the fence and may re-offer the still-due row once.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

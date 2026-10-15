@@ -24,8 +24,12 @@ afterEach(() => {
 });
 
 describe("loadCatalog", () => {
-	test("missing dir is an empty catalog", () => {
-		expect(loadCatalog(join(useRoot(), "nope"))).toEqual({ entries: [], skipped: 0 });
+	test("missing dir is an empty catalog that still names its root", () => {
+		expect(loadCatalog(join(useRoot(), "nope"))).toEqual({
+			entries: [],
+			skipped: 0,
+			root: "nope",
+		});
 	});
 
 	test("a valid skill is listed", () => {
@@ -36,6 +40,7 @@ describe("loadCatalog", () => {
 			{ name: "mq", description: "jq for Markdown", path: join("skills", "mq", "SKILL.md") },
 		]);
 		expect(catalog.skipped).toBe(0);
+		expect(catalog.root).toBe("skills");
 	});
 
 	test("entries sort by name", () => {
@@ -179,13 +184,13 @@ describe("loadCatalog", () => {
 
 describe("formatSkillsSection", () => {
 	test("an empty catalog still renders the capability notice", () => {
-		const text = formatSkillsSection({ entries: [], skipped: 0 }).join("\n");
+		const text = formatSkillsSection({ entries: [], skipped: 0, root: "skills" }).join("\n");
 		expect(text).toContain("## skills");
 		expect(text).toContain("(none yet)");
 	});
 
 	test("the default header is byte-for-byte the shipped text", () => {
-		expect(formatSkillsSection({ entries: [], skipped: 0 })).toEqual([
+		expect(formatSkillsSection({ entries: [], skipped: 0, root: "skills" })).toEqual([
 			"## skills",
 			"",
 			"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
@@ -205,6 +210,7 @@ describe("formatSkillsSection", () => {
 				{
 					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
 					skipped: 0,
+					root: "skills",
 				},
 				undefined,
 				"/global/workspace",
@@ -229,6 +235,7 @@ describe("formatSkillsSection", () => {
 				{
 					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
 					skipped: 0,
+					root: "skills",
 				},
 				undefined,
 				"/tmp/operator's workspace",
@@ -258,26 +265,28 @@ describe("formatSkillsSection", () => {
 				},
 			],
 			skipped: 0,
+			root: "skills",
 		}).join("\n");
 		expect(text).toContain("- mq — jq for Markdown [Requires the mq CLI] (skills/mq/SKILL.md)");
 	});
 
 	test("the skip count is noted for the agent to surface", () => {
-		const one = formatSkillsSection({ entries: [], skipped: 1 }).join("\n");
+		const one = formatSkillsSection({ entries: [], skipped: 1, root: "skills" }).join("\n");
 		expect(one).toContain("(1 entry skipped as malformed");
-		const many = formatSkillsSection({ entries: [], skipped: 3 }).join("\n");
+		const many = formatSkillsSection({ entries: [], skipped: 3, root: "skills" }).join("\n");
 		expect(many).toContain("(3 entries skipped as malformed");
 	});
 
 	test("pending proposals render when present — and only then", () => {
-		const none = formatSkillsSection({ entries: [], skipped: 0 }, { entries: [], skipped: 0 }).join(
-			"\n",
-		);
+		const none = formatSkillsSection(
+			{ entries: [], skipped: 0, root: "skills" },
+			{ entries: [], skipped: 0, root: "skills-proposed" },
+		).join("\n");
 		expect(none).not.toContain("Pending proposals");
-		const absent = formatSkillsSection({ entries: [], skipped: 0 }).join("\n");
+		const absent = formatSkillsSection({ entries: [], skipped: 0, root: "skills" }).join("\n");
 		expect(absent).not.toContain("Pending proposals");
 		const withProposal = formatSkillsSection(
-			{ entries: [], skipped: 0 },
+			{ entries: [], skipped: 0, root: "skills" },
 			{
 				entries: [
 					{
@@ -287,6 +296,7 @@ describe("formatSkillsSection", () => {
 					},
 				],
 				skipped: 0,
+				root: "skills-proposed",
 			},
 		).join("\n");
 		expect(withProposal).toContain("Pending proposals");
@@ -294,6 +304,25 @@ describe("formatSkillsSection", () => {
 		expect(withProposal).toContain(
 			"- pdf-tables — Extract tables from PDFs (skills-proposed/pdf-tables/SKILL.md)",
 		);
+	});
+
+	test("the prose derives its roots from the scanned catalogs, not a hardcoded leaf", () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-skills-"));
+		dirs.push(dir);
+		const root = join(dir, "my-catalog");
+		writeSkill(root, "mq", "name: mq\ndescription: jq for Markdown");
+		writeSkill(join(dir, "drafts"), "pdf", "name: pdf\ndescription: Extract PDF text");
+		const catalog = loadCatalog(root);
+		const proposals = loadCatalog(join(dir, "drafts"));
+		const text = formatSkillsSection(catalog, proposals).join("\n");
+		expect(text).toContain("Skills are directories under `my-catalog/`");
+		expect(text).toContain("catalog is yours: write my-catalog/<name>/SKILL.md");
+		expect(text).toContain("`skills-ref validate ./my-catalog/<name>` via bash");
+		expect(text).toContain("- mq — jq for Markdown (my-catalog/mq/SKILL.md)");
+		expect(text).toContain("reviewer drafts under `drafts/`");
+		expect(text).toContain("- pdf — Extract PDF text (drafts/pdf/SKILL.md)");
+		// Entries and prose share the root's basename — they can't disagree.
+		expect(catalog.entries[0]!.path).toBe("my-catalog/mq/SKILL.md");
 	});
 
 	test("frontmatter that doesn't close inside the 16 KiB head is malformed", () => {

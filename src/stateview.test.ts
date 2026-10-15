@@ -65,6 +65,25 @@ describe("listSkills", () => {
 		writeRel("skills/deep/a/b/c.md", "nested");
 		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
 		expect(res.skills[0]!.files).toEqual(["a/b/c.md"]);
+		expect(res.skills[0]!.truncated).toBe(false);
+	});
+
+	test("a tree past the file cap is flagged truncated — files and size are a floor", () => {
+		writeRel("skills/fat/SKILL.md", "x");
+		for (let i = 0; i < 210; i++) writeRel(`skills/fat/f${String(i).padStart(3, "0")}.md`, "x");
+		// The skipped bytes live past the cap: every counted file is "x",
+		// the unlisted ones carry the extra payload.
+		writeRel("skills/fat/zzz.md", "x".repeat(500));
+		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
+		const fat = res.skills.find((s) => s.name === "fat")!;
+		expect(fat.truncated).toBe(true);
+		expect(fat.files.length).toBe(200);
+	});
+
+	test("a dir beyond the depth cap flags truncated even when never opened", () => {
+		writeRel("skills/deep/a/b/c/d/file.md", "x");
+		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
+		expect(res.skills[0]!.truncated).toBe(true);
 	});
 
 	test("every listed path can be read unchanged under its skill", () => {
@@ -443,6 +462,12 @@ describe("tailLog", () => {
 		]);
 		const res = tailLog(f, { limit: 10, q: "wanted" });
 		expect(res.lines.map((l) => l.msg)).toEqual(["kept"]);
+	});
+
+	test("a non-object JSON line also reads as truncation", () => {
+		const f = writeLog(["42", JSON.stringify({ ts: "t1", level: "info", msg: "ok" })]);
+		const res = tailLog(f, { limit: 10 });
+		expect(res.lines.map((l) => l.msg)).toEqual(["ok"]);
 		expect(res.truncated).toBe(true);
 	});
 

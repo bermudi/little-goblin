@@ -6,10 +6,16 @@ import { join } from "node:path";
 import {
 	APICallError,
 	type LanguageModelV4,
+	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
+import {
+	scriptedModel as scriptedEdge,
+	textModel,
+	type StreamAttempt,
+} from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
@@ -70,48 +76,15 @@ describe("provider-filter retry", () => {
 	};
 	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
 
-	function scripted(
-		attempts: (
-			| LanguageModelV4StreamPart[]
-			| Error
-			| { readError: Error }
-			| { cancelError: Error }
-		)[],
-	) {
+	function scripted(attempts: StreamAttempt[]) {
 		const requests: string[] = [];
+		const edge = scriptedEdge(attempts, { modelId: "filter-test" });
+		const inner = edge.model as unknown as LanguageModelV4;
 		const model: LanguageModelV4 = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "filter-test",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unused");
-			},
-			async doStream(options) {
-				const attempt = attempts[requests.length];
+			...inner,
+			doStream(options) {
 				requests.push(JSON.stringify(options));
-				if (attempt === undefined) throw new Error("unexpected extra model request");
-				if (attempt instanceof Error) throw attempt;
-				return {
-					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							if ("readError" in attempt) {
-								controller.error(attempt.readError);
-								return;
-							}
-							if ("cancelError" in attempt) {
-								controller.enqueue(blocked);
-								return; // Leave open so reader.cancel exercises cleanup.
-							}
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							for (const part of attempt) controller.enqueue(part);
-							controller.close();
-						},
-						cancel() {
-							if ("cancelError" in attempt) throw attempt.cancelError;
-						},
-					}),
-				};
+				return inner.doStream(options);
 			},
 		};
 		return { model, requests };
@@ -241,7 +214,9 @@ describe("provider-filter retry", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
-			// The probe step produced output before the second filter block.
+			// One provider call spent — only the probe step produced
+			// work; each filter block's stream died on its error part
+			// before any step output.
 			modelCalls: 1,
 			transient: false,
 		});
@@ -311,7 +286,10 @@ describe("provider-filter retry", () => {
 		});
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
-		const { model, requests } = scripted([{ cancelError: new Error("cancel failed") }, answer()]);
+		const { model, requests } = scripted([
+			{ cancelError: new Error("cancel failed"), parts: [blocked] },
+			answer(),
+		]);
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
@@ -1189,27 +1167,13 @@ function textReply(text: string): LanguageModelV4StreamPart[] {
 // it as an `error` chunk). Every wire prompt is captured.
 function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
 	const prompts: string[] = [];
-	let calls = 0;
+	const edge = scriptedEdge(scripts, { extra: textReply("ok") });
+	const inner = edge.model as unknown as LanguageModelV4;
 	const model = {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(o: { prompt: unknown }) {
+		...inner,
+		doStream(o: LanguageModelV4CallOptions) {
 			prompts.push(JSON.stringify(o.prompt));
-			const script = scripts[calls++] ?? textReply("ok");
-			if (script instanceof Error) throw script;
-			return {
-				stream: new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						for (const p of script) controller.enqueue(p);
-						controller.close();
-					},
-				}),
-			};
+			return inner.doStream(o);
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts };
@@ -1434,6 +1398,33 @@ describe("context overflow recovery", () => {
 		});
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
+	test("a mid-stream provider error leaves modelCalls at 0 — the retry ladder's precondition", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		// The error arrives as a stream part, not a doStream rejection —
+		// the 200-then-SSE-error shape (upstream 429s) the scheduler's
+		// zero-call retry ladder exists to re-fire.
+		const { model, prompts } = scriptedModel([
+			[{ type: "error", error: new Error("Rate limit reached for requests") }],
+		]);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({
+			kind: "error",
+			message: "Rate limit reached for requests",
+			modelCalls: 0,
+			transient: true,
+		});
+		expect(prompts).toHaveLength(1);
 		store.close();
 	});
 

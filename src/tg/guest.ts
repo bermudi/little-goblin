@@ -36,7 +36,7 @@ import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError, makeDeliverySink } from "./delivery.ts";
 import { sendRefusal } from "./refusals.ts";
 
 // ---------- state: summons dedup (rows, not config) ----------
@@ -79,6 +79,31 @@ export function openGuestStore(db: Database): GuestStore {
 // every summons from someone on neither list gets exactly this and
 // nothing else — no turn, no conversation, no state.
 export const GUEST_REFUSAL = "🚫 I only talk to my operator and approved users.";
+
+// One outbound refusal per stranger chat per window. The line is the
+// whole answer to a summons — without the latch a hostile stranger
+// drives 1:1 sends against the bot's global quota at zero cost.
+// Process-scoped like the recentReplies ring: a restart resets every
+// window, so a stranger re-summoning after boot earns one more line.
+const REFUSAL_LATCH_MS = 10 * 60_000;
+const refusalLatch = new Map<number, number>();
+
+// True — and latched — when this stranger chat is due the refusal.
+// Stamps on the decision to send, not on delivery, so a failed send
+// can't multiply retries either. Keys are stranger chat ids; a spray
+// of fresh ones could grow the map, so a full one resets wholesale.
+export function refusalDue(chatId: number, now = Date.now()): boolean {
+	const last = refusalLatch.get(chatId);
+	if (last !== undefined && now - last < REFUSAL_LATCH_MS) return false;
+	if (refusalLatch.size >= 4096) refusalLatch.clear();
+	refusalLatch.set(chatId, now);
+	return true;
+}
+
+/** Test door — process state like the recentReplies ring. */
+export function resetRefusalLatchForTests(): void {
+	refusalLatch.clear();
+}
 
 // Operator anywhere → personal. allowedUser → sandbox. Stranger →
 // refused: the refusal line, never a turn.
@@ -248,12 +273,11 @@ export class GuestSink implements TurnSink {
 			this.edits++;
 			this.published = body;
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
 			if (isNotModifiedError(err)) {
 				this.published = body;
 				return;
 			}
-			if (msg.includes("message to edit not found") || msg.includes("message not found")) {
+			if (isMessageGoneError(err)) {
 				this.dead = true;
 				log.error("guest message vanished — edits stopped", undefined, {
 					inline: this.inlineMessageId,
@@ -451,10 +475,20 @@ export function ensurePersonaClass(
 			});
 		}
 	}
-	store.setMeta(conv.id, {
-		persona: want,
-		...(memoryExcluded !== undefined ? { memoryExcluded } : {}),
-	});
+	// The exclusion write: callers force it on for guest lanes and leave
+	// it alone (undefined) for personal ones — except a promotion, where
+	// the guest stamp must not survive into the operator lane. The flag
+	// doubles as the /memory opt-out, but that write never lands on a
+	// guest lane, so true under a guest persona is the sandbox's stamp.
+	// Already-personal lanes keep it: excluded there reads as a genuine
+	// opt-out.
+	const excluded =
+		memoryExcluded !== undefined
+			? memoryExcluded
+			: conv.persona === "guest" && want === "personal"
+				? false
+				: conv.memoryExcluded;
+	store.setMeta(conv.id, { persona: want, memoryExcluded: excluded });
 	// A persona flip rewrites the system prompt — the frozen snapshot
 	// must bust with it, or a demoted caller keeps the personal
 	// persona's bytes (SOUL, USER) while the tool filter already
@@ -669,7 +703,8 @@ export async function routeMemberGuestMessage(
 		// The same bounded dispatcher the DM gate uses — a stranger
 		// mentioning the bot in a group must not amplify into one
 		// unbounded outbound send per mention.
-		sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
+		if (refusalDue(chatId))
+			sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
 		return true;
 	}
 

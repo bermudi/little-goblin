@@ -56,6 +56,16 @@ marker="$(git rev-parse --git-path GOBLIN_DEPLOYED_REV)" || fail "cannot resolve
 marker_dir="$(dirname "$marker")"
 [ -d "$marker_dir" ] && [ -w "$marker_dir" ] && [ -x "$marker_dir" ] ||
 	fail "deployment marker directory is not writable: $marker_dir"
+# One deploy at a time: a slow acceptance must not let a finishing
+# sibling regress a newer marker, and a rollback-vs-forward race can
+# leave node_modules/app/dist stale against the running rev. Block —
+# the wait is bounded by the holder's own run.
+exec 9>"$marker_dir/.deploy-lock" || fail "cannot open deploy lock: $marker_dir"
+if ! flock -n 9; then
+	step "deploy lock held by a sibling run — waiting (15m budget)"
+	flock -w 900 9 ||
+		fail "deploy lock still held after 15m — a sibling deploy is hung; inspect $marker_dir/.deploy-lock"
+fi
 old_rev=""
 refresh_all=true
 rollback_available=false
@@ -78,6 +88,9 @@ if [ -e "$marker" ] || [ -L "$marker" ]; then
 			refresh_all=false
 			rollback_available=true ;;
 		"$old_rev missing")
+			# No local object — the printed rollback line would name a
+			# commit git can't check out.
+			old_rev=""
 			step "deployment marker history is missing; refreshing everything" ;;
 		*) fail "invalid commit in deployment marker: $marker ($marker_type)" ;;
 	esac
@@ -133,10 +146,10 @@ incomplete_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOY_INCOMPLETE.XXXXXX")" ||
 	fail "cannot create deployment attempt marker temp file"
 printf '%s\n' "$new_rev" >"$incomplete_tmp" ||
 	{ rm -f "$incomplete_tmp"; fail "cannot write deployment attempt marker"; }
-sync -d "$incomplete_tmp" || fail "cannot flush deployment attempt marker temp file"
+sync "$incomplete_tmp" || fail "cannot flush deployment attempt marker temp file"
 mv -f "$incomplete_tmp" "$incomplete" ||
 	{ rm -f "$incomplete_tmp"; fail "cannot update deployment attempt marker: $incomplete"; }
-sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
+sync "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 
 # From here a failure can leave ignored dependencies, the served bundle, or
 # the unit mid-rollout — every nonzero exit prints recovery: the automated
@@ -146,7 +159,7 @@ sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 rollback_cmd=""
 if [ "$rollback_available" = true ]; then
 	printf -v rollback_marker '%q' "$marker"
-	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
+	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker && sync $rollback_marker"
 fi
 on_exit() {
 	rc=$?
@@ -204,6 +217,16 @@ if grep -qE '^deploy/memory/' <<< "$changed_paths"; then
 fi
 
 # --- 5. Restart, verify -----------------------------------------------------
+# The gate ran minutes ago against new_rev's tree; a sibling session's
+# commit in between leaves the tree clean (the status check can't see it)
+# and would restart into code the gate never saw, with the marker
+# recording the wrong rev. An *uncommitted* sibling edit is the same hole
+# — the status gate ran before the build, so re-check the tree too.
+[ "$(git rev-parse --verify "HEAD^{commit}")" = "$new_rev" ] ||
+	fail "HEAD moved during the gate — commit it and redeploy"
+tree_status="$(git status --porcelain)" || fail "cannot re-read working tree status"
+[ -z "$tree_status" ] ||
+	fail "working tree dirtied during the gate — inspect and redeploy"
 restart_epoch="$(date +%s)"
 # The watcher's floor: the invocation this restart must replace, read
 # BEFORE the restart — a crash/restart that lands ahead of the watch can
@@ -239,14 +262,16 @@ if ! bun scripts/check-startup.ts --watch 0 75000 "${watch_floor[0]}" "${watch_f
 fi
 annotate_log "restart accepted — goblin live at deployed rev"
 sleep 3
-journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
-# grep's 1 means no error lines, not a failed journal read.
-# Deliberate tolerance: error-level lines are reported, not fatal — a
-# long-lived agent logs nonfatal subsystem errors without stopping the
-# unit. The hard gates are the startup-acceptance probe above and the
+# The journal read and the grep are reported, not fatal — a rotation
+# race or a grep miss must not abort between the restart and the marker
+# write. The hard gates are the startup-acceptance probe above and the
 # memory probe below; this print exists so a recurring boot error ships
 # visibly with the deploy that introduced it.
-errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
+if ! journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"; then
+	journal=""
+	echo "deploy: WARNING — could not read the fresh journal; error scan skipped" >&2
+fi
+errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || true)"
 if [ -n "$errors" ]; then
 	echo "deploy: WARNING — error lines in the fresh journal:" >&2
 	printf '%s\n' "$errors" | tail -5 >&2
@@ -279,15 +304,17 @@ fi
 # rejects as an invalid commit (wedging deploys until hand-repaired).
 marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot create deployment marker temp file"
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
-sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
+# Plain sync FILE fsyncs it — `sync -d` is write-range only and skips a
+# fresh file's size metadata; on a directory it does nothing at all.
+sync "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
-sync -d "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
+sync "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
 # Verification passed and the successful marker landed durably — only
 # now does the attempt marker go away. A failure here reports failure
 # even though the restart succeeded; the stale marker just makes the
 # next run refresh again.
 rm -f "$incomplete" || fail "cannot clear deployment attempt marker: $incomplete"
-sync -d "$marker_dir" || fail "cannot flush deployment attempt marker removal"
+sync "$marker_dir" || fail "cannot flush deployment attempt marker removal"
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$rollback_cmd" ]; then
 	step "rollback: $rollback_cmd"

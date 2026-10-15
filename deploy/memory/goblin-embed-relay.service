@@ -7,6 +7,11 @@ Description=Relay loopback ollama into the goblin-memory podman bridge
 # tailscale/wlan boot race: tailscale down = no relay = the memory API
 # cannot boot (it test-embeds during init).
 Before=goblin-memory-api.service
+# Never give up restarting — the same phone-only posture as
+# goblin.service, made explicit: RestartSec=5 can never trip the default
+# start limit anyway. A tailscale outage can outlast any fixed budget,
+# and the memory API cannot boot without the relay.
+StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=%h/.config/goblin-memory/embed-relay.env

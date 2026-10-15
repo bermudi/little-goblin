@@ -248,7 +248,10 @@ function ProjectNotes({
 	onOpenNote: (id: string) => void;
 }) {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [truncated, setTruncated] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [creating, setCreating] = useState(false);
+	const creatingRef = useRef(false);
 	// A create finishing after the page unmounted must not navigate —
 	// the operator already left; the note itself still exists. Setup
 	// rearms because StrictMode replays mount effects.
@@ -267,6 +270,7 @@ function ProjectNotes({
 				(r) => {
 					if (!live) return;
 					setNotes(r.notes);
+					setTruncated(r.truncated);
 					setError(null);
 				},
 				(err) =>
@@ -284,14 +288,21 @@ function ProjectNotes({
 		};
 	}, [token, project.id]);
 	const newNote = () => {
+		if (creatingRef.current) return;
+		creatingRef.current = true;
+		setCreating(true);
 		const seq = ++createSeq.current;
 		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
 			(n) => {
 				if (!mounted.current || seq !== createSeq.current) return;
+				creatingRef.current = false;
+				setCreating(false);
 				onOpenNote(n.id);
 			},
 			(err) => {
 				if (!mounted.current || seq !== createSeq.current) return;
+				creatingRef.current = false;
+				setCreating(false);
 				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
 			},
 		);
@@ -300,13 +311,18 @@ function ProjectNotes({
 		<>
 			<div className="row">
 				<h2 className="ops-h2">Notes</h2>
-				<button type="button" className="ghost" onClick={newNote}>
+				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
 					New note
 				</button>
 			</div>
 			{error !== null && (
 				<p className="error" role="alert">
 					{error}
+				</p>
+			)}
+			{truncated && (
+				<p className="cap" role="status">
+					Showing the first {notes?.length} notes. Use the Notes search to find other notes.
 				</p>
 			)}
 			{notes === null ? (
@@ -429,7 +445,12 @@ export function ProjectView({
 						onBlur={commitRename}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") commitRename();
-							if (e.key === "Escape") setRenaming(false);
+							// Escape cancels — without committed the
+							// unmount's blur would PATCH the draft anyway.
+							if (e.key === "Escape") {
+								committed.current = true;
+								setRenaming(false);
+							}
 						}}
 					/>
 				</div>

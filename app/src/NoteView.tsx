@@ -3,7 +3,15 @@
 // lazy Milkdown editor, project pin/archive/delete, versions, and
 // "Chat with this note".
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	useEffect,
+	useImperativeHandle,
+	useRef,
+	useState,
+	type RefObject,
+} from "react";
 import type {
 	AppNote,
 	AppNoteSummary,
@@ -67,7 +75,12 @@ export function NotesIndex({
 	const [filter, setFilter] = useState<string>("all");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [archived, setArchived] = useState<AppNoteSummary[] | null>(null);
+	// Each list carries the wire's own hit-the-bound bit — a capped
+	// shelf must say so, not read as complete.
+	const [truncated, setTruncated] = useState({ active: false, archived: false });
 	const [error, setError] = useState<string | null>(null);
+	const [creating, setCreating] = useState(false);
+	const creatingRef = useRef(false);
 	const seq = useRef(0);
 	const mounted = useRef(true);
 	const createSeq = useRef(0);
@@ -100,6 +113,7 @@ export function NotesIndex({
 					if (n !== seq.current) return;
 					setNotes(active.notes);
 					setArchived(gone.notes);
+					setTruncated({ active: active.truncated, archived: gone.truncated });
 					setError(null);
 				},
 				(err) => {
@@ -123,17 +137,24 @@ export function NotesIndex({
 	}, [query, filter, token]);
 
 	const newNote = () => {
+		if (creatingRef.current) return;
+		creatingRef.current = true;
 		const req = ++createSeq.current;
+		setCreating(true);
 		void createNote(token, {
 			title: "Untitled note",
 			...(filter !== "all" && filter !== "loose" ? { projectId: filter } : {}),
 		}).then(
 			(n) => {
 				if (!mounted.current || req !== createSeq.current) return;
+				creatingRef.current = false;
+				setCreating(false);
 				onOpen(n.id);
 			},
 			(err) => {
 				if (!mounted.current || req !== createSeq.current) return;
+				creatingRef.current = false;
+				setCreating(false);
 				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
 			},
 		);
@@ -158,7 +179,7 @@ export function NotesIndex({
 						</option>
 					))}
 				</select>
-				<button type="button" className="ghost" onClick={newNote}>
+				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
 					New note
 				</button>
 			</div>
@@ -183,9 +204,24 @@ export function NotesIndex({
 					))}
 				</div>
 			)}
+			{notes !== null && notes.length > 0 && truncated.active && (
+				<p className="empty" role="status">
+					Showing the first {notes.length} matching notes — narrow the search or pick a project to
+					find the rest.
+				</p>
+			)}
 			{archived !== null && archived.length > 0 && (
 				<details className="tuning">
-					<summary>Archived notes ({archived.length})</summary>
+					<summary>
+						Archived notes ({archived.length}
+						{truncated.archived ? "+" : ""})
+					</summary>
+					{truncated.archived && (
+						<p className="empty" role="status">
+							Showing the first {archived.length} archived notes — narrow the search or pick a
+							project to find the rest.
+						</p>
+					)}
 					<div className="inner card">
 						{archived.map((n) => (
 							<NoteIndexRow
@@ -409,14 +445,20 @@ export function NoteView({
 	projects,
 	onChat,
 	onDeleted,
+	onDirtyChange,
+	discardRef,
 }: {
 	token: string | null;
 	noteId: string;
 	projects: AppProject[];
 	// Starts a conversation carrying this note as an attachment —
 	// bound to the note's project when it has one.
-	onChat: (note: AppNote) => Promise<void>;
+	onChat: (note: AppNote) => void | Promise<void | boolean>;
 	onDeleted: () => void;
+	// Reports the leave-guard state: unsaved body or title edits, or a
+	// standing conflict — anything navigation would silently destroy.
+	onDirtyChange?: ((dirty: boolean) => void) | undefined;
+	discardRef?: RefObject<(() => void) | null> | undefined;
 }) {
 	const [note, setNote] = useState<AppNote | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
@@ -467,6 +509,19 @@ export function NoteView({
 	conflictRef.current = conflict;
 	rewriteBusyRef.current = rewriteBusy;
 
+	useImperativeHandle(
+		discardRef,
+		() => () => {
+			editorRef.current?.discard();
+			titlePendingRef.current = false;
+			const current = noteRef.current;
+			if (current !== null) {
+				titleDraftRef.current = current.title;
+				setTitleDraft(current.title);
+			}
+		},
+		[],
+	);
 	// A conflict note behind state the page already accepted — or
 	// strictly older than the bar already standing — is a late reply,
 	// not new information: it can neither raise nor move the bar. An
@@ -563,6 +618,16 @@ export function NoteView({
 		const h = editorRef.current;
 		if (h !== null && !h.dirty()) h.adoptRev(data);
 	};
+
+	// The leave guard's truth: a dirty body, a dirty title, or a
+	// standing conflict bar — all die silently with the component.
+	const guardedDirty = note !== null && (conflict !== null || dirty || titleDraft !== note.title);
+	useEffect(() => {
+		onDirtyChange?.(guardedDirty);
+	}, [onDirtyChange, guardedDirty]);
+	// Unmount clears the parent's guard — a destroyed editor must not
+	// leave the app refusing navigation forever.
+	useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
 	useEffect(() => {
 		let live = true;
@@ -732,6 +797,9 @@ export function NoteView({
 			) {
 				return;
 			}
+			// The flush can settle before React commits the dirty-report effect.
+			// Give navigation the live truth, not the last painted dirty bit.
+			onDirtyChange?.(h.dirty() || titleDraftRef.current !== now.title);
 			await onChat(now);
 		} catch (err) {
 			setOpError(

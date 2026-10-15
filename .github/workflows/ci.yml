@@ -15,3 +15,4 @@ jobs:
       - run: bun run format:check
       - run: bun run typecheck
       - run: bun test
+      - run: python3 -m unittest discover -s deploy/memory -t deploy/memory

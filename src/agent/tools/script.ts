@@ -4,6 +4,8 @@
 // pi-codemode, a worker thread per execute) has no filesystem, network,
 // timers or process — its only capability is the injected tools.
 
+import { readdirSync, rmSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
@@ -112,6 +114,46 @@ function errorMessage(result: unknown): string | null {
 	if (typeof error !== "string") return null;
 	const kind = (result as { kind?: unknown }).kind;
 	return typeof kind === "string" ? `${error} (${kind})` : error;
+}
+
+// Spill bodies are synthesized at will (up to the heap cap each), not
+// fetched like webcache — without a sweep the dir grows forever. The
+// file this call just wrote is always kept — the footer names it, and
+// under concurrent executes it may no longer be the newest. Other
+// spills hold a count and byte budget, newest first.
+const SPILL_KEEP_FILES = 32;
+const SPILL_KEEP_BYTES = 256 * 1024 * 1024;
+
+function sweepScriptCache(keepPath: string): void {
+	const dir = paths.scriptcache();
+	const keep = basename(keepPath);
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch (e) {
+		// ENOENT is an absent cache dir — nothing to sweep. A wedged dir
+		// (EACCES/EMFILE) must not silently disable the cap it exists for.
+		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+		return;
+	}
+	const files: { name: string; mtime: number; size: number }[] = [];
+	for (const name of names) {
+		try {
+			const st = statSync(join(dir, name));
+			if (st.isFile()) files.push({ name, mtime: st.mtimeMs, size: st.size });
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+		}
+	}
+	files.sort((a, b) => b.mtime - a.mtime);
+	let bytes = 0;
+	for (const [i, f] of files.entries()) {
+		if (f.name === keep || (i < SPILL_KEEP_FILES && bytes + f.size <= SPILL_KEEP_BYTES)) {
+			bytes += f.size;
+			continue;
+		}
+		rmSync(join(dir, f.name));
+	}
 }
 
 const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
@@ -344,7 +386,19 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 			const { window, truncated } = windowText(body, OUTPUT_BUDGET);
 			let footer = "";
 			if (truncated) {
-				footer = truncatedFooter(trySpill(paths.scriptcache(), body), body.length);
+				const file = trySpill(paths.scriptcache(), body);
+				if (file !== null) {
+					try {
+						sweepScriptCache(file);
+					} catch (e) {
+						log.warn("scriptcache sweep failed", e, { conversation: deps.conversation });
+					}
+				}
+				footer = truncatedFooter(
+					file,
+					body.length,
+					"This is a temporary retained file — a later script's scriptcache sweep may reclaim it",
+				);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);
 			const status =

@@ -112,6 +112,13 @@ delegated):
   No ticker, no boot hook, no shutdown hook: goblin restarts leave
   containers untouched; a host reboot stops them with their filesystems
   intact.
+- **Disabling the block reaps nothing.** Remove or empty `sandbox` and
+  the tool unmounts — so no call ever runs the sweep again, and tracked
+  containers (possibly network-on) would strand silently. Instead of
+  sweeping on the transition — an experiment may still matter — the
+  config save logs a warning naming each stranded container plus the
+  manual `podman rm -f` line; cleanup is a deliberate operator act
+  (docs/operations.md).
 - **`reset`** destroys and recreates — optionally on another image —
   disconnected.
 
@@ -158,7 +165,8 @@ tool already makes. Flat schema, per-action contract enforced inside
   outside symlink while the read was in flight must not aim the write.
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
-  confirmed off when off is intended is removed, not used.
+  confirmed off when off is intended is removed, not used — its row stays:
+  it carries the image and intent the next call recreates from.
 - `reset` — optional `image`. Destruction is gated on a successful
   replacement preflight: after the run-lease and ownership checks it
   verifies the target image is in the local store and the isolated

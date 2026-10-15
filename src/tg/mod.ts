@@ -44,6 +44,7 @@ import {
 	GUEST_REFUSAL,
 	handleGuestUpdate,
 	openGuestStore,
+	refusalDue,
 	routeMemberGuestMessage,
 } from "./guest.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
@@ -176,6 +177,7 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 		ctx: {
 			from?: { id: number } | undefined;
 			chat?: { id: number; type: string } | undefined;
+			update?: { callback_query?: { id: string } | undefined };
 			api: Api;
 		},
 		next: () => Promise<void>,
@@ -191,6 +193,23 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 			await next();
 			return;
 		}
+		// A callback tap isn't chatter: ctx.chat resolves to the tapped
+		// message's chat, so a member poking an operator group's buttons
+		// lands here. Answer it — the tap's spinner otherwise runs until
+		// Telegram expires it — while still refusing the authority.
+		if (ctx.update !== undefined && "callback_query" in ctx.update) {
+			const q = ctx.update.callback_query;
+			log.info("callback tap refused — not operator", { userId: id, chat: ctx.chat?.id });
+			if (q !== undefined) {
+				await withTimeout(
+					ctx.api.answerCallbackQuery(q.id, { text: "operator only" }),
+					"answerCallbackQuery",
+				)
+					.then(() => undefined)
+					.catch((err: unknown) => log.debug("answerCallbackQuery failed", { error: String(err) }));
+			}
+			return;
+		}
 		if (ctx.chat?.type === "private") {
 			// The guest block is the sandbox switch: without it an
 			// approved id's DM refuses exactly like a stranger's.
@@ -202,7 +221,7 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 					userId: id,
 					guest: cfg.guest !== undefined,
 				});
-				dispatch(ctx.api, id, id, GUEST_REFUSAL);
+				if (refusalDue(id)) dispatch(ctx.api, id, id, GUEST_REFUSAL);
 				return;
 			}
 			await next();
@@ -798,17 +817,17 @@ export function flushConversation(
 function dmClass(cfg: Config, chatId: number): "personal" | "guest" | null {
 	return cfg.operators.includes(chatId)
 		? "personal"
-		: cfg.allowedUsers.includes(chatId)
+		: cfg.guest !== undefined && cfg.allowedUsers.includes(chatId)
 			? "guest"
 			: null;
 }
 
 // The one refusal line, fire-and-forget — a failed send never kills
-// the lane's work.
+// the lane's work. The latch bounds it: one send per stranger chat per
+// window, however many messages drive the refusal.
 function refuseStranger(api: Api, chatId: number): void {
-	void withTimeout(api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
-		(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
-	);
+	if (!refusalDue(chatId)) return;
+	sendRefusal(api, chatId, chatId, GUEST_REFUSAL);
 }
 
 // A stranger's coalesced batch never turns: the gate's admission was
@@ -1285,6 +1304,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 	bot.callbackQuery(SKILL_CALLBACK_RE, (ctx) => {
 		const q = ctx.callbackQuery;
+		if (!deps.configRef.current.operators.includes(q.from.id)) {
+			// Approval taps are operator authority — the DM gate only
+			// admits the chat, and a demoted account's stale button must
+			// decide nothing. Ack so the tap spinner ends; that's all.
+			log.warn("skill approval tap refused — not operator", { userId: q.from.id });
+			void withTimeout(
+				bot.api.answerCallbackQuery(q.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
 		void skillApproval.handleTap({
 			id: q.id,
 			data: q.data,
@@ -1300,6 +1332,18 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
+		if (!deps.configRef.current.operators.includes(ctx.callbackQuery.from.id)) {
+			log.warn("mail approval tap refused — not operator", {
+				userId: ctx.callbackQuery.from.id,
+			});
+			void withTimeout(
+				bot.api.answerCallbackQuery(ctx.callbackQuery.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
 		const approval = deps.mail?.();
 		if (!approval) {
 			void withTimeout(

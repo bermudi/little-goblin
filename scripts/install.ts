@@ -306,7 +306,12 @@ async function install(): Promise<void> {
 			// same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
-				render("goblin-keys.service", [["/home/daniel/.local/bin/pass-keys", passKeys], ...common])
+				render("goblin-keys.service.in", [
+					["/home/daniel/.local/bin/pass-keys", passKeys],
+					...common,
+				])
+					// The template-only warning is not part of the rendered unit.
+					.replace(/^[\s\S]*?(?=^\[Unit\])/m, "")
 					// Only a standalone placeholder may expand into directives.
 					.replace(/^@WARM_AUTH_PROFILES@$/m, () =>
 						selected.profiles.map((profile) => `ExecStart=${passKeys} warm ${profile}`).join("\n"),

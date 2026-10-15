@@ -75,6 +75,10 @@ export interface AppNoteSummary {
 }
 export interface AppNoteList {
 	notes: AppNoteSummary[];
+	/** True when the filter matched past the server's bound — the
+	 * list is a prefix, and a narrower project/q filter reaches the
+	 * rest. Required so a capped shelf can never read as complete. */
+	truncated: boolean;
 }
 
 /** GET /api/app/notes/<id>/versions — metadata only; the body is a

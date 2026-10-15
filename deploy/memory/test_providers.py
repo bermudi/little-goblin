@@ -159,6 +159,29 @@ class ResolveAuthKeyTest(unittest.TestCase):
         # The lint is narrow: pass-keys is the sanctioned lane, not a trip.
         self.assertEqual(resolve_auth_key(self.home, "keys"), "pass-keys")
 
+    def test_command_stdout_is_capped(self) -> None:
+        # `yes` floods forever — the capped reader refuses at 64 KiB
+        # rather than buffering until the timeout (src/auth.ts MAX_OUTPUT).
+        with self.store.open("a") as handle:
+            handle.write(json.dumps({"name": "flood", "value": "!yes x"}) + "\n")
+        with self.assertRaises(ValueError) as raised:
+            resolve_auth_key(self.home, "flood")
+        self.assertIn("oversized", str(raised.exception))
+
+    def test_command_timeout_kills(self) -> None:
+        with self.store.open("a") as handle:
+            handle.write(
+                json.dumps({"name": "slow", "value": "!sleep 5"}) + "\n")
+        import providers
+        original = providers._AUTH_CMD_TIMEOUT
+        providers._AUTH_CMD_TIMEOUT = 0.5
+        try:
+            with self.assertRaises(ValueError) as raised:
+                resolve_auth_key(self.home, "slow")
+            self.assertIn("timed out", str(raised.exception))
+        finally:
+            providers._AUTH_CMD_TIMEOUT = original
+
 
 class FetchCatalogTest(unittest.TestCase):
     def fake_urlopen(self, payload: bytes) -> mock.MagicMock:

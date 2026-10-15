@@ -14,9 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
+import select
 import subprocess
+import time
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -29,6 +32,62 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _INVOKES_PASS_CLI_DIRECTLY = re.compile(
     r"(?:^|[\s;&|()\"'`])(?:[^\s;&|()\"'`/]*\/)*pass-cli(?:[\s;&|)\"'`]|$)"
 )
+
+# A secret is a line of text. Far more means the command is wrong — cap
+# it rather than buffering a flood; mirrors src/auth.ts's boundedRun
+# (MAX_OUTPUT / RESOLVE_TIMEOUT_MS).
+_AUTH_CMD_MAX_OUTPUT = 64 * 1024
+_AUTH_CMD_TIMEOUT = 30.0
+
+
+def _run_auth_command(command: str, auth_name: str) -> tuple[int, bytes]:
+    """Run a `!` auth record with capped stdout — reads stop at
+    _AUTH_CMD_MAX_OUTPUT+1 so a flooding command can't balloon installer
+    memory, and the timeout kills rather than hangs."""
+    proc = subprocess.Popen(
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    assert proc.stdout is not None
+    deadline = time.monotonic() + _AUTH_CMD_TIMEOUT
+    buf = bytearray()
+    oversized = False
+    try:
+        while True:
+            if len(buf) > _AUTH_CMD_MAX_OUTPUT:
+                oversized = True
+                proc.kill()
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                break
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not ready:
+                proc.kill()
+                break
+            chunk = os.read(
+                proc.stdout.fileno(), _AUTH_CMD_MAX_OUTPUT + 1 - len(buf))
+            if not chunk:
+                break
+            buf += chunk
+    except OSError as error:
+        proc.kill()
+        raise ValueError(f"auth command for '{auth_name}' failed: "
+                         f"{error.__class__.__name__}") from error
+    finally:
+        proc.stdout.close()
+    try:
+        proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    if oversized:
+        raise ValueError(
+            f"auth command for '{auth_name}' produced oversized output")
+    if time.monotonic() > deadline:
+        raise ValueError(f"auth command for '{auth_name}' timed out")
+    return proc.returncode, bytes(buf)
+
 
 _BUN_JSON5 = (
     "const {parse} = require('json5'); const fs = require('fs');"
@@ -204,16 +263,11 @@ def resolve_auth_key(goblin_home: Path, auth_name: str) -> str:
                 f"auth record '{auth_name}' invokes pass-cli directly — it "
                 "would run as the owner session; route it through pass-keys"
             )
-        try:
-            proc = subprocess.run(value[1:], shell=True, capture_output=True,
-                                  text=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise ValueError(f"auth command for '{auth_name}' failed: "
-                             f"{error.__class__.__name__}") from error
-        if proc.returncode != 0 or not proc.stdout.strip():
+        returncode, stdout = _run_auth_command(value[1:], auth_name)
+        if returncode != 0 or not stdout.strip():
             raise ValueError(f"auth command for '{auth_name}' failed "
-                             f"(exit {proc.returncode})")
-        return proc.stdout.strip()
+                             f"(exit {returncode})")
+        return stdout.strip().decode()
     return value
 
 

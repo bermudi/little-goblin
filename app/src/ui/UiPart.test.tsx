@@ -113,6 +113,23 @@ describe("UiPart (static markup)", () => {
 		}
 	});
 
+	// A leaf's md can be a still-arriving prefix — an unclosed note
+	// fence inside one must not offer its append affordance until the
+	// input lands (or the transcript reloads settled).
+	test("an unclosed note fence stays non-actionable while its ui block streams", () => {
+		const input = { blocks: [{ type: "text", md: "```note\npartial body" }] };
+		const streaming = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "input-streaming", input })} />,
+		);
+		expect(streaming).toContain("note-card");
+		expect(streaming).toContain("partial body");
+		expect(streaming).not.toContain("note-card-append");
+		const settled = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
+		);
+		expect(settled).toContain("note-card-append");
+	});
+
 	test("a schema-failing input falls back to the generic tool row", () => {
 		const html = renderToStaticMarkup(
 			<UiPart
@@ -485,6 +502,65 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		// The checkbox rides the same [ui] line as everything else —
 		// .checked, not the inert "on" default value.
 		expect(actions).toEqual(["[ui] Done packing: water=true, tent=false, notes=headlamp, leave="]);
+	});
+
+	// A note fence inside a ui block writes like one in reply text —
+	// same bearer, same project binding, or the click 401s / files the
+	// note loose in bearer mode and trust mode respectively.
+	test("a note card inside a ui block carries the transcript's auth and project", async () => {
+		const seen: Array<{ url: string; auth: string | null; body: unknown }> = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const headers = new Headers(init?.headers);
+			seen.push({
+				url,
+				auth: headers.get("authorization"),
+				body: init?.body !== undefined ? JSON.parse(String(init.body)) : undefined,
+			});
+			if (init?.method === "POST")
+				return Promise.resolve(
+					new Response(JSON.stringify({ id: "n9", title: "scratch" }), {
+						headers: { "content-type": "application/json" },
+					}),
+				);
+			return Promise.resolve(
+				new Response(JSON.stringify({ notes: [], truncated: false }), {
+					headers: { "content-type": "application/json" },
+				}),
+			);
+		}) as typeof fetch;
+		try {
+			const input = {
+				blocks: [{ type: "text", md: "summary\n\n```note\nui-block body\n```" }],
+			};
+			await mount(
+				<UiPart
+					part={uiPart({ state: "output-available", input, output: "shown" })}
+					token="tok-1"
+					noteProjectId="proj-9"
+				/>,
+			);
+			// The card renders inside the ui surface — not in reply text.
+			const card = container.querySelector(".ui-text .note-card");
+			expect(card).not.toBeNull();
+			await act(async () => {
+				card!
+					.querySelector<HTMLButtonElement>(".note-card-append")!
+					.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			});
+			const create = [...container.querySelectorAll<HTMLButtonElement>(".note-pick button")].find(
+				(b) => b.textContent === "New note",
+			)!;
+			await act(async () => {
+				create.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			});
+			const post = seen.find((s) => s.url === "/api/app/notes" && s.body !== undefined);
+			expect(post?.auth).toBe("Bearer tok-1");
+			expect(post?.body).toMatchObject({ projectId: "proj-9", body: "ui-block body" });
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 
 	test("a choices tap highlights the matching table row; reload re-derives it", async () => {

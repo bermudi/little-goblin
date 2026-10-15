@@ -181,6 +181,14 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 				if (err instanceof SandboxError || err instanceof PodmanError) {
 					return { error: err.message };
 				}
+				// Ordinary destination/path mistakes — a file where a
+				// directory was expected, a directory where a file was
+				// expected — are refusals the model can fix, not step-fatal.
+				// Resource/device errors (ENOSPC, EIO) stay loud.
+				const code = (err as NodeJS.ErrnoException).code;
+				if (code === "EEXIST" || code === "ENOTDIR" || code === "EISDIR" || code === "ENOTEMPTY") {
+					return { error: (err as Error).message };
+				}
 				throw err;
 			}
 		},

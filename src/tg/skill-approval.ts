@@ -95,7 +95,8 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	try {
 		targetStats = lstatSync(target);
 	} catch (err) {
-		// Live copy not there at all — plain move.
+		// Live copy not there at all — plain move. Anything but ENOENT
+		// (an unreadable skills dir) is not "not there" — propagate.
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (targetStats?.isSymbolicLink()) return { ok: false, reason: "live skill is a symlink" };
@@ -115,7 +116,18 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	try {
 		renameSync(proposed, target);
 	} catch (err) {
-		renameSync(trash, target); // rollback — the live copy and proposal stand
+		// Rollback must not mask the original failure — a second throw
+		// strands the live copy in staging (cleanupStaging keeps
+		// .replaced-* entries precisely so this is recoverable).
+		try {
+			renameSync(trash, target);
+		} catch (rbErr) {
+			log.error("skill approve rollback failed — live copy stranded in staging", rbErr, {
+				skill,
+				trash,
+				target,
+			});
+		}
 		throw err;
 	}
 	try {
@@ -173,15 +185,16 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 		try {
 			// A missing notice only loses the stamp — the action still
 			// decides on disk with a null query.
-			const answerText = await runDecision(
-				parsed,
-				query.message === undefined ? null : query,
-			);
+			const answerText = await runDecision(parsed, query.message === undefined ? null : query);
 			await answer(answerText);
 		} catch (err) {
 			// A filesystem error that isn't absence — the decision did not
 			// happen, the buttons stay, and the tap gets the failure line
 			// rather than a silently dead press.
+			log.error("skill proposal decision failed", err, {
+				skill: parsed.skill,
+				conversation: parsed.conversationId,
+			});
 			await answer("internal error — nothing applied; check goblin logs");
 			throw err;
 		}
@@ -223,7 +236,9 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			const outcome = installProposal(deps, skill);
 			if (!outcome.ok && outcome.reason === "gone") {
 				log.info("skill proposal tap on gone proposal", { skill, conversation: conversationId });
-				await stamp(`⚠ skill ${skill} not installed — proposal no longer exists (handled elsewhere)`);
+				await stamp(
+					`⚠ skill ${skill} not installed — proposal no longer exists (handled elsewhere)`,
+				);
 				return "already handled — the proposal is gone, nothing applied";
 			}
 			if (!outcome.ok) {

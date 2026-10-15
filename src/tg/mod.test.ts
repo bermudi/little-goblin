@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
 import { memoryConfigSchema, type Config } from "../config.ts";
 import {
@@ -8,7 +8,7 @@ import {
 	conversationAddress,
 	SHARED_CHAT_NOTE,
 } from "./mod.ts";
-import { GUEST_REFUSAL } from "./guest.ts";
+import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
 import { COMMANDS, DM_COMMANDS, type CommandMemoryDeps } from "./commands.ts";
 import { HindsightClient } from "../hindsight.ts";
 import { tmpDb } from "../testkit.ts";
@@ -31,6 +31,7 @@ const baseConfig: Config = {
 describe("accessGate", () => {
 	const api = {
 		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
+		answerCallbackQuery: (async () => true) as Api["answerCallbackQuery"],
 	} as unknown as Api;
 	// The access-control boundary — everything else hangs off it.
 	// The guest block is configured here: without it the sandbox class
@@ -72,6 +73,32 @@ describe("accessGate", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	test("a non-operator callback tap in an operator group is acked 'operator only'", async () => {
+		const configRef = { current: baseConfig };
+		const gate = accessGate(configRef);
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		const tap = {
+			from: { id: 9 },
+			chat: { id: -50, type: "group" },
+			update: { callback_query: { id: "cb-9" } },
+			api,
+		};
+		const answer = spyOn(api, "answerCallbackQuery");
+		await gate(tap, next);
+		expect(reached).toBe(0);
+		expect(answer).toHaveBeenCalledWith("cb-9", { text: "operator only" });
+		await gate({ ...tap, chat: { id: 9, type: "private" } }, next);
+		expect(answer).toHaveBeenCalledTimes(2);
+		expect(reached).toBe(0);
+		answer.mockRestore();
+		// An operator's tap still passes through to the handlers.
+		await gate({ ...tap, from: { id: 1 } }, next);
+		expect(reached).toBe(1);
 	});
 
 	test("the guest block is the sandbox switch — an approved DM refuses without it, toggles live", async () => {
@@ -499,6 +526,29 @@ function flushTest(
 }
 
 describe("handleMessage", () => {
+	test("an allowed user's /memory on cannot un-exclude the guest lane", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		h.env.deps.runtime.submitPersisted = () => true;
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
+		const lane = h.store.currentDm(2)!;
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 1,
+				chat: { id: 2, type: "private" },
+				from: { id: 2, is_bot: false, first_name: "guest" },
+				text: "/memory on",
+			}),
+		);
+		await Promise.resolve();
+		expect(h.store.get(lane.id)?.persona).toBe("guest");
+		expect(h.store.get(lane.id)?.memoryExcluded).toBe(true);
+		expect(h.apiCalls.some((c) => c.text === "This command is only available to operators.")).toBe(
+			true,
+		);
+		h.store.close();
+	});
+
 	test("a batch buffered while the sender was demoted to stranger drops — no turn lands", async () => {
 		const h = routerHarness();
 		const submitted: string[] = [];
@@ -523,9 +573,28 @@ describe("handleMessage", () => {
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
 	});
 
+	test("a promotion to operator clears the guest lane's class-forced exclusion", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		h.env.deps.runtime.submitPersisted = () => true;
+		// chat 2 is allowedUsers — its DM is the sandbox lane: persona
+		// guest, off the record.
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
+		const lane = h.store.currentDm(2)!;
+		expect(h.store.get(lane.id)?.persona).toBe("guest");
+		expect(h.store.get(lane.id)?.memoryExcluded).toBe(true);
+		// Promoted: chat 2 joins operators — the same lane turns personal
+		// and must not keep the sandbox's off-the-record stamp.
+		h.env.deps.configRef.current = { ...baseConfig, operators: [1, 2] };
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "now" }], chatId: 2 }]);
+		expect(h.store.get(lane.id)?.persona).toBe("personal");
+		expect(h.store.get(lane.id)?.memoryExcluded).toBe(false);
+		h.store.close();
+	});
+
 	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {
 		const h = routerHarness({
 			...baseConfig,
+			guest: { outputChars: 3500 },
 			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		// chat 2 = allowedUsers. An answered exchange lets the burst
@@ -1837,6 +1906,7 @@ describe("rolling dm", () => {
 		const h = routerHarness({
 			...baseConfig,
 			allowedUsers: [2, 7],
+			guest: { outputChars: 3500 },
 			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
@@ -2260,3 +2330,5 @@ describe("manual DM navigation", () => {
 		});
 	}
 });
+
+beforeEach(() => resetRefusalLatchForTests());

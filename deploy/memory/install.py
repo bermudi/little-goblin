@@ -798,6 +798,22 @@ def wire_goblin(goblin_home: Path, bank_id: str) -> str:
     return "live"
 
 
+def report_wiring(wired: str) -> None:
+    """The shared tail of fresh install and --resume."""
+    if wired == "live":
+        print("\nDone. Memory is live. In Telegram: /memory")
+    elif wired == "patched":
+        # The block is already in goblin.json5 — printing it again would
+        # invite a double-add the next installer run rejects.
+        print("\nStack and bank are live, and goblin.json5 is already patched — "
+              "restart goblin when ready:\n"
+              "  systemctl --user restart goblin.service")
+    else:
+        print("\nStack and bank are live, but goblin was not wired — "
+              "add the memory block printed above, then: "
+              "systemctl --user restart goblin.service")
+
+
 # --------------------------------------------------------------------------
 # Interactive prompts — the only place input is collected
 # --------------------------------------------------------------------------
@@ -1123,11 +1139,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reconfigure", action="store_true",
                         help="re-prompt LLM/embeddings and rewrite hindsight.env "
                              "(keeps database, volume, bank, goblin config)")
+    parser.add_argument("--resume", action="store_true",
+                        help="finish a partial install whose env files already "
+                             "exist: start the stack, create the bank, wire goblin")
     parser.add_argument("--goblin-home", type=Path,
                         default=Path(os.environ.get("GOBLIN_HOME", str(Path.home() / "goblin"))))
     args = parser.parse_args(argv)
     if args.reconfigure and args.no_start:
         parser.error("--reconfigure restarts the API by design; --no-start contradicts it")
+    if args.resume and (args.reconfigure or args.no_start):
+        parser.error("--resume finishes a partial install by starting the stack; "
+                     "--reconfigure and --no-start contradict it")
 
     print("Goblin memory stack installer — Hindsight 1.0.0-slim + PostgreSQL 17")
     preflight()
@@ -1206,6 +1228,26 @@ def main(argv: list[str] | None = None) -> None:
         info("done — bank and goblin config unchanged")
         return
 
+    if args.resume:
+        # A first install that died after writing env files left every
+        # rerun on the status path — bank creation and goblin wiring
+        # unreachable without hand-deleting 0600 files. Resume finishes
+        # exactly that tail; each step is idempotent.
+        if not POSTGRES_ENV.is_file() or not HINDSIGHT_ENV.is_file():
+            fail(f"--resume needs both env files a partial install left "
+                 f"({POSTGRES_ENV}, {HINDSIGHT_ENV}); run without flags for "
+                 "a fresh install")
+        bank_id, mission = prompt_bank()
+        state = probe(["systemctl", "--user", "is-active", API_UNIT])
+        if ((state.stdout if state else "") or "").strip() != "active":
+            pre_pull_images()
+            start_stack()
+        else:
+            info("stack already running — finishing bank and goblin wiring")
+        create_bank(bank_id, mission)
+        report_wiring(wire_goblin(args.goblin_home, bank_id))
+        return
+
     if HINDSIGHT_ENV.is_file():
         api_state = existing_install_status()
         # install_assets is fresh-install-only otherwise: a re-run on an
@@ -1214,7 +1256,20 @@ def main(argv: list[str] | None = None) -> None:
         # used (a stopped stack is a deliberate operator choice — see
         # the watch unit) and --no-start keeps enablement off.
         refresh_assets(enable_watch=api_state == "active" and not args.no_start)
+        if api_state != "active" and not args.no_start:
+            print("  stack is not running — if the first install never "
+                  "finished, rerun with --resume to start it and complete "
+                  "bank creation / goblin wiring")
         return
+
+    # Regenerating the password would silently desync PostgreSQL auth on
+    # an initialized volume (a new password never rotates the role); if
+    # hindsight.env was removed but this file survived, the stack exists.
+    # Check BEFORE prompting — collecting two hidden keys and only then
+    # refusing a stray file is hostile (the --reconfigure ordering rule).
+    if POSTGRES_ENV.is_file():
+        fail(f"{POSTGRES_ENV} already exists — refusing to regenerate the "
+             "database password; run with --reconfigure to change models/keys")
 
     answers = prompt_answers(args.goblin_home)
     bank_id, mission = prompt_bank()
@@ -1222,12 +1277,6 @@ def main(argv: list[str] | None = None) -> None:
     if not ask_yes("write config and install assets?", default=False):
         fail("aborted before writing anything")
 
-    # Regenerating the password would silently desync PostgreSQL auth on
-    # an initialized volume (a new password never rotates the role); if
-    # hindsight.env was removed but this file survived, the stack exists.
-    if POSTGRES_ENV.is_file():
-        fail(f"{POSTGRES_ENV} already exists — refusing to regenerate the "
-             "database password; run with --reconfigure to change models/keys")
     db_password = secrets.token_urlsafe(24)
     try:
         env = build_hindsight_env(answers, db_password)
@@ -1241,16 +1290,19 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.no_start:
         print("\nAssets installed, stack NOT started (and NOT enabled at boot —\n"
-              "enablement happens with the first confirmed start). To start later:")
+              "enablement happens with the first confirmed start). To finish later:\n"
+              "  uv run python deploy/memory/install.py --resume\n"
+              "Or start manually (then create the bank and wire goblin per docs/memory.md):")
         for command in deferred_start_commands(CFG_DIR):
             print(f"  {command}")
-        print("Then create the bank and wire goblin per docs/memory.md.")
         return
 
     print("\nStarting can call the embedding provider (dimension detection) "
           "and resume persisted background work — it is not free.")
     if not ask_yes("start the stack now?", default=False):
-        print("Stack not started. Assets and config are in place; start with:")
+        print("Stack not started. Assets and config are in place; finish later with:\n"
+              "  uv run python deploy/memory/install.py --resume\n"
+              "Or start manually (then create the bank and wire goblin per docs/memory.md):")
         for command in deferred_start_commands(CFG_DIR):
             print(f"  {command}")
         return
@@ -1258,19 +1310,7 @@ def main(argv: list[str] | None = None) -> None:
     pre_pull_images()
     start_stack()
     create_bank(bank_id, mission)
-    wired = wire_goblin(args.goblin_home, bank_id)
-    if wired == "live":
-        print("\nDone. Memory is live. In Telegram: /memory")
-    elif wired == "patched":
-        # The block is already in goblin.json5 — printing it again would
-        # invite a double-add the next installer run rejects.
-        print("\nStack and bank are live, and goblin.json5 is already patched — "
-              "restart goblin when ready:\n"
-              "  systemctl --user restart goblin.service")
-    else:
-        print("\nStack and bank are live, but goblin was not wired — "
-              "add the memory block printed above, then: "
-              "systemctl --user restart goblin.service")
+    report_wiring(wire_goblin(args.goblin_home, bank_id))
 
 
 def cli() -> None:
@@ -1279,8 +1319,8 @@ def cli() -> None:
     except KeyboardInterrupt:
         # Prompts happen before any write and writes are atomic, so an
         # interrupt can only leave CLEAN state: no file, or complete
-        # files. A half-install (postgres.env without hindsight.env) is
-        # detected on rerun and pointed at --reconfigure.
+        # files. A partial install (env files written, stack never
+        # started) is finished by --resume.
         print("\ninstall: interrupted — safe to rerun; existing files are "
               "detected and kept", file=sys.stderr)
         sys.exit(130)  # 128 + SIGINT, the convention shells understand

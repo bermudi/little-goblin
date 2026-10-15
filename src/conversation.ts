@@ -1509,16 +1509,6 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		deleteConversation(id) {
-			// Pending retention rides the outbox's own sweeper — a corrupt
-			// payload must not bar the delete, so a failure here is a warn,
-			// not a rollback of the conversation rows.
-			try {
-				memoryQueue.cancelConversation(id);
-			} catch (err) {
-				log.warn("retention purge failed during conversation delete", err, {
-					conversation: id,
-				});
-			}
 			db.transaction(() => {
 				// Sever the rolling navigation chain first — successors'
 				// previous_dm_id would FK-fail the row delete (a demoted
@@ -1556,6 +1546,18 @@ export function openStore(dbPath: string): ConversationStore {
 				qDeleteContexts.run(id);
 				qDeleteConv.run(id);
 			})();
+			// The purge waits for the commit: queued retention rides the
+			// append transaction only, so cancelling before the delete and
+			// then rolling back would strand those rows forever. A purge
+			// failure is still a warn — a corrupt payload must not bar the
+			// delete that already landed.
+			try {
+				memoryQueue.cancelConversation(id);
+			} catch (err) {
+				log.warn("retention purge failed during conversation delete", err, {
+					conversation: id,
+				});
+			}
 		},
 
 		history(id) {

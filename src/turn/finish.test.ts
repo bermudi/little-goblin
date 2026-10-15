@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type LanguageModel, readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
+import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory.ts";
@@ -574,32 +575,13 @@ describe("submitTurnReview", () => {
 		const skills = join(workspace, "skills");
 		mkdirSync(skills, { recursive: true });
 		const prompts: string[] = [];
-		const reviewModel = {
-			specificationVersion: "v4",
-			provider: "fake",
+		const reviewModel = scriptedModel([], {
 			modelId: "fake-review",
-			supportedUrls: {},
-			doGenerate: async (options: unknown) => {
-				prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? null));
-				return {
-					content: [{ type: "text", text: "nothing worth saving" }],
-					finishReason: { unified: "stop", raw: undefined },
-					usage: {
-						inputTokens: {
-							total: 1,
-							noCache: undefined,
-							cacheRead: undefined,
-							cacheWrite: undefined,
-						},
-						outputTokens: { total: 1, text: undefined, reasoning: undefined },
-					},
-					warnings: [],
-				};
+			onGenerate: async (options) => {
+				prompts.push(JSON.stringify(options.prompt ?? null));
+				return textResult("nothing worth saving");
 			},
-			doStream: () => {
-				throw new Error("unimplemented");
-			},
-		} as unknown as LanguageModel;
+		}).model;
 		return { root, workspace, skills, prompts, reviewModel };
 	}
 

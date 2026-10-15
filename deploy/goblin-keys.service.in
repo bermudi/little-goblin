@@ -1,3 +1,6 @@
+# Template, not a unit — scripts/install.ts renders this to
+# goblin-keys.service. Copied as-is it crash-loops: @WARM_AUTH_PROFILES@
+# is unrendered. The .in suffix is the guard.
 [Unit]
 Description=Goblin keys — sync encrypted pass-keys profile snapshots
 # Remote sync must not hold up foreground local reads. Retry until

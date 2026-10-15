@@ -66,10 +66,10 @@ if(process.argv[2]==='identity'){
 if(active&&mode==='stalled-command')await new Promise(resolve=>setTimeout(resolve,10000));
 const changed=existsSync(${JSON.stringify(join(dir, "during-http"))});
 const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; if(active)writeFileSync(countFile,String(count+1));
-process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed||mode==='watch-restart'&&count>0)?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
+process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed||mode==='watch-restart'&&count>0||mode==='watch-prerestart')?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
 }else{
-const names=mode==='boot-error'?['boot failed']:mode==='poll-error'?['long polling failed']:mode==='no-polling'?['goblin up']:['goblin up','long polling started'];
-for(const msg of names)process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:mode==='old-logs'?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id,__MONOTONIC_TIMESTAMP:mode==='old-time'?'0':mono,__REALTIME_TIMESTAMP:String(mode==='before-attempt'?0:Date.now()*1000),MESSAGE:JSON.stringify({msg,...(msg==='goblin up'&&mode==='generated'?{port:${server.port}}:msg==='goblin up'&&mode==='wrong-port'?{port:${server.port! + 1}}:msg==='goblin up'&&mode==='invalid-port'?{port:0}:{}),error:'FIXTURE_SECRET',body:'FIXTURE_SECRET'})})+'\\n');
+const names=mode==='boot-error'?['boot failed']:mode==='poll-error'?['long polling failed']:mode==='no-polling'?['goblin up']:mode==='cursor'?(process.argv.includes('--after-cursor=fixture-up')?['long polling started']:['goblin up']):['goblin up','long polling started'];
+for(const msg of names)process.stdout.write(JSON.stringify({...(mode==='cursor'?{__CURSOR:'fixture-up'}:{}),_SYSTEMD_INVOCATION_ID:mode==='old-logs'?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id,__MONOTONIC_TIMESTAMP:mode==='old-time'?'0':mono,__REALTIME_TIMESTAMP:String(mode==='before-attempt'?0:Date.now()*1000),MESSAGE:JSON.stringify({msg,...(msg==='goblin up'&&mode==='generated'?{port:${server.port}}:msg==='goblin up'&&mode==='wrong-port'?{port:${server.port! + 1}}:msg==='goblin up'&&mode==='invalid-port'?{port:0}:{}),error:'FIXTURE_SECRET',body:'FIXTURE_SECRET'})})+'\\n');
 process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:id,__MONOTONIC_TIMESTAMP:mono,__REALTIME_TIMESTAMP:String(Date.now()*1000),MESSAGE:'unstructured FIXTURE_SECRET'})+'\\n');
 if(brief){
 process.stdout.write(JSON.stringify({SYSLOG_IDENTIFIER:'systemd',__REALTIME_TIMESTAMP:String(Date.now()*1000),MESSAGE:'Started goblin.service.'})+'\\n');
@@ -84,7 +84,7 @@ process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:'ddddddddddddddddddd
 		);
 		writeFileSync(
 			join(bin, "journalctl"),
-			`#!/bin/sh\nexec '${process.execPath}' --no-install '${metadata}' journal\n`,
+			`#!/bin/sh\nexec '${process.execPath}' --no-install '${metadata}' journal "$@"\n`,
 			{ mode: 0o755 },
 		);
 		const runner = join(dir, "runner.ts");
@@ -145,6 +145,11 @@ describe("invocation-specific startup acceptance", () => {
 		expect(result.exit).toBe(0);
 		expect(result.output).toBe("accepted");
 	});
+	test("journal polling resumes after the last consumed cursor", async () => {
+		const result = await startupFixture("cursor");
+		expect(result.exit).toBe(0);
+		expect(result.output).toBe("accepted");
+	});
 	test("both current lifecycle events and served local HTML/assets are required, private fields never print", async () => {
 		const result = await startupFixture("healthy");
 		expect(result.exit).toBe(0);
@@ -199,6 +204,14 @@ describe("invocation-specific startup acceptance", () => {
 		expect(result.output).not.toContain("accepted");
 		expect(result.output).not.toContain("FIXTURE_SECRET");
 	});
+	for (const floor of [undefined, "dead"] as const)
+		test(`watch mode refuses an already-replaced invocation (${floor ?? "unfloored"})`, async () => {
+			const result = await startupFixture("watch-prerestart", "healthy", "watch", floor);
+			expect(result.exit).toBe(1);
+			expect(result.output).toContain("startup failed or restarted");
+			expect(result.output).not.toContain("accepted");
+			expect(result.output).not.toContain("FIXTURE_SECRET");
+		});
 	test("a floored watch accepts the invocation that postdates a dead unit", async () => {
 		const result = await startupFixture("healthy", "healthy", "watch", "dead");
 		expect(result.exit).toBe(0);

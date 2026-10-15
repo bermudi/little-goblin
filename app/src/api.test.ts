@@ -4,6 +4,7 @@ import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
 	clearToken,
+	fetchAttachment,
 	forgetMemoryDocument,
 	getConfig,
 	getConversationConfig,
@@ -12,12 +13,14 @@ import {
 	listMemoryDocuments,
 	loadToken,
 	NoteConflictError,
+	listNotes,
 	patchConfig,
 	patchNote,
 	patchConversationConfig,
 	restoreNoteVersion,
 	saveOperatorConfig,
 	saveToken,
+	uploadAttachment,
 } from "./api.ts";
 
 const originalFetch = globalThis.fetch;
@@ -150,6 +153,32 @@ describe("model setting scopes", () => {
 	});
 });
 
+describe("notes", () => {
+	const fakeFetch = (handler: (req: Request) => Response | Promise<Response>) => {
+		const requests: Request[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const req = new Request(new URL(String(input), "http://localhost"), init);
+				requests.push(req);
+				return handler(req);
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		return requests;
+	};
+
+	test("the list encodes project/q/archived and carries the server's truncated flag verbatim", async () => {
+		const requests = fakeFetch(() => Response.json({ notes: [], truncated: true }));
+		const res = await listNotes(null, { project: "p1", q: "pancake", archived: true });
+		expect(res.truncated).toBe(true);
+		const url = new URL(requests[0]!.url);
+		expect(url.pathname).toBe("/api/app/notes");
+		expect(url.searchParams.get("project")).toBe("p1");
+		expect(url.searchParams.get("q")).toBe("pancake");
+		expect(url.searchParams.get("archived")).toBe("1");
+	});
+});
+
 describe("operator surface", () => {
 	const fakeFetch = (handler: (req: Request) => Response | Promise<Response>) => {
 		const requests: Request[] = [];
@@ -230,6 +259,76 @@ describe("operator surface", () => {
 	});
 });
 
+describe("attachments", () => {
+	const fakeFetch = (handler: (req: Request) => Response | Promise<Response>) => {
+		const requests: Request[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const req = new Request(new URL(String(input), "http://localhost"), init);
+				requests.push(req);
+				return handler(req);
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		return requests;
+	};
+
+	test("upload posts one multipart `file` field and returns the stored ref", async () => {
+		const requests = fakeFetch(() =>
+			Response.json({
+				ref: {
+					path: "attachments/abc/note.jpg",
+					mediaType: "image/jpeg",
+					filename: "note.jpg",
+					size: 10,
+				},
+			}),
+		);
+		const file = new File(["jpeg-bytes"], "note.jpg", { type: "image/jpeg" });
+		const { ref } = await uploadAttachment("tok", file);
+		const req = requests[0]!;
+		expect(req.method).toBe("POST");
+		expect(new URL(req.url).pathname).toBe("/api/app/attachments");
+		expect(req.headers.get("authorization")).toBe("Bearer tok");
+		expect(req.headers.get("content-type")).toContain("multipart/form-data");
+		const sent = (await req.formData()).get("file");
+		expect(sent).toBeInstanceOf(File);
+		expect((sent as File).name).toBe("note.jpg");
+		expect((sent as File).type).toBe("image/jpeg");
+		expect(await (sent as File).text()).toBe("jpeg-bytes");
+		expect(ref.path).toBe("attachments/abc/note.jpg");
+	});
+
+	test("a rejected upload surfaces the server's error field", async () => {
+		fakeFetch(() => Response.json({ error: "attachment too large" }, { status: 413 }));
+		const file = new File(["x"], "huge.bin", { type: "application/octet-stream" });
+		const err = await uploadAttachment("tok", file).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ApiError);
+		expect((err as ApiError).status).toBe(413);
+		expect((err as ApiError).message).toBe("attachment too large");
+	});
+
+	test("fetch returns the blob and encodes the name in the query", async () => {
+		const bytes = new TextEncoder().encode("png-bytes");
+		const requests = fakeFetch(() => new Response(new Blob([bytes], { type: "image/png" })));
+		const blob = await fetchAttachment("tok", "note pad/1.png");
+		const url = new URL(requests[0]!.url);
+		expect(url.pathname).toBe("/api/app/attachments/file");
+		// Spaces and slashes must survive the round trip through the query.
+		expect(url.searchParams.get("name")).toBe("note pad/1.png");
+		expect(requests[0]!.headers.get("authorization")).toBe("Bearer tok");
+		expect(blob.type).toBe("image/png");
+		expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
+	});
+
+	test("a non-ok fetch raises ApiError with the status", async () => {
+		fakeFetch(() => new Response("gone", { status: 404 }));
+		const err = await fetchAttachment("tok", "missing.png").catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ApiError);
+		expect((err as ApiError).status).toBe(404);
+	});
+});
+
 // The Telegram door (design/telegram.md → Mini Apps): served under /t/,
 // operator requests rewrite /api/app/* to the identically-named /api/*
 // tails and ride x-init-data instead of a bearer token.
@@ -300,6 +399,29 @@ describe("telegram door", () => {
 		}) as typeof fetch;
 		await getMessages(null, "app/chat-1");
 		expect(new URL(requests[0]!.url).pathname).toBe("/api/conversations/chat-1/messages");
+	});
+
+	test("attachments ride the same rewrite — upload and download swap prefix and credential", async () => {
+		mountAt("/t/files");
+		const requests: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			requests.push(new Request(new URL(String(input), "http://localhost"), init));
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname === "/api/attachments") {
+				return Response.json({
+					ref: { path: "attachments/a/b.png", mediaType: "image/png", filename: "b.png", size: 1 },
+				});
+			}
+			return new Response(new Blob(["bytes"], { type: "image/png" }));
+		}) as typeof fetch;
+		await uploadAttachment("tok", new File(["b"], "b.png", { type: "image/png" }));
+		await fetchAttachment("tok", "b.png");
+		expect(new URL(requests[0]!.url).pathname).toBe("/api/attachments");
+		expect(new URL(requests[1]!.url).pathname).toBe("/api/attachments/file");
+		for (const req of requests) {
+			expect(req.headers.get("x-init-data")).toBe("user=%7B%22id%22%3A111%7D&hash=abc");
+			expect(req.headers.get("authorization")).toBeNull();
+		}
 	});
 });
 

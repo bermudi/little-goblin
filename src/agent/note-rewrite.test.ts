@@ -5,7 +5,7 @@
 // would actually receive.
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import type { LanguageModel } from "ai";
+import { generateModel } from "../testkit/fake-model.ts";
 import { APICallError } from "@ai-sdk/provider";
 import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { AuthStore } from "../auth.ts";
@@ -40,14 +40,6 @@ const testConfig = (model = "zai/glm-5.3-flash", thinking: Config["thinking"] = 
 		logLevel: "info",
 	}) as Config;
 
-interface Recorded {
-	prompt: LanguageModelV4CallOptions["prompt"];
-	providerOptions: LanguageModelV4CallOptions["providerOptions"];
-	maxOutputTokens: number | undefined;
-	abortSignal: AbortSignal | undefined;
-	tools: unknown;
-}
-
 type Responder = (
 	opts: LanguageModelV4CallOptions,
 ) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
@@ -68,34 +60,18 @@ const answer = (
 // The provider-edge fake; `resolvedAs` records the modelRef resolve was
 // asked for so tests see which configured model the call used.
 function setup(respond: Responder) {
-	const calls: Recorded[] = [];
+	const edge = generateModel(respond);
 	const resolvedAs: string[] = [];
-	const model = {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		async doGenerate(opts: LanguageModelV4CallOptions) {
-			calls.push({
-				prompt: opts.prompt,
-				providerOptions: opts.providerOptions,
-				maxOutputTokens: opts.maxOutputTokens,
-				abortSignal: opts.abortSignal,
-				tools: opts.tools,
-			});
-			return respond(opts);
-		},
-	} as unknown as LanguageModel;
 	const configRef: ConfigRef = { current: testConfig(), ttsDown: false };
 	const deps = {
 		configRef,
 		auth: NO_AUTH,
 		resolve: (_cfg: Config, _auth: AuthStore, modelRef: string) => {
 			resolvedAs.push(modelRef);
-			return Promise.resolve(model);
+			return Promise.resolve(edge.model);
 		},
 	};
-	return { calls, resolvedAs, deps, configRef };
+	return { calls: edge.generateCalls, resolvedAs, deps, configRef };
 }
 
 const QUERY = { noteId: "n-1", selection: "some **old** text", instruction: "make it terse" };

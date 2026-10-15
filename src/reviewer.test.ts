@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
+import { scriptedModel } from "./testkit/fake-model.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile } from "./log.ts";
@@ -62,24 +64,20 @@ function fakeReviewModel(
 	beforeStep?: () => Promise<void>,
 	prompts?: string[],
 ): LanguageModel {
-	let step = 0;
 	let call = 0;
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
+	return scriptedModel([], {
 		modelId: "fake-review",
-		supportedUrls: {},
-		doGenerate: async (options: unknown) => {
-			if ((options as { abortSignal?: AbortSignal }).abortSignal?.aborted) {
+		onGenerate: async (options, step) => {
+			if (options.abortSignal?.aborted) {
 				throw new Error("aborted before provider call");
 			}
 			if (beforeStep !== undefined) await beforeStep();
 			if (prompts !== undefined) {
-				prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? null));
+				prompts.push(JSON.stringify(options.prompt ?? null));
 			}
-			const s = script[Math.min(step++, script.length - 1)]!;
+			const s = script[Math.min(step, script.length - 1)]!;
 			if (s.error !== undefined) throw new Error(s.error);
-			const content: unknown[] = [];
+			const content: LanguageModelV4GenerateResult["content"] = [];
 			if (s.text !== undefined) content.push({ type: "text", text: s.text });
 			for (const c of s.calls ?? []) {
 				content.push({
@@ -107,10 +105,7 @@ function fakeReviewModel(
 				warnings: [],
 			};
 		},
-		doStream: () => {
-			throw new Error("unimplemented");
-		},
-	} as unknown as LanguageModel;
+	}).model;
 }
 
 const SKILL_MD = (name: string, extra = "") =>

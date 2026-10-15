@@ -22,6 +22,7 @@ import {
 	realpathSync,
 	statSync,
 	type Dirent,
+	type Stats,
 } from "node:fs";
 import { join, sep } from "node:path";
 
@@ -35,6 +36,8 @@ export interface OperatorSkillItem {
 	sizeBytes: number;
 	/** SKILL.md's mtime when present, else the dir's own. */
 	updatedAt: string | null;
+	/** The walk hit a cap — files/sizeBytes are a floor, not the whole tree. */
+	truncated: boolean;
 }
 
 export interface SkillsResponse {
@@ -56,21 +59,26 @@ const TEXT_VIEW_CAP = 2 * 1024 * 1024;
 const MAX_SKILL_FILES = 200;
 const MAX_SKILL_DEPTH = 3;
 
-function listFilesUnder(dir: string, rel: string, depth: number, out: string[]): void {
-	if (out.length >= MAX_SKILL_FILES || depth > MAX_SKILL_DEPTH) return;
+// Returns true when a cap stopped the walk — a dir beyond MAX_SKILL_DEPTH
+// was never opened, so its contents count as skipped whether or not any
+// exist.
+function listFilesUnder(dir: string, rel: string, depth: number, out: string[]): boolean {
+	if (out.length >= MAX_SKILL_FILES || depth > MAX_SKILL_DEPTH) return true;
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(join(dir, rel), { withFileTypes: true });
 	} catch (e) {
-		if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw e;
 	}
+	let truncated = false;
 	for (const entry of entries) {
-		if (out.length >= MAX_SKILL_FILES) return;
+		if (out.length >= MAX_SKILL_FILES) return true;
 		const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
-		if (entry.isDirectory()) listFilesUnder(dir, relPath, depth + 1, out);
+		if (entry.isDirectory()) truncated = listFilesUnder(dir, relPath, depth + 1, out) || truncated;
 		else if (entry.isFile()) out.push(relPath);
 	}
+	return truncated;
 }
 
 export function listSkillDir(dir: string): OperatorSkillItem[] {
@@ -86,7 +94,7 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 		if (!entry.isDirectory()) continue;
 		const skillDir = join(dir, entry.name);
 		const files: string[] = [];
-		listFilesUnder(skillDir, "", 1, files);
+		const truncated = listFilesUnder(skillDir, "", 1, files);
 		// SKILL.md leads so a viewer can default to it.
 		files.sort((a, b) => {
 			if (a === "SKILL.md") return -1;
@@ -116,7 +124,7 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 				if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
 			}
 		}
-		items.push({ name: entry.name, files, sizeBytes, updatedAt });
+		items.push({ name: entry.name, files, sizeBytes, updatedAt, truncated });
 	}
 	items.sort((a, b) => a.name.localeCompare(b.name));
 	return items;
@@ -224,7 +232,14 @@ export function listAttachments(dir: string): AttachmentsResponse {
 		// persistAttachment stages uploads as dotfile temps that a later
 		// rename settles — an in-flight temp is not an attachment.
 		if (entry.name.startsWith(".")) continue;
-		const st = statSync(join(dir, entry.name));
+		let st: Stats;
+		try {
+			st = statSync(join(dir, entry.name));
+		} catch (e) {
+			// Vanished between readdir and stat — absent, like a missing dir.
+			if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw e;
+		}
 		files.push({ name: entry.name, sizeBytes: st.size, updatedAt: st.mtime.toISOString() });
 	}
 	files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -296,11 +311,17 @@ export function readAttachmentBytes(
 ): AttachmentBytes | null {
 	const full = attachmentPath(dir, name);
 	if (full === null) return null;
-	const st = statSync(full);
-	if (st.size > capBytes) {
-		throw new AttachmentTooLargeError(`attachment too large to serve (${st.size} bytes)`);
+	try {
+		const st = statSync(full);
+		if (st.size > capBytes) {
+			throw new AttachmentTooLargeError(`attachment too large to serve (${st.size} bytes)`);
+		}
+		return { bytes: readFileSync(full), contentType: attachmentContentType(name) };
+	} catch (e) {
+		// Vanished between attachmentPath's stat and the read — absent.
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
 	}
-	return { bytes: readFileSync(full), contentType: attachmentContentType(name) };
 }
 
 // ---------- identity files ----------

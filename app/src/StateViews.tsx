@@ -4,7 +4,7 @@
 // validated; the containment wall lives in src/stateview.ts.
 import { useEffect, useRef, useState } from "react";
 import { fetchAttachment, getIdentity, getSkillFile, listAttachments, listSkills } from "./api.ts";
-import { describe, KV, ts, useLoad } from "./opsShared.tsx";
+import { bytes, describe, KV, ts, useLoad } from "./opsShared.tsx";
 import type {
 	AttachmentsResponse,
 	IdentityResponse,
@@ -12,12 +12,6 @@ import type {
 	OperatorSkillItem,
 	SkillsResponse,
 } from "../../src/http/operator-wire.ts";
-
-function bytes(n: number): string {
-	if (n < 1024) return `${n} B`;
-	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function OpsError({ err }: { err: string }) {
 	return (
@@ -89,6 +83,7 @@ function SkillCard({
 			</div>
 			<KV k="updated" v={ts(skill.updatedAt)} />
 			<KV k="size" v={bytes(skill.sizeBytes)} mono />
+			{skill.truncated && <p className="empty">file list truncated — size is a floor</p>}
 			<div className="skill-files">
 				{skill.files.map((f) => (
 					<button

@@ -14,6 +14,7 @@ import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { tmpDb } from "./testkit.ts";
 
 const PREFIX = "test-sbx-";
 const NETWORK = "test-sbxnet";
@@ -26,10 +27,6 @@ interface FakeContainer {
 	networks: Set<string>;
 	labels: Record<string, string>;
 	files: Map<string, Uint8Array>;
-}
-
-function tmpdb(): string {
-	return join(mkdtempSync(join(tmpdir(), "goblin-sbx-")), "goblin.sqlite");
 }
 
 // A fake podman engine: runner routes on argv shape, holding container
@@ -193,7 +190,7 @@ function fakeEngine(opts?: {
 }
 
 function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConfig>) {
-	const store = openSandboxes(tmpdb());
+	const store = openSandboxes(tmpDb("goblin-sbx-"));
 	const sandboxes = makeSandboxes({
 		podman: engine.podman,
 		store,

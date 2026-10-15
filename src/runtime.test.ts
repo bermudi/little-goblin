@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { open as openFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import {
 	APICallError,
 	type LanguageModelV4,
@@ -15,11 +16,19 @@ import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings } from "./conversation.ts";
-import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
-import { fakeModel, openStore, RecordingSink, tmpdb } from "./testkit.ts";
+import type { System1Client } from "./system1.ts";
+import {
+	deferred,
+	type FakeModelOptions,
+	fakeModel,
+	openStore,
+	pauseFakeModelAtDelta,
+	RecordingSink,
+	tmpdb,
+} from "./testkit.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -27,27 +36,34 @@ afterEach(() => {
 	dirs = [];
 });
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 // Fake the model provider at the edge: a LanguageModelV2 that streams the
-// given deltas with a delay between each.
+// given deltas.
 
 // The bell's shape (design/app.md → Spin-off): delivery hooks only —
 // no onStreamChunk, so the streaming-lane boundary treats it as
 // headless. It only ever sees the turn's terminal outcome.
 class HeadlessSink implements TurnSink {
 	done: Promise<TurnDone>;
+	readonly firstToolCall: Promise<void>;
 	private resolveDone: (d: TurnDone) => void;
+	private markFirstToolCall: () => void;
 	constructor() {
 		let r: (d: TurnDone) => void = () => {};
+		let markToolCall: () => void = () => {};
 		this.done = new Promise<TurnDone>((res) => {
 			r = res;
 		});
 		this.resolveDone = r;
+		this.firstToolCall = new Promise<void>((resolve) => {
+			markToolCall = resolve;
+		});
+		this.markFirstToolCall = markToolCall;
 	}
 	onTextDelta() {}
 	onReasoningDelta() {}
-	onToolCall() {}
+	onToolCall() {
+		this.markFirstToolCall();
+	}
 	onDone(d: TurnDone) {
 		this.resolveDone(d);
 	}
@@ -74,15 +90,26 @@ class ParkedDoneSink implements TurnSink {
 	}
 }
 
-function setup(deltas: string[], delayMs = 15) {
+function setupWithModel(model: LanguageModel) {
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(deltas, { delayMs }), system: "test" }),
+		buildStep: () => ({ model, system: "test" }),
 		makeTools: () => ({}),
 	});
 	return { store, conv, runtime };
+}
+
+function setup(deltas: string[], options: FakeModelOptions | number = {}) {
+	return setupWithModel(fakeModel(deltas, options));
+}
+
+// After the terminal event and any explicitly awaited post-done work,
+// yield one event-loop turn so the lane drain can unwind without a timed poll.
+async function settleRuntimeTurn(runtime: Runtime, convId: string): Promise<void> {
+	await setImmediate();
+	expect(runtime.busy(convId)).toBe(false);
 }
 
 describe("provider-filter retry", () => {
@@ -177,7 +204,7 @@ describe("provider-filter retry", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "Discuss German politics" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await settleRuntimeTurn(runtime, conv.id);
 			await runtime.shutdown();
 			expect(requests).toHaveLength(2);
 			expect(requests[0]).toBe(requests[1]);
@@ -214,7 +241,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "Do the action then answer" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(executions).toBe(1);
 		expect(requests).toHaveLength(3);
@@ -256,7 +283,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "Use the tool then answer" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(executions).toBe(1);
 		expect(requests).toHaveLength(2);
@@ -287,7 +314,7 @@ describe("provider-filter retry", () => {
 			modelCalls: 1,
 			transient: false,
 		});
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(3);
 		expect(sink.chunkTypes.filter((type) => type === "error")).toHaveLength(1);
@@ -307,7 +334,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(1);
 		expect(sink.text).toBe(warning);
@@ -344,7 +371,7 @@ describe("provider-filter retry", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 			expect((await sink.done).kind).toBe("error");
-			while (runtime.busy(conv.id)) await sleep(1);
+			await settleRuntimeTurn(runtime, conv.id);
 			await runtime.shutdown();
 			expect(requests).toHaveLength(2);
 			expect(executions).toBe(0);
@@ -364,7 +391,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(sink.text).toBe("Recovered answer");
@@ -393,7 +420,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(sink.chunkTypes).not.toContain("error");
@@ -446,7 +473,7 @@ describe("provider-filter retry", () => {
 		runtime.stop(conv.id);
 		release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toBe(1);
 		expect(sink.chunkTypes).not.toContain("error");
@@ -473,7 +500,7 @@ describe("provider-filter retry", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(2);
 		expect(requests[0]).toBe(requests[1]);
@@ -516,7 +543,7 @@ describe("provider-filter retry", () => {
 		runtime.stop(conv.id);
 		release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests).toHaveLength(1);
 		expect(sink.text).toBe("");
@@ -527,14 +554,16 @@ describe("provider-filter retry", () => {
 
 // Records the prompt each doStream call receives — JSON-stringified so
 // requests compare bytewise across turns (cache-stability tests).
-function recordingModel(deltas: string[], delayMs = 15) {
+function recordModel(baseModel: LanguageModel) {
 	const prompts: string[] = [];
-	const base = fakeModel(deltas, delayMs) as unknown as {
-		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
+	const base = baseModel as unknown as {
+		doStream(o: { prompt: unknown; abortSignal?: AbortSignal }): {
+			stream: ReadableStream<LanguageModelV4StreamPart>;
+		};
 	};
 	const model = {
 		...base,
-		doStream(o: { prompt: unknown }) {
+		doStream(o: { prompt: unknown; abortSignal?: AbortSignal }) {
 			prompts.push(JSON.stringify(o.prompt));
 			return base.doStream(o);
 		},
@@ -542,9 +571,13 @@ function recordingModel(deltas: string[], delayMs = 15) {
 	return { model, prompts };
 }
 
+function recordingModel(deltas: string[], options: FakeModelOptions | number = {}) {
+	return recordModel(fakeModel(deltas, options));
+}
+
 describe("turn authority", () => {
 	test("clean turn completes and persists the assistant message", async () => {
-		const { store, conv, runtime } = setup(["hello", " world"], 5);
+		const { store, conv, runtime } = setup(["hello", " world"]);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -555,11 +588,14 @@ describe("turn authority", () => {
 	});
 
 	test("epoch advance mid-turn fences it — quietly, no assistant append", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sink.firstDelta; // first delta observed — turn is mid-stream
+		await sink.firstDelta;
+		await gated.entered; // the next delta is held inside the provider stream
 		store.bumpEpoch(conv.id); // settings change, e.g. /think
+		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(sink.text.length).toBeGreaterThan(0);
 		expect(sink.text.length).toBeLessThan(5);
@@ -572,7 +608,8 @@ describe("turn authority", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let seen: AbortSignal | undefined;
-		const base = fakeModel(["a", "b", "c", "d", "e"], 20) as unknown as {
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const base = gated.model as unknown as {
 			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }): {
 				stream: ReadableStream<LanguageModelV4StreamPart>;
 			};
@@ -591,8 +628,10 @@ describe("turn authority", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sink.firstDelta; // mid-stream
+		await sink.firstDelta;
+		await gated.entered;
 		store.bumpEpoch(conv.id); // /voice or /memory toggle — no /stop, no abort
+		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		// the fence must kill the model call itself: the provider stream
 		// cannot keep generating into a stream nobody reads
@@ -601,117 +640,155 @@ describe("turn authority", () => {
 	});
 
 	test("/stop aborts and drains the queue", async () => {
-		const { store, conv, runtime } = setup(["x", "y", "z", "w"], 30);
+		const gated = pauseFakeModelAtDelta(["x", "y", "z", "w"]);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(40);
+		await gated.entered;
 		runtime.stop(conv.id);
+		gated.release();
 		const d = await sink.done;
 		expect(d.kind).toBe("fenced");
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
 	test("post-commit cancellation requires the committed fence and does not advance it again", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 20);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d"], 1);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta;
+		await gated.entered;
 		expect(() => runtime.cancelFenced(conv.id, 0)).toThrow("committed epoch");
 		expect(() => runtime.cancelFenced(conv.id, 1)).toThrow("committed epoch");
 		const epoch = store.bumpEpoch(conv.id);
 		expect(runtime.cancelFenced(conv.id, epoch).stopped).toBe(true);
 		expect(store.get(conv.id)?.epoch).toBe(epoch);
+		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(store.history(conv.id).map((message) => message.role)).toEqual(["user"]);
 		store.close();
 	});
 
 	test("/stop notifies queued turns — every sink gets exactly one onDone", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d"], 1);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10); // first turn is running
+		await s1.firstDelta;
+		await gated.entered;
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2); // queued
 		const { stopped, settled } = runtime.stop(conv.id);
 		expect(stopped).toBe(true);
-		// the dropped turn's sink is still told, so it can release resources
+		// The dropped turn's sink is still told, so it can release resources.
 		expect(await s2.done).toEqual({ kind: "fenced" });
+		gated.release();
 		expect((await s1.done).kind).toBe("fenced");
 		await settled;
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
 	test("/stop reports nothing-running on an idle lane — epoch still bumps", async () => {
-		const { store, conv, runtime } = setup(["a"], 30);
+		const gated = pauseFakeModelAtDelta(["a"]);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const idle = runtime.stop(conv.id);
 		expect(idle.stopped).toBe(false);
 		// The bump is harmless — and any turn admitted next captures it.
 		expect(store.get(conv.id)!.epoch).toBe(1);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(5); // admitted and running
+		await gated.entered;
 		const live = runtime.stop(conv.id);
 		expect(live.stopped).toBe(true);
+		gated.release();
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
 	test("stop().settled resolves only after the dropped sinks' onDone settles", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d"], 1);
+		const { store, conv, runtime } = setupWithModel(gated.model);
 		const running = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), running);
-		await sleep(10); // first turn is running
-		// A queued sink whose onDone does a slow final flush.
+		await running.firstDelta;
+		await gated.entered;
+		let releaseFlush!: () => void;
+		let beginFlush!: () => void;
+		const flush = new Promise<void>((resolve) => {
+			releaseFlush = resolve;
+		});
+		const flushStarted = new Promise<void>((resolve) => {
+			beginFlush = resolve;
+		});
 		let flushed = false;
-		const flush = new Promise<void>((r) =>
-			setTimeout(() => {
-				flushed = true;
-				r();
-			}, 40),
-		);
 		const queued: TurnSink = {
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
 			onDone: async () => {
+				beginFlush();
 				await flush;
+				flushed = true;
 			},
 		};
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), queued);
 		const { settled } = runtime.stop(conv.id);
+		await flushStarted;
 		let settledDone = false;
 		void settled.then(() => {
 			settledDone = true;
 		});
-		await sleep(15); // stop has run; the flush has not finished
 		expect(flushed).toBe(false);
 		expect(settledDone).toBe(false);
-		await flush;
-		await sleep(15);
+		releaseFlush();
+		await settled;
+		expect(flushed).toBe(true);
 		expect(settledDone).toBe(true);
+		gated.release();
+		expect((await running.done).kind).toBe("fenced");
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
-	test("a finished lane does not report stoppable turns", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
+	test("a drained lane does not report stoppable turns", async () => {
+		const { store, conv, runtime } = setup(["a"]);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.done;
-		await sleep(10); // lane fully drained
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(runtime.stop(conv.id).stopped).toBe(false);
 		store.close();
 	});
 
 	test("shutdown fences every lane and resolves after the sinks' onDone", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const first = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"]);
+		const second = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: (conversation) => ({
+				model: conversation.id === conv.id ? first.model : second.model,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+		});
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
 		runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
-		await sleep(30); // both turns mid-stream
-		await runtime.shutdown();
+		await Promise.all([first.entered, second.entered]);
+		const shuttingDown = runtime.shutdown();
+		first.release();
+		second.release();
+		await shuttingDown;
 		expect(await s1.done).toEqual({ kind: "fenced" });
 		expect(await s2.done).toEqual({ kind: "fenced" });
 		// fenced turns commit no assistant output
@@ -721,12 +798,11 @@ describe("turn authority", () => {
 	});
 
 	test("a submit after shutdown lands in history but never runs", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
+		const { store, conv, runtime } = setup(["a"]);
 		await runtime.shutdown();
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		await sleep(50); // prove no turn ever starts
 		expect(sink.text).toBe("");
 		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
 		store.close();
@@ -735,6 +811,8 @@ describe("turn authority", () => {
 	test("a tool call under stale authority never executes", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const toolCallPending = deferred<void>();
+		const releaseToolCall = deferred<void>();
 		let executed = false;
 		const runtime = new Runtime({
 			store,
@@ -758,7 +836,8 @@ describe("turn authority", () => {
 									}
 								};
 								push({ type: "stream-start", warnings: [] });
-								await sleep(30); // epoch bump lands before the tool call
+								toolCallPending.resolve();
+								await releaseToolCall.promise;
 								push({
 									type: "tool-call",
 									toolCallId: "c1",
@@ -803,14 +882,16 @@ describe("turn authority", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.admitted; // turn holds its epoch — bump cannot race admission
+		await toolCallPending.promise; // provider is paused immediately before emitting the tool call
 		store.bumpEpoch(conv.id); // settings change mid-turn
+		releaseToolCall.resolve();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran
 		store.close();
 	});
 
 	test("queued turns run serially", async () => {
-		const { store, conv, runtime } = setup(["r"], 10);
+		const { store, conv, runtime } = setup(["r"]);
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
@@ -824,7 +905,8 @@ describe("turn authority", () => {
 	test("submits queued behind a running turn coalesce into ONE successor turn", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const { model, prompts } = recordingModel(["answer"], 30);
+		const gated = pauseFakeModelAtDelta(["answer"]);
+		const { model, prompts } = recordModel(gated.model);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({ model, system: "test" }),
@@ -834,9 +916,10 @@ describe("turn authority", () => {
 		const s2 = new RecordingSink();
 		const s3 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+2?" }]), s1);
-		await sleep(15); // turn 1 is mid-stream
+		await gated.entered;
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+5?" }]), s2);
 		runtime.submit(conv, userMessage([{ type: "text", text: "2+8?" }]), s3);
+		gated.release();
 		// Two queued submits, one successor turn — every sink still gets
 		// exactly one onDone.
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -878,7 +961,7 @@ describe("turn authority", () => {
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "earlier answer" }] },
 			{ id: "sys1", role: "system", parts: [{ type: "text", text: event }] },
 		]);
-		const { model, prompts } = recordingModel(["answer"], 5);
+		const { model, prompts } = recordingModel(["answer"]);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({ model, system: "test instructions" }),
@@ -1132,7 +1215,7 @@ describe("turn authority", () => {
 				],
 			},
 		]);
-		const { model, prompts } = recordingModel(["ok"], 5);
+		const { model, prompts } = recordingModel(["ok"]);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({ model, system: "test" }), // no inputModalities → text-only
@@ -1165,7 +1248,7 @@ describe("turn authority", () => {
 				],
 			},
 		]);
-		const { model, prompts } = recordingModel(["ok"], 5);
+		const { model, prompts } = recordingModel(["ok"]);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({
@@ -1184,7 +1267,8 @@ describe("turn authority", () => {
 	});
 
 	test("a throwing sink still gets exactly one onDone", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
+		const { store, conv, runtime } = setup(["a"]);
+		const called = deferred<void>();
 		let calls = 0;
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), {
 			onTextDelta() {},
@@ -1192,10 +1276,12 @@ describe("turn authority", () => {
 			onToolCall() {},
 			onDone() {
 				calls++;
+				called.resolve();
 				throw new Error("sink blew up");
 			},
 		});
-		await sleep(100);
+		await called.promise;
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(calls).toBe(1);
 		store.close();
 	});
@@ -1516,7 +1602,7 @@ describe("context overflow recovery", () => {
 		runtime.stop(conv.id);
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		// The compaction died with the stop; no resume call ever ran.
-		await sleep(30);
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -1564,10 +1650,6 @@ describe("context overflow recovery", () => {
 		});
 		const head = new RecordingSink();
 		const joiner = new RecordingSink();
-		let joinerSettled = false;
-		joiner.done.then(() => {
-			joinerSettled = true;
-		});
 		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
 		await started;
 		// Queued while the overflow compaction holds the lane; the resumed
@@ -1575,14 +1657,10 @@ describe("context overflow recovery", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "joined during compact" }]), joiner);
 		release();
 		expect((await head.done).kind).toBe("error");
-		await sleep(40);
-		// The claim must have put the joiner on a settlement surface: the
-		// crash may not strand a claimed-but-untracked submit — its stream
-		// would hang forever, shutdown included.
-		expect(joinerSettled).toBe(true);
-		// Unstamped: the crash died in admission, before the attempt's try —
-		// drain's last-ditch settlement cannot know modelCalls/transient.
+		// The claim must put the joiner on a settlement surface: the crash
+		// may not strand a claimed-but-untracked submit.
 		expect(await joiner.done).toEqual({ kind: "error", message: "Synthetic SQLite read failure" });
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(runtime.busy(conv.id)).toBe(false);
 		store.close();
@@ -1605,7 +1683,7 @@ describe("cache stability", () => {
 	test("turn N+1's request is turn N's request with content appended", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const { model, prompts } = recordingModel(["hello world"], 5);
+		const { model, prompts } = recordingModel(["hello world"]);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({ model, system: "test" }),
@@ -1633,7 +1711,7 @@ describe("cache stability", () => {
 		writeFileSync(b, "pngdata-b");
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const { model, prompts } = recordingModel(["ok"], 5);
+		const { model, prompts } = recordingModel(["ok"]);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({
@@ -1965,8 +2043,19 @@ describe("cache stability", () => {
 				},
 			}) as unknown as LanguageModel;
 		const summaries: string[] = [];
+		const compactionWritten = deferred<void>();
+		const observedStore = new Proxy(store, {
+			get(target, key, receiver) {
+				if (key === "setCompaction")
+					return (id: string, value: Parameters<typeof store.setCompaction>[1]) => {
+						target.setCompaction(id, value);
+						compactionWritten.resolve();
+					};
+				return Reflect.get(target, key, receiver);
+			},
+		});
 		const runtime = new Runtime({
-			store,
+			store: observedStore,
 			buildStep: () => ({ model: model(750), system: "test", contextWindow: 1000 }),
 			makeTools: () => ({}),
 			compaction: {
@@ -1980,12 +2069,9 @@ describe("cache stability", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		// The compaction runs in-lane AFTER the sinks are notified — done
-		// resolving only means the reply landed. Poll for the pointer,
-		// bounded, instead of a fixed sleep.
-		for (let i = 0; i < 100 && store.getCompaction(conv.id) === null; i++) {
-			await sleep(10);
-		}
+		// The completion sink fires before threshold compaction finishes;
+		// observe the durable pointer write instead of polling the store.
+		await compactionWritten.promise;
 		// Exactly 75% is inclusive — the trigger fired.
 		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
 		// next queued turn's snapshot — here, before done resolves.
@@ -2011,6 +2097,7 @@ describe("cache stability", () => {
 			| { text: string }
 			| undefined;
 		expect(lastText?.text).toBe("ok");
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 
 		// Just below the threshold (74%): no compaction, no pointer.
@@ -2030,6 +2117,7 @@ describe("cache stability", () => {
 		const sink2 = new RecordingSink();
 		runtime2.submit(conv2, userMessage([{ type: "text", text: "hi" }]), sink2);
 		expect(await sink2.done).toEqual({ kind: "completed" });
+		await settleRuntimeTurn(runtime2, conv2.id);
 		expect(store2.getCompaction(conv2.id)).toBeNull();
 		store2.close();
 	});
@@ -2049,7 +2137,7 @@ describe("cache stability", () => {
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({
-				model: fakeModel(["slow ", "reply"], 40),
+				model: fakeModel(["slow ", "reply"]),
 				system: "test",
 				contextWindow: 1000,
 			}),
@@ -2081,16 +2169,18 @@ describe("cache stability", () => {
 			.filter((e) => (e.anchorSeq ?? e.seq) > boundary)
 			.map((e) => e.seq);
 		expect(tail).toEqual(expected);
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
 	test("/stop drops a queued /compact — it resolves as a noop", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const gated = pauseFakeModelAtDelta(["slow ", "reply"], 1);
 		const runtime = new Runtime({
 			store,
 			buildStep: () => ({
-				model: fakeModel(["slow ", "reply"], 40),
+				model: gated.model,
 				system: "test",
 				contextWindow: 1000,
 			}),
@@ -2099,14 +2189,17 @@ describe("cache stability", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sink.firstDelta; // mid-stream: the compact queues behind the turn
+		await sink.firstDelta;
+		await gated.entered;
 		const compacted = runtime.compact(conv);
 		const { stopped } = runtime.stop(conv.id);
 		expect(stopped).toBe(true);
+		gated.release();
 		// stop means stop — the queued job drops like a queued turn, but
 		// its promise still settles so the /compact reply fires.
 		expect(await compacted).toEqual({ kind: "noop", reason: "stopped" });
 		expect(await sink.done).toEqual({ kind: "fenced" });
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
 	});
@@ -2134,7 +2227,7 @@ describe("cache stability", () => {
 			store,
 			buildStep: () =>
 				buildGate.then(() => ({
-					model: fakeModel(["reply"], 5),
+					model: fakeModel(["reply"]),
 					system: "test",
 					contextWindow: 1000,
 				})),
@@ -2159,6 +2252,7 @@ describe("cache stability", () => {
 		// authority check lands first now: the compaction rejects as fenced
 		// before the (pre-aborted) summary call could even start.
 		await expect(compacted).rejects.toThrow("turn fenced");
+		await settleRuntimeTurn(runtime, conv.id);
 		// No history pointer was written despite the summary path being
 		// reachable — the crossing retries on the next threshold.
 		expect(store.getCompaction(conv.id)).toBeNull();
@@ -2266,8 +2360,8 @@ describe("cache stability", () => {
 		expect(store.get(conv.id)?.epoch).toBe(1);
 		releaseSummary("the folded era");
 		expect(await barrier.done).toEqual({ kind: "completed" });
-		// Settle the lane before closing the store — the barrier turn's
-		// post-done work must finish first.
+		// The barrier turn's onDone precedes its final lane cleanup.
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		// The summary resolved, but the pointer never landed and the frozen
 		// snapshot survived — the next threshold crossing retries under the
@@ -2303,7 +2397,7 @@ describe("cache stability", () => {
 		});
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["reply"], 1), system: "test", contextWindow: 1000 }),
+			buildStep: () => ({ model: fakeModel(["reply"]), system: "test", contextWindow: 1000 }),
 			makeTools: () => ({}),
 			compaction: {
 				modelRef: () => "m",
@@ -2321,6 +2415,7 @@ describe("cache stability", () => {
 		// The job rejects with the fence — the /compact reply reports it and
 		// nothing was written.
 		await expect(compacted).rejects.toThrow("turn fenced");
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -2334,11 +2429,12 @@ describe("cache stability", () => {
 		const pendingDelivery = new Promise<void>((resolve) => {
 			release = resolve;
 		});
+		const deliveryStarted = deferred<void>();
 		const runtime = new Runtime({
 			store,
 			buildStep: () => {
 				builds++;
-				return { model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
+				return { model: fakeModel(["ok"]), system: "test", contextWindow: 1 };
 			},
 			makeTools: () => ({}),
 			compaction: { modelRef: () => "m", summarize: async () => "should not run" },
@@ -2346,19 +2442,18 @@ describe("cache stability", () => {
 		const sink = new RecordingSink();
 		const delivered = sink.onDone.bind(sink);
 		sink.onDone = async (done) => {
+			deliveryStarted.resolve();
 			await pendingDelivery;
 			delivered(done);
 		};
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sink.firstDelta;
-		// Let the turn reach onDone, then revoke its authority while the
-		// delivery remains parked.
-		for (let i = 0; i < 100 && store.history(conv.id).length < 2; i++) await sleep(1);
+		// onDone is entered only after the answer has been committed.
+		await deliveryStarted.promise;
 		expect(store.history(conv.id)).toHaveLength(2);
 		runtime.stop(conv.id);
 		release();
 		await sink.done;
-		await sleep(20);
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(builds).toBe(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -2417,9 +2512,7 @@ describe("cache stability", () => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			// The warn rides the same turn's log trail — a warning that never
-			// lands was the fail-quiet seam this guards against.
-			await Bun.sleep(20);
+			// The warn is written synchronously on the turn's stream path.
 			const lines = readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
@@ -2439,7 +2532,7 @@ describe("skill reviewer hook", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["answer"], 1), system: "test" }),
+			buildStep: () => ({ model: fakeModel(["answer"]), system: "test" }),
 			makeTools: () => ({}),
 		});
 		let release!: () => void;
@@ -2476,12 +2569,11 @@ describe("skill reviewer hook", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "save this" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await atGate;
-		// A settled drain removes the lane; shutdown must still find the gate.
-		await sleep(20);
+		// The turn is no longer busy, but its off-lane gate remains held.
+		expect(runtime.busy(conv.id)).toBe(false);
 		await runtime.shutdown();
-		store.close();
 		release();
-		await sleep(20);
+		store.close();
 	});
 	// The finish-side behaviors (snapshot construction, exclusion,
 	// prior-turn chain, the digest payload) moved to turn/finish.test.ts
@@ -2489,7 +2581,8 @@ describe("skill reviewer hook", () => {
 	// shutdown fencing a held gate, and authority (a fenced turn never
 	// reaches the finish path at all).
 	test("a fenced turn never gates", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const stream = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const { store, conv, runtime } = setupWithModel(stream.model);
 		let gated = false;
 		runtime.setReviewer(
 			new Reviewer({
@@ -2515,9 +2608,11 @@ describe("skill reviewer hook", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta;
+		await stream.entered;
 		store.bumpEpoch(conv.id);
+		stream.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		await sleep(50); // the fire-and-forget gate would have fired by now
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(gated).toBe(false);
 		store.close();
 	});
@@ -2622,9 +2717,8 @@ describe("steering", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
-		// Turn 1 is mid-tool-call (step 1 done, tool gated). Submit —
-		// this is the steer.
-		await sleep(20);
+		// The first tool call is on the wire and its execution is gated.
+		await s1.firstToolCall;
 		runtime.submit(conv, userMessage([{ type: "text", text: "actually pivot" }]), s2);
 		releaseTool();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2675,7 +2769,7 @@ describe("steering", () => {
 				),
 			).toBeNull();
 			runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), s1);
-			await sleep(20); // step 1 (the tool call) is on the wire, tool gated
+			await s1.firstToolCall;
 			const seen: UIMessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
 			const replay = runtime.subscribeLiveChunks(
@@ -2710,7 +2804,8 @@ describe("steering", () => {
 	test("a submit during the turn's startup steers into the first call", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const { model, prompts } = recordingModel(["done"], 5);
+		const { model, prompts } = recordingModel(["done"]);
+		const buildStarted = deferred<void>();
 		let releaseStep: () => void = () => {};
 		const stepGate = new Promise<void>((r) => {
 			releaseStep = r;
@@ -2719,6 +2814,7 @@ describe("steering", () => {
 			store,
 			// buildStep still pending when the second submit lands.
 			buildStep: async () => {
+				buildStarted.resolve();
 				await stepGate;
 				return { model, system: "test" };
 			},
@@ -2727,7 +2823,7 @@ describe("steering", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10);
+		await buildStarted.promise;
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2765,7 +2861,7 @@ describe("steering", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(20); // mid-tool-call
+		await s1.firstToolCall;
 		store.bumpEpoch(conv.id); // fence, without stop()'s queue drop
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseTool();
@@ -2775,7 +2871,7 @@ describe("steering", () => {
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("two");
-		await sleep(20); // let the successor's post-completion authority check land before close
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
@@ -2796,7 +2892,7 @@ describe("steering", () => {
 		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall;
 		const s2 = new RecordingSink();
 		runtime.submit(
 			conv,
@@ -2813,11 +2909,12 @@ describe("steering", () => {
 			s2,
 		);
 		releaseTool(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
-		await sleep(30);
+		const writer = await openFile(fifo, "w"); // resolves only after the reader opens
 		const s3 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), s3);
 		// Unpark the photo and let the turn finish.
-		await writeFile(fifo, "pngdata");
+		await writer.writeFile("pngdata");
+		await writer.close();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
 		// Swap the FIFO for a regular file: the successor's admission would
@@ -2843,6 +2940,7 @@ describe("steering", () => {
 			...detail.filter((d) => d.message.role === "user").map((d) => d.seq),
 		);
 		expect(assistants[1]!.anchorSeq).toBe(followUpSeq);
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
@@ -2855,7 +2953,7 @@ describe("steering", () => {
 		const { store, conv, runtime } = steeringSetup(model, gate);
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall;
 		// Poison: a file part with an invalid URL — materializeAttachments
 		// passes it through untouched, convertToModelMessages throws.
 		const s2 = new RecordingSink();
@@ -2890,6 +2988,7 @@ describe("steering", () => {
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("could not be prepared for the model");
 		expect(prompts[2]).toContain("still there?");
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 
@@ -2913,7 +3012,7 @@ describe("steering", () => {
 		}
 		const joiner = new JoiningSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
-		await sleep(30); // parked mid-tool-call
+		await head.firstToolCall;
 		// The steer's conversion parks reading the FIFO; the epoch dies
 		// while it waits, and the conversion then SUCCEEDS — the fence
 		// must still hold on the success path, before join/replay/fold.
@@ -2932,16 +3031,17 @@ describe("steering", () => {
 			joiner,
 		);
 		releaseTool();
-		await sleep(40);
+		const writer = await openFile(fifo, "w");
 		store.bumpEpoch(conv.id);
-		await writeFile(fifo, "pngdata");
+		await writer.writeFile("pngdata");
+		await writer.close();
 		expect(await head.done).toEqual({ kind: "fenced" });
 		expect(await joiner.done).toEqual({ kind: "fenced" });
 		// The joiner never joined: no wire replay reached it after the
 		// fence, and no model request ever carried its content.
 		expect(joinerChunks).toHaveLength(0);
 		expect(prompts.every((p) => !p.includes("photo.png"))).toBe(true);
-		await sleep(20);
+		await settleRuntimeTurn(runtime, conv.id);
 		store.close();
 	});
 });
@@ -2955,7 +3055,7 @@ describe("app channel", () => {
 		const conv = store.resolve(appAddress("chat-01"), "/w");
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["hello", " app"], 0), system: "test" }),
+			buildStep: () => ({ model: fakeModel(["hello", " app"]), system: "test" }),
 			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
@@ -2968,6 +3068,7 @@ describe("app channel", () => {
 		expect(sink.chunkTypes[0]).toBe("start");
 		expect(sink.chunkTypes[sink.chunkTypes.length - 1]).toBe("finish");
 		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -2975,7 +3076,8 @@ describe("app channel", () => {
 	test("steering into a running app turn works through the same queue", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve(appAddress("chat-01"), "/w");
-		const { model, prompts } = recordingModel(["done"], 0);
+		const { model, prompts } = recordingModel(["done"]);
+		const buildStarted = deferred<void>();
 		let releaseStep: () => void = () => {};
 		const stepGate = new Promise<void>((r) => {
 			releaseStep = r;
@@ -2985,6 +3087,7 @@ describe("app channel", () => {
 			// buildStep still pending when the second submit lands — the
 			// steer folds it into the first model call.
 			buildStep: async () => {
+				buildStarted.resolve();
 				await stepGate;
 				return { model, system: "test" };
 			},
@@ -2993,7 +3096,7 @@ describe("app channel", () => {
 		const s1 = new RecordingSink();
 		const s2 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		await sleep(10);
+		await buildStarted.promise;
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -3004,6 +3107,7 @@ describe("app channel", () => {
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");
 		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "user", "assistant"]);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -3025,7 +3129,7 @@ describe("streaming lane boundary", () => {
 		const headless = new HeadlessSink();
 		const streaming = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), headless);
-		await sleep(20); // parked mid-tool-call
+		await headless.firstToolCall;
 		runtime.submit(conv, userMessage([{ type: "text", text: "watch me" }]), streaming);
 		releaseTool();
 		expect(await headless.done).toEqual({ kind: "completed" });
@@ -3049,7 +3153,7 @@ describe("streaming lane boundary", () => {
 		const streaming = new RecordingSink();
 		const headless = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), streaming);
-		await sleep(20); // parked mid-tool-call
+		await streaming.firstToolCall;
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), headless);
 		releaseTool();
 		expect(await streaming.done).toEqual({ kind: "completed" });
@@ -3070,7 +3174,7 @@ describe("streaming lane boundary", () => {
 		const first = new HeadlessSink();
 		const second = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), first);
-		await sleep(20); // parked mid-tool-call
+		await first.firstToolCall;
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), second);
 		releaseTool();
 		expect(await first.done).toEqual({ kind: "completed" });
@@ -3088,7 +3192,7 @@ describe("streaming lane boundary", () => {
 	// answer the same message a second time. Multiple pending submits at
 	// admission, not arrivals during the model loop.
 	test("admission never reads a queued streaming submit — the client keeps its own turn", async () => {
-		const { model, prompts } = recordingModel(["answer"], 5);
+		const { model, prompts } = recordingModel(["answer"]);
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
@@ -3253,7 +3357,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "dig everywhere" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		// 80 tool steps then the answer step — no forced landing.
 		expect(requests).toHaveLength(81);
@@ -3275,7 +3379,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed", forced: "repeat" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		// 20 tool steps: warn appended at the request after the 10th
 		// result, cut lands tools-off on the request after the 20th.
@@ -3321,14 +3425,12 @@ describe("loop landings", () => {
 			settled(): Promise<void>;
 		} {
 			const states: { totalToolCalls: number; recentCalls: { result: string }[] }[] = [];
+			const allDecisions = deferred<void>();
 			let i = 0;
-			let pending = 0;
+			let completed = 0;
+			if (scores.length === 0) allDecisions.resolve();
 			const decide: System1Client["decide"] = async (state, questions) => {
-				pending++;
 				try {
-					// Settle inside the next tool's execution so the verdict is
-					// deterministic in time (probe's 20ms execution pads it).
-					await sleep(5);
 					expect(questions["stuck"]).toBeDefined();
 					const s = state as {
 						totalToolCalls: number;
@@ -3347,32 +3449,32 @@ describe("loop landings", () => {
 					if (score instanceof Error) throw score;
 					return { answers: { stuck: score ?? 0 }, inputTokens: 5, cost: 0 };
 				} finally {
-					pending--;
+					completed++;
+					if (completed === scores.length) allDecisions.resolve();
 				}
 			};
 			return {
 				decide,
 				states,
 				settled: async () => {
-					while (pending > 0) await sleep(1);
+					await allDecisions.promise;
+					// Let the TurnState .then/.finally handlers consume the
+					// resolved model decision before assertions inspect landings.
+					await Promise.resolve();
 				},
 			};
 		}
 
 		test("two consecutive stuck verdicts cut — the first warns", async () => {
 			const { model, requests } = loopModel();
-			const { decide, states } = decideScript([0.9, 0.9]);
-			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => {
-					await sleep(20);
-					return "ok";
-				},
-			});
+			const { decide, states, settled } = decideScript([0.9, 0.9]);
+			const { store, conv, runtime } = loopSetup(model);
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed", forced: "watchdog" });
-			while (runtime.busy(conv.id)) await sleep(1);
+			await settled();
+			await settleRuntimeTurn(runtime, conv.id);
 			await runtime.shutdown();
 			// Checks at calls 2 and 4: the first warns (lands in the next
 			// boundary's request, tools still on), the second cuts — the
@@ -3396,19 +3498,14 @@ describe("loop landings", () => {
 		test("a sub-threshold check resets the escalation — no cut", async () => {
 			const { model, requests } = loopModel({ calls: 6 });
 			const { decide, states, settled } = decideScript([0.9, 0.1, 0.9]);
-			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => {
-					await sleep(20);
-					return "ok";
-				},
-			});
+			const { store, conv, runtime } = loopSetup(model);
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
-			await runtime.shutdown();
 			await settled(); // the last check can outlive the answer step
+			await settleRuntimeTurn(runtime, conv.id);
+			await runtime.shutdown();
 			// warn, reset, warn — never two consecutive stuck verdicts.
 			expect(states).toHaveLength(3);
 			expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
@@ -3421,19 +3518,14 @@ describe("loop landings", () => {
 				new Error("system1 down"),
 				new Error("system1 down"),
 			]);
-			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => {
-					await sleep(20);
-					return "ok";
-				},
-			});
+			const { store, conv, runtime } = loopSetup(model);
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
 			expect(await sink.done).toEqual({ kind: "completed" });
-			while (runtime.busy(conv.id)) await sleep(1);
-			await runtime.shutdown();
 			await settled();
+			await settleRuntimeTurn(runtime, conv.id);
+			await runtime.shutdown();
 			expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
 			store.close();
 		});
@@ -3445,7 +3537,7 @@ describe("loop landings", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "fill me" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed", forced: "context" });
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		// Step 1's 900/1000 input crossed the line — request 2 is the
 		// tools-off landing with the context nudge, not call 5.
@@ -3477,7 +3569,7 @@ describe("loop landings", () => {
 		});
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start" }]), s1);
-		await sleep(20); // parked mid-tool-call
+		await s1.firstToolCall;
 		const s2 = new RecordingSink();
 		runtime.submit(
 			conv,
@@ -3496,7 +3588,7 @@ describe("loop landings", () => {
 		// errored its own delivery and the forced step went tools-off.
 		expect(await s1.done).toEqual({ kind: "completed", forced: "context" });
 		expect((await s2.done).kind).toBe("error");
-		while (runtime.busy(conv.id)) await sleep(1);
+		await settleRuntimeTurn(runtime, conv.id);
 		await runtime.shutdown();
 		expect(requests.at(-1)!.toolChoice).toBe("none");
 		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");
@@ -3530,7 +3622,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		async buildStep(conv) {
 			if (++calls === 1) await held;
 			return {
-				model: fakeModel([`${conv.model}:${conv.thinking}`], 1),
+				model: fakeModel([`${conv.model}:${conv.thinking}`]),
 				system: "test",
 				label: conv.model!,
 			};
@@ -3578,6 +3670,8 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		expect(summaries.every((s) => s === "test/compact:low")).toBe(true);
 		expect(summaries.length).toBeGreaterThan(0);
 		expect(store.getCompaction(app.id)!.model).toBe("test/compact");
+		await settleRuntimeTurn(runtime, app.id);
+		await settleRuntimeTurn(runtime, dm.id);
 	} finally {
 		await runtime.shutdown();
 		store.close();
@@ -3626,6 +3720,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		const next = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "continue" }]), next);
 		expect((await next.done).kind).toBe("completed");
+		await settleRuntimeTurn(runtime, conv.id);
 		expect(selections.at(-1)).toBe("test/changed:low");
 	} finally {
 		await runtime.shutdown();

@@ -2,9 +2,11 @@ import { afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModel, UIMessageChunk } from "ai";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import type { LanguageModel, UIMessageChunk } from "ai";
+
 export { openStore } from "./conversation.ts";
+
 import type { TurnDone, TurnSink } from "./runtime.ts";
 
 export interface Deferred<T> {
@@ -106,6 +108,24 @@ export function fakeModel(
 	} as unknown as LanguageModel;
 }
 
+/** Hold a provider stream at one delta until a test releases it. */
+export function pauseFakeModelAtDelta(
+	deltas: string[],
+	index = 0,
+): { model: LanguageModel; entered: Promise<void>; release(): void } {
+	const entered = deferred<void>();
+	const gate = deferred<void>();
+	const model = fakeModel(deltas, {
+		beforeDelta: async (_delta, current) => {
+			if (current === index) {
+				entered.resolve();
+				await gate.promise;
+			}
+		},
+	});
+	return { model, entered: entered.promise, release: () => gate.resolve() };
+}
+
 /** Records the runtime's delivery and streaming hooks, with event promises for race tests. */
 export class RecordingSink implements TurnSink {
 	text = "";
@@ -114,9 +134,11 @@ export class RecordingSink implements TurnSink {
 	readonly done: Promise<TurnDone>;
 	readonly admitted: Promise<void>;
 	readonly firstDelta: Promise<void>;
+	readonly firstToolCall: Promise<void>;
 	private resolveDone!: (done: TurnDone) => void;
 	private markAdmitted!: () => void;
 	private markFirstDelta!: () => void;
+	private markFirstToolCall!: () => void;
 
 	constructor() {
 		this.done = new Promise<TurnDone>((resolve) => {
@@ -127,6 +149,9 @@ export class RecordingSink implements TurnSink {
 		});
 		this.firstDelta = new Promise<void>((resolve) => {
 			this.markFirstDelta = resolve;
+		});
+		this.firstToolCall = new Promise<void>((resolve) => {
+			this.markFirstToolCall = resolve;
 		});
 	}
 
@@ -140,7 +165,9 @@ export class RecordingSink implements TurnSink {
 	}
 
 	onReasoningDelta() {}
-	onToolCall() {}
+	onToolCall() {
+		this.markFirstToolCall();
+	}
 
 	onStreamChunk(chunk: UIMessageChunk) {
 		this.chunkTypes.push(chunk.type);

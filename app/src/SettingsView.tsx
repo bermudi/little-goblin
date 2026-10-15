@@ -1100,6 +1100,63 @@ export function SettingsView({
 
 			{eff === "chat" && (
 				<>
+					<h2 className="ops-h2">App defaults</h2>
+					<div className="card">
+						{modelButton(
+							"Default model",
+							"New app conversations only. Each chat remembers its own model and thinking level.",
+							"model",
+							draft.model,
+							"appModelLabel",
+						)}
+						<Row
+							label="Thinking"
+							cap={
+								levels.app.unavailable
+									? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
+									: "Only levels this model can express are shown."
+							}
+							col
+						>
+							<Seg
+								options={levels.app.values}
+								value={displayLevel(draft.thinking, levels.app.values)}
+								ariaLabel="App default thinking level"
+								onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
+							/>
+						</Row>
+					</div>
+					{/* Topic titles and Vision are global model calls — they run on
+					    Telegram turns too; the card sits outside both channel
+					    sections so the grouping says so. */}
+					<h2 className="ops-h2">All channels</h2>
+					<div className="card">
+						{modelButton(
+							"Topic titles",
+							"Names Telegram topics and new app chats, then stops.",
+							"title",
+							draft.titleModel,
+							"titleModelLabel",
+						)}
+						{modelButton(
+							"Vision",
+							"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments. Telegram and app turns.",
+							"vision",
+							draft.vision?.model ?? "",
+							"visionLabel",
+						)}
+					</div>
+					<h2 className="ops-h2">Favorites</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.favorites}
+							onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
+							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
+							placeholder="provider/model-id"
+							ariaLabel="add favorite"
+							cap="Offered in the pickers above."
+						/>
+					</div>
 					<h2 className="ops-h2">Telegram</h2>
 					<div className="card">
 						{modelButton(
@@ -1147,57 +1204,6 @@ export function SettingsView({
 								/>
 							</Row>
 						)}
-					</div>
-					<h2 className="ops-h2">App defaults</h2>
-					<div className="card">
-						{modelButton(
-							"Default model",
-							"New app conversations only. Each chat remembers its own model and thinking level.",
-							"model",
-							draft.model,
-							"appModelLabel",
-						)}
-						<Row
-							label="Thinking"
-							cap={
-								levels.app.unavailable
-									? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
-									: "Only levels this model can express are shown."
-							}
-							col
-						>
-							<Seg
-								options={levels.app.values}
-								value={displayLevel(draft.thinking, levels.app.values)}
-								ariaLabel="App default thinking level"
-								onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
-							/>
-						</Row>
-						{modelButton(
-							"Topic titles",
-							"Names new topics, then stops.",
-							"title",
-							draft.titleModel,
-							"titleModelLabel",
-						)}
-						{modelButton(
-							"Vision",
-							"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
-							"vision",
-							draft.vision?.model ?? "",
-							"visionLabel",
-						)}
-					</div>
-					<h2 className="ops-h2">Favorites</h2>
-					<div className="card">
-						<ChipsEditor
-							values={draft.favorites}
-							onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
-							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
-							placeholder="provider/model-id"
-							ariaLabel="add favorite"
-							cap="Offered in the pickers above."
-						/>
 					</div>
 				</>
 			)}

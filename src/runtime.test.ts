@@ -2883,28 +2883,11 @@ describe("app channel", () => {
 	// The turn loop is shared machinery: an app conversation submits,
 	// steers, fences and persists exactly like a telegram one — the only
 	// difference is the sink it streams into (DESIGN.md, App channel).
-	test("an app conversation runs a turn and streams raw chunks to its sink", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("chat-01"), "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: fakeModel(["hello", " app"], 0), system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		expect(sink.text).toBe("hello app");
-		// The raw pass-through saw the same stream the delta methods
-		// consumed — the app client's SSE surface rides verbatim.
-		expect(sink.chunkTypes).toContain("text-delta");
-		expect(sink.chunkTypes[0]).toBe("start");
-		expect(sink.chunkTypes[sink.chunkTypes.length - 1]).toBe("finish");
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
-		await runtime.shutdown();
-		store.close();
-	});
-
+	// The basic app turn (submit → chunk stream → history) is pinned
+	// end-to-end through the real door in http/app-channel.test.ts
+	// ("chat submits a user message and streams UIMessage chunks as
+	// SSE"); what stays here is the Runtime-level steering pin the HTTP
+	// surface cannot assert as directly.
 	test("steering into a running app turn works through the same queue", async () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve(appAddress("chat-01"), "/w");

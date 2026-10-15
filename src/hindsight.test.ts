@@ -22,6 +22,124 @@ const document: MemoryDocument = {
 };
 
 describe("Hindsight HTTP boundary", () => {
+	test("retained large documents remain browsable with UTF-8 and JSON escaping", async () => {
+		for (const original of ["😀".repeat(300_000), "\u0001".repeat(900_000)]) {
+			const client = new HindsightClient({
+				baseUrl: fake(() =>
+					Response.json({
+						id: "large",
+						bank_id: "g",
+						original_text: original,
+						created_at: "2026-01-01",
+						updated_at: "2026-01-01",
+						memory_unit_count: 1,
+					}),
+				),
+				bankId: "g",
+			});
+			expect((await client.getDocument("large"))?.original_text).toBe(original);
+		}
+	});
+
+	test("score floors and observation preference use the observed 0.10 wire fields", async () => {
+		const baseUrl = fake(async (request) => {
+			expect(await request.json()).toEqual({
+				query: "related",
+				max_tokens: 2048,
+				budget: "low",
+				prefer_observations: true,
+				min_scores: { semantic: 0.3 },
+			});
+			return Response.json({
+				results: [
+					{ id: "relevant", text: "Relevant fact.", scores: { final: 0.5, semantic: 0.7 } },
+					{ id: "noise", text: "Off-topic fact.", scores: { final: 0.5, semantic: 0.1 } },
+					{ id: "graph-only", text: "No semantic stage.", scores: { final: 0.5, semantic: null } },
+					{ id: "legacy", text: "No reported scores." },
+				],
+			});
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "g" });
+		expect(
+			(await client.recall("related", { minScores: { semantic: 0.3 } })).map((f) => f.id),
+		).toEqual(["relevant"]);
+	});
+
+	test("explicit search without a floor retains graph results and can disable observation preference", async () => {
+		const baseUrl = fake(async (request) => {
+			expect(await request.json()).toMatchObject({ prefer_observations: false });
+			return Response.json({ results: [{ id: "graph", text: "Connected evidence." }] });
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "g" });
+		expect(
+			await client.recall("relationship", { preferObservations: false, minScores: {} }),
+		).toHaveLength(1);
+	});
+
+	test("screens outbound queries and legacy queued payloads without changing identities", async () => {
+		const token = `ghp_${"x".repeat(36)}`;
+		const operationId = randomUUID();
+		const baseUrl = fake(async (request) => {
+			const body = await request.json();
+			expect(JSON.stringify(body)).not.toContain(token);
+			if (new URL(request.url).pathname.endsWith("/recall")) return Response.json({ results: [] });
+			expect(body).toMatchObject({ operation_id: operationId });
+			return Response.json({
+				success: true,
+				bank_id: "g",
+				items_count: 1,
+				async: true,
+				operation_id: operationId,
+			});
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "g" });
+		await client.recall(`Remember ${token}`);
+		const legacy = { ...document, content: `Operator: ${token}` };
+		await client.submit(legacy, operationId);
+		expect(legacy.content).toContain(token);
+	});
+
+	test("reflection requests structured evidence and validates it without leaking protocol payloads", async () => {
+		const baseUrl = fake(async (request) => {
+			expect(await request.json()).toMatchObject({ include: { facts: {} } });
+			return Response.json({
+				text: "A synthesis.",
+				based_on: { memories: [{ id: "f", text: "A fact." }] },
+			});
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "g" });
+		expect(await client.reflect("patterns")).toEqual({
+			text: "A synthesis.",
+			based_on: { memories: [{ id: "f", text: "A fact." }], mental_models: [], directives: [] },
+		});
+		const malformed = new HindsightClient({
+			baseUrl: fake(() => Response.json({ text: "a private response without evidence" })),
+			bankId: "g",
+		});
+		try {
+			await malformed.reflect("patterns");
+			throw new Error("Expected protocol failure");
+		} catch (err) {
+			expect(err).toBeInstanceOf(HindsightError);
+			expect((err as HindsightError).kind).toBe("protocol");
+			expect((err as Error).message).not.toContain("private response");
+		}
+	});
+
+	test("reflection has its own bounded timeout", async () => {
+		const client = new HindsightClient({
+			baseUrl: fake(async () => {
+				await Bun.sleep(100);
+				return Response.json({ text: "late", based_on: {} });
+			}),
+			bankId: "g",
+			timeoutMs: 1000,
+		});
+		await expect(client.reflect("patterns", { timeoutMs: 5 })).rejects.toMatchObject({
+			kind: "timeout",
+		});
+	});
+
 	test("recall is bounded and keeps fact identity, dates, and provenance", async () => {
 		const requests: { path: string; auth: string | null; body: unknown }[] = [];
 		const baseUrl = fake(async (request) => {
@@ -57,7 +175,12 @@ describe("Hindsight HTTP boundary", () => {
 			{
 				path: "/v1/default/banks/my%20bank/memories/recall",
 				auth: "Bearer synthetic-test-credential",
-				body: { query: "notification preference", max_tokens: 512, budget: "low" },
+				body: {
+					query: "notification preference",
+					max_tokens: 512,
+					budget: "low",
+					prefer_observations: true,
+				},
 			},
 		]);
 	});
@@ -190,13 +313,13 @@ describe("Hindsight HTTP boundary", () => {
 	});
 
 	test("invalid, malformed, and oversized responses fail loudly", async () => {
-		for (const response of [
-			() => Response.json({ results: [{ text: "missing id" }] }),
-			() => new Response("{invalid json"),
-			() => new Response("x".repeat(1_048_577)),
-		]) {
+		for (const [response, kind] of [
+			[() => Response.json({ results: [{ text: "missing id" }] }), "protocol"],
+			[() => new Response("{invalid json"), "protocol"],
+			[() => new Response("x".repeat(1_048_577)), "too_large"],
+		] as const) {
 			const client = new HindsightClient({ baseUrl: fake(response), bankId: "g" });
-			await expect(client.recall("query")).rejects.toMatchObject({ kind: "protocol" });
+			await expect(client.recall("query")).rejects.toMatchObject({ kind });
 		}
 	});
 

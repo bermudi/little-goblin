@@ -12,6 +12,7 @@ import type {
 	ThinkingLevel,
 	transcriptionDefaults,
 	transcriptionKinds,
+	ttsCloudDefaults,
 } from "../config.ts";
 
 /** GET config — the config plus the schema's kind lists. */
@@ -22,6 +23,10 @@ export interface ConfigResponse {
 	fetchKinds: readonly string[];
 	transcriptionKinds: typeof transcriptionKinds;
 	transcriptionDefaults: typeof transcriptionDefaults;
+	/** Cloud-TTS defaults (model + auth record) per kind, like
+	 *  transcriptionDefaults — the editor's placeholders track the
+	 *  server instead of hardcoding them. */
+	ttsDefaults: typeof ttsCloudDefaults;
 	/** Blank-auth defaults per kind — one source with the schema. */
 	authDefaults: typeof authDefaults;
 	/** auth.jsonl record names as loaded at boot (sorted, values never). */
@@ -36,7 +41,12 @@ export interface ConfigPostBody {
 	titleModel: string;
 	favorites: string[];
 	thinking: ThinkingLevel;
-	tts: "" | { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined };
+	// Blank model/auth on a cloud arm mean the kind's defaults —
+	// the schema materializes them server-side like transcription.
+	tts:
+		| ""
+		| { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined }
+		| { kind: "openrouter" | "logfare"; model?: string; auth?: string; voice?: string };
 	// Absent/blank fields mean "the kind's default" (model, auth) or
 	// "detect" (language); keywords/engine/weights are whistle-only and
 	// round-tripped untouched so a page save never drops hand edits.
@@ -63,6 +73,10 @@ export interface ConfigPostBody {
 		dmGapMinutes: number;
 		model?: string;
 		thinking?: ThinkingLevel;
+		// Rich-reply kill switch + reasoning toggle — the phone-only
+		// operator's off-switch for draft streaming (design/telegram.md).
+		richReplies: boolean;
+		showReasoning: boolean;
 	};
 	publicUrl: string;
 	http: { port: number };
@@ -161,6 +175,7 @@ export interface OperatorProgramItem {
 	name: string;
 	charter: string;
 	cron: string | null;
+	maxLatenessMinutes: number | null;
 	hasHook: boolean;
 	mailFilter: string | null;
 	enabled: boolean;
@@ -214,13 +229,13 @@ export interface OperatorStatusResponse {
 // and validated in stateview.ts next to the containment wall they
 // describe; re-exported here so the client keeps one contract module.
 export type {
-	OperatorSkillItem,
-	SkillsResponse,
-	SkillFileResponse,
-	OperatorAttachmentItem,
 	AttachmentsResponse,
 	IdentityFile,
 	IdentityResponse,
 	LogTailItem,
 	LogTailResponse,
+	OperatorAttachmentItem,
+	OperatorSkillItem,
+	SkillFileResponse,
+	SkillsResponse,
 } from "../stateview.ts";

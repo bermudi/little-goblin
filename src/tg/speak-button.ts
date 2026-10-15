@@ -43,6 +43,10 @@ export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps
 		// an edge failure. The fire-and-forget registration can't surface
 		// it, so it lands here instead of unhandledRejection.
 		log.error("voice button handler failed", err, { query: query.id });
+		await withTimeout(
+			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
+			"answerCallbackQuery",
+		).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
 	}
 }
 

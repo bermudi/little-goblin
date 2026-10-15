@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { authDefaults, parseConfig, type Config } from "../../src/config.ts";
+import { authDefaults, type Config, memoryConfigSchema, parseConfig } from "../../src/config.ts";
 import {
 	bodyFromDraft,
 	displayLevel,
 	draftFromConfig,
 	emptyTranscription,
 	switchProviderKind,
-	switchTranscriptionKind,
-	validateDraft,
 	type ProvDraft,
 	type SettingsDraft,
+	switchTranscriptionKind,
+	switchTtsKind,
+	validateDraft,
 } from "./settingsDraft.ts";
 
 // A Config in its parsed shape — the same object the settings GET
@@ -31,7 +32,13 @@ const baseConfig = (): Config => ({
 	fetch: undefined,
 	operators: [111],
 	allowedUsers: [111, 222],
-	telegram: { model: "route/auto", thinking: "low", dmGapMinutes: 45 },
+	telegram: {
+		model: "route/auto",
+		thinking: "low",
+		dmGapMinutes: 45,
+		richReplies: true,
+		showReasoning: false,
+	},
 	publicUrl: "https://goblin.example.test",
 	http: { port: 8787 },
 	logLevel: "info",
@@ -64,6 +71,8 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	publicUrl: "",
 	apiRoot: "",
 	dmGap: "45",
+	richReplies: true,
+	showReasoning: false,
 	port: "8787",
 	logLevel: "info",
 	memory: null,
@@ -73,7 +82,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 describe("draftFromConfig", () => {
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {
 		const c = baseConfig();
-		c.telegram = { dmGapMinutes: 45 };
+		c.telegram = { dmGapMinutes: 45, richReplies: true, showReasoning: false };
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toBeNull();
 		expect(d.transcription).toBeNull();
@@ -103,19 +112,27 @@ describe("draftFromConfig", () => {
 	test("populated optional blocks keep their values", () => {
 		const c = baseConfig();
 		c.tts = { kind: "edge", voice: "en-US-AriaNeural", rate: "+5%", voices: ["de-DE-KatjaNeural"] };
-		c.memory = {
+		c.memory = memoryConfigSchema.parse({
 			baseUrl: "http://127.0.0.1:8888",
 			bankId: "goblin",
 			budget: "mid",
 			maxTokens: 1024,
 			recallTimeoutMs: 2000,
-		};
+			searchMaxTokens: 6000,
+			searchBudget: "mid",
+			searchTimeoutMs: 25_000,
+			reflectTimeoutMs: 90_000,
+			minScores: { semantic: 0.4 },
+		});
 		c.search = [{ kind: "brave", auth: "BRAVE_KEY" }, { kind: "ddg" }];
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toEqual({
+			kind: "edge",
 			voice: "en-US-AriaNeural",
 			rate: "+5%",
 			voices: ["de-DE-KatjaNeural"],
+			model: "",
+			auth: "",
 		});
 		expect(d.memory).toMatchObject({
 			baseUrl: "http://127.0.0.1:8888",
@@ -126,6 +143,14 @@ describe("draftFromConfig", () => {
 			{ kind: "brave", auth: "BRAVE_KEY" },
 			{ kind: "ddg", auth: "" },
 		]);
+		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).memory).toMatchObject({
+			searchMaxTokens: 6000,
+			searchBudget: "mid",
+			searchTimeoutMs: 25_000,
+			reflectTimeoutMs: 90_000,
+			minScores: { semantic: 0.4 },
+			preferObservations: true,
+		});
 	});
 });
 
@@ -151,9 +176,12 @@ describe("validateDraft", () => {
 	});
 
 	test("enabled blocks validate their required fields", () => {
-		expect(validateDraft(draft({ tts: { voice: "", rate: "", voices: [] } }), [prov()])).toMatch(
-			/voice/,
-		);
+		expect(
+			validateDraft(
+				draft({ tts: { kind: "edge", voice: "", rate: "", voices: [], model: "", auth: "" } }),
+				[prov()],
+			),
+		).toMatch(/voice/);
 		expect(
 			validateDraft(draft({ vision: { model: "", maxTokens: "2000", mode: "auto" } }), [prov()]),
 		).toMatch(/Vision/);
@@ -271,6 +299,18 @@ describe("bodyFromDraft", () => {
 		const body = bodyFromDraft(draft({ apiRoot: "  " }), [prov()], authDefaults);
 		expect(body.telegram.apiRoot).toBe("");
 		expect(JSON.parse(JSON.stringify(body)).telegram).toMatchObject({ apiRoot: "" });
+	});
+
+	test("the rich-reply switches ride the telegram block both ways", () => {
+		const c = baseConfig();
+		c.telegram.richReplies = false;
+		c.telegram.showReasoning = true;
+		const { draft: d } = draftFromConfig(c);
+		expect(d.richReplies).toBe(false);
+		expect(d.showReasoning).toBe(true);
+		const body = bodyFromDraft(d, [prov()], authDefaults);
+		expect(body.telegram.richReplies).toBe(false);
+		expect(body.telegram.showReasoning).toBe(true);
 	});
 
 	test("numeric fields coerce; blanks mean undefined", () => {
@@ -483,5 +523,107 @@ describe("provider kind switch", () => {
 	test("re-selecting the current kind keeps what the operator typed", () => {
 		const p = prov({ auth: "KEY" });
 		expect(switchProviderKind(p, "openai-compatible")).toEqual(p);
+	});
+});
+
+// The tts block is one widened draft like transcription: edge arms
+// carry rate/voices, openrouter arms carry model/auth, and only the
+// kind's own fields ever reach the wire.
+describe("tts block", () => {
+	test("an openrouter arm parses back through the server schema with its defaults", () => {
+		const c = baseConfig();
+		c.tts = {
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+			voice: "b347db033a6549378b48d00acb0d06cd",
+		};
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.tts).toEqual({
+			kind: "openrouter",
+			voice: "b347db033a6549378b48d00acb0d06cd",
+			rate: "",
+			voices: [],
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+		});
+		expect(validateDraft(d, providers)).toBeNull();
+		expect(bodyFromDraft(d, providers, authDefaults).tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+			voice: "b347db033a6549378b48d00acb0d06cd",
+		});
+	});
+
+	test("a logfare arm round-trips like openrouter, with its own defaults", () => {
+		const { draft: d, providers } = draftFromConfig(baseConfig());
+		const tts = {
+			kind: "logfare" as const,
+			voice: "",
+			rate: "",
+			voices: [],
+			model: "",
+			auth: "",
+		};
+		const body = bodyFromDraft({ ...d, tts }, providers, authDefaults);
+		expect(body.tts).toEqual({ kind: "logfare" });
+		const c = baseConfig();
+		expect(parseConfig({ ...c, ...body }).tts).toEqual({
+			kind: "logfare",
+			model: "aura-2-en",
+			auth: "logfare",
+		});
+	});
+
+	test("openrouter needs no voice; blank fields fall back to the kind's defaults", () => {
+		const { draft: d, providers } = draftFromConfig(baseConfig());
+		const tts = {
+			kind: "openrouter" as const,
+			voice: "",
+			rate: "",
+			voices: [],
+			model: "",
+			auth: "",
+		};
+		const body = bodyFromDraft({ ...d, tts }, providers, authDefaults);
+		expect(body.tts).toEqual({ kind: "openrouter" });
+		const c = baseConfig();
+		expect(parseConfig({ ...c, ...body }).tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+		});
+	});
+
+	// An edge voice name under openrouter goes upstream as a Fish
+	// voice-library id and 400s — identity fields clear on the switch,
+	// while edge-only fields ride the draft like whistle's do.
+	test("switching kinds clears voice/model/auth but keeps the edge cast", () => {
+		const edge = {
+			kind: "edge" as const,
+			voice: "en-US-AriaNeural",
+			rate: "+5%",
+			voices: ["es-ES-ElviraNeural"],
+			model: "",
+			auth: "",
+		};
+		const or = switchTtsKind(edge, "openrouter");
+		expect(or).toMatchObject({
+			kind: "openrouter",
+			voice: "",
+			model: "",
+			auth: "",
+			rate: "+5%",
+			voices: ["es-ES-ElviraNeural"],
+		});
+		const { draft: full, providers } = draftFromConfig(baseConfig());
+		expect(bodyFromDraft({ ...full, tts: or }, providers, authDefaults).tts).toEqual({
+			kind: "openrouter",
+		});
+		expect(switchTtsKind(or, "edge")).toMatchObject({
+			voices: ["es-ES-ElviraNeural"],
+			rate: "+5%",
+		});
 	});
 });

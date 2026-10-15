@@ -121,24 +121,60 @@ describe("blocked notice send", () => {
 });
 
 describe("skill proposal notice send", () => {
-	test("names the skill with an approve invite, into the topic's thread", async () => {
-		type Send = { chatId: number; text: string; threadId?: number };
+	type Send = {
+		chatId: number;
+		text: string;
+		threadId?: number;
+		keyboard?: Array<Array<{ text: string; callback_data: string }>>;
+	};
+	function noticeApi() {
 		const sends: Send[] = [];
 		const api = {
-			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
+			sendMessage: async (
+				chatId: number,
+				text: string,
+				other?: {
+					message_thread_id?: number;
+					reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+				},
+			) => {
 				sends.push({
 					chatId,
 					text,
 					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
+					...(other?.reply_markup !== undefined
+						? { keyboard: other.reply_markup.inline_keyboard }
+						: {}),
 				});
 			},
 		} as unknown as Api;
+		return { api, sends };
+	}
+
+	test("one message per skill, each with the install/discard row", async () => {
+		const { api, sends } = noticeApi();
 		await sendSkillProposedNotice(api, "topic:-100200300:546216", ["pdf-tables"]);
 		await sendSkillProposedNotice(api, "dm:42", ["a", "b"]);
-		expect(sends).toHaveLength(2);
+		expect(sends).toHaveLength(3);
 		expect(sends[0]).toMatchObject({ chatId: -100200300, threadId: 546216 });
 		expect(sends[0]?.text).toBe("proposed skill: pdf-tables — approve to install");
-		expect(sends[1]?.text).toBe("proposed skills: a, b — approve to install");
+		expect(sends[0]?.keyboard).toEqual([
+			[
+				{ text: "✅ Install", callback_data: "skill:install:topic:-100200300:546216:pdf-tables" },
+				{ text: "🚫 Discard", callback_data: "skill:discard:topic:-100200300:546216:pdf-tables" },
+			],
+		]);
+		expect(sends[1]?.text).toBe("proposed skill: a — approve to install");
+		expect(sends[2]?.text).toBe("proposed skill: b — approve to install");
+	});
+
+	test("callback data over 64 bytes degrades to the conversational notice", async () => {
+		const { api, sends } = noticeApi();
+		const long = "a".repeat(64); // spec-legal name, worst case
+		await sendSkillProposedNotice(api, "dm:42", [long]);
+		expect(sends).toHaveLength(1);
+		expect(sends[0]?.text).toBe(`proposed skill: ${long} — approve to install`);
+		expect(sends[0]?.keyboard).toBeUndefined();
 	});
 });
 

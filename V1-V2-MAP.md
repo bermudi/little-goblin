@@ -86,7 +86,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 |---|---|---|
 | 🔀 Recurrence | one-shot `at`/`in <duration>`, recurring `every <duration>` — intervals only, no cron | 5-field cron, validated by `cron-parser` at the boundary; the model translates natural language → cron |
 | 🔀 State | JSON schedule store, Surface-owned, 8-job cap per session | `programs` table in `goblin.sqlite`; program pinned to the chat/topic it was born in |
-| 🔀 Missed runs | — | boot catch-up fires once, then advances; disabled gaps aren't owed; one attempt per occurrence (a failing program can't refire forever) |
+| 🔀 Missed runs | — | boot catch-up coalesces into at most one fire based on the latest missed occurrence; optional per-program lateness grace skips stale runs; disabled gaps aren't owed |
 | ❌ Heartbeat | `heartbeat_action on/off`, HEARTBEAT.md (global + surface-scoped), agent-initiated proactive turns | explicitly out — programs are standing orders the operator asked for, not an agent that decides to check things |
 | 🔀 Manage | `/schedule` + scheduler tools | `program` tool (list/create/update/delete/toggle) |
 

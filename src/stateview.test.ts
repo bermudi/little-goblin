@@ -403,6 +403,19 @@ describe("tailLog", () => {
 		expect(res.truncated).toBe(true);
 	});
 
+	test("a torn line inside the window is skipped and reported as truncation", () => {
+		const f = writeLog([
+			JSON.stringify({ ts: "t1", level: "info", msg: "before" }),
+			'{"ts":"t2","level":"info","msg":"torn by a cra',
+			JSON.stringify({ ts: "t3", level: "info", msg: "after" }),
+		]);
+		const res = tailLog(f, { limit: 10 });
+		expect(res.lines.map((l) => l.msg)).toEqual(["before", "after"]);
+		// The view must never silently hide content: a line it could not
+		// parse is a gap the caller has to know about.
+		expect(res.truncated).toBe(true);
+	});
+
 	test("a window cut drops the partial first line and reports it", () => {
 		const pad = "x".repeat(400);
 		const f = writeLog([

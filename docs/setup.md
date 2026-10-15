@@ -53,7 +53,7 @@ they do not retain facts in a memory bank.
 | Pass command refs | `pass-keys` (and its sync dependencies), scoped agent/grants, profiles, explicit initial sync and an available unlocked persistent Secret Service/KWallet. Service PATH must find the commands. See the snapshot steps below. |
 | MCP | Frozen dependencies supply Goblin's pinned mcporter; configure its own `mcporter.json` with `imports: []` and placeholders only. Provision `goblin-mcp-dev` and any server executables/OAuth separately. A seed with no servers is intentionally empty. |
 | Browser | Install `agent-browser` and Chromium separately; the browser skill alone does not install them. |
-| Mail / Workspace | Install `gws`, perform its scoped login, and provision configured send/System One auth refs. See [Mail design](../design/mail.md). |
+| Mail / Workspace | Install `gws`, perform its scoped login, and provision configured send/[System One](../design/system1.md) auth refs. See [Mail design](../design/mail.md). |
 | Delegation | Install herdr and the configured harnesses on each target, with their own logins and service PATH. Diagnostics do not create panes or launch agents. |
 | Long-term memory | Hindsight is a separate service, not Goblin's SQLite store. Choose an existing endpoint or follow the separately approved [memory setup](memory.md). A local stack needs rootless Podman/user units and subuid/subgid; local embeddings additionally need configured Ollama/model/relay access. No automatic memory deployment or embedding-model change. |
 | Remote app / Settings access | Configure a reverse proxy or tailnet HTTPS door and `publicUrl`. Loopback acceptance does not verify the public route. Public exposure requires app bearer auth (`appToken`); trust mode is only appropriate for a trusted private door. |
@@ -260,8 +260,7 @@ The built client in `app/dist` is read live on every request; building there
 can publish a new client before the backend restarts. Verification builds must
 use an isolated output directory, not live `app/dist`. Client publication and
 backend restart are one coordinated rollout requiring bermudi's OK. Source edits
-and these instructions authorize neither. The plain Settings mini app has no
-build step and its client is loaded at backend startup.
+and these instructions authorize neither.
 
 Conversation state, settings and workspace files live in `GOBLIN_HOME`, not
 in the checkout. Updates must preserve them and never silently migrate keys

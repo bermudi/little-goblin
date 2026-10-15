@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
 import { MemoryDestinations } from "./memory-destinations.ts";
@@ -571,6 +572,13 @@ export function openStore(dbPath: string): ConversationStore {
 	// but host power loss could discard an acked commit — FULL syncs
 	// before we return.
 	db.run("PRAGMA synchronous = FULL");
+	// The default busy handler is none: an operator's sqlite3 session or a
+	// checkpoint holding the write lock would fail the next insert on the
+	// spot — the inbox insert that precedes the Telegram ack included. The
+	// wait is bounded short: five connections in this one thread share the
+	// file, so a nested cross-connection write (a bug) must still surface
+	// within seconds, not wedge the event loop.
+	db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.run("PRAGMA foreign_keys = ON");
 	db.run(`
 		CREATE TABLE IF NOT EXISTS conversations (
@@ -748,6 +756,16 @@ export function openStore(dbPath: string): ConversationStore {
 			current_id TEXT NOT NULL REFERENCES conversations(id),
 			n INTEGER NOT NULL
 		)`);
+	// High-water for a lane's rolling ordinal, retained even after its
+	// current conversation is deleted (e.g. persona demotion clearing
+	// personal history). deleteConversation drops the (FK-enforced)
+	// dm_rolls row but first copies its n here, so the next rollDm
+	// never reuses an abandoned id or collides with a surviving one.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS dm_roll_highwater (
+			chat_id INTEGER PRIMARY KEY,
+			n INTEGER NOT NULL
+		)`);
 	// Manual DM navigation is additive. The presence of the link column
 	// is the one-time migration marker: never rebuild links on later boots,
 	// or a /back → /new branch would silently become chronological again.
@@ -854,6 +872,9 @@ export function openStore(dbPath: string): ConversationStore {
 		 UNION
 		 SELECT conversation_id AS id FROM conversation_epoch_hwm
 		 WHERE conversation_id LIKE 'dm:' || ? || ':%'`,
+	);
+	const qDmRollHighwater = db.query<{ n: number }, [number]>(
+		"SELECT n FROM dm_roll_highwater WHERE chat_id = ?",
 	);
 	const qUpsertRoll = db.query(
 		`INSERT INTO dm_rolls (chat_id, current_id, n, selected_at) VALUES (?, ?, ?, ?)
@@ -1168,22 +1189,23 @@ export function openStore(dbPath: string): ConversationStore {
 			privateChatIdSchema.parse(chatId);
 			return db.transaction(() => {
 				const roll = qDmRoll.get(chatId);
-				let n = (roll?.n ?? 0) + 1;
+				const highwater = qDmRollHighwater.get(chatId);
+				let n = Math.max(roll?.n ?? 0, highwater?.n ?? 0) + 1;
 				if (!roll) {
 					// The lane pointer was severed (its current row deleted) —
-					// the stored n went with it, so recover the high-water
-					// mark from extant rows and the delete tombstones; a
-					// re-minted ordinal would collide with outstanding epoch
-					// tokens and silently reconnect a demoted lane.
-					let hwm = 0;
+					// the stored n went with it, so also recover the mark
+					// from extant rows and the delete tombstones:
+					// dm_roll_highwater only knows what post-upgrade writes
+					// told it, and a re-minted ordinal would collide with
+					// outstanding epoch tokens and silently reconnect a
+					// demoted lane.
 					for (const { id: candidate } of qDmOrdinalCandidates.all(chatId, String(chatId))) {
 						const ordinal = rollingDmOrdinal(
 							{ id: candidate, chat_id: chatId, thread_id: null },
 							chatId,
 						);
-						if (ordinal !== null && ordinal > hwm) hwm = ordinal;
+						if (ordinal !== null && ordinal + 1 > n) n = ordinal + 1;
 					}
-					n = hwm + 1;
 				}
 				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
 				const now = new Date().toISOString();
@@ -1194,6 +1216,7 @@ export function openStore(dbPath: string): ConversationStore {
 					id,
 				]);
 				qUpsertRoll.run(chatId, id, n, now);
+				db.run("INSERT INTO dm_roll_highwater (chat_id, n) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET n = excluded.n", [chatId, n]);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);
@@ -1496,9 +1519,21 @@ export function openStore(dbPath: string): ConversationStore {
 				// lane's persona reset is the one caller that deletes a
 				// rolled conversation; /back must not reach it anyway).
 				db.run("UPDATE conversations SET previous_dm_id = NULL WHERE previous_dm_id = ?", [id]);
+				// Preserve the lane's rolling ordinal high-water before
+				// dropping the FK-enforced dm_rolls row, so a demoted lane
+				// re-mints a fresh id instead of colliding with (or reusing)
+				// the deleted conversation. See audit R1.
+				db.run(
+					`INSERT INTO dm_roll_highwater (chat_id, n)
+					SELECT chat_id, n FROM dm_rolls WHERE current_id = ?
+					ON CONFLICT(chat_id) DO UPDATE SET
+						n = MAX(dm_roll_highwater.n, excluded.n)`,
+					[id],
+				);
 				// The lane pointer is NOT NULL — dropping the deleted row's
-				// dm_rolls entry is the sever; the next rollDm re-mints the
-				// lane (the reset flow calls it immediately).
+				// dm_rolls entry is the sever; the high-water survives in
+				// dm_roll_highwater and rollDm re-mints the lane (the reset
+				// flow calls it immediately).
 				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
 				// Record the final epoch before the row goes — a recreated id
 				// must not collide with a token this generation issued.

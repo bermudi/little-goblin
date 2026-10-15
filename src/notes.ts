@@ -501,7 +501,11 @@ export function openNotes(
 			let join = "";
 			if (filter.q !== undefined && filter.q !== "") {
 				const match = toFtsQuery(filter.q);
-				if (match !== null) {
+				if (match === null) {
+					// A query that strips to nothing matches nothing —
+					// searchHistory's rule, never a silent unfiltered list.
+					clauses.push("1 = 0");
+				} else {
 					join = "JOIN notes_fts ON notes_fts.rowid = n.rowid";
 					clauses.push("notes_fts MATCH ?");
 					params.push(match);

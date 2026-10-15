@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { JevClient, JevError, JEV_FALLBACK_MODEL, JEV_MODEL } from "./jev.ts";
+import { System1Client, System1Error, FALLBACK_MODEL, DEFAULT_MODEL } from "./system1.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -29,10 +29,10 @@ const RECORDED = {
 	provider: "TypeSafe",
 };
 
-describe("JevClient", () => {
+describe("System1Client", () => {
 	test("default and backup are explicitly typesafe/jev-1.13", () => {
-		expect(JEV_MODEL).toBe("typesafe/jev-1.13");
-		expect(JEV_FALLBACK_MODEL).toBe("typesafe/jev-1.13");
+		expect(DEFAULT_MODEL).toBe("typesafe/jev-1.13");
+		expect(FALLBACK_MODEL).toBe("typesafe/jev-1.13");
 	});
 
 	test("posts model/state/questions and parses the documented response", async () => {
@@ -45,12 +45,12 @@ describe("JevClient", () => {
 			};
 			return Response.json(RECORDED);
 		});
-		const client = new JevClient({ baseUrl, auth: async () => "key" });
+		const client = new System1Client({ baseUrl, auth: async () => "key" });
 		const out = await client.decide("some state", { correction: question });
 		expect(seen!.url.endsWith("/api/alpha/decisions")).toBe(true);
 		expect(seen!.auth).toBe("Bearer key");
 		expect(seen!.body).toEqual({
-			model: JEV_MODEL,
+			model: DEFAULT_MODEL,
 			state: "some state",
 			questions: { correction: question },
 		});
@@ -59,29 +59,29 @@ describe("JevClient", () => {
 
 	test("a missing answer is a protocol error", async () => {
 		const baseUrl = served(() => Response.json({ ...RECORDED, answers: {} }));
-		const client = new JevClient({ baseUrl, auth: async () => "key" });
+		const client = new System1Client({ baseUrl, auth: async () => "key" });
 		const err = await client.decide("s", { correction: question }).catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(JevError);
-		expect((err as JevError).kind).toBe("protocol");
+		expect(err).toBeInstanceOf(System1Error);
+		expect((err as System1Error).kind).toBe("protocol");
 	});
 
 	test("usage may be absent — tokens and cost read null", async () => {
 		const { usage: _dropped, ...bare } = RECORDED;
 		const baseUrl = served(() => Response.json(bare));
-		const client = new JevClient({ baseUrl, auth: async () => "key" });
+		const client = new System1Client({ baseUrl, auth: async () => "key" });
 		const out = await client.decide("s", { correction: question });
 		expect(out).toEqual({ answers: { correction: 0.91 }, inputTokens: null, cost: null });
 	});
 
 	test("HTTP failures carry the status, auth failures their kind", async () => {
 		const failing = served(() => new Response("bad", { status: 500 }));
-		const http = await new JevClient({ baseUrl: failing, auth: async () => "key" })
+		const http = await new System1Client({ baseUrl: failing, auth: async () => "key" })
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect(http).toBeInstanceOf(JevError);
-		expect((http as JevError).kind).toBe("http");
-		expect((http as JevError).status).toBe(500);
-		const auth = await new JevClient({
+		expect(http).toBeInstanceOf(System1Error);
+		expect((http as System1Error).kind).toBe("http");
+		expect((http as System1Error).status).toBe(500);
+		const auth = await new System1Client({
 			baseUrl: failing,
 			auth: async () => {
 				throw new Error("no key");
@@ -89,24 +89,24 @@ describe("JevClient", () => {
 		})
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect((auth as JevError).kind).toBe("auth");
+		expect((auth as System1Error).kind).toBe("auth");
 	});
 
 	test("a wedged server times out instead of hanging the gate", async () => {
 		const baseUrl = served(() => new Promise<Response>(() => {}));
-		const client = new JevClient({ baseUrl, auth: async () => "key", timeoutMs: 50 });
+		const client = new System1Client({ baseUrl, auth: async () => "key", timeoutMs: 50 });
 		const err = await client.decide("s", { correction: question }).catch((e: unknown) => e);
-		expect((err as JevError).kind).toBe("timeout");
+		expect((err as System1Error).kind).toBe("timeout");
 	});
 
 	test("a wedged auth resolver is bounded by the same deadline", async () => {
-		const client = new JevClient({ auth: () => new Promise<string>(() => {}), timeoutMs: 25 });
+		const client = new System1Client({ auth: () => new Promise<string>(() => {}), timeoutMs: 25 });
 		const err = await client.decide("s", { correction: question }).catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(JevError);
-		expect((err as JevError).kind).toBe("timeout");
+		expect(err).toBeInstanceOf(System1Error);
+		expect((err as System1Error).kind).toBe("timeout");
 	});
 
-	test("a failing response stream is a Jev transport error, not a raw exception", async () => {
+	test("a failing response stream is a System1 transport error, not a raw exception", async () => {
 		const baseUrl = served(
 			() =>
 				new Response(
@@ -119,11 +119,11 @@ describe("JevClient", () => {
 					{ headers: { "content-type": "application/json" } },
 				),
 		);
-		const err = await new JevClient({ baseUrl, auth: async () => "key" })
+		const err = await new System1Client({ baseUrl, auth: async () => "key" })
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(JevError);
-		expect((err as JevError).kind).toBe("transport");
+		expect(err).toBeInstanceOf(System1Error);
+		expect((err as System1Error).kind).toBe("transport");
 	});
 
 	test("configured primary failure retries the identical payload once with backup and one auth resolution", async () => {
@@ -138,12 +138,12 @@ describe("JevClient", () => {
 				})
 				.parse(await request.json());
 			requests.push({ ...body, auth: request.headers.get("authorization") });
-			return body.model === JEV_FALLBACK_MODEL
+			return body.model === FALLBACK_MODEL
 				? Response.json(RECORDED)
 				: new Response("primary unavailable", { status: 503 });
 		});
 		let resolutions = 0;
-		const client = new JevClient({
+		const client = new System1Client({
 			baseUrl,
 			model: "inception/mercury-decide:free",
 			auth: async () => {
@@ -160,7 +160,7 @@ describe("JevClient", () => {
 				auth: "Bearer key",
 			},
 			{
-				model: JEV_FALLBACK_MODEL,
+				model: FALLBACK_MODEL,
 				state: "state",
 				questions: { correction: question },
 				auth: "Bearer key",
@@ -175,7 +175,7 @@ describe("JevClient", () => {
 			calls++;
 			return Response.json({ answers: { correction: { type: "noul", noul: 0 } } });
 		});
-		const decision = await new JevClient({
+		const decision = await new System1Client({
 			baseUrl,
 			model: "primary",
 			auth: async () => "key",
@@ -190,7 +190,7 @@ describe("JevClient", () => {
 			const baseUrl = served(() =>
 				++calls === 1 ? new Response("synthetic failure", { status }) : Response.json(RECORDED),
 			);
-			const decision = await new JevClient({
+			const decision = await new System1Client({
 				baseUrl,
 				model: "primary",
 				auth: async () => "key",
@@ -211,7 +211,7 @@ describe("JevClient", () => {
 		test(`${name} on configured primary falls back`, async () => {
 			let calls = 0;
 			const baseUrl = served(() => (++calls === 1 ? new Response(body) : Response.json(RECORDED)));
-			const decision = await new JevClient({
+			const decision = await new System1Client({
 				baseUrl,
 				model: "primary",
 				auth: async () => "key",
@@ -227,11 +227,11 @@ describe("JevClient", () => {
 			calls++;
 			return new Response("failed", { status: 503 });
 		});
-		const err = await new JevClient({ baseUrl, auth: async () => "key" })
+		const err = await new System1Client({ baseUrl, auth: async () => "key" })
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(JevError);
-		expect((err as JevError).status).toBe(503);
+		expect(err).toBeInstanceOf(System1Error);
+		expect((err as System1Error).status).toBe(503);
 		expect(calls).toBe(1);
 	});
 
@@ -242,10 +242,10 @@ describe("JevClient", () => {
 				calls++;
 				return new Response("denied", { status });
 			});
-			const err = await new JevClient({ baseUrl, model: "primary", auth: async () => "key" })
+			const err = await new System1Client({ baseUrl, model: "primary", auth: async () => "key" })
 				.decide("s", { correction: question })
 				.catch((e: unknown) => e);
-			expect((err as JevError).status).toBe(status);
+			expect((err as System1Error).status).toBe(status);
 			expect(calls).toBe(1);
 		});
 	}
@@ -257,7 +257,7 @@ describe("JevClient", () => {
 			calls++;
 			return Response.json(RECORDED);
 		});
-		const err = await new JevClient({
+		const err = await new System1Client({
 			baseUrl,
 			model: "primary",
 			auth: async () => {
@@ -267,8 +267,8 @@ describe("JevClient", () => {
 		})
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect((err as JevError).kind).toBe("auth");
-		expect((err as JevError).message).not.toContain("credential detail");
+		expect((err as System1Error).kind).toBe("auth");
+		expect((err as System1Error).message).not.toContain("credential detail");
 		expect(resolutions).toBe(1);
 		expect(calls).toBe(0);
 	});
@@ -279,13 +279,13 @@ describe("JevClient", () => {
 			calls++;
 			return new Response("synthetic private response body", { status: 503 });
 		});
-		const err = await new JevClient({ baseUrl, model: "primary", auth: async () => "key" })
+		const err = await new System1Client({ baseUrl, model: "primary", auth: async () => "key" })
 			.decide("s", { correction: question })
 			.catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(JevError);
-		expect((err as JevError).kind).toBe("http");
-		expect((err as JevError).status).toBe(503);
-		expect((err as JevError).message).not.toContain("private response body");
+		expect(err).toBeInstanceOf(System1Error);
+		expect((err as System1Error).kind).toBe("http");
+		expect((err as System1Error).status).toBe(503);
+		expect((err as System1Error).message).not.toContain("private response body");
 		expect(calls).toBe(2);
 	});
 
@@ -295,7 +295,7 @@ describe("JevClient", () => {
 			++calls === 1 ? new Promise<Response>(() => {}) : Response.json(RECORDED),
 		);
 		const started = performance.now();
-		const decision = await new JevClient({
+		const decision = await new System1Client({
 			baseUrl,
 			model: "primary",
 			auth: async () => "key",
@@ -312,10 +312,10 @@ describe("JevClient", () => {
 			return new Promise<Response>(() => {});
 		});
 		const started = performance.now();
-		const err = await new JevClient({ baseUrl, model: "primary", auth: async () => "key" })
+		const err = await new System1Client({ baseUrl, model: "primary", auth: async () => "key" })
 			.decide("s", { correction: question }, { timeoutMs: 200 })
 			.catch((e: unknown) => e);
-		expect((err as JevError).kind).toBe("timeout");
+		expect((err as System1Error).kind).toBe("timeout");
 		expect(calls).toBe(2);
 		expect(performance.now() - started).toBeLessThan(400);
 	});
@@ -336,7 +336,7 @@ describe("JevClient", () => {
 			states.push(body.state);
 			return ++calls === 1 ? new Response("failed", { status: 503 }) : Response.json(RECORDED);
 		});
-		await new JevClient({
+		await new System1Client({
 			baseUrl,
 			model: "primary",
 			auth: async () => {

@@ -60,6 +60,7 @@ function fixture(
 			join(repo, "scripts", "startup-categories.ts"),
 		);
 		copyFileSync(join(root, "src", "proc.ts"), join(repo, "src", "proc.ts"));
+		copyFileSync(join(root, "src", "log.ts"), join(repo, "src", "log.ts"));
 		if (mode.startsWith("real-")) cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
 		if (mode === "startup-descendant") {
 			copyFileSync(
@@ -106,7 +107,7 @@ function fixture(
 '--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main", "alpha-one"] : [] })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
-'--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable --now goblin.service"} ;;
+'--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable goblin.service && systemctl --user start --no-block goblin.service"} ;;
 '--no-install run src/doctor.ts --phase installed --json') ${mode === "installed" ? "exit 1" : ":"} ;;
 *) echo 'unexpected Bun boundary' >&2; exit 99 ;;
 esac`,
@@ -116,7 +117,7 @@ esac`,
 			`case "$*" in
 '--user show goblin.service --property=LoadState --value') ${mode === "manager" ? "echo FIXTURE_SECRET >&2; exit 1" : `printf '${mode === "existing" ? "loaded" : "not-found"}\\n'`} ;;
 '--user show goblin.service --property=InvocationID '*) sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '${join(dir, "child-pid")}'; wait \"$child\" ;;
-'--user daemon-reload'|'--user enable --now goblin.service'|'--user enable --now goblin-herdr.service'|'--user enable goblin-keys.service'|'--user enable --now goblin-keys.timer') : ;;
+'--user daemon-reload'|'--user enable goblin.service'|'--user start --no-block goblin.service'|'--user enable --now goblin-herdr.service'|'--user enable goblin-keys.service'|'--user enable --now goblin-keys.timer') : ;;
 *) echo 'unexpected systemctl boundary' >&2; exit 99 ;;
 esac`,
 		);

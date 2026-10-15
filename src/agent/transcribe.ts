@@ -24,6 +24,7 @@ import {
 	elevenlabsEngine,
 	geminiEngine,
 	groqEngine,
+	logfareEngine,
 	mimoEngine,
 	mistralEngine,
 	openaiEngine,
@@ -95,6 +96,8 @@ export function speechEngine(
 			return geminiEngine(cfg, auth, deps);
 		case "mimo":
 			return mimoEngine(cfg, auth, deps);
+		case "logfare":
+			return logfareEngine(cfg, auth, deps);
 	}
 }
 
@@ -104,7 +107,10 @@ export function speechEngine(
 // degrades per message: keep-profile engines only lose the over-cap
 // path, wav-profile engines lose everything). The warn here is the
 // audit trail either way.
-export async function probeFfmpeg(feature = "transcription"): Promise<boolean> {
+export async function probeFfmpeg(
+	feature = "transcription",
+	requiredEncoder?: string,
+): Promise<boolean> {
 	try {
 		const r = await boundedRun(spawnProc(["ffmpeg", "-version"]), {
 			timeoutMs: 10_000,
@@ -113,11 +119,26 @@ export async function probeFfmpeg(feature = "transcription"): Promise<boolean> {
 		if (r.exitCode !== 0) {
 			throw new Error(`ffmpeg -version exited ${r.exitCode ?? "unreaped"}`);
 		}
-		return true;
 	} catch (err) {
 		log.warn("ffmpeg unavailable", err, { feature });
 		return false;
 	}
+	// Encoder presence: a minimal ffmpeg can run and still lack the
+	// codec the feature encodes with (openrouter TTS needs libopus).
+	if (requiredEncoder !== undefined) {
+		const enc = await boundedRun(spawnProc(["ffmpeg", "-hide_banner", "-encoders"]), {
+			timeoutMs: 10_000,
+			maxOutput: 512 * 1024,
+		});
+		if (enc.exitCode !== 0 || !enc.stdout.includes(requiredEncoder)) {
+			log.warn("ffmpeg lacks required encoder", {
+				feature,
+				encoder: requiredEncoder,
+			});
+			return false;
+		}
+	}
+	return true;
 }
 
 export interface TranscribeOptions {

@@ -1,6 +1,7 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
-import type { HindsightClient } from "../../hindsight.ts";
+import { HindsightClient } from "../../hindsight.ts";
+import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
 import type { ProgramsStore } from "../../programs.ts";
 import type { Config } from "../../config.ts";
 import type { AuthStore } from "../../auth.ts";
@@ -10,6 +11,7 @@ import {
 	toolNames,
 	type DelegateToolDeps,
 	type HistorySearchDeps,
+	type ImageToolDeps,
 	type MailToolDeps,
 	type VisionToolDeps,
 } from "./mod.ts";
@@ -18,53 +20,110 @@ const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
 
 describe("toolNames ↔ makeTools", () => {
+	test("reflection uses shared defaults and never mutates the recall-health latch", async () => {
+		const outcomes: boolean[] = [];
+		let reflectOk = false;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (new URL(request.url).pathname.endsWith("/reflect")) {
+					expect(await request.json()).toMatchObject({
+						budget: MEMORY_DEFAULTS.reflectBudget,
+						max_tokens: MEMORY_DEFAULTS.reflectMaxTokens,
+					});
+					return reflectOk
+						? Response.json({
+								text: "A synthesis.",
+								based_on: { memories: [{ id: "f", text: "A fact." }] },
+							})
+						: new Response("synthetic failure", { status: 503 });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		try {
+			const tools = makeTools({
+				cwd: "/tmp",
+				memory: {
+					client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+					maxTokens: 256,
+					budget: "low",
+					timeoutMs: 1000,
+					isExcluded: () => false,
+					noteRecall: (ok) => outcomes.push(ok),
+				},
+			});
+			const run = async (name: string) => {
+				const execute = tools[name]?.execute;
+				if (!execute) throw new Error("Expected executable tool");
+				return execute({ query: "x" }, { toolCallId: name, messages: [], context: {} });
+			};
+			await run("memory_search");
+			expect(outcomes).toEqual([true]);
+			expect(await run("memory_reflect")).toMatchObject({
+				error: "memory investigation unavailable",
+			});
+			expect(outcomes).toEqual([true]);
+			reflectOk = true;
+			expect(await run("memory_reflect")).toMatchObject({ synthesis: "A synthesis." });
+			expect(outcomes).toEqual([true]);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	for (const voice of [false, true]) {
 		for (const program of [false, true]) {
 			for (const file of [false, true]) {
 				for (const memory of [false, true]) {
 					for (const transcribe of [false, true]) {
 						for (const vision of [false, true]) {
-							test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}`, () => {
-								const tools = makeTools({
-									cwd: "/tmp",
-									voice: voice
-										? { synthesize: async () => [], deliver: async () => {} }
-										: undefined,
-									program: program
-										? {
-												programs,
-												chatId: 1,
-												threadId: null,
-												publicUrl: () => "https://g.ts.net",
-												sendPrivate: async () => {},
-											}
-										: undefined,
-									file: file ? { deliver: async () => {} } : undefined,
-									memory: memory
-										? {
-												client: memoryClient,
-												maxTokens: 256,
-												budget: "low",
-												isExcluded: () => false,
-												noteRecall: () => {},
-											}
-										: undefined,
-									transcribe: transcribe ? { transcribe: async () => null } : undefined,
-									vision: vision ? ({} as VisionToolDeps) : undefined,
+							for (const image of [false, true]) {
+								test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}, image=${image}`, () => {
+									const tools = makeTools({
+										cwd: "/tmp",
+										voice: voice
+											? { synthesize: async () => [], deliver: async () => {} }
+											: undefined,
+										program: program
+											? {
+													programs,
+													chatId: 1,
+													threadId: null,
+													publicUrl: () => "https://g.ts.net",
+													sendPrivate: async () => {},
+												}
+											: undefined,
+										file: file ? { deliver: async () => {} } : undefined,
+										memory: memory
+											? {
+													client: memoryClient,
+													maxTokens: 256,
+													budget: "low",
+													isExcluded: () => false,
+													noteRecall: () => {},
+												}
+											: undefined,
+										transcribe: transcribe ? { transcribe: async () => null } : undefined,
+										vision: vision ? ({} as VisionToolDeps) : undefined,
+										image: image ? ({} as ImageToolDeps) : undefined,
+									});
+									expect(toolNames(tools)).toEqual([
+										"read_file",
+										"write_file",
+										"edit_file",
+										"bash",
+										...(voice ? ["speak"] : []),
+										...(transcribe ? ["transcribe"] : []),
+										...(vision ? ["vision"] : []),
+										...(image ? ["generate_image"] : []),
+										...(program ? ["program"] : []),
+										...(file ? ["send_file"] : []),
+										...(memory ? ["memory_search", "memory_reflect"] : []),
+									]);
 								});
-								expect(toolNames(tools)).toEqual([
-									"read_file",
-									"write_file",
-									"edit_file",
-									"bash",
-									...(voice ? ["speak"] : []),
-									...(transcribe ? ["transcribe"] : []),
-									...(vision ? ["vision"] : []),
-									...(program ? ["program"] : []),
-									...(file ? ["send_file"] : []),
-									...(memory ? ["memory_search"] : []),
-								]);
-							});
+							}
 						}
 					}
 				}
@@ -128,6 +187,7 @@ describe("toolNames ↔ makeTools", () => {
 				workspace: "/tmp",
 				desktops: {} as never,
 			},
+			image: {} as unknown as ImageToolDeps,
 		});
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;

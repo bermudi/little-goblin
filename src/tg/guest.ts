@@ -193,6 +193,11 @@ export class GuestSink implements TurnSink {
 		private inlineMessageId: string,
 		private outputChars: number,
 		private editIntervalMs = GUEST_EDIT_INTERVAL_MS,
+		// Rich edits ride the same inline primitive — the first
+		// rejection flips the rest of the turn to plain edits, so a
+		// client/platform that never learned InputRichMessage still
+		// gets its reply, just unformatted.
+		private rich = false,
 	) {}
 
 	onTextDelta(delta: string): void {
@@ -235,7 +240,9 @@ export class GuestSink implements TurnSink {
 		if (!stamp && (this.fenced || (this.authority !== null && !this.authority()))) return;
 		try {
 			await withTimeout(
-				this.api.editMessageTextInline(this.inlineMessageId, body),
+				this.rich
+					? this.api.editMessageTextInline(this.inlineMessageId, { markdown: body })
+					: this.api.editMessageTextInline(this.inlineMessageId, body),
 				"editMessageText",
 			);
 			this.edits++;
@@ -253,6 +260,13 @@ export class GuestSink implements TurnSink {
 					edits: this.edits,
 				});
 				return;
+			}
+			if (this.rich) {
+				this.rich = false;
+				log.warn("guest rich edit rejected — edits go plain", err, {
+					inline: this.inlineMessageId,
+				});
+				return this.edit(body, stamp);
 			}
 			// Fail loud but never kill the turn over one edit.
 			log.warn("guest edit failed", err, { edits: this.edits });
@@ -424,6 +438,12 @@ export function ensurePersonaClass(
 	// see.
 	if (conv.persona === "personal" && want === "guest") {
 		const hasHistory = store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
+		// Fence any running turn: after demotion the lane is sandboxed, so
+		// an active personal turn must not keep executing tool calls as
+		// the operator (audit G1). The epoch advance is lost on a full
+		// reset below and re-minted at 1 — the old turn's epoch no longer
+		// matches either way.
+		store.bumpEpoch(conv.id);
 		if (hasHistory) {
 			if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
 			const addr = parseAddress(conv.id);
@@ -433,6 +453,7 @@ export function ensurePersonaClass(
 				addr.kind === "rolling"
 					? (resetLane?.() ?? throwReset(conv.id))
 					: store.resolve(addr, paths.workspace());
+			store.bumpEpoch(conv.id);
 			log.info("conversation reset on demotion — personal history cleared", {
 				conversation: conv.id,
 			});
@@ -589,7 +610,13 @@ export async function handleGuestUpdate(
 		const admitted = env.runtime.submit(
 			conv,
 			summonMessage(msg),
-			new GuestSink(env.api, inlineMessageId, freshCfg.outputChars),
+			new GuestSink(
+				env.api,
+				inlineMessageId,
+				freshCfg.outputChars,
+				GUEST_EDIT_INTERVAL_MS,
+				env.configRef.current.telegram.richReplies ?? false,
+			),
 		);
 		log.info("guest summons", {
 			chat: chatId,
@@ -669,7 +696,7 @@ export async function routeMemberGuestMessage(
 	const sink = makeDeliverySink(
 		env.api,
 		{ ...conv, threadId: msg.message_thread_id ?? null },
-		msg.message_id,
+		{ replyTo: msg.message_id },
 	);
 	const admitted = env.runtime.submit(conv, summonMessage(msg), {
 		...sink,
@@ -736,10 +763,12 @@ export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"mail",
 	"delegate",
 	"memory_search",
+	"memory_reflect",
 	"history_search",
 	"note",
 	"speak",
 	"send_file",
+	"generate_image",
 ]);
 
 // Hard toolset exclusion, applied at assembly (index.ts makeTools):

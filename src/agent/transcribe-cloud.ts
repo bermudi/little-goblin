@@ -1,8 +1,8 @@
 // Cloud speech engines — hand-rolled HTTP like TTS (tts.ts), no
 // provider SDK. Two adapter families (design/asr.md):
 //
-//   OpenAI-compatible multipart — groq, openai, mistral: one
-//     implementation, three URLs, {"text": …} back.
+//   OpenAI-compatible multipart — groq, openai, mistral, logfare: one
+//     implementation, four URLs, {"text": …} back.
 //   Bespoke — elevenlabs (multipart, xi-api-key), openrouter (JSON
 //     base64 STT), gemini + mimo (chat-with-audio by instruction).
 //
@@ -23,10 +23,20 @@ import { readTextCapped } from "./tools/web.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine, SpeechFile } from "./transcribe.ts";
 
 // Every cloud arm of the transcription union — one shape (kind, model,
-// auth, language?), seven kinds.
+// auth, language?), eight kinds.
 export type CloudCfg = Extract<
 	TranscriptionConfig,
-	{ kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" }
+	{
+		kind:
+			| "groq"
+			| "openai"
+			| "openrouter"
+			| "mistral"
+			| "elevenlabs"
+			| "gemini"
+			| "mimo"
+			| "logfare";
+	}
 >;
 
 // Groq's multipart cap is 25 MiB — over that, segment instead of
@@ -128,9 +138,17 @@ export function mistralEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps =
 	);
 }
 
-// groq/openai/mistral share one wire: multipart file+model(+language),
-// Bearer auth, {"text": …} back. Differences are the URL and the error
-// body flavor, both handled in renderError.
+// Logfare advertises the OpenAI audio/transcriptions wire
+// (https://logfare.ai/docs) — same multipart file+model(+language),
+// {"text": …} back. Unverified against the live API (no key provisioned
+// yet); the fixture pins the documented shape.
+export function logfareEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
+	return openAiCompatible("logfare", cfg, auth, "https://logfare.ai/v1/audio/transcriptions", deps);
+}
+
+// groq/openai/mistral/logfare share one wire: multipart
+// file+model(+language), Bearer auth, {"text": …} back. Differences are
+// the URL and the error body flavor, both handled in renderError.
 function openAiCompatible(
 	kind: string,
 	cfg: CloudCfg,

@@ -12,6 +12,34 @@ set -euo pipefail
 fail() { echo "deploy: $*" >&2; exit 1; }
 step() { echo "deploy: $*"; }
 
+# goblin.log annotation: a deploy-initiated restart must be distinguishable
+# from a spontaneous one in the operational log — an unexplained "shutting
+# down" reads as an incident until proven otherwise. Lines match src/log.ts's
+# JSONL shape (ts ISO ms UTC, level, msg + free fields). Diagnostics, not
+# gating: every failure here warns on stderr and continues.
+annotate_log() {
+	[ -n "$goblin_log" ] || return 0
+	local msg="$1" was="${2-}"
+	local line
+	if [ -n "$was" ]; then
+		line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+			--arg msg "deploy $msg" --arg rev "$new_rev" --arg was "$was" \
+			'{ts:$ts,level:"info",msg:$msg,rev:$rev,was:$was}')" || {
+			echo "deploy: WARNING — goblin.log annotation build failed" >&2
+			return 0
+		}
+	else
+		line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+			--arg msg "deploy $msg" --arg rev "$new_rev" \
+			'{ts:$ts,level:"info",msg:$msg,rev:$rev}')" || {
+			echo "deploy: WARNING — goblin.log annotation build failed" >&2
+			return 0
+		}
+	fi
+	printf '%s\n' "$line" >>"$goblin_log" 2>/dev/null ||
+		echo "deploy: WARNING — could not append goblin.log annotation" >&2
+}
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_root"
 # A branch clone or linked worktree must not restart a different checkout.
@@ -177,22 +205,46 @@ fi
 
 # --- 5. Restart, verify -----------------------------------------------------
 restart_epoch="$(date +%s)"
-systemctl --user restart goblin
-for _ in $(seq 1 20); do
-	sleep 1
-	[ "$(systemctl --user is-active goblin)" = active ] && break
-done
-if [ "$(systemctl --user is-active goblin)" != active ]; then
-	journalctl --user -u goblin -n 40 --no-pager >&2
-	fail "goblin not active after restart"
+# The watcher's floor: the invocation this restart must replace, read
+# BEFORE the restart — a crash/restart that lands ahead of the watch can
+# never be adopted as the accepted one.
+pre_restart="$(systemctl --user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value)" ||
+	fail "cannot read goblin.service pre-restart identity"
+mapfile -t watch_floor <<< "$pre_restart"
+if [ "${#watch_floor[@]}" -ne 2 ]; then
+	fail "unreadable goblin.service pre-restart identity"
 fi
+# The log the unit's goblin writes: GOBLIN_HOME rides the unit Environment,
+# not this shell. Absent home, missing file, or no jq → warn, deploy anyway.
+goblin_log=""
+unit_env="$(systemctl --user show goblin.service --property=Environment --value 2>/dev/null || true)"
+goblin_home="$(printf '%s\n' "$unit_env" | grep -o 'GOBLIN_HOME=[^ ]*' | head -1 | cut -d= -f2- || true)"
+if ! command -v jq >/dev/null 2>&1; then
+	echo "deploy: WARNING — jq unavailable; goblin.log will not carry deploy context" >&2
+elif [ -n "$goblin_home" ] && [ -f "$goblin_home/state/goblin.log" ]; then
+	goblin_log="$goblin_home/state/goblin.log"
+else
+	echo "deploy: WARNING — goblin.log not resolvable (GOBLIN_HOME='${goblin_home:-unset}'); restart will read unexplained" >&2
+fi
+annotate_log "restarting goblin" "${old_rev:-none}"
+systemctl --user restart goblin
+step "verify: startup acceptance"
+# Installer grammar; 75s because slow boot failures (a timed-out provider
+# handshake) land long after an is-active poll turns green.
+if ! bun scripts/check-startup.ts --watch 0 75000 "${watch_floor[0]}" "${watch_floor[1]}" >&2; then
+	# Failure diagnostics under the same allowlist the watcher enforces —
+	# raw journal bodies carry private runtime fields.
+	bun scripts/check-startup.ts --brief 40 >&2 || true
+	fail "goblin failed startup acceptance after restart"
+fi
+annotate_log "restart accepted — goblin live at deployed rev"
 sleep 3
 journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
 # grep's 1 means no error lines, not a failed journal read.
 # Deliberate tolerance: error-level lines are reported, not fatal — a
 # long-lived agent logs nonfatal subsystem errors without stopping the
-# unit. The hard gates are the is-active check above and the memory
-# probe below; this print exists so a recurring boot error ships
+# unit. The hard gates are the startup-acceptance probe above and the
+# memory probe below; this print exists so a recurring boot error ships
 # visibly with the deploy that introduced it.
 errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
 if [ -n "$errors" ]; then
@@ -229,7 +281,7 @@ marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
 sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
-sync -d "$marker_dir" || fail "cannot flush deployment marker directory"
+sync -d "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
 # Verification passed and the successful marker landed durably — only
 # now does the attempt marker go away. A failure here reports failure
 # even though the restart succeeded; the stale marker just makes the

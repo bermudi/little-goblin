@@ -5,39 +5,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Long-term memory
 
-**Implemented; live-verified 2026-09-24** on the homelab box against the
-real Podman stack (0.10.0-slim). Verified by live traffic that day:
-retention end-to-end (queued exchanges drained through submit → async
-operation → completed), recall answering with real extracted facts,
-installer start, and the watch timer firing on schedule. The 2026-09-25
-reboot closed the boot-path gate in production: db and api units
-auto-started within a minute of boot. Quadlet's `[Install]` creates the
-dependency in the generator directory (`systemctl --user is-enabled
-goblin-memory-api` reads `generated`; `default.target`'s loaded Wants is
-the activation check). A hand-written same-name relative symlink in
-the user wants directory points to itself and is not a boot hook.
-On 2026-09-27, four synthetic exchanges across three named
-private Telegram topics exercised cross-topic recall and a dated correction
-with the operator-selected `glm-5.3-flash`: the fresh topics' persisted
-recall blocks cited the source topic, the recall reply gave the prior
-value, and the correction reply distinguished current from prior and
-included the date. All four replies were visible in Telegram and all four
-retention operations completed. With the queue idle, a
-controlled API restart returned healthy with unchanged queue state; a
-watch tick against a healthy API left its service invocation unchanged.
-In a later drill that day, pausing only the API process made its running
-container genuinely `unhealthy` after four failed probes. The scheduled
-watch restarted that unit, not the database; the new container became
-healthy and readiness returned HTTP 200. A separate synthetic retention
-operation was acknowledged as `pending` remotely when the API restarted:
-Goblin submitted it once, kept the same operation ID, and later marked it
-completed with a stored document. Two attempts to catch an operation in
-`processing` finished before the probe could observe that state; active
-extraction interrupted by a restart is therefore **not verified**.
-First live finding: z.ai 429
-"insufficient balance" during extraction blocks a single document for
-operator reconciliation (the designed path, not a crash) — provider
-credit is a live dependency of retention.
+**Implemented and live-verified** — first traffic 2026-09-24 against the
+real Podman stack (0.10.0-slim), and the 2026-09-25 reboot closed the
+boot-path gate when both units auto-started. The drills are git history;
+what they left on record: **provider credit is a live dependency of
+retention** — a z.ai 429 "insufficient balance" during extraction blocks
+a single document for operator reconciliation, by design, not a crash —
+and one open edge: **Unverified:** an active extraction interrupted
+mid-`processing` by a restart (the state was never observed live).
 Slice 2 rulings (below) lock the turn-integration mechanisms.
 Memory returns on explicit
 operator demand. Hindsight is the selected memory service, not an agent
@@ -50,7 +25,7 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    bankId, auth?, recallTimeoutMs?, maxTokens?, budget?}`; absent =
    exact current behavior. `auth` names an `auth.jsonl` secret for the
    Bearer token (loopback needs none). Recall defaults: 5000ms timeout,
-   1024 max tokens, `low` budget — turns must not wait on memory.
+   2048 max tokens, `mid` budget — the timeout still bounds waiting.
    (Timeout raised 2026-10-02: measured cold recall is ~2.3–2.7s — the
    remote embedding leg re-colds within ~8s of idle, so every chat turn
    pays it; 2s silently disabled recall on every cold turn rather than
@@ -78,79 +53,70 @@ No MCP, replacement turn loop, or generic multi-backend framework.
 4. **Document ID: `exchange/{conversationId}/{anchorSeq}/{assistantId}`.**
    Stable per completed exchange, unique across retries; retries replay
    identical content (queue rejects same ID with different content).
-5. **Degraded status: log + `/memory status`, not chat spam.** Every
-   recall/worker outcome emits a structured line; `/memory status`
-   reports disabled/healthy/degraded/pending with outbox counts. Model
-   context distinguishes unavailable from empty via the persisted block;
-   no Telegram notification per retry. Amendment (2026-09-24): the ruling
-   covers per-retry spam, not silence — a retention chain that cannot
-   drain for a continuous hour earns exactly ONE notice per episode,
-   sent to the conversation whose exchange is stuck (episode state in
-   SQLite, `memory_outage`; a failed send retries on the next worker
-   failure; any successful advance clears the episode silently). The
-   amendment exists because the stack's boot-enablement gap (below) left
-   goblin retrying a dead port for a full day with no one the wiser.
-   Amendment (2026-09-25): blocked retention is not an outage — the
-   service answered — and it surfaced nowhere in chat while a 429 storm
-   left a document stuck for hours. A document's first transition into
-   `blocked` earns ONE notice per document (latch in SQLite,
-   `memory_blocked_notices`), naming `/memory retry` and `/memory
-   dismiss`; everything after the first notice is `/memory status`
-   territory. The mini app's Memories tab renders the same status as a
-   read-only card (`GET /api/memory-status`, same auth as every other
-   endpoint, polled only while the tab is open) — the status panel
-   never mutates the queue. Forgetting later grew a UI surface
-   (ruling 8); retry and dismiss stay Telegram verbs. Retry mints a FRESH operation id — Hindsight holds the old
-   op terminally failed server-side, so replaying it just re-reads the
-   dead op's status (the live hand-requeue that failed); dismiss keeps
-   the row as `dismissed` for audit, and `/forget delete` cancels
-   blocked and dismissed rows too.
+5. **Degraded status: log + `/memory status`, plus exactly two
+   notices.** Every recall/worker outcome emits a structured line;
+   `/memory status` reports disabled/healthy/degraded/pending with
+   outbox counts. Model context distinguishes unavailable from empty
+   via the persisted block. The complete notice list: **one notice per
+   outage episode** — a retention chain that cannot drain for a
+   continuous hour earns exactly one notice, sent to the conversation
+   whose exchange is stuck (2026-09-24: episode state in SQLite,
+   `memory_outage`; a failed send retries on the next worker failure;
+   any successful advance clears the episode silently — born of the
+   boot-enablement gap that left goblin retrying a dead port for a
+   day); **one notice per first blocked transition** — a document's
+   first transition into `blocked` earns one notice per document
+   (2026-09-25: latch in `memory_blocked_notices`), naming `/memory
+   retry` and `/memory dismiss`, because blocked retention is not an
+   outage — the service answered. Everything else is `/memory status`
+   territory — no Telegram notification per retry. The mini app's
+   Memories tab renders the same status as a read-only card
+   (`GET /api/memory-status`, same auth as every other endpoint,
+   polled only while the tab is open) — the status panel never mutates
+   the queue. Retry mints a fresh operation id — Hindsight holds the
+   old op terminally failed server-side, so replaying it just re-reads
+   the dead op's status; dismiss keeps the row as `dismissed` for
+   audit.
 6. **Bank/mission: operator step, no auto-creation.** Goblin never
    creates banks or sets missions; `docs/memory.md` documents the manual
    `curl` with an example mission (preferences, decisions, commitments,
    people, ongoing work). Bank-level overrides stay out of Goblin.
 7. **Forgetting: two commands, suppression survives everything.**
    `/forget <query>` resolves and shows affected sources;
-   `/forget delete <documentId>` requires that go-ahead, then suppresses,
-   parks the document's outbox rows, deletes the remote document, and
-   redacts affected recall snapshots (global prefix reset, logged).
-   Suppression lives in SQLite and is checked before every enqueue, so
-   restarts and future backfills cannot resurrect forgotten sources.
-   Amendment (2026-10-08, #87): forgetting is destination-aware. The
-   outbox binds rows to the endpoint+bank target hash, and that hash is
-   one-way — after a destination change, the bank that owns a row could
-   not be addressed again, so `/forget delete` polled old-bank UUIDs
-   against the new bank (a bank-scoped 404 reads as settled), cancelled
-   the old rows, deleted only in the new bank, and reported forgotten
-   while the old bank kept the document and its live retention. Every
-   boot now records its destination (baseUrl, bank, auth key name —
-   never a token) in `memory_destinations` keyed by the target hash;
-   the protocol settles each destination's in-flight operations and
-   deletes the document through every destination the outbox names,
-   plus the current one. A destination the history cannot reconstruct
-   (rows predating the table) refuses the forget outright with all
-   tracking preserved — old-bank rows are never silently cancelled on
-   a new-bank delete. Suppression stays bank-agnostic. Pending rows
-   against a previous bank still never drain through the current worker
-   (the binding rule above); forgetting is their reconciliation path.
-   Amendment (2026-10-08, #113): the cancel step must not destroy the
-   retry map — the outbox rows ARE the document→destination mapping.
-   Deleting them before the remote deletes meant a failed old-bank
-   delete (or a crash in the window) left a re-run of `/forget delete`
-   unable to know the old bank held the document: it deleted only from
-   the current bank and reported forgotten while the old copy survived.
-   Forgetting now parks every row for the document in a `deleting`
-   state — invisible to the worker, so ingestion and blocked-review
-   surfaces stop (suppression already blocks re-enqueue) — and releases
-   each destination's rows only after that destination's own delete
-   confirms. A failure leaves the unconfirmed destinations parked, so
-   the retry settles and deletes through every bank that still holds
-   the document. This is the retain path's durable-operation rule
+   `/forget delete <documentId>` requires that go-ahead, then runs one
+   protocol: suppress, settle every named destination's in-flight
+   operations, park the document's outbox rows, delete the remote
+   document through every destination the outbox names plus the current
+   one, and redact affected recall snapshots (global prefix reset,
+   logged). Suppression lives in SQLite, is bank-agnostic, and is
+   checked before every enqueue, so restarts and future backfills
+   cannot resurrect forgotten sources.
+
+   Destination registry (2026-10-08, #87): every boot records its
+   destination — baseUrl, bank, auth key name, never a token — in
+   `memory_destinations` keyed by the one-way target hash. A
+   destination the history cannot reconstruct (rows predating the
+   table) refuses the forget outright with all tracking preserved;
+   old-bank rows are never silently cancelled on a new-bank delete.
+   Pending rows against a previous bank never drain through the
+   current worker (the binding rule in Retain); forgetting is their
+   reconciliation path.
+
+   The park step (2026-10-08, #113): the outbox rows ARE the
+   document→destination mapping, so they are never deleted before the
+   remote delete confirms. Every row for the document parks in
+   `deleting` — invisible to the worker, so ingestion and
+   blocked-review surfaces stop while suppression already blocks
+   re-enqueue — and each destination's rows release only after that
+   destination's own delete confirms. Blocked and dismissed rows cancel
+   under the same delete. A failure leaves the unconfirmed destinations
+   parked, so the retry settles and deletes through every bank that
+   still holds the document — the retain path's durable-operation rule
    applied to deletion: persist the work record before the remote
-   action, drop it only after confirmation — never before. `/memory status`
-   and the mini-app status card expose the parked outbox-row count as
-   degraded, with `/forget delete <documentId>` retry guidance. These rows
-   do not drain automatically and `/memory retry` does not retry deletions.
+   action, drop it only after confirmation, never before. `/memory
+   status` and the mini-app status card expose parked rows as degraded
+   with `/forget delete` retry guidance; they do not drain
+   automatically and `/memory retry` does not retry deletions.
 8. **Memories browser: the mini app grows a Memories tab (operator ask,
    2026-09-30).** The settings page restructures to two tabs — Settings
    (the six config sections one level deep behind an index; settings
@@ -185,7 +151,10 @@ upgrades. Nothing assumes a particular hostname, operator home directory,
 or existing database installation. The stack is boot-enabled
 (`[Install]` + `WantedBy=default.target` on the API unit; the database
 rides along via `Requires`/`After`) like goblin itself — the installer's
-cost confirmation gates the first start, not every reboot. A deferred
+cost confirmation gates the first start, not every reboot. `[Install]`
+creates the dependency in the generator directory (`is-enabled` reads
+`generated`); a hand-written same-name symlink is not a boot hook.
+A deferred
 start (`--no-start` or a declined confirmation) only prints the
 continuation — daemon-reload, the embed relay when opted in, the API
 start, then the watch timer — the same sequence a confirmed start runs,
@@ -328,17 +297,60 @@ snapshot and recent conversational context. No additional query-generation
 model initially. Recall has explicit time/search/output bounds and source
 references. Also expose a validated memory-search tool for deeper searches.
 
-**Reflect stays declined (reaffirmed 2026-10-06, after revisit).** The
-original one-line rationale undersold the decision. Hindsight `reflect` is
-not consolidation — it is an agentic reasoning loop inside the service:
-a question in, a disposition-shaped prose answer out, up to ten tool
-iterations under the bank's mission, disposition traits, and directives.
-Goblin declines it for the same reason it declines a replacement turn
-loop: Goblin owns reasoning, and recalled text must stay dated evidence,
-not a second engine's conclusions. The feature that makes reflect
-attractive elsewhere — curated precomputed answers ("mental models") —
-is already Goblin's workspace-file territory (SOUL.md/AGENTS.md), by
-design.
+**On-demand reflection is approved.** `memory_reflect` asks the configured
+Hindsight service to investigate cross-session patterns. It is a bounded
+memory specialist, not a replacement turn loop: Goblin still owns the final
+answer. Automatic context injection continues to use recall. Reflection
+requests supporting facts (`include: {facts: {}}`, the observed 0.10.0
+contract), returns synthesis separately from dated evidence, and identifies
+mental models and directives that shaped it. Missing evidence envelopes are
+protocol failures, not successful text-only answers. Bank disposition and
+directives are service-side interpretation, never new Goblin instructions.
+Reflection's input response is bounded separately: 16 MiB on the wire and
+two million aggregate string characters after validation. A larger response
+is a resource-limit failure with a narrower-question suggestion, not a wire
+protocol violation. The model-facing result remains much smaller. Reserve
+room for whole evidence: if the synthesis exceeds its share, omit it with
+`synthesisOmitted: true` rather than clipping a qualification or discarding
+a completed investigation. Reflection outcomes are logged separately and
+never change the shared recall-health latch.
+No new provider/model, bank creation, automatic reflection, or instruction-file
+generation is introduced. The existing service's configured LLM does the work.
+
+**Memory quality and safety.** Completed exchanges retain their full text
+rather than silently taking a 2,000-character prefix. Hindsight owns extraction
+chunking; an explicit one-million-character ceiling rejects oversized
+retention loudly without dropping the completed response. Context remains a
+bounded, labelled aid, not fresh evidence. Recognizable credentials are
+redacted before the durable outbox and before recall, search, reflection, and
+legacy queued submissions leave the process. Pattern screening is not a
+secrecy guarantee, does not rewrite original history, and is not retroactive
+cleanup of old outbox rows or remote storage.
+
+Automatic recall defaults to `mid` / 2048 tokens; explicit search has separate
+`searchBudget` / `searchMaxTokens` / `searchTimeoutMs` defaults of `high` /
+4096 / 30000; deliberate search does not inherit the automatic-recall deadline.
+Reflection has
+`reflectBudget` / `reflectMaxTokens` / `reflectTimeoutMs` defaults of `high` /
+4096 / 120000. Explicitly configured old recall bounds remain respected.
+`preferObservations` defaults true without excluding fresh raw facts.
+`minScores` defaults to a conservative semantic cosine floor of 0.3 for
+automatic injection, while `searchMinScores` defaults empty so deliberate
+relational searches may use graph-only results. The floor is an initial
+tunable policy, not an empirically calibrated quality claim. Stage scores are
+validated and configured floors also apply client-side; a missing floored
+stage cannot pass. Recall rendering fits whole facts into a bounded character
+envelope derived from the requested token budget, with explicit omission
+counts rather than clipping qualifications. This envelope is a sizing
+estimate, not a model-specific tokenizer.
+
+Borrowed mechanisms: the catalog-pinned Hindsight Hermes plugin 1.2.2
+(`f843f173bb41f001e322cc83c917371639e47fbf`,
+`hindsight-integrations/hermes/__init__.py`) supplies observation preference,
+score-floor enforcement and optional memory investigation; current Hermes
+`agent/memory_manager.py` supplies pre-provider credential screening. Keep
+Goblin's current-turn recall, transaction-coupled durable outbox, exclusions,
+forgetting protocol, and persisted request-prefix snapshots.
 
 **Consolidation is live, and it is Hindsight's, not Goblin's (recorded
 2026-10-06; it had never been ruled on).** The deployed bank runs
@@ -353,10 +365,9 @@ including `observation` — so observations are already recall evidence
 under the existing rules: dated, sourced, outranked by current operator
 statements. Goblin's own projection stays append-only; the converging
 layer belongs to the service. Unresolved follow-ups from the revisit:
-(1) `prefer_observations` (recall flag, default false) would drop raw
+(1) `prefer_observations` (service default false, Goblin default true) drops raw
 facts superseded by a returned observation and backfill the freed token
-budget — recommended, but it changes what the model sees, so it waits
-for an explicit operator decision; (2) `/forget delete` removes source
+budget under the approved memory-quality ruling above; (2) `/forget delete` removes source
 documents, but whether delete-triggered consolidation reconciles the
 observations derived from those facts is unverified — Goblin's code has
 no observation handling anywhere (the word appears in no src file), so

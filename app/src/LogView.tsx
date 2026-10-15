@@ -32,7 +32,6 @@ export function LogView({ token }: { token: string | null }) {
 	// One fence for every tail — a slower filter's response must not
 	// overwrite the newer controls' results when it lands out of order.
 	const tailSeq = useRef(0);
-
 	const load = useCallback(() => {
 		const seq = ++tailSeq.current;
 		setErr(null);

@@ -17,7 +17,12 @@ import {
 	type Conversation,
 	type ConversationStore,
 } from "./conversation.ts";
-import { JevError, type JevClient, type JevDecision, type JevQuestion } from "./jev.ts";
+import {
+	System1Error,
+	type System1Client,
+	type System1Decision,
+	type System1Question,
+} from "./system1.ts";
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
 
@@ -64,13 +69,13 @@ export interface RollDeps {
 	runtime: Pick<Runtime, "busy">;
 	// Live config read — a mini-app save applies on the next message.
 	gapMinutes: () => number;
-	// The shared reviewer JevClient, resolved per call (it is built
-	// after the bot in the composition root). undefined = no check
-	// available — the burst joins current.
-	gate?: () => Pick<JevClient, "decide"> | undefined;
+	// The shared System1Client, resolved per call (it is built after the
+	// bot in the composition root). undefined = no check available — the
+	// burst joins current.
+	gate?: () => Pick<System1Client, "decide"> | undefined;
 	// Injectable clock — tests steer the gap without sleeping.
 	now?: () => Date;
-	// Interactive ceiling for the check: the shared JevClient's own 30s
+	// Interactive ceiling for the check: the shared System1Client's own 30s
 	// timeout is too long to hold an operator's message. Pass this
 	// budget into the client so primary + backup are aborted within it;
 	// the outer deadline also bounds a gate that ignores the option.
@@ -83,7 +88,7 @@ export const FRESH_BELOW = 0.3;
 const CHECK_DEADLINE_MS = 3_000;
 const HEAD_CHARS = 2_000;
 
-const FOLLOW_UP_QUESTIONS: Record<string, JevQuestion> = {
+const FOLLOW_UP_QUESTIONS: Record<string, System1Question> = {
 	follow_up: {
 		type: "noul",
 		instructions:
@@ -98,7 +103,7 @@ const FOLLOW_UP_QUESTIONS: Record<string, JevQuestion> = {
 
 // The deadline losing the race is a fallback trigger, not a bug —
 // typed so the catch can tell it from a real failure (fail loud covers
-// everything that isn't a JevError or this).
+// everything that isn't a System1Error or this).
 class RollDeadlineError extends Error {
 	constructor() {
 		super("follow-up check deadline");
@@ -233,7 +238,7 @@ export function routeDm(
 // The intake path: past the gap, the follow-up check decides continue
 // vs roll. Every failure of the check itself fails open into the
 // current conversation (the message still needs an answer); anything
-// that isn't a JevError or the deadline propagates.
+// that isn't a System1Error or the deadline propagates.
 export async function routeDmMessage(
 	deps: RollDeps,
 	chatId: number,
@@ -268,7 +273,7 @@ export async function routeDmMessage(
 		return continued(current, "fallback", gapMinutes);
 	}
 	const started = Date.now();
-	let decision: JevDecision;
+	let decision: System1Decision;
 	try {
 		decision = await withDeadline(
 			gate.decide(checkState(history, gapMinutes, burstText), FOLLOW_UP_QUESTIONS, {
@@ -277,14 +282,20 @@ export async function routeDmMessage(
 			deps.checkDeadlineMs ?? CHECK_DEADLINE_MS,
 		);
 	} catch (err) {
-		if (!(err instanceof JevError) && !(err instanceof RollDeadlineError)) throw err;
+		if (!(err instanceof System1Error) && !(err instanceof RollDeadlineError)) throw err;
 		log.warn("follow-up check", {
 			chat: chatId,
 			conversation: current.id,
 			ms: Date.now() - started,
-			kind: err instanceof JevError ? err.kind : "deadline",
+			kind: err instanceof System1Error ? err.kind : "deadline",
 		});
-		if (!stillRouteable()) return { conv: current, rolled: false, decidedBy: "command" };
+		if (!stillRouteable()) {
+			// Re-read the pin; navigation may have moved it after admission
+			// of this check. The caller re-checks anyway, but log/read as
+			// current to avoid carrying a stale conv (audit R2).
+			const pinned = deps.store.currentDm(chatId);
+			return { conv: pinned ?? current, rolled: false, decidedBy: "command" };
+		}
 		// The address can still have rolled while the failed check ran
 		// — same re-read as the resolved path: join the new current
 		// rather than answering the superseded one.
@@ -304,7 +315,8 @@ export async function routeDmMessage(
 			inputTokens: decision.inputTokens,
 			cost: decision.cost,
 		});
-		return { conv: current, rolled: false, decidedBy: "command", probability };
+		const pinned2 = deps.store.currentDm(chatId);
+		return { conv: (pinned2 ?? current), rolled: false, decidedBy: "command", probability };
 	}
 	const fresh = probability < FRESH_BELOW;
 	log.info("follow-up check", {

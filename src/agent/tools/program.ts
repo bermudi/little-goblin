@@ -14,7 +14,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { nextFire, type Program, type ProgramsStore } from "../../programs.ts";
+import { nextFire, ProgramRuleError, type Program, type ProgramsStore } from "../../programs.ts";
 
 function programView(program: Program): Record<string, unknown> {
 	return {
@@ -22,6 +22,7 @@ function programView(program: Program): Record<string, unknown> {
 		name: program.name,
 		charter: program.charter,
 		cron: program.cron,
+		max_lateness_minutes: program.maxLatenessMinutes,
 		has_hook: program.hookHash !== null,
 		mail_filter: program.mailFilter,
 		enabled: program.enabled,
@@ -89,6 +90,9 @@ const createSchema = z.object({
 	name: z.string().min(1).max(100),
 	charter: z.string().min(1),
 	cron: z.string().min(5).optional(),
+	// The 30s scan tick is the finest lateness there is — 0 reads as
+	// structurally un-fireable, so the floor is 1 minute.
+	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
 });
@@ -99,6 +103,13 @@ const updateSchema = z.object({
 	charter: z.string().min(1).optional(),
 	// null clears the cron — allowed only while a hook remains.
 	cron: z.string().min(5).nullable().optional(),
+	maxLatenessMinutes: z
+		.number()
+		.int()
+		.positive()
+		.max(Number.MAX_SAFE_INTEGER)
+		.nullable()
+		.optional(),
 	// null clears the mail filter — allowed only while another trigger remains.
 	mailFilter: z.string().min(1).max(500).nullable().optional(),
 });
@@ -131,6 +142,7 @@ export const programInputSchema = z
 		name: createSchema.shape.name.optional(),
 		charter: createSchema.shape.charter.optional(),
 		cron: updateSchema.shape.cron,
+		maxLatenessMinutes: updateSchema.shape.maxLatenessMinutes,
 		hook: createSchema.shape.hook,
 		mailFilter: updateSchema.shape.mailFilter,
 		id: updateSchema.shape.id.optional(),
@@ -147,7 +159,7 @@ export const programInputSchema = z
 export const programTool = (deps: ProgramToolDeps) =>
 	tool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
 		inputSchema: programInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
@@ -171,6 +183,9 @@ export const programTool = (deps: ProgramToolDeps) =>
 							name: input.name,
 							charter: input.charter,
 							...(input.cron !== undefined ? { cron: input.cron } : {}),
+							...(input.maxLatenessMinutes !== undefined
+								? { maxLatenessMinutes: input.maxLatenessMinutes }
+								: {}),
 							...(minted !== null ? { hookHash: hookTokenHash(minted.token) } : {}),
 							...(input.mailFilter !== undefined ? { mailFilter: input.mailFilter } : {}),
 							address: { chatId: deps.chatId, threadId: deps.threadId },
@@ -179,6 +194,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							program: program.id,
 							name: program.name,
 							cron: program.cron,
+							maxLatenessMinutes: program.maxLatenessMinutes,
 							hook: program.hookHash !== null,
 							mail: program.mailFilter !== null,
 							conversation: `${deps.chatId}/${deps.threadId ?? "-"}`,
@@ -195,8 +211,8 @@ export const programTool = (deps: ProgramToolDeps) =>
 						}
 						return { program: programView(program) };
 					} catch (err) {
-						if (isTriggerError(err)) {
-							return { error: err instanceof Error ? err.message : String(err) };
+						if (isProgramRuleError(err)) {
+							return { error: err.message };
 						}
 						throw err;
 					}
@@ -214,22 +230,29 @@ export const programTool = (deps: ProgramToolDeps) =>
 						name?: string;
 						charter?: string;
 						cron?: string | null;
+						maxLatenessMinutes?: number | null;
 						mailFilter?: string | null;
 					} = {};
 					if (input.name !== undefined) patch.name = input.name;
 					if (input.charter !== undefined) patch.charter = input.charter;
 					if (input.cron !== undefined) patch.cron = input.cron;
+					if (input.maxLatenessMinutes !== undefined)
+						patch.maxLatenessMinutes = input.maxLatenessMinutes;
 					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
 					try {
 						const program = deps.programs.update(input.id, patch);
 						if (program === null) return { error: `no program ${input.id}` };
-						log.info("program updated", { program: program.id, name: program.name });
+						log.info("program updated", {
+							program: program.id,
+							name: program.name,
+							maxLatenessMinutes: program.maxLatenessMinutes,
+						});
 						return { program: programView(program) };
 					} catch (err) {
 						// The trigger invariant is model-actionable; storage
 						// failures propagate — never swallowed.
-						if (isTriggerError(err)) {
-							return { error: err instanceof Error ? err.message : String(err) };
+						if (isProgramRuleError(err)) {
+							return { error: err.message };
 						}
 						throw err;
 					}
@@ -253,8 +276,8 @@ export const programTool = (deps: ProgramToolDeps) =>
 						try {
 							deps.programs.setHook(input.id, null);
 						} catch (err) {
-							if (isTriggerError(err)) {
-								return { error: err instanceof Error ? err.message : String(err) };
+							if (isProgramRuleError(err)) {
+								return { error: err.message };
 							}
 							throw err;
 						}
@@ -282,10 +305,10 @@ export const programTool = (deps: ProgramToolDeps) =>
 		},
 	});
 
-// The store's trigger-invariant message is the one thrown error a
-// tool call can fix — everything else (storage failures) propagates.
-function isTriggerError(err: unknown): boolean {
-	return err instanceof Error && err.message.includes("at least one trigger");
+// Program invariants are model-actionable; storage failures propagate.
+// Identity, not message text — wording stays free to change.
+function isProgramRuleError(err: unknown): err is ProgramRuleError {
+	return err instanceof ProgramRuleError;
 }
 
 // Token + URL + the publicUrl gate. Returns the minted pair or an

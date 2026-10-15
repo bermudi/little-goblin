@@ -15,23 +15,23 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	authReferences,
+	type Config,
 	ensureHomeLayout,
-	paths,
+	fetchEntrySchema,
+	fetchKinds,
 	loadConfig,
+	parseConfig,
+	paths,
 	providerKinds,
 	providerSchema,
-	fetchKinds,
-	fetchEntrySchema,
-	searchKinds,
 	searchEntrySchema,
+	searchKinds,
+	splitModelRef,
 	transcriptionDefaults,
 	transcriptionKinds,
 	transcriptionSchema,
-	splitModelRef,
-	authReferences,
 	writeConfig,
-	parseConfig,
-	type Config,
 } from "./config.ts";
 import { setLogFile } from "./log.ts";
 
@@ -111,7 +111,7 @@ const valid: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -284,6 +284,29 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow();
 	});
 
+	test('image: absent by default, provider must carry a baseUrl, "" clears', () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.image).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev"}}`);
+		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev" });
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},image:{model:"zai/flux-2-dev",size:"1024x768"}}`,
+		);
+		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev", size: "1024x768" });
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:""}`);
+		expect(loadConfig()!.image).toBeUndefined();
+		// Provider must exist AND carry a baseUrl — the images POST needs one.
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"other/x"}}`);
+		expect(() => loadConfig()).toThrow("image: custom");
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"openrouter/flux-2-dev"}}`);
+		expect(() => loadConfig()).toThrow("image: custom");
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev",size:"big"}}`);
+		expect(() => loadConfig()).toThrow();
+	});
+
 	test("reviewer: threshold defaults, model is provider-validated, auth required", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
@@ -318,10 +341,10 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow();
 	});
 
-	test("system1: optional block, model/baseUrl free-form, reviewer stays the switch", () => {
+	test("system1: optional block, model/baseUrl free-form, its own switch", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		// Absent → undefined; system1 alone enables nothing (reviewer is the switch).
+		// Absent → undefined; the block alone enables the shared client.
 		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x"}}`);
 		expect(loadConfig()!.system1).toEqual({ auth: "x" });
 		expect(loadConfig()!.reviewer).toBeUndefined();
@@ -337,7 +360,7 @@ describe("goblin.json5", () => {
 			model: "jev-latest",
 			baseUrl: "https://example.com",
 		});
-		// system1.model is a Jev model id, NOT a <provider>/<model-id> chat
+		// system1.model is a bare decision-model id, NOT a <provider>/<model-id> chat
 		// ref — it is NOT provider-validated (unlike reviewer.model).
 		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x",model:"other/x"}}`);
 		expect(loadConfig()!.system1?.model).toBe("other/x");
@@ -414,6 +437,31 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
+	test("tts openrouter defaults model and auth; voice is optional", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter"}}`);
+		expect(loadConfig()!.tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+		});
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},tts:{kind:"openrouter",model:"fish-audio/s2.1-pro",auth:"or-tts",voice:"b347db033a6549378b48d00acb0d06cd"}}`,
+		);
+		expect(loadConfig()!.tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro",
+			auth: "or-tts",
+			voice: "b347db033a6549378b48d00acb0d06cd",
+		});
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",model:""}}`);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",voice:" "}}`);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
+
 	test('transcription defaults its model; "" clears to unset', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
@@ -483,8 +531,22 @@ describe("goblin.json5", () => {
 		const mem = loadConfig()!.memory!;
 		expect(mem.bankId).toBe("goblin");
 		expect(mem.recallTimeoutMs).toBe(5000);
-		expect(mem.maxTokens).toBe(1024);
-		expect(mem.budget).toBe("low");
+		expect(mem.maxTokens).toBe(2048);
+		expect(mem.budget).toBe("mid");
+		expect(mem.preferObservations).toBe(true);
+		expect(mem.minScores).toEqual({ semantic: 0.3 });
+		expect(mem.searchMaxTokens).toBe(4096);
+		expect(mem.searchBudget).toBe("high");
+		expect(mem.searchTimeoutMs).toBe(30_000);
+		expect(mem.searchMinScores).toEqual({});
+		expect(mem.reflectTimeoutMs).toBe(120_000);
+		for (const timeout of [0, 120_001]) {
+			writeFileSync(
+				join(dir, "goblin.json5"),
+				`${base},memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:${timeout}}}`,
+			);
+			expect(() => loadConfig()).toThrow();
+		}
 		// Remote plain HTTP is rejected — loopback or HTTPS only.
 		writeFileSync(
 			join(dir, "goblin.json5"),
@@ -616,6 +678,12 @@ describe("ensureHomeLayout", () => {
 		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
+		// The herdr skill seeds the same way (delegation.md): a rebuilt
+		// box must regain the pane-targeting contract — the agent-surface
+		// rule that keeps operator-pointed prompts off raw pane sends.
+		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
+		expect(herdr).toContain("name: herdr");
+		expect(herdr).toContain("herdr agent prompt");
 	});
 
 	test("existing identity files are never clobbered", () => {
@@ -825,6 +893,7 @@ describe("authReferences", () => {
 			operators: [7],
 			allowedUsers: [7],
 			search: [{ kind: "brave", auth: "brave-key" }],
+			tts: { kind: "openrouter", auth: "or-tts" },
 			appToken: "app-token-record",
 			subagents: {
 				worker: {
@@ -850,10 +919,24 @@ describe("authReferences", () => {
 		expect([...authReferences(c)].sort()).toEqual([
 			"app-token-record",
 			"brave-key",
+			"or-tts",
 			"telegram",
 			"zai",
 			"zai-flash",
 		]);
+	});
+
+	test("edge tts contributes no auth ref", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [7],
+			allowedUsers: [7],
+			tts: { kind: "edge", voice: "en-US-AriaNeural" },
+		});
+		expect([...authReferences(c)].sort()).toEqual(["telegram", "zai"]);
 	});
 });
 

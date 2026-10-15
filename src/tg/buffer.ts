@@ -62,6 +62,21 @@ export class CoalescingBuffer<T> {
 		}
 	}
 
+	// Rewrites one still-buffered item in place — the edited_message
+	// door: a fix landing while the burst coalesces edits the batch,
+	// never the record. False when the key's bucket already fired (the
+	// item's flush owns it now, or a retry will pick up what the inbox
+	// row holds). Amending never touches the timers — an edit is not
+	// new input, and the window's bounds stay where the messages put them.
+	amend(key: string, match: (item: T) => boolean, update: (item: T) => void): boolean {
+		const bucket = this.buckets.get(key);
+		if (bucket === undefined) return false;
+		const item = bucket.items.find(match);
+		if (item === undefined) return false;
+		update(item);
+		return true;
+	}
+
 	// Flush every pending bucket now, then wait out in-flight flushes —
 	// shutdown calls this so buffered input reaches history instead of
 	// dying in memory with the process. Async now: it also awaits every

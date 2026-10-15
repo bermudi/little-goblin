@@ -44,6 +44,7 @@ const loop: LoopTurnState = {
 	watchdogRing: [],
 	watchdogStrikes: 0,
 	completedCalls: 0,
+	modelCalls: 0,
 	warnings: [],
 	cutKind: null,
 	forcedKind: null,

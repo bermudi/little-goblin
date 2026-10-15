@@ -5,7 +5,7 @@
 // serve/funnel/any reverse proxy). Nothing here assumes a public IP.
 
 import type { Program, ProgramsStore } from "../programs.ts";
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import type { DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
@@ -40,10 +40,10 @@ export interface HttpDeps extends OperatorDeps {
 	};
 	// Loopback-only injection scoring (POST /api/check-injection, no
 	// initData — the 127.0.0.1 bind + Host check is the auth, same trust
-	// class as the hook token-in-URL). The composition root passes the
-	// SAME JevClient instance the reviewer holds; http only calls decide.
-	// Absent = no reviewer/system1 gate, the route answers 503.
-	checkInjection?: { gate: Pick<JevClient, "decide"> };
+	// class as the hook token-in-URL). The composition root passes its
+	// shared System1Client instance; http only calls decide. Absent = no
+	// client (neither system1 nor reviewer block), the route answers 503.
+	checkInjection?: { gate: Pick<System1Client, "decide"> };
 	// The app channel's API (DESIGN.md, App channel). Auth — bearer
 	// token or trust mode — is baked into the closure at boot by the
 	// composition root (index.ts): no per-request config read, so a

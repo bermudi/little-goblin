@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
+import { memoryConfigSchema } from "./config.ts";
 import {
 	buildMemoryClient,
 	buildRecallQuery,
 	buildRetentionDocument,
+	MemoryRetentionTooLargeError,
 	documentIdFor,
 	formatRecallBlock,
 	memoryBoundEntries,
@@ -16,6 +18,7 @@ import {
 	MemoryContexts,
 	startMemoryWorker,
 	withMemoryBlocks,
+	retentionSourceFrom,
 	type MemoryState,
 } from "./memory.ts";
 import { attachmentPart } from "./agent/attachments.ts";
@@ -103,6 +106,88 @@ describe("recall formatting", () => {
 });
 
 describe("retention documents", () => {
+	test("screening precedes query and context slicing", () => {
+		const material = "SYNTHETIC_PRIVATE_MATERIAL".repeat(200);
+		const key = `-----BEGIN PRIVATE KEY-----\n${material}\n-----END PRIVATE KEY-----`;
+		expect(buildRecallQuery([user("u1", key)])).not.toContain("SYNTHETIC_PRIVATE_MATERIAL");
+		const source = retentionSourceFrom([
+			{ seq: 1, message: user("u1", key) },
+			{ seq: 2, message: asst("a1", "noted") },
+			{ seq: 3, message: user("u2", "Remember the decision.") },
+		]);
+		expect(source.priorContext).not.toContain("SYNTHETIC_PRIVATE_MATERIAL");
+		const doc = buildRetentionDocument({
+			conversationId: "dm:1",
+			anchorSeq: 1,
+			userTexts: ["Remember the decision."],
+			userIds: ["u1"],
+			assistant: asst("a1", "noted"),
+			priorContext: key,
+			timestamp: "2026-09-22T10:00:00Z",
+		});
+		expect(doc?.content).not.toContain("SYNTHETIC_PRIVATE_MATERIAL");
+	});
+
+	test("late decisions and complete replies survive beyond the old prefix cap", () => {
+		const doc = buildRetentionDocument({
+			conversationId: "dm:1",
+			anchorSeq: 1,
+			userTexts: ["context ".repeat(5000) + "FINAL DECISION: use the green door."],
+			userIds: ["u1"],
+			assistant: asst("a1", "discussion ".repeat(3000) + "FINAL ACK: green door."),
+			priorContext: "",
+			timestamp: "2026-09-22T10:00:00Z",
+		});
+		expect(doc?.content).toContain("FINAL DECISION: use the green door.");
+		expect(doc?.content).toContain("FINAL ACK: green door.");
+	});
+
+	test("credentials are screened before creating a durable payload", () => {
+		const token = `sk-${"x".repeat(40)}`;
+		const doc = buildRetentionDocument({
+			conversationId: "dm:1",
+			anchorSeq: 1,
+			userTexts: [`api_key="${token}"`],
+			userIds: ["u1"],
+			assistant: asst("a1", "noted"),
+			priorContext: "",
+			timestamp: "2026-09-22T10:00:00Z",
+		});
+		expect(JSON.stringify(doc)).not.toContain(token);
+	});
+
+	test("an oversized exchange fails explicitly rather than returning a silent prefix", () => {
+		expect(() =>
+			buildRetentionDocument({
+				conversationId: "dm:1",
+				anchorSeq: 1,
+				userTexts: ["x".repeat(1_000_000)],
+				userIds: ["u1"],
+				assistant: asst("a1", "noted"),
+				priorContext: "",
+				timestamp: "2026-09-22T10:00:00Z",
+			}),
+		).toThrow(MemoryRetentionTooLargeError);
+	});
+
+	test("recall preserves long qualifications and omits oversized facts whole", () => {
+		const qualified = "x".repeat(700) + " BUT NOT ON WEEKENDS.";
+		const rendered = formatRecallBlock([{ id: "f", text: qualified }], "results", 2048);
+		expect(rendered).toContain(qualified);
+		const bounded = formatRecallBlock(
+			[
+				{ id: "big", text: "x".repeat(5000) },
+				{ id: "small", text: "Complete short fact." },
+			],
+			"results",
+			256,
+		);
+		expect(bounded).toContain("Complete short fact.");
+		expect(bounded).toContain("1 whole memories omitted");
+		expect(bounded).not.toContain("x".repeat(100));
+		expect(bounded.length).toBeLessThanOrEqual(256 * 4);
+	});
+
 	test("document IDs are stable per exchange", () => {
 		expect(documentIdFor("dm:1", 3, "a-1")).toBe(documentIdFor("dm:1", 3, "a-1"));
 		expect(documentIdFor("dm:1", 3, "a-1")).not.toBe(documentIdFor("dm:1", 3, "a-2"));
@@ -408,13 +493,13 @@ describe("client construction", () => {
 
 	test("present config builds a bound client", () => {
 		const client = buildMemoryClient(
-			{
+			memoryConfigSchema.parse({
 				baseUrl: "http://127.0.0.1:1",
 				bankId: "g",
 				recallTimeoutMs: 500,
 				maxTokens: 256,
 				budget: "low",
-			},
+			}),
 			{ resolve: async () => "x", has: () => true, names: () => ["h"] },
 		);
 		expect(client).toBeInstanceOf(HindsightClient);
@@ -675,6 +760,99 @@ describe("worker timer", () => {
 			await w.stop();
 		} finally {
 			(log as { error: unknown }).error = original;
+			server.stop(true);
+		}
+	});
+
+	// Shutdown during a memory outage: drain() used to run "until idle",
+	// which during an outage is one full pass of every due row at the
+	// request timeout — and index.ts awaited that before its drain budget
+	// even started, so a wedged Hindsight held every deploy until systemd
+	// SIGKILLed the process. stop() now aborts the in-flight request and
+	// the loop yields; the rows stay pending for the next boot.
+	test("stop() during an outage returns promptly and keeps the rows", async () => {
+		let requests = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async () => {
+				requests++;
+				await Bun.sleep(10_000); // never answers inside the client timeout
+				return new Response("late", { status: 500 });
+			},
+		});
+		try {
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+				timeoutMs: 2_000,
+			});
+			const queue = new MemoryQueue(memdb());
+			const ids: string[] = [];
+			for (let i = 0; i < 4; i++) {
+				ids.push(
+					queue.enqueue(client.target, {
+						id: `exchange-${i}`,
+						conversationId: "dm:1",
+						sourceIds: [`u${i}`, `a${i}`],
+						timestamp: "2026-09-27T10:00:00Z",
+						content: `exchange ${i}`,
+					}),
+				);
+			}
+			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
+			await Bun.sleep(50); // the timer's drain is parked in its first submit
+			expect(requests).toBe(1);
+			const started = Date.now();
+			await w.stop();
+			// Well inside one request timeout: the abort cut the wait short,
+			// and no second row was attempted after the stop.
+			expect(Date.now() - started).toBeLessThan(1_000);
+			expect(requests).toBe(1);
+			for (const id of ids) expect(queue.get(id)?.state).toBe("pending");
+			// An aborted submit is not a failed attempt — no backoff consumed.
+			expect(queue.get(ids[0]!)?.attempts).toBe(0);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	test("withWorkerPaused joins the in-flight tick, not the whole outage backlog", async () => {
+		let requests = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async () => {
+				requests++;
+				await Bun.sleep(150);
+				return new Response("unavailable", { status: 503 });
+			},
+		});
+		try {
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
+			const queue = new MemoryQueue(memdb());
+			for (let i = 0; i < 6; i++) {
+				queue.enqueue(client.target, {
+					id: `exchange-${i}`,
+					conversationId: "dm:1",
+					sourceIds: [`u${i}`, `a${i}`],
+					timestamp: "2026-09-27T10:00:00Z",
+					content: `exchange ${i}`,
+				});
+			}
+			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
+			await Bun.sleep(50); // first submit on the wire
+			const started = Date.now();
+			const seen = await w.withWorkerPaused(async () => requests);
+			// /forget's quiesce waits for the one request in flight — never
+			// for the six-row pass the outage would otherwise run.
+			expect(Date.now() - started).toBeLessThan(600);
+			expect(seen).toBeLessThanOrEqual(2);
+			await w.stop();
+		} finally {
 			server.stop(true);
 		}
 	});

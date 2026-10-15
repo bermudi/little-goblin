@@ -87,7 +87,7 @@ because the three sources fail differently:
   leaves the skills tree, so a crafted link can't pull host files into the
   model-readable staging copy (`src/reviewer.ts` staging walk).
 - **Inbound mail** is gated at the sender, then *scored* for injection by the
-  System One / Jev checker on the read path (`src/injection.ts`,
+  System One checker on the read path (`src/injection.ts`,
   `src/mail-watcher.ts`). The mail path is the one place untrusted text is
   fetched and could be read before any human sees it.
 
@@ -321,7 +321,7 @@ boundary.
 | JSON content-type on `/api/app/*` mutations | **closed** — 415 | `application/json` is a claim a cross-origin page cannot make without a preflight |
 | `/api/check-injection` host check | **closed** — 403 | Only reachable on-loopback anyway |
 | Webhook token | **closed** — 404/405/503 | Unknown == disabled, no oracle |
-| Injection scoring (Jev) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |
+| Injection scoring (system1) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |
 | Reviewer gate (skill review) | **open** → fall back to "≥8 tool calls" | Review is an experiment; a gate outage must not drop reviews silently — it logs the fallback and the streak |
 | Memory recall | **open** — continue without prior context | Turns must not wait on memory |
 | Pass-keys local snapshot/key or wallet unavailable | **closed** — loud failure, no Pass/owner fallback | Foreground consumption is local-only |

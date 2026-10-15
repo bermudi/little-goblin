@@ -259,7 +259,7 @@ describe("delegation watcher", () => {
 				startAgent: (name) => Promise.resolve(agent(name, "idle", 1)),
 				get: () => Promise.reject(new Error("herdr get hiccup")),
 			};
-			const owner = startDelegationLifecycle(h.deps);
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
 				task: "do it",
@@ -267,7 +267,6 @@ describe("delegation watcher", () => {
 				name: "x",
 				address: { chatId: 1, threadId: null },
 			});
-			owner.stopTicker();
 			expect(out.kind).toBe("started");
 			const agentName = agentNameFor(1, "x");
 			expect(h.store.get(1)!.status).toBe("running");
@@ -309,7 +308,7 @@ describe("delegation watcher", () => {
 					return Promise.resolve();
 				},
 			};
-			const owner = startDelegationLifecycle(h.deps);
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
 				task: "do it",
@@ -317,7 +316,6 @@ describe("delegation watcher", () => {
 				name: "x",
 				address: { chatId: 1, threadId: null },
 			});
-			owner.stopTicker();
 			expect(out.kind).toBe("parked");
 			expect(h.store.get(1)!.status).toBe("needs_input");
 			expect(h.store.get(1)!.promptPending).toBe(true);
@@ -913,7 +911,7 @@ describe("delegation watcher", () => {
 		mkdirSync(join(h.delegationsDir, String(d.id), "report.md"), { recursive: true });
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain("the real result on screen");
@@ -1474,6 +1472,77 @@ describe("delegation watcher", () => {
 		});
 	});
 
+	describe("shutdown joins in-flight ops", () => {
+		test("stopTicker waits for a launch inside herdr.prompt — no stranded starting row", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
+				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+				prompt: () => gate.then(() => {}),
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const launching = owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it",
+				cwd: "/w",
+				name: "x",
+				address: { chatId: 1, threadId: null },
+			});
+			// Wait for the bind so the launch is parked inside the gated
+			// prompt — the pre-markRunning window a restart used to strand.
+			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
+				await new Promise((r) => setTimeout(r, 1));
+			}
+			let joined = false;
+			const stopping = owner.stopTicker().then(() => {
+				joined = true;
+			});
+			await new Promise((r) => setTimeout(r, 20));
+			expect(joined).toBe(false);
+			release();
+			const out = await launching;
+			await stopping;
+			// The launch landed markRunning before the join released — the
+			// next boot sees `running`, never a doomed `starting` row.
+			expect(out.kind).toBe("started");
+			expect(h.store.get(1)!.status).toBe("running");
+		});
+
+		test("stopTicker waits for a send inside herdr.prompt — its row write lands before close", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			h.deps.herdr = {
+				...h.deps.herdr,
+				prompt: () => gate.then(() => {}),
+			};
+			const row = runningRow(h, "follow-up", 1);
+			h.agents.set(row.agentName, agent(row.agentName, "working", 1));
+			const owner = startDelegationLifecycle(h.deps);
+			const sending = owner.send(row.id, "continue");
+			let joined = false;
+			const stopping = owner.stopTicker().then(() => {
+				joined = true;
+			});
+			await new Promise((r) => setTimeout(r, 20));
+			expect(joined).toBe(false);
+			release();
+			const out = await sending;
+			await stopping;
+			// The send's promptedAt write landed before the join released;
+			// the row reads running, not a stale pre-send state.
+			expect(out.kind).toBe("sent");
+			expect(h.store.get(row.id)!.status).toBe("running");
+		});
+	});
+
 	describe("remote machine mode", () => {
 		test("a machine-target launch preflights the link, targets the remote cwd, keeps nothing local, and seeds through the pane", async () => {
 			const h = harness();
@@ -1833,4 +1902,42 @@ describe("delegation watcher", () => {
 			expect(existsSync(h.delegationsDir)).toBe(false);
 		});
 	});
+});
+
+test("delegation ticker owns its store until shutdown joins, and stopped handles stay stopped", async () => {
+	const h = harness();
+	const d = runningRow(h, "ownership", 1);
+	let release!: (value: AgentInfo) => void;
+	h.deps.herdr.get = () =>
+		new Promise((resolve) => {
+			release = resolve;
+		});
+	const w = startDelegationLifecycle(h.deps, 3_600_000);
+	try {
+		expect(() => startDelegationLifecycle({ ...h.deps })).toThrow("already active");
+		const joined = w.stopTicker();
+		expect(() => startDelegationLifecycle(h.deps)).toThrow("already active");
+		release(agent(d.agentName, "blocked", 2));
+		await joined;
+		expect(h.wakes).toHaveLength(1);
+		let scans = 0;
+		h.store.active = () => {
+			scans++;
+			return [];
+		};
+		await w.tick();
+		expect(scans).toBe(0);
+		expect(h.wakes).toHaveLength(1);
+		// A new owner is legal after drain, but old stop calls cannot release it.
+		h.store.active = () => [];
+		const next = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await w.stopTicker();
+			expect(() => startDelegationLifecycle(h.deps)).toThrow("already active");
+		} finally {
+			await next.stopTicker();
+		}
+	} finally {
+		await w.stopTicker();
+	}
 });

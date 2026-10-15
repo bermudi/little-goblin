@@ -14,7 +14,10 @@ agent loop.
     `responses` kind over `@ai-sdk/openai`) — the coding-plan door that
     carries documents in tool results (see Web access). Daily driver.
     The `openai-compatible` kind (chat completions) stays available for
-    any OpenAI-shaped relay.
+    any OpenAI-shaped relay — Logfare included (`logfare.ai/v1`, the same
+    `logfare` auth record that serves its speech/transcription/images
+    kinds in asr.md, telegram.md → TTS, and tools.md → generate_image;
+    its docs note requests may be PII-scrubbed and logged for eval).
   - `openrouter` — `@openrouter/ai-sdk-provider`.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
@@ -200,7 +203,7 @@ agent loop.
   job — same engine, same segmentation, called deliberately.
   When `transcription` is configured, intake transcribes the saved
   recording once and stores the text inside the `data-attachment` part
-  (the engine layer — whistle local default plus seven cloud kinds
+  (the engine layer — whistle local default plus eight cloud kinds
   behind one `SpeechEngine` interface — is designed in
   [`asr.md`](asr.md)).
   Eager, not per-turn: the transcript is durable history, and
@@ -222,16 +225,11 @@ agent loop.
 
 ## No step budget — loops are caught, not capped
 
-Ruling 2026-10-07 (second, supersedes the same-day "soft budget +
-watchdog" ruling and its removal). Operator intent, stated plainly: **a
-turn has no step budget.** Current models work reliably on one task for
-hours; a step count is a design constraint dressed as a safety net, and
-the scaffold-era `MAX_STEPS = 25` cliff already ate one whole reply (the
-Safari Zone turn: 25 steps of ROM diffs, `finish=tool-calls`, zero
-prose). The first ruling raised the cap to 64 *and* added the system1
-watchdog — keeping the cap is what made the watchdog look redundant, and
-the removal (`7d9e1dc`) judged the half-built thing. The watchdog was
-always meant to *replace* the cap.
+Ruling 2026-10-07 (operator): **a turn has no step budget.** Current
+models work reliably on one task for hours; a step count is a design
+constraint dressed as a safety net, and the scaffold-era `MAX_STEPS =
+25` cliff already ate one whole reply (the Safari Zone turn: 25 steps
+of ROM diffs, `finish=tool-calls`, zero prose).
 
 What bounds a turn now, in order of who fires first:
 
@@ -261,7 +259,8 @@ error, cycling approaches — the exact cases v1's wording excluded.
 **≥0.7 warns; a second consecutive ≥0.7 cuts; a sub-threshold check in
 between resets.** Async and fail-open (an unavailable system1 logs and
 skips; the detector still stands), one check in flight at a time,
-wired from the shared JevClient (reviewer-enabled is the switch).
+wired from the shared System One client (`design/system1.md`; its
+config coupling rules apply).
 
 Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: the six longest
 stored tool turns plus six synthetic cases, three runs each —
@@ -327,7 +326,7 @@ own notice line after the audio. The mini app is the settings surface,
 not a chat — no stamp there by design. `TurnDone` carries the same
 `forced?` kind so any future delivery surface inherits the contract.
 
-**Carried from the first ruling's review round.** Detector records and
+**Review-round rulings (2026-10-07).** Detector records and
 watchdog state ride `TurnRecovery` across an overflow resume — one
 logical turn, one loop history. A steer whose every conversion fails at
 the landing step does not eat the landing (the poison-pill return

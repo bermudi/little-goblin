@@ -1,12 +1,12 @@
 // POST /api/check-injection — loopback-only scoring through the shared
-// Jev gate. Fake the gate at the edge, drive real HTTP; no model, no
+// System One gate. Fake the gate at the edge, drive real HTTP; no model, no
 // network, no Telegram.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
-import { JevError, type JevClient } from "../jev.ts";
+import { System1Error, type System1Client } from "../system1.ts";
 import { verdictLine } from "../injection.ts";
 import { startHttp } from "./mod.ts";
 import { readBodyBytesCapped, type InjectionCheckResponse } from "./check.ts";
@@ -39,12 +39,12 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [42],
 	allowedUsers: [42],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 0 }, // ephemeral
 	logLevel: "info",
 };
 
-type Gate = Pick<JevClient, "decide">;
+type Gate = Pick<System1Client, "decide">;
 
 function fakeGate(answers: Record<string, number>): Gate {
 	return {
@@ -165,11 +165,11 @@ describe("injection check endpoint", () => {
 		}
 	});
 
-	test("a gate outage (JevError) fail-opens to unavailable, still 200", async () => {
+	test("a gate outage (System1Error) fail-opens to unavailable, still 200", async () => {
 		const http = boot({
 			gate: {
 				decide: async () => {
-					throw new JevError("transport");
+					throw new System1Error("transport");
 				},
 			},
 		});

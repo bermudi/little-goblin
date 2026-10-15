@@ -56,6 +56,21 @@ const CUT_NUDGE: Record<ForcedKind, string> = {
 	context: CONTEXT_CUT,
 };
 
+// Chunks that carry stream mechanics, not generated output: start,
+// finish, and their step-level twins mark boundaries, metadata rides
+// the finish, abort is control, and error carries a failure — none of
+// them billed provider work. Everything else in a step is content the
+// model produced.
+const FRAMING_CHUNKS = new Set([
+	"start",
+	"start-step",
+	"finish-step",
+	"finish",
+	"message-metadata",
+	"abort",
+	"error",
+]);
+
 // The script tool's stored output (design/tools.md → Scripting): the
 // nested-call record rides `calls`, each entry already summarized by
 // the tool. The stream expands them into the digest as script.<tool>
@@ -653,6 +668,10 @@ export async function driveStream<M extends WireMember>(
 	// — and every chunk after it — stays off the client's stream
 	// because the resumed attempt continues the same message.
 	let holdForRecovery = false;
+	// Whether the current step already yielded generated content. Any
+	// chunk outside the framing set is output the provider produced;
+	// error is framing here because it carries a failure, not work.
+	let stepSawOutput = false;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,
@@ -728,6 +747,15 @@ export async function driveStream<M extends WireMember>(
 	};
 	for await (const chunk of uiStream) {
 		deps.assertAuthority();
+		// A step that yielded content spent provider work — even chunks
+		// held for recovery came from a real call, while a step whose
+		// only yield is an error part billed nothing. The terminal-error
+		// stamp reads this so a trigger owner retries only zero-spend
+		// failures, whatever they looked like on the wire.
+		if (!stepSawOutput && !FRAMING_CHUNKS.has(chunk.type)) {
+			stepSawOutput = true;
+			state.noteModelCall();
+		}
 		if (chunk.type === "error") {
 			// A classified overflow on an attempt that may still
 			// recover (first attempt, compaction wired): hold the
@@ -759,6 +787,7 @@ export async function driveStream<M extends WireMember>(
 				// synthesize part ids per request, so step 2 can reuse
 				// step 1's id verbatim. Reset instead of trusting ids.
 				lastTextPartId = null;
+				stepSawOutput = false;
 				break;
 			case "text-delta":
 				// Distinct text parts are distinct blocks. A multi-step

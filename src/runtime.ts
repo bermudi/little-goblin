@@ -7,9 +7,10 @@ import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-uti
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
+import { isTransientTurnFailure } from "./agent/provider-errors.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import {
 	type MemoryTurnDeps,
@@ -44,7 +45,10 @@ export type { ForcedKind } from "./turn/state.ts";
 export type TurnDone =
 	| { kind: "completed"; forced?: ForcedKind }
 	| { kind: "fenced" }
-	| { kind: "error"; message: string };
+	// modelCalls/transient are stamped only where the runtime can
+	// know them — the terminal failure path. Absent means unknown, and
+	// consumers must treat unknown as not-retryable.
+	| { kind: "error"; message: string; modelCalls?: number; transient?: boolean };
 
 // Every submitted sink receives exactly one terminal notification, including
 // work dropped from the queue. This lets channel sinks release typing and
@@ -192,7 +196,7 @@ export class Runtime {
 	private reviewer: Reviewer | undefined;
 	// Optional watchdog; repeat detection and context limits still apply when
 	// it is absent.
-	private loopWatchdog: { decide: JevClient["decide"]; every: number } | null = null;
+	private loopWatchdog: { decide: System1Client["decide"]; every: number } | null = null;
 	// Reviewer sequence number; gate latency must not reorder reviews.
 	private turnCounter = 0;
 	// Previous reviewable turn per conversation, used as correction evidence.
@@ -205,7 +209,7 @@ export class Runtime {
 		this.reviewer = reviewer;
 	}
 
-	setLoopWatchdog(watchdog: { decide: JevClient["decide"]; every?: number } | null): void {
+	setLoopWatchdog(watchdog: { decide: System1Client["decide"]; every?: number } | null): void {
 		this.loopWatchdog =
 			watchdog === null
 				? null
@@ -845,10 +849,16 @@ export class Runtime {
 				// stream may still be producing after the chunk loop unwinds.
 				controller.abort();
 				log.error("turn failed", err, { conversation: convId });
-				await notifyAll({
+				// The stamps are what lets a trigger owner (a schedule fire) tell
+				// a zero-call transport blip from a failure the provider already
+				// spent work on; other error paths stay unstamped.
+				const done: TurnDone = {
 					kind: "error",
 					message: terminalFailureMessage(err, recovery !== undefined),
-				});
+					modelCalls: state.snapshot().modelCalls,
+					transient: isTransientTurnFailure(err),
+				};
+				await notifyAll(done);
 			}
 		}
 		return { kind: "done" };

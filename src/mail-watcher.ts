@@ -36,14 +36,25 @@ export interface MailWatcherDeps {
 }
 
 export interface MailWatcher {
-	/** One scan now — also the test door; production runs it on a timer. */
+	/** One scan now; after stop this only joins existing work (or is a no-op). */
 	tick(): Promise<void>;
-	stop(): void;
+	/** Stops the timer and returns the in-flight scan, if any, so
+	 *  shutdown can join it: a scan parked in a Gmail call must not come
+	 *  back after the drain and fire into a closed runtime. */
+	stop(): Promise<void>;
 }
 
 const TICK_MS = 5 * 60_000;
 
+const activeWatchers = new WeakSet<object>();
+
+/** One ticker per store object; duplicate starts fail until the old owner stops. */
 export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailWatcher {
+	if (activeWatchers.has(deps.programs))
+		throw new Error("startMailWatcher already active for this store");
+	activeWatchers.add(deps.programs);
+	let stopped = false;
+	let stopping: Promise<void> | null = null;
 	// Per-program outage episodes: the last error message, present while
 	// failing. A new message re-warns; equality stays silent; success
 	// clears. Map identity is the program id.
@@ -54,6 +65,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
+		if (stopped) return Promise.resolve();
 		// Assign the .finally wrapper, not the work promise: a body that
 		// finishes without awaiting (mail unconfigured, or no enabled
 		// filters) would run its cleanup before the assignment lands,
@@ -62,12 +74,23 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		// again (the delegation watcher's rule).
 		const work = (async () => {
 			const now = deps.now?.() ?? new Date();
-			const gmail = deps.reader();
+			// The reader and the filter query sit outside the per-program
+			// guard below; a throw here would otherwise leave scan() as a
+			// context-free unhandled rejection every tick.
+			let gmail: MailPoller | null;
+			let programs: Program[];
+			try {
+				gmail = deps.reader();
+				programs = gmail === null ? [] : deps.programs.withMailFilter();
+			} catch (err) {
+				log.error("mail scan failed", err, {});
+				return;
+			}
 			if (gmail === null) {
 				log.debug("mail watcher idle — mail is not configured");
 				return;
 			}
-			for (const program of deps.programs.withMailFilter()) {
+			for (const program of programs) {
 				try {
 					await check(deps, failing, gmail, program, now);
 				} catch (err) {
@@ -91,7 +114,18 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		void scan();
 	}, tickMs);
 	void scan(); // boot catch-up: the cursor persisted, missed mail fires
-	return { tick: scan, stop: () => clearInterval(timer) };
+	return {
+		tick: scan,
+		stop: () => {
+			if (stopping !== null) return stopping;
+			stopped = true;
+			clearInterval(timer);
+			stopping = (current ?? Promise.resolve()).finally(() => {
+				activeWatchers.delete(deps.programs);
+			});
+			return stopping;
+		},
+	};
 }
 
 async function check(

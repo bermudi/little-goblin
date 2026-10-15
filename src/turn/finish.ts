@@ -16,6 +16,7 @@ import type { MemoryDocument } from "../hindsight.ts";
 import { log } from "../log.ts";
 import {
 	buildRetentionDocument,
+	MemoryRetentionTooLargeError,
 	type MemoryEligibility,
 	type MemoryTurnDeps,
 	memoryBoundEntries,
@@ -229,15 +230,26 @@ export function retentionOpt(
 		});
 		return null;
 	}
-	const doc = buildRetentionDocument({
-		conversationId: conv.id,
-		anchorSeq,
-		userTexts: source.userTexts,
-		userIds: source.userIds,
-		assistant: responseMessage,
-		priorContext: source.priorContext,
-		timestamp: new Date().toISOString(),
-	});
+	let doc: MemoryDocument | null;
+	try {
+		doc = buildRetentionDocument({
+			conversationId: conv.id,
+			anchorSeq,
+			userTexts: source.userTexts,
+			userIds: source.userIds,
+			assistant: responseMessage,
+			priorContext: source.priorContext,
+			timestamp: new Date().toISOString(),
+		});
+	} catch (err) {
+		if (!(err instanceof MemoryRetentionTooLargeError)) throw err;
+		log.warn("memory retention skipped — oversized exchange", {
+			conversation: conv.id,
+			characters: err.characters,
+			limit: 1_000_000,
+		});
+		return null;
+	}
 	if (!doc) {
 		log.debug("memory retention skipped — no text to retain", {
 			conversation: conv.id,

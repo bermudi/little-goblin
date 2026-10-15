@@ -542,6 +542,7 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 		const tools: ToolSet = {
 			bash: filler(),
 			memory_search: filler(),
+			memory_reflect: filler(),
 			history_search: filler(),
 			fetch: filler(),
 			search: filler(),
@@ -556,6 +557,7 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 		const callable = /- Callable: (.+?)\. Arguments/.exec(description)?.[1] ?? "";
 		expect(callable).toContain("tools.bash");
 		expect(callable).not.toContain("memory_search");
+		expect(callable).not.toContain("memory_reflect");
 		expect(callable).not.toContain("history_search");
 	});
 

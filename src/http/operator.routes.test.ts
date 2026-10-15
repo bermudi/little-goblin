@@ -177,6 +177,12 @@ describe("state viewer routes", () => {
 		expect(badLimit.status).toBe(400);
 		const badLevel = await getWithQuery("log", "level=loud");
 		expect(badLevel.status).toBe(400);
+		// An overlong q is a 400, not a silent truncation — the module's
+		// own rule: malformed input gets a typed refusal.
+		const longQ = await getWithQuery("log", `q=${"a".repeat(301)}`);
+		expect(longQ.status).toBe(400);
+		const atCap = await getWithQuery("log", `q=${"a".repeat(300)}`);
+		expect(atCap.status).toBe(200);
 	});
 
 	test("attachments serves bytes with a content type", async () => {

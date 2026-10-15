@@ -150,7 +150,7 @@ function setup(
 			thinking: "medium",
 			operators: [42],
 			allowedUsers: [42],
-			telegram: { dmGapMinutes: 45 },
+			telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 			http: { port: 0 },
 			logLevel: "info",
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),
@@ -2062,9 +2062,19 @@ describe("app operator surface", () => {
 		});
 		try {
 			const progs = (await (await wired.call("/api/app/programs")).json()) as {
-				programs: Array<{ name: string; cron: string | null; hasHook: boolean }>;
+				programs: Array<{
+					name: string;
+					cron: string | null;
+					maxLatenessMinutes: number | null;
+					hasHook: boolean;
+				}>;
 			};
-			expect(progs.programs[0]).toMatchObject({ name: "ci", cron: "0 9 * * *", hasHook: false });
+			expect(progs.programs[0]).toMatchObject({
+				name: "ci",
+				cron: "0 9 * * *",
+				maxLatenessMinutes: null,
+				hasHook: false,
+			});
 
 			const dels = (await (await wired.call("/api/app/delegations")).json()) as {
 				delegations: Array<{ name: string; status: string; appConversation: string | null }>;

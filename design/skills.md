@@ -21,11 +21,15 @@ One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
 publishing flow, live at the next conversation boundary (a DM roll
 or compaction — the system prompt is frozen per conversation; the
-SKILL.md itself is read fresh on use). Three exceptions ship from the repo: the
-browser, pass-cli, and mcp skills are seeded by `ensureHomeLayout` (write-if-absent,
-from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates the
-capabilities — a rebuilt box must regain them without operator prompting
-or agent memory.
+SKILL.md itself is read fresh on use). The skills the design mandates ship
+from the repo: browser, pass-cli, mcp, gws, and herdr are seeded by
+`ensureHomeLayout` (write-if-absent, from `deploy/skills/<name>/SKILL.md`)
+because a rebuilt box must regain them without operator prompting or agent
+memory. Write-if-absent also means a seed update never overwrites an
+installed copy — when the repo text changes, the live
+`workspace/skills/` copy is synced in the same change (the herdr seed
+reached v2.0 while the live copy stayed v1.0 and goblin improvised a
+pane-send that misfired, 2026-10-13).
 Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
 policy, no selection UI. One sibling directory exists:
@@ -114,14 +118,10 @@ learned into a skill without being asked. A better model of the
 operator is **not** this feature — that is Hindsight's job (tune it,
 don't duplicate it).
 
-- **Gate: Jev on every completed turn** — the shared System One client
-  (default and backup `typesafe/jev-1.13`, configured primary
-  `inception/mercury-decide:free`; see `design/mail.md`) via
-  OpenRouter's Decisions API, a typed-decision
-  model, not a chat model. `POST openrouter.ai/api/alpha/decisions`
-  with `{model, state, questions}`; each `noul` answer is a
-  yes-probability, `usage` carries input tokens and cost (the wire
-  shape is pinned by a boundary test on a recorded response). State:
+- **Gate: System One on every completed turn** — the shared System One
+  client (`design/system1.md` — models, retry policy, wire protocol)
+  asks typed `noul` questions: a decision
+  model, not a chat model. State:
   the operator's message(s) (tail-first), the reply (head-first),
   tool-call count and names — bounded to ~22k chars against its 32k
   context. Deliberately lean: the gate never sees tool arguments or
@@ -220,10 +220,16 @@ don't duplicate it).
   proposed, not installed).** The reviewer never writes the live
 catalog: a validated skill parks in `skills-proposed/<name>/` and
   installs only when the operator approves. A proposal posts a short
-  note to the topic ("proposed skill: X — approve to install") and
-  lands in history as a system event, so the next turn knows. Like
-  the old "reply to undo", approve and discard are conversational,
-  not mechanical: the history event tells the next turn that approve
+  note to the topic ("proposed skill: X — approve to install") with an
+  in-chat ✅ Install / 🚫 Discard row per skill (ruling 2026-10-13,
+  the pattern mail approval proved): the tap decides mechanically —
+  install swaps the proposal into `skills/` (replacing any live copy;
+  a symlink on either path refuses the swap), discard deletes the
+  staged dir — and appends a resolution history event. Over the 64-byte
+  callback cap the row degrades to the conversational notice below.
+  It lands in history as a system event, so the next turn knows. Like
+  the old "reply to undo", approve and discard stay conversational as
+  the fallback: the history event tells the next turn that approve
   means moving the dir into `skills/` (replacing any live copy) and
   discard means deleting it — goblin is already the operator's hands
   for installs. The `## skills` section lists pending proposals (same
@@ -248,5 +254,5 @@ catalog: a validated skill parks in `skills-proposed/<name>/` and
   absent = feature off. Hand-edited-only, like delegation and mail —
   no mini-app surface, gate auth and thresholds boot-captured
   (system1's auth/model/baseUrl ride the same capture; the shared
-  JevClient's auth closure resolves live per call); the
+  System One client's auth closure resolves live per call); the
   review model resolves live per review.

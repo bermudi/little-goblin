@@ -235,6 +235,67 @@ class EmbedRelayEnvTest(unittest.TestCase):
                 "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
                 "GOBLIN_EMBED_MODEL=bad model\n")
 
+    def test_model_charset_rejects_systemd_lexers(self) -> None:
+        # % and $ are live inside the pin unit's ExecStart -d payload;
+        # quotes and backslashes break the unquoted env line itself.
+        for model in ("a%b", "a$b", 'a"b', "a\\b", "a;rm", "a b"):
+            with self.subTest(model=model):
+                with self.assertRaises(ValueError):
+                    install.parse_embed_relay_env(
+                        "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+                        f"GOBLIN_EMBED_MODEL={model}\n")
+
+    def test_model_id_shapes_pass(self) -> None:
+        # Real ollama ids: bare names, tags, namespaced hf.co refs.
+        for model in ("embeddinggemma", "llama3.2:3b", "hf.co/ns/model:tag"):
+            with self.subTest(model=model):
+                parsed = install.parse_embed_relay_env(
+                    "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+                    f"GOBLIN_EMBED_MODEL={model}\n")
+                self.assertEqual(parsed["GOBLIN_EMBED_MODEL"], model)
+
+
+class PromptAnswersKeyReuseTest(unittest.TestCase):
+    """A resolved auth-store value that can't render verbatim in an env
+    file must fall back to the prompted path — the same charset gate
+    pasted keys pass, or the boot mangles it into a misleading 401."""
+
+    STUBBED = ("read_goblin_providers", "resolve_auth_key", "ask_provider",
+               "ask_url", "ask_secret", "load_catalog", "ask_model_search")
+
+    def setUp(self) -> None:
+        self.saved = {name: getattr(install, name) for name in self.STUBBED}
+        self.addCleanup(self._restore)
+
+    def _restore(self) -> None:
+        for name, value in self.saved.items():
+            setattr(install, name, value)
+
+    def run_flow(self, resolved: str) -> tuple[object, list[str]]:
+        install.read_goblin_providers = (
+            lambda goblin_home, repo_root: ({"zai": "ZAI_KEY"}, None))
+        install.resolve_auth_key = lambda goblin_home, name: resolved
+        install.ask_provider = lambda *args: "zai"
+        install.ask_url = lambda *args: "https://api.z.ai/v4"
+        prompted: list[str] = []
+        install.ask_secret = lambda prompt: (
+            prompted.append(prompt), "sk-good")[1]
+        install.load_catalog = lambda *args: None
+        install.ask_model_search = lambda *args: "m"
+        with contextlib.redirect_stdout(io.StringIO()):
+            answers = install.prompt_answers(Path("/nowhere"))
+        return answers, prompted
+
+    def test_unrenderable_stored_key_falls_back_to_prompt(self) -> None:
+        answers, prompted = self.run_flow("sk bad")
+        self.assertEqual(prompted, ["API key"])
+        self.assertEqual(answers.llm_api_key, "sk-good")
+
+    def test_renderable_stored_key_reused_without_prompt(self) -> None:
+        answers, prompted = self.run_flow("sk-good")
+        self.assertEqual(prompted, [])
+        self.assertEqual(answers.llm_api_key, "sk-good")
+
 
 class SecretFileTest(unittest.TestCase):
     def test_mode_600_and_content(self) -> None:

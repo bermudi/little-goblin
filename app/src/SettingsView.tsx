@@ -1,30 +1,32 @@
 import { useEffect, useId, useRef, useState } from "react";
+import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse } from "../../src/http/operator-wire.ts";
 import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
 import {
 	bodyFromDraft,
+	type ChainEntry,
 	displayLevel,
 	draftFromConfig,
 	EMPTY_DRAFT,
+	emptyTranscription,
 	FETCH_META,
-	SEARCH_META,
-	THINKING_ORDER,
-	validateDraft,
-	VOICE_SUGGESTIONS,
-	type ChainEntry,
 	type KindMeta,
+	type MemDraft,
 	type ProvDraft,
+	SEARCH_META,
 	type SettingsDraft,
+	switchTranscriptionKind,
+	switchTtsKind,
+	THINKING_ORDER,
+	type TranscriptionKind,
 	type TrDraft,
 	type TtsDraft,
+	type TtsKind,
 	type VisDraft,
-	type MemDraft,
-	type TranscriptionKind,
-	emptyTranscription,
+	VOICE_SUGGESTIONS,
 	switchProviderKind,
-	switchTranscriptionKind,
+	validateDraft,
 } from "./settingsDraft.ts";
-import type { ThinkingLevel } from "../../src/config.ts";
 
 type Section = "chat" | "voice" | "web" | "memory" | "providers" | "access";
 type SheetMode = "model" | "telegram" | "title" | "vision";
@@ -60,6 +62,8 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	publicUrl: "public url",
 	apiRoot: "telegram api root",
 	dmGap: "dm gap",
+	richReplies: "rich replies",
+	showReasoning: "show reasoning",
 	port: "http port",
 	logLevel: "log level",
 	memory: "memory",
@@ -657,6 +661,7 @@ export function SettingsView({
 		transcription: readonly TranscriptionKind[];
 		authDefaults: ConfigResponse["authDefaults"];
 		trDefaults: ConfigResponse["transcriptionDefaults"];
+		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
 	const [etag, setEtag] = useState("");
@@ -665,7 +670,13 @@ export function SettingsView({
 	const [baseline, setBaseline] = useState<string | null>(null);
 	const [section, setSection] = useState<Section | null>(null);
 	const [sheet, setSheet] = useState<SheetMode | null>(null);
-	const [notice, setNotice] = useState<{ text: string; kind: "err" | "ok" } | null>(null);
+	const [notice, setNotice] = useState<{
+		text: string;
+		kind: "err" | "ok";
+		// Whether the savebar's retry button makes sense for this error —
+		// set only by the save catch; other error notices never retry.
+		retryable?: boolean;
+	} | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [loadErr, setLoadErr] = useState<string | null>(null);
 	// Turned-off blocks keep their last content — toggling back on
@@ -691,6 +702,8 @@ export function SettingsView({
 		setDraft((d) =>
 			d.transcription === null ? d : { ...d, transcription: { ...d.transcription, ...p } },
 		);
+	const patchTts = (p: Partial<TtsDraft>) =>
+		setDraft((d) => (d.tts === null ? d : { ...d, tts: { ...d.tts, ...p } }));
 
 	// Provider ids whose card is holding an uncommitted name draft —
 	// typed but not blurred. That text is in no serialized field, so it
@@ -760,6 +773,7 @@ export function SettingsView({
 					transcription: data.transcriptionKinds,
 					authDefaults: data.authDefaults,
 					trDefaults: data.transcriptionDefaults,
+					ttsDefaults: data.ttsDefaults,
 				});
 				setAuthNames(data.authNames);
 			},
@@ -950,6 +964,8 @@ export function SettingsView({
 			);
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
+			// A 409 is a stale etag — the same save retries it forever;
+			// only a reload fixes it, so it gets no retry button.
 			setNotice({
 				text:
 					e instanceof ApiError && e.status === 409
@@ -958,6 +974,7 @@ export function SettingsView({
 							? e.message
 							: "Save failed — check the tailnet.",
 				kind: "err",
+				retryable: !(e instanceof ApiError && e.status === 409),
 			});
 		} finally {
 			setSaving(false);
@@ -1117,6 +1134,28 @@ export function SettingsView({
 								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
 							/>
 						</Row>
+						<Row
+							label="Rich replies"
+							cap="Markdown replies in your DM with a live draft preview while goblin works. Off restores plain text — the off-switch if streaming misbehaves. Applies to new turns."
+						>
+							<Switch
+								on={draft.richReplies}
+								ariaLabel="rich replies"
+								onChange={(on) => patchDraft({ richReplies: on })}
+							/>
+						</Row>
+						{draft.richReplies && (
+							<Row
+								label="Show reasoning"
+								cap="The model's thinking streams into its own preview bubble and lands collapsed above the reply. DMs only."
+							>
+								<Switch
+									on={draft.showReasoning}
+									ariaLabel="show reasoning"
+									onChange={(on) => patchDraft({ showReasoning: on })}
+								/>
+							</Row>
+						)}
 					</div>
 					<h2 className="ops-h2">App defaults</h2>
 					<div className="card">
@@ -1188,7 +1227,14 @@ export function SettingsView({
 										if (on) {
 											return {
 												...d,
-												tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
+												tts: last.current.tts ?? {
+													kind: "edge",
+													voice: "",
+													rate: "",
+													voices: [],
+													model: "",
+													auth: "",
+												},
 											};
 										}
 										last.current.tts = d.tts;
@@ -1199,53 +1245,103 @@ export function SettingsView({
 						</Row>
 						{draft.tts !== null && (
 							<>
+								<Row
+									label="Engine"
+									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint."
+								>
+									<select
+										className="mono"
+										aria-label="tts kind"
+										value={draft.tts.kind}
+										onChange={(e) =>
+											setDraft((d) =>
+												d.tts === null
+													? d
+													: { ...d, tts: switchTtsKind(d.tts, e.target.value as TtsKind) },
+											)
+										}
+									>
+										<option value="edge">edge</option>
+										<option value="openrouter">openrouter</option>
+										<option value="logfare">logfare</option>
+									</select>
+								</Row>
+								{draft.tts.kind !== "edge" && (
+									<>
+										<Field
+											label="Model"
+											value={draft.tts.model}
+											onChange={(v) => patchTts({ model: v })}
+											placeholder={kinds?.ttsDefaults[draft.tts.kind].model}
+											mono
+											cap={`Blank uses ${kinds?.ttsDefaults[draft.tts.kind].model ?? "the kind's default"}.`}
+										/>
+										<Field
+											label="Secret name"
+											value={draft.tts.auth}
+											onChange={(v) => patchTts({ auth: v })}
+											placeholder={`${kinds?.ttsDefaults[draft.tts.kind].auth ?? "auth"} — in auth.jsonl`}
+											cap={
+												authWarn(
+													draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? ""),
+													authNames,
+												) ??
+												(draft.tts.auth.trim() === ""
+													? `Blank uses ${kinds?.ttsDefaults[draft.tts.kind].auth ?? "the kind's record"}.`
+													: undefined)
+											}
+											mono
+											list={AUTH_DL}
+										/>
+									</>
+								)}
 								<Field
 									label="Voice"
 									value={draft.tts.voice}
-									onChange={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
-										}))
-									}
-									placeholder="en-US-AriaNeural"
+									onChange={(v) => patchTts({ voice: v })}
+									placeholder={draft.tts.kind === "edge" ? "en-US-AriaNeural" : "model default"}
 									mono
-									cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
-								/>
-								<Field
-									label="Rate"
-									value={draft.tts.rate}
-									onChange={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
-										}))
+									cap={
+										draft.tts.kind === "edge"
+											? "Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
+											: draft.tts.kind === "openrouter"
+												? "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
+												: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
 									}
-									placeholder="+10%"
-									mono
 								/>
-								<ChipsEditor
-									values={draft.tts.voices}
-									onAdd={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
-										}))
-									}
-									onRemove={(i) =>
-										setDraft((d) => ({
-											...d,
-											tts:
-												d.tts === null
-													? d.tts
-													: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
-										}))
-									}
-									placeholder="add a voice"
-									ariaLabel="add alternate voice"
-									suggestions={VOICE_SUGGESTIONS}
-									cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
-								/>
+								{draft.tts.kind === "edge" && (
+									<>
+										<Field
+											label="Rate"
+											value={draft.tts.rate}
+											onChange={(v) => patchTts({ rate: v })}
+											placeholder="+10%"
+											mono
+										/>
+										<ChipsEditor
+											values={draft.tts.voices}
+											onAdd={(v) =>
+												setDraft((d) => ({
+													...d,
+													tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
+												}))
+											}
+											onRemove={(i) =>
+												setDraft((d) => ({
+													...d,
+													tts:
+														d.tts === null
+															? d.tts
+															: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
+												}))
+											}
+											placeholder="add a voice"
+											ariaLabel="add alternate voice"
+											suggestions={VOICE_SUGGESTIONS}
+											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+										/>
+									</>
+								)}
 							</>
 						)}
 					</div>
@@ -1441,7 +1537,7 @@ export function SettingsView({
 													baseUrl: "",
 													bankId: "",
 													auth: "",
-													budget: "low",
+													budget: "mid",
 													tokens: "",
 													timeout: "",
 												},
@@ -1496,7 +1592,7 @@ export function SettingsView({
 								<Row label="Recall budget" col>
 									<Seg
 										options={["low", "mid", "high"]}
-										value={draft.memory.budget || "low"}
+										value={draft.memory.budget || "mid"}
 										ariaLabel="Recall budget"
 										onChange={(v) =>
 											setDraft((d) => ({
@@ -1672,6 +1768,20 @@ export function SettingsView({
 						onClick={() => void save()}
 					>
 						Save
+					</button>
+				)}
+				{notice?.kind === "err" && notice.retryable === true && !saving && dirty && (
+					<button
+						type="button"
+						className="ghost-inline"
+						onClick={() => {
+							// Re-arm the attempted guard for this exact state —
+							// without it the debounce would chain retries forever.
+							attempted.current = serialize(draft, provs);
+							void save();
+						}}
+					>
+						retry
 					</button>
 				)}
 			</div>

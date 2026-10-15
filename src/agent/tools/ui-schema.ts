@@ -65,7 +65,11 @@ const stepsLeaf = z.object({
 const chartLeaf = z
 	.object({
 		type: z.literal("chart"),
-		kind: z.enum(["bar", "line"]).describe("Grouped bars or lines"),
+		kind: z
+			.enum(["bar", "line", "pie"])
+			.describe(
+				"Grouped bars, lines, or a pie — a pie's slices come from the first series, labelled by x (extra series are ignored)",
+			),
 		x: z.array(z.string()).min(1).max(50).describe("X-axis category labels"),
 		series: z
 			.array(
@@ -81,6 +85,9 @@ const chartLeaf = z
 	})
 	.refine((c) => c.series.every((s) => s.values.length === c.x.length), {
 		message: "every series must have exactly one value per x label",
+	})
+	.refine((c) => c.kind !== "pie" || c.series[0]!.values.every((v) => v >= 0), {
+		message: "pie slices need non-negative values",
 	});
 
 const choicesLeaf = z.object({
@@ -101,7 +108,11 @@ const formLeaf = z
 				z.object({
 					name: z.string().describe("Unique field key sent back on submit"),
 					label: z.string().describe("Visible field label"),
-					kind: z.enum(["text", "number", "select"]).describe("Input kind"),
+					kind: z
+						.enum(["text", "number", "select", "checkbox", "textarea", "date"])
+						.describe(
+							"Input kind. checkbox submits true/false; textarea is multi-line text; date submits YYYY-MM-DD",
+						),
 					options: z.array(z.string()).optional().describe("Required for kind=select"),
 				}),
 			)

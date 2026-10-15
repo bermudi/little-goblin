@@ -4,7 +4,7 @@
 //
 // auth.jsonl sits next to this file (mode 0600), one JSON record per line:
 //   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
-//   {"name": "openrouter", "value": "!pass show api/openrouter"}
+//   {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_KEY"}
 // A value starting with "!" is resolved by running it as a command at the
 // point of use. Required records: "telegram" (the bot token) plus one per
 // provider `auth` name below.
@@ -24,6 +24,15 @@
       kind: "openrouter",
       auth: "openrouter",
     },
+    // Logfare — an OpenAI-compatible relay (https://logfare.ai). One
+    // provider entry covers chat completions; the same `logfare` auth
+    // record serves the tts/transcription/image blocks below. Note its
+    // docs' caveat: requests may be logged (PII-scrubbed) for eval.
+    // logfare: {
+    //   kind: "openai-compatible",
+    //   baseUrl: "https://logfare.ai/v1",
+    //   auth: "logfare",
+    // },
     // ChatGPT-subscription Codex models — auth comes from the codex CLI's
     // own OAuth file, not auth.jsonl. Run `codex login` first; expired
     // tokens are refreshed in-process and written back. authFile defaults
@@ -66,6 +75,19 @@
   //   // matching voice, falling back to `voice` above.
   //   voices: [],
   // },
+  // Cloud TTS via OpenRouter's speech endpoint — model/auth default as
+  // shown (auth names the auth.jsonl record holding the OpenRouter
+  // key); voice is the upstream voice id (a Fish voice-library hex id
+  // for fish-audio models), absent = the model's default voice.
+  // tts: {
+  //   kind: "openrouter",
+  //   model: "fish-audio/s2.1-pro-free:free",
+  //   auth: "openrouter",
+  //   voice: "b347db033a6549378b48d00acb0d06cd",
+  // },
+  // Logfare's speech endpoint (same POST shape) — its catalog is
+  // Deepgram Aura; voice ids look like "aura-2-asteria-en".
+  // tts: { kind: "logfare", model: "aura-2-en", auth: "logfare" },
 
   // Speech → text for voice and video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript
@@ -91,6 +113,7 @@
   // transcription: { kind: "elevenlabs" }, // scribe_v2
   // transcription: { kind: "gemini" },    // gemini-flash-latest
   // transcription: { kind: "mimo" },      // xiaomi/mimo-v2.6-flash
+  // transcription: { kind: "logfare" },   // whisper-large-v3-turbo (or nova-3)
 
   // --- Vision (image Q&A) ---
   // Unset = no vision tool. With it, the bot can ask a vision model
@@ -108,6 +131,15 @@
   //   // models too — a file on disk is invisible to either.
   //   mode: "auto",
   // },
+
+  // --- Image generation ---
+  // Unset = no generate_image tool. `model` is a "<provider>/<model-id>"
+  // ref whose provider carries a baseUrl (openai-compatible/responses) —
+  // the call is the OpenAI images shape POST {baseUrl}/images/generations,
+  // auth riding the provider's own auth.jsonl ref. Generated files save
+  // to the attachment store and deliver inline on Telegram; `size` sets
+  // the default "WxH" (the tool may override per call).
+  // image: { model: "logfare/flux-2-dev", size: "1024x1024" },
 
   // --- Scripting (in-process tool composition) ---
   // Unset = no script tool. With it, the model can write a JavaScript
@@ -136,7 +168,7 @@
 
   // --- Skill reviewer ---
   // Unset = automatic skill proposals off. `auth` names the auth.jsonl
-  // record holding your OpenRouter key (the Jev gate rides it).
+  // record holding your OpenRouter key (the System One gate rides it).
   // threshold is the gate's shared yes-cutoff; thresholds overrides it
   // per question. queueCap bounds queued reviews (a full queue drops
   // the incoming). evidence bounds the tool-call digest the review
@@ -151,10 +183,12 @@
   // },
 
   // --- System One (the small gate model) ---
-  // One block feeding the reviewer's Jev gate, mail-event scoring, and
-  // the loopback injection check. Unset = those consumers fall back to
-  // reviewer.auth and built-in defaults. `model` is a Jev model id
-  // (e.g. respan/span-01-lite), NOT a <provider>/<model> chat ref.
+  // Set = the shared System One client exists, feeding the mail
+  // injection checker, the loop watchdog, and the DM follow-up check
+  // (the skill-review gate rides it too, but only `reviewer` enables
+  // that consumer). Unset = `reviewer` still implies the client.
+  // `model` is a bare decision-model id (e.g. typesafe/jev-1.13), NOT a
+  // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
   // --- Delegation (other coding harnesses, via herdr) ---

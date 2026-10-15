@@ -25,10 +25,11 @@ program's state, never a workspace file.** Rulings:
 - **State is rows, not files.** A `programs` table in `goblin.sqlite`
   (own connection in `src/programs.ts`, same WAL file): name,
   charter, optional 5-field cron, optional webhook token hash, the
-  pinned Telegram address, enabled, last_run, next_run (null without
-  a cron). A program needs at least one trigger. Creating one changes
-  nothing in the workspace and nothing in any prompt — cache stable
-  by construction. The legacy `jobs` table is purged at open (W2.2):
+  pinned Telegram address, enabled, optional per-cron lateness grace,
+  last_run, next_run (null without a cron). A program needs at least
+  one trigger. Creating one changes nothing in the workspace and
+  nothing in any prompt — cache stable by construction. The legacy
+  `jobs` table is purged at open (W2.2):
   rows still in it copy in once — prompt becomes charter, an id already
   in `programs` means it was copied before and is ignored — then the
   table drops, all in one transaction; a re-run is a no-op. Rows with
@@ -55,6 +56,26 @@ program's state, never a workspace file.** Rulings:
   they retry next poll). The route keeps its HTTP status and throttle
   clock, the watcher keeps polling, but no caller writes program
   state.
+- **Schedule fires retry zero-call transient failures on a bounded
+  in-process ladder** (2026-10-13). The cron rule above never holds an
+  occurrence — but that made a fire whose turn died before any model
+  call (a DNS blip at fire time) silently lose the day to the next
+  cron slot, the one trigger with no retry middle ground (webhook has
+  the caller, mail has the checkpoint). When the runtime stamps a
+  terminal failure `transient` with zero completed model calls
+  (transport/availability classification in
+  `agent/provider-errors`), the scheduler re-fires the same occurrence
+  after 5, 15, and 30 minutes — at most 3 retries, never a held
+  occurrence, and the ladder never re-runs `markRan`: the cursor
+  advanced at the original fire. Any completed model call, any model
+  output seen through the fire's sink, a non-transient or unknown
+  cause, a mid-ladder disable or delete (revoked authority fences the
+  retry like the mid-gate mail ruling), an exhausted ladder, or a
+  process restart (the scheduler is a singleton; pending retries are
+  memory, and losing them matches the old no-ladder behavior) ends the
+  ladder — the ordinary error notice is all the operator sees.
+  Webhook (caller-owned retry) and mail (checkpoint hold) accounting
+  are unchanged.
 - **Authority is granted, never self-issued.** Creating or widening a
   program needs the operator's explicit ask — the agent may *propose*
   one ("want me to own this?"), never grant itself standing
@@ -109,15 +130,36 @@ program's state, never a workspace file.** Rulings:
   every mutation logs. Edits within an existing charter's intent
   (reword, reschedule, toggle) need no go-ahead; new programs and
   widened authority do (above).
+- **Ticker ownership and shutdown.** One scheduler may own a programs
+  store object at a time; duplicate starts throw. Stop is terminal for
+  that handle: later ticks are no-ops. A new owner after stop gets a
+  fresh retry generation, so late completions from the old owner cannot
+  arm retries in the new one.
 - **The scheduler is an in-process ticker** (30s) in the runtime
-  process; systemd covers crashes. A fire time missed while the
-  process was down fires **once** at the next tick (boot catch-up),
-  then advances to the next future occurrence — never a replay of
-  every missed instance. Occurrences skipped while a program was
-  disabled are skipped, not owed: re-enabling recomputes `next_run`
-  from now. Submit first, then markRan: a message that landed is
-  history even if the turn never ran. A submit that throws never
-  landed — release the sink with the error, deliver it, then
+  process; systemd covers crashes. A schedule's optional
+  integer `maxLatenessMinutes` is measured against the **latest
+  missed cron occurrence at or before the scan time** — "occurrence"
+  meaning the scheduler's own forward sequence: the same `nextFire`
+  steps that persist `next_run` and advance `markRan`, walked from
+  the due row's `next_run` (ruling 2026-10-12: a backward `.prev()`
+  lookup is a *different* sequence across DST transitions — it skips
+  the spring-forward landing hour, so an on-time catch-up reads a
+  day, and a sparse annual cron years, late, and it admits the
+  fall-back repeated hour, so a stale catch-up reads on-time).
+  `null` (the default for
+  existing and new programs) means unlimited lateness and preserves
+  fire-on-wake behavior. Missed occurrences coalesce: if the latest
+  occurrence is within the program's grace, fire at most once on that
+  scan and advance to the next future occurrence — never replay each
+  missed instance. If it is beyond grace, skip every occurrence
+  through that scan, advance to the next future occurrence, and emit
+  one structured skip log line. A skip does not change `last_run`
+  because no fire was submitted. This is schedule-only; webhook and
+  mail accounting are unchanged. Occurrences skipped while a program
+  was disabled are skipped, not owed: re-enabling recomputes
+  `next_run` from now. Submit first, then markRan: a message that
+  landed is history even if the turn never ran. A submit that throws
+  never landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
   failure cannot refire (and re-deliver) on every tick.
 
@@ -130,4 +172,3 @@ tables beyond last_run and the log. Mail is the one watcher that
 returned (operator ask, 2026-09-26) — as a program trigger, see
 `Email`: a mail match is an event the operator's filter asked for,
 not the agent deciding to look.
-

@@ -386,11 +386,13 @@ async function install(): Promise<void> {
 			"enable key refresh timer",
 		);
 	}
-	// The acceptance subprocess captures the baseline BEFORE issuing the start.
+	// The acceptance subprocess captures the baseline BEFORE issuing the
+	// start; the start job can sit behind the 90s network-online wait, so
+	// the envelope must clear the watcher's 120s budget.
 	await command(
 		[bun, "--no-install", "run", "scripts/check-startup.ts", String(selected.port)],
 		"start and accept current invocation",
-		65_000,
+		130_000,
 	);
 	await command(
 		[bun, "--no-install", "run", "src/doctor.ts", "--phase", "installed", "--json"],

@@ -124,10 +124,20 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 		let url: string | null = null;
 		void fetchAttachmentUrl(token, path)
 			.then((u) => {
-				url = u;
-				if (live) setThumb(u);
+				if (live) {
+					url = u;
+					setThumb(u);
+				} else {
+					// Unmounted mid-fetch — the cleanup already ran, so
+					// revoke here or the blob pins until page unload.
+					URL.revokeObjectURL(u);
+				}
 			})
-			.catch(() => {});
+			.catch((e: unknown) => {
+				// A dead prefetch otherwise degrades to the download chip
+				// with no reason — show it like a failed download.
+				if (live) setDlError(e instanceof Error ? e.message : "download failed");
+			});
 		return () => {
 			live = false;
 			if (url !== null) URL.revokeObjectURL(url);
@@ -236,6 +246,7 @@ export function MessageParts({
 	onAction,
 	onOpenNote,
 	busy,
+	messages,
 }: {
 	parts: UIMessage["parts"];
 	token?: string | null;
@@ -247,6 +258,9 @@ export function MessageParts({
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
 	busy?: boolean | undefined;
+	// The full transcript, when the caller has it: ui surfaces re-derive
+	// their picked choice row from persisted [ui] messages.
+	messages?: readonly UIMessage[] | undefined;
 }) {
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
@@ -264,6 +278,7 @@ export function MessageParts({
 						token={token}
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}
+						messages={messages}
 					/>,
 				);
 				continue;
@@ -388,19 +403,23 @@ function useSpeech(token: string | null) {
 	const [err, setErr] = useState<string | null>(null);
 	const audio = useRef<HTMLAudioElement | null>(null);
 	const cancelled = useRef(false);
-	useEffect(
-		() => () => {
-			cancelled.current = true;
-			audio.current?.pause();
-		},
-		[],
-	);
-	const stop = useCallback(() => {
+	// pause() settles no event — without this a stopped chunk's promise
+	// hangs forever, leaking the loop's frame and that chunk's object
+	// URL. stop resolves it as "played"; the cancelled flag ends the
+	// loop before the failure branch can run.
+	const releaseChunk = useRef<(() => void) | null>(null);
+	const cancel = useCallback(() => {
 		cancelled.current = true;
+		releaseChunk.current?.();
+		releaseChunk.current = null;
 		audio.current?.pause();
 		audio.current = null;
-		setState("idle");
 	}, []);
+	useEffect(() => cancel, [cancel]);
+	const stop = useCallback(() => {
+		cancel();
+		setState("idle");
+	}, [cancel]);
 	const play = useCallback(
 		async (text: string) => {
 			if (state === "playing" || state === "loading") {
@@ -414,21 +433,27 @@ function useSpeech(token: string | null) {
 				const r = await synthesize(token, text);
 				if (cancelled.current) return;
 				setState("playing");
+				let played = true;
 				for (const b64 of r.chunks) {
 					if (cancelled.current) break;
 					const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 					const url = URL.createObjectURL(
 						new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }),
 					);
-					await new Promise<void>((resolve) => {
+					played = await new Promise<boolean>((resolve) => {
 						const a = new Audio(url);
 						audio.current = a;
-						a.onended = () => resolve();
-						a.onerror = () => resolve();
-						void a.play().catch(() => resolve());
+						releaseChunk.current = () => resolve(true);
+						a.onended = () => resolve(true);
+						// Decode/playback failures are per-browser, not
+						// per-chunk — one failure means the rest will too.
+						a.onerror = () => resolve(false);
+						void a.play().catch(() => resolve(false));
 					});
 					URL.revokeObjectURL(url);
+					if (!played) break;
 				}
+				if (!played) setErr("playback failed — this browser may not support ogg audio");
 			} catch (e) {
 				setErr(e instanceof Error ? e.message : "speech failed");
 			}
@@ -1222,7 +1247,7 @@ export function Composer({
 							>
 								{[...new Set([cfg.thinking, ...cfg.thinkingLevels])].map((l) => (
 									<option key={l} value={l}>
-										{l === "off" ? "think off" : `think ${l}`}
+										{l}
 									</option>
 								))}
 							</select>
@@ -1572,6 +1597,7 @@ function Chat({
 									token={token}
 									noteProjectId={noteProjectId}
 									busy={busy}
+									messages={messages}
 									onOpenNote={onOpenNote}
 									onAction={(text) => {
 										pinned.current = true;

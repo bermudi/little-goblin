@@ -475,7 +475,14 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			signal: signal ?? null,
 		});
 		if (!res.ok || !res.body) {
-			const detail = await res.text().catch(() => "");
+			let detail: string;
+			try {
+				detail = await res.text();
+			} catch (err) {
+				throw new Error(`codex responses HTTP ${res.status}: error body read failed`, {
+					cause: err,
+				});
+			}
 			throw new Error(`codex responses HTTP ${res.status}: ${detail.slice(0, 500)}`);
 		}
 		return res;

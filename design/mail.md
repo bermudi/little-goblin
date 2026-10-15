@@ -53,9 +53,10 @@ token plumbing in-process was a pita, and gws owns it instead — one
   scope in the login, so sending is impossible from gws by
   mechanism, not just by rule.
 - **Every read is injection-checked and fenced — including watcher
-  events.** The System One gate (below) scores the body through two
-  `noul` questions (injection + severity) and the verdict line rides
-  with the text: `[injection check: clean p=0.02 sev=0.01]` (or
+  events.** The shared System One gate (`design/system1.md`) scores the
+  body through two `noul` questions (injection + severity) and the
+  verdict line rides with the text: `[injection check: clean p=0.02
+  sev=0.01]` (or
   `suspicious` / `malicious` at ≥0.3 / ≥0.7) or `[injection check
   unavailable]` on any gate outage — fail-open, the read still
   proceeds. The wrapper (`goblin-mail read`) scores through the
@@ -121,6 +122,10 @@ token plumbing in-process was a pita, and gws owns it instead — one
   callback can settle the row even without a bound message id; if they
   did not land, the pending row expires after 24 hours. The operator
   checks Telegram before requesting a replacement draft.
+- **Watcher ownership and shutdown.** One mail watcher may own a programs
+  store object at a time. Stop fences new scans immediately and joins
+  existing work; later ticks only join that work or do nothing. Duplicate
+  starts throw until the stop promise settles, when a new owner is legal.
 - **Mail is a program trigger.** A program may carry a `mail` filter
   (Gmail query, e.g. `from:bank is:important`) beside its cron and
   webhook. An in-process ticker (the scheduler's twin, 5 min) runs
@@ -177,38 +182,12 @@ token plumbing in-process was a pita, and gws owns it instead — one
   expiry stamp, after the fuse) decides on stale information. The
   crash window (power loss, kill -9) remains accepted as before;
   graceful shutdown no longer shares it.
-- **System One (`system1` block + Jev gate) feeds the shared gates.**
-  The optional hand-edited `system1` block (`{auth, model?,
-  baseUrl?}` — a decision model id like `typesafe/jev-1.13`, NOT a
-  `<provider>/<model>` chat ref, so never provider-validated) rides
-  the reviewer's single `JevClient`: `auth` resolves live per call
-  (falling back to `reviewer.auth`), `model`/`baseUrl` are
-  boot-captured with the reviewer's gate auth/thresholds (a hand edit
-  applies on restart). The built-in default and backup model are
-  **`typesafe/jev-1.13`** (operator ruling, 2026-10-05); the operator's
-  configured primary is `inception/mercury-decide:free`. A failed
-  configured-model call retries the identical state/questions once
-  against the backup on the same endpoint, except auth failures and
-  HTTP 401/403 (the same credential cannot fix those). No duplicate
-  attempt when primary and backup are the same; no retry of a valid
-  low-probability answer. Primary gets half the call's time budget to
-  reserve room for the backup; both attempts share the original total
-  deadline (30s normally, 3s for Rolling DM). If both fail, the
-  existing consumer-specific failure behavior remains. Attempt,
-  selected model, probabilities, usage, latency, and sanitized failure
-  kind/status are logged with one request id; never state text,
-  credentials, response bodies, or endpoint URLs.
-  `reviewer` stays the on/off switch — no
-  reviewer block means no gate at all (the loopback endpoint 503s,
-  watcher events fire unscored, reads report unavailable). Consumer
-  one: the skill-review gate (below). Consumer two: the injection
-  checker above — `checkInjection` in `src/injection.ts` (head-cut
-  8000 chars, verdicts at ≥0.7/≥0.3, fail-open ONLY on `JevError`,
-  anything else propagates loud) via the loopback route
-  (`POST /api/check-injection`: loopback Host check, 64 KiB body cap,
-  never logs the text) for wrapper reads and directly through the
-  shared instance for watcher fires. The wrapper follows
-  `goblin.json5`'s `http.port` automatically (`GOBLIN_MAIL_PORT`
+- **Mail's reads ride the shared System One gate** (`design/system1.md`)
+  — one client, its models, retry policy, config block and loopback
+  endpoint live there; the read-path injection checker is one of its
+  consumers. When no client exists (see the config coupling there), the
+  loopback route 503s and watcher events fire unscored. The wrapper
+  follows `goblin.json5`'s `http.port` automatically (`GOBLIN_MAIL_PORT`
   overrides; a wrong override warns and reads fail open — the old
   env-dance default of 8787 died with the first box-local port
   override). The `goblin-mail` shim (`$GOBLIN_HOME/goblin-mail` →
@@ -217,8 +196,6 @@ token plumbing in-process was a pita, and gws owns it instead — one
   write-if-absent) are the model's contract: reads ONLY through the
   wrapper, never raw `+read`; `gws` discovery beyond mail (drive /
   calendar / sheets) rides the same CLI and scopes.
-  Consumer three: Rolling DM's follow-up check (see
-  `design/telegram.md`), with its 3s total check budget.
 - **Logging**: every gws/Gmail call (action, query or id, exit code or
   status, ms — never bodies); every injection check (verdict,
   probabilities, ms) and every served loopback check (verdict, ms);

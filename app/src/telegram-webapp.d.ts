@@ -1,8 +1,8 @@
-// Minimal ambient types for telegram-web-app.js — main.tsx fetches the
-// telegram.org copy on the mini-app door only (and Telegram's own
-// webviews inject the object before page scripts run). Only the surface
-// the client uses; widen here when the door grows rather than casting
-// at call sites. Methods are optional because the SDK version varies by
+// Minimal ambient types for the Telegram WebApp surface — the native
+// object the client webview injects, or app/src/telegram.ts's local
+// stand-in when it doesn't (Telegram Desktop). Only the surface the
+// client uses; widen here when the door grows rather than casting at
+// call sites. Methods are optional because the SDK version varies by
 // client — callers feature-detect every call.
 //
 // APP PROGRAM ONLY (it lives under app/src, which the server's
@@ -35,6 +35,9 @@ interface TelegramWebApp {
 declare global {
 	interface Window {
 		Telegram?: { WebApp: TelegramWebApp };
+		// Telegram Desktop's Qt bridge — the first postEvent target in
+		// the official script's dispatch order.
+		TelegramWebviewProxy?: { postEvent(eventType: string, eventData: string): void };
 	}
 }
 

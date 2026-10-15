@@ -17,6 +17,7 @@
 import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
@@ -75,6 +76,7 @@ function toRow(row: unknown): SandboxRow {
 export function openSandboxes(dbPath: string): SandboxStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS sandboxes (
 		conversation_id TEXT PRIMARY KEY,
 		container TEXT NOT NULL,
@@ -330,6 +332,17 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		return cfg();
 	}
 
+	// The image gate belongs to the caller's timing: reset must fail
+	// before the rm, while the filesystem still stands. Callers check
+	// once, at the point that ordering matters.
+	async function requireImage(image: string, conv: string): Promise<void> {
+		if (!(await podman.imageExists(image, conv))) {
+			throw new SandboxError(
+				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
+			);
+		}
+	}
+
 	async function createContainer(
 		name: string,
 		image: string,
@@ -476,30 +489,31 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
 		for (const row of store.staleBefore(cutoff, conv)) {
-			try {
-				// The idle/lease verdict is re-read inside the target's
-				// lane, immediately before removal — a touch or a fresh
-				// run lease landing between the listing and the rm must
-				// win the race.
-				await lane(row.conversationId, async () => {
-					const fresh = store.get(row.conversationId);
-					if (fresh === null || fresh.lastUsedAt >= cutoff) return;
-					if (deps.runLease?.(row.conversationId) != null) return;
+			// The idle/lease verdict is re-read inside the target's
+			// lane, immediately before removal — a touch or a fresh
+			// run lease landing between the listing and the rm must
+			// win the race.
+			await lane(row.conversationId, async () => {
+				const fresh = store.get(row.conversationId);
+				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
+				if (deps.runLease?.(row.conversationId) != null) return;
+				try {
 					await podman.rm(fresh.container, conv);
-					store.delete(row.conversationId);
-					log.info("sandbox reaped", {
+				} catch (err) {
+					// Keep the row — the next call retries the reap.
+					log.warn("sandbox reap failed — row kept", err, {
 						conversation: row.conversationId,
-						container: row.container,
-						idleHours: idle,
+						container: fresh.container,
 					});
-				});
-			} catch (err) {
-				// Keep the row — the next call retries the reap.
-				log.warn("sandbox reap failed — row kept", err, {
+					return;
+				}
+				store.delete(row.conversationId);
+				log.info("sandbox reaped", {
 					conversation: row.conversationId,
-					container: row.container,
+					container: fresh.container,
+					idleHours: idle,
 				});
-			}
+			});
 		}
 	}
 
@@ -700,6 +714,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				}
 				const name = nameFor(conv);
 				const target = image ?? cfg().image;
+				// The image gate runs before the rm: a bad ref must fail
+				// with the old container still standing, not after its
+				// filesystem is already gone.
+				await requireImage(target, conv);
 				const ins = await podman.inspect(name, conv);
 				opts?.abortSignal?.throwIfAborted();
 				if (ins.state !== "missing") requireOurs(name, ins);

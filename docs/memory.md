@@ -8,7 +8,8 @@ When configured, each admitted turn recalls bounded evidence pre-turn
 (fail-open, persisted per-turn and re-materialized verbatim so provider
 prefix caches stay valid), completed text exchanges enqueue retention in
 the same SQLite transaction as history, a bounded worker drains the
-outbox, and `memory_search` offers deeper recall. `/memory` controls
+outbox, `memory_search` offers deeper recall, and `memory_reflect` investigates
+cross-session patterns with supporting evidence. `/memory` controls
 per-topic inclusion; `/forget` resolves then deletes sources with a
 suppression that survives restarts and future backfills.
 
@@ -57,7 +58,7 @@ not auto-deleted.
 - `/memory off` — exclude this topic: pending retention is cancelled,
   already-submitted operations remain tracked through their remote outcome,
   and no new retention is sent or
-  shared memories are recalled here (automatic or via `memory_search`).
+  shared memories are recalled here (automatic, `memory_search`, or `memory_reflect`).
   `/memory on` re-includes. Both bump the epoch (fence in-flight turns)
   and are logged cache boundaries.
 - `/forget <query>` — resolve and list matching sources as a numbered
@@ -77,6 +78,59 @@ not auto-deleted.
   pending personal content. The process logs a warning when a save
   changes the block.
 
+## Memory quality and explicit investigation
+
+New configurations default to automatic recall at `mid` / 2048 tokens, while
+explicit search uses separate `searchBudget: "high"` / `searchMaxTokens: 4096`
+and `searchTimeoutMs: 30000` (configurable up to 120000). The automatic-recall
+deadline does not limit deliberate search.
+Existing explicit automatic bounds are respected. `preferObservations: true`
+removes duplicate supporting facts when their observation is returned, without
+excluding fresh raw facts. `minScores: {semantic: 0.3}` is an initial automatic
+relevance floor, not a calibrated accuracy guarantee; set `minScores: {}` to
+disable it. `searchMinScores` defaults empty so deliberate relational searches
+can retrieve graph-only evidence. Floors are also enforced client-side, and a
+result missing a configured score stage is excluded.
+
+A small synthetic check with the existing local `embeddinggemma` and its
+configured task prefixes produced cosine scores 0.627–0.645 for matching
+questions (including Spanish), versus at most 0.127 for nonmatching pairs.
+That supports the initial 0.3 floor for these examples, not a claim about
+accuracy or completeness on the live bank.
+
+`memory_reflect` uses the current service's configured LLM to search and reason
+over memory. It returns synthesis, dated supporting facts, mental models, and
+the service directives that influenced it. Those directives are evidence about
+its reasoning, not instructions for Goblin. It never runs automatically and is
+not callable through `script`. Defaults: `reflectBudget: "high"`,
+`reflectMaxTokens: 4096`, `reflectTimeoutMs: 120000`. It adds model calls, latency,
+and provider cost. A missing evidence envelope is a protocol error. No evidence
+means `grounded: false`; oversized evidence items are omitted whole with a count.
+Synthesis may use at most half the estimated output allowance; if it cannot
+fit whole, `synthesisOmitted: true` and an empty synthesis preserve the supporting
+evidence rather than returning a misleading prefix. The envelope has a 1024
+character minimum so even tiny synthesis-token bounds can return evidence.
+Reflection can receive up to 16 MiB, with a two-million-character aggregate
+string limit. Larger responses return an explicit size-limit error and suggest
+a narrower question, not a malformed-protocol error. Reflection outcomes have
+their own log events and never degrade or recover `/memory status`'s recall latch.
+
+Completed exchanges now preserve their full text for Hindsight's extraction
+chunking. Exchanges over one million characters are rejected for retention with
+a log warning; the completed reply is still saved. Recall preserves whole facts
+inside an estimated character budget, reporting omissions instead of cutting off
+qualifications.
+
+Pattern-based credential screening runs before new outbox persistence and
+memory requests, and before recalled/reflected text enters model context. It is
+not a guarantee that every secret is recognizable. It does not scrub existing
+history, old outbox rows at rest, remote memories, backups, or provider retention.
+Explicit search/reflection results remain part of original conversation history;
+forgetting indexed sources is not erasing that history.
+
+These advanced fields are editable in `goblin.json5` and preserved by the app
+settings editor. All memory config changes apply on the approved backend restart.
+
 ## Bank creation (operator step, once)
 
 Goblin never creates banks. With the stack running:
@@ -90,7 +144,7 @@ curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
 # Then steer the knobs Goblin actually exercises — the installer sends
 # both of these itself at creation; the curl is for repair. The generic
 # `mission` above lands on reflect_mission (Hindsight 0.10), which only
-# affects reflect() — an endpoint Goblin never calls. Extraction follows
+# affects the explicit memory_reflect investigation. Extraction follows
 # retain_mission; consolidation follows observations_mission:
 curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
   -H 'content-type: application/json' \
@@ -119,13 +173,15 @@ documents and extracted facts, not observations.
 
 ## Verified launch profile
 
-Assets: `deploy/memory/`. Public upstream documentation, tagged source, registry
-manifests and image configuration were checked on 2026-09-21; no images were
-pulled, services started, credentials read, or model calls made.
+Assets: `deploy/memory/`. The shipped 1.0.0 target was checked against tagged
+source, the registry manifest, and image revision metadata. This inspection
+did not pull images, restart services, read operator credentials, or invoke
+models. Existing deployments keep their old image until an approved migration.
 
-- Hindsight **0.10.0-slim**, API-only, pinned to the multi-architecture manifest
-  digest in the Quadlet. Image revision matches tag `v0.10.0`:
-  `5d46f9c8c8eb4fb96f549aa63abe1191b82a7840`.
+- Hindsight **1.0.0-slim**, API-only, pinned to multi-architecture manifest
+  `sha256:1e889b5f44a3546a40765d084162cf0807c0b08c97fb29f64d0705597f1ef3b6`.
+  Image revision matches tag `v1.0.0`:
+  `39c65ffe2f140d0c84cee58566cad8900c5b9908`.
 - PostgreSQL **17 / pgvector 0.8.2 / bookworm**, also digest-pinned. Both indexes
   advertise Linux amd64 and arm64. Hindsight uses `pgvector` and native PostgreSQL
   text search, not optional VectorChord/ParadeDB extensions. Its migrations create
@@ -142,7 +198,7 @@ pulled, services started, credentials read, or model calls made.
 
   | Provider | Required model / auth | Endpoint |
   | --- | --- | --- |
-  | `openrouter` | `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY` | Selecting this provider explicitly selects upstream's fixed `https://openrouter.ai/api/v1`; v0.10.0 has no embedding endpoint override for it. |
+  | `openrouter` | `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY` | Selecting this provider explicitly selects upstream's fixed `https://openrouter.ai/api/v1`; this profile has no embedding endpoint override for it. |
   | `openai` | `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` | Require `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` for OpenAI or a compatible endpoint. |
 
   Remove the previous provider's fields when switching; inactive settings fail.
@@ -163,17 +219,19 @@ not a code change. This profile supports only the mappings above and model-free
 `rrf`; wider provider or learned-reranker choices belong in an operator-managed
 external BYO Hindsight deployment, not an implicit fallback here. The slim image
 excludes local ML models; Hugging Face offline flags add defense in depth.
-Goblin does not call reflection. Do not expose bank configuration APIs to
+Goblin calls reflection only through the explicit `memory_reflect` tool,
+never for automatic context injection. It uses the service's existing
+configured LLM and returns synthesis with supporting evidence. Do not expose bank configuration APIs to
 untrusted clients: bank-level overrides are outside this launch guard.
 
 ### Evidence
 
-- [Tagged configuration reference](https://github.com/vectorize-io/hindsight/blob/v0.10.0/hindsight-docs/docs/developer/configuration.md)
+- [Tagged configuration reference](https://github.com/vectorize-io/hindsight/blob/v1.0.0/hindsight-docs/docs/developer/configuration.mdx)
   (LLM per-operation inheritance, embeddings, `rrf`, extensions).
-- [Tagged embedding implementation](https://github.com/vectorize-io/hindsight/blob/v0.10.0/hindsight-api-slim/hindsight_api/engine/embeddings.py),
-  [reranking implementation](https://github.com/vectorize-io/hindsight/blob/v0.10.0/hindsight-api-slim/hindsight_api/engine/cross_encoder.py),
-  [migrations](https://github.com/vectorize-io/hindsight/blob/v0.10.0/hindsight-api-slim/hindsight_api/migrations.py),
-  [image build](https://github.com/vectorize-io/hindsight/blob/v0.10.0/docker/standalone/Dockerfile).
+- [Tagged embedding implementation](https://github.com/vectorize-io/hindsight/blob/v1.0.0/hindsight-api-slim/hindsight_api/engine/embeddings.py),
+  [reranking implementation](https://github.com/vectorize-io/hindsight/blob/v1.0.0/hindsight-api-slim/hindsight_api/engine/cross_encoder.py),
+  [migrations](https://github.com/vectorize-io/hindsight/blob/v1.0.0/hindsight-api-slim/hindsight_api/migrations.py),
+  [image build](https://github.com/vectorize-io/hindsight/blob/v1.0.0/docker/standalone/Dockerfile).
 - [Z.AI model](https://docs.z.ai/guides/vlm/glm-5.3-flash),
   [standard endpoint](https://docs.z.ai/guides/overview/quick-start).
 - [OpenRouter embedding catalog](https://openrouter.ai/api/v1/embeddings/models).
@@ -566,7 +624,7 @@ drifting call is recorded.
   ("…Date every fact.") until 2026-10-10, when `retain_mission` and
   `observations_mission` were set to the canonical English-pinned texts
   via the `/config` PATCH above (the generic `mission` field was left —
-  it only feeds reflect(), which Goblin never calls).
+  it feeds the explicit memory_reflect tool, not extraction).
 - Container→host networking: bridge net `goblin-memory`;
   `host.containers.internal` does NOT reach host loopback listeners
   (refused) — the `goblin-embed-relay` socat unit on the tailscale /32

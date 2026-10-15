@@ -516,6 +516,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	let createGate: Promise<void> | null = null;
 	let settingsGate: Promise<void> | null = null;
 	let settingsReleases: (() => void)[];
+	let saveStatus = 200;
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -548,6 +549,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		createGate = null;
 		settingsGate = null;
 		settingsReleases = [];
+		saveStatus = 200;
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -583,6 +585,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
+				if (saveStatus !== 200)
+					return Promise.resolve(jsonResponse({ error: `http ${saveStatus}` }, saveStatus));
 				return (settingsGate ?? Promise.resolve()).then(() => jsonResponse({ ok: true }));
 			}
 			if (url === "/api/app/settings")
@@ -1015,6 +1019,39 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			auth: authDefaults.openrouter,
 		});
 	}, 30_000);
+	test("a conflicted save offers no retry — only a transient failure does", async () => {
+		saveStatus = 409;
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		const level = (name: string) =>
+			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
+				(b) => b.textContent === name,
+			);
+		const retry = () =>
+			[...container.querySelectorAll(".savebar button")].find((b) => b.textContent === "retry");
+		await click(level("debug"));
+		await waitFor(() => savedBodies.length > 0, "the edit to post");
+		await waitFor(
+			() => container.textContent?.includes("reload the page") === true,
+			"the conflict notice",
+		);
+		// The notice itself says only a reload fixes it — a retry button
+		// here would re-run the same stale-etag write and fail again.
+		expect(retry()).toBeUndefined();
+		// A transient failure keeps the affordance — and it works.
+		saveStatus = 500;
+		await click(level("warn"));
+		await waitFor(() => savedBodies.length > 1, "the second edit to post");
+		await waitFor(() => retry() !== undefined, "the retry button");
+		saveStatus = 200;
+		await click(retry());
+		await waitFor(() => savedBodies.length > 2, "the retry to post");
+		expect(savedBodies.at(-1)?.logLevel).toBe("warn");
+		await waitFor(() => container.textContent?.includes("Saved") === true, "the saved notice");
+		expect(container.textContent).not.toContain("unsaved");
+	});
 
 	test("an invalid edit cannot write itself — it stays unsaved with the reason", async () => {
 		await mount();

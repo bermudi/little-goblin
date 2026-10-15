@@ -19,6 +19,7 @@ import {
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { OutageTracker } from "./memory-outage.ts";
+import { screenMemoryText } from "./memory-screen.ts";
 import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "./tags.ts";
 import {
 	MemoryQueueWorker,
@@ -138,7 +139,7 @@ export function buildRecallQuery(history: UIMessage[]): string {
 	const texts: { role: string; text: string }[] = [];
 	for (const m of history) {
 		if (m.role !== "user" && m.role !== "assistant") continue;
-		const t = messageText(m);
+		const t = screenMemoryText(messageText(m), "recall-query-source");
 		if (t !== "") texts.push({ role: m.role, text: t.slice(0, 1000) });
 	}
 	if (texts.length === 0) return "";
@@ -157,9 +158,6 @@ export function buildRecallQuery(history: UIMessage[]): string {
 
 // ---------- recall formatting ----------
 
-const MAX_FACTS = 10;
-const MAX_FACT_CHARS = 500;
-
 function factDate(f: RecalledFact): string {
 	return f.occurred_start ?? f.mentioned_at ?? f.occurred_end ?? "undated";
 }
@@ -170,26 +168,63 @@ const EVIDENCE_HEADER =
 
 // Every outcome has distinct bytes: results vs empty vs unavailable are
 // never confused in model context.
+export function renderRecallEvidence(
+	facts: RecalledFact[] | null,
+	outcome: "results" | "empty" | "unavailable",
+	maxTokens = 2_048,
+	withSources = false,
+): {
+	memory: string;
+	sources: { fact: string; document: string | null; date: string | null }[];
+	omitted: number;
+} {
+	if (outcome === "unavailable") {
+		return {
+			memory:
+				"[Long-term memory — unavailable (service outage). " +
+				'Proceed without it; do not treat this as "no memories".]',
+			sources: [],
+			omitted: 0,
+		};
+	}
+	if (outcome === "empty" || facts === null || facts.length === 0) {
+		return { memory: "[Long-term memory — no relevant memories found.]", sources: [], omitted: 0 };
+	}
+	const lines = [EVIDENCE_HEADER];
+	const sources: { fact: string; document: string | null; date: string | null }[] = [];
+	let omitted = 0;
+	const maxChars = Math.min(64_000, Math.max(EVIDENCE_HEADER.length + 128, maxTokens * 4));
+	for (const f of facts) {
+		const text = screenMemoryText(f.text, "recall-result");
+		const source = f.document_id ? ` [source: ${f.document_id}]` : "";
+		const line = `- (${factDate(f)}) ${text}${source}`;
+		const provenance = {
+			fact: f.id,
+			document: f.document_id ?? null,
+			date: f.occurred_start ?? f.mentioned_at ?? f.occurred_end ?? null,
+		};
+		const candidate = [...lines, line].join("\n");
+		const size = withSources
+			? JSON.stringify({ memory: candidate, sources: [...sources, provenance] }).length
+			: candidate.length;
+		// Leave room for the omission notice; never clip a qualification.
+		if (size > maxChars - 96) {
+			omitted++;
+			continue;
+		}
+		lines.push(line);
+		sources.push(provenance);
+	}
+	if (omitted > 0) lines.push(`[${omitted} whole memories omitted to fit the context budget.]`);
+	return { memory: lines.join("\n"), sources, omitted };
+}
+
 export function formatRecallBlock(
 	facts: RecalledFact[] | null,
 	outcome: "results" | "empty" | "unavailable",
+	maxTokens = 2_048,
 ): string {
-	if (outcome === "unavailable") {
-		return (
-			"[Long-term memory — unavailable (service outage). " +
-			'Proceed without it; do not treat this as "no memories".]'
-		);
-	}
-	if (outcome === "empty" || facts === null || facts.length === 0) {
-		return "[Long-term memory — no relevant memories found.]";
-	}
-	const lines = [EVIDENCE_HEADER];
-	for (const f of facts.slice(0, MAX_FACTS)) {
-		const text = f.text.length > MAX_FACT_CHARS ? `${f.text.slice(0, MAX_FACT_CHARS)}…` : f.text;
-		const source = f.document_id ? ` [source: ${f.document_id}]` : "";
-		lines.push(`- (${factDate(f)}) ${text}${source}`);
-	}
-	return lines.join("\n").slice(0, 8000);
+	return renderRecallEvidence(facts, outcome, maxTokens).memory;
 }
 
 // ---------- turn recall ----------
@@ -246,12 +281,21 @@ export async function recallMemory(options: {
 			signal,
 			maxTokens: mem.config.maxTokens,
 			budget: mem.config.budget,
+			preferObservations: mem.config.preferObservations,
+			minScores: mem.config.minScores,
 		});
 		assertAuthority();
-		const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
+		const rendered = renderRecallEvidence(
+			facts,
+			facts.length > 0 ? "results" : "empty",
+			mem.config.maxTokens,
+		);
+		const block = rendered.memory;
 		const sources = [
-			...new Set(facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string")),
-		].slice(0, 100);
+			...new Set(
+				rendered.sources.map((f) => f.document).filter((d): d is string => typeof d === "string"),
+			),
+		];
 		const current: RecallContext = { anchorSeq, content: block, sourceIds: sources };
 		try {
 			mem.contexts.save(conv.id, anchorSeq, block, sources);
@@ -304,7 +348,12 @@ export async function recallMemory(options: {
 
 // ---------- retention ----------
 
-const MAX_RETAIN_CHARS = 2000;
+export class MemoryRetentionTooLargeError extends Error {
+	constructor(readonly characters: number) {
+		super("Memory retention exceeds the one-million-character boundary");
+		this.name = "MemoryRetentionTooLargeError";
+	}
+}
 
 // Stable, unique per completed exchange. Retries replay identical content
 // (the queue rejects same-ID/different-content), so this must be a pure
@@ -326,20 +375,23 @@ export function buildRetentionDocument(options: {
 	priorContext: string;
 	timestamp: string;
 }): MemoryDocument | null {
-	const assistantText = messageText(options.assistant).slice(0, MAX_RETAIN_CHARS);
+	const assistantText = messageText(options.assistant);
 	if (assistantText === "") return null; // tool-only turn — nothing to retain
 	const userText = options.userTexts
 		.map((t) => t.trim())
 		.filter((t) => t !== "")
-		.join("\n")
-		.slice(0, MAX_RETAIN_CHARS);
-	const context = options.priorContext.trim().slice(0, 500);
-	const content = [
-		...(context !== "" ? [`[Context — not fresh evidence]: ${context}`] : []),
-		...(userText !== "" ? [`Operator: ${userText}`] : []),
-		`Goblin: ${assistantText}`,
-	].join("\n");
-	const sourceIds = [...options.userIds, options.assistant.id].slice(0, 100);
+		.join("\n");
+	const context = screenMemoryText(options.priorContext, "retain-context").trim().slice(0, 500);
+	const content = screenMemoryText(
+		[
+			...(context !== "" ? [`[Context — not fresh evidence]: ${context}`] : []),
+			...(userText !== "" ? [`Operator: ${userText}`] : []),
+			`Goblin: ${assistantText}`,
+		].join("\n"),
+		"retain-enqueue",
+	);
+	if (content.length > 1_000_000) throw new MemoryRetentionTooLargeError(content.length);
+	const sourceIds = [...new Set([...options.userIds, options.assistant.id])];
 	const doc = {
 		id: documentIdFor(options.conversationId, options.anchorSeq, options.assistant.id),
 		content,
@@ -390,7 +442,7 @@ export function retentionSourceFrom(
 		// operator said.
 		if (isCompactionSummaryId(e.message.id)) continue;
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
-		const t = messageText(e.message);
+		const t = screenMemoryText(messageText(e.message), "retain-source");
 		if (t === "") continue;
 		if (e.message.role === "user" && i > lastAsstIndex) {
 			// Program fires and delegation notices are housekeeping, not
@@ -827,11 +879,24 @@ export function startMemoryWorker(
 			: undefined;
 	const worker = new MemoryQueueWorker(queue, client, Date.now, observe);
 	const tick = opts.tickFn ?? ((signal) => worker.tick(signal));
+	// stop() aborts the in-flight request through this: the queue keeps
+	// the row for the next boot (same operation id, so a replay of an
+	// accepted-but-unanswered submit is the designed path), and a deploy
+	// never waits on a wedged memory service.
+	const stopping = new AbortController();
+	// Drains until idle — but yields between ticks to a stop or a pause.
+	// During an outage every due row fails and re-arms on its backoff,
+	// so "until idle" is one full pass per backoff level: a dozen rows at
+	// the default request timeout is minutes, which is exactly what a
+	// shutdown or a /forget must never wait on. A pause still joins the
+	// in-flight tick, which is the invariant it needs: no submit on the
+	// wire while the paused section reads the queue.
 	async function drain(): Promise<void> {
 		for (;;) {
+			if (stopped || pauses > 0) return;
 			let worked = false;
 			try {
-				worked = await tick();
+				worked = await tick(stopping.signal);
 			} catch (err) {
 				// A tick failure is a bug or a broken boundary, not an
 				// expected degradation — the queue's own HindsightError
@@ -854,6 +919,7 @@ export function startMemoryWorker(
 		async stop(): Promise<void> {
 			stopped = true;
 			clearInterval(timer);
+			stopping.abort();
 			if (draining) await draining;
 		},
 		tickNow(): Promise<boolean> {
@@ -863,8 +929,9 @@ export function startMemoryWorker(
 			pauses++;
 			try {
 				// drain() never rejects (tick failures are logged inside it),
-				// so this await settles when the drain runs dry — every
-				// in-flight submit has landed and flipped its row.
+				// and it yields to the pause after its current tick — so this
+				// await settles once the in-flight submit, if any, has landed
+				// and flipped its row.
 				if (draining) await draining;
 				return await fn();
 			} finally {

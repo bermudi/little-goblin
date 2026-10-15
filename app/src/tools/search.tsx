@@ -53,8 +53,10 @@ export const searchView: ToolView = {
 						<ul className="hits">
 							{parsed.hits.map((h, i) => (
 								<li key={i}>
-									{h.url === "" ? (
-										<span className="hit-title">{h.title}</span>
+									{h.url === "" || !/^https?:\/\//.test(h.url) ? (
+										// Provider data is untrusted — only http(s) earns an
+										// anchor (the same scheme rule markdown links get).
+										<span className="hit-title">{h.title === "" ? h.url : h.title}</span>
 									) : (
 										<a className="hit-title" href={h.url} target="_blank" rel="noreferrer">
 											{h.title === "" ? h.url : h.title}

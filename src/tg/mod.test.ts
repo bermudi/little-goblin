@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
-import type { Config } from "../config.ts";
+import { memoryConfigSchema, type Config } from "../config.ts";
 import {
 	accessGate,
 	applyCommands,
@@ -22,7 +22,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -327,13 +327,15 @@ import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import {
 	flushConversation,
+	handleEditedMessage,
 	handleMessage,
 	handleMessageDurably,
 	replayInbox,
 	InboxRecordError,
+	type BufferedItem,
 	type IntakeEnv,
 } from "./mod.ts";
-import { openTelegramInbox } from "./inbox.ts";
+import { openTelegramInbox, type InboxPayload } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
@@ -369,12 +371,14 @@ interface RouterHarness {
 		replyTo: number | undefined;
 		updateId: number;
 	}>;
-	apiCalls: Array<{ method: string; text?: string; chat?: unknown }>;
+	apiCalls: Array<{ method: string; text?: string; chat?: unknown; opts?: SendOpts }>;
 	stopped: string[];
 	store: ConversationStore;
 	pings: PingStore;
 	bellConvs: string[];
 }
+
+type SendOpts = { disable_notification?: boolean; message_thread_id?: number };
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
 	const store = openStore(tmpdb());
@@ -385,8 +389,13 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const bellConvs: string[] = [];
 	const api = {
 		getFile: (_id: string) => Promise.reject(new Error("file api down")),
-		sendMessage: (chat: unknown, text: string) => {
-			apiCalls.push({ method: "sendMessage", text, chat });
+		sendMessage: (chat: unknown, text: string, opts?: SendOpts) => {
+			apiCalls.push({
+				method: "sendMessage",
+				text,
+				chat,
+				...(opts !== undefined ? { opts } : {}),
+			});
 			return Promise.resolve({ message_id: apiCalls.length });
 		},
 		editMessageText: (_c: unknown, _m: unknown, text: string) => {
@@ -395,6 +404,12 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		},
 		editForumTopic: () => Promise.resolve(true),
 		sendChatAction: () => Promise.resolve(true),
+		sendMessageDraft: () => Promise.resolve(true),
+		sendRichMessageDraft: () => Promise.resolve(true),
+		sendRichMessage: (_c: unknown, rm: { markdown: string }) => {
+			apiCalls.push({ method: "sendRichMessage", text: rm.markdown });
+			return Promise.resolve({ message_id: apiCalls.length });
+		},
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as IntakeEnv["api"];
 	const buffer = {
@@ -469,18 +484,121 @@ function flushTest(
 			media: null,
 			mediaError: null,
 		});
+		// Mirroring enqueuePersisted's slot bookkeeping — inert here since
+		// fixture items never take the edited_message amend path.
+		const textIndex = item.parts.findIndex(
+			(p) => p.type === "text" && !p.text.startsWith("[replying to:"),
+		);
 		return {
 			parts: item.parts,
 			replyTo: item.replyTo,
 			updateId,
 			chatId: item.chatId ?? -100,
 			...(item.quoted !== undefined ? { quoted: item.quoted } : {}),
+			textIndex: Math.max(0, textIndex),
+			hasText: textIndex >= 0,
 		};
 	});
 	return flushConversation(env, convId, buffered);
 }
 
 describe("handleMessage", () => {
+	test("a batch buffered while the sender was demoted to stranger drops — no turn lands", async () => {
+		const h = routerHarness();
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		// The intake gate admitted chat 2; the config save demoting it
+		// lands while the burst coalesces — flush must recheck, not
+		// trust intake-time truth (same rule as the guest surface).
+		h.env.deps.configRef.current = { ...baseConfig, allowedUsers: [] };
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hello" }], chatId: 2 }]);
+		expect(submitted).toEqual([]);
+		// The recheck runs before routing: a stranger never mints a
+		// conversation, never sends the boundary marker — the refusal
+		// line is the only send.
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			GUEST_REFUSAL,
+		]);
+		// Tombstoned, not pending — boot replay doesn't retry the drop.
+		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
+	});
+
+	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {
+		const h = routerHarness({
+			...baseConfig,
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
+		// chat 2 = allowedUsers. An answered exchange lets the burst
+		// reach the check instead of joining unanswered.
+		const old = h.store.rollDm(2, "/w");
+		h.store.append(old.id, [
+			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
+		]);
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const checking = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.env.deps.followUpGate = () => ({
+			async decide() {
+				entered();
+				await held;
+				return { answers: { follow_up: 0.01 }, inputTokens: 1, cost: 0 };
+			},
+		});
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
+		const flushing = flushTest(h.env, "dm:2", [
+			{ parts: [{ type: "text", text: "hello" }], chatId: 2 },
+		]);
+		await checking;
+		// The save lands inside the check's await — routing already ran,
+		// but the last class read before admission must still win.
+		h.env.deps.configRef.current = {
+			...baseConfig,
+			allowedUsers: [],
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		};
+		release();
+		await flushing;
+		expect(submits).toBe(0);
+		expect(h.apiCalls.some((c) => c.method === "sendMessage" && c.text === GUEST_REFUSAL)).toBe(
+			true,
+		);
+		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
+		h.store.close();
+	});
+
+	test("a stranger's command is refused without minting a conversation", async () => {
+		const h = routerHarness();
+		// handleMessage sits behind the access gate in production —
+		// invoked directly here it must still never pin a stranger as
+		// guest: the class check precedes routing.
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 5, chat: { id: 9, type: "private" }, text: "/stop" }),
+		);
+		await Promise.resolve();
+		expect(h.store.currentDm(9)).toBeNull();
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			GUEST_REFUSAL,
+		]);
+		h.store.close();
+	});
+
 	test("a settings command without media is consumed — nothing reaches the buffer", () => {
 		// tts on (the default) so /voice actually toggles — the observable
 		// proof the command ran against meta, not just a reply.
@@ -575,6 +693,27 @@ describe("handleMessage", () => {
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
+		// Service messages drop silently — no note, no log-worthy send.
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage")).toEqual([]);
+		h.store.close();
+	});
+
+	test("an unhandled media kind leaves a visible, silent note instead of a debug vanish", () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 4,
+				chat: { id: 1, type: "private" },
+				location: { latitude: 52.5, longitude: 13.4 },
+			}),
+		);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.intake.size).toBe(0);
+		const note = h.apiCalls.find((c) => c.method === "sendMessage");
+		expect(note?.text).toContain("I can't read a location yet");
+		expect(note?.opts?.disable_notification).toBe(true);
+		h.store.close();
 	});
 
 	test("a command failure is answered, not promoted to InboxRecordError", async () => {
@@ -665,13 +804,13 @@ describe("handleMessage", () => {
 // buys sandbox chat, not command authority.
 describe("operator-only command gate", () => {
 	const REFUSAL = "This command is only available to operators.";
-	const MEM_BLOCK = {
+	const MEM_BLOCK = memoryConfigSchema.parse({
 		baseUrl: "http://127.0.0.1:1",
 		bankId: "g",
 		recallTimeoutMs: 500,
 		maxTokens: 256,
 		budget: "low" as const,
-	};
+	});
 	const guestChat = { id: 2, type: "private" } as const;
 	const guestMsg = (text: string, updateId: number): Message =>
 		tgMsg({
@@ -947,6 +1086,10 @@ describe("ping replies (Spin-off)", () => {
 				(c) => c.method === "sendMessage" && c.chat === 1 && c.text === "sent to the work",
 			),
 		).toBe(true);
+		// The ack is delivery-only chatter — silent (#126).
+		expect(h.apiCalls.find((c) => c.text === "sent to the work")?.opts?.disable_notification).toBe(
+			true,
+		);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]!.sink).toBe(nullSink); // the bell, never a delivery sink
 		expect(h.bellConvs).toEqual([app.id]);
@@ -1006,7 +1149,14 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.env.inbox.pending().map((e) => e.updateId)).toEqual([100]);
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
 		await flushConversation(h.env, app.id, [
-			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+			{
+				updateId: 100,
+				chatId: 1,
+				parts: [{ type: "text", text: "looks good" }],
+				replyTo: 51,
+				textIndex: 0,
+				hasText: true,
+			},
 		]);
 		expect(h.env.inbox.pending()).toHaveLength(0);
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
@@ -1033,7 +1183,14 @@ describe("ping replies (Spin-off)", () => {
 		await h.env.intake.get(app.id);
 		h.store.deleteConversation(app.id);
 		void flushConversation(h.env, app.id, [
-			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+			{
+				updateId: 100,
+				chatId: 1,
+				parts: [{ type: "text", text: "looks good" }],
+				replyTo: 51,
+				textIndex: 0,
+				hasText: true,
+			},
 		]);
 		expect(h.env.inbox.pending()).toHaveLength(0);
 		h.apiCalls.length = 0;
@@ -1123,7 +1280,9 @@ describe("flushConversation", () => {
 	});
 
 	test("a submit failure after commit releases the sink with the error — never rethrown", async () => {
-		const h = routerHarness(baseConfig);
+		// chat 9 is a stranger in baseConfig — the flush recheck would
+		// drop its batch; list it as an operator like production DM tests.
+		const h = routerHarness({ ...baseConfig, operators: [1, 9] });
 		const conv = h.store.resolve({ kind: "dm", chatId: 9 }, "/w");
 		let seen: TurnSink | null = null;
 		h.env.deps = {
@@ -1141,10 +1300,15 @@ describe("flushConversation", () => {
 		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]);
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
-		// path delivers the failure to Telegram.
+		// path delivers the failure to Telegram — either door, the intake
+		// config enables rich replies for DMs.
 		await Bun.sleep(10);
 		expect(
-			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
+			h.apiCalls.some(
+				(c) =>
+					(c.method === "sendMessage" || c.method === "sendRichMessage") &&
+					c.text?.includes("queue closed"),
+			),
 		).toBe(true);
 		expect(h.env.inbox.pending()).toEqual([]); // commit precedes admission
 	});
@@ -1177,7 +1341,14 @@ describe("flushConversation", () => {
 		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
 		await expect(
 			flushConversation(h.env, conv.id, [
-				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71, chatId: 1 },
+				{
+					updateId: 710,
+					parts: [{ type: "text", text: "hi" }],
+					replyTo: 71,
+					chatId: 1,
+					textIndex: 0,
+					hasText: true,
+				},
 			]) as Promise<void>,
 		).rejects.toThrow("disk failed");
 		await Bun.sleep(10);
@@ -1213,6 +1384,10 @@ describe("flushConversation", () => {
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			"not sent — that app conversation was deleted",
 		]);
+		// The ack is chatter on a screen the operator is holding (#126).
+		expect(h.apiCalls.find((c) => c.method === "sendMessage")?.opts?.disable_notification).toBe(
+			true,
+		);
 	});
 });
 
@@ -1313,6 +1488,8 @@ describe("durable intake", () => {
 			parts: [{ type: "text" as const, text: "retry" }],
 			replyTo: 70,
 			chatId: 1,
+			textIndex: 0,
+			hasText: true,
 		};
 		const originalStore = h.store;
 		h.env.deps.store = {
@@ -1422,9 +1599,180 @@ describe("durable intake", () => {
 	});
 });
 
+describe("handleEditedMessage", () => {
+	function realBuffer(h: RouterHarness): {
+		buffer: CoalescingBuffer<BufferedItem>;
+		batches: BufferedItem[][];
+	} {
+		const batches: BufferedItem[][] = [];
+		const buffer = new CoalescingBuffer<BufferedItem>(60_000, (_key, items) => {
+			batches.push(items);
+		});
+		h.env.buffer = buffer;
+		return { buffer, batches };
+	}
+
+	function pendingItem(
+		h: RouterHarness,
+		buffer: CoalescingBuffer<BufferedItem>,
+		over: {
+			updateId: number;
+			lane: string;
+			messageId: number;
+			chatId?: number;
+			text: string;
+			media?: InboxPayload["media"];
+		},
+	): void {
+		const chatId = over.chatId ?? 2;
+		h.env.inbox.record(over.updateId, {
+			conversationId: over.lane,
+			chatId,
+			messageId: over.messageId,
+			text: over.text,
+			media: over.media ?? null,
+			mediaError: null,
+		});
+		const parts: UIMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
+		buffer.push(over.lane, {
+			updateId: over.updateId,
+			parts,
+			chatId,
+			replyTo: over.messageId,
+			textIndex: 0,
+			hasText: over.text !== "",
+		});
+	}
+
+	test("an edit inside the window rewrites the buffered text and the durable row", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		pendingItem(h, buffer, {
+			updateId: 700,
+			lane: "dm:2",
+			messageId: 42,
+			text: "helo",
+		});
+		handleEditedMessage(
+			h.env,
+			tgMsg({ message_id: 42, chat: { id: 2, type: "private" }, text: "hello" }),
+		);
+		await h.env.intake.get("dm:2");
+		await buffer.drain();
+		// The edit amends the batch — the fix is what the turn reads.
+		expect(batches).toEqual([
+			[expect.objectContaining({ parts: [{ type: "text", text: "hello" }] })],
+		]);
+		// payload_json holds the corrected text too — a crash-replay sees
+		// the same burst the live buffer carried.
+		expect(h.env.inbox.pending().map((e) => e.payload.text)).toEqual(["hello"]);
+		h.store.close();
+	});
+
+	test("an edit landing mid-intake still finds the item behind the pending media step", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.env.api.getFile = async () => {
+			await gate;
+			// Absolute path takes the local-copy branch — the copy fails
+			// fast ENOENT, no network in the test.
+			return { file_path: "/nonexistent/f.jpg" } as never;
+		};
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 2, type: "private" },
+				caption: "helo",
+				photo: [{ file_id: "f", file_unique_id: "u-1", width: 8, height: 8 }],
+			}),
+			701,
+		);
+		// The original's getFile is still pending — the edit chains behind
+		// it on the lane, so the amend runs after the push, not before.
+		handleEditedMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 2, type: "private" },
+				caption: "hello",
+				photo: [{ file_id: "f", file_unique_id: "u-1", width: 8, height: 8 }],
+			}),
+		);
+		release();
+		await Promise.all([...h.env.intake.values()]);
+		await buffer.drain();
+		// Slot 0 is the amended sender text — the failed-attachment tail
+		// sits after it.
+		expect(batches[0]![0]!.parts[0]).toEqual({ type: "text", text: "hello" });
+		expect(h.env.inbox.pending()[0]!.payload.text).toBe("hello");
+		h.store.close();
+	});
+
+	test("an edit after the batch committed changes nothing", async () => {
+		const h = routerHarness();
+		realBuffer(h);
+		h.env.inbox.record(702, {
+			conversationId: "dm:2",
+			chatId: 2,
+			messageId: 44,
+			text: "helo",
+			media: null,
+			mediaError: null,
+		});
+		h.env.inbox.commitBatch([702], "dm:2", () => {});
+		handleEditedMessage(
+			h.env,
+			tgMsg({ message_id: 44, chat: { id: 2, type: "private" }, text: "hello" }),
+		);
+		// No pending row, nothing enqueued — a tombstone replay never
+		// reads and the landed turn keeps its history.
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("an edit that swaps the media leaves the original standing", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		pendingItem(h, buffer, {
+			updateId: 703,
+			lane: "dm:2",
+			messageId: 45,
+			text: "helo",
+			media: {
+				fileId: "f1",
+				fileUniqueId: "u-1",
+				fileName: "photo-u-1.jpg",
+				mimeType: "image/jpeg",
+			},
+		});
+		handleEditedMessage(
+			h.env,
+			tgMsg({
+				message_id: 45,
+				chat: { id: 2, type: "private" },
+				caption: "hello",
+				photo: [{ file_id: "f2", file_unique_id: "u-2", width: 8, height: 8 }],
+			}),
+		);
+		await h.env.intake.get("dm:2");
+		await buffer.drain();
+		// fileUniqueId moved — this is a different message, not a fix.
+		expect(batches[0]![0]!.parts).toEqual([{ type: "text", text: "helo" }]);
+		expect(h.env.inbox.pending()[0]!.payload.text).toBe("helo");
+		h.store.close();
+	});
+});
+
 describe("rolling dm", () => {
 	test("a private message carrying a thread id still lands in the rolling lane", async () => {
-		const h = routerHarness();
+		// chat 7 as operator — the flush's class pin no-ops on the
+		// fresh personal row, matching this test's pre-recheck intent.
+		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
 		handleTestMessage(
 			h.env,
 			tgMsg({
@@ -1446,7 +1794,7 @@ describe("rolling dm", () => {
 	});
 
 	test("a rolled flush sends the boundary marker before the turn's delivery", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
 		// submitPersisted stands in for the turn's first Telegram write —
 		// the marker must already be on the wire when it runs.
 		h.env.deps.runtime = {
@@ -1459,6 +1807,13 @@ describe("rolling dm", () => {
 		const sends = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
 		expect(sends[0]).toBe("— new conversation —");
 		expect(sends[1]).toBe("turn output");
+		// The marker is silent chatter; the turn's own delivery is not (#126).
+		expect(
+			h.apiCalls.find((c) => c.text === "— new conversation —")?.opts?.disable_notification,
+		).toBe(true);
+		expect(h.apiCalls.find((c) => c.text === "turn output")?.opts?.disable_notification).toBe(
+			undefined,
+		);
 		h.store.close();
 	});
 
@@ -1481,8 +1836,13 @@ describe("rolling dm", () => {
 
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
 		// dmGapMinutes 0 makes every flush past the gap — the check is
-		// the only path a plain burst can take.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		// the only path a plain burst can take. chat 7 is allowed but
+		// no operator: admitted to the guest lane.
+		const h = routerHarness({
+			...baseConfig,
+			allowedUsers: [2, 7],
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1524,7 +1884,11 @@ describe("rolling dm", () => {
 
 	test("a reply past the gap joins without asking the gate", async () => {
 		// dmGapMinutes 0 makes every flush past the gap.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, 7],
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1552,7 +1916,12 @@ describe("rolling dm", () => {
 describe("manual DM navigation", () => {
 	const chat = { id: 7, type: "private" } as const;
 	function batch(h: RouterHarness) {
-		return h.pushed.map((item) => ({ ...item, chatId: chat.id }));
+		return h.pushed.map((item) => ({
+			...item,
+			chatId: chat.id,
+			textIndex: 0,
+			hasText: item.parts.some((p) => p.type === "text"),
+		}));
 	}
 
 	test("/new is immediate while busy, stops the outgoing turn, and preserves its history", () => {
@@ -1569,6 +1938,8 @@ describe("manual DM navigation", () => {
 		expect(h.store.history("dm:7:2")).toEqual([]);
 		expect(h.pushed).toEqual([]);
 		expect(h.apiCalls.at(-1)?.text).toBe("— new conversation —");
+		// The receipt is silent — the operator just typed the command (#126).
+		expect(h.apiCalls.at(-1)?.opts?.disable_notification).toBe(true);
 		// Redelivery is not another manual /new.
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
@@ -1631,7 +2002,10 @@ describe("manual DM navigation", () => {
 	});
 
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({
+			...baseConfig,
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		for (const [i, text] of [
 			"/new@otherbot",
 			"/back@otherbot",
@@ -1668,7 +2042,11 @@ describe("manual DM navigation", () => {
 	});
 
 	test("navigation during a follow-up check cannot reroll the pin or execute archived input", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, chat.id],
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.
 		h.store.append(old.id, [
@@ -1712,7 +2090,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("navigation while the automatic boundary marker is pending prevents late admission", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
 		const sending = new Promise<void>((resolve) => {
@@ -1748,7 +2126,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("held pre-command media is archived while post-command text enters only the new conversation", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 		const old = h.store.rollDm(chat.id, "/w");
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
@@ -1846,7 +2224,7 @@ describe("manual DM navigation", () => {
 
 	for (const multipleArchives of [false, true]) {
 		test(`partial flush failure retries only pending rows${multipleArchives ? " across multiple archive targets" : ""}`, async () => {
-			const h = routerHarness();
+			const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 			h.store.rollDm(chat.id, "/w");
 			const targets: string[] = [];
 			h.env.deps.runtime.submitPersisted = (conv, _message, sink) => {

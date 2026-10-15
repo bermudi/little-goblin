@@ -3,6 +3,7 @@ export const startupCategories: readonly string[] = [
 	"invalid startup arguments",
 	"startup deadline expired",
 	"startup refuses existing invocation",
+	"startup watch refuses missing invocation",
 	"startup clock unavailable",
 	"startup failed or restarted",
 	"startup identity predates attempted start",
@@ -19,7 +20,7 @@ export const startupCategories: readonly string[] = [
 	"service identity: invalid response",
 	"startup evidence: invalid JSON",
 	"startup evidence: invalid record",
-	...["service identity", "startup evidence", "start service"].flatMap((name) => [
+	...["service identity", "startup evidence", "enable service", "start service"].flatMap((name) => [
 		`${name}: inspection failed`,
 		`${name}: command failed/timeout/output limit`,
 	]),

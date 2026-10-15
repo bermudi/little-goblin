@@ -181,6 +181,65 @@ describe("coalescing buffer", () => {
 		await buf.drain();
 	});
 
+	test("an amend rewrites a buffered item in place — the batch, never the record", async () => {
+		const flushes: { id: number; text: string }[][] = [];
+		const buf = new CoalescingBuffer<{ id: number; text: string }>(40, (_k, items) => {
+			flushes.push(items);
+		});
+		buf.push("c1", { id: 1, text: "a" });
+		buf.push("c1", { id: 2, text: "b" });
+		expect(
+			buf.amend(
+				"c1",
+				(i) => i.id === 1,
+				(i) => {
+					i.text = "fixed";
+				},
+			),
+		).toBe(true);
+		// A miss fabricates nothing — no bucket, no item.
+		expect(
+			buf.amend(
+				"c1",
+				(i) => i.id === 9,
+				() => {},
+			),
+		).toBe(false);
+		expect(
+			buf.amend(
+				"nope",
+				() => true,
+				() => {},
+			),
+		).toBe(false);
+		await buf.drain();
+		expect(flushes).toEqual([
+			[
+				{ id: 1, text: "fixed" },
+				{ id: 2, text: "b" },
+			],
+		]);
+	});
+
+	test("an amend after the bucket fired misses — the landed flush owns the item", async () => {
+		const flushes: { id: number; text: string }[][] = [];
+		const buf = new CoalescingBuffer<{ id: number; text: string }>(30, (_k, items) => {
+			flushes.push(items);
+		});
+		buf.push("c1", { id: 1, text: "a" });
+		await buf.drain();
+		expect(
+			buf.amend(
+				"c1",
+				(i) => i.id === 1,
+				(i) => {
+					i.text = "late";
+				},
+			),
+		).toBe(false);
+		expect(flushes).toEqual([[{ id: 1, text: "a" }]]);
+	});
+
 	test("drain awaits an in-flight async flush and its deferred successor", async () => {
 		const flushes: string[][] = [];
 		let release: () => void = () => {};

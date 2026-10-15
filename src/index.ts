@@ -1,54 +1,57 @@
 // Composition root — it wires, it never rules (DESIGN.md → Module map).
 
+import { homedir } from "node:os";
+import { generateText } from "ai";
 import pkg from "../package.json";
-import { loadAuth } from "./auth.ts";
+import type { MediaPosition } from "./agent/attachments.ts";
 import {
 	contextLimit,
 	ensureOpenRouterCatalog,
 	inputModalities,
 	inputModalitiesCached,
 } from "./agent/models-dev.ts";
-import { systemPromptFor } from "./agent/prompt.ts";
-import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
-import type { MediaPosition } from "./agent/attachments.ts";
-import { generateTopicTitle } from "./agent/title.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
-import { generateText } from "ai";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { systemPromptFor } from "./agent/prompt.ts";
+import { carriesMedia, observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
+import { generateTopicTitle } from "./agent/title.ts";
+import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
+import { makePrivateSender } from "./agent/tools/program.ts";
+import { withScript } from "./agent/tools/script.ts";
 import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
-import { withScript } from "./agent/tools/script.ts";
-import { makePrivateSender } from "./agent/tools/program.ts";
+import { loadAuth } from "./auth.ts";
 import {
+	type Config,
+	type ConfigRef,
 	ensureHomeLayout,
 	goblinHome,
 	loadConfig,
 	paths,
 	splitModelRef,
-	type Config,
-	type ConfigRef,
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
 import {
+	type Conversation,
 	captureConversationSettings,
 	channelOf,
 	openStore,
 	prepareAppSettingsForConfig,
-	type Conversation,
 } from "./conversation.ts";
-import { openDelegations } from "./delegations.ts";
 import {
-	delegationWake,
-	startDelegationLifecycle,
 	type DelegationLifecycle,
 	type DelegationTargetDeps,
+	delegationWake,
+	startDelegationLifecycle,
 } from "./delegation-lifecycle.ts";
+import { openDelegations } from "./delegations.ts";
 import { makeHerdr } from "./herdr.ts";
-import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
+import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
+import { startHttp } from "./http/mod.ts";
+import { log, setLogFile, setLogLevel } from "./log.ts";
+import { type MailPoller, type MailSender, makeSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
@@ -56,35 +59,34 @@ import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
 import { openNotes } from "./notes.ts";
 import { openProjects, projectWorkdir } from "./projects.ts";
-import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { openSubagents, type Subagents } from "./subagents.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
-	startMemoryWorker,
 	type MemoryWorker,
+	startMemoryWorker,
 } from "./memory.ts";
-import { JevClient } from "./jev.ts";
-import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
-import { startHttp } from "./http/mod.ts";
-import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
-import { launchPin, type SpinOffDeps } from "./spinoff.ts";
-import { makeWakeDeps, wakeConversation } from "./wake.ts";
-import { log, setLogFile, setLogLevel } from "./log.ts";
+import { wakeConversation } from "./wake.ts";
+import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { Runtime } from "./runtime.ts";
-import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
+import { launchPin, type SpinOffDeps } from "./spinoff.ts";
+import { System1Client } from "./system1.ts";
 import { filterGuestTools } from "./tg/guest.ts";
+import { withTimeout } from "./tg/deadline.ts";
+import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
 	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
+import { makeWakeDeps } from "./tg/wake.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -256,7 +258,15 @@ async function boot() {
 			: config.transcription?.kind === "whistle"
 				? "transcription (whistle)"
 				: "transcription";
-		const ok = await probeFfmpeg(feature);
+		// Edge's remux is a stream copy; the cloud kinds' mp3 must
+		// re-encode to opus, so a binary without libopus would die per
+		// chunk.
+		const ok = await probeFfmpeg(
+			feature,
+			config.tts !== false && config.tts !== undefined && config.tts.kind !== "edge"
+				? "libopus"
+				: undefined,
+		);
 		if (!ok && config.tts) {
 			configRef.ttsDown = true;
 			log.warn(
@@ -421,12 +431,21 @@ async function boot() {
 						? {
 								// A per-call voice replaces the config voice outright — Edge
 								// derives the language from the voice name; the allowlist
-								// always carries the default.
+								// always carries the default. The cast is edge-only:
+								// openrouter voice ids carry no language to match on.
 								synthesize: (text, voice) =>
-									synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
+									synthesizeSpeech(
+										text,
+										voice !== undefined && tts.kind === "edge"
+											? { ...tts, voice, voices: [] }
+											: tts,
+										{ auth },
+									),
 								deliver: deliverVoice,
 								...(recording ? { recording } : {}),
-								...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
+								...(tts.kind === "edge" && tts.voices?.length
+									? { voices: [...new Set([tts.voice, ...tts.voices])] }
+									: {}),
 							}
 						: undefined,
 				// sendPrivate keeps hook URLs out of model context — a DM per
@@ -438,7 +457,10 @@ async function boot() {
 							threadId: conv.threadId,
 							publicUrl: () => configRef.current.publicUrl,
 							sendPrivate: makePrivateSender(
-								(id, text) => tg.bot.api.sendMessage(id, text),
+								// The one send composed outside tg/ — same deadline as
+								// every tg/ sender, or a wedged API stalls the
+								// program turn's tool call forever.
+								(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
 								() => configRef.current.operators,
 							),
 						}
@@ -448,8 +470,16 @@ async function boot() {
 					memoryClient && memoryBootConfig
 						? {
 								client: memoryClient,
-								maxTokens: memoryBootConfig.maxTokens,
-								budget: memoryBootConfig.budget,
+								maxTokens: memoryBootConfig.searchMaxTokens,
+								budget: memoryBootConfig.searchBudget,
+								timeoutMs: memoryBootConfig.searchTimeoutMs,
+								minScores: memoryBootConfig.searchMinScores,
+								preferObservations: memoryBootConfig.preferObservations,
+								reflection: {
+									maxTokens: memoryBootConfig.reflectMaxTokens,
+									budget: memoryBootConfig.reflectBudget,
+									timeoutMs: memoryBootConfig.reflectTimeoutMs,
+								},
 								isExcluded: () => conv.memoryExcluded,
 								noteRecall,
 							}
@@ -480,6 +510,18 @@ async function boot() {
 				note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
+				// Same live-read gate as vision — the image block mounts
+				// generate_image; Telegram channels deliver each image
+				// inline, other channels save + report paths.
+				image:
+					configRef.current.image !== undefined
+						? {
+								configRef,
+								auth,
+								conversation: conv.id,
+								...(deliverFile ? { deliver: deliverFile } : {}),
+							}
+						: undefined,
 				// Live-read like vision/search: the sandbox block mounts the
 				// tool for any channel (guest personas are filtered out below).
 				sandbox:
@@ -581,12 +623,12 @@ async function boot() {
 		runtime,
 		titleFor,
 		async synthesize(text, tts) {
-			return synthesizeSpeech(text, tts);
+			return synthesizeSpeech(text, tts, { auth });
 		},
 		transcribe: transcribeFile,
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
 		mail: () => mailApproval,
-		followUpGate: () => jevGate ?? undefined,
+		followUpGate: () => system1Gate ?? undefined,
 	});
 
 	// The mail approval gate — the draft's one owner (queue → post →
@@ -618,21 +660,39 @@ async function boot() {
 	// bot.api); the hand-edited block boot-captures auth and threshold, the
 	// review model resolves live.
 	const reviewerBlock = configRef.current.reviewer;
-	const jevGate = reviewerBlock
-		? new JevClient({
-				auth: () => auth.resolve(configRef.current.system1?.auth ?? reviewerBlock.auth),
-				// System One is the gate source when present; absent falls back to defaults.
-				...(configRef.current.system1?.model !== undefined
-					? { model: configRef.current.system1.model }
-					: {}),
-				...(configRef.current.system1?.baseUrl !== undefined
-					? { baseUrl: configRef.current.system1.baseUrl }
-					: {}),
-			})
-		: null;
-	if (jevGate !== null) {
-		const block = reviewerBlock; // narrowed: non-null exactly when the gate exists
-		if (!block) throw new Error("reviewer gate without block");
+	// System One is its own switch (design/system1.md → Config): the shared
+	// client exists whenever a `system1` block is set, and `reviewer` still
+	// implies it — reviewer configs behave identically; a system1-only
+	// config gains the client it already named.
+	const system1Block = configRef.current.system1;
+	const system1Gate =
+		system1Block || reviewerBlock
+			? new System1Client({
+					auth: () => {
+						// Auth resolves live per call; system1.auth wins,
+						// reviewer.auth is the fallback for reviewer-only configs.
+						const name = configRef.current.system1?.auth ?? reviewerBlock?.auth;
+						if (name === undefined) throw new Error("system1 gate without auth");
+						return auth.resolve(name);
+					},
+					...(system1Block?.model !== undefined ? { model: system1Block.model } : {}),
+					...(system1Block?.baseUrl !== undefined ? { baseUrl: system1Block.baseUrl } : {}),
+				})
+			: null;
+	if (system1Gate !== null) {
+		// The loop watchdog rides the same System1Client (design/model.md → "No step
+		// budget"): every 16 completed calls system1 scores the digest ring — warn
+		// once, cut on the second stuck verdict.
+		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
+		if (reviewerBlock === undefined)
+			log.info("system1 enabled", {
+				model: system1Block?.model,
+				baseUrl: system1Block?.baseUrl,
+			});
+	}
+	if (reviewerBlock !== undefined && system1Gate !== null) {
+		// reviewer implies the gate by construction — system1Gate is never null here.
+		const block = reviewerBlock;
 		const thresholds = {
 			correction: block.thresholds?.correction ?? block.threshold,
 			procedure: block.thresholds?.procedure ?? block.threshold,
@@ -641,13 +701,13 @@ async function boot() {
 			thresholds,
 			queueCap: block.queueCap,
 			evidence: block.evidence,
-			system1: configRef.current.system1 !== undefined,
+			system1: system1Block !== undefined,
 		});
 		// Staging from a killed run is garbage — clear before any review proposes.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer(
 			new Reviewer({
-				gate: jevGate,
+				gate: system1Gate,
 				thresholds,
 				queueCap: block.queueCap,
 				evidence: block.evidence,
@@ -672,10 +732,6 @@ async function boot() {
 					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 			}),
 		);
-		// The loop watchdog rides the same JevClient (design/model.md → "No step
-		// budget"): every 16 completed calls system1 scores the digest ring — warn
-		// once, cut on the second stuck verdict.
-		runtime.setLoopWatchdog({ decide: jevGate.decide.bind(jevGate) });
 	}
 
 	// The shared wake path — program fires and delegation notices submit
@@ -687,15 +743,15 @@ async function boot() {
 		runtime,
 		api: tg.bot.api,
 		configRef,
-		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
-		followUpGate: () => jevGate ?? undefined,
+		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
+		followUpGate: () => system1Gate ?? undefined,
 		pings,
 	});
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
-		// The Jev gate doubles as the watcher-event scorer (fail-open) — unscored absent.
-		...(jevGate ? { checkMail: jevGate as Pick<typeof jevGate, "decide"> } : {}),
+		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
+		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	};
 
 	// The delegation lifecycle — after tg (notices wake through bot.api),
@@ -905,8 +961,8 @@ async function boot() {
 			accepting: () => runtime.accepting(),
 			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
 		},
-		// The Jev gate doubles as the loopback injection checker — absent = 503.
-		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
+		// The System One gate doubles as the loopback injection checker — absent = 503.
+		...(system1Gate ? { checkInjection: { gate: system1Gate } } : {}),
 		// The app handler stays opaque here: app-channel.ts imports the
 		// runtime/AI-SDK graph, which must not enter http/mod.ts's DOM-lib
 		// typecheck program.
@@ -929,7 +985,7 @@ async function boot() {
 				speak: async (text) => {
 					const tts = configRef.current.tts;
 					if (!tts || configRef.ttsDown) return null;
-					return synthesizeSpeech(text, tts);
+					return synthesizeSpeech(text, tts, { auth });
 				},
 				titleFor,
 				// Selection rewrite — the configured root model/thinking;
@@ -1016,14 +1072,16 @@ async function shutdown(signal: string): Promise<void> {
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
-	// The mail watcher only stops polling — cursors and drafts persist.
-	mailWatcher.stop();
+	// The mail watcher stops polling and joins an in-flight scan — a late
+	// fire must not land in a closed runtime; cursors and drafts persist.
+	const mailScan = mailWatcher.stop();
 	// The approval gate stops sweeping AND joins an in-flight Gmail send
 	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
-	// The retention worker only drains the outbox — pending rows stay
-	// durable for the next boot.
-	await memoryWorker?.stop();
+	// The retention worker aborts its in-flight request and yields — the
+	// outbox rows stay durable for the next boot. Joined under the budget
+	// like everything else: a wedged memory service is not a deploy hold.
+	const retention = memoryWorker?.stop() ?? Promise.resolve();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
 	const stopping = tg.bot.stop().catch((err: unknown) => {
@@ -1045,7 +1103,9 @@ async function shutdown(signal: string): Promise<void> {
 		drained,
 		flushed,
 		delegationScan,
+		mailScan,
 		mailSends,
+		retention,
 		subagentsClosed,
 	]);
 	const finished = await Promise.race([

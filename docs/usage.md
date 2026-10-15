@@ -143,9 +143,14 @@ brief me on the news" creates a program pinned to that chat (or topic).
 A program is standing authority for one concern — a charter plus a
 schedule. The bot writes crons it can restate; anything vaguer it will
 confirm with you first. Replies arrive as ordinary messages in the same
-place. Programs survive restarts; a fire missed while the bot was down
-runs once when it comes back, then continues on schedule. Tell the bot
-"list my programs" / "delete the news brief" to manage them.
+place. Programs survive restarts; missed occurrences coalesce into at
+most one fire, judged by the latest missed occurrence. By default
+there is no lateness limit; set a program's `maxLatenessMinutes` when
+a stale reminder should be skipped. If the latest missed occurrence
+exceeds that limit, the scheduler advances past the overdue
+occurrences and records one skip warning; skips do not update
+`last_run`. Tell the bot "list my programs" / "delete the news brief"
+to manage them.
 
 ### Webhooks
 

@@ -3,6 +3,7 @@
 // surface a store failure honestly — are testable without a live bot.
 
 import type { Api, Bot } from "grammy";
+import type { InlineKeyboardButton, InlineKeyboardMarkup } from "grammy/types";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import type { ReplyRating, ReplyRatings } from "./ratings.ts";
@@ -42,12 +43,16 @@ function parseRateCallback(data: string): {
 
 // Structural subset of Telegram's CallbackQuery — the fields this flow
 // reads (the speak-button pattern: grammy's full type is assignable).
+// reply_markup rides along so the tap can retire its own row without
+// touching siblings like 🔊.
 export interface RateQuery {
 	id: string;
 	data?: string | undefined;
 	message?: {
 		message_id: number;
 		chat: { id: number };
+		message_thread_id?: number;
+		reply_markup?: InlineKeyboardMarkup;
 	};
 }
 
@@ -70,7 +75,42 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 		// Outside the guarded boundaries below — a programming error, not
 		// an edge failure. Registration can't surface it, so it lands here.
 		log.error("rate button handler failed", err, { query: query.id });
+		await withTimeout(
+			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
+			"answerCallbackQuery",
+		).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
 	}
+}
+
+// A tap retires the rating row (design/telegram.md — "Buttons and small
+// parts"): when it shared the keyboard (the 🔊 row), the row collapses
+// into a disabled button recording the vote — layout persists; when it
+// was the whole markup, the strip leaves nothing. Cosmetic — the rating
+// is already durable, so a failed strip just keeps its buttons.
+async function stripRatingRow(
+	api: Api,
+	message: NonNullable<RateQuery["message"]>,
+	rating: ReplyRating,
+): Promise<void> {
+	const rows = message.reply_markup?.inline_keyboard;
+	if (rows === undefined) return;
+	const isRate = (b: InlineKeyboardButton) =>
+		"callback_data" in b && RATE_CALLBACK_RE.test(b.callback_data);
+	if (!rows.some((row) => row.some(isRate))) return;
+	const rest = rows.filter((row) => !row.some(isRate));
+	const inline_keyboard =
+		rest.length === 0 ? [] : [[{ text: rating === "up" ? "👍" : "👎", disabled: {} }], ...rest];
+	await withTimeout(
+		api.editMessageReplyMarkup(message.chat.id, message.message_id, {
+			...(message.message_thread_id !== undefined
+				? { message_thread_id: message.message_thread_id }
+				: {}),
+			reply_markup: { inline_keyboard },
+		}),
+		"editMessageReplyMarkup",
+	).catch((err: unknown) => {
+		log.debug("rate strip failed", { error: String(err) });
+	});
 }
 
 async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
@@ -117,5 +157,10 @@ async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
 		message: message.message_id,
 		rating: parsed.rating,
 	});
-	await answer(parsed.rating === "up" ? "👍 recorded" : "👎 recorded");
+	// The toast shouldn't wait behind the strip — an API stall there
+	// would hold the ack for the full call timeout.
+	await Promise.all([
+		stripRatingRow(deps.api, message, parsed.rating),
+		answer(parsed.rating === "up" ? "👍 recorded" : "👎 recorded"),
+	]);
 }

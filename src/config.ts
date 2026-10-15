@@ -19,8 +19,9 @@ import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
-import { hindsightConnectionSchema } from "./hindsight.ts";
+import { hindsightConnectionSchema, minScoresSchema } from "./hindsight.ts";
 import { log } from "./log.ts";
+import { MEMORY_DEFAULTS } from "./memory-policy.ts";
 
 // ---------- paths ----------
 
@@ -132,7 +133,7 @@ export function ensureHomeLayout(): void {
 		].join("\n"),
 	);
 	// Repo-shipped skills: a rebuilt box regains the capability without prompting.
-	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
+	for (const skill of ["browser", "pass-cli", "mcp", "gws", "herdr"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
 			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),
@@ -282,6 +283,7 @@ export const authDefaults = {
 	firecrawl: "firecrawl",
 	parallel: "parallel",
 	openrouter: "openrouter",
+	logfare: "logfare",
 } as const;
 
 // Single source: config.test.ts pins this array against the schema
@@ -322,9 +324,23 @@ export const memoryConfigSchema = z.object({
 	baseUrl: hindsightConnectionSchema.shape.baseUrl,
 	bankId: hindsightConnectionSchema.shape.bankId,
 	auth: z.string().min(1).optional(),
-	recallTimeoutMs: z.number().int().min(100).max(10_000).default(5000),
-	maxTokens: z.number().int().min(1).max(8192).default(1024),
-	budget: z.enum(["low", "mid", "high"]).default("low"),
+	recallTimeoutMs: z.number().int().min(100).max(10_000).default(MEMORY_DEFAULTS.recallTimeoutMs),
+	maxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.maxTokens),
+	budget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.budget),
+	preferObservations: z.boolean().default(MEMORY_DEFAULTS.preferObservations),
+	minScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.minScores })),
+	searchMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.searchMaxTokens),
+	searchBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.searchBudget),
+	searchTimeoutMs: z.number().int().min(100).max(120_000).default(MEMORY_DEFAULTS.searchTimeoutMs),
+	searchMinScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.searchMinScores })),
+	reflectMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.reflectMaxTokens),
+	reflectBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.reflectBudget),
+	reflectTimeoutMs: z
+		.number()
+		.int()
+		.min(100)
+		.max(300_000)
+		.default(MEMORY_DEFAULTS.reflectTimeoutMs),
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
@@ -338,6 +354,23 @@ export const visionConfigSchema = z.object({
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
+// "WxH" like "1024x1024" — one validator for the image config block
+// and the generate_image tool's input, so the grammar can't fork.
+export const imageSizeSchema = z
+	.string()
+	.regex(/^\d{2,5}x\d{2,5}$/, 'size must be "WxH" like "1024x1024"');
+
+// Image generation behind the generate_image tool — absent = off.
+// model is a "<provider>/<model-id>" ref whose provider must carry a
+// baseUrl (openai-compatible/responses): the call is the OpenAI images
+// shape, POST {baseUrl}/images/generations. size is a default for the
+// tool's calls ("WxH" — logfare maps it to width/height upstream).
+export const imageConfigSchema = z.object({
+	model: z.string().min(1),
+	size: imageSizeSchema.optional(),
+});
+export type ImageConfig = z.infer<typeof imageConfigSchema>;
+
 // In-process tool composition behind the script tool — absent = off
 // (design/tools.md → Scripting). maxCalls bounds nested tool calls per
 // script; absent falls back to the default at the wiring site.
@@ -348,6 +381,14 @@ export type ScriptingConfig = z.infer<typeof scriptingConfigSchema>;
 
 // Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
+
+// Cloud TTS kinds share one request shape (OpenAI's speech POST) and
+// differ by endpoint and defaults — served to the settings UI so its
+// placeholders track the server instead of hardcoding per kind.
+export const ttsCloudDefaults = {
+	openrouter: { model: "fish-audio/s2.1-pro-free:free", auth: authDefaults.openrouter },
+	logfare: { model: "aura-2-en", auth: authDefaults.logfare },
+} as const;
 
 // Delegation to external harnesses via herdr — absent = no delegate
 // tool. Harness names double as herdr agent-name prefixes (hence the
@@ -479,7 +520,7 @@ export const guestConfigSchema = z.object({
 export type GuestConfig = z.infer<typeof guestConfigSchema>;
 
 // Automatic skill saving — absent = off. auth names the auth.jsonl
-// record holding the OpenRouter key behind the Jev gate.
+// record holding the OpenRouter key behind the System One gate.
 export const reviewerEvidenceSchema = z.object({
 	calls: z.number().int().min(1).max(32).default(8),
 	argChars: z.number().int().min(50).max(4000).default(300),
@@ -500,10 +541,14 @@ export const reviewerConfigSchema = z.object({
 });
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
-// Jev decisions — one block feeding injection, skill-review, and DM
-// follow-up gates; absent pieces fall back to reviewer.auth/JEV_MODEL.
-// model is a bare Jev model id, NOT a "<provider>/<model-id>" chat ref —
-// deliberately outside superRefine's provider validation.
+// System One decisions — the switch and tuning for the shared client
+// feeding the mail injection checker, the loop watchdog, and the DM
+// follow-up check (the skill-review gate rides it too, but only
+// `reviewer` enables that consumer). Set on its own it enables the
+// client; absent, reviewer still implies it. Fields fall back to
+// reviewer.auth/DEFAULT_MODEL.
+// model is a bare decision-model id, NOT a "<provider>/<model-id>" chat
+// ref — deliberately outside superRefine's provider validation.
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),
 	model: z.string().min(1).optional(),
@@ -514,17 +559,37 @@ export const system1ConfigSchema = z.object({
 });
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
-export const ttsConfigSchema = z.object({
-	kind: z.literal("edge"),
-	voice: z.string().min(1),
-	rate: z
-		.string()
-		.regex(/^[+-]\d+%$/)
-		.optional(),
-	// Language-cast voices: /voice and the 🔊 button pick by each
-	// reply's language, falling back to `voice`.
-	voices: z.array(z.string().min(1)).optional(),
-});
+const cloudTtsSchema = (kind: keyof typeof ttsCloudDefaults) =>
+	z.object({
+		kind: z.literal(kind),
+		model: z.string().min(1).default(ttsCloudDefaults[kind].model),
+		auth: z.string().min(1).default(ttsCloudDefaults[kind].auth),
+		voice: z.string().trim().min(1).optional(),
+	});
+
+export const ttsConfigSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("edge"),
+		voice: z.string().min(1),
+		rate: z
+			.string()
+			.regex(/^[+-]\d+%$/)
+			.optional(),
+		// Language-cast voices: /voice and the 🔊 button pick by each
+		// reply's language, falling back to `voice`.
+		voices: z.array(z.string().min(1)).optional(),
+	}),
+	// Cloud speech endpoints (design/telegram.md → TTS) — one POST shape
+	// (OpenAI's /audio/speech: model, input, voice?, response_format),
+	// the model field picks the upstream. voice is the upstream's voice
+	// id (Fish: a voice-library hex id; Aura: aura-2-<name>-en); absent =
+	// the model's default voice. There is no language cast: upstream ids
+	// carry no language prefix to match on.
+	cloudTtsSchema("openrouter"),
+	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today. Its
+	// documented speech table drops response_format (see tts-cloud.ts).
+	cloudTtsSchema("logfare"),
+]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
 // Speech kinds — whistle (local) first, then the cloud menu
@@ -539,6 +604,7 @@ export const transcriptionKinds = [
 	"elevenlabs",
 	"gemini",
 	"mimo",
+	"logfare",
 ] as const;
 
 // Cloud-kind defaults — model is the UI's placeholder, auth defaults to
@@ -552,6 +618,8 @@ export const transcriptionDefaults = {
 	elevenlabs: { model: "scribe_v2", auth: "elevenlabs" },
 	gemini: { model: "gemini-flash-latest", auth: "gemini" },
 	mimo: { model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+	// Logfare's transcription catalog is Whisper and Deepgram Nova.
+	logfare: { model: "whisper-large-v3-turbo", auth: "logfare" },
 } as const;
 
 const transcriptionLanguage = z
@@ -559,7 +627,7 @@ const transcriptionLanguage = z
 	.regex(/^[a-z]{2}$/, 'language must be an ISO-639-1 code like "es"');
 
 const cloudTranscriptionSchema = (
-	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo",
+	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" | "logfare",
 ) =>
 	z.object({
 		kind: z.literal(kind),
@@ -586,6 +654,7 @@ export const transcriptionSchema = z.union([
 	cloudTranscriptionSchema("elevenlabs"),
 	cloudTranscriptionSchema("gemini"),
 	cloudTranscriptionSchema("mimo"),
+	cloudTranscriptionSchema("logfare"),
 ]);
 
 // Chain-entry kinds for search/fetch builders — config.test.ts pins
@@ -669,6 +738,12 @@ const configSchema = z
 			.union([visionConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		// Same live-read gate as vision (hand-edited only — the mini app
+		// round-trips it through the merge untouched).
+		image: z
+			.union([imageConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// One entry or an ordered fallback chain (first is primary). Only
 		// transport/HTTP/auth failures advance the chain — an empty result
 		// set is an answer.
@@ -701,8 +776,16 @@ const configSchema = z
 					.transform((v) => v || undefined)
 					.optional(),
 				dmGapMinutes: z.number().int().min(1).default(45),
+				// Rich replies (Bot API 10.3): draft streaming and one markdown
+				// render per DM turn. A kill switch, not a feature flag — a
+				// phone-only operator needs config off, not a redeploy
+				// (design/telegram.md, "Formatted replies & draft streaming").
+				richReplies: z.boolean().default(true),
+				// Reasoning as a collapsed block above the reply. DMs only;
+				// guests never see it regardless.
+				showReasoning: z.boolean().default(false),
 			})
-			.default({ dmGapMinutes: 45 }),
+			.default({ dmGapMinutes: 45, richReplies: true, showReasoning: false }),
 		// External HTTPS door for mini apps — nothing in-process assumes
 		// a public IP. "" = unset (the form can't express undefined).
 		publicUrl: z
@@ -765,6 +848,7 @@ const configSchema = z
 			["titleModel", cfg.titleModel],
 			["reviewer.model", cfg.reviewer?.model],
 			["vision.model", cfg.vision?.model],
+			["image.model", cfg.image?.model],
 		] as const) {
 			if (ref === undefined) continue;
 			let provider: string;
@@ -783,6 +867,25 @@ const configSchema = z
 					code: "custom",
 					path: path.split("."),
 					message: "model names a provider which is not in providers",
+				});
+			}
+		}
+		// The image call POSTs to {baseUrl}/images/generations — only
+		// openai-compatible/responses carry one. A malformed ref was
+		// already reported above; don't re-throw here.
+		if (cfg.image) {
+			let provider: string;
+			try {
+				provider = splitModelRef(cfg.image.model).provider;
+			} catch {
+				return;
+			}
+			const p = cfg.providers[provider];
+			if (p !== undefined && !("baseUrl" in p)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["image", "model"],
+					message: `provider "${provider}" has no baseUrl — image calls need openai-compatible or responses`,
 				});
 			}
 		}
@@ -900,12 +1003,14 @@ export function authReferences(config: Config): Set<string> {
 	for (const feature of [
 		config.memory,
 		config.transcription,
+		config.tts,
 		config.reviewer,
 		config.system1,
 		...(config.search ?? []),
 		...(config.fetch ?? []),
 	])
-		if (feature && "auth" in feature && feature.auth) refs.add(feature.auth);
+		if (feature && typeof feature === "object" && "auth" in feature && feature.auth)
+			refs.add(feature.auth);
 	if (config.appToken) refs.add(config.appToken);
 	if (config.mail) {
 		refs.add(config.mail.clientSecretAuth);

@@ -4,9 +4,10 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { HindsightClient, HindsightError } from "../../hindsight.ts";
-import { formatRecallBlock } from "../../memory.ts";
+import { HindsightClient, HindsightError, type RecallMinScores } from "../../hindsight.ts";
+import { renderRecallEvidence } from "../../memory.ts";
 import { log } from "../../log.ts";
+import { BUDGET_ORDER, MEMORY_DEFAULTS } from "../../memory-policy.ts";
 
 export interface MemorySearchDeps {
 	client: HindsightClient;
@@ -14,16 +15,15 @@ export interface MemorySearchDeps {
 	// them, never widen past the wire cap.
 	maxTokens: number;
 	budget: "low" | "mid" | "high";
+	timeoutMs?: number;
+	preferObservations?: boolean;
+	minScores?: RecallMinScores;
 	// Topic exclusion governs inflow too: excluded conversations may not
 	// recall shared memories by any path.
 	isExcluded: () => boolean;
 	// Records the outcome for /memory status alongside turn recalls.
 	noteRecall: (ok: boolean) => void;
 }
-
-// low < mid < high — a tool-supplied budget may narrow the configured
-// recall effort, never widen past it (the same rule maxTokens follows).
-const BUDGET_ORDER: Record<MemorySearchDeps["budget"], number> = { low: 0, mid: 1, high: 2 };
 
 export const memorySearchTool = (deps: MemorySearchDeps) =>
 	tool({
@@ -45,12 +45,16 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 				.optional()
 				.describe("Search effort (defaults to the configured budget)"),
 		}),
-		execute: async ({ query, maxTokens, budget }) => {
+		execute: async ({ query, maxTokens, budget }, options) => {
 			if (deps.isExcluded()) {
 				return { error: "memory is excluded in this conversation" };
 			}
 			try {
 				const facts = await deps.client.recall(query, {
+					timeoutMs: deps.timeoutMs ?? MEMORY_DEFAULTS.searchTimeoutMs,
+					...(options?.abortSignal ? { signal: options.abortSignal } : {}),
+					...(deps.minScores ? { minScores: deps.minScores } : {}),
+					preferObservations: deps.preferObservations ?? true,
 					// exactOptionalPropertyTypes: never pass an explicit undefined.
 					...(maxTokens !== undefined
 						? { maxTokens: Math.min(maxTokens, deps.maxTokens) }
@@ -59,20 +63,24 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 						? { budget: BUDGET_ORDER[budget] > BUDGET_ORDER[deps.budget] ? deps.budget : budget }
 						: { budget: deps.budget }),
 				});
-				const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
+				if (deps.isExcluded()) return { error: "memory is excluded in this conversation" };
+				const bound = Math.min(maxTokens ?? deps.maxTokens, deps.maxTokens);
+				const rendered = renderRecallEvidence(
+					facts,
+					facts.length > 0 ? "results" : "empty",
+					bound,
+					true,
+				);
 				deps.noteRecall(true);
 				log.info("memory searched", { facts: facts.length });
 				return {
-					memory: block,
-					sources: facts.slice(0, 10).map((f) => ({
-						fact: f.id,
-						document: f.document_id ?? null,
-						date: f.occurred_start ?? f.mentioned_at ?? f.occurred_end ?? null,
-					})),
+					memory: rendered.memory,
+					sources: rendered.sources,
+					...(rendered.omitted > 0 ? { omitted: rendered.omitted } : {}),
 				};
 			} catch (err) {
 				if (err instanceof HindsightError) {
-					deps.noteRecall(false);
+					if (err.kind !== "cancelled") deps.noteRecall(false);
 					return {
 						error: "memory unavailable",
 						retryable: err.retryable,

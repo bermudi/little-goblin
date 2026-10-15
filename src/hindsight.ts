@@ -3,6 +3,8 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { log } from "./log.ts";
+import { screenMemoryText } from "./memory-screen.ts";
+import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./memory-policy.ts";
 
 // Bank/document identifier vocabulary — shared with the forget
 // protocol (memory-forget.ts validates operator-supplied ids before
@@ -49,13 +51,26 @@ export const hindsightConnectionSchema = z.object({
 
 export const memoryDocumentSchema = z.object({
 	id: identifier,
-	content: z.string().min(1).max(64_000),
+	content: z.string().min(1).max(1_000_000),
 	timestamp: z.iso.datetime({ offset: true }),
 	conversationId: identifier,
-	sourceIds: z.array(identifier).min(1).max(100),
+	sourceIds: z.array(identifier).min(1).max(10_000),
 });
 export type MemoryDocument = z.infer<typeof memoryDocumentSchema>;
 
+export const minScoresSchema = z.object({
+	semantic: z.number().finite().min(-1).max(1).optional(),
+	keyword: z.number().finite().nonnegative().optional(),
+	reranker: z.number().finite().min(0).max(1).optional(),
+	final: z.number().finite().nonnegative().optional(),
+});
+export type RecallMinScores = z.infer<typeof minScoresSchema>;
+const scoresSchema = z.object({
+	semantic: z.number().finite().nullish(),
+	keyword: z.number().finite().nullish(),
+	reranker: z.number().finite().nullish(),
+	final: z.number().finite(),
+});
 const factSchema = z.object({
 	id: identifier,
 	text: z.string().max(64_000),
@@ -66,16 +81,83 @@ const factSchema = z.object({
 	occurred_end: z.string().max(128).nullish(),
 	mentioned_at: z.string().max(128).nullish(),
 	source_fact_ids: z.array(identifier).max(1_000).nullish(),
+	scores: scoresSchema.nullish(),
 });
 const recallSchema = z.object({
 	results: z.array(factSchema).max(1_000),
 });
 export type RecalledFact = z.infer<typeof factSchema>;
 
+const reflectionFactSchema = z.object({
+	id: identifier.nullish(),
+	text: z.string().max(64_000),
+	type: z.string().max(128).nullish(),
+	context: z.string().max(16_000).nullish(),
+	occurred_start: z.string().max(128).nullish(),
+	occurred_end: z.string().max(128).nullish(),
+});
+function totalStringCharacters(value: unknown): number {
+	if (typeof value === "string") return value.length;
+	if (Array.isArray(value))
+		return value.reduce<number>((sum, item: unknown) => sum + totalStringCharacters(item), 0);
+	if (typeof value === "object" && value !== null)
+		return Object.values(value).reduce<number>(
+			(sum, item: unknown) => sum + totalStringCharacters(item),
+			0,
+		);
+	return 0;
+}
+
+const reflectionSchema = z
+	.object({
+		text: z.string().max(64_000),
+		based_on: z.object({
+			memories: z.array(reflectionFactSchema).max(1_000).default([]),
+			mental_models: z
+				.array(
+					z.object({
+						id: identifier,
+						text: z.string().max(64_000),
+						context: z.string().max(16_000).nullish(),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+			directives: z
+				.array(
+					z.object({
+						id: identifier,
+						name: z.string().max(256),
+						content: z.string().max(16_000),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+		}),
+		usage: z
+			.object({
+				input_tokens: z.number().int().nonnegative().default(0),
+				output_tokens: z.number().int().nonnegative().default(0),
+				total_tokens: z.number().int().nonnegative().default(0),
+				cached_tokens: z.number().int().nonnegative().default(0),
+				thoughts_tokens: z.number().int().nonnegative().default(0),
+			})
+			.nullish(),
+	})
+	.superRefine((value, ctx) => {
+		if (totalStringCharacters(value) > REFLECTION_LIMITS.totalCharacters)
+			ctx.addIssue({
+				code: "custom",
+				message: "Memory reflection exceeds the aggregate response limit",
+				params: { memoryResponseTooLarge: true },
+			});
+	});
+export type MemoryReflection = z.infer<typeof reflectionSchema>;
+
 const documentSchema = z.object({
 	id: identifier,
 	bank_id: identifier,
-	original_text: z.string().max(512_000).nullable(),
+	original_text: z.string().max(1_000_000).nullable(),
 	created_at: z.string().max(128),
 	updated_at: z.string().max(128),
 	memory_unit_count: z.number().int().nonnegative(),
@@ -145,7 +227,14 @@ const operationSchema = z.object({
 });
 export type MemoryOperation = z.infer<typeof operationSchema>;
 
-type FailureKind = "http" | "transport" | "timeout" | "cancelled" | "protocol" | "auth";
+type FailureKind =
+	| "http"
+	| "transport"
+	| "timeout"
+	| "cancelled"
+	| "protocol"
+	| "auth"
+	| "too_large";
 export class HindsightError extends Error {
 	constructor(
 		readonly kind: FailureKind,
@@ -168,7 +257,7 @@ export class HindsightError extends Error {
 
 const MAX_RESPONSE_BYTES = 1_048_576;
 
-async function readJson(response: Response): Promise<unknown> {
+async function readJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<unknown> {
 	if (!response.body) throw new HindsightError("protocol");
 	const reader = response.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -178,9 +267,9 @@ async function readJson(response: Response): Promise<unknown> {
 			const chunk = await reader.read();
 			if (chunk.done) break;
 			size += chunk.value.byteLength;
-			if (size > MAX_RESPONSE_BYTES) {
+			if (size > maxBytes) {
 				await reader.cancel();
-				throw new HindsightError("protocol");
+				throw new HindsightError("too_large");
 			}
 			chunks.push(chunk.value);
 		}
@@ -242,6 +331,8 @@ export class HindsightClient {
 			signal?: AbortSignal | undefined;
 			missing?: boolean;
 			document?: string;
+			timeoutMs?: number;
+			responseBytes?: number;
 		} = {},
 	): Promise<T | null> {
 		const started = Date.now();
@@ -250,7 +341,7 @@ export class HindsightClient {
 		const timeout = setTimeout(() => {
 			timedOut = true;
 			controller.abort();
-		}, this.timeoutMs);
+		}, options.timeoutMs ?? this.timeoutMs);
 		const cancel = () => controller.abort();
 		options.signal?.addEventListener("abort", cancel, { once: true });
 		if (options.signal?.aborted) controller.abort();
@@ -291,8 +382,13 @@ export class HindsightClient {
 					if (response.status === 404 && options.missing) return null;
 					throw new HindsightError("http", response.status);
 				}
-				const parsed = schema.safeParse(await readJson(response));
-				if (!parsed.success) throw new HindsightError("protocol");
+				const parsed = schema.safeParse(await readJson(response, options.responseBytes));
+				if (!parsed.success) {
+					const limited = parsed.error.issues.some(
+						(issue) => issue.code === "custom" && issue.params?.memoryResponseTooLarge === true,
+					);
+					throw new HindsightError(limited ? "too_large" : "protocol");
+				}
 				return parsed.data;
 			};
 			const result = await Promise.race([work(), aborted]);
@@ -329,6 +425,9 @@ export class HindsightClient {
 			signal?: AbortSignal;
 			maxTokens?: number;
 			budget?: "low" | "mid" | "high";
+			preferObservations?: boolean;
+			minScores?: RecallMinScores;
+			timeoutMs?: number;
 		} = {},
 	): Promise<RecalledFact[]> {
 		const input = z
@@ -336,15 +435,89 @@ export class HindsightClient {
 				query: z.string().min(1).max(8_000),
 				max_tokens: z.number().int().min(1).max(8_192),
 				budget: z.enum(["low", "mid", "high"]),
+				prefer_observations: z.boolean(),
+				min_scores: minScoresSchema.optional(),
 			})
-			.parse({ query, max_tokens: options.maxTokens ?? 2_048, budget: options.budget ?? "low" });
+			.parse({
+				query: screenMemoryText(query, "recall-query"),
+				max_tokens: options.maxTokens ?? 2_048,
+				budget: options.budget ?? "low",
+				prefer_observations: options.preferObservations ?? true,
+				...(options.minScores && Object.keys(options.minScores).length > 0
+					? { min_scores: options.minScores }
+					: {}),
+			});
+		const timeoutMs = z
+			.number()
+			.int()
+			.min(1)
+			.max(300_000)
+			.parse(options.timeoutMs ?? this.timeoutMs);
 		const result = await this.request("recall", "/memories/recall", "POST", recallSchema, {
 			body: input,
 			signal: options.signal,
+			timeoutMs,
 		});
 		if (!result) throw new HindsightError("protocol");
-		log.info("memory recalled", { bank: this.bankId, count: result.results.length });
-		return result.results;
+		const floors = (["semantic", "keyword", "reranker", "final"] as const).flatMap((stage) => {
+			const floor = input.min_scores?.[stage];
+			return typeof floor === "number" ? [[stage, floor] as const] : [];
+		});
+		const facts = result.results.filter((fact) =>
+			floors.every(([stage, floor]) => {
+				const score = fact.scores?.[stage];
+				return score !== undefined && score !== null && score >= floor;
+			}),
+		);
+		log.info("memory recalled", {
+			bank: this.bankId,
+			count: facts.length,
+			filtered: result.results.length - facts.length,
+		});
+		return facts;
+	}
+
+	async reflect(
+		query: string,
+		options: {
+			signal?: AbortSignal;
+			maxTokens?: number;
+			budget?: "low" | "mid" | "high";
+			timeoutMs?: number;
+		} = {},
+	): Promise<MemoryReflection> {
+		const input = z
+			.object({
+				query: z.string().min(1).max(8_000),
+				max_tokens: z.number().int().min(1).max(8_192),
+				budget: z.enum(["low", "mid", "high"]),
+			})
+			.parse({
+				query: screenMemoryText(query, "reflect-query"),
+				max_tokens: options.maxTokens ?? MEMORY_DEFAULTS.reflectMaxTokens,
+				budget: options.budget ?? MEMORY_DEFAULTS.reflectBudget,
+			});
+		const timeoutMs = z
+			.number()
+			.int()
+			.min(1)
+			.max(300_000)
+			.parse(options.timeoutMs ?? MEMORY_DEFAULTS.reflectTimeoutMs);
+		const result = await this.request("reflect", "/reflect", "POST", reflectionSchema, {
+			body: { ...input, include: { facts: {} } },
+			signal: options.signal,
+			timeoutMs,
+			responseBytes: REFLECTION_LIMITS.responseBytes,
+		});
+		if (!result) throw new HindsightError("protocol");
+		log.info("memory reflected", {
+			bank: this.bankId,
+			facts: result.based_on.memories.length,
+			mentalModels: result.based_on.mental_models.length,
+			directives: result.based_on.directives.length,
+			...(result.usage ? { usage: result.usage } : {}),
+		});
+		return result;
 	}
 
 	// Caller must persist this UUID before submission. A lost acknowledgement
@@ -370,7 +543,7 @@ export class HindsightClient {
 					{
 						document_id: doc.id,
 						update_mode: "replace",
-						content: doc.content,
+						content: screenMemoryText(doc.content, "retain-submit"),
 						timestamp: doc.timestamp,
 						context:
 							"Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
@@ -407,7 +580,7 @@ export class HindsightClient {
 			`/documents/${encodeURIComponent(id)}`,
 			"GET",
 			documentSchema.refine((r) => r.id === id && r.bank_id === this.bankId),
-			{ signal, missing: true, document: id },
+			{ signal, missing: true, document: id, responseBytes: 12 * 1024 * 1024 },
 		);
 	}
 

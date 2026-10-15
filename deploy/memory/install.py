@@ -101,10 +101,15 @@ DB_IMAGE = (
     "@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966"
 )
 API_IMAGE = (
-    "ghcr.io/vectorize-io/hindsight-api:0.10.0-slim"
-    "@sha256:bc3082ccb514fee1a7f7d66da308ba2c2018e2ea2c739d2341c993e3a3bd91b9"
+    "ghcr.io/vectorize-io/hindsight-api:1.0.0-slim"
+    "@sha256:1e889b5f44a3546a40765d084162cf0807c0b08c97fb29f64d0705597f1ef3b6"
 )
 BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
+
+# Ollama model ids (name:tag, namespaced hf.co refs): alphanumerics plus
+# . _ ~ : / -. Anything else — %, $, whitespace, quotes, backslashes —
+# is a systemd-lexer or JSON-payload hazard in the pin unit's ExecStart.
+EMBED_MODEL_PATTERN = re.compile(r"[A-Za-z0-9._~:/-]+")
 DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
     "Remember the operator's preferences, decisions, commitments, people, "
@@ -263,9 +268,9 @@ def parse_embed_relay_env(text: str) -> dict[str, str]:
         raise ValueError(
             "embed-relay.env: GOBLIN_EMBED_RELAY_ADDR must not be unspecified"
         )
-    if any(char.isspace() for char in result["GOBLIN_EMBED_MODEL"]):
+    if not EMBED_MODEL_PATTERN.fullmatch(result["GOBLIN_EMBED_MODEL"]):
         raise ValueError(
-            "embed-relay.env: GOBLIN_EMBED_MODEL must not contain whitespace")
+            "embed-relay.env: GOBLIN_EMBED_MODEL must be an ollama model id")
     return result
 
 
@@ -967,7 +972,14 @@ def prompt_answers(goblin_home: Path) -> Answers:
         auth_name = goblin_providers.get(provider)
         if auth_name is not None:
             try:
-                keys[provider] = resolve_auth_key(goblin_home, auth_name)
+                resolved = resolve_auth_key(goblin_home, auth_name)
+                # The same charset gate pasted keys pass: an env file
+                # must carry the value verbatim or the boot silently
+                # mangles it (a misleading 401, not a clean refusal).
+                if not UNQUOTED_ENV_VALUE.fullmatch(resolved):
+                    raise ValueError(
+                        "value has characters an env file can't carry verbatim")
+                keys[provider] = resolved
                 info(f"{provider}: reusing goblin's stored key '{auth_name}'")
                 return keys[provider]
             except ValueError as error:
@@ -1117,7 +1129,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.reconfigure and args.no_start:
         parser.error("--reconfigure restarts the API by design; --no-start contradicts it")
 
-    print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
+    print("Goblin memory stack installer — Hindsight 1.0.0-slim + PostgreSQL 17")
     preflight()
     # A present-but-invalid embed-relay switch fails here, before any
     # prompt, env write or unit copy in ANY branch below — the refusal

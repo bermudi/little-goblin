@@ -13,7 +13,7 @@ import {
 	type ConversationAddress,
 	type ConversationStore,
 } from "../conversation.ts";
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import {
 	isRollingChat,
 	projectRollText,
@@ -36,6 +36,8 @@ import {
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { floodWaitTransformer } from "./flood-wait.ts";
+import { registerGenerationStop } from "./generation-stop.ts";
 import {
 	type GuestEnv,
 	ensurePersonaClass,
@@ -48,9 +50,10 @@ import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "./ratings.ts";
+import { SKILL_CALLBACK_RE, startSkillApproval } from "./skill-approval.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
-import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
+import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
 import {
 	openTelegramInbox,
 	validatedInboxMedia,
@@ -99,7 +102,7 @@ export function conversationAddress(msg: {
 	return { kind: "dm", chatId: msg.chat.id };
 }
 
-interface BufferedItem {
+export interface BufferedItem {
 	updateId: number;
 	// The chat the message arrived in — an app lane needs it to ack the
 	// ping reply, the conversation's own chat_id being the 0 filler.
@@ -109,6 +112,12 @@ interface BufferedItem {
 	// Set when the message quoted another. Presence alone counts as a
 	// reply for rolling-DM routing — an empty quote still joins.
 	quoted?: { messageId: number; text: string };
+	// The edited_message door (design/telegram.md): the slot in parts
+	// where this message's own text/caption lives — or where an
+	// edited-in one goes when hasText is false (the quoted context
+	// always leads at 0). Parts after it are media/error tails.
+	textIndex: number;
+	hasText: boolean;
 }
 
 // A failed durable insert must stop polling, not allow grammy to acknowledge
@@ -136,9 +145,9 @@ export interface BotDeps {
 	// Resolved per tap (built right after the bot — it needs bot.api).
 	// Absent = mail never wired: a stale button gets an answer, never a hang.
 	mail?: () => MailApproval;
-	// The Rolling DM follow-up check, resolved per call (the reviewer is
-	// built after the bot). Absent = no check: a past-gap burst joins current.
-	followUpGate?: () => Pick<JevClient, "decide"> | undefined;
+	// The Rolling DM follow-up check, resolved per call (the shared client
+	// is built after the bot). Absent = no check: a past-gap burst joins current.
+	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 }
 
 export interface RunningBot {
@@ -240,12 +249,13 @@ function rollDepsOf(deps: BotDeps): RollDeps {
 
 function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
 	const addr = conversationAddress(msg);
+	// Silent — the operator just sent the command; the receipt is chatter
+	// on a screen they are looking at (#126).
 	void withTimeout(
-		env.api.sendMessage(
-			msg.chat.id,
-			text,
-			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
-		),
+		env.api.sendMessage(msg.chat.id, text, {
+			disable_notification: true,
+			...(addr.kind === "topic" ? { message_thread_id: addr.threadId } : {}),
+		}),
 		"sendMessage (navigation reply)",
 	)
 		.then((sent) => {
@@ -417,13 +427,32 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			// command acts on the current conversation and never rolls.
 			if (target === null) {
 				const cmd = command.command;
+				// Commands never reach flushRolling's pin, and an unpinned
+				// row defaults personal+included — /memory on and /forget
+				// would run on a sandbox lane as if it were the operator's.
+				// Same class rule as the flush: chat id IS the user id —
+				// read before routing so a stranger never mints a lane.
+				// Unreachable while the gate holds, but a stranger who
+				// arrives here must get the refusal, never a guest pin.
+				const cls = dmClass(deps.configRef.current, addr.chatId);
+				if (cls === null) {
+					log.info("stranger refused — bot dm command", { userId: addr.chatId });
+					refuseStranger(env.api, addr.chatId);
+					return;
+				}
 				const routed = routeDm(
 					rollDepsOf(deps),
 					addr.chatId,
 					cmd === "/voice" || cmd === "/memory" ? "command" : "current",
 				);
 				if (routed.rolled) void sendRollMarker(env.api, addr.chatId, routed.conv.id);
-				target = routed.conv;
+				target = ensurePersonaClass(
+					deps,
+					routed.conv,
+					cls,
+					cls === "guest" ? true : undefined,
+					() => deps.store.rollDm(addr.chatId, paths.workspace()),
+				);
 			}
 			handled = handleCommand(
 				{
@@ -458,8 +487,35 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	}
 
 	if (text === "" && !media && mediaError === null) {
-		// Service messages, join/leave, uncovered media kinds — routine drop.
-		log.debug("dropped message with no text or media", { conversation: lane });
+		const kind = unhandledMediaKind(msg);
+		if (kind === null) {
+			// Service messages, join/leave — routine drop.
+			log.debug("dropped message with no text or media", { conversation: lane });
+			return;
+		}
+		// A real attachment the sender can see land must not vanish
+		// without a trace: one line where the message landed, silent —
+		// the sender is still looking at it (#128).
+		log.info("dropped unhandled media kind", {
+			conversation: lane,
+			kind,
+			message: msg.message_id,
+		});
+		void withTimeout(
+			env.api.sendMessage(
+				msg.chat.id,
+				`⚠ I can't read ${kind} yet — describe it in text if it matters.`,
+				{
+					disable_notification: true,
+					...(addr.kind === "topic" ? { message_thread_id: addr.threadId } : {}),
+				},
+			),
+			"sendMessage (unhandled media note)",
+		)
+			.then(() => undefined)
+			.catch((err: unknown) => {
+				log.warn("unhandled media note failed", err, { chat: msg.chat.id });
+			});
 		return;
 	}
 
@@ -533,7 +589,9 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 		if (quoted !== undefined && quoted.text !== "") {
 			parts.push({ type: "text", text: `[replying to: "${quoted.text.slice(0, 2_000)}"]` });
 		}
-		if (text !== "") parts.push({ type: "text", text });
+		const textIndex = parts.length;
+		const hasText = text !== "";
+		if (hasText) parts.push({ type: "text", text });
 		if (mediaError !== null) {
 			log.error("media intake failed", mediaError, { conversation: convId });
 			parts.push({
@@ -582,6 +640,97 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 			chatId: payload.chatId,
 			replyTo: messageId,
 			...(quoted !== undefined ? { quoted } : {}),
+			textIndex,
+			hasText,
+		});
+	});
+}
+
+// Rewrite one buffered item's sender-text slot for an edited_message:
+// replace in place, splice out on an emptied caption, or insert ahead
+// of the media/error tail when the original carried none.
+function amendBufferedText(item: BufferedItem, text: string): void {
+	if (item.hasText) {
+		if (text === "") {
+			item.parts.splice(item.textIndex, 1);
+			item.hasText = false;
+		} else {
+			item.parts[item.textIndex] = { type: "text", text };
+		}
+		return;
+	}
+	if (text !== "") {
+		item.parts.splice(item.textIndex, 0, { type: "text", text });
+		item.hasText = true;
+	}
+}
+
+// Edits never re-enter history — the original already is it — but a
+// fix landing while the burst still coalesces amends the buffered text
+// in place (and the durable row with it, so a crash-replay sees the
+// same correction). Everything else stays an ack + log.
+export function handleEditedMessage(env: IntakeEnv, msg: Message): void {
+	const hit = env.inbox.pendingByMessage(msg.chat.id, msg.message_id);
+	if (hit === null) {
+		log.info("edited message acked — edits do not re-enter history", {
+			chat: msg.chat.id,
+			message: msg.message_id,
+		});
+		return;
+	}
+	// Inside the lane's intake chain the amend lands behind the
+	// message's own media resolution + push — an edit mid-intake still
+	// finds the item, and a commit that raced ahead re-checks to null.
+	// The chain resolves failures quietly (intake step failed is logged);
+	// the update itself is consumed either way.
+	void enqueueIntake(env.intake, hit.laneKey, async () => {
+		const pending = env.inbox.pendingByMessage(msg.chat.id, msg.message_id);
+		if (pending === null) {
+			log.info("edited message arrived after its batch committed", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+			});
+			return;
+		}
+		// Text and caption edits amend; a media swap is a different
+		// message — the original stands. fileUniqueId is the same-file
+		// invariant across the edit.
+		let mediaUniqueId: string | null | undefined;
+		try {
+			mediaUniqueId = mediaFromMessage(msg)?.fileUniqueId ?? null;
+		} catch {
+			mediaUniqueId = undefined;
+		}
+		if (mediaUniqueId !== pending.mediaUniqueId) {
+			log.info("edited message changed media — original stands", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+				updateId: pending.updateId,
+			});
+			return;
+		}
+		const text = msg.text ?? msg.caption ?? "";
+		const amended = env.buffer.amend(
+			pending.laneKey,
+			(item) => item.updateId === pending.updateId,
+			(item) => amendBufferedText(item, text),
+		);
+		if (!amended) {
+			log.info("edited message missed the coalescing window", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+				updateId: pending.updateId,
+			});
+			return;
+		}
+		// The durable row follows the live batch — only while still
+		// pending: a committed row is a tombstone replay never reads.
+		env.inbox.amendPendingText(pending.updateId, text);
+		log.info("edited message amended in flight", {
+			chat: msg.chat.id,
+			message: msg.message_id,
+			updateId: pending.updateId,
+			lane: pending.laneKey,
 		});
 	});
 }
@@ -643,6 +792,48 @@ export function flushConversation(
 	admitBatch(env, conv, convId, items, parts);
 }
 
+// The gate's class rule, re-read wherever a DM lane commits work: on
+// a private chat the chat id IS the user id. null = stranger —
+// neither list carries them any more.
+function dmClass(cfg: Config, chatId: number): "personal" | "guest" | null {
+	return cfg.operators.includes(chatId)
+		? "personal"
+		: cfg.allowedUsers.includes(chatId)
+			? "guest"
+			: null;
+}
+
+// The one refusal line, fire-and-forget — a failed send never kills
+// the lane's work.
+function refuseStranger(api: Api, chatId: number): void {
+	void withTimeout(api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
+		(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
+	);
+}
+
+// A stranger's coalesced batch never turns: the gate's admission was
+// intake-time truth, and a config edit that demoted this sender while
+// the burst sat must not produce one (the guest surface rechecks
+// eligibility the same way). Rows tombstone without appending so
+// replay doesn't retry the drop forever; the refusal is the answer.
+function refuseDroppedBatch(
+	env: FlushEnv,
+	chatId: number,
+	laneKey: string,
+	batch: BufferedItem[],
+): void {
+	env.inbox.commitBatch(
+		batch.map((i) => i.updateId),
+		laneKey,
+		() => {},
+	);
+	log.info("dm batch dropped — sender left both lists mid-flight", {
+		chat: chatId,
+		updateIds: batch.map((i) => i.updateId),
+	});
+	refuseStranger(env.api, chatId);
+}
+
 // The rolling lane's async half: route, land the roll marker if one
 // happened (before the turn — the operator reads it as "this is a
 // fresh conversation"), then commit + submit like a topic flush.
@@ -657,6 +848,19 @@ async function flushRolling(
 	let remaining = archiveNavigatedInput(env, laneKey, items);
 	while (remaining.length > 0) {
 		const batch = remaining;
+		// Persona follows class (design/telegram.md → Roles and
+		// permissions): the operator's DM lane stays personal; an allowed
+		// user's DM is the standing sandbox — persona guest, off the
+		// record, search-only tools via the persona-driven filter. The
+		// gate admitted only these two classes at intake; the chat id IS
+		// the user id here. The class read leads routing — a sender
+		// demoted while the burst coalesced never pays a roll, a marker,
+		// or the follow-up check.
+		let cls = dmClass(deps.configRef.current, chatId);
+		if (cls === null) {
+			refuseDroppedBatch(env, chatId, laneKey, batch);
+			return;
+		}
 		const stillRouteable = (): boolean =>
 			env.inbox.assertRouteable(
 				batch.map((item) => item.updateId),
@@ -686,13 +890,14 @@ async function flushRolling(
 				to: current.id,
 			});
 		}
-		// Persona follows class (design/telegram.md → Roles and
-		// permissions): the operator's DM lane stays personal; an allowed
-		// user's DM is the standing sandbox — persona guest, off the
-		// record, search-only tools via the persona-driven filter. The
-		// gate already admitted only these two classes; the chat id IS
-		// the user id here.
-		const cls = deps.configRef.current.operators.includes(chatId) ? "personal" : "guest";
+		// Same adjudication, refreshed — the class read predates the
+		// route and marker awaits, and a config save can land inside
+		// them. The last read before admission wins.
+		cls = dmClass(deps.configRef.current, chatId);
+		if (cls === null) {
+			refuseDroppedBatch(env, chatId, laneKey, batch);
+			return;
+		}
 		const pinned = ensurePersonaClass(deps, current, cls, cls === "guest" ? true : undefined, () =>
 			deps.store.rollDm(chatId, paths.workspace()),
 		);
@@ -793,18 +998,25 @@ function admitBatch(
 			deps.store.append(conv.id, [message]);
 		},
 	);
-	const sink = makeDeliverySink(
-		env.api,
-		conv,
-		items[0]?.replyTo,
-		undefined,
-		tts && !deps.configRef.ttsDown
-			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
-			: undefined,
-		undefined,
-		undefined,
-		deps.store,
-	);
+	const replyTo = items[0]?.replyTo;
+	const sink = makeDeliverySink(env.api, conv, {
+		...(replyTo !== undefined ? { replyTo } : {}),
+		...(tts && !deps.configRef.ttsDown
+			? {
+					voice: {
+						voiceMode: conv.voice,
+						synthesize: (text: string) => deps.synthesize(text, tts),
+					},
+				}
+			: {}),
+		rating: deps.store,
+		// Rich replies + reasoning: the sink gates DMs and voice mode;
+		// these are the config kill switches (design/telegram.md).
+		rich: {
+			enabled: deps.configRef.current.telegram.richReplies,
+			reasoning: deps.configRef.current.telegram.showReasoning,
+		},
+	});
 	try {
 		deps.runtime.submitPersisted(conv, message, sink);
 	} catch (err) {
@@ -835,7 +1047,9 @@ function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): voi
 	});
 	for (const chat of new Set(items.map((i) => i.chatId))) {
 		void withTimeout(
-			env.api.sendMessage(chat, "not sent — that app conversation was deleted"),
+			env.api.sendMessage(chat, "not sent — that app conversation was deleted", {
+				disable_notification: true,
+			}),
 			"sendMessage (ping reply drop)",
 		).catch((err: unknown) => {
 			if (err instanceof TelegramTimeoutError) {
@@ -881,7 +1095,9 @@ function admitAppBatch(
 	// operators' replies into one app batch. Delivery only, never history.
 	for (const chat of new Set(items.map((i) => i.chatId))) {
 		void withTimeout(
-			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`),
+			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`, {
+				disable_notification: true,
+			}),
 			"sendMessage (ping reply ack)",
 		).catch((err: unknown) => {
 			// Abandoned, not cancelled — the ack may still have landed.
@@ -956,6 +1172,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
+	// Honors 429 retry_after on every api call — first transformer, so
+	// init (getMe) is covered too.
+	bot.api.config.use(floodWaitTransformer());
 	// Populates bot.botInfo, needed to route /cmd@botname. Bounded: a
 	// wedged connection must fail boot loudly, not hang.
 	await withTimeout(bot.init(), "getMe");
@@ -1032,18 +1251,18 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		await next();
 	});
 
+	// Before the gate: a stop update carries no sender, so the gate would
+	// drop it at debug level before this handler ever ran.
+	registerGenerationStop(bot);
+
 	bot.use(accessGate(deps.configRef));
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 
-	// Edits never re-enter history — the original already is it — but
-	// must leave a trace: acked and logged.
-	bot.on("edited_message", (ctx) => {
-		log.info("edited message acked — edits do not re-enter history", {
-			chat: ctx.editedMessage.chat.id,
-			message: ctx.editedMessage.message_id,
-		});
-	});
+	// Edits never re-enter history — the original already is it — but a
+	// fix landing while the burst still coalesces amends the buffered
+	// text in place. Everything else stays an ack + log.
+	bot.on("edited_message", (ctx) => handleEditedMessage(env, ctx.editedMessage));
 
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {
@@ -1056,6 +1275,29 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 
 	registerRateButton(bot, { api: bot.api, ratings });
+
+	const skillApproval = startSkillApproval({
+		api: bot.api,
+		store: deps.store,
+		workspaceDir: paths.workspace(),
+		skillsDir: paths.skills(),
+		proposedDir: paths.skillsProposed(),
+	});
+	bot.callbackQuery(SKILL_CALLBACK_RE, (ctx) => {
+		const q = ctx.callbackQuery;
+		void skillApproval.handleTap({
+			id: q.id,
+			data: q.data,
+			...(q.message !== undefined
+				? {
+						message: {
+							message_id: q.message.message_id,
+							chat: { id: q.message.chat.id },
+						},
+					}
+				: {}),
+		});
+	});
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
 		const approval = deps.mail?.();

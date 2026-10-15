@@ -46,21 +46,37 @@ model/thinking (history still copies, as specified in design/app.md).
   stops polling rather than acknowledging input held only in RAM. This
   store connection uses WAL/FULL so an acknowledged journal commit also
   survives a host power loss. This protects future updates, not input
-  lost before the inbox was deployed.
+  lost before the inbox was deployed. An `edited_message` is not a
+  second message (ruling 2026-10-13): while its original still
+  coalesces, the edit amends the buffered text in place — the journaled
+  `payload_json` with it, so crash-replay sees the fix the live batch
+  carried. The amend runs inside the lane's intake chain (behind the
+  original's own media resolution and push) and is bounded by the
+  row's pending state: after the batch commits the edit stays
+  ack-and-log — the landed turn's history is the record. A media swap
+  (`file_unique_id` moved) is a different message, not a fix; the
+  original stands.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
-  message and log structured detail. A definite Telegram send failure may
-  retry/fall back; a sendMessage timeout is ambiguous (the abandoned request
-  may still land), so never resend that content. Stop the remaining text
-  chunks/drain and completion reaction, log the address and uncertainty, and
+  message and log structured detail. Flood control is honored once, at the api
+  layer: a single transformer wired at bot construction waits out a 429's
+  `retry_after` (bounded wait, capped retries per call) and retries the same
+  call — the drain awaits its in-flight send chain, so a resolved wait never
+  ticks its stagnant ladder. Beyond the cap or the retry budget the 429
+  propagates to the caller's existing failure/uncertainty handling. A definite
+  Telegram send failure may retry/fall back; a sendMessage timeout is ambiguous
+  (the abandoned request may still land), so never resend that content. Stop
+  the remaining text chunks/drain and completion reaction, log the address and
+  uncertainty, and
   best-effort send a distinct "delivery uncertain—check Telegram before
   retrying" notice only while the turn still holds authority. Never retry
   the notice itself. In voice mode a sendVoice timeout likewise stops voice
   output without falling back to duplicate text; use the same notice.
   Fencing suppresses any new output, including the notice.
 - **Reply ratings**: a clean-completed reply's last bubble also carries a
-  👍/👎 row, stamped in the same `editMessageReplyMarkup` as the 🔊 row
-  (markup is whole-keyboard replacement — they must ride one call).
+  👍/👎 row, stamped on one row with the 🔊 button in the same
+  `editMessageReplyMarkup` (markup is whole-keyboard replacement — they
+  must ride one call).
   Same gate as the 🫡: errors, fenced turns, and voice-mode replies get
   none. Guest replies get none either — same reason they get no 🔊:
   a guest's tap can't answer past the allowed-user gate, so a rendered
@@ -76,8 +92,16 @@ model/thinking (history still copies, as specified in design/app.md).
 - **TTS**: default-on — absent config means
   `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
   explicit off (it parses to `false` so the mini app's whole-file
-  rewrite can't silently lose it and reload as on). The service is the
-  Edge read-aloud websocket (no auth, unofficial, it can break; failures
+  rewrite can't silently lose it and reload as on). Three kinds: `edge`
+  is the Edge read-aloud websocket (no auth, unofficial, it can break);
+  `openrouter` is OpenRouter's `POST /api/v1/audio/speech` — one
+  JSON shape for every upstream speech model (`model`, `input`,
+  `voice?`, `response_format`), raw mp3 back, resolved via its `auth`
+  record like every cloud provider — and `logfare` is the same call
+  against `logfare.ai/v1/audio/speech` minus `response_format`, which
+  its documented speech table doesn't list (mp3 is the endpoint
+  default; Deepgram Aura catalog, `aura-2-en` default; doc-pinned,
+  unverified live). Failures
   surface as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the
@@ -92,10 +116,13 @@ model/thinking (history still copies, as specified in design/app.md).
   guard, never a control-flow path the model must recover from. Button
   text is stripped of the tool-status tail, code blocks, long URLs, and
   markdown before synthesis (`speakable`); tool input is already authored
-  for speech. Edge's supported
-  WebM/Opus stream is remuxed losslessly through ffmpeg to ogg/opus — a real
+  for speech. Provider audio lands as ogg/opus
+  through one ffmpeg pipe — Edge's WebM/Opus stream remuxes losslessly,
+  the cloud kinds' mp3 re-encodes — a real
   voice-note bubble, not an audio-file card. ffmpeg is probed at boot —
-TTS is default-on, so always; a failed probe takes TTS down for the run
+TTS is default-on, so always — and when TTS is a cloud kind the probe also
+requires the libopus encoder, since the re-encode dies per chunk without
+it. A failed probe takes TTS down for the run
 with a boot warning (install ffmpeg and restart to re-enable) instead of
 failing message by message.
   `record_voice` chat action runs while synthesis is in flight. The
@@ -108,7 +135,9 @@ failing message by message.
   voice per call, and `/voice` mode and the 🔊 button sniff the
   speakable text and cast the matching voice from `voice` + `voices` —
   one cast list, three consumers; `voice` speaks when the language is
-  unclear or no cast member matches.
+  unclear or no cast member matches. The cast is edge-only — cloud-kind
+  voice ids carry no language to match on, so those arms speak their one
+  configured voice (or the model default) regardless of language.
 - **Files**: `send_file` is the file-out twin of intake media: it
   *names*, it does not send. The tool hands a workspace path (+ optional
   caption) to the turn's delivery sink (`sink.onFile`), which owns the
@@ -141,16 +170,13 @@ failing message by message.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
-  **One client, two doors (ruling 2026-10-10).** The settings page began
-  as two static files served verbatim — markup+css in `http/app.ts`,
-  client script in `http/app.js`, no build step, tsc-checked against the
-  server's wire types. It retires here: `app.js` had grown into a second
-  settings UI maintained beside the app channel's editor (the operator
-  console landed in the PWA, design/app.md, 2026-10-09, and the mini app
-  kept duplicating a subset of it). The Telegram door now serves the
-  built app client — the same `app/dist` bundle the PWA runs — at
-  `/t/settings` and `/t/memory`, in a constrained **telegram mode**:
-  operator surface only, no conversation rail, no chat, no composer.
+  **One client, two doors (ruling 2026-10-10).** The Telegram door
+  serves the built app client — the same `app/dist` bundle the PWA runs
+  — at `/t/settings` and `/t/memory`, in a constrained **telegram
+  mode**: operator surface only, no conversation rail, no chat, no
+  composer. The plain-JS page it replaced is gone; it had grown into a
+  second settings UI duplicating the app console, and git owns that
+  history.
   Auth is unchanged: initData per request via `x-init-data`, the same
   `validateInitData`, the same `via: "mini-app"` actor — so the
   self-lockout guard (the door refuses to drop the *requesting* Telegram
@@ -166,17 +192,21 @@ failing message by message.
   backend guessed. Telegram mode never touches the app door — no token
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
-  **Same-origin residual (ruling 2026-10-13).** Both doors serve one
-  bundle from one origin, so origin-scoped client storage is shared:
-  any script executing in the origin — including a compromised
-  `telegram.org/js/telegram-web-app.js`, which the /t/ door fetches as
-  a fallback — can read the PWA's bearer credential. The mitigations
-  narrow exposure, they do not isolate: the token lives in
-  `sessionStorage` (dies with the tab, never persists across browser
-  sessions) and the SDK is fetched only on the /t/ door. Accepted for
-  a single-operator agent that already hands that SDK its initData;
-  the clean fix — one origin per door — is declined as
-  disproportionate.
+  `telegram-web-app.js` is never fetched: both doors are one origin, the
+  app token lives in that origin's sessionStorage (dies with the tab,
+  never persists across browser sessions), and no third-party
+  script — live, and per ruling 2026-10-13 not even a pinned copy —
+  executes there. Webviews that inject `window.Telegram` use their own
+  copy; Telegram Desktop does not inject, which silently killed this
+  door there until ruling 2026-10-13. The door therefore installs a
+  local stand-in (`app/src/telegram.ts`) when the object is absent: it
+  parses `tgWebAppData` from the URL hash — the transport every client
+  delivers, and the same one the official script reads — and posts
+  `web_app_ready`/`web_app_expand` through the client bridges in the
+  official precedence order (TelegramWebviewProxy → external.notify →
+  parent-frame postMessage). A hash without `tgWebAppData` — a plain
+  browser — keeps initData empty and gets the same empty-initData
+  notice.
   In-door navigation is component state with no history entries; the
   webview's back gesture closes the mini app natively. The unsaved-draft
   protection is two layers of the same contract: the in-door confirm
@@ -259,7 +289,6 @@ and the rules below exist to keep it unsurprising.
    and intake carries the replied-to message's text into the burst as
    a quoted part (head-cut, like the check's state) — a reply to a
    message from an older conversation must still say what "this" is.
-   Intake drops that text today; this ruling adds it.
    (A reply to a spin-off ping is routed to the app conversation
    instead — see App channel → Spin-off.)
 3. **Past the gap** — if the current conversation has no assistant
@@ -276,9 +305,9 @@ A fresh conversation starts with an empty window: system prompt,
 admission-time recall, the burst. Nothing is carried over by Goblin —
 memory and `history_search` are the bridge, by design.
 
-**The follow-up check.** One System One (Jev) noul call through the
-shared `JevClient` — the reviewer's gate client, so the `reviewer`
-block is its on/off switch like every other Jev consumer. State:
+**The follow-up check.** One System One `noul` call through the
+shared client (`design/system1.md` — it exists when `system1` or
+`reviewer` is configured, per the switch there). State:
 `{gapMinutes, previous: {user, assistant}, next}` — the last user
 message and last assistant reply of the current conversation and the
 incoming burst, text only (attachments render as `[photo]`,
@@ -299,12 +328,11 @@ Fresh only when `p(follow_up) < 0.3` — the threshold leans toward
 continuing because a wrong continuation costs one cold read, while a
 wrong fresh start is the surprise above. The constant lives in code
 and every check logs its probability, so a retune is an evidence-based
-edit, not a guess. **Failure** (no reviewer block, `JevError`,
-timeout) → follow-up, warn-logged. The shared client first tries its
-backup model (`typesafe/jev-1.13`) on primary failure, within the same
-3s check budget — half reserved for each attempt. See
-`design/mail.md` for the common retry policy. The original deadline
-still bounds fake or unavailable gates; no abandoned 30s request
+edit, not a guess. **Failure** (no client, `System1Error`,
+timeout) → follow-up, warn-logged. The shared client retries once on
+its backup model inside the same 3 s check budget
+(`design/system1.md` → the common retry policy). The original deadline
+still bounds fake or unavailable gates; no abandoned 30 s request
 continues after the check times out.
 
 **The marker.** When a fresh conversation starts, delivery sends a
@@ -378,12 +406,11 @@ command, and whether a turn/review was stopped.
 store — readable, searchable by `history_search` — and are never
 routed to again. Any DM message, thread id or not, resolves to the
 rolling address and replies go to the main chat. Programs pinned to a
-DM topic are re-pinned to the DM at cutover (one-off, logged per
-program). Unverified: whether the bot's threaded mode must be switched
-off in BotFather for the DM to render as a plain chat, and whether a
-send without a thread id behaves while it is on — probe at
-implementation; cutover also waits for no delegation in flight from a
-DM topic. Group topics are untouched.
+DM topic were re-pinned to the DM at cutover (one-off, logged per
+program). Group topics are untouched. **Unverified:** whether the
+bot's threaded mode must be switched off in BotFather for the DM to
+render as a plain chat, and whether a send without a thread id behaves
+while it is on.
 
 **Logging.** `dm rolled` (address, from → to conversation, gap,
 decided by
@@ -402,8 +429,8 @@ outcome — never message text); `dm cutover re-pin` per program.
   as history and is never current.
 - *A live turn always absorbs input* (it steers), whatever the gap.
 - *The check has a 3 s interactive deadline*, passed into the shared
-  Jev client instead of its usual 30 s timeout and externally raced as
-  a backstop; losing the race is a fallback. If the
+  System One client instead of its usual 30 s timeout and externally
+  raced as a backstop; losing the race is a fallback. If the
   address rolled while the check ran (a fire), the burst joins the new
   current conversation — never two rolls.
 - *Delegation notices join, never roll:* they continue work the
@@ -451,9 +478,9 @@ chat, not command authority.
 **Sandbox class invariants.** Persona follows class at conversation
 creation, and the sandbox tool filter is **persona-driven**: any
 conversation pinned `persona: guest` gets `SANDBOX_TOOLS` (`search`
-only) whatever channel it lives on. The old filter guarded on
-channel, which would have handed a persona-pinned DM the full
-toolset — the guard is the persona column, not the address shape.
+only) whatever channel it lives on — the guard is the persona column,
+not the address shape (a channel check would hand a persona-pinned DM
+the full toolset).
 Sandbox conversations are memory-excluded by construction, capped
 per reply by `guest.outputChars` on the guest surface, **uncapped in
 turn count** (ruling 2026-10-11 — the named list is small and
@@ -469,6 +496,17 @@ legacy single `allowedUsers` key meant operator class; the live file
 migrates at deploy (`allowedUsers: [x]` → `operators: [x]`,
 `allowedUsers: []`), and boot fails loud naming the key when
 `operators` is missing.
+
+**The mid-flight recheck is DM-scoped.** The gate's verdict is
+intake-time truth; a save landing while a burst coalesces is
+re-adjudicated at flush — but only where the lane names the person.
+A private chat's lane key IS the sender's id, so a demotion drops the
+batch (refusal line, tombstoned rows) before any routing happens.
+Topic/group batches carry no sender identity — the journaled payload
+records the room's chat id, not `from.id` — so a demoted operator's
+already-coalesced group input still runs its turn. Accepted residual:
+the window is the coalescing delay, and closing it means journaling
+`from.id` per inbox row.
 
 ## Guest mode (ruling 2026-10-06)
 
@@ -493,16 +531,12 @@ asked for both surfaces Telegram offers:
   intake — a standing conversation in that chat, full agent, no guest
   machinery at all.
 
-**The unit of trust is the person (Roles and permissions, 2026-10-11).**
-The 2026-10-06 chat-trust machinery is deleted with it: `/open` and
-`/off`, the `guest_open_chats` row, the epoch-bump fencing on close,
-and the post-placeholder revalidation of openness (the busy check
-stays — a busy conversation still refuses new summons with one
-line). Summonses classify by the two lists alone; a stranger's
-summons gets the refusal line, settled into the placeholder where
-there is one. Group privacy mode stays ON deliberately: the bot
-receives only mentions/replies in member chats, mirroring guest
-mode's no-history property.
+**The unit of trust is the person** (Roles and permissions, 2026-10-11 —
+the earlier chat-trust machinery is deleted there). Summonses classify
+by the two lists alone; a stranger's summons gets the refusal line,
+settled into the placeholder where there is one. Group privacy mode
+stays ON deliberately: the bot receives only mentions/replies in member
+chats, mirroring guest mode's no-history property.
 
 **Three classes, decided per summons, enforced by hard exclusion**
 (Roles and permissions, above). `from.id ∈ operators` (read live at
@@ -599,3 +633,109 @@ preferring the normal path); the `answerGuestQuery` deadline
 (placeholder-first makes it moot); the edit window on guest messages.
 Media in third-party summonses is caption text only in v1 — photo
 intake for the member surface is a follow-up, not a ruling.
+
+## Formatted replies & draft streaming (ruling 2026-10-12)
+
+Bot API 10.3 gives goblin two primitives it never had: **rich messages**
+(`sendRichMessage`, markdown/html/blocks, 32 768-char cap, no edit after
+send) and **drafts** (`sendMessageDraft`/`sendRichMessageDraft`, a 30-second
+ephemeral preview that must be followed by a real send to persist). Probed
+live 2026-10-12 in the operator DM: markdown renders, 6 KB passes,
+`expandable_blockquote` works on plain sends, both draft variants stream and
+refresh at ≤15 s cadence. Rich messages cannot be edited — ever.
+
+**Streaming = rich drafts, finalizing = one rich send.** A running turn
+streams its accumulated markdown into `sendRichMessageDraft` (same
+`draft_id` per turn, refreshed by the existing ~1 s throttle — well inside
+the TTL) and on completion sends the same content once via
+`sendRichMessage`. The preview is the message, formatting included; the
+hand-off (draft vanishes, real message lands) is accepted behavior, not a
+bug to smooth over. ~~Drafts replace the typing indicator entirely.~~
+**Typing stays live alongside drafts (ruling 2026-10-14, operator):**
+the chat action is not a rich-mode casualty — the 4 s tick pings
+`sendChatAction("typing")` in every mode while the turn runs, drafts or
+not, because "goblin is busy" must always read as typing… in the
+status bar. Division of labor: drafts carry content, the chat action
+carries liveness. Two consequences ride this: Telegram clears the
+chat action whenever a real message lands, so every mid-turn send
+(voice note, file, chunk boundary) re-pings immediately instead of
+waiting out the tick — gated to skip while a synthesis window owns
+the status bar (`record_voice`) and after `onDone` (no ghost typing on
+a finished turn); and the draft TTL keep-alive moves onto whatever
+tick is live, so a long voice synthesis (typing interval paused)
+doesn't let the draft evaporate mid-turn. The
+finalizing send carries everything the message needs in one call —
+`reply_markup` included (ruling 2026-10-13): the completed-turn rating
+row goes out on the `sendRichMessage`, not a follow-up
+`editMessageReplyMarkup` that could lose the race between "bubble up"
+and "buttons on". The premium-gate retry that drops
+`message_effect_id` keeps the markup.
+
+**DMs only in v1.** Group and topic conversations keep the current
+edit-streaming sink untouched; group rich rendering and reply-threading are
+unprobed.
+
+**Guest answers edit into rich (ruling 2026-10-13).** The earlier line —
+guests never see either primitive — rested on a stale premise: there is
+no inline-scoped rich primitive. There is: `editMessageText`'s
+`text_or_rich_message` accepts an `InputRichMessage` (`{markdown}`) with
+`inline_message_id`, so the guest placeholder edits *into* a rich answer
+— the ⏳ is updated in place, never replaced by a second message. The
+boundary is the send side, not the receive side: a *sent* rich message
+can't be edited, but editing a plain inline message *to* rich content is
+the documented shape. Live behavior is **unprobed** (types pinned, API
+not exercised): the first rejected rich edit flips that sink to plain
+edits for the rest of the turn — warn-logged `guest rich edit rejected`,
+the reply still lands. The placeholder itself stays plain text in
+`answerGuestQuery` — a platform that can't answer rich would drop the
+summons at placement, not just the formatting.
+
+**Kill switch, not feature flag.** `telegram.richReplies` (bool, default
+true): false restores the plain-text sink verbatim. A phone-only operator
+needs a config off-switch if streaming misbehaves, not a code deploy. Any
+rich-path failure at runtime (draft or send) degrades to the plain path for
+that turn, logs `reply fallback`, and never loses the reply. Length drain:
+the 32 768-char cap replaces the 3 800-char chunking for rich sends; the
+drain remains as fallback only.
+
+**Reasoning (`telegram.showReasoning`, bool, default false, DMs only).**
+Off by default everywhere. When on, reasoning streams into its own draft
+bubble ahead of the answer and lands in the final message as a collapsed
+block (expandable) above the reply text. The draft rides the native
+`InputRichBlockThinking` block (Bot API 10.2 — the client's animated
+Thinking UI); the final message keeps the probed `<details>` markdown: the
+exact collapsible syntax in the rich markdown dialect was pinned by probe
+2026-10-12 (`<details>/<summary>` renders collapsed; `<tg-details>` does
+not parse), and the thinking block itself cannot be received in messages. Reasoning never renders for guests,
+regardless of the flag.
+
+**Buttons and small parts.** Rating 👍/👎 keyboards strip themselves after
+a tap (`editMessageReplyMarkup` to empty, `DisabledButton` where layout
+should persist); mail approval already does this. `force_reply` is
+declined for now — no in-scope consumer. The drafts never set
+`can_stop`/`keep_on_stop` (Bot API 10.3): the client-side stop button is
+declined (operator ruling, 2026-10-12) — stopping stays the typed `/stop`,
+and the `stopped_message_generation` handler remains a tripwire, not a
+stop path. Porting the app channel's `ui`
+tool to Telegram would reverse the chat-native ruling in design/app.md and
+needs its own conversation; explicitly out of scope here.
+
+**Completed-turn salute effect.** A completed DM turn's rich send carries
+`message_effect_id` for the 🫡 salute (matching the reaction, which stays
+the real marker). The id is pinned against the live API (`EFFECT_ID_INVALID`
+on garbage); effects are premium-gated at the receiving chat — the first
+`PREMIUM_ACCOUNT_REQUIRED` retries the send once without the param (a 400
+is definite, nothing landed) and drops effects for the process lifetime;
+a restart re-probes. Multi-image `send_file` bursts share one
+`sendMediaGroup` album via a short batch window; documents never wait,
+and a group timeout means the album may be live (uncertain, never resent).
+
+**Prompt.** `prompt.ts` already tells the model Telegram messages are
+Markdown; implementation updates that line to say markdown *renders*, and
+that collapsible blocks are available for long asides.
+
+**Logging.** Per-chunk draft sends stay silent (throttle territory). Per
+turn: chosen mode (`rich|plain`), fallback events with the API error, the
+final send, and whether a reasoning block was attached. Test seams at the
+grammy boundary as everywhere else; pin mode selection, DM gating, the
+fallback path, and the config schema.

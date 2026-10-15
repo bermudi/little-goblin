@@ -64,6 +64,35 @@ describe("uiInputSchema", () => {
 		expect(uiBlockSchema.safeParse(bad).success).toBe(false);
 	});
 
+	test("accepts pie charts and the richer form field kinds", () => {
+		expect(
+			uiBlockSchema.safeParse({
+				type: "chart",
+				kind: "pie",
+				x: ["VPS", "Domains + net"],
+				series: [{ name: "spend", values: [219, 71] }],
+				unit: "€",
+			}).success,
+		).toBe(true);
+		expect(
+			uiBlockSchema.safeParse({
+				type: "form",
+				fields: [
+					{ name: "water", label: "Water", kind: "checkbox" },
+					{ name: "notes", label: "Notes", kind: "textarea" },
+					{ name: "leave", label: "Leave on", kind: "date" },
+				],
+				submit: "Done packing",
+			}).success,
+		).toBe(true);
+	});
+
+	test("rejects a pie with a negative slice; bar/line keep negatives legal", () => {
+		const neg = { type: "chart", x: ["a", "b"], series: [{ name: "s", values: [3, -1] }] };
+		expect(uiBlockSchema.safeParse({ ...neg, kind: "pie" }).success).toBe(false);
+		expect(uiBlockSchema.safeParse({ ...neg, kind: "line" }).success).toBe(true);
+	});
+
 	test("rejects a select field without options", () => {
 		const bad = {
 			type: "form",
@@ -202,6 +231,17 @@ describe("normalizeUiInput", () => {
 			{ path: "blocks.0.tabs.1.blocks.1", type: "stats" },
 			{ path: "blocks.0", type: "tabs" },
 		]);
+	});
+
+	test("a typeless pie chart still re-types as chart", () => {
+		// The pie kind is an enum member, not a new key — the chart
+		// candidate's key set is untouched, so repair must be unchanged.
+		const r = normalizeUiInput({
+			blocks: [{ kind: "pie", x: ["a", "b"], series: [{ name: "s", values: [1, 2] }] }],
+		});
+		expect(r.inferred).toEqual([{ path: "blocks.0", type: "chart" }]);
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 	});
 
 	test("never mutates the input", () => {

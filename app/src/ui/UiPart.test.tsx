@@ -449,4 +449,94 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		await clickEl(card!.querySelector(".note-card-status button"));
 		expect(opened).toEqual(["n-new"]);
 	});
+
+	test("a checkbox/textarea/date form submits true/false, text and raw date", async () => {
+		const actions: string[] = [];
+		await mount(
+			<UiPart
+				part={uiPart({
+					state: "output-available",
+					input: {
+						blocks: [
+							{
+								type: "form",
+								fields: [
+									{ name: "water", label: "Water (2L)", kind: "checkbox" },
+									{ name: "tent", label: "Tent", kind: "checkbox" },
+									{ name: "notes", label: "Notes", kind: "textarea" },
+									{ name: "leave", label: "Leave on", kind: "date" },
+								],
+								submit: "Done packing",
+							},
+						],
+					},
+					output: "shown",
+				})}
+				onAction={(t) => actions.push(t)}
+			/>,
+		);
+		const boxes = container.querySelectorAll<HTMLInputElement>('.ui-field input[type="checkbox"]');
+		expect(boxes.length).toBe(2);
+		boxes[0]!.checked = true;
+		container.querySelector<HTMLTextAreaElement>(".ui-field textarea")!.value = "headlamp";
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
+		});
+		// The checkbox rides the same [ui] line as everything else —
+		// .checked, not the inert "on" default value.
+		expect(actions).toEqual(["[ui] Done packing: water=true, tent=false, notes=headlamp, leave="]);
+	});
+
+	test("a choices tap highlights the matching table row; reload re-derives it", async () => {
+		const input = {
+			blocks: [
+				{
+					type: "table",
+					columns: ["Ride", "km"],
+					rows: [
+						["Road loop", "42"],
+						["Gravel trail", "60"],
+					],
+				},
+				{
+					type: "choices",
+					prompt: "Which ride?",
+					options: [{ label: "Road loop" }, { label: "Gravel trail" }],
+				},
+			],
+		};
+		const actions: string[] = [];
+		await mount(
+			<UiPart
+				part={uiPart({ state: "output-available", input, output: "shown" })}
+				onAction={(t) => actions.push(t)}
+			/>,
+		);
+		expect(container.querySelector("tr.picked")).toBeNull();
+		await act(async () => {
+			container
+				.querySelector<HTMLButtonElement>(".ui-choice")!
+				.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		// The tap posts the ordinary [ui] message AND highlights locally.
+		expect(actions).toEqual(["[ui] Road loop"]);
+		expect(container.querySelector("tr.picked")?.textContent).toBe("Road loop42");
+
+		// Reload: fresh mount with no tap — the highlight re-derives from
+		// the persisted [ui] message.
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		const messages: UIMessage[] = [
+			{ id: "m1", role: "user", parts: [{ type: "text", text: "[ui] Gravel trail" }] },
+		];
+		await mount(
+			<UiPart
+				part={uiPart({ state: "output-available", input, output: "shown" })}
+				messages={messages}
+			/>,
+		);
+		expect(container.querySelector("tr.picked")?.textContent).toBe("Gravel trail60");
+	});
 });

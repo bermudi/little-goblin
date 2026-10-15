@@ -5,11 +5,17 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, twenty:
+Hand-rolled, zod-validated, twenty-three:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
-`fetch` `history_search` `sandbox` `script` `subagent` `desktop` `ui`
+`vision` `generate_image` `program` `delegate` `mail` `send_file`
+`memory_search` `memory_reflect` `search` `fetch` `history_search` `note`
+`sandbox` `script` `subagent` `desktop` `ui`
+
+`memory_reflect` is an on-demand Hindsight investigation with synthesis and
+supporting evidence, not automatic recall or an autonomous turn loop. It obeys
+memory exclusion and cancellation, uses its own bounded timeout, and stays
+out of the script tool's callable set because it invokes a model.
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -46,6 +52,20 @@ or video file → text, present only when `transcription` is configured
 and riding the same provider seam as intake. It exists precisely because
 intake *doesn't* transcribe attached audio — "transcribe this podcast"
 is a tool call against the saved attachment path, not a re-send.
+
+`generate_image` is the outbound twin of `vision`: present only when the
+`image` config block names a `<provider>/<model>` ref whose provider is
+`openai-compatible` or `responses` (the kinds that carry `baseUrl` — the
+call is the OpenAI images shape, `POST {baseUrl}/images/generations`,
+auth riding the provider's auth.jsonl ref). Generated files land in the
+attachment store like intake media — the returned path is a real file
+`vision` can then inspect and `send_file` can resend — and the tool also
+hands each one to the turn's delivery sink (`sink.onFile`), so Telegram
+shows the photo inline while the saved path remains the durable artifact.
+"Telegram send is delivery, not a tool" stays true; a `DeliveryUncertainError`
+is reported, never retried. `size` defaults from the config block and `n`
+caps at 4 per call. Guest channels exclude it like the other
+provider-calling tools.
 
 `program` manages standing programs (list/create/update/delete/toggle/
 hook) — see `Programs`. `delegate` hands tasks to other harnesses —
@@ -140,8 +160,9 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
   `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
   sink), `mail` (per-send human approval), `delegate` `program`
-  `subagent` `desktop` (spawn agents / standing work), `vision` (a
-  model call). Excluding writes would be theater — `bash` writes.
+  `subagent` `desktop` (spawn agents / standing work), `vision`
+  `memory_reflect` (model calls). Excluding writes would be theater —
+  `bash` writes.
 - **Nested calls are real calls.** Each one is zod-validated against
   the tool's own input schema (the SDK validates direct calls; nothing
   validates inside the VM), runs the tool's live `execute` — looked up

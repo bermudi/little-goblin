@@ -9,11 +9,12 @@ import {
 	readFileSync,
 	rmSync,
 	writeFileSync,
+	symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { readFileTool, readTextFile } from "./read.ts";
+import { readFileTool, readTextFile, sniffImage } from "./read.ts";
 
 let dirs: string[] = [];
 function tmpdir_(): string {
@@ -431,4 +432,14 @@ describe("sniffImage — JPEG marker walk", () => {
 		};
 		expect(page2.content!.startsWith("2001\tl2000")).toBe(true);
 	});
+});
+
+test("image sniffing distinguishes missing/non-image files from an open failure", () => {
+	const dir = tmpdir_();
+	expect(sniffImage(join(dir, "missing"))).toBeNull();
+	writeFileSync(join(dir, "text"), "not an image");
+	expect(sniffImage(join(dir, "text"))).toBeNull();
+	const loop = join(dir, "loop");
+	symlinkSync("loop", loop);
+	expect(() => sniffImage(loop)).toThrow(`cannot open image candidate ${loop}`);
 });

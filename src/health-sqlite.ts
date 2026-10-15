@@ -25,6 +25,7 @@ const required = {
 		"persona",
 		"archived_at",
 		"pinned_at",
+		"project_id",
 		"previous_dm_id",
 	],
 	events: [
@@ -58,6 +59,7 @@ const required = {
 		"created_at",
 	],
 	dm_rolls: ["chat_id", "current_id", "n"],
+	dm_roll_highwater: ["chat_id", "n"],
 } as const;
 
 function inspect(path: string): z.infer<typeof sqliteProbeSchema> {

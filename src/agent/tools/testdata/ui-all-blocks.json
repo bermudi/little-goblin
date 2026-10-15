@@ -47,6 +47,13 @@
 			"unit": "°C"
 		},
 		{
+			"type": "chart",
+			"kind": "pie",
+			"x": ["VPS", "Domains + net"],
+			"series": [{ "name": "spend", "values": [219, 71] }],
+			"unit": "€"
+		},
+		{
 			"type": "choices",
 			"prompt": "Which ride this weekend?",
 			"options": [{ "label": "Road loop" }, { "label": "Gravel trail" }, { "label": "Stay home" }]
@@ -64,6 +71,16 @@
 				{ "name": "notes", "label": "Notes", "kind": "text" }
 			],
 			"submit": "Plan ride"
+		},
+		{
+			"type": "form",
+			"fields": [
+				{ "name": "water", "label": "Water (2L)", "kind": "checkbox" },
+				{ "name": "tent", "label": "Tent", "kind": "checkbox" },
+				{ "name": "notes", "label": "Notes", "kind": "textarea" },
+				{ "name": "leave", "label": "Leave on", "kind": "date" }
+			],
+			"submit": "Done packing"
 		},
 		{
 			"type": "tabs",

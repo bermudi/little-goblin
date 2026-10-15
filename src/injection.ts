@@ -1,18 +1,18 @@
-// System One / Jev typed-decision injection checker on the mail read path
-// (DESIGN.md Email). Asks Jev two noul questions over inbound text and maps
-// the injection probability to clean / suspicious / malicious.
+// System One typed-decision injection checker on the mail read path
+// (DESIGN.md Email). Asks the gate two noul questions over inbound text
+// and maps the injection probability to clean / suspicious / malicious.
 //
-// Fail-open rule: a checker outage (any JevError) never blocks reads — it
+// Fail-open rule: a checker outage (any System1Error) never blocks reads — it
 // returns an "unavailable" verdict and logs, so the mail path proceeds. Only
 // the gate's own failures fall back; anything else propagates loud.
 //
 // The hard boundary is readonly Gmail scopes: the checker only scores text
 // already fetched, it never grants write authority.
 
-import { JevError, type JevClient, type JevQuestion } from "./jev.ts";
+import { System1Error, type System1Client, type System1Question } from "./system1.ts";
 import { log } from "./log.ts";
 
-export const INJECTION_QUESTIONS: Record<string, JevQuestion> = {
+export const INJECTION_QUESTIONS: Record<string, System1Question> = {
 	injection: {
 		type: "noul",
 		instructions:
@@ -54,7 +54,7 @@ export type InjectionVerdict = {
 const DEFAULT_MAX_CHARS = 8000;
 
 export async function checkInjection(
-	gate: Pick<JevClient, "decide">,
+	gate: Pick<System1Client, "decide">,
 	text: string,
 	opts?: { thresholds?: InjectionThresholds; maxChars?: number },
 ): Promise<InjectionVerdict> {
@@ -79,7 +79,7 @@ export async function checkInjection(
 	} catch (err) {
 		// Only the gate's own failures fall back — anything else is a bug
 		// and propagates, loud.
-		if (!(err instanceof JevError)) throw err;
+		if (!(err instanceof System1Error)) throw err;
 		const ms = Date.now() - started;
 		log.warn("injection check unavailable", err, { ms });
 		return { status: "unavailable", injection: null, severity: null, ms };

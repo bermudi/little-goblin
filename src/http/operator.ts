@@ -26,6 +26,7 @@ import {
 	searchKinds,
 	transcriptionDefaults,
 	transcriptionKinds,
+	ttsCloudDefaults,
 	writeConfig,
 	paths,
 	type Config,
@@ -181,6 +182,8 @@ const CONFIG_POST_TELEGRAM_KEYS = {
 	dmGapMinutes: true,
 	model: true,
 	thinking: true,
+	richReplies: true,
+	showReasoning: true,
 } as const satisfies Record<keyof ConfigPostBody["telegram"], true>;
 
 // Key shape only — every field is unknown+optional; values stay
@@ -475,6 +478,7 @@ function programItem(program: Program): OperatorProgramItem {
 		name: program.name,
 		charter: program.charter,
 		cron: program.cron,
+		maxLatenessMinutes: program.maxLatenessMinutes,
 		hasHook: program.hookHash !== null,
 		mailFilter: program.mailFilter,
 		enabled: program.enabled,
@@ -542,6 +546,7 @@ export async function handleOperatorRoute(
 				fetchKinds,
 				transcriptionKinds,
 				transcriptionDefaults,
+				ttsDefaults: ttsCloudDefaults,
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
 			};
@@ -577,7 +582,9 @@ export async function handleOperatorRoute(
 			// rejections so a failed save never poisons the next; each
 			// attempt answers for itself.
 			const attempt = configSaveQueue.then(() => saveConfig(deps, actor, req, body));
-			configSaveQueue = attempt.catch(() => {});
+			configSaveQueue = attempt.catch((err: unknown) => {
+				log.error("config save queue attempt failed", err, who);
+			});
 			return attempt;
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -909,10 +916,15 @@ export async function handleOperatorRoute(
 		if (!level.success)
 			return Response.json({ error: "bad level" }, { status: 400, headers: NO_STORE });
 		const qRaw = url.searchParams.get("q");
+		const q =
+			qRaw === null || qRaw === ""
+				? { success: true as const, data: null }
+				: z.string().max(300).safeParse(qRaw);
+		if (!q.success) return Response.json({ error: "bad q" }, { status: 400, headers: NO_STORE });
 		const body = tailLog(paths.logFile(), {
 			limit: limit.data,
 			level: level.data,
-			q: qRaw === null || qRaw === "" ? null : qRaw.slice(0, 300),
+			q: q.data,
 		});
 		return Response.json(body, { headers: NO_STORE });
 	}

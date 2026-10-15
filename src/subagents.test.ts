@@ -26,7 +26,7 @@ import { CompactionTask, Harness, type ConversationId } from "@earendil-works/pi
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { Config, SubagentsConfig } from "./config.ts";
-import type { DeliveryApi } from "./tg/delivery.ts";
+import { makeDeliverySink, type DeliveryApi } from "./tg/delivery.ts";
 import { wakeConversation, type WakeDeps } from "./wake.ts";
 import type { Desktops, DesktopRow, DesktopAction, LeaseHolder } from "./desktops.ts";
 import { DesktopError, DesktopLeaseError } from "./desktops.ts";
@@ -4926,19 +4926,6 @@ function recordingChatModel(requests: unknown[], answer: string): LanguageModel 
 	} as unknown as LanguageModel;
 }
 
-const WAKE_TEST_CONFIG = {
-	providers: {},
-	model: "unused/m",
-	tts: false,
-	favorites: [],
-	thinking: "medium",
-	operators: [1],
-	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45 },
-	http: { port: 8787 },
-	logLevel: "info",
-} as Config;
-
 describe("origin responsiveness over the real wake path", () => {
 	test("origin + sibling turns answer while a worker request is in flight; settle wake lands once", async () => {
 		let wakeDeps!: WakeDeps;
@@ -4963,9 +4950,8 @@ describe("origin responsiveness over the real wake path", () => {
 		wakeDeps = {
 			store,
 			runtime,
-			api,
-			configRef: { current: WAKE_TEST_CONFIG, ttsDown: false },
-			synthesize: async () => [],
+			delivery: (conv) => makeDeliverySink(api, conv, {}),
+			markRoll: async () => {},
 			roll: { store, runtime, gapMinutes: () => 45 },
 			bell: () => new WakeTestSink(),
 		};

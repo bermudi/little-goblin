@@ -1,3 +1,4 @@
+import { makeWakeDelivery } from "./tg/wake.ts";
 // The mail watcher's contract: new filters baseline without firing,
 // one tick's matches become one turn, the checkpoint follows fired
 // records (held on a fire that does not land), and outages notice
@@ -14,7 +15,7 @@ import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
-import { JevError } from "./jev.ts";
+import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
 import { fireMail, type SchedulerDeps } from "./scheduler.ts";
@@ -45,7 +46,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -65,7 +66,7 @@ interface Harness {
 	path: string;
 	programs: ProgramsStore;
 	/** The shared gate the firing entry point scores events through —
-	 *  assigned per test the way index.ts wires jevGate into checkMail. */
+	 *  assigned per test the way index.ts wires system1Gate into checkMail. */
 	checkMail?: Pick<{ decide: (...args: unknown[]) => Promise<unknown> }, "decide">;
 	/** The handoff record: every fireMail call, before it runs. */
 	fired: Array<{ program: number; matches: string[] }>;
@@ -134,9 +135,12 @@ function harness(): Harness {
 		programs: h.programs,
 		store,
 		runtime,
-		api,
-		configRef: { current: config, ttsDown: false },
-		synthesize: () => Promise.resolve([]),
+		...makeWakeDelivery({
+			api,
+			store,
+			configRef: { current: config, ttsDown: false },
+			synthesize: () => Promise.resolve([]),
+		}),
 		// Rolling DM wiring — a private-chat fire rolls like intake does.
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 		// Fires never take the app path — wired because WakeDeps requires it.
@@ -293,7 +297,7 @@ describe("mail watcher", () => {
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
-		// The shared gate, wired the way index.ts wires jevGate into
+		// The shared gate, wired the way index.ts wires system1Gate into
 		// firingDeps.checkMail: a scripted clean verdict first.
 		h.checkMail = {
 			decide: async () => ({
@@ -313,7 +317,7 @@ describe("mail watcher", () => {
 		h.submitted.length = 0;
 		h.checkMail = {
 			decide: async () => {
-				throw new JevError("timeout");
+				throw new System1Error("timeout");
 			},
 		};
 		h.pollImpl = async () => ({ hits: [hit("m2")], historyId: "130" });
@@ -562,4 +566,97 @@ describe("mail watcher", () => {
 		expect(h.programs.get(p.id)!.lastRun).toBe(NOW.toISOString());
 		await closeSinks(h);
 	});
+
+	// The scan's own preamble — reader(), the filter query — sits outside
+	// the per-program guard. A throw there used to reject scan() with no
+	// program context and no "mail check failed" line, every tick.
+	test("a throwing reader is an error line, not a bare unhandled rejection", async () => {
+		const h = harness();
+		mailProgram(h);
+		const captured: string[] = [];
+		setLogFile("mail-watch-reader-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const w = startMailWatcher(
+			{
+				programs: h.programs,
+				reader: () => {
+					throw new Error("gws binary missing");
+				},
+				fire: async () => {},
+				notify: async () => {},
+				now: () => NOW,
+			},
+			60_000,
+		);
+		watchers.push(w);
+		try {
+			await w.tick();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(lines.some((l) => l.msg === "mail scan failed" && l.level === "error")).toBe(true);
+		expect(h.polls).toHaveLength(0);
+	});
+
+	test("stop() joins the in-flight scan so a late fire never lands after shutdown", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100", 0);
+		let release!: () => void;
+		const parked = new Promise<void>((resolve) => (release = resolve));
+		h.pollImpl = async () => {
+			await parked;
+			return { hits: [hit("m1")], historyId: "120" };
+		};
+		const w = start(h);
+		const scan = w.tick();
+		await Bun.sleep(5);
+		let joined = false;
+		const stopped = w.stop().then(() => {
+			joined = true;
+		});
+		await Bun.sleep(5);
+		// Still parked in the Gmail call: stop() must not have resolved.
+		expect(joined).toBe(false);
+		release();
+		await stopped;
+		await scan;
+		expect(joined).toBe(true);
+		// The fire that was in flight completed inside the join.
+		expect(h.fired).toHaveLength(1);
+		await closeSinks(h);
+	});
+});
+
+test("mail watcher rejects duplicate owners and never scans through a stopped handle", async () => {
+	const h = harness();
+	let scans = 0;
+	const original = h.programs.withMailFilter;
+	h.programs.withMailFilter = () => {
+		scans++;
+		return original();
+	};
+	const w = start(h);
+	try {
+		expect(() => start(h)).toThrow("already active");
+		await w.stop();
+		const stoppedAt = scans;
+		await w.tick();
+		expect(scans).toBe(stoppedAt);
+		const next = start(h);
+		try {
+			await next.tick();
+			expect(scans).toBeGreaterThan(stoppedAt);
+			await w.stop();
+			expect(() => start(h)).toThrow("already active");
+		} finally {
+			await next.stop();
+		}
+	} finally {
+		await w.stop();
+	}
 });

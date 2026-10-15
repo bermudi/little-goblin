@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
-import { JevClient, JevError, JEV_FALLBACK_MODEL, type JevQuestion } from "./jev.ts";
+import { System1Client, System1Error, FALLBACK_MODEL, type System1Question } from "./system1.ts";
 import {
 	FRESH_BELOW,
 	isRollingChat,
@@ -28,7 +28,7 @@ afterEach(() => {
 
 interface GateCall {
 	state: string;
-	questions: Record<string, JevQuestion>;
+	questions: Record<string, System1Question>;
 }
 
 // Fake the gate at the edge like injection.test.ts: scripted answers or
@@ -36,9 +36,9 @@ interface GateCall {
 function fakeGate(
 	answersOrError: Record<string, number> | Error,
 	calls?: GateCall[],
-): Pick<JevClient, "decide"> {
+): Pick<System1Client, "decide"> {
 	return {
-		decide: async (state: string, questions: Record<string, JevQuestion>) => {
+		decide: async (state: string, questions: Record<string, System1Question>) => {
 			calls?.push({ state, questions });
 			if (answersOrError instanceof Error) throw answersOrError;
 			return { answers: { ...answersOrError }, inputTokens: 12, cost: 0.001 };
@@ -48,7 +48,7 @@ function fakeGate(
 
 function harness(opts?: {
 	gapMinutes?: number;
-	gate?: Pick<JevClient, "decide">;
+	gate?: Pick<System1Client, "decide">;
 	now?: () => Date;
 	busy?: (id: string) => boolean;
 	checkDeadlineMs?: number;
@@ -209,9 +209,9 @@ describe("routeDmMessage", () => {
 		expect(FRESH_BELOW).toBe(0.3);
 	});
 
-	test("a JevError falls back into current", async () => {
+	test("a System1Error falls back into current", async () => {
 		const { store, deps } = harness({
-			gate: fakeGate(new JevError("timeout")),
+			gate: fakeGate(new System1Error("timeout")),
 			now: anHourHence,
 		});
 		const current = store.rollDm(7, "/w");
@@ -224,7 +224,7 @@ describe("routeDmMessage", () => {
 	});
 
 	test("a hanging gate hits the deadline and falls back into current", async () => {
-		const hanging: Pick<JevClient, "decide"> = {
+		const hanging: Pick<System1Client, "decide"> = {
 			decide: () => new Promise(() => {}), // never settles
 		};
 		const { store, deps } = harness({ gate: hanging, now: anHourHence, checkDeadlineMs: 30 });
@@ -240,7 +240,7 @@ describe("routeDmMessage", () => {
 	test("passes the interactive deadline into the client as well as racing it", async () => {
 		for (const deadline of [undefined, 200]) {
 			let budget: number | undefined;
-			const gate: Pick<JevClient, "decide"> = {
+			const gate: Pick<System1Client, "decide"> = {
 				async decide(_state, _questions, options) {
 					budget = options?.timeoutMs;
 					return { answers: { follow_up: 0.9 }, inputTokens: null, cost: null };
@@ -267,12 +267,12 @@ describe("routeDmMessage", () => {
 			async fetch(request) {
 				const body = z.object({ model: z.string() }).parse(await request.json());
 				models.push(body.model);
-				return body.model === JEV_FALLBACK_MODEL
+				return body.model === FALLBACK_MODEL
 					? Response.json({ answers: { follow_up: { type: "noul", noul: 0.92 } } })
 					: new Promise<Response>(() => {});
 			},
 		});
-		const gate = new JevClient({
+		const gate = new System1Client({
 			baseUrl: `http://127.0.0.1:${server.port}`,
 			model: "primary",
 			auth: async () => "key",
@@ -286,7 +286,7 @@ describe("routeDmMessage", () => {
 			expect(result.rolled).toBe(false);
 			expect(result.decidedBy).toBe("check");
 			expect(result.probability).toBe(0.92);
-			expect(models).toEqual(["primary", JEV_FALLBACK_MODEL]);
+			expect(models).toEqual(["primary", FALLBACK_MODEL]);
 		} finally {
 			server.stop(true);
 			store.close();
@@ -304,7 +304,7 @@ describe("routeDmMessage", () => {
 		store.close();
 	});
 
-	test("a non-JevError propagates — fail loud, never swallowed", async () => {
+	test("a non-System1Error propagates — fail loud, never swallowed", async () => {
 		const { store, deps } = harness({
 			gate: fakeGate(new TypeError("bug in the gate")),
 			now: anHourHence,
@@ -316,7 +316,7 @@ describe("routeDmMessage", () => {
 
 	test("a roll that happened during the check is joined, never doubled", async () => {
 		const store = openStore(tmpdb());
-		const racingGate: Pick<JevClient, "decide"> = {
+		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// A fire rolled meanwhile — the pin now points elsewhere.
 				store.rollDm(7, "/w");
@@ -341,12 +341,12 @@ describe("routeDmMessage", () => {
 
 	test("a roll during a failing check joins the new current, not the stale one", async () => {
 		const store = openStore(tmpdb());
-		const racingGate: Pick<JevClient, "decide"> = {
+		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// A fire rolled while the check was in flight — then the
 				// check died. The pin re-read still wins.
 				store.rollDm(7, "/w");
-				throw new JevError("timeout");
+				throw new System1Error("timeout");
 			},
 		};
 		const deps: RollDeps = {
@@ -367,7 +367,7 @@ describe("routeDmMessage", () => {
 	test("a lane that went busy during the check absorbs instead of rolling", async () => {
 		const store = openStore(tmpdb());
 		let wentBusy = false;
-		const gate: Pick<JevClient, "decide"> = {
+		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// A turn started on the current conversation mid-check —
 				// rolling would strand this burst from the turn that must
@@ -395,7 +395,7 @@ describe("routeDmMessage", () => {
 	test("fresh activity during the check joins the gap instead of rolling", async () => {
 		const store = openStore(tmpdb());
 		let now = anHourHence();
-		const gate: Pick<JevClient, "decide"> = {
+		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {
 				// Another burst landed meanwhile — it resets the quiet
 				// clock, and a roll now would split two adjacent inputs.

@@ -197,6 +197,16 @@ Rulings:
   hold. **No concurrency cap** (operator, 2026-10-06): `maxRunning`
   is gone — the tool never refuses on volume; how much runs, where,
   is goblin's judgment.
+- **Watcher ownership and shutdown.** One lifecycle ticker may own a
+  delegations store object at a time; duplicate starts throw. `stopTicker`
+  fences new scans and joins existing work — the in-flight scan plus every
+  in-flight launch/send/answer/stop/read — before releasing ownership.
+  Later ticks on the old handle only join that work or do nothing; a new
+  owner may start after the stop promise settles. Shutdown depends on the
+  join: it closes the store right after `stopTicker` settles, and an op
+  running past that close would throw and strand its row's transition
+  (a live agent's row would stay `starting` and boot recovery would kill
+  the workspace as an interrupted launch).
 - **The watcher is an in-process ticker** (15 s), the scheduler's
   twin: for each `running`/`needs_input` row, `agent get`,
   serialized per target (forwarded calls are ssh round trips —
@@ -271,6 +281,26 @@ Rulings:
   `read` result, never interpolated into error prose. Done
   delegations keep their workspace so the operator can inspect it;
   `stop` on a finished one is the cleanup.
+- **The operator's session is reachable on ask; tasking there goes
+  through herdr's agent surface (2026-10-13).** When the operator
+  points goblin at a tab in `default` ("send the P2s to Devin on
+  tab 1"), `delegate` can't express it — those panes aren't
+  goblin's delegations. Reads of `default` (snapshot, `pane read`,
+  `agent list`/`get`/`read`, `worktree`) are sanctioned when he
+  asks; what they return is his context, quoted back only as far
+  as requested. Submitting work to a recognized agent there is
+  `herdr agent prompt <pane> "<text>" --wait`: herdr validates the
+  target hosts an agent, submits text plus encoded Enter as one
+  bracketed-paste-safe act, refuses a blocked agent before any
+  input, and `--wait`'s activity gate proves the turn started.
+  Identity is pinned from `agent get` JSON (kind + cwd) at send
+  time — never assumed from a remembered pane ID. Raw
+  `pane send-text`/`send-keys` into an agent pane is banned: a P2
+  handoff went line-by-line into the π review pane (`w8B:p8`)
+  instead of devin (`w8B:p1`), was submitted with a manual Enter,
+  and only the recipient's quota error contained it. Plain shell
+  panes take `pane run`. The procedure lives in the herdr skill
+  (`deploy/skills/herdr`, seeded by `ensureHomeLayout`).
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
   `bash` call — and says that it did. Which harness (2026-10-11):

@@ -205,6 +205,14 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				reply(deps, conv, "memory is not configured — see docs/memory.md");
 				return true;
 			}
+			// Sandbox lanes are memory-excluded by class (design/telegram.md
+			// → Roles and permissions), and the whole surface is operator
+			// data: status reads the bank's queue, retry/dismiss manage its
+			// blocked rows, and on would strip the lane's own fence.
+			if (conv.persona === "guest") {
+				reply(deps, conv, "memory is off for this lane by class — it is not a setting here");
+				return true;
+			}
 			if (arg === "off") {
 				apply(deps, conv, { memoryExcluded: true });
 				// Pending rows are purged; operations already submitted
@@ -303,6 +311,12 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			const mem = deps.memory && deps.configRef.current.memory ? deps.memory : null;
 			if (!mem) {
 				reply(deps, conv, "memory is not configured — see docs/memory.md");
+				return true;
+			}
+			// The bank is shared — a sandbox lane must never list or
+			// delete the operator's documents (same class rule as /memory).
+			if (conv.persona === "guest") {
+				reply(deps, conv, "memory is off for this lane by class — nothing to forget here");
 				return true;
 			}
 			if (conv.memoryExcluded) {

@@ -23,15 +23,15 @@ earns its place.
   `scripts/install.sh` is fresh-only and path-substituting: it refuses an
   existing installation, validates provisioned config/auth before enabling
   units, builds client assets, and checks the current boot rather than
-  accepting an active restart loop. That script plus first-boot scaffolding (home layout,
-  SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
-  story — no onboarding wizard, ever. Deployment reality: prod is g7 —
-this tree runs `goblin.service` plus the memory stack directly
-(lithium ran prod until 2026-10-09, then retired; its state was
-merged here). `scripts/deploy.sh` is the update path: gate
-(typecheck + tests), rebuild the app client when it moved,
-restart, verify. Git publication is separate: local deployment never
-pushes or updates the remote review baseline (docs/operations.md → Deploying).
+  accepting an active restart loop. That script plus first-boot scaffolding
+  (home layout, SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the
+  entire setup story — no onboarding wizard, ever. Deployment reality: prod
+  is g7 — this tree runs `goblin.service` plus the memory stack directly
+  (lithium ran prod until 2026-10-09, then retired; its state was merged
+  here). `scripts/deploy.sh` is the update path: gate (typecheck + tests),
+  rebuild the app client when it moved, restart, verify. Git publication is
+  separate: local deployment never pushes or updates the remote review
+  baseline (docs/operations.md → Deploying).
 - Telegram is one of two channels: long polling, topics, reactions, files,
   voice — **and Mini Apps, designed in from the start** (the process serves
   them over HTTP; see Telegram intake & delivery). The second channel is
@@ -117,24 +117,25 @@ Conversation ─────── (channel address) → durable event history
   (2026-10-08, #82): durability is not ownership — a submit still queued
   when the turn starts (the streaming client a non-streaming head must
   leave behind) stays out of that turn's view and anchor; the turn that
-  claims it reads it. Input arriving after the final model call has no
-  boundary left to steer into — it queues into an immediate successor
-  turn. One
-  exception (2026-10-03, Spin-off): a turn led by a sink that doesn't
-  stream (the background-turn bell) never absorbs a submit from a
-  streaming sink (the app client). That submit waits and leads its
-  own turn, or the client would never see the reply. The inverse
-  holds and is deliberate (2026-10-04, app.md → Streaming members): a
-  streaming turn fans its chunks out to every streaming member, so a
-  merged or steered second client watches the whole reply. A
-  submit that cannot be prepared for the model errors its own delivery
-  and is never re-queued (requeue would fail every successor turn's
-  admission conversion identically — a poison pill); its message stays
-  in history and degrades to a readable placeholder in later model
-  views, the corrupt-row precedent one step later at the conversion
-  boundary. `/stop` fences the running turn and
-  drops queued ones; messages still in the intake buffer are user input,
-  not queued turns, and flush into a fresh turn at the new epoch.
+  claims it reads it. The inverse is deliberate too (2026-10-04, app.md →
+  Streaming members): a streaming turn fans its chunks out to every
+  streaming member, so a merged or steered second client watches the
+  whole reply. Exceptions:
+  - A turn led by a sink that doesn't stream (the background-turn bell)
+    never absorbs a submit from a streaming sink (2026-10-03, Spin-off):
+    that submit waits and leads its own turn, or the client would never
+    see the reply.
+  - Input arriving after the final model call has no boundary left to
+    steer into — it queues into an immediate successor turn.
+  - A submit that cannot be prepared for the model errors its own
+    delivery and is never re-queued (requeue would fail every successor
+    turn's admission conversion identically — a poison pill); its
+    message stays in history and degrades to a readable placeholder in
+    later model views, the corrupt-row precedent one step later at the
+    conversion boundary.
+  - `/stop` fences the running turn and drops queued ones; messages
+    still in the intake buffer are user input, not queued turns, and
+    flush into a fresh turn at the new epoch.
 
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
@@ -233,18 +234,22 @@ live in its own file under `design/`. Code comments and docs cite design
 sections by name (`DESIGN.md, "Web access"`, `DESIGN.md → Proton Pass`);
 this index resolves a name to its file. A new ruling goes in its area's
 file; a change to the domain model, the authority rule, cache stability,
-or the non-goals goes here.
+or the non-goals goes here. And a superseded ruling is rewritten in
+place, not amended in place: state the surviving rule with its
+provenance anchor; narration of retired behavior belongs in git, not
+the spec.
 
 - this file — Why, Product boundary, Domain model, Conversation, Turn, The authority rule, Cache stability, Design areas, State layout, Config, Module map, Non-goals (v1 — return only on demand), Test posture — the real change
 - [`design/model.md`](design/model.md) — Model layer, Provider registry, Thinking, History, Causal view, arrival-order storage, Compaction, Capabilities, Content, Transcription
 - [`design/asr.md`](design/asr.md) — Speech recognition engines: whistle (local) default, eight kinds behind one interface, artifact auto-fetch, verbatim provider contracts
-- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (W3.0 decomposition ruling): phase list, state ownership by lifetime, recursion → driven loop, what must not change, module cut, test migration, the two text projections (#84/#111)
+- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (architecture ruling): the phase list, state ownership by lifetime, the attempt loop, what must not change, module map, the two text projections (#84/#111)
 - [`design/tools.md`](design/tools.md) — Tools (v1), Scripting (in-process tool composition, not a subagent), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
 - [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty with its own snapshot, Known limits, accepted
-- [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: Jev on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
+- [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: System One on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
+- [`design/system1.md`](design/system1.md) — System One (typed-decision models): the shared client, retry policy, wire protocol, the four-consumer table, the loopback injection-check endpoint, config surface
 - [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
 - [`design/delegation.md`](design/delegation.md) — Delegation (other harnesses, via herdr), The herdr session is its own systemd user unit, Targets: the own local session plus configured machines, One protocol, target-agnostic, Only `src/herdr.ts` knows herdr, One lifecycle owner, Harnesses are config, never guessed, Agents run full-auto; goblin never answers approvals, State is rows, Watcher writes are compare-and-set; the notice lands first, Start, The watcher is an in-process ticker, Management is the `delegate` tool, Goblin may delegate on its own judgment
-- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, System One (`system1` block + Jev gate) feeds the shared gates, Logging
+- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, Every read injection-checked and fenced, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Reads ride the shared System One gate (design/system1.md), Logging
 - [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
@@ -254,7 +259,7 @@ or the non-goals goes here.
 - [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
 
 - [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
-- [`design/setup.md`](design/setup.md) — Fresh installation, prerequisites, current-invocation startup acceptance
+- [`design/setup.md`](design/setup.md) — Product shape, Install order, Phases, Phase-dependent expectations, Startup acceptance, Installer rules, Opt-in dependencies, Verification boundary
 
 ## State layout
 
@@ -335,7 +340,7 @@ permissions), optional
 harness; `maxRuns`, per-type `worker`/`computer` model refs, `desktops`
 pool knobs — boot-frozen, `design/subagents.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
-System One gate behind it — Email + Skill reviewer). No secrets —
+System One client's own switch — `design/system1.md`). No secrets —
 those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
@@ -377,8 +382,9 @@ src/
                     their conversation)
   wake.ts           the shared wake path: system messages submit into
                     pinned conversations through the ordinary turn
-                    path — makeWakeDeps owns the routing rules (the
-                    rolling gap, the bell for app conversations)
+                    path over channel-neutral sink/marker ports
+  tg/wake.ts        makeWakeDeps wires Telegram delivery, live voice/rich
+                    settings and app bells without leaking grammy types
   spinoff.ts        the spin-off fork and where a delegation launch
                     pins its notices (launchPin — the Spin-off trigger
                     map, design/app.md → Spin-off)
@@ -411,10 +417,11 @@ src/
                     owner's mail entry point (never writes program state)
   mail.ts           the send client (operator-gated) + shared mail shapes
                     (MailHit, ThreadContext, HistoryExpiredError, MailPoller)
-  injection.ts      System One injection checker: shared Jev gate →
+  injection.ts      System One injection checker: shared System One gate →
                     clean/suspicious/malicious/unavailable verdicts, fail-open
-  jev.ts            the Jev/OpenRouter Decisions boundary (the reviewer's
-                    gate and the checker's shared client)
+  system1.ts        the System One boundary — the OpenRouter Decisions
+                    client shared by all four consumers
+                    (design/system1.md)
   runtime.ts        per-conversation queue, lane drain, checkAuthority,
                     stop/shutdown, the attempt loop — the turn's phases
                     live in turn/ (design/runtime-turn.md)
@@ -455,11 +462,11 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the twenty tools (read, write, edit, bash, speak,
-                    transcribe, vision, program, delegate, mail
+    tools/          the tools (read, write, edit, bash, speak,
+                    transcribe, vision, generate_image, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
-                    bash), send_file, memory_search, search, fetch,
-                    history_search, sandbox, script, subagent,
+                    bash), send_file, memory_search, memory_reflect, search, fetch,
+                    history_search, note, sandbox, script, subagent,
                     desktop, ui)
   http/             the HTTP doors: /t/ and /app/ serve the built
                     client (app/dist) — the Telegram mini app and the

@@ -11,6 +11,7 @@ import {
 	type MemoryDocument,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
+import { screenMemoryText } from "./memory-screen.ts";
 
 // The destination-identity vocabulary lives in hindsight.ts; this local
 // alias keeps the queue's validation reads the same as before.
@@ -56,6 +57,15 @@ export type MemoryQueueItem = Omit<z.infer<typeof rowSchema>, "payload"> & {
 };
 
 export class MemoryQueue {
+	// The one pending row whose submit is on the wire right now — process
+	// local, because one worker owns the outbox and its ticks never
+	// overlap. The worker flips a row to `submitted` only after submit()
+	// returns, so a cancel that deletes this row mid-call leaves the
+	// document retained remotely with no local row to forget it by; the
+	// cancel is deferred instead and the worker settles it once the
+	// request is answered (see cancelConversation / settleInflight).
+	private inflight: { operationId: string; cancelRequested: boolean } | null = null;
+
 	constructor(private readonly db: Database) {
 		db.run(`CREATE TABLE IF NOT EXISTS memory_outbox (
 			operation_id TEXT PRIMARY KEY,
@@ -86,7 +96,11 @@ export class MemoryQueue {
 	// content or resets a terminal operation. Caller logs only after committing.
 	enqueue(target: string, document: MemoryDocument): string {
 		targetSchema.parse(target);
-		const doc = memoryDocumentSchema.parse(document);
+		const parsed = memoryDocumentSchema.parse(document);
+		const doc = memoryDocumentSchema.parse({
+			...parsed,
+			content: screenMemoryText(parsed.content, "retain-queue"),
+		});
 		const payload = JSON.stringify(doc);
 		const existing = this.db
 			.query<{ operation_id: string; payload: string }, [string, string]>(
@@ -123,6 +137,30 @@ export class MemoryQueue {
 		return { ...fields, document: document.data };
 	}
 
+	// A row the decoder rejects (schema drift, a hand edit, torn bytes)
+	// is parked `blocked` with the decode error instead of thrown: a
+	// throw from next() aborts every drain at the same row — nothing
+	// behind it ever ships, nothing ever advances, and the only trace is
+	// a tick error per interval. Blocked rows surface in /memory status
+	// and answer to retry/dismiss like any other; addressed by rowid
+	// because the row's own columns are what failed validation.
+	private quarantine(raw: unknown, err: unknown): void {
+		const rowid = (raw as { rowid?: unknown }).rowid;
+		const message = err instanceof Error ? err.message : String(err);
+		const change =
+			typeof rowid === "number"
+				? this.db.run(
+						`UPDATE memory_outbox SET state = 'blocked', error = ?
+						 WHERE rowid = ? AND state IN ('pending', 'submitted')`,
+						[`undecodable row: ${message}`.slice(0, 500), rowid],
+					)
+				: null;
+		log.error("memory queue row undecodable — quarantined as blocked", err, {
+			rowid,
+			parked: change === null ? 0 : Number(change.changes),
+		});
+	}
+
 	// Due pending submissions outrank polling already-acknowledged
 	// operations: a submitted row's poll is bookkeeping, while a due
 	// pending row is unsent work. Ordering by rowid alone let an early
@@ -131,13 +169,64 @@ export class MemoryQueue {
 	// so submitted rows poll FIFO among themselves.
 	next(target: string, now: number): MemoryQueueItem | null {
 		targetSchema.parse(target);
-		const raw = this.db
-			.query(
-				`SELECT * FROM memory_outbox WHERE target = ? AND state IN ('pending', 'submitted')
+		const query = this.db.query(
+			`SELECT rowid, * FROM memory_outbox WHERE target = ? AND state IN ('pending', 'submitted')
 			 AND next_attempt <= ? ORDER BY CASE WHEN state = 'pending' THEN 0 ELSE 1 END, rowid LIMIT 1`,
-			)
-			.get(target, now);
-		return raw === null ? null : this.decode(raw);
+		);
+		for (;;) {
+			const raw = query.get(target, now);
+			if (raw === null) return null;
+			try {
+				return this.decode(raw);
+			} catch (err) {
+				// Quarantine moves the row out of the due set; if it somehow
+				// did not (a concurrent state change), the next pick is the
+				// same row again — fail loud rather than spin.
+				this.quarantine(raw, err);
+				const again = query.get(target, now) as { rowid?: unknown } | null;
+				if (again !== null && again.rowid === (raw as { rowid?: unknown }).rowid) throw err;
+			}
+		}
+	}
+
+	// Worker-only brackets around the submit HTTP call. settleInflight
+	// reports whether a cancel arrived while the request was on the wire
+	// — the worker finishes that cancel if the row is still pending, and
+	// leaves an accepted row tracked through completion like any other
+	// submitted operation.
+	beginInflight(operationId: string): void {
+		if (this.inflight !== null) {
+			throw new Error(`memory queue submit overlap: ${this.inflight.operationId} still in flight`);
+		}
+		this.inflight = { operationId, cancelRequested: false };
+	}
+
+	settleInflight(operationId: string): { cancelRequested: boolean } {
+		const current = this.inflight;
+		if (current === null || current.operationId !== operationId) {
+			throw new Error(`memory queue settle without a matching in-flight operation ${operationId}`);
+		}
+		this.inflight = null;
+		return { cancelRequested: current.cancelRequested };
+	}
+
+	// The deferred half of cancelConversation: the row's submit settled
+	// without an acceptance (retryable failure, or the request was
+	// aborted), so it is still the unsent pending work the cancel
+	// promised to purge. CAS on state + attempts, like update().
+	dropCancelled(item: MemoryQueueItem): boolean {
+		const change = this.db.run(
+			`DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending' AND attempts = ?`,
+			[item.operation_id, item.attempts],
+		);
+		if (change.changes === 1) {
+			log.info("memory retention cancelled after in-flight submit settled unsent", {
+				operation: item.operation_id,
+				document: item.document_id,
+				conversation: item.document.conversationId,
+			});
+		}
+		return change.changes === 1;
 	}
 
 	get(operationId: string): MemoryQueueItem | null {
@@ -250,33 +339,47 @@ export class MemoryQueue {
 
 	// Excluding a topic purges its pending retention — "/memory off"
 	// promises no new submissions. Submitted operations were already
-	// accepted remotely and must remain tracked through completion.
-	// Finished, blocked, and other topics' rows are untouched.
+	// accepted remotely and must remain tracked through completion —
+	// including the one whose submit is on the wire this instant: its
+	// row still reads pending, so it is skipped here and settled by the
+	// worker (accepted → tracked like any submitted row; unsent →
+	// dropped then). Finished, blocked, and other topics' rows are
+	// untouched; an undecodable row is quarantined, never a throw that
+	// leaves the exclusion applied with the purge half done.
 	cancelConversation(conversationId: string): number {
 		const rows = this.db
-			.query<{ operation_id: string; payload: string }, []>(
-				`SELECT operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
+			.query<{ rowid: number; operation_id: string; payload: string }, []>(
+				`SELECT rowid, operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
 			)
 			.all();
 		let removed = 0;
 		for (const row of rows) {
-			let payload: unknown;
+			let doc: MemoryDocument;
 			try {
-				payload = JSON.parse(row.payload);
-			} catch {
-				throw new Error(`Invalid memory queue payload for operation ${row.operation_id}`);
+				const payload: unknown = JSON.parse(row.payload);
+				const parsed = memoryDocumentSchema.safeParse(payload);
+				if (!parsed.success) {
+					throw new Error(`Invalid memory document for operation ${row.operation_id}`);
+				}
+				doc = parsed.data;
+			} catch (err) {
+				this.quarantine(row, err);
+				continue;
 			}
-			const doc = memoryDocumentSchema.safeParse(payload);
-			if (!doc.success) {
-				throw new Error(`Invalid memory document for operation ${row.operation_id}`);
+			if (doc.conversationId !== conversationId) continue;
+			if (this.inflight !== null && this.inflight.operationId === row.operation_id) {
+				this.inflight.cancelRequested = true;
+				log.info("memory retention cancel deferred — submit in flight", {
+					operation: row.operation_id,
+					conversation: conversationId,
+				});
+				continue;
 			}
-			if (doc.data.conversationId === conversationId) {
-				removed += Number(
-					this.db.run("DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending'", [
-						row.operation_id,
-					]).changes,
-				);
-			}
+			removed += Number(
+				this.db.run("DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending'", [
+					row.operation_id,
+				]).changes,
+			);
 		}
 		return removed;
 	}
@@ -453,9 +556,18 @@ export class MemoryQueueWorker {
 		let delayMs = 5_000;
 		let error: string | null = null;
 		let transportFailure = false;
+		// A cancel that arrives while the submit is on the wire is deferred
+		// by the queue; once the request settles without an acceptance the
+		// row is still the unsent work that cancel promised to purge.
+		let cancelRequested = false;
 		try {
 			if (item.state === "pending") {
-				await this.client.submit(item.document, item.operation_id, signal);
+				this.queue.beginInflight(item.operation_id);
+				try {
+					await this.client.submit(item.document, item.operation_id, signal);
+				} finally {
+					cancelRequested = this.queue.settleInflight(item.operation_id).cancelRequested;
+				}
 				state = "submitted";
 			} else {
 				const operation = await this.client.operation(item.operation_id, signal);
@@ -475,11 +587,28 @@ export class MemoryQueueWorker {
 			}
 		} catch (err) {
 			if (!(err instanceof HindsightError)) throw err; // SQLite/programming failures are not HTTP outages.
-			if (err.kind === "cancelled") return false; // Keep the durable row for restart.
+			if (err.kind === "cancelled") {
+				// Keep the durable row for restart — unless its topic was
+				// excluded meanwhile: an aborted submit is unsent work, and a
+				// restart must not ship it behind the exclusion.
+				if (cancelRequested) this.queue.dropCancelled(item);
+				return false;
+			}
 			state = err.retryable ? item.state : "blocked";
 			delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(item.attempts, 9));
 			error = err.message; // HindsightError is deliberately payload-free.
 			transportFailure = err.retryable;
+		}
+		if (cancelRequested && state === "pending" && this.queue.dropCancelled(item)) {
+			// The deferred cancel, finished: the submit failed retryably, so
+			// the row would otherwise come due again behind "/memory off".
+			if (transportFailure)
+				this.observe?.({
+					ok: false,
+					transport: true,
+					conversationId: item.document.conversationId,
+				});
+			return true;
 		}
 		// A late shutdown must not discard an already acknowledged operation.
 		this.queue.update(item, state, this.clock() + delayMs, error);

@@ -1,8 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
+import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
+import { logfareSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
@@ -309,15 +311,19 @@ export function pickVoice(
 	);
 }
 
-export interface EdgeOptions {
+export interface SynthOptions {
+	// Provider voice id/name; "" asks for the provider's default voice.
 	voice: string;
+	// BCP-47 tag of the chosen voice (edge SSML); "" when none is derivable.
 	lang: string;
+	// Edge prosody rate — other kinds leave it unset.
 	rate?: string;
+	// The container the synthesizer returns; the remux must match it.
 	outputFormat: string;
 }
 
-export type EdgeSynthesizer = (text: string, options: EdgeOptions) => Promise<Uint8Array>;
-export type AudioRemuxer = (webm: Uint8Array) => Promise<Uint8Array>;
+export type ChunkSynthesizer = (text: string, options: SynthOptions) => Promise<Uint8Array>;
+export type AudioRemuxer = (audio: Uint8Array) => Promise<Uint8Array>;
 
 function splitOversized(text: string, limit: number): string[] {
 	const out: string[] = [];
@@ -430,16 +436,20 @@ function asBuffer(data: RawData): Buffer {
 	return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
-const edgeSynthesize: EdgeSynthesizer = (text, options) =>
+const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 	new Promise<Uint8Array>((resolve, reject) => {
+		// The legacy speech.platform.bing.com synthesis socket answers
+		// 403; Edge itself now dials api.msedgeservices.com, which still
+		// accepts the same client token — renamed — plus the v1 Sec-MS-GEC
+		// pair (upstream fix: rany2/edge-tts#491).
 		const query = new URLSearchParams({
-			TrustedClientToken: EDGE_TOKEN,
+			"Ocp-Apim-Subscription-Key": EDGE_TOKEN,
 			ConnectionId: connectionId(),
 			"Sec-MS-GEC": edgeAuthToken(),
 			"Sec-MS-GEC-Version": `1-${EDGE_VERSION}`,
 		});
 		const socket = new WebSocket(
-			`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?${query}`,
+			`wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?${query}`,
 			{
 				handshakeTimeout: 10_000,
 				headers: {
@@ -545,91 +555,130 @@ const REMUX_TIMEOUT_MS = 30_000;
 // The cap only guards a wedged ffmpeg flooding stdout, not real speech.
 const REMUX_MAX_OUTPUT = 32 * 1024 * 1024;
 
-const remuxOgg: AudioRemuxer = async (webm) => {
-	let proc: Bun.ReadableSubprocess;
-	try {
-		proc = spawnProc(
-			[
-				"ffmpeg",
-				"-hide_banner",
-				"-loglevel",
-				"error",
-				"-f",
-				"webm",
-				"-i",
-				"pipe:0",
-				"-vn",
-				"-c:a",
-				"copy",
-				"-f",
-				"ogg",
-				"pipe:1",
-			],
-			undefined,
-			new Blob([webm]),
-		);
-	} catch (err) {
-		throw new Error(`ffmpeg ogg remux failed to spawn — ${(err as Error).message}`);
+// input → ogg/opus through one bounded ffmpeg pipe. The input container
+// is forced — webm probing from a pipe is unreliable. codecArgs decide
+// copy vs re-encode: edge already speaks opus so it stream-copies;
+// mp3 (openrouter) must re-encode to opus for a real voice note.
+function oggRemuxer(inputFormat: string, codecArgs: string[]): AudioRemuxer {
+	return async (audio) => {
+		let proc: Bun.ReadableSubprocess;
+		try {
+			proc = spawnProc(
+				[
+					"ffmpeg",
+					"-hide_banner",
+					"-loglevel",
+					"error",
+					"-f",
+					inputFormat,
+					"-i",
+					"pipe:0",
+					"-vn",
+					...codecArgs,
+					"-f",
+					"ogg",
+					"pipe:1",
+				],
+				undefined,
+				new Blob([audio]),
+			);
+		} catch (err) {
+			throw new Error(`ffmpeg ogg remux failed to spawn — ${(err as Error).message}`);
+		}
+		// Bounded like every other subprocess: a SIGTERM-ignoring ffmpeg is
+		// escalated to group SIGKILL instead of stalling the voice lane and
+		// shutdown forever waiting on proc.exited.
+		const r = await boundedRunBinary(proc, {
+			timeoutMs: REMUX_TIMEOUT_MS,
+			maxOutput: REMUX_MAX_OUTPUT,
+		});
+		if (r.timedOut) {
+			throw new Error(`ffmpeg ogg remux timed out after ${REMUX_TIMEOUT_MS}ms`);
+		}
+		if (r.truncated) {
+			throw new Error("ffmpeg ogg remux produced oversized or cut-off output");
+		}
+		if (r.exitCode !== 0) {
+			throw new Error(
+				`ffmpeg ogg remux exited ${r.exitCode ?? "unreaped"}: ${r.stderr.trim().slice(0, 500)}`,
+			);
+		}
+		const out = r.stdout;
+		if (out.byteLength < 4 || new TextDecoder().decode(out.subarray(0, 4)) !== "OggS") {
+			throw new Error("ffmpeg ogg remux returned invalid output");
+		}
+		return out;
+	};
+}
+
+// Edge's webm/opus stream-copies; the cloud kinds' mp3 re-encodes to opus.
+const remuxWebmOgg = oggRemuxer("webm", ["-c:a", "copy"]);
+const remuxMp3Ogg = oggRemuxer("mp3", ["-ac", "1", "-b:a", "48k", "-c:a", "libopus"]);
+
+// Injectable seams — tests fake the synthesizer/remux per chunk and the
+// fetch behind the cloud kinds; production fills the defaults.
+export interface SpeechDeps {
+	synthesize?: ChunkSynthesizer;
+	remux?: AudioRemuxer;
+	// Cloud kinds resolve their key lazily at the point of use, like
+	// every other provider — the resolved key never leaves the engine.
+	auth?: AuthStore;
+	fetchFn?: typeof fetch;
+	chunkLimit?: number;
+}
+
+function defaultSynthesizer(config: TtsConfig, deps: SpeechDeps): ChunkSynthesizer {
+	switch (config.kind) {
+		case "edge":
+			return edgeSynthesize;
+		case "openrouter": {
+			if (deps.auth === undefined) throw new Error("openrouter tts needs an auth store");
+			return openrouterSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
+		case "logfare": {
+			if (deps.auth === undefined) throw new Error("logfare tts needs an auth store");
+			return logfareSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
 	}
-	// Bounded like every other subprocess: a SIGTERM-ignoring ffmpeg is
-	// escalated to group SIGKILL instead of stalling the voice lane and
-	// shutdown forever waiting on proc.exited.
-	const r = await boundedRunBinary(proc, {
-		timeoutMs: REMUX_TIMEOUT_MS,
-		maxOutput: REMUX_MAX_OUTPUT,
-	});
-	if (r.timedOut) {
-		throw new Error(`ffmpeg ogg remux timed out after ${REMUX_TIMEOUT_MS}ms`);
-	}
-	if (r.truncated) {
-		throw new Error("ffmpeg ogg remux produced oversized or cut-off output");
-	}
-	if (r.exitCode !== 0) {
-		throw new Error(
-			`ffmpeg ogg remux exited ${r.exitCode ?? "unreaped"}: ${r.stderr.trim().slice(0, 500)}`,
-		);
-	}
-	const out = r.stdout;
-	if (out.byteLength < 4 || new TextDecoder().decode(out.subarray(0, 4)) !== "OggS") {
-		throw new Error("ffmpeg ogg remux returned invalid output");
-	}
-	return out;
-};
+}
 
 export async function synthesizeSpeech(
 	text: string,
 	config: TtsConfig,
-	synthesize: EdgeSynthesizer = edgeSynthesize,
-	chunkLimit = CHUNK_LIMIT,
-	remux: AudioRemuxer = remuxOgg,
+	deps: SpeechDeps = {},
 ): Promise<Uint8Array[]> {
-	const chunks = chunkSpeech(text, chunkLimit);
+	const chunks = chunkSpeech(text, deps.chunkLimit ?? CHUNK_LIMIT);
 	if (chunks.length === 0) throw new Error("speech input is empty");
+	const synthesize = deps.synthesize ?? defaultSynthesizer(config, deps);
+	const remux = deps.remux ?? (config.kind === "edge" ? remuxWebmOgg : remuxMp3Ogg);
 	// One sniff per reply, applied to every chunk — replies are
-	// monolingual in practice, and a per-chunk flip would stutter.
-	const voice = pickVoice(text, config.voice, config.voices);
-	const lang = voice.split("-").slice(0, 2).join("-");
+	// monolingual in practice, and a per-chunk flip would stutter. Edge
+	// only: cloud voice ids carry no language to cast on.
+	const voice =
+		config.kind === "edge" ? pickVoice(text, config.voice, config.voices) : (config.voice ?? "");
+	const options = {
+		voice,
+		lang: config.kind === "edge" ? voice.split("-").slice(0, 2).join("-") : "",
+		...(config.kind === "edge" && config.rate !== undefined ? { rate: config.rate } : {}),
+		outputFormat: config.kind === "edge" ? OUTPUT_FORMAT : "mp3",
+	};
 	const audio: Uint8Array[] = [];
 	log.info("speech synthesis started", {
 		provider: config.kind,
+		...(config.kind !== "edge" ? { model: config.model } : {}),
 		voice,
-		...(voice !== config.voice ? { defaultVoice: config.voice } : {}),
+		...(config.kind === "edge" && voice !== config.voice ? { defaultVoice: config.voice } : {}),
 		chars: text.length,
 		chunks: chunks.length,
 	});
 	try {
 		for (const chunk of chunks) {
-			const webm = await synthesize(chunk, {
-				voice,
-				lang,
-				...(config.rate ? { rate: config.rate } : {}),
-				outputFormat: OUTPUT_FORMAT,
-			});
-			audio.push(await remux(webm));
+			audio.push(await remux(await synthesize(chunk, options)));
 		}
 	} catch (err) {
 		log.warn("speech synthesis failed", err, {
 			provider: config.kind,
+			...(config.kind !== "edge" ? { model: config.model } : {}),
 			voice,
 			completedChunks: audio.length,
 		});

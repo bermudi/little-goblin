@@ -4,7 +4,6 @@
 // needs it.
 
 import type { ToolSet } from "ai";
-import type { HindsightClient } from "../../hindsight.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 import { programTool, type ProgramToolDeps } from "./program.ts";
 import type { SpeechFile } from "../transcribe.ts";
@@ -12,6 +11,7 @@ import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
 import { historySearchTool, type HistorySearchDeps } from "./history.ts";
+import { imageTool, type ImageToolDeps } from "./image.ts";
 import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
 import { noteTool, type NoteToolDeps } from "./note.ts";
@@ -26,6 +26,9 @@ import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
+import { memoryReflectTool } from "./memory-reflect.ts";
+import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
+import type { MemorySearchDeps } from "./memory.ts";
 import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";
 
@@ -44,12 +47,12 @@ export interface FileToolDeps {
 	deliver(file: OutgoingFile): Promise<void>;
 }
 
-export interface MemoryToolDeps {
-	client: HindsightClient;
-	maxTokens: number;
-	budget: "low" | "mid" | "high";
-	isExcluded: () => boolean;
-	noteRecall: (ok: boolean) => void;
+export interface MemoryToolDeps extends MemorySearchDeps {
+	reflection?: {
+		maxTokens: number;
+		budget: "low" | "mid" | "high";
+		timeoutMs: number;
+	};
 }
 
 export interface TranscribeToolDeps {
@@ -59,6 +62,7 @@ export interface TranscribeToolDeps {
 }
 
 export type { VisionToolDeps };
+export type { ImageToolDeps };
 
 export type { DelegateToolDeps };
 export type { HistorySearchDeps };
@@ -89,6 +93,7 @@ export interface MakeToolsOptions {
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
 	vision?: VisionToolDeps | undefined;
+	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
 	// The subagent pool's own gate: mounted only while the subagents
 	// block exists and the owner was built — worker/computer kind
@@ -114,6 +119,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		history,
 		note,
 		vision,
+		image,
 		sandbox,
 		subagent,
 		desktop,
@@ -135,6 +141,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// transcribe/search. The vision model never has to be the
 		// conversation's model: read_file's image note points here.
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
+		// generate_image rides its config block — same per-turn gate as
+		// vision: deps arrive only while `image` exists in live config.
+		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.
@@ -144,7 +153,20 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// in this dep tree (reads ride the goblin-mail wrapper via bash).
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
-		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
+		...(memory
+			? {
+					memory_search: memorySearchTool(memory),
+					memory_reflect: memoryReflectTool({
+						client: memory.client,
+						isExcluded: memory.isExcluded,
+						...(memory.reflection ?? {
+							maxTokens: MEMORY_DEFAULTS.reflectMaxTokens,
+							budget: MEMORY_DEFAULTS.reflectBudget,
+							timeoutMs: MEMORY_DEFAULTS.reflectTimeoutMs,
+						}),
+					}),
+				}
+			: {}),
 		// Fetch is always in the set (local extraction needs no config);
 		// search rides its config block. This runs per turn against
 		// configRef, so a mini-app save — the one writer that swaps the

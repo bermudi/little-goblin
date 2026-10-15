@@ -177,8 +177,13 @@ Publishing to GitHub is a separate, explicitly approved action. This keeps
 coderabbit review --base origin/main
 ```
 
+Each deploy annotates `goblin.log` itself — `deploy restarting goblin`
+just before the restart, `deploy restart accepted — goblin live at
+deployed rev` once startup acceptance passes — so a deploy-initiated
+restart is distinguishable from a spontaneous one in the operational log.
+
 It refuses a dirty tree, runs the gate (`bun run typecheck`; the full
-suite gates merges, not deploys),
+suite gates merges via `.github/workflows/ci.yml`, not deploys),
 then refreshes what the gate can't cover: `bun install --frozen-lockfile`
 when the dependency manifests moved and `bun run app:build` when `app/`
 or the manifests moved — the bundle inlines dependency code, so a React
@@ -190,8 +195,13 @@ refreshes unconditionally). A second marker,
 removed only after the restart verifies — a leftover means the last
 deploy died mid-refresh, so the next run reinstalls dependencies and
 rebuilds the client regardless of the source diff. It then restarts
-the unit, verifies it came
-back, scans the fresh journal for error lines, and prints the old→new
+the unit and gates on 75 s
+startup acceptance (`scripts/check-startup.ts --watch`, the installer's
+grammar): both lifecycle events in the new invocation's journal, `/app/`
+HTML and its local assets served on loopback, and no crash-restart
+within the budget — a bare is-active poll closes before slow boot
+failures (e.g. a timed-out provider handshake) show. It then scans the
+fresh journal for error lines, and prints the old→new
 hashes plus a one-line rollback (`git reset --hard <old>`, then
 `bun install` and `bun run app:build` — dist and node_modules are
 gitignored, so the old revision needs its own deps and client — then

@@ -1,3 +1,5 @@
+import { log } from "./log.ts";
+
 export type ProcessGroupMode = "new" | "inherit";
 
 // Bounded subprocess execution. spawnProc only fixes the stdio layout and
@@ -216,13 +218,17 @@ async function runBounded<S>(
 			drainCut = true;
 			for (const r of readers) {
 				try {
-					void r.cancel().catch(() => {});
-				} catch {
-					// released mid-iteration — nothing to cancel
+					void r.cancel().catch((err: unknown) => {
+						log.warn("process pipe cancel failed", err, {});
+					});
+				} catch (err) {
+					log.debug("process pipe cancel failed — reader may be released", { error: String(err) });
 				}
 			}
 		})
-		.catch(() => {});
+		.catch((err: unknown) => {
+			log.warn("process pipe drain failed", err, {});
+		});
 
 	// The collectors' truncate callback is the cap witness — a
 	// post-exit drain cutoff never reaches it.

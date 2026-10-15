@@ -129,7 +129,6 @@ export function makeBellSink(
 						"sendMessage (spin-off ping)",
 						deps.timeoutMs ?? API_CALL_TIMEOUT_MS,
 					);
-					delivered = true;
 					deps.pings.record(chat, sent.message_id, conv.id);
 					const dm = deps.store.currentDm(chat);
 					if (dm === null) {
@@ -149,6 +148,7 @@ export function makeBellSink(
 							},
 						]);
 					}
+					delivered = true;
 					log.info("spin-off ping", {
 						conversation: conv.id,
 						chat,

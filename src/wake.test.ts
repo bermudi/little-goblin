@@ -1,3 +1,4 @@
+import { makeWakeDelivery } from "./tg/wake.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +32,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -65,9 +66,12 @@ function harness(gapMinutes: number) {
 	const deps: WakeDeps = {
 		store,
 		runtime,
-		api,
-		configRef: { current: config, ttsDown: false },
-		synthesize: async () => [],
+		...makeWakeDelivery({
+			api,
+			store,
+			configRef: { current: config, ttsDown: false },
+			synthesize: async () => [],
+		}),
 		roll,
 		bell: () => {
 			sinks.push(nullSink);
@@ -99,9 +103,12 @@ test("wake after runtime close neither records history nor reports delivery", as
 		{
 			store,
 			runtime,
-			api,
-			configRef: { current: config, ttsDown: false },
-			synthesize: async () => [],
+			...makeWakeDelivery({
+				api,
+				store,
+				configRef: { current: config, ttsDown: false },
+				synthesize: async () => [],
+			}),
 			// A topic address never consults the roller — wired because the
 			// type requires it.
 			roll: { store, runtime, gapMinutes: () => 45 },

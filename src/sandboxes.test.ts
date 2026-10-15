@@ -77,6 +77,9 @@ function fakeEngine(opts?: {
 		// Canned exec results — the output-cap restart tests.
 		execResult: undefined as BoundedProc | undefined,
 		execBytesResult: undefined as BoundedProcBytes | undefined,
+		// Awaited before an rm is applied — the race tests park the
+		// sweep here to inject ordering.
+		onRm: undefined as undefined | ((name: string) => Promise<void>),
 	};
 
 	const runner = async (args: string[]) => {
@@ -163,6 +166,7 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "rm") {
+			if (flags.onRm !== undefined) await flags.onRm(args.at(-1)!);
 			if (flags.failRm) {
 				return { code: 1, stdout: "", stderr: "Error: rm wedged on a locked layer" };
 			}
@@ -546,6 +550,96 @@ describe("sandboxes lifecycle", () => {
 			"podman pull docker.io/library/debian:stable-slim",
 		);
 		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+	});
+
+	test("reset validates the target image before destroying — a bad ref leaves the sandbox intact", async () => {
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine);
+		const conv = "dm:12";
+		await sandboxes.exec(conv, "true", execOpts);
+		const name = containerNameFor(conv, PREFIX);
+		const callsBefore = engine.calls.length;
+		await expect(sandboxes.reset(conv, "docker.io/library/ghost:latest")).rejects.toThrow(
+			"podman pull docker.io/library/ghost:latest",
+		);
+		// The old sandbox is untouched — no rm, no recreate, the row
+		// still points at the surviving container.
+		expect(engine.containers.has(name)).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+		const after = engine.calls.slice(callsBefore);
+		expect(after.some((a) => a[0] === "rm")).toBe(false);
+		expect(after.some((a) => a[0] === "run")).toBe(false);
+	});
+
+	test("a foreign sweep re-reads inside the row's lane — a fresh touch survives the reap", async () => {
+		// Two stale rows: whichever the snapshot processes first parks
+		// on its rm while the other's owner "returns" (touch). The
+		// recheck inside the row's lane must see the fresh timestamp
+		// and skip — under the old snapshot-only reap it was destroyed.
+		const convX = "dm:race-x";
+		const convY = "dm:race-y";
+		const nameX = containerNameFor(convX, PREFIX);
+		const nameY = containerNameFor(convY, PREFIX);
+		const engine = fakeEngine({ containers: [{ name: nameX }, { name: nameY }] });
+		const { sandboxes, store } = rig(engine, { idleHours: 1 });
+		const old = Date.now() - 2 * 3_600_000;
+		for (const [c, n] of [
+			[convX, nameX],
+			[convY, nameY],
+		] as const) {
+			store.put({
+				conversationId: c,
+				container: n,
+				image: IMAGE,
+				network: false,
+				createdAt: old,
+				lastUsedAt: old,
+			});
+		}
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = () => r();
+		});
+		engine.flags.onRm = () => gate;
+		const pending = sandboxes.exec("dm:active", "true", execOpts);
+		// Wait for the sweep to reach its first rm — that name is the
+		// snapshot's first victim; the other row is the one we refresh.
+		for (let i = 0; i < 200 && !engine.calls.some((a) => a[0] === "rm"); i++) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		const firstName = engine.calls.find((a) => a[0] === "rm")!.at(-1)!;
+		const returning = firstName === nameX ? convY : convX;
+		const returningName = firstName === nameX ? nameY : nameX;
+		store.touch(returning, Date.now());
+		release();
+		await pending;
+		expect(engine.containers.has(firstName)).toBe(false);
+		expect(engine.containers.has(returningName)).toBe(true);
+		expect(store.get(returning)).not.toBeNull();
+	});
+
+	test("a failed reap keeps the row — the next call's sweep retries", async () => {
+		const staleConv = "dm:flaky";
+		const staleName = containerNameFor(staleConv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name: staleName }] });
+		const { sandboxes, store } = rig(engine, { idleHours: 1 });
+		const old = Date.now() - 2 * 3_600_000;
+		store.put({
+			conversationId: staleConv,
+			container: staleName,
+			image: IMAGE,
+			network: false,
+			createdAt: old,
+			lastUsedAt: old,
+		});
+		engine.flags.failRm = true;
+		await sandboxes.exec("dm:active", "true", execOpts);
+		expect(engine.containers.has(staleName)).toBe(true);
+		expect(store.get(staleConv)).not.toBeNull();
+		engine.flags.failRm = false;
+		await sandboxes.exec("dm:active", "true", execOpts);
+		expect(engine.containers.has(staleName)).toBe(false);
+		expect(store.get(staleConv)).toBeNull();
 	});
 });
 

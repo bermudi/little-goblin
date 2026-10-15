@@ -112,9 +112,8 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 			try {
 				updatedAt = statSync(skillDir).mtime.toISOString();
 			} catch (e2) {
-				// Dir vanished mid-walk — skip it.
-				if ((e2 as NodeJS.ErrnoException).code === "ENOENT") continue;
-				throw e2;
+				// Dir vanished mid-walk — list it without a timestamp.
+				if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
 			}
 		}
 		items.push({ name: entry.name, files, sizeBytes, updatedAt });

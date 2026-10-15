@@ -4,7 +4,7 @@
 // only once complete), complete input renders all-or-nothing — a bad
 // payload falls back to the generic tool row, never a blank.
 
-import type { DynamicToolUIPart, ToolUIPart } from "ai";
+import type { DynamicToolUIPart, ToolUIPart, UIMessage } from "ai";
 import {
 	normalizeUiInput,
 	uiBlockSchema,
@@ -59,8 +59,12 @@ export function UiPart({
 	onAction,
 	busy,
 	streaming,
+	messages,
 	...note
-}: { part: ToolUIPart | DynamicToolUIPart } & UiActionProps) {
+}: {
+	part: ToolUIPart | DynamicToolUIPart;
+	messages?: readonly UIMessage[] | undefined;
+} & UiActionProps) {
 	switch (part.state) {
 		case "input-streaming":
 			return <StreamingSurface input={part.input} {...note} />;
@@ -74,6 +78,7 @@ export function UiPart({
 					onAction={onAction}
 					busy={busy}
 					streaming={streaming}
+					messages={messages}
 					{...note}
 				/>
 			);

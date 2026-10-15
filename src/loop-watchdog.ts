@@ -3,10 +3,10 @@
 // question exists for what a hash cannot see — calls that all differ
 // but stop producing anything new.
 
-import type { JevQuestion } from "./jev.ts";
+import type { System1Question } from "./system1.ts";
 import type { ToolCallDigest } from "./reviewer.ts";
 
-export const LOOP_QUESTIONS: Record<string, JevQuestion> = {
+export const LOOP_QUESTIONS: Record<string, System1Question> = {
 	stuck: {
 		type: "noul",
 		instructions:

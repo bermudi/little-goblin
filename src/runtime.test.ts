@@ -15,7 +15,7 @@ import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
@@ -387,6 +387,9 @@ describe("provider-filter retry", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
+			// The probe step produced output before the second filter block.
+			modelCalls: 1,
+			transient: false,
 		});
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
@@ -1575,7 +1578,12 @@ describe("context overflow recovery", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		expect(await sink.done).toEqual({ kind: "error", message: "Authentication Failed" });
+		expect(await sink.done).toEqual({
+			kind: "error",
+			message: "Authentication Failed",
+			modelCalls: 0,
+			transient: false,
+		});
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -1676,6 +1684,8 @@ describe("context overflow recovery", () => {
 		// crash may not strand a claimed-but-untracked submit — its stream
 		// would hang forever, shutdown included.
 		expect(joinerSettled).toBe(true);
+		// Unstamped: the crash died in admission, before the attempt's try —
+		// drain's last-ditch settlement cannot know modelCalls/transient.
 		expect(await joiner.done).toEqual({ kind: "error", message: "Synthetic SQLite read failure" });
 		await runtime.shutdown();
 		expect(runtime.busy(conv.id)).toBe(false);
@@ -3408,7 +3418,7 @@ describe("loop landings", () => {
 		// calls the turn's own digest ring is scored "stuck". ≥0.7 warns;
 		// a second consecutive ≥0.7 cuts; a pass resets. Fail-open.
 		function decideScript(scores: (number | Error)[]): {
-			decide: JevClient["decide"];
+			decide: System1Client["decide"];
 			states: { totalToolCalls: number; recentCalls: { result: string }[] }[];
 			// A check in flight survives onDone (the verdict lands after the
 			// turn's last request) — tests that assert on calls must await it.
@@ -3417,7 +3427,7 @@ describe("loop landings", () => {
 			const states: { totalToolCalls: number; recentCalls: { result: string }[] }[] = [];
 			let i = 0;
 			let pending = 0;
-			const decide: JevClient["decide"] = async (state, questions) => {
+			const decide: System1Client["decide"] = async (state, questions) => {
 				pending++;
 				try {
 					// Settle inside the next tool's execution so the verdict is

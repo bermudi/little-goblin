@@ -124,6 +124,18 @@ export function openTelegramInbox(db: Database): {
 	// claims the identity; genuinely conflicting identities stay with
 	// record()'s checks.
 	admittedDestination(updateId: number, chatId: number, messageId: number): string | null;
+	// A message's pending inbox row — the edited_message door: while the
+	// burst still coalesces the edit can amend it in place. Committed or
+	// absent rows return null (the turn already saw the original text,
+	// or the message was never journaled — edits never re-enter history).
+	pendingByMessage(
+		chatId: number,
+		messageId: number,
+	): { updateId: number; laneKey: string; mediaUniqueId: string | null } | null;
+	// Rewrites a pending row's sender text — payload_json is replay
+	// input, so a crash between amend and flush still produces the
+	// edited burst. False when the row is gone or already committed.
+	amendPendingText(updateId: number, text: string): boolean;
 	pending(): InboxEntry[];
 	pendingIds(updateIds: readonly number[], laneKey: string): number[];
 	archivePendingBefore(laneKey: string, beforeUpdateId: number, targetId: string): number;
@@ -183,6 +195,9 @@ export function openTelegramInbox(db: Database): {
 		FROM tg_inbox WHERE chat_id = ? AND message_id = ?`);
 	const commit = db.query(`UPDATE tg_inbox SET committed_at = ?, payload_json = NULL
 		WHERE update_id = ? AND committed_at IS NULL`);
+	// Pending-guarded: an edit that lands after commit touches nothing.
+	const amendText = db.query(`UPDATE tg_inbox SET payload_json = ?
+		WHERE update_id = ? AND committed_at IS NULL`);
 
 	return {
 		admittedDestination(updateId, chatId, messageId) {
@@ -201,6 +216,36 @@ export function openTelegramInbox(db: Database): {
 			// identify the message (a redelivery under a new update id).
 			const byMessage = selectMessage.get(chatId, messageId);
 			return byMessage === null ? null : rowSchema.parse(byMessage).conversation_id;
+		},
+		pendingByMessage(chatId, messageId) {
+			idSchema.parse(chatId);
+			idSchema.parse(messageId);
+			const raw = selectMessage.get(chatId, messageId);
+			if (raw === null) return null;
+			const row = rowSchema.parse(raw);
+			if (row.committed_at !== null) return null;
+			const entry = decode(row);
+			return {
+				updateId: entry.updateId,
+				laneKey: row.conversation_id,
+				mediaUniqueId: entry.payload.media?.fileUniqueId ?? null,
+			};
+		},
+		amendPendingText(updateId, text) {
+			updateIdSchema.parse(updateId);
+			z.string().parse(text);
+			const raw = selectOne.get(updateId);
+			if (raw === null) return false;
+			const row = rowSchema.parse(raw);
+			if (row.committed_at !== null) return false;
+			// Re-decode, patch, re-encode: the payload boundary stays the
+			// throwing zod one even on the rewrite path.
+			const next = payloadSchema.parse({ ...decode(row).payload, text });
+			if (amendText.run(JSON.stringify(next), updateId).changes !== 1) {
+				throw new Error(`Telegram inbox update ${updateId} committed during its amend`);
+			}
+			log.info("telegram inbox pending input amended by edit", { updateId });
+			return true;
 		},
 		record(updateId, payload) {
 			const fields = {

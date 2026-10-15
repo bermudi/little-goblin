@@ -24,6 +24,10 @@ function fakeApi(calls: ApiCall[]): Api {
 			calls.push({ method: "answerCallbackQuery", args: [id, opts] });
 			return Promise.resolve(true);
 		},
+		editMessageReplyMarkup: (chat: number, messageId: number, opts?: unknown) => {
+			calls.push({ method: "editMessageReplyMarkup", args: [chat, messageId, opts] });
+			return Promise.resolve(true);
+		},
 	} as unknown as Api;
 }
 
@@ -45,12 +49,31 @@ function fakeRatings(fail = false): ReplyRatings & { records: ReplyRatingWrite[]
 	};
 }
 
-function query(data: string | undefined, chatId = 1, messageId = 10): RateQuery {
+function query(
+	data: string | undefined,
+	chatId = 1,
+	messageId = 10,
+	markup?: NonNullable<NonNullable<RateQuery["message"]>["reply_markup"]>,
+): RateQuery {
 	return {
 		id: `q-${messageId}`,
 		data,
-		message: { message_id: messageId, chat: { id: chatId } },
+		message: {
+			message_id: messageId,
+			chat: { id: chatId },
+			...(markup !== undefined ? { reply_markup: markup } : {}),
+		},
 	};
+}
+
+function markups(calls: ApiCall[]): Array<Array<Array<Record<string, unknown>>>> {
+	return calls
+		.filter((c) => c.method === "editMessageReplyMarkup")
+		.map(
+			(c) =>
+				(c.args[2] as { reply_markup: { inline_keyboard: Array<Array<Record<string, unknown>>> } })
+					.reply_markup.inline_keyboard,
+		);
 }
 
 describe("rate button", () => {
@@ -112,6 +135,62 @@ describe("rate button", () => {
 			ratings,
 		});
 		expect(answers(calls)).toEqual(["rating not recorded — check the log"]);
+	});
+
+	test("a tap retires the rating row — the vote stays visible, 🔊 stays live", async () => {
+		const calls: ApiCall[] = [];
+		const ratings = fakeRatings();
+		const markup = {
+			inline_keyboard: [
+				[
+					{ text: "👍", callback_data: rateCallbackData("up", "dm:1", 7) },
+					{ text: "👎", callback_data: rateCallbackData("down", "dm:1", 7) },
+				],
+				[{ text: "🔊", callback_data: "speak_reply" }],
+			],
+		};
+		await handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 10, markup), {
+			api: fakeApi(calls),
+			ratings,
+		});
+		expect(markups(calls)).toEqual([
+			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
+		]);
+		expect(answers(calls)).toEqual(["👍 recorded"]);
+	});
+
+	test("a rating-only keyboard strips to empty", async () => {
+		const calls: ApiCall[] = [];
+		const ratings = fakeRatings();
+		const markup = {
+			inline_keyboard: [
+				[
+					{ text: "👍", callback_data: rateCallbackData("up", "dm:1", 7) },
+					{ text: "👎", callback_data: rateCallbackData("down", "dm:1", 7) },
+				],
+			],
+		};
+		await handleRateButton(query(rateCallbackData("down", "dm:1", 7), 42, 10, markup), {
+			api: fakeApi(calls),
+			ratings,
+		});
+		expect(markups(calls)).toEqual([[]]);
+	});
+
+	test("no rate row or no markup at all — no edit call, still recorded", async () => {
+		const calls: ApiCall[] = [];
+		const ratings = fakeRatings();
+		const speakOnly = { inline_keyboard: [[{ text: "🔊", callback_data: "speak_reply" }]] };
+		await handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 10, speakOnly), {
+			api: fakeApi(calls),
+			ratings,
+		});
+		await handleRateButton(query(rateCallbackData("up", "dm:1", 7)), {
+			api: fakeApi(calls),
+			ratings,
+		});
+		expect(markups(calls)).toEqual([]);
+		expect(ratings.records).toHaveLength(2);
 	});
 
 	test("registration routes a rate update through a real bot — non-rate updates don't reach it", async () => {

@@ -1,15 +1,15 @@
 // Skill reviewer — automatic skill saving (DESIGN.md, "Skill reviewer").
 //
-// Every completed turn is gated: Jev (a typed-decision model, not a chat
-// model) answers two noul questions over the turn's state — did the
+// Every completed turn is gated: System One (a typed-decision model, not
+// a chat model) answers two noul questions over the turn's state — did the
 // operator correct something, did the turn run a repeatable procedure —
 // and either at or past its per-question threshold triggers a background
 // review. This is an experiment: every gate logs both probabilities, the
 // thresholds, the trigger, unique tool names, the consecutive-fallback
 // count, the decision, input tokens, cost, and latency, so cost, hit
-// rate, and outage drift are answerable from the log. Jev unreachable
-// (any gate failure) falls back to the tool-count rule — a turn with 8+
-// tool calls reviews.
+// rate, and outage drift are answerable from the log. The gate
+// unreachable (any failure) falls back to the tool-count rule — a turn
+// with 8+ tool calls reviews.
 //
 // The review runs off the conversation lane in a private staging copy of
 // the skills tree (workspace/.reviewer-staging/<review_id>/skills):
@@ -66,7 +66,7 @@ import { readFileTool } from "./agent/tools/read.ts";
 import { writeFileTool } from "./agent/tools/write.ts";
 import { resolvePath } from "./agent/tools/paths.ts";
 import type { ConversationStore } from "./conversation.ts";
-import { JevError, type JevClient, type JevQuestion } from "./jev.ts";
+import { System1Error, type System1Client, type System1Question } from "./system1.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 
@@ -117,7 +117,7 @@ export interface EvidenceLimits {
 }
 
 export interface ReviewerDeps {
-	gate: Pick<JevClient, "decide">;
+	gate: Pick<System1Client, "decide">;
 	thresholds: { correction: number; procedure: number };
 	/** Queued (not running) review cap; full queue drops the incoming. */
 	queueCap: number;
@@ -169,7 +169,7 @@ export function toolOk(output: unknown): boolean {
 
 // ---------- gate ----------
 
-const GATE_QUESTIONS: Record<string, JevQuestion> = {
+const GATE_QUESTIONS: Record<string, System1Question> = {
 	correction: {
 		type: "noul",
 		instructions:
@@ -190,14 +190,14 @@ const GATE_QUESTIONS: Record<string, JevQuestion> = {
 	},
 };
 
-// Jev's context is 32k tokens — the state stays an order of magnitude
+// The decision model's context is 32k tokens — the state stays an order of magnitude
 // under it. Operator text reads tail-first (a correction lands in the
 // latest message); the reply reads head-first. Deliberately lean: names
 // and counts only — the digest is the reviewer's evidence, not the
 // gate's (a heavy gate is a non-goal).
 const MAX_OPERATOR_CHARS = 10_000;
 const MAX_REPLY_CHARS = 12_000;
-// The fallback rule when Jev is unreachable (DESIGN.md).
+// The fallback rule when the gate is unreachable (DESIGN.md).
 const FALLBACK_TOOL_CALLS = 8;
 
 export function buildGateState(turn: CompletedTurn): string {
@@ -338,7 +338,7 @@ export class Reviewer {
 		} catch (err) {
 			// Only the gate's own failures fall back — anything else is a
 			// bug and propagates to the runtime's backstop, loud.
-			if (!(err instanceof JevError)) throw err;
+			if (!(err instanceof System1Error)) throw err;
 			this.fallbackStreak += 1;
 			const review = turn.toolNames.length >= FALLBACK_TOOL_CALLS;
 			const trigger: Trigger = "procedure";
@@ -837,13 +837,14 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 	const drifted: string[] = [];
 	const liveSkill = join(skillsDir, skill);
 	// lstat, not existsSync: a broken link is still a link and must
-	// conflict like any other, not count as "not there". Any lstat
-	// failure means the root is unreachable — same branch as missing.
+	// conflict like any other, not count as "not there". Only ENOENT is
+	// "not there" — an unreadable root (EACCES, ELOOP, EIO) is a real
+	// failure, not a brand-new skill.
 	let rootStats: Stats | undefined;
 	try {
 		rootStats = lstatSync(liveSkill);
-	} catch {
-		// Not there at all.
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (rootStats === undefined) {
 		// Not in the manifest either → brand-new skill, nothing to drift.
@@ -921,8 +922,8 @@ function proposeSkill(
 	let targetStats: Stats | undefined;
 	try {
 		targetStats = lstatSync(target);
-	} catch {
-		// Not there at all.
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (targetStats?.isSymbolicLink()) {
 		log.warn("reviewer proposal skipped — proposal target is a symlink", {

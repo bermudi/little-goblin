@@ -226,6 +226,25 @@ describe("makeBellSink", () => {
 		h.store.close();
 	});
 
+	test("bookkeeping failure after a landed ping keeps the dedup key", async () => {
+		// record throws after sendMessage has landed — the operator got
+		// the ping, so a second bell for the same response must not re-ring.
+		const h = harness({ allowedUsers: [1, 7] });
+		const conv = appConv(h.store);
+		reply(h.store, conv.id, "done");
+		const realRecord = h.pings.record.bind(h.pings);
+		h.pings.record = () => {
+			throw new Error("ping store wedged");
+		};
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		// Both sends landed; one chat's bookkeeping failure didn't stop the loop.
+		expect(h.sent.map((s) => s.chat)).toEqual([1, 7]);
+		h.pings.record = realRecord;
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		expect(h.sent).toHaveLength(2);
+		h.store.close();
+	});
+
 	test("a hung send times out: nothing recorded, the next chat still rings", async () => {
 		const h = harness({ allowedUsers: [1, 7], hangChats: [1], timeoutMs: 30 });
 		const conv = appConv(h.store);

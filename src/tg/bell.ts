@@ -129,26 +129,37 @@ export function makeBellSink(
 						"sendMessage (spin-off ping)",
 						deps.timeoutMs ?? API_CALL_TIMEOUT_MS,
 					);
-					deps.pings.record(chat, sent.message_id, conv.id);
-					const dm = deps.store.currentDm(chat);
-					if (dm === null) {
-						log.debug("spin-off ping not journaled — no current DM", {
+					// delivered means "the send landed" — bookkeeping failures
+					// below must not strand the dedup key on a ping the
+					// operator already received.
+					delivered = true;
+					try {
+						deps.pings.record(chat, sent.message_id, conv.id);
+						const dm = deps.store.currentDm(chat);
+						if (dm === null) {
+							log.debug("spin-off ping not journaled — no current DM", {
+								conversation: conv.id,
+								chat,
+							});
+						} else {
+							// The ping is what the operator sees — journaled as an
+							// assistant event so the DM can answer "what was that?"
+							// and the quiet-gap clock sees the activity.
+							deps.store.append(dm.id, [
+								{
+									id: randomUUID(),
+									role: "assistant",
+									parts: [{ type: "text", text: ping }],
+								},
+							]);
+						}
+					} catch (err) {
+						log.error("spin-off ping landed but record/journal failed", err, {
 							conversation: conv.id,
 							chat,
+							message: sent.message_id,
 						});
-					} else {
-						// The ping is what the operator sees — journaled as an
-						// assistant event so the DM can answer "what was that?"
-						// and the quiet-gap clock sees the activity.
-						deps.store.append(dm.id, [
-							{
-								id: randomUUID(),
-								role: "assistant",
-								parts: [{ type: "text", text: ping }],
-							},
-						]);
 					}
-					delivered = true;
 					log.info("spin-off ping", {
 						conversation: conv.id,
 						chat,

@@ -622,15 +622,8 @@ describe("review run — staging and publication", () => {
 			),
 		});
 		const p = new Reviewer(deps).considerTurn(turn());
-		let stagedFile: string | null = null;
-		for (let i = 0; i < 500 && stagedFile === null; i++) {
-			await Bun.sleep(1);
-			const entries = readdirSync(h.staging);
-			if (entries.length > 0) {
-				stagedFile = join(h.staging, entries[0]!, "skills", "fresh", "SKILL.md");
-			}
-		}
-		expect(stagedFile).not.toBeNull();
+		await waitUntil(() => readdirSync(h.staging).length > 0, "staged write lands");
+		const stagedFile = join(h.staging, readdirSync(h.staging)[0]!, "skills", "fresh", "SKILL.md");
 		// The staged write exists; the live catalog has never seen it.
 		expect(readFileSync(stagedFile!, "utf8")).toContain("name: fresh");
 		expect(() => readFileSync(join(h.skills, "fresh", "SKILL.md"))).toThrow();

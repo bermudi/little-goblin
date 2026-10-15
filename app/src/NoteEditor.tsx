@@ -15,13 +15,22 @@
 
 import { Editor, defaultValueCtx, editorViewCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
 import type { Node as PMNode } from "@milkdown/kit/prose/model";
+import { Plugin } from "@milkdown/kit/prose/state";
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { history } from "@milkdown/kit/plugin/history";
 import { commonmark } from "@milkdown/kit/preset/commonmark";
 import { gfm } from "@milkdown/kit/preset/gfm";
-import { getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
+import { $prose, getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ApiError, NoteConflictError, patchNote, rewriteNote } from "./api.ts";
+import {
+	clearNoteDraft,
+	discardNoteDraft,
+	loadNoteDraft,
+	rawNoteDraft,
+	writeNoteDraft,
+	type NoteDraft,
+} from "./noteDraft.ts";
 import type { AppNote } from "../../src/http/app-wire.ts";
 
 export interface NoteEditorHandle {
@@ -41,6 +50,14 @@ export interface NoteEditorHandle {
 	// Run the pending save now (synchronous serialization — the
 	// listener lags edits ~200ms). Blocked while a conflict stands.
 	flush(): void;
+	flushAndWait(): Promise<boolean>;
+	// The one title write lane — queues into the SAME save loop as the
+	// body so a title PATCH never races a body PATCH onto one rev.
+	// Resolves true only when the server acked this exact title;
+	// false on conflict, offline, a permanent refusal, or a not-ready
+	// editor. The PATCH carries the current serialized body with the
+	// title so both land atomically.
+	saveTitle(title: string): Promise<boolean>;
 	// An external conflict (the page's focus refresh or a title 409):
 	// block automatic writes and raise the bar.
 	conflict(note: AppNote): void;
@@ -77,8 +94,10 @@ const NoteEditor = forwardRef<
 	{
 		token: string | null;
 		noteId: string;
-		initialBody: string;
-		initialRev: number;
+		// The whole note, not just body/rev — a stale draft restores
+		// behind the conflict bar, which needs the genuine current
+		// server record rather than invented metadata or a refetch.
+		initialNote: AppNote;
 		// A successful autosave/resolve reports the note back so the page
 		// tracks the live rev for flag writes and titles.
 		onSaved: (note: AppNote) => void;
@@ -99,8 +118,7 @@ const NoteEditor = forwardRef<
 	{
 		token,
 		noteId,
-		initialBody,
-		initialRev,
+		initialNote,
 		onSaved,
 		onConflict,
 		onDirty,
@@ -112,11 +130,42 @@ const NoteEditor = forwardRef<
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const editorRef = useRef<Editor | null>(null);
-	const baselineRef = useRef(initialBody);
+	const baselineRef = useRef(initialNote.body);
 	// The raw body the server last acknowledged (initial load, reload,
 	// successful PATCH) — adoptRev compares responses against it.
-	const serverBodyRef = useRef(initialBody);
-	const revRef = useRef(initialRev);
+	const serverBodyRef = useRef(initialNote.body);
+	const revRef = useRef(initialNote.rev);
+	// The monotonic state token: rev orders only content writes, so a
+	// flag response that bumps nothing else still advances stateRev —
+	// stale-response guards run on it, never on rev or updatedAt.
+	const stateRevRef = useRef(initialNote.stateRev);
+	// The title the server last acknowledged — a saveTitle() resolves
+	// true only once a response carries exactly the requested title.
+	const titleAckRef = useRef(initialNote.title);
+	// A reload()/adoptRev() landing before Editor.create resolves — or
+	// a newer initialNote prop from the same window — queues here; the
+	// create continuation applies the freshest of the two under draft
+	// suppression before baseline/draft recovery decide anything.
+	const startupRemoteRef = useRef<AppNote | null>(null);
+	const initialNoteRef = useRef(initialNote);
+	initialNoteRef.current = initialNote;
+	// The server state the stored draft stands on. While a conflict
+	// stands this keeps the draft's ORIGINAL base — a capture during
+	// the block must not rebase onto the newer remote, or a revisit
+	// would see a matching base and autosave stale local text over it.
+	const draftBaseRef = useRef({ rev: initialNote.rev, body: initialNote.body });
+	// Suppresses draft capture during mount/recovery and programmatic
+	// reloads — a restore is not an edit, and the mount-time parse
+	// normalization must never write or autosave.
+	const suppressDraftRef = useRef(true);
+	// The exact serialized record this editor last stored — compare-
+	// delete, so a late ack clears only its own write.
+	const lastDraftRef = useRef<string | null>(null);
+	// A stored record that failed to load stays on the key verbatim
+	// until the operator handles it — every capture path funnels
+	// through persistDraft, which refuses while this stands.
+	const preservedRef = useRef(false);
+	const [preserved, setPreserved] = useState(false);
 	const dirtyRef = useRef(false);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savingRef = useRef(false);
@@ -166,6 +215,9 @@ const NoteEditor = forwardRef<
 	const [ready, setReady] = useState(false);
 	const [status, setStatus] = useState<SaveStatus>("saved");
 	const [statusDetail, setStatusDetail] = useState<string | null>(null);
+	// A draft-storage failure is separate from the save status — an
+	// autosave result must not paint over "recovery is broken".
+	const [draftError, setDraftError] = useState<string | null>(null);
 	const onSavedRef = useRef(onSaved);
 	const onConflictRef = useRef(onConflict);
 	const onDirtyRef = useRef(onDirty);
@@ -187,6 +239,126 @@ const NoteEditor = forwardRef<
 		if (dirtyRef.current === dirty) return;
 		dirtyRef.current = dirty;
 		if (!unmountedRef.current) onDirtyRef.current?.(dirty);
+	}
+
+	// Storage failures stay visible: an ErrorEvent diagnostic plus a
+	// persistent alert, so a broken draft never masquerades as
+	// recovery. No note body or token ever enters either.
+	function reportDraftError(verb: "preserved" | "loaded" | "cleared", e: unknown): void {
+		// A raw SyntaxError message can quote its input (V8) — stored
+		// bytes are note content and never reach the alert/diagnostic.
+		const msg =
+			e instanceof SyntaxError
+				? "stored record is malformed"
+				: e instanceof Error
+					? e.message
+					: String(e);
+		window.dispatchEvent(new ErrorEvent("error", { message: `note draft ${verb} failed: ${msg}` }));
+		if (!unmountedRef.current) setDraftError(`Local draft could not be ${verb}: ${msg}`);
+	}
+
+	// Store the live body as the durable draft, standing on whatever
+	// base draftBaseRef currently names; returns the exact snapshot
+	// stored, or null when storage refused. A detached component may
+	// only overwrite the snapshot it last wrote — after unmount a
+	// newer editor owns the record, and a late drain/ack write must
+	// never roll it back.
+	function persistDraft(md: string, ownedOnly = false): string | null {
+		// The preserved record owns the key — overwriting bytes nobody
+		// could read back would destroy the unsaved work they hold.
+		// Captures resume only on the operator's explicit discard.
+		if (preservedRef.current) return null;
+		const draft: NoteDraft = {
+			version: 1,
+			noteId,
+			baseRev: draftBaseRef.current.rev,
+			baseBody: draftBaseRef.current.body,
+			body: md,
+		};
+		try {
+			const snap =
+				unmountedRef.current || ownedOnly
+					? lastDraftRef.current !== null
+						? writeNoteDraft(draft, lastDraftRef.current)
+						: null
+					: writeNoteDraft(draft);
+			if (snap === null) return null;
+			lastDraftRef.current = snap;
+			if (!unmountedRef.current) setDraftError(null);
+			return snap;
+		} catch (e) {
+			reportDraftError("preserved", e);
+			return null;
+		}
+	}
+
+	function dropDraft(snapshot: string): void {
+		try {
+			clearNoteDraft(noteId, snapshot);
+			if (!unmountedRef.current) setDraftError(null);
+		} catch (e) {
+			reportDraftError("cleared", e);
+		}
+	}
+
+	// Every document change: baseline-equal means the buffer landed or
+	// was never dirty — clear only THIS editor's last snapshot, and
+	// only while no conflict stands: under one, even baseline-equal
+	// local text IS the conflict's local side and must stay
+	// recoverable. Anything else is unsaved local work and persists.
+	function captureDraft(md: string): void {
+		if (md === baselineRef.current && conflictRef.current === null) {
+			const snap = lastDraftRef.current;
+			lastDraftRef.current = null;
+			if (snap !== null) dropDraft(snap);
+			return;
+		}
+		persistDraft(md);
+	}
+
+	// The operator's explicit calls on a preserved record: Download
+	// hands back the raw bytes (recovery), Discard frees the key so the
+	// live buffer becomes the draft again.
+	function downloadPreservedDraft(): void {
+		let raw: string | null;
+		try {
+			raw = rawNoteDraft(noteId);
+		} catch (e) {
+			reportDraftError("loaded", e);
+			return;
+		}
+		if (raw === null || typeof URL.createObjectURL !== "function") return;
+		const url = URL.createObjectURL(new Blob([raw], { type: "text/plain" }));
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `goblin-note-draft-${noteId}.txt`;
+		a.click();
+		// Some engines start the download on a later task — a same-tick
+		// revoke can cancel it, and this is the only salvage path.
+		setTimeout(() => URL.revokeObjectURL(url), 0);
+	}
+
+	function discardPreservedDraft(): void {
+		try {
+			discardNoteDraft(noteId);
+		} catch (e) {
+			reportDraftError("cleared", e);
+			return;
+		}
+		preservedRef.current = false;
+		setPreserved(false);
+		setDraftError(null);
+		// The live buffer may still be unsaved work — capture it now
+		// that the record's key is free.
+		persistLive();
+	}
+
+	// Synchronous persist for unload boundaries — runs even while a
+	// conflict or rewrite blocks every automatic write.
+	function persistLive(): void {
+		const ed = editorRef.current;
+		if (ed === null) return;
+		captureDraft(ed.action(getMarkdown()));
 	}
 
 	function clearTimer(): void {
@@ -217,22 +389,37 @@ const NoteEditor = forwardRef<
 		// in, so the apply PATCH remains the sole writer.
 		if (rewriteActiveRef.current && opts.preflush !== true) return;
 		if (savingRef.current) {
+			// Merge, never replace — a body-only re-arm must not drop a
+			// queued title, and a newer title supersedes an older one.
+			const queued = pendingRef.current;
 			pendingRef.current = {
-				keepalive: opts.keepalive === true,
-				...(opts.force === true ? { force: true } : {}),
-				...(opts.title !== undefined ? { title: opts.title } : {}),
-				...(opts.preflush === true ? { preflush: true } : {}),
+				keepalive: queued?.keepalive === true || opts.keepalive === true,
+				...(queued?.force === true || opts.force === true ? { force: true } : {}),
+				...(opts.title !== undefined
+					? { title: opts.title }
+					: queued?.title !== undefined
+						? { title: queued.title }
+						: {}),
+				...(queued?.preflush === true || opts.preflush === true ? { preflush: true } : {}),
 			};
 			return;
 		}
 		const ed = editorRef.current;
 		if (ed === null) return;
 		const md = ed.action(getMarkdown());
-		if (opts.force !== true && md === baselineRef.current) {
+		// A clean buffer short-circuits only a body save — a queued
+		// title still has to reach the server.
+		if (opts.force !== true && opts.title === undefined && md === baselineRef.current) {
+			// Doc is clean — a stored draft of ours is stale too.
+			captureDraft(md);
 			markDirty(false);
 			markStatus("saved");
 			return;
 		}
+		// Synchronous capture at save entry covers anything the plugin
+		// missed; the request snapshot is what the ack may later clear,
+		// and only while the live body is still this one.
+		const requestSnap = persistDraft(md, opts.force !== true);
 		savingRef.current = true;
 		hardFailRef.current = false;
 		markStatus("saving");
@@ -248,15 +435,47 @@ const NoteEditor = forwardRef<
 					{ ifMatch: expectedRev, keepalive: opts.keepalive === true },
 				);
 				baselineRef.current = md;
-				serverBodyRef.current = data.body;
+				// The ack's token decides whether its fields may move the
+				// acknowledged markers — a write that landed before a
+				// newer remote was observed must not roll title or
+				// serverBody back over that remote.
+				const freshest = data.stateRev >= stateRevRef.current;
+				if (freshest) {
+					serverBodyRef.current = data.body;
+					titleAckRef.current = data.title;
+				}
 				// Never backwards — a flag response may race ahead.
 				if (data.rev > revRef.current) revRef.current = data.rev;
+				if (data.stateRev > stateRevRef.current) stateRevRef.current = data.stateRev;
 				// A landed write resolves only a conflict at or below its
-				// rev — a delayed response can't clear a newer observed
-				// remote. The page still hears about the ack (its forward
-				// guard drops the stale rev); only the label stays blocked.
+				// state token — a delayed response can't clear a newer
+				// observed remote. The page still hears about the ack
+				// (its forward guard drops the stale token); only the
+				// label stays blocked.
 				const c = conflictRef.current;
-				if (c === null || data.rev >= c.rev) conflictRef.current = null;
+				if (c === null || data.stateRev >= c.stateRev) conflictRef.current = null;
+				// The draft base advances only on a save that stands
+				// clean — a late old ack under a newer observed conflict
+				// must not rebase the stored draft onto that remote.
+				if (conflictRef.current === null)
+					draftBaseRef.current = { rev: revRef.current, body: serverBodyRef.current };
+				// The ack retires the request snapshot only while the live
+				// body is still the submitted one and no conflict stands —
+				// under a newer remote, the local body (even this exact
+				// one) is the conflict's local side and must stay
+				// recoverable at the draft's ORIGINAL base. Edits that
+				// landed mid-flight persist again at whatever base now
+				// stands — the retained editor answers even after unmount.
+				const liveEd = editorRef.current;
+				const liveMd = liveEd !== null ? liveEd.action(getMarkdown()) : md;
+				if (conflictRef.current === null && liveMd === md) {
+					const snap = lastDraftRef.current;
+					lastDraftRef.current = null;
+					if (snap !== null) dropDraft(snap);
+					if (requestSnap !== null && requestSnap !== snap) dropDraft(requestSnap);
+				} else {
+					persistDraft(liveMd, true);
+				}
 				if (!unmountedRef.current) {
 					onSavedRef.current(data);
 					if (conflictRef.current === null) markStatus("saved");
@@ -289,8 +508,9 @@ const NoteEditor = forwardRef<
 			} finally {
 				savingRef.current = false;
 				if (unmountedRef.current) {
-					// The drain loop re-serializes and decides for itself.
-					pendingRef.current = null;
+					// The drain loop owns pendingRef now — it consumes and
+					// dispatches the queued write itself, so a title
+					// committed behind this in-flight PATCH still lands.
 					return;
 				}
 				// Reconcile anything that landed mid-flight: compare the
@@ -303,7 +523,11 @@ const NoteEditor = forwardRef<
 				pendingRef.current = null;
 				if (conflictRef.current === null && !hardFailRef.current) {
 					if (pending !== null) {
-						if (pending.force === true || dirtyNow) void save(revRef.current, pending);
+						// A queued title dispatches even on a clean body —
+						// clean-buffer early return applies to body writes.
+						if (pending.force === true || pending.title !== undefined || dirtyNow) {
+							void save(revRef.current, pending);
+						}
 					} else if (dirtyNow) {
 						schedule();
 					}
@@ -326,20 +550,100 @@ const NoteEditor = forwardRef<
 		void save(revRef.current, { keepalive });
 	}
 
+	function blocked(): boolean {
+		return (
+			unmountedRef.current ||
+			editorRef.current === null ||
+			conflictRef.current !== null ||
+			rewriteActiveRef.current
+		);
+	}
+
+	async function flushAndWait(): Promise<boolean> {
+		clearTimer();
+		if (blocked() || !ready) return false;
+		for (;;) {
+			const flight = inFlightRef.current;
+			if (flight === null) break;
+			await flight;
+			if (blocked()) return false;
+		}
+		const ed = editorRef.current;
+		if (ed === null) return false;
+		// Consume any queued drain here so its options (a forced title)
+		// ride this flush instead of dispatching twice off the finally.
+		const queued = pendingRef.current;
+		pendingRef.current = null;
+		if (
+			ed.action(getMarkdown()) !== baselineRef.current ||
+			queued?.title !== undefined ||
+			queued?.force === true
+		) {
+			await save(revRef.current, queued ?? {});
+		}
+		for (;;) {
+			const flight = inFlightRef.current;
+			if (flight === null) break;
+			await flight;
+		}
+		if (blocked() || savingRef.current) return false;
+		return editorRef.current!.action(getMarkdown()) === baselineRef.current;
+	}
+
+	// The page's one title lane — rides the same save loop as body
+	// autosaves so a title PATCH can never race a body PATCH onto the
+	// same rev. Joins any in-flight save, then any queued drain; true
+	// only when a response acked exactly this title.
+	async function saveTitle(title: string): Promise<boolean> {
+		if (blocked()) return false;
+		clearTimer();
+		void save(revRef.current, { title });
+		for (;;) {
+			const flight = inFlightRef.current;
+			if (flight === null) break;
+			await flight;
+			if (blocked()) return false;
+		}
+		if (conflictRef.current !== null) return false;
+		return titleAckRef.current === title;
+	}
+
 	// A server-side content change landed: adopt the note, rebase the
 	// baseline to the serializer's own output (the listener's ~200ms-
 	// debounced markdownUpdated for this replaceAll lands after this
 	// and self-cancels against the new baseline), clear the conflict.
+	// Adoption supersedes the stored draft — the local snapshot this
+	// editor last wrote is cleared once the new body is in.
 	function reload(note: AppNote): void {
 		const ed = editorRef.current;
-		if (ed === null) return;
+		if (ed === null) {
+			// Editor.create is still resolving — the freshest queued
+			// refresh wins and is applied before draft recovery (see the
+			// startup reconcile in the mount effect).
+			const queuedRev = startupRemoteRef.current?.stateRev ?? stateRevRef.current;
+			if (!unmountedRef.current && note.stateRev > queuedRev) {
+				startupRemoteRef.current = note;
+			}
+			return;
+		}
 		clearTimer();
 		pendingRef.current = null;
 		conflictRef.current = null;
-		ed.action(replaceAll(note.body));
-		baselineRef.current = ed.action(getMarkdown());
+		suppressDraftRef.current = true;
+		try {
+			ed.action(replaceAll(note.body));
+			baselineRef.current = ed.action(getMarkdown());
+		} finally {
+			suppressDraftRef.current = false;
+		}
 		serverBodyRef.current = note.body;
 		revRef.current = note.rev;
+		stateRevRef.current = note.stateRev;
+		titleAckRef.current = note.title;
+		draftBaseRef.current = { rev: note.rev, body: note.body };
+		const snap = lastDraftRef.current;
+		lastDraftRef.current = null;
+		if (snap !== null) dropDraft(snap);
 		markDirty(false);
 		markStatus("saved");
 	}
@@ -554,11 +858,12 @@ const NoteEditor = forwardRef<
 			// the ref for TS, but a focus conflict can have landed.
 			const c = conflictRef.current as AppNote | null;
 			// Same delayed-success guard as the autosave path: a newer
-			// conflict observed while the apply was held, or a write rev
-			// that moved past this PATCH, must not be adopted over. The
-			// ack still reports — the page's forward guard drops stale
-			// revs — but the doc and the standing conflict stay.
-			if (data.rev < revRef.current || (c !== null && c.rev > data.rev)) {
+			// conflict observed while the apply was held, or a state
+			// token that moved past this PATCH, must not be adopted
+			// over. The ack still reports — the page's forward guard
+			// drops stale tokens — but the doc and the standing conflict
+			// stay.
+			if (data.stateRev < stateRevRef.current || (c !== null && c.stateRev > data.stateRev)) {
 				onSavedRef.current(data);
 				closeRewrite();
 				return;
@@ -623,10 +928,23 @@ const NoteEditor = forwardRef<
 		const container = containerRef.current;
 		if (container === null) return;
 		let live = true;
+		// Load before the editor exists — a broken record keeps the
+		// normal server doc (never deleted), just with the failure shown.
+		let recovered: { draft: NoteDraft; snapshot: string } | null = null;
+		try {
+			recovered = loadNoteDraft(noteId);
+		} catch (err) {
+			reportDraftError("loaded", err);
+			// The unreadable record is held until the operator's
+			// download or discard — persistDraft blocks while this
+			// stands, so edits can't silently overwrite it.
+			preservedRef.current = true;
+			setPreserved(true);
+		}
 		const ed = Editor.make()
 			.config((ctx) => {
 				ctx.set(rootCtx, container);
-				ctx.set(defaultValueCtx, initialBody);
+				ctx.set(defaultValueCtx, initialNote.body);
 				const mgr = ctx.get(listenerCtx);
 				// The parser normalizes on load (e.g. `-` bullets become
 				// `*`) — the baseline must be the serializer's own output
@@ -666,6 +984,22 @@ const NoteEditor = forwardRef<
 			.use(gfm)
 			.use(listener)
 			.use(history)
+			// The durable-draft capture: synchronous on EVERY document
+			// change — the listener's debounce owns autosave timing, but
+			// a typed-then-gone body can't wait for it.
+			.use(
+				$prose(
+					(ctx) =>
+						new Plugin({
+							view: () => ({
+								update: (view, prev) => {
+									if (suppressDraftRef.current || view.state.doc.eq(prev.doc)) return;
+									captureDraft(ctx.get(serializerCtx)(view.state.doc));
+								},
+							}),
+						}),
+				),
+			)
 			.create();
 		const detachErr = (err: unknown) =>
 			window.dispatchEvent(
@@ -677,7 +1011,79 @@ const NoteEditor = forwardRef<
 			(e) => {
 				if (live) {
 					editorRef.current = e;
+					// The freshest known server state — a reload/adoptRev
+					// queued while creation pended, else the latest
+					// initialNote prop. Applied under suppression BEFORE
+					// the baseline and draft recovery run, so both judge
+					// against what the server actually holds, not the
+					// prop captured when the effect fired.
+					const queued = startupRemoteRef.current;
+					startupRemoteRef.current = null;
+					// The freshest complete state we hold — a queued refresh,
+					// the latest prop, or a pre-ready conflict's note (which
+					// already moved stateRevRef; assigning below it would
+					// roll the bookkeeping backwards).
+					const fresh = [
+						initialNoteRef.current,
+						...(queued !== null ? [queued] : []),
+						...(conflictRef.current !== null ? [conflictRef.current] : []),
+					].reduce((a, b) => (b.stateRev > a.stateRev ? b : a));
+					// The doc must end holding fresh's body — compare the
+					// live serialization, never a captured prop, so a
+					// delayed create or a differently-initialized
+					// defaultValue can't leave stale text mounted.
+					if (e.action(getMarkdown()) !== fresh.body) {
+						e.action(replaceAll(fresh.body));
+					}
 					baselineRef.current = e.action(getMarkdown());
+					serverBodyRef.current = fresh.body;
+					revRef.current = fresh.rev;
+					stateRevRef.current = fresh.stateRev;
+					titleAckRef.current = fresh.title;
+					// Draft judgment stands on the same freshest state — a
+					// stale-base record restores behind the bar, a matching
+					// one resumes the autosave.
+					draftBaseRef.current = { rev: fresh.rev, body: fresh.body };
+					// A stored draft is restored under suppression once the
+					// normalized server baseline exists, then its recorded
+					// base decides what it means:
+					//  · serializes to the baseline — the draft already
+					//    reached the server; retire that exact record.
+					//  · base is this very note — the buffer is genuinely
+					//    dirty; resume the guarded autosave.
+					//  · base moved — the server has newer text; restore
+					//    the buffer local-only behind the conflict bar,
+					//    keeping the draft's ORIGINAL base so no later
+					//    capture can rebase over the remote.
+					if (recovered !== null) {
+						e.action(replaceAll(recovered.draft.body));
+						const restoredMd = e.action(getMarkdown());
+						if (restoredMd === baselineRef.current) {
+							dropDraft(recovered.snapshot);
+						} else {
+							lastDraftRef.current = recovered.snapshot;
+							markDirty(true);
+							if (
+								recovered.draft.baseRev === fresh.rev &&
+								recovered.draft.baseBody === fresh.body
+							) {
+								schedule();
+							} else {
+								draftBaseRef.current = {
+									rev: recovered.draft.baseRev,
+									body: recovered.draft.baseBody,
+								};
+								// An explicit pre-ready conflict stands — the
+								// stale-base one only fills a vacant bar.
+								if (conflictRef.current === null) {
+									conflictRef.current = fresh;
+									markStatus("conflict");
+									onConflictRef.current(fresh);
+								}
+							}
+						}
+					}
+					suppressDraftRef.current = false;
 					setReady(true);
 				} else {
 					e.destroy().catch(detachErr);
@@ -691,10 +1097,13 @@ const NoteEditor = forwardRef<
 					);
 			},
 		);
-		// Leaving must not lose the debounce window's work: pagehide
-		// flushes the pending save through fetch keepalive so it
-		// survives the unload itself.
-		const onHide = () => flush(true);
+		// Leaving must not lose the debounce window's work: persist the
+		// buffer durably FIRST — it runs even under a conflict or open
+		// rewrite — then the keepalive flush is the best-effort fast path.
+		const onHide = () => {
+			persistLive();
+			flush(true);
+		};
 		const onVis = () => {
 			if (document.visibilityState === "hidden") flush();
 		};
@@ -714,12 +1123,18 @@ const NoteEditor = forwardRef<
 			rewriteActiveRef.current = false;
 			onRewriteBusyRef.current?.(false);
 			setApplying(false);
+			// Persist before the drain — a save that never lands still
+			// leaves the body recoverable.
+			persistLive();
 			const e = editorRef.current;
 			// Drain, then destroy: fire the pending write if the
 			// serialized doc still differs from the baseline, wait for
 			// the in-flight PATCH (whose response may re-dirty — the
 			// loop sends the latest body at the new rev), then tear
-			// down. A blocked or dead write stops the drain.
+			// down. A write queued behind the in-flight PATCH — a title
+			// commit carries no body diff — is consumed and dispatched
+			// too, or it would die with the editor. A blocked or dead
+			// write stops the drain.
 			void (async () => {
 				while (e !== null && conflictRef.current === null && !drainDeadRef.current) {
 					const flight = inFlightRef.current;
@@ -727,8 +1142,10 @@ const NoteEditor = forwardRef<
 						await flight;
 						continue;
 					}
-					if (e.action(getMarkdown()) === baselineRef.current) break;
-					void save(revRef.current);
+					const queued = pendingRef.current;
+					pendingRef.current = null;
+					if (queued === null && e.action(getMarkdown()) === baselineRef.current) break;
+					void save(revRef.current, queued ?? {});
 				}
 				if (e !== null) e.destroy().catch(detachErr);
 				editorRef.current = null;
@@ -750,11 +1167,25 @@ const NoteEditor = forwardRef<
 			},
 			editor: () => editorRef.current,
 			flush: () => flush(),
+			flushAndWait,
+			saveTitle,
 			reload,
 			adoptRev: (note: AppNote): void => {
+				if (editorRef.current === null) {
+					// Same startup queue as reload — a pre-create response
+					// still lands once creation resolves.
+					const queuedRev = startupRemoteRef.current?.stateRev ?? stateRevRef.current;
+					if (!unmountedRef.current && note.stateRev > queuedRev) {
+						startupRemoteRef.current = note;
+					}
+					return;
+				}
 				// Stale first: a delayed older response must never touch the
-				// doc, the baseline, or the write rev.
-				if (note.rev < revRef.current) return;
+				// doc, the baseline, or the write rev. stateRev is the
+				// order token — flag responses don't move rev.
+				if (note.stateRev < stateRevRef.current) return;
+				stateRevRef.current = note.stateRev;
+				titleAckRef.current = note.title;
 				if (note.body !== serverBodyRef.current) {
 					// The server body moved under us — a clean editor takes
 					// it; a dirty or in-flight one raises the bar instead of
@@ -772,11 +1203,26 @@ const NoteEditor = forwardRef<
 					reload(note);
 					return;
 				}
-				if (note.rev > revRef.current) revRef.current = note.rev;
+				if (note.rev > revRef.current) {
+					revRef.current = note.rev;
+					// An unchanged-body response may advance the draft
+					// base — never while a conflict stands — and a dirty
+					// buffer is re-captured at that new base.
+					if (conflictRef.current === null) {
+						draftBaseRef.current = { rev: note.rev, body: note.body };
+						const ed = editorRef.current;
+						if (ed !== null) {
+							const liveMd = ed.action(getMarkdown());
+							if (liveMd !== baselineRef.current) persistDraft(liveMd, true);
+						}
+					}
+				}
 			},
 			conflict: (note: AppNote): void => {
 				clearTimer();
+				pendingRef.current = null;
 				conflictRef.current = note;
+				if (note.stateRev > stateRevRef.current) stateRevRef.current = note.stateRev;
 				markStatus("conflict");
 				onConflictRef.current(note);
 			},
@@ -793,9 +1239,13 @@ const NoteEditor = forwardRef<
 					return;
 				}
 				// Clear the block only to submit the forced write — a
-				// repeated 409 reblocks via the catch path.
+				// repeated 409 reblocks via the catch path. Keep mine
+				// writes ON TOP of theirs, so the draft base advances to
+				// it before the write leaves.
 				conflictRef.current = null;
 				revRef.current = theirs.rev;
+				stateRevRef.current = theirs.stateRev;
+				draftBaseRef.current = { rev: theirs.rev, body: theirs.body };
 				markStatus("saving");
 				void save(theirs.rev, {
 					force: true,
@@ -877,6 +1327,21 @@ const NoteEditor = forwardRef<
 							{rewrite.phase === "preview" || rewrite.phase === "blocked" ? "Discard" : "Cancel"}
 						</button>
 					</div>
+				</div>
+			)}
+			{draftError !== null && (
+				<div className="note-draft-error" role="alert">
+					<span>{draftError}</span>
+					{preserved && (
+						<span className="row note-draft-actions">
+							<button type="button" className="ghost-inline" onClick={downloadPreservedDraft}>
+								Download draft
+							</button>
+							<button type="button" className="ghost-inline" onClick={discardPreservedDraft}>
+								Discard draft
+							</button>
+						</span>
+					)}
 				</div>
 			)}
 			<div className={`note-save-status ${status}`}>{label}</div>

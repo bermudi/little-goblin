@@ -61,6 +61,7 @@ import {
 	type InboxPayload,
 } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
+import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
 
@@ -77,6 +78,10 @@ const COALESCE_MAX_WAIT_MS = 10_000;
 // Sentinel for media that failed intake — kept out of topic-title input
 // or a download error becomes the conversation's name.
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
+const OPERATOR_ONLY_REPLY = "This command is only available to operators.";
+// Settings and memory verbs — refused to non-operators before routing
+// or conversation creation (design/telegram.md → Roles and permissions).
+const OPERATOR_ONLY_COMMANDS = new Set(["/voice", "/memory", "/forget", "/compact"]);
 
 // Conversation identity IS the Telegram address. `message_thread_id`
 // also rides on non-forum comment threads (is_topic_message stays
@@ -155,11 +160,18 @@ export interface RunningBot {
 
 // The access-control boundary (design/telegram.md → Roles and
 // permissions): operators pass everywhere; an allowed user passes in
-// the bot DM only — their standing sandbox lane; a stranger's DM gets
-// the one refusal line; a non-operator's group message drops (the
-// guest router above already took the mentions). Read per-message so
-// mini-app saves apply without a restart.
-export function accessGate(configRef: { current: Config }) {
+// the bot DM while the guest block exists — their sandbox lane; a
+// stranger's DM gets the one refusal line; a non-operator's group
+// message drops (the guest router above already took the mentions).
+// Read per-message so mini-app saves apply without a restart.
+// Refusal sends are detached from the middleware path: a stranger DM
+// is denied immediately and the fixed refusal line rides the bounded
+// dispatcher in refusals.ts — dedup per (user, chat), a global slot
+// cap, one timeout each. A wedged Telegram boundary can pin slots,
+// never stall grammY polling or delay an operator's next().
+export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
+	const dispatch =
+		opts?.refusalTimeoutMs === undefined ? sendRefusal : refusalDispatcher(opts.refusalTimeoutMs);
 	return async (
 		ctx: {
 			from?: { id: number } | undefined;
@@ -180,13 +192,17 @@ export function accessGate(configRef: { current: Config }) {
 			return;
 		}
 		if (ctx.chat?.type === "private") {
-			if (!cfg.allowedUsers.includes(id)) {
+			// The guest block is the sandbox switch: without it an
+			// approved id's DM refuses exactly like a stranger's.
+			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
 				// A stranger DM is a summons: the fixed refusal line is its
-				// whole answer. A failed send never kills the poller.
-				log.info("stranger refused — bot dm", { userId: id });
-				await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
-					.then(() => undefined)
-					.catch((err: unknown) => log.warn("stranger refusal failed", err, { userId: id }));
+				// whole answer — denied synchronously, sent detached so a
+				// stuck send can never hold the polling lane.
+				log.info("dm refused — not an operator", {
+					userId: id,
+					guest: cfg.guest !== undefined,
+				});
+				dispatch(ctx.api, id, id, GUEST_REFUSAL);
 				return;
 			}
 			await next();
@@ -322,6 +338,23 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	const command =
 		text !== "" && !media && mediaError === null ? parseCommand(text, env.botUsername) : null;
 	if (command !== null && !command.forThisBot) return;
+	// Privileged commands are refused by sender here — before
+	// navigation, routing, conversation creation, or journaling — so a
+	// refused update leaves no trace but the fixed reply. A senderless
+	// update is not an operator.
+	if (
+		command !== null &&
+		OPERATOR_ONLY_COMMANDS.has(command.command) &&
+		!deps.configRef.current.operators.includes(msg.from?.id ?? -1)
+	) {
+		log.info("privileged command refused — not operator", {
+			command: command.command,
+			userId: msg.from?.id ?? null,
+			chat: msg.chat.id,
+		});
+		sendRefusal(env.api, msg.from?.id ?? msg.chat.id, msg.chat.id, OPERATOR_ONLY_REPLY);
+		return;
+	}
 	if (command?.command === "/new" || command?.command === "/back") {
 		if (!rolling) {
 			replyNavigation(
@@ -501,8 +534,11 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// A swipe-reply to a delegation ping routes into the app conversation
 	// that rang; the payload carries no quoted part — the app conversation
 	// doesn't need the ping text. A deleted target degrades to ordinary.
+	// Operator-only: a demoted operator's chat still holds the pings, and
+	// routing their reply in would bypass the guest persona + tool filter
+	// the DM lane pins at flush.
 	const pingedConv =
-		quotedReply === undefined
+		quotedReply === undefined || !deps.configRef.current.operators.includes(msg.from?.id ?? -1)
 			? null
 			: (() => {
 					const hit = env.pings.lookup(msg.chat.id, quotedReply.message_id);

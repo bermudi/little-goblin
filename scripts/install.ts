@@ -79,8 +79,17 @@ async function command(argv: string[], label: string, timeoutMs = 30_000): Promi
 			maxOutput: 4 * 1024 * 1024,
 			abortSignal: commandAbort.signal,
 		});
-	} catch {
-		return fail(`${label}: spawn-failed`);
+	} catch (error) {
+		// boundedRun's promise always settles; only spawnProc throws here, and
+		// its errno (ENOENT vs EACCES) is the diagnosable part.
+		const code =
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			typeof error.code === "string"
+				? error.code
+				: "unknown";
+		return fail(`${label}: spawn-failed:${code}`);
 	} finally {
 		cancellation.signal.removeEventListener("abort", stop);
 		if (escalation) clearTimeout(escalation);
@@ -297,14 +306,12 @@ async function install(): Promise<void> {
 			// same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
-				render("goblin-keys.service", [
-					["/home/daniel/.local/bin/pass-keys", passKeys],
-					...common,
-					[
-						"@WARM_AUTH_PROFILES@",
+				render("goblin-keys.service", [["/home/daniel/.local/bin/pass-keys", passKeys], ...common])
+					// Only a standalone placeholder may expand into directives.
+					.replace(/^@WARM_AUTH_PROFILES@$/m, () =>
 						selected.profiles.map((profile) => `ExecStart=${passKeys} warm ${profile}`).join("\n"),
-					],
-				]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
+					)
+					.replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 				{ mode: 0o644 },
 			);
 			writeFileSync(

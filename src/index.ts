@@ -11,6 +11,7 @@ import {
 	inputModalitiesCached,
 } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
+import { join } from "node:path";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { carriesMedia, observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
@@ -54,6 +55,13 @@ import { type MailPoller, type MailSender, makeSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
+import { makePodman } from "./podman.ts";
+import { openPrograms } from "./programs.ts";
+import { openNotes } from "./notes.ts";
+import { openProjects, projectWorkdir } from "./projects.ts";
+import { makeDesktops, openDesktops } from "./desktops.ts";
+import { openSubagentRuns } from "./subagent-runs.ts";
+import { openSubagents, type Subagents } from "./subagents.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
@@ -61,10 +69,7 @@ import {
 	startMemoryWorker,
 } from "./memory.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { openNotes } from "./notes.ts";
-import { makePodman } from "./podman.ts";
-import { openPrograms } from "./programs.ts";
-import { openProjects, projectWorkdir } from "./projects.ts";
+import { wakeConversation } from "./wake.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
@@ -94,6 +99,13 @@ process.on("uncaughtException", (err: unknown) => {
 	process.exit(1);
 });
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// Long enough for the sinks' final flushes and polling's offset
+// confirm; short enough that a wedged Telegram API can't hold a deploy.
+// Declared above boot(): the startup-failure cleanup below budgets a
+// wedged close with the same constant the shutdown drain uses.
+const SHUTDOWN_DRAIN_MS = 10_000;
+
 async function boot() {
 	ensureHomeLayout();
 	// /api/*/status reports from this — uptime and the boot timestamp.
@@ -120,14 +132,26 @@ async function boot() {
 	// The outbox opens unconditionally — drafts stay readable and
 	// cancellable without the mail block; only the clients gate on it.
 	const outbox = openOutbox(paths.db());
+	// One Podman adapter serves sandbox and desktop rows — both drivers
+	// reconcile against the same store of truth.
+	const podman = makePodman();
+	// The routing table is additive and unconditional: sandboxes read
+	// worker leases from it whether or not the subagents block exists.
+	const subagentRuns = openSubagentRuns(paths.db());
 	// The sandbox lifecycle owner exists whether or not the block is
 	// configured — the tool gate is the per-turn config read, and the
 	// store is an additive table. Config is read live: resource limits
 	// and idleHours apply to the next sandbox call, not the boot set.
 	const sandboxes = makeSandboxes({
-		podman: makePodman(),
+		podman,
 		store: openSandboxes(paths.db()),
 		config: () => configRef.current.sandbox,
+		// A live worker run pins its sandbox: the reaper skips it and
+		// reset refuses while a lease stands (design/subagents.md).
+		runLease: (conv) => subagentRuns.workerLease(conv),
+		// Destructive sandbox lifecycle (recreate/restart) reaches the
+		// worker on its next tool result — persisted until carried.
+		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — gws owns its own auth, no OAuth secret here.
@@ -282,12 +306,11 @@ async function boot() {
 		});
 	}
 
-	// The project domain — the memory queue rides along only when memory
-	// is configured, matching /memory off's purge (design/projects.md).
-	const projects = openProjects(
-		store,
-		memoryClient && memoryBootConfig ? { memoryQueue: store.memoryQueue } : undefined,
-	);
+	// The project domain — the retention outbox rides along whether or
+	// not a memory client exists: pending rows can survive a disable,
+	// and project→off must still purge them like /memory off
+	// (design/projects.md). Submission needs the client; purging does not.
+	const projects = openProjects(store, { memoryQueue: store.memoryQueue });
 
 	// A bound conversation's working directory is its project's dir —
 	// the throw inside is a failed turn at admission, never a silent
@@ -508,6 +531,23 @@ async function boot() {
 								workspace: workdir,
 								sandboxes,
 							}
+						: undefined,
+				// The subagents block is boot-frozen — a live config read
+				// can only hide the tools, never swap models mid-run.
+				subagent:
+					subagents !== null && configRef.current.subagents !== undefined
+						? {
+								conversation: conv.id,
+								workspace: workdir,
+								subagents,
+								workerEnabled:
+									subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
+								computerEnabled: subagentsBoot?.computer !== undefined,
+							}
+						: undefined,
+				desktop:
+					subagents !== null && desktops !== null && configRef.current.subagents !== undefined
+						? { conversation: conv.id, workspace: workdir, desktops }
 						: undefined,
 				// The interface tool mounts on app turns only — Telegram
 				// and guests render plain text (design/app.md → Intelligent UI).
@@ -730,6 +770,73 @@ async function boot() {
 			: null;
 	completeBoot(delegationLifecycle, memoryWorker);
 
+	// The subagent owner is boot-frozen like delegation: its config
+	// (models, pool limits, auth refs) is one snapshot. Construction —
+	// including crash recovery over Pi Durable's storage — runs only
+	// after the late-boot bindings land: a settle during open may wake
+	// through wakeDeps immediately. Desktops construct empty-handed:
+	// no allocation or reaping happens at boot, rows reconcile on use.
+	const subagentsBoot = config.subagents;
+	const desktops =
+		subagentsBoot !== undefined
+			? makeDesktops({
+					podman,
+					store: openDesktops(paths.db()),
+					// Boot-frozen like the owner's block — a live read would
+					// make the restart warning a lie.
+					config: () => subagentsBoot?.desktops,
+				})
+			: null;
+	// A poisoned auth record or a resume refusal (e.g. a lowered
+	// maxRuns) must not crash-loop the service — poison the feature,
+	// never refuse boot (auth.ts). The pool stays constructed but
+	// every subagent/desktop tool is gated on the owner, so a failed
+	// open unmounts both for the run.
+	let subagents: Subagents | null = null;
+	if (subagentsBoot !== undefined && desktops !== null) {
+		try {
+			subagents = await openSubagents({
+				config: subagentsBoot,
+				runs: subagentRuns,
+				auth,
+				sandboxes,
+				desktops,
+				storagePath: join(paths.state(), "subagents.sqlite"),
+				transferRoot: join(paths.state(), "subagent-transfer"),
+				wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
+			});
+			// Recovery is explicit and ordered: persisted stops land,
+			// desktop leases re-verify and monitors reattach BEFORE the
+			// harness resumes scheduling — and before any inbound
+			// message can reach the tools.
+			await subagents.resume();
+		} catch (err) {
+			log.error("subagents startup failed — closing the owner before disabling", err);
+			if (subagents !== null) {
+				// close() on a half-open owner can itself throw, or wedge
+				// on a lane/monitor promise that never settles — either
+				// would turn the fail-open catch into the boot failure it
+				// exists to prevent. Same best-effort budget as the
+				// shutdown drain: join it if it lands, disable anyway.
+				const closed = subagents
+					.close()
+					.then(() => true)
+					.catch((closeErr: unknown) => {
+						log.warn("subagents close after failed startup threw — disabling anyway", closeErr);
+						return false;
+					});
+				const joined = await Promise.race([closed, sleep(SHUTDOWN_DRAIN_MS).then(() => false)]);
+				if (!joined) {
+					log.warn("subagents close after failed startup wedged — disabling anyway", {
+						budgetMs: SHUTDOWN_DRAIN_MS,
+					});
+				}
+			}
+			subagents = null;
+			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
+		}
+	}
+
 	// Recover inbox rows before polling: the wirings above must exist before
 	// recovered turns run, and the offset must not advance past journaled input.
 	await tg.replayInbox();
@@ -786,6 +893,13 @@ async function boot() {
 		) {
 			log.warn("delegation config changed — restart to apply");
 		}
+		// Same boot-freeze as delegation: models, pool limits and auth
+		// refs are one snapshot the owner built at boot.
+		if (
+			JSON.stringify(configRef.current.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)
+		) {
+			log.warn("subagents config changed — restart to apply");
+		}
 	};
 	// The same boot-pin comparisons onConfigWritten logs — the operator
 	// surface's status card answers with them instead of waiting for the
@@ -800,6 +914,9 @@ async function boot() {
 		if (cur.telegram.apiRoot !== apiRootBoot) hints.push("telegram.apiRoot");
 		if (JSON.stringify(cur.delegation ?? null) !== JSON.stringify(delegationBoot ?? null)) {
 			hints.push("delegation");
+		}
+		if (JSON.stringify(cur.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)) {
+			hints.push("subagents");
 		}
 		return hints;
 	};
@@ -911,6 +1028,9 @@ async function boot() {
 		mailWatcher,
 		mailApproval,
 		memoryWorker,
+		subagentRuns,
+		subagents,
+		desktops,
 	};
 }
 
@@ -934,12 +1054,10 @@ const {
 	mailWatcher,
 	mailApproval,
 	memoryWorker,
+	subagentRuns,
+	subagents,
 } = booted;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-// Long enough for the sinks' final flushes and polling's offset
-// confirm; short enough that a wedged Telegram API can't hold a deploy.
-const SHUTDOWN_DRAIN_MS = 10_000;
 let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
@@ -973,6 +1091,13 @@ async function shutdown(signal: string): Promise<void> {
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
+	// Pause only: pending subagent runs persist for the next boot — the
+	// harness close seals admission, it never aborts work.
+	const subagentsClosed = subagents
+		? subagents.close().catch((err: unknown) => {
+				log.warn("subagents close failed", err);
+			})
+		: Promise.resolve();
 	const settled = Promise.allSettled([
 		stopping,
 		drained,
@@ -981,6 +1106,7 @@ async function shutdown(signal: string): Promise<void> {
 		mailScan,
 		mailSends,
 		retention,
+		subagentsClosed,
 	]);
 	const finished = await Promise.race([
 		settled.then(() => true),
@@ -998,6 +1124,13 @@ async function shutdown(signal: string): Promise<void> {
 		}
 	}
 	http.stop();
+	// Runs outlive the process: the table closes only when the owner
+	// joined inside the drain budget — a timed-out close leaves the
+	// store open rather than let a lingering settle write a closed
+	// handle (the process exits anyway).
+	if (finished) {
+		subagentRuns.close();
+	}
 	store.close();
 	programs.close();
 	outbox.close();

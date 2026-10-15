@@ -3,7 +3,15 @@
 // log tail's window/filter/limit mechanics. The zod layer at the router
 // is input hygiene; these tests hold the module alone.
 
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+	utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -13,6 +21,7 @@ import {
 	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
+	listSkillDir,
 	listSkills,
 	readAttachmentBytes,
 	readSkillFile,
@@ -83,6 +92,45 @@ describe("listSkills", () => {
 		expect(res.skills).toEqual([]);
 		expect(res.proposed).toEqual([]);
 	});
+
+	test("a skill dir without SKILL.md still lists, stamped by the directory", () => {
+		writeRel("skills/bare/notes.md", "x");
+		const res = listSkillDir(join(home, "skills"));
+		expect(res.length).toBe(1);
+		expect(res[0]!.files).toEqual(["notes.md"]);
+		expect(res[0]!.updatedAt).not.toBeNull();
+	});
+
+	// Mode-bit probes are meaningless for root — permission checks are
+	// bypassed — so they only run for a real unprivileged user.
+	test.skipIf(process.getuid?.() === 0)(
+		"a non-searchable skill dir propagates the stat failure — never an empty render",
+		() => {
+			const skill = join(home, "skills", "locked");
+			mkdirSync(skill, { recursive: true });
+			writeFileSync(join(skill, "SKILL.md"), "x");
+			chmodSync(skill, 0o400);
+			try {
+				expect(() => listSkillDir(join(home, "skills"))).toThrow(/EACCES/);
+			} finally {
+				chmodSync(skill, 0o700);
+			}
+		},
+	);
+
+	test.skipIf(process.getuid?.() === 0)(
+		"an empty non-searchable skill dir propagates the SKILL.md stat failure",
+		() => {
+			const skill = join(home, "skills", "locked");
+			mkdirSync(skill, { recursive: true });
+			chmodSync(skill, 0o400);
+			try {
+				expect(() => listSkillDir(join(home, "skills"))).toThrow(/EACCES/);
+			} finally {
+				chmodSync(skill, 0o700);
+			}
+		},
+	);
 });
 
 describe("readStateFile containment", () => {
@@ -195,6 +243,21 @@ describe("readSkillFile", () => {
 		).toBe("a/SKILL.md");
 	});
 
+	test("a double-dot substring is an ordinary name; exact dot segments are refused", () => {
+		writeRel("skills/v1..beta/SKILL.md", "installed");
+		writeRel("skills/a/ref/file..name.md", "dots");
+		const skills = join(home, "skills");
+		const proposed = join(home, "skills-proposed");
+		expect(readSkillFile(skills, proposed, "skills", "v1..beta", "SKILL.md")?.content).toBe(
+			"installed",
+		);
+		expect(readSkillFile(skills, proposed, "skills", "a", "ref/file..name.md")?.content).toBe(
+			"dots",
+		);
+		expect(readSkillFile(skills, proposed, "skills", ".", "SKILL.md")).toBeNull();
+		expect(readSkillFile(skills, proposed, "skills", "..", "SKILL.md")).toBeNull();
+	});
+
 	test("a name that is not one segment is refused", () => {
 		writeRel("skills/a/SKILL.md", "x");
 		expect(
@@ -245,6 +308,25 @@ describe("attachments", () => {
 		const ok = readAttachmentBytes(join(home, "attachments"), "big.bin", 1024);
 		expect(ok?.bytes.length).toBe(16);
 		expect(ok?.contentType).toBe("application/octet-stream");
+	});
+
+	test("upload temps (dotfiles) are not listed", () => {
+		const now = new Date("2026-10-03T10:00:00Z");
+		writeRel("attachments/.app-uuid.tmp", "partial", now);
+		writeRel("attachments/settled.png", "a", now);
+		const res = listAttachments(join(home, "attachments"));
+		expect(res.files.map((f) => f.name)).toEqual(["settled.png"]);
+	});
+
+	test("interior dots are ordinary; a leading dot is an upload temp and refuses", () => {
+		writeRel("attachments/file..name.txt", "x");
+		writeRel("attachments/.app-uuid.tmp", "partial");
+		expect(attachmentPath(join(home, "attachments"), "file..name.txt")).not.toBeNull();
+		// persistAttachment stages uploads as dotfile temps — never served.
+		expect(attachmentPath(join(home, "attachments"), ".app-uuid.tmp")).toBeNull();
+		expect(readAttachmentBytes(join(home, "attachments"), ".app-uuid.tmp", 1024)).toBeNull();
+		expect(attachmentPath(join(home, "attachments"), ".")).toBeNull();
+		expect(attachmentPath(join(home, "attachments"), "..")).toBeNull();
 	});
 
 	test("attachmentPath holds the wall", () => {
@@ -305,6 +387,9 @@ describe("tailLog", () => {
 		expect(tailLog(f, { limit: 10, level: "error" }).lines.length).toBe(1);
 		expect(tailLog(f, { limit: 10, q: "dm:2" }).lines.length).toBe(1);
 		expect(tailLog(f, { limit: 10, q: "dm:1", level: "error" }).lines[0]!.msg).toBe("send failed");
+		// Filtering is intentional selection, not dropped content.
+		expect(tailLog(f, { limit: 10, level: "error" }).truncated).toBe(false);
+		expect(tailLog(f, { limit: 10, q: "dm:2" }).truncated).toBe(false);
 	});
 
 	test("limit keeps the newest matches and reports truncation", () => {
@@ -343,10 +428,22 @@ describe("tailLog", () => {
 		expect(res.truncated).toBe(true);
 	});
 
-	test("malformed lines are skipped, not fatal", () => {
+	test("malformed lines are skipped, not fatal — and reported as truncation", () => {
 		const f = writeLog(["{torn write", JSON.stringify({ ts: "t1", level: "info", msg: "ok" })]);
 		const res = tailLog(f, { limit: 10 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["ok"]);
+		expect(res.truncated).toBe(true);
+	});
+
+	test("torn and non-object records count even when the filter would skip them", () => {
+		const f = writeLog([
+			"{torn write",
+			"42",
+			JSON.stringify({ ts: "t1", level: "info", msg: "kept", tag: "wanted" }),
+		]);
+		const res = tailLog(f, { limit: 10, q: "wanted" });
+		expect(res.lines.map((l) => l.msg)).toEqual(["kept"]);
+		expect(res.truncated).toBe(true);
 	});
 
 	test("missing log file is an empty view", () => {

@@ -358,6 +358,20 @@ def write_file_atomic(path: Path, content: str, mode: int) -> None:
         raise
 
 
+def validate_embed_relay_config(cfg_dir: Path) -> None:
+    """Fail loud on a present-but-invalid embed-relay.env BEFORE any
+    durable state is written — an invalid opt-in must not coexist with
+    half-installed units or env files. Absent switch = remote embeddings,
+    always valid; a good switch is left untouched."""
+    switch = cfg_dir / EMBED_RELAY_ENV.name
+    if not switch.is_file():
+        return
+    try:
+        parse_embed_relay_env(switch.read_text())
+    except (OSError, ValueError) as error:
+        fail(f"{switch}: {error}")
+
+
 def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
                     user_unit_dir: Path,
                     skip_existing_quadlets: bool = False) -> list[Path]:
@@ -368,6 +382,7 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     failure message), so a refresh hands over new assets without clobbering
     operator edits. Fresh installs keep overwrite semantics — deleting a
     Quadlet before a fresh install is the reset path."""
+    validate_embed_relay_config(cfg_dir)
     systemd_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     user_unit_dir.mkdir(parents=True, exist_ok=True)
@@ -419,12 +434,9 @@ def install_embed_units(memory_dir: Path, cfg_dir: Path,
     present-but-invalid switch fails BEFORE any unit lands, so the relay
     can't come up half-configured."""
     switch = cfg_dir / EMBED_RELAY_ENV.name
+    validate_embed_relay_config(cfg_dir)
     if not switch.is_file():
         return []
-    try:
-        parse_embed_relay_env(switch.read_text())
-    except (OSError, ValueError) as error:
-        fail(f"{switch}: {error}")
     user_unit_dir.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     for name in EMBED_UNITS:
@@ -450,6 +462,24 @@ def enable_embed_relay(cfg_dir: Path) -> None:
     run(["systemctl", "--user", "enable", "--now", RELAY_UNIT, PIN_TIMER])
     info("embed relay enabled — an already-running relay keeps its old "
          "definition until 'systemctl --user restart goblin-embed-relay'")
+
+
+def deferred_start_commands(cfg_dir: Path) -> list[str]:
+    """The continuation printed when the stack was installed but not
+    started (--no-start or a declined first start). PRINTED only — this
+    helper runs nothing.
+
+    Same boot/watch policy a confirmed start applies: reload so Quadlet
+    generates the API's boot dependency (and the watch units load),
+    relay before the API when local embeddings are opted in (the API
+    test-embeds during init), API start, then the health watch timer."""
+    commands = ["systemctl --user daemon-reload"]
+    if (cfg_dir / EMBED_RELAY_ENV.name).is_file():
+        commands.append(
+            f"systemctl --user enable --now {RELAY_UNIT} {PIN_TIMER}")
+    commands.append(f"systemctl --user start {API_UNIT}")
+    commands.append(f"systemctl --user enable --now {WATCH_TIMER}")
+    return commands
 
 
 # --------------------------------------------------------------------------
@@ -1101,6 +1131,10 @@ def main(argv: list[str] | None = None) -> None:
 
     print("Goblin memory stack installer — Hindsight 1.0.0-slim + PostgreSQL 17")
     preflight()
+    # A present-but-invalid embed-relay switch fails here, before any
+    # prompt, env write or unit copy in ANY branch below — the refusal
+    # must leave zero durable state behind.
+    validate_embed_relay_config(CFG_DIR)
 
     if args.reconfigure:
         # Check BEFORE prompting: collecting two hidden keys and then
@@ -1207,17 +1241,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.no_start:
         print("\nAssets installed, stack NOT started (and NOT enabled at boot —\n"
-              "enablement happens with the first confirmed start). To start later:\n"
-              "  systemctl --user daemon-reload\n"
-              f"  systemctl --user start {API_UNIT}\n"
-              "Then create the bank and wire goblin per docs/memory.md.")
+              "enablement happens with the first confirmed start). To start later:")
+        for command in deferred_start_commands(CFG_DIR):
+            print(f"  {command}")
+        print("Then create the bank and wire goblin per docs/memory.md.")
         return
 
     print("\nStarting can call the embedding provider (dimension detection) "
           "and resume persisted background work — it is not free.")
     if not ask_yes("start the stack now?", default=False):
-        print("Stack not started. Assets and config are in place; start with:\n"
-              f"  systemctl --user daemon-reload && systemctl --user start {API_UNIT}")
+        print("Stack not started. Assets and config are in place; start with:")
+        for command in deferred_start_commands(CFG_DIR):
+            print(f"  {command}")
         return
 
     pre_pull_images()

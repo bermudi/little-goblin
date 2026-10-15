@@ -163,16 +163,27 @@ describe("conversation store", () => {
 		reopened.close();
 	});
 
-	test("bumpEpoch advances past a deleted address's previous authority", () => {
-		const store = openStore(tmpDb("goblin-test-"));
-		const addr = { kind: "dm" as const, chatId: 1 };
-		const c = store.resolve(addr, "/w");
-		const previous = store.bumpEpoch(c.id);
+	test("deleted ids retain epoch floors across recreation, reopen, and explicit authority bounds", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// A token captured under the first generation (epoch 0 — the
+		// demotion-reset case) must not authorize anything against the
+		// recreated row.
 		store.deleteConversation(c.id);
-		store.resolve(addr, "/w");
-		expect(store.bumpEpoch(c.id, previous)).toBe(previous + 1);
-		expect(store.bumpEpoch(c.id, 0)).toBe(previous + 2);
+		const fresh = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(fresh.id).toBe(c.id);
+		expect(fresh.epoch).toBe(1);
+		// Later generations keep climbing off the high-water mark.
+		expect(store.bumpEpoch(fresh.id, c.epoch)).toBe(2);
+		store.deleteConversation(fresh.id);
 		store.close();
+		const reopened: ConversationStore = openStore(path);
+		const third = reopened.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(third.epoch).toBe(3);
+		expect(reopened.bumpEpoch(third.id, third.epoch + 1)).toBe(5);
+		expect(reopened.bumpEpoch(third.id, 0)).toBe(6);
+		reopened.close();
 	});
 
 	test("applySettings patches meta and bumps epoch atomically", () => {
@@ -936,6 +947,51 @@ describe("rolling dm", () => {
 		expect(created).toBe(conv.createdAt);
 		store.append(conv.id, [msg("hello")]);
 		expect(store.lastActivityAt(conv.id) >= created).toBe(true);
+		store.close();
+	});
+
+	// The demotion/reset case: deleting the current row severs the
+	// dm_rolls pointer, but the epoch tombstone keeps the deleted id's
+	// generation outstanding — the next roll must mint past it, never
+	// reuse an ordinal a stale token could still authorize against.
+	test("a deleted current's ordinal is never re-minted — the tombstone carries the high-water mark", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const first = store.rollDm(7, "/w");
+		const second = store.rollDm(7, "/w");
+		expect(second.id).toBe("dm:7:2");
+		store.deleteConversation(second.id);
+		expect(store.currentDm(7)).toBeNull();
+		const third = store.rollDm(7, "/w");
+		expect(third.id).toBe("dm:7:3");
+		expect(store.currentDm(7)?.id).toBe("dm:7:3");
+		// No back link into deleted history: the sever NULLed :1's
+		// forward pointer and the pointer-less mint carries no source.
+		expect(store.previousDm(7)).toBeNull();
+		expect(store.backDm(7)).toBeNull();
+		expect(store.get(second.id)).toBeNull();
+		expect(store.get(first.id)).not.toBeNull();
+		// Repeated deletion climbs off the durable tombstones, reopen or not.
+		store.deleteConversation(third.id);
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.currentDm(7)).toBeNull();
+		expect(reopened.rollDm(7, "/w").id).toBe("dm:7:4");
+		// Deleting every extant row of the lane still never reuses.
+		reopened.deleteConversation(first.id);
+		reopened.deleteConversation("dm:7:4");
+		expect(reopened.rollDm(7, "/w").id).toBe("dm:7:5");
+		// Another chat's counter is untouched.
+		expect(reopened.rollDm(8, "/w").id).toBe("dm:8:1");
+		reopened.close();
+	});
+
+	test("deleting the only row a chat ever minted still advances the ordinal", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const only = store.rollDm(9, "/w");
+		expect(only.id).toBe("dm:9:1");
+		store.deleteConversation(only.id);
+		expect(store.rollDm(9, "/w").id).toBe("dm:9:2");
 		store.close();
 	});
 });

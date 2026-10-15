@@ -55,6 +55,7 @@ import { log } from "../log.ts";
 import {
 	NOTE_PART,
 	type Note,
+	NOTE_BODY_MAX,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
@@ -338,13 +339,14 @@ const projectPatchBody = z
 // a note back to loose — the flag-write half of a PATCH.
 const noteCreateBody = z.object({
 	title: z.string().trim().min(1).max(200),
-	body: z.string().optional(),
+	body: z.string().max(NOTE_BODY_MAX).optional(),
 	projectId: z.string().min(1).nullish(),
 });
 
 const notePatchBody = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
+		// The store bounds the result, allowing legacy oversized bodies to shrink.
 		body: z.string().optional(),
 		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
@@ -366,7 +368,7 @@ const notePatchBody = z
 		{ message: "nothing to write" },
 	);
 
-const noteAppendBody = z.object({ text: z.string().min(1) });
+const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
 
 // design/projects.md → AI rewrite: the selection cap rides a whole
 // note's plausible size; whitespace-only selection can't anchor a
@@ -674,6 +676,7 @@ function appNote(n: Note): AppNote {
 		title: n.title,
 		body: n.body,
 		rev: n.rev,
+		stateRev: n.stateRev,
 		lastSource: n.lastSource,
 		pinnedAt: n.pinnedAt,
 		archivedAt: n.archivedAt,
@@ -688,6 +691,7 @@ function appNoteSummary(s: ReturnType<NoteStore["list"]>[number]): AppNoteSummar
 		projectId: s.projectId,
 		title: s.title,
 		rev: s.rev,
+		stateRev: s.stateRev,
 		pinnedAt: s.pinnedAt,
 		archivedAt: s.archivedAt,
 		updatedAt: s.updatedAt,
@@ -1069,10 +1073,21 @@ export async function handleAppApi(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
+		// A restore writes content, so it rides the same If-Match guard
+		// as PATCH — a stale etag conflicts with the live note instead
+		// of rolling newer work back to the historical body.
+		const expectedRev = ifMatchRev(req);
+		if (expectedRev === null) {
+			return Response.json(
+				{ error: "If-Match required for restore" },
+				{ status: 428, headers: NO_STORE },
+			);
+		}
 		try {
 			const note = deps.notes.restore(
 				noteRestoreMatch[1]!,
 				Number.parseInt(noteRestoreMatch[2]!, 10),
+				expectedRev,
 			);
 			return noteResponse(note);
 		} catch (err) {
@@ -1216,20 +1231,12 @@ export async function handleAppApi(
 			expectedRev = rev;
 		}
 		try {
-			if (patch.projectId !== undefined) deps.notes.move(noteId, patch.projectId);
-			if (patch.pinned !== undefined) deps.notes.setPinned(noteId, patch.pinned);
-			if (patch.archived !== undefined) deps.notes.setArchived(noteId, patch.archived);
-			const updated = wantsContent
-				? deps.notes.write(
-						noteId,
-						{
-							...(patch.title !== undefined ? { title: patch.title } : {}),
-							...(patch.body !== undefined ? { body: patch.body } : {}),
-						},
-						patch.source ?? "app",
-						{ expectedRev },
-					)
-				: deps.notes.get(noteId)!;
+			// One store transaction: the flag/move mutations and the
+			// content write commit together or roll back together — a
+			// failed write must not strand a committed archive or move.
+			const updated = deps.notes.patch(noteId, parsed.data, parsed.data.source ?? "app", {
+				expectedRev,
+			});
 			return noteResponse(updated);
 		} catch (err) {
 			const res = noteError(err);

@@ -1,14 +1,16 @@
 // Notes domain tests — the single write path's invariants
 // (design/projects.md → Notes): version-before-write, app-write
 // coalescing, expected-rev conflicts, range-edit refusals that write
-// nothing, FTS freshness, and flag writes that bump nothing.
+// nothing, FTS freshness, and flag writes that move only state_rev.
 
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { setLogFile } from "./log.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import {
+	ensureNotesSchema,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
@@ -38,13 +40,49 @@ function setup(): {
 }
 
 describe("the write path", () => {
+	test("the resulting body limit guards every write and rolls back combined patches", () => {
+		const { notes } = setup();
+		const body = "x".repeat(1_000_000);
+		expect(() => notes.create({ title: "too big", body: `${body}x` })).toThrow(NoteInputError);
+		const n = notes.create({ title: "capped", body });
+		expect(() => notes.append(n.id, "more", "agent")).toThrow(NoteInputError);
+		expect(() => notes.write(n.id, { body: `${body}x` }, "agent")).toThrow(NoteInputError);
+		expect(() =>
+			notes.replaceRanges(n.id, [{ start: 0, end: 0, expected: "", text: "more" }]),
+		).toThrow(NoteInputError);
+		expect(() => notes.patch(n.id, { body: `${body}x`, pinned: true }, "app")).toThrow(
+			NoteInputError,
+		);
+		expect(notes.get(n.id)).toEqual(n);
+		expect(notes.listVersions(n.id)).toEqual([]);
+	});
+
+	test("legacy oversized notes can be renamed or reduced but never grown", () => {
+		const { store, notes } = setup();
+		const n = notes.create({ title: "legacy" });
+		const body = "x".repeat(1_000_006);
+		store.db.run("UPDATE notes SET body_md = ? WHERE id = ?", [body, n.id]);
+		const renamed = notes.write(n.id, { title: "renamed", body }, "app");
+		expect(renamed.title).toBe("renamed");
+		expect(() => notes.append(n.id, "more", "append")).toThrow(NoteInputError);
+		const reduced = notes.write(n.id, { body: body.slice(1) }, "app");
+		expect(reduced.body.length).toBe(1_000_005);
+		expect(() => notes.write(n.id, { body }, "agent")).toThrow(NoteInputError);
+		const small = notes.write(n.id, { body: "small" }, "app");
+		expect(small.body).toBe("small");
+		const version = notes.listVersions(n.id)[0]!;
+		expect(notes.getVersion(n.id, version.rev)!.body.length).toBeGreaterThan(1_000_000);
+		expect(() => notes.restore(n.id, version.rev, small.rev)).toThrow(NoteInputError);
+		expect(notes.get(n.id)).toEqual(small);
+	});
+
 	test("agent/append/restore writes version every time", () => {
 		const { notes } = setup();
 		const n = notes.create({ title: "groceries", body: "milk" });
 		notes.append(n.id, "eggs", "agent", "app/c1");
 		notes.append(n.id, "bread", "append");
 		const beforeRestore = notes.get(n.id)!;
-		notes.restore(n.id, 1);
+		notes.restore(n.id, 1, beforeRestore.rev);
 		const versions = notes.listVersions(n.id);
 		// Three writes → three pre-write snapshots, newest first.
 		expect(versions.map((v) => v.rev)).toEqual([3, 2, 1]);
@@ -235,7 +273,7 @@ describe("search and scope", () => {
 });
 
 describe("flags, moves, and delete", () => {
-	test("pin/archive/move never bump rev or write versions", () => {
+	test("pin/archive/move never bump rev or write versions — state_rev moves", () => {
 		const { notes, projects } = setup();
 		const p = projects.create({ name: "P" });
 		const n = notes.create({ title: "t", body: "x" });
@@ -245,6 +283,7 @@ describe("flags, moves, and delete", () => {
 		notes.move(n.id, p.id);
 		const after = notes.get(n.id)!;
 		expect(after.rev).toBe(1);
+		expect(after.stateRev).toBe(5); // one accepted mutation each
 		expect(after.projectId).toBe(p.id);
 		expect(notes.listVersions(n.id)).toHaveLength(0);
 	});
@@ -269,5 +308,96 @@ describe("flags, moves, and delete", () => {
 		expect(notes.get(n.id)).toBeNull();
 		// Versions went with it — the row is gone, not dangling.
 		expect(() => notes.listVersions(n.id)).toThrow(NoteInputError);
+	});
+});
+
+describe("the state_rev ordering token", () => {
+	test("flags advance only state_rev; content writes advance both counters", () => {
+		const { notes, projects, clock } = setup();
+		const p = projects.create({ name: "P" });
+		const n = notes.create({ title: "t", body: "x" });
+		expect(n.stateRev).toBe(1);
+		// Every accepted flag flip is a new state — rev, updated_at,
+		// and the version list can't see any of them.
+		notes.setPinned(n.id, true);
+		notes.setArchived(n.id, true);
+		notes.setArchived(n.id, false);
+		notes.move(n.id, p.id);
+		const flagged = notes.get(n.id)!;
+		expect(flagged.rev).toBe(1);
+		expect(flagged.stateRev).toBe(5);
+		expect(flagged.updatedAt).toBe(n.updatedAt);
+		expect(notes.listVersions(n.id)).toHaveLength(0);
+		// A content write moves both counters and the clock.
+		clock.t = new Date(clock.t.getTime() + 5_000);
+		const written = notes.write(n.id, { body: "v2" }, "app");
+		expect(written.rev).toBe(2);
+		expect(written.stateRev).toBe(6);
+		expect(written.updatedAt).not.toBe(flagged.updatedAt);
+	});
+
+	test("a refused combined patch rolls the flags AND the token back", () => {
+		const { notes } = setup();
+		const n = notes.create({ title: "t", body: "x" });
+		expect(() =>
+			notes.patch(n.id, { pinned: true, body: "v2" }, "app", { expectedRev: 99 }),
+		).toThrow(NoteConflictError);
+		const after = notes.get(n.id)!;
+		expect(after.rev).toBe(1);
+		expect(after.stateRev).toBe(1);
+		expect(after.pinnedAt).toBeNull();
+	});
+
+	test("a stale restore conflicts and writes nothing; the current rev advances", () => {
+		const { notes } = setup();
+		const n = notes.create({ title: "t", body: "one" });
+		notes.append(n.id, "two", "agent");
+		notes.append(n.id, "three", "agent");
+		const before = notes.get(n.id)!;
+		expect(() => notes.restore(n.id, 1, 2)).toThrow(NoteConflictError);
+		// Nothing moved — body, versions, and both counters stand.
+		expect(notes.get(n.id)!).toEqual(before);
+		expect(notes.listVersions(n.id)).toHaveLength(2);
+		const ok = notes.restore(n.id, 1, 3);
+		expect(ok.rev).toBe(4);
+		expect(ok.stateRev).toBe(4);
+		expect(ok.body).toBe("one");
+	});
+
+	test("a store that predates the column migrates existing rows to 1 — idempotently", () => {
+		const home = useHome();
+		mkdirSync(join(home, "state"), { recursive: true });
+		const db = new Database(join(home, "state", "goblin.sqlite"));
+		try {
+			// The pre-migration shape: no state_rev, a row already written.
+			db.run(`CREATE TABLE notes (
+				id TEXT PRIMARY KEY,
+				project_id TEXT,
+				title TEXT NOT NULL,
+				body_md TEXT NOT NULL DEFAULT '',
+				rev INTEGER NOT NULL DEFAULT 1,
+				last_source TEXT NOT NULL DEFAULT 'app',
+				pinned_at TEXT,
+				archived_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)`);
+			db.run(
+				`INSERT INTO notes (id, title, body_md, rev, last_source, created_at, updated_at)
+				 VALUES ('n-old', 'old', 'x', 3, 'app', 'a', 'a')`,
+			);
+			ensureNotesSchema(db);
+			// A second pass must not re-alter or clobber the value.
+			ensureNotesSchema(db);
+			const row = db
+				.query<{ rev: number; state_rev: number }, []>(
+					"SELECT rev, state_rev FROM notes WHERE id = 'n-old'",
+				)
+				.get()!;
+			expect(row.rev).toBe(3);
+			expect(row.state_rev).toBe(1);
+		} finally {
+			db.close();
+		}
 	});
 });

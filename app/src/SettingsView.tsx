@@ -24,6 +24,7 @@ import {
 	type TtsKind,
 	type VisDraft,
 	VOICE_SUGGESTIONS,
+	switchProviderKind,
 	validateDraft,
 } from "./settingsDraft.ts";
 
@@ -510,6 +511,7 @@ function ProviderCard({
 	onPatch,
 	onRename,
 	onRemove,
+	onNameDirtyChange,
 }: {
 	prov: ProvDraft;
 	kinds: readonly string[];
@@ -519,12 +521,25 @@ function ProviderCard({
 	onPatch: (patch: Partial<ProvDraft>) => void;
 	onRename: (v: string) => string | null;
 	onRemove: () => void;
+	onNameDirtyChange: (dirty: boolean) => void;
 }) {
 	// Name edits commit on blur — a half-typed name would break model
 	// refs while the operator is mid-word (the mini app's rule).
 	const [nameDraft, setNameDraft] = useState(prov.name);
 	const [nameErr, setNameErr] = useState<string | null>(null);
 	useEffect(() => setNameDraft(prov.name), [prov.name]);
+	// The uncommitted name is departure hazard the serialized diff can't
+	// see: report divergence on every change, and clear on unmount —
+	// section switches unmount the card and the draft dies with it, so
+	// the pending flag must not outlive it. The callback rides a ref:
+	// the parent's inline wrapper changes identity every render and a
+	// cleanup bound to it would clear the flag on each re-render.
+	const reportName = useRef(onNameDirtyChange);
+	reportName.current = onNameDirtyChange;
+	useEffect(() => {
+		reportName.current(nameDraft !== prov.name);
+		return () => reportName.current(false);
+	}, [nameDraft, prov.name]);
 	const commitName = () => {
 		const v = nameDraft.trim();
 		if (v === prov.name) {
@@ -576,7 +591,7 @@ function ProviderCard({
 					className="mono"
 					value={prov.kind}
 					aria-label="provider type"
-					onChange={(e) => onPatch({ kind: e.target.value })}
+					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value))}
 				>
 					{kinds.map((k) => (
 						<option key={k} value={k}>
@@ -690,20 +705,43 @@ export function SettingsView({
 	const patchTts = (p: Partial<TtsDraft>) =>
 		setDraft((d) => (d.tts === null ? d : { ...d, tts: { ...d.tts, ...p } }));
 
+	// Provider ids whose card is holding an uncommitted name draft —
+	// typed but not blurred. That text is in no serialized field, so it
+	// joins the dirty flag as a second, independent departure hazard.
+	const [pendingNames, setPendingNames] = useState<ReadonlySet<number>>(new Set());
+	const reportNameDirty = (id: number, dirty: boolean) =>
+		setPendingNames((s) => {
+			if (s.has(id) === dirty) return s;
+			const next = new Set(s);
+			if (dirty) next.add(id);
+			else next.delete(id);
+			return next;
+		});
+	const namePending = pendingNames.size > 0;
+
 	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
-	useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+	// The guard the parent navigation/beforeunload asks about: serialized
+	// edits OR a provider name still uncommitted in its card.
+	const departureDirty = dirty || namePending;
+	useEffect(() => onDirtyChange?.(departureDirty), [departureDirty, onDirtyChange]);
 
 	// Which top-level fields differ — serialized both sides so the
 	// comparison sees exactly what dirty sees (provs minus ids).
-	const dirtyFields = (() => {
-		if (!dirty || baseline === null) return [];
+	const { dirtyFields, stagedDirty } = (() => {
+		const none = { dirtyFields: [] as string[], stagedDirty: false };
+		if (!dirty || baseline === null) return none;
 		const cur = JSON.parse(serialize(draft, provs)) as { d: SettingsDraft; ps: unknown[] };
 		const base = JSON.parse(baseline) as { d: SettingsDraft; ps: unknown[] };
-		const out = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[])
-			.filter((k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]))
-			.map((k) => FIELD_LABELS[k]);
-		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) out.push("providers");
-		return out;
+		const keys = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[]).filter(
+			(k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]),
+		);
+		// publicUrl IS this tab's origin gate — an intermediate value
+		// ("" between clear and retype) autosaved would 403 the tab's
+		// own next write. It stays staged until the savebar's Save.
+		const stagedDirty = keys.includes("publicUrl");
+		const fields = keys.map((k) => FIELD_LABELS[k]);
+		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) fields.push("providers");
+		return { dirtyFields: fields, stagedDirty };
 	})();
 
 	// A dirty draft that fails validation can't write — it stays dirty
@@ -725,6 +763,7 @@ export function SettingsView({
 				const { draft: d, providers } = draftFromConfig(data.config);
 				setDraft(d);
 				setProvs(providers);
+				setPendingNames(new Set());
 				setBaseline(serialize(d, providers));
 				setEtag(tag ?? "");
 				setKinds({
@@ -817,6 +856,14 @@ export function SettingsView({
 	const removeProvider = (p: ProvDraft) => {
 		const refs = p.name !== "" ? providerRefs(p.name) : [];
 		setProvs((ps) => ps.filter((q) => q.id !== p.id));
+		// The card's unmount also reports clear, but its effect ordering
+		// isn't the contract — delete the id directly.
+		setPendingNames((s) => {
+			if (!s.has(p.id)) return s;
+			const next = new Set(s);
+			next.delete(p.id);
+			return next;
+		});
 		if (refs.length > 0) {
 			setNotice({
 				text: `Removed — still referenced by ${refs.join(", ")}. Fix before saving.`,
@@ -872,6 +919,15 @@ export function SettingsView({
 	};
 
 	const save = async () => {
+		// A half-typed provider name isn't in the serialized draft — this
+		// body would store everything but it and still announce "Saved."
+		if (pendingNames.size > 0) {
+			setNotice({
+				text: "A provider name is still being edited — leave the field to commit it.",
+				kind: "err",
+			});
+			return;
+		}
 		const err = validateDraft(draft, provs);
 		if (err !== null) {
 			setNotice({ text: err, kind: "err" });
@@ -885,14 +941,27 @@ export function SettingsView({
 		}
 		setSaving(true);
 		setNotice(null);
+		const body = bodyFromDraft(draft, provs, kinds.authDefaults);
+		const submittedProvs = provs;
 		try {
-			const res = await saveOperatorConfig(
-				token,
-				bodyFromDraft(draft, provs, kinds.authDefaults),
-				etag,
-			);
+			const res = await saveOperatorConfig(token, body, etag);
 			if (res.etag !== null) setEtag(res.etag);
-			setBaseline(serialize(draft, provs));
+			const ackProvs = submittedProvs.map((p) => {
+				const stored = body.providers[p.name.trim()];
+				if (stored === undefined) return p;
+				const w = stored as { auth?: string; authFile?: string };
+				return { ...p, auth: w.auth ?? w.authFile ?? p.auth };
+			});
+			setBaseline(serialize(draft, ackProvs));
+			setProvs((cur) =>
+				cur.map((c) => {
+					const sub = submittedProvs.find((s) => s.id === c.id);
+					const ack = ackProvs.find((a) => a.id === c.id);
+					if (sub === undefined || ack === undefined) return c;
+					if (c.kind === sub.kind && c.auth === sub.auth) return { ...c, auth: ack.auth };
+					return c;
+				}),
+			);
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
 			// A 409 is a stale etag — the same save retries it forever;
@@ -915,9 +984,14 @@ export function SettingsView({
 	// Save on change: a valid edit writes itself after a short debounce —
 	// rapid edits coalesce, an edit mid-write schedules another. A failed
 	// write isn't retried on the identical state — the next edit re-arms.
+	// A staged field (publicUrl) holds EVERYTHING: the save body is the
+	// whole draft, so while an unstaged write would commit a half-edited
+	// allowlist, nothing goes out until the operator's explicit Save.
+	// The same holds for a pending provider name — an autosave over it
+	// would store the old baseline and the savebar would call it "Saved".
 	const attempted = useRef<string | null>(null);
 	useEffect(() => {
-		if (!dirty || invalidReason !== null || saving) return;
+		if (!dirty || stagedDirty || namePending || invalidReason !== null || saving) return;
 		const sig = serialize(draft, provs);
 		if (sig === attempted.current) return;
 		const t = setTimeout(() => {
@@ -925,7 +999,7 @@ export function SettingsView({
 			void save();
 		}, 800);
 		return () => clearTimeout(t);
-	}, [dirty, invalidReason, saving, draft, provs]);
+	}, [dirty, stagedDirty, namePending, invalidReason, saving, draft, provs]);
 
 	if (loadErr !== null) {
 		return (
@@ -990,7 +1064,7 @@ export function SettingsView({
 			</datalist>
 			<nav className="settings-nav" aria-label="Settings sections">
 				<h2 className="ops-h2 settings-h2">
-					Settings {dirty && <span className="dirty-pill">unsaved</span>}
+					Settings {departureDirty && <span className="dirty-pill">unsaved</span>}
 				</h2>
 				{SECTIONS.map((s) => (
 					<button
@@ -1009,7 +1083,7 @@ export function SettingsView({
 			{section === null && (
 				<div className="settings-index">
 					<h2 className="ops-h2">
-						Settings {dirty && <span className="dirty-pill">unsaved</span>}
+						Settings {departureDirty && <span className="dirty-pill">unsaved</span>}
 					</h2>
 					<div className="card">
 						{SECTIONS.map((s) => (
@@ -1029,7 +1103,7 @@ export function SettingsView({
 					<button type="button" className="ghost" onClick={() => setSection(null)}>
 						‹ Settings
 					</button>
-					{dirty && <span className="dirty-pill">unsaved</span>}
+					{departureDirty && <span className="dirty-pill">unsaved</span>}
 				</div>
 			)}
 
@@ -1585,6 +1659,7 @@ export function SettingsView({
 								onPatch={(patch) => patchProv(p.id, patch)}
 								onRename={(v) => renameProvider(p.id, v)}
 								onRemove={() => removeProvider(p)}
+								onNameDirtyChange={(d) => reportNameDirty(p.id, d)}
 							/>
 						))}
 					</div>
@@ -1630,7 +1705,7 @@ export function SettingsView({
 							onChange={(v) => patchDraft({ publicUrl: v })}
 							placeholder="https://…"
 							mono
-							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
+							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below. Commits only on Save — an in-between value would cut this tab's own access."
 						/>
 						<Field
 							label="Bot api root"
@@ -1679,10 +1754,22 @@ export function SettingsView({
 						if (saving) return "Saving…";
 						if (notice?.kind === "err") return notice.text;
 						if (invalidReason !== null) return invalidReason;
-						if (dirty) return `Unsaved: ${dirtyFields.join(", ")}`;
+						const fields = dirtyFields.slice();
+						if (namePending) fields.unshift("provider name (still editing)");
+						if (fields.length > 0) return `Unsaved: ${fields.join(", ")}`;
 						return notice?.text ?? "";
 					})()}
 				</span>
+				{stagedDirty && (
+					<button
+						type="button"
+						className="savebar-save"
+						disabled={saving || invalidReason !== null || namePending}
+						onClick={() => void save()}
+					>
+						Save
+					</button>
+				)}
 				{notice?.kind === "err" && notice.retryable === true && !saving && dirty && (
 					<button
 						type="button"

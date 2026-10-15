@@ -155,21 +155,21 @@ describe("diagnostic boundary and phases", () => {
 		);
 		expect(JSON.stringify(await runHealth(f.options))).not.toContain(secret);
 	});
-	test("auth strict poison scan covers overridden records, mode and missing effective references; never executes refs", async () => {
+	test("auth strict poison scan covers live records, mode and missing effective references; never executes refs", async () => {
 		const f = fixture(),
 			marker = join(f.root, "executed");
 		writeFileSync(
 			join(f.home, "auth.jsonl"),
 			[
 				{ name: "telegram", value: `!touch ${marker}` },
-				{ name: "unused", value: `!pass-cli ${secret}` },
 				{ name: "unused", value: secret },
+				{ name: "unused", value: `!pass-cli ${secret}` },
 			]
 				.map((record) => JSON.stringify(record))
 				.join("\n"),
 		);
 		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
-			"prohibited-owner-session-command:line:2",
+			"prohibited-owner-session-command:line:3",
 		);
 		writeFileSync(
 			join(f.home, "auth.jsonl"),
@@ -186,6 +186,37 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
 			"1 referenced auth records missing",
 		);
+	});
+	test("the poison lint folds last-wins like the runtime: a clean override un-poisons", async () => {
+		const f = fixture();
+		// Unshadowed pass-cli record still hard-fails, naming the live line.
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			[
+				{ name: "telegram", value: secret },
+				{ name: "telegram", value: `!pass-cli ${secret}` },
+			]
+				.map((record) => JSON.stringify(record))
+				.join("\n"),
+		);
+		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
+			"prohibited-owner-session-command:line:2",
+		);
+		// The identical raw line shadowed by a later clean same-name record
+		// leaves the live record set clean — the diagnostic must pass it.
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			[
+				{ name: "telegram", value: `!pass-cli ${secret}` },
+				{ name: "telegram", value: secret },
+			]
+				.map((record) => JSON.stringify(record))
+				.join("\n"),
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "auth.metadata").status).toBe("pass");
+		expect(JSON.stringify(report)).not.toContain("prohibited-owner-session-command");
+		expect(JSON.stringify(report)).not.toContain(secret);
 	});
 	test("nonregular and oversized config files are bounded; ENOTDIR is not missing", async () => {
 		const f = fixture();
@@ -385,6 +416,48 @@ describe("pass-keys status source contract (fixtures, not a live wallet)", () =>
 		const report = await runHealth(f.options);
 		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
 		expect(JSON.stringify(report)).not.toContain(marker);
+	});
+	test.each([
+		"!GOBLIN_PROBE=/missing/pass-keys get fixture BOT_TOKEN",
+		"!GOBLIN_PROBE+=/missing/pass-keys get fixture BOT_TOKEN",
+		"!#/missing/pass-keys get fixture BOT_TOKEN",
+	])("shell non-executables remain unverified without a snapshot probe (%#)", async (value) => {
+		const f = fixture();
+		const calls = join(f.root, "argv");
+		writeFileSync(join(f.home, "auth.jsonl"), JSON.stringify({ name: "telegram", value }));
+		f.script(
+			"pass-keys",
+			`printf '%s\\n' "$*" > '${calls}'; printf 'fixture: READY  age=1s  keys=1  names=BOT_TOKEN\\n'`,
+		);
+		const report = await runHealth(f.options);
+		expect(JSON.stringify(report)).toContain("1 general commands");
+		expect(report.results.some((r) => r.id === "keys.snapshot.1")).toBe(false);
+		expect(existsSync(calls)).toBe(false);
+		expect(JSON.stringify(report)).not.toContain(value);
+	});
+	test("an absolute-path pass-keys get is recognized; only the canonical status probe runs", async () => {
+		const f = fixture(),
+			calls = join(f.root, "argv"),
+			executed = join(f.root, "executed"),
+			absolute = join(f.root, "sbin", "pass-keys");
+		mkdirSync(join(f.root, "sbin"));
+		// If diagnosis ever executed the record's executable this marker
+		// would appear — recognition is parse-only, probing stays
+		// `pass-keys status <profile>` on PATH.
+		writeFileSync(absolute, `#!/bin/sh\ntouch '${executed}'\n`, { mode: 0o700 });
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			JSON.stringify({ name: "telegram", value: `!${absolute} get fixture BOT_TOKEN` }),
+		);
+		f.script(
+			"pass-keys",
+			`printf '%s\\n' "$*" > '${calls}'; printf 'fixture: MISSING  age=none  keys=0\\n'; exit 1`,
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
+		expect(finding(report, "keys.snapshot.1").scope).toContain("profile:fixture");
+		expect(readFileSync(calls, "utf8")).toBe("status fixture\n");
+		expect(existsSync(executed)).toBe(false);
 	});
 });
 

@@ -633,6 +633,15 @@ export function openStore(dbPath: string): ConversationStore {
 	if (!convCols.has("project_id")) {
 		db.run("ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id)");
 	}
+	// The epoch high-water mark outlives its conversation row: a deleted
+	// id's final epoch is recorded on delete, and every later mint of the
+	// same id starts above it — a turn that captured a token under the old
+	// generation can never pass the fresh row's authority check.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS conversation_epoch_hwm (
+			conversation_id TEXT PRIMARY KEY,
+			epoch INTEGER NOT NULL
+		)`);
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -850,11 +859,25 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
-		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
-		 VALUES (?, ?, ?, NULL, ?, ?)`,
+		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at, epoch)
+		 VALUES (?, ?, ?, NULL, ?, ?,
+			COALESCE((SELECT epoch + 1 FROM conversation_epoch_hwm WHERE conversation_id = ?1), 0))`,
 	);
 	const qDmRoll = db.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
 		"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
+	);
+	// rollDm's pointer-less recovery: every candidate id that could carry
+	// a rolling ordinal for this chat — extant private rows plus the
+	// delete tombstones (a deleted dm:<chat>:<n> must never re-mint: its
+	// epoch tokens may still be outstanding). Thread rows and other
+	// address pools can't carry a rolling id, so a plain id list fed
+	// through rollingDmOrdinal is enough — malformed, legacy and
+	// foreign-chat ids all decode to null there.
+	const qDmOrdinalCandidates = db.query<{ id: string }, [number, string]>(
+		`SELECT id FROM conversations WHERE chat_id = ? AND thread_id IS NULL
+		 UNION
+		 SELECT conversation_id AS id FROM conversation_epoch_hwm
+		 WHERE conversation_id LIKE 'dm:' || ? || ':%'`,
 	);
 	const qDmRollHighwater = db.query<{ n: number }, [number]>(
 		"SELECT n FROM dm_roll_highwater WHERE chat_id = ?",
@@ -1173,7 +1196,23 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => {
 				const roll = qDmRoll.get(chatId);
 				const highwater = qDmRollHighwater.get(chatId);
-				const n = Math.max(roll?.n ?? 0, highwater?.n ?? 0) + 1;
+				let n = Math.max(roll?.n ?? 0, highwater?.n ?? 0) + 1;
+				if (!roll) {
+					// The lane pointer was severed (its current row deleted) —
+					// the stored n went with it, so also recover the mark
+					// from extant rows and the delete tombstones:
+					// dm_roll_highwater only knows what post-upgrade writes
+					// told it, and a re-minted ordinal would collide with
+					// outstanding epoch tokens and silently reconnect a
+					// demoted lane.
+					for (const { id: candidate } of qDmOrdinalCandidates.all(chatId, String(chatId))) {
+						const ordinal = rollingDmOrdinal(
+							{ id: candidate, chat_id: chatId, thread_id: null },
+							chatId,
+						);
+						if (ordinal !== null && ordinal + 1 > n) n = ordinal + 1;
+					}
+				}
 				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
 				const now = new Date().toISOString();
 				const source = roll ? qGet.get(roll.current_id) : null;
@@ -1502,6 +1541,16 @@ export function openStore(dbPath: string): ConversationStore {
 				// dm_roll_highwater and rollDm re-mints the lane (the reset
 				// flow calls it immediately).
 				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
+				// Record the final epoch before the row goes — a recreated id
+				// must not collide with a token this generation issued.
+				const gone = qGet.get(id);
+				if (gone !== null) {
+					db.run(
+						`INSERT INTO conversation_epoch_hwm (conversation_id, epoch) VALUES (?, ?)
+						 ON CONFLICT(conversation_id) DO UPDATE SET epoch = MAX(epoch, excluded.epoch)`,
+						[gone.id, gone.epoch],
+					);
+				}
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);
 				qDeleteContexts.run(id);

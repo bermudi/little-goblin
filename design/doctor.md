@@ -74,7 +74,7 @@ migration before boot has performed existing initialization.
 | --- | --- |
 | Config | Existing schema and local model/provider reference validation; no provider construction, catalog refresh or generation |
 | Auth | Permissions, safe record parsing, effective last-wins references including configured optional features; strict prohibited-command lint scans all records |
-| Keys | Referenced recognized `pass-keys get` profiles: metadata-only status, required key-name presence, snapshot age; installed refresh unit state |
+| Keys | Referenced recognized `pass-keys get` profiles (a single direct command — bare or literal path-prefixed executable): metadata-only status, required key-name presence, snapshot age; installed refresh unit state |
 | Workspace | Required readable files/directories, explicit optional or preflight skips |
 | Storage | Available bytes and reported inodes for caller home and narrowly discovered local PostgreSQL volume; not a write/fsync guarantee |
 | SQLite | WAL-aware read-only open, bounded integrity inspection and required base schema; no state-owner constructors or migrations |
@@ -82,9 +82,15 @@ migration before boot has performed existing initialization.
 | Memory | Configured `/health/ready` returns 2xx; credentials, bank permissions and running queues remain unverified |
 | Embedding | Local installation/container binding/mount and allowlisted embedding settings match a host-local relay/model before synthetic embedding; vectors omitted |
 
-Status parsing is pinned to the local pass-keys Go source, including vault
-keys beginning with digits and signed durations. No `get`, `warm`,
-owner-session command or arbitrary auth thunk is executed. Only verified
+Record recognition shares the installer's grammar (`src/auth.ts`): only a
+single direct `!pass-keys get <profile> <KEY>` counts — `pass-keys` bare or
+literal path-prefixed as the first word, two bare arguments, no operators,
+quotes, env prefixes, substitutions/globs or wrappers. Every other command
+form stays a general, unverified command. Status parsing is pinned to the
+local pass-keys Go
+source, including vault keys beginning with digits and signed durations. No
+`get`, `warm`, owner-session command or arbitrary auth thunk is executed.
+Only verified
 status metadata supplies profile labels; malformed outputs/errors are not
 forwarded. Locked/missing/broken snapshots fail fresh-resolution readiness,
 without claiming that the running bot already lost memoized credentials.

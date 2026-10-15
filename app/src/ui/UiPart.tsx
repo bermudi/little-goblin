@@ -10,11 +10,12 @@ import {
 	uiBlockSchema,
 	uiInputSchema,
 } from "../../../src/agent/tools/ui-schema.ts";
+import type { MarkdownNoteContext } from "../markdown.tsx";
 import { Skeleton } from "../tools/bits.tsx";
 import { ToolRun } from "../tools/mod.tsx";
 import { Block, Surface, type UiActionProps } from "./blocks.tsx";
 
-function StreamingSurface({ input }: { input: unknown }) {
+function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteContext) {
 	const rawIn = (typeof input === "object" && input !== null ? input : {}) as Record<
 		string,
 		unknown
@@ -46,7 +47,7 @@ function StreamingSurface({ input }: { input: unknown }) {
 				// invalid blocks are skipped, never skeletons.
 				if (!parsed.success) return last && !tailFragment ? <Skeleton key={i} /> : null;
 				// streaming pins html leaves to skeletons at any depth.
-				return <Block key={i} block={parsed.data} streaming />;
+				return <Block key={i} block={parsed.data} streaming {...note} />;
 			})}
 			{tailFragment && <Skeleton />}
 		</div>
@@ -57,19 +58,30 @@ export function UiPart({
 	part,
 	onAction,
 	busy,
+	streaming,
 	messages,
+	...note
 }: {
 	part: ToolUIPart | DynamicToolUIPart;
 	messages?: readonly UIMessage[] | undefined;
 } & UiActionProps) {
 	switch (part.state) {
 		case "input-streaming":
-			return <StreamingSurface input={part.input} />;
+			return <StreamingSurface input={part.input} {...note} />;
 		case "input-available":
 		case "output-available": {
 			const parsed = uiInputSchema.safeParse(normalizeUiInput(part.input).value);
 			if (!parsed.success) return <ToolRun part={part} />;
-			return <Surface input={parsed.data} onAction={onAction} busy={busy} messages={messages} />;
+			return (
+				<Surface
+					input={parsed.data}
+					onAction={onAction}
+					busy={busy}
+					streaming={streaming}
+					messages={messages}
+					{...note}
+				/>
+			);
 		}
 		default:
 			// output-error / output-denied / approval states — the

@@ -122,6 +122,7 @@ function harness(): Harness {
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as DeliveryApi;
 	const runtime = {
+		accepting: () => true,
 		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
 			if (h.failSubmit) throw new Error("queue closed");
 			const part = message.parts[0] as { text?: string } | undefined;
@@ -129,7 +130,7 @@ function harness(): Harness {
 			return true;
 		},
 		busy: () => false,
-	} as unknown as Runtime;
+	} satisfies Pick<Runtime, "accepting" | "submit" | "busy"> as unknown as Runtime;
 	const firingDeps: SchedulerDeps & { checkMail?: Harness["checkMail"] } = {
 		programs: h.programs,
 		store,

@@ -36,7 +36,115 @@ type Options = {
 		| "unwritable"
 		| "directory"
 		| "dangling";
+	attempt?: "regular" | "directory" | "dangling" | "link" | "unreadable" | "unwritable";
 };
+
+// Fake only external command boundaries: PATH contains approved
+// utilities and fakes; nothing here can reach a production service,
+// publication, build or SSH. The bun refresh stubs write real artifact
+// bytes from the checkout's own sources, so an interrupted deploy's
+// half-written artifacts are distinguishable from a clean refresh.
+function fakeBin(dir: string, includePodman = true): string {
+	const bin = join(dir, "bin");
+	mkdirSync(bin);
+	for (const name of [
+		"cat",
+		"cp",
+		"date",
+		"dirname",
+		"grep",
+		"mkdir",
+		"mktemp",
+		"mv",
+		"rm",
+		"seq",
+		"tail",
+	]) {
+		symlinkSync(commandPath(name), join(bin, name));
+	}
+	const callsFile = join(dir, "calls");
+	const stub = (name: string, body: string): void => {
+		const path = join(bin, name);
+		writeFileSync(path, `#!/bin/bash\nprintf '%s\\n' '${name} '"$*" >> "$CALLS"\n${body}\n`);
+		chmodSync(path, 0o755);
+	};
+	stub(
+		"git",
+		`case "$1" in
+push|fetch|pull) echo 'deployment must not publish or update refs' >&2; exit 90 ;;
+status|symbolic-ref|rev-parse|cat-file|log|diff)
+  if [ "$MODE" = "$1" ]; then echo "$1 failed" >&2; exit 31; fi
+  exec "$REAL_GIT" "$@" ;;
+*) echo "unexpected git boundary: $*" >&2; exit 90 ;;
+esac`,
+	);
+	stub(
+		"bun",
+		`case "$*" in
+'run typecheck') failure=typecheck ;;
+'install --frozen-lockfile') failure=install ;;
+'run app:build') failure=build ;;
+'scripts/check-startup.ts --watch '*)
+  if [ "$MODE" = watch-fail ]; then echo 'startup acceptance failed' >&2; exit 37; fi ;;
+'scripts/check-startup.ts --brief '*)
+  echo 'systemd[1]: Started goblin.service.' ;;
+*) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
+esac
+if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi
+case "$failure" in
+install) mkdir -p node_modules && cp package.json node_modules/installed.txt ;;
+build) mkdir -p app/dist && cp app/src/App.tsx app/dist/bundle.txt ;;
+esac`,
+	);
+	stub(
+		"systemctl",
+		`case "$*" in
+'--user show --property=WorkingDirectory --value goblin.service')
+  if [ "$MODE" = unit ]; then echo 'unit query failed' >&2; exit 33; fi
+  printf '%s\\n' "$SERVICE_ROOT" ;;
+'--user restart goblin')
+  if [ "$MODE" = restart ]; then echo 'restart failed' >&2; exit 34; fi ;;
+'--user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value')
+  if [ "$MODE" = floor ]; then echo 'floor failed' >&2; exit 33; fi
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n42000000\n' ;;
+'--user show goblin.service --property=Environment --value')
+  printf 'GOBLIN_HOME=%s\n' "$HOME/goblin" ;;
+'--user show --property=LoadState --value goblin-memory-api.service')
+  if [ "$MODE" = load-state ]; then echo 'load-state failed' >&2; exit 35; fi
+  if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;
+*) echo "unexpected systemctl boundary: $*" >&2; exit 90 ;;
+esac`,
+	);
+	stub(
+		"journalctl",
+		`if [ "$MODE" = journal ]; then echo 'journal failed' >&2; exit 36; fi
+if [ "$MODE" = journal-errors ]; then echo '{"level":"error","msg":"fixture error"}'; fi`,
+	);
+	if (includePodman)
+		stub(
+			"podman",
+			`case "$*" in
+'container exists goblin-memory-api')
+  case "$MODE" in
+  absent|installed-missing|load-state) exit 1 ;;
+  storage) echo 'storage unavailable' >&2; exit 125 ;;
+  esac ;;
+"inspect goblin-memory-api --format {{.State.Health.Status}}")
+  case "$MODE" in
+  inspect) echo 'inspection failed' >&2; exit 125 ;;
+  unhealthy) echo unhealthy ;;
+  *) echo healthy ;;
+  esac ;;
+*) echo "unexpected podman boundary: $*" >&2; exit 90 ;;
+esac`,
+		);
+	stub("sleep", "exit 0");
+	stub("ssh", "echo 'deployment must be local' >&2; exit 90");
+	// The marker's fsyncs are prod-real durability; the hermetic PATH
+	// only needs the command to exist.
+	stub("sync", "exit 0");
+	return bin;
+}
 
 // Run the whole shipped script in a real scratch Git checkout. PATH contains
 // only approved utilities and fakes: no production service, publication, build or SSH
@@ -58,6 +166,7 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 	};
 	let markerDir: string | undefined;
 	let marker: string | undefined;
+	let attempt: string | undefined;
 	try {
 		const main = join(dir, "main");
 		mkdirSync(main);
@@ -67,6 +176,12 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 		git(main, "config", "core.hooksPath", "/dev/null");
 		mkdirSync(join(main, "scripts"));
 		copyFileSync(deploySh, join(main, "scripts", "deploy.sh"));
+		// Ignored artifact locations so a stub refresh never dirties the
+		// tree, plus the two sources the stub refresh copies verbatim.
+		writeFileSync(join(main, ".gitignore"), "node_modules/\napp/dist/\n");
+		writeFileSync(join(main, "package.json"), "deps-A\n");
+		mkdirSync(join(main, "app", "src"), { recursive: true });
+		writeFileSync(join(main, "app", "src", "App.tsx"), "app-A\n");
 		git(main, "add", ".");
 		git(main, "commit", "-qm", "previous deployment");
 		const oldRev = git(main, "rev-parse", "HEAD");
@@ -135,86 +250,19 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 						: mode === "alias"
 							? alias
 							: repo;
-		const bin = join(dir, "bin");
-		mkdirSync(bin);
-		for (const name of ["dirname", "cat", "grep", "date", "seq", "tail", "mktemp", "mv"]) {
-			symlinkSync(commandPath(name), join(bin, name));
+		attempt = resolve(repo, git(repo, "rev-parse", "--git-path", "GOBLIN_DEPLOY_INCOMPLETE"));
+		if (options.attempt !== undefined) {
+			if (options.attempt === "directory") mkdirSync(attempt);
+			else if (options.attempt === "dangling") symlinkSync(join(dir, "missing-attempt"), attempt);
+			else if (options.attempt === "link") symlinkSync(marker, attempt);
+			else {
+				writeFileSync(attempt, `${newRev}\n`);
+				if (options.attempt === "unreadable") chmodSync(attempt, 0o000);
+				if (options.attempt === "unwritable") chmodSync(attempt, 0o444);
+			}
 		}
+		const bin = fakeBin(dir, mode !== "no-podman");
 		const callsFile = join(dir, "calls");
-		const stub = (name: string, body: string): void => {
-			const path = join(bin, name);
-			writeFileSync(path, `#!/bin/bash\nprintf '%s\\n' '${name} '"$*" >> "$CALLS"\n${body}\n`);
-			chmodSync(path, 0o755);
-		};
-		stub(
-			"git",
-			`case "$1" in
-push|fetch|pull) echo 'deployment must not publish or update refs' >&2; exit 90 ;;
-status|symbolic-ref|rev-parse|cat-file|log|diff)
-  if [ "$MODE" = "$1" ]; then echo "$1 failed" >&2; exit 31; fi
-  exec "$REAL_GIT" "$@" ;;
-*) echo "unexpected git boundary: $*" >&2; exit 90 ;;
-esac`,
-		);
-		stub(
-			"bun",
-			`case "$*" in
-'run typecheck') failure=typecheck ;;
-'install --frozen-lockfile') failure=install ;;
-'run app:build') failure=build ;;
-'scripts/check-startup.ts --watch '*)
-  if [ "$MODE" = watch-fail ]; then echo 'startup acceptance failed' >&2; exit 37; fi ;;
-'scripts/check-startup.ts --brief '*)
-  echo 'systemd[1]: Started goblin.service.' ;;
-*) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
-esac
-if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
-		);
-		stub(
-			"systemctl",
-			`case "$*" in
-'--user show --property=WorkingDirectory --value goblin.service')
-  if [ "$MODE" = unit ]; then echo 'unit query failed' >&2; exit 33; fi
-  printf '%s\\n' "$SERVICE_ROOT" ;;
-'--user restart goblin')
-  if [ "$MODE" = restart ]; then echo 'restart failed' >&2; exit 34; fi ;;
-'--user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value')
-  if [ "$MODE" = floor ]; then echo 'floor failed' >&2; exit 33; fi
-  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n42000000\n' ;;
-'--user show --property=LoadState --value goblin-memory-api.service')
-  if [ "$MODE" = load-state ]; then echo 'load-state failed' >&2; exit 35; fi
-  if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;
-*) echo "unexpected systemctl boundary: $*" >&2; exit 90 ;;
-esac`,
-		);
-		stub(
-			"journalctl",
-			`if [ "$MODE" = journal ]; then echo 'journal failed' >&2; exit 36; fi
-if [ "$MODE" = journal-errors ]; then echo '{"level":"error","msg":"fixture error"}'; fi`,
-		);
-		if (mode !== "no-podman")
-			stub(
-				"podman",
-				`case "$*" in
-'container exists goblin-memory-api')
-  case "$MODE" in
-  absent|installed-missing|load-state) exit 1 ;;
-  storage) echo 'storage unavailable' >&2; exit 125 ;;
-  esac ;;
-"inspect goblin-memory-api --format {{.State.Health.Status}}")
-  case "$MODE" in
-  inspect) echo 'inspection failed' >&2; exit 125 ;;
-  unhealthy) echo unhealthy ;;
-  *) echo healthy ;;
-  esac ;;
-*) echo "unexpected podman boundary: $*" >&2; exit 90 ;;
-esac`,
-			);
-		stub("sleep", "exit 0");
-		stub("ssh", "echo 'deployment must be local' >&2; exit 90");
-		// The marker's fsyncs are prod-real durability; the hermetic PATH
-		// only needs the command to exist.
-		stub("sync", "exit 0");
 		const result = spawnSync("/bin/bash", [join(repo, "scripts", "deploy.sh")], {
 			cwd: home,
 			env: {
@@ -230,6 +278,8 @@ esac`,
 		});
 		if (result.error) throw result.error;
 		if (options.marker === "unreadable") chmodSync(marker, 0o600);
+		if (options.attempt === "unreadable" || options.attempt === "unwritable")
+			chmodSync(attempt, 0o600);
 		const calls = existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n") : [];
 		return {
 			status: result.status,
@@ -239,6 +289,10 @@ esac`,
 			oldRev,
 			newRev,
 			marker,
+			attempt,
+			// Captured before cleanup — the fixture dir is gone by the
+			// time a test could stat the returned path itself.
+			attemptExists: existsSync(attempt),
 			markerValue:
 				existsSync(marker) && options.marker !== "directory"
 					? readFileSync(marker, "utf8").trim()
@@ -254,6 +308,9 @@ esac`,
 function expectPreflightFailure(result: ReturnType<typeof runDeploy>, diagnostic: string) {
 	expect(result.status).not.toBe(0);
 	expect(result.stderr).toContain(diagnostic);
+	// Nothing has mutated yet, so no rollback recipe is printed.
+	expect(result.stderr).not.toContain("FAILED");
+	expect(result.stderr).not.toContain("git reset --hard");
 	expect(
 		result.calls.some(
 			(call) =>
@@ -328,6 +385,8 @@ describe("local deployment preflight", () => {
 		expect(result.stdout).toContain("deploy/memory/ changed");
 		expect(result.stdout).toContain("history is missing; refreshing everything");
 		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).not.toContain("rollback:");
+		expect(result.stderr).not.toContain("git reset --hard");
 	});
 
 	test("linked worktree marker uses Git's path, not .git as a directory", () => {
@@ -443,6 +502,13 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.stderr.length).toBeGreaterThan(0);
 			expect(result.markerValue).toBe(result.oldRev);
 			expect(result.stdout).not.toContain("deploy: done:");
+			// Post-publish failures print recovery without rolling back or
+			// clearing the attempt marker.
+			expect(result.stderr).toContain("FAILED — the attempt marker stays");
+			expect(result.stderr).toContain(
+				`git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin`,
+			);
+			expect(result.attemptExists).toBe(true);
 			if (["typecheck", "install", "build", "restart", "journal", "floor"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
 			if (mode === "typecheck") {
@@ -476,10 +542,222 @@ describe("local deployment failures and memory probe", () => {
 		});
 	}
 
+	test("a failed first deployment reports failure state with manual recovery", () => {
+		const result = runDeploy([], { marker: "missing", mode: "typecheck" });
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).toContain("previous deployed revision unknown");
+		expect(result.stderr).toContain("GOBLIN_DEPLOYED_REV");
+		expect(result.stderr).toContain("GOBLIN_DEPLOY_INCOMPLETE");
+		expect(result.stderr).toContain("redeploy from the origin/main baseline");
+		expect(result.stderr).not.toContain("git reset --hard");
+		expect(result.stderr).not.toContain("rollback:");
+	});
+
+	test("a stale marker's post-restart failure keeps the attempt marker and prints manual recovery", () => {
+		const result = runDeploy([], { marker: "unknown", mode: "watch-fail" });
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).toContain("goblin failed startup acceptance after restart");
+		expect(result.stderr).toContain("previous deployed revision unknown");
+		expect(result.stderr).toContain("redeploy from the origin/main baseline");
+		expect(result.stderr).not.toContain("git reset --hard");
+		expect(result.stderr).not.toContain("rollback:");
+		expect(result.attemptExists).toBe(true);
+	});
+
 	test("fresh journal errors are visible warnings, not hidden or a read failure", () => {
 		const result = runDeploy([], { mode: "journal-errors" });
 		expect(result.status).toBe(0);
 		expect(result.stderr).toContain("WARNING — error lines in the fresh journal");
 		expect(result.stderr).toContain("fixture error");
 	});
+});
+
+describe("deployment attempt marker", () => {
+	for (const form of ["directory", "dangling", "link", "unreadable", "unwritable"] as const) {
+		test(`a ${form} attempt marker fails loudly before any deployment side effects`, () => {
+			expectPreflightFailure(runDeploy([], { attempt: form }), "attempt marker");
+		});
+	}
+
+	test("a leftover attempt marker forces dependency and client refresh despite a clean diff", () => {
+		const result = runDeploy(["src/index.ts"], { attempt: "regular" });
+		expect(result.status).toBe(0);
+		expect(result.calls).toContain("bun install --frozen-lockfile");
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.attemptExists).toBe(false);
+	});
+
+	test("a linked worktree resolves the attempt marker inside its own gitdir", () => {
+		const result = runDeploy(["src/index.ts"], { linked: true, attempt: "regular" });
+		expect(result.status).toBe(0);
+		expect(result.attempt).toContain("/.git/worktrees/");
+		expect(result.calls).toContain("bun install --frozen-lockfile");
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.attemptExists).toBe(false);
+	});
+});
+
+// A→B→C on ONE scratch checkout: markers and artifacts persist between
+// runs, so the interrupted middle deploy's leftover marker — never the
+// source diff — is what forces the retry's dependency and client refresh.
+function deploySequence() {
+	const dir = mkdtempSync(join(tmpdir(), "goblin-deploy-seq-"));
+	const home = join(dir, "home");
+	mkdirSync(home);
+	const env = {
+		HOME: home,
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_CONFIG_GLOBAL: "/dev/null",
+	};
+	const git = (cwd: string, ...args: string[]): string => {
+		const result = spawnSync(realGit, args, { cwd, env, encoding: "utf8" });
+		if (result.status !== 0) throw new Error(`fixture git ${args.join(" ")}: ${result.stderr}`);
+		return result.stdout.trim();
+	};
+	const repo = join(dir, "main");
+	mkdirSync(repo);
+	git(repo, "init", "-q", "-b", "fixture");
+	git(repo, "config", "user.name", "Deploy fixture");
+	git(repo, "config", "user.email", "fixture@example.invalid");
+	git(repo, "config", "core.hooksPath", "/dev/null");
+	mkdirSync(join(repo, "scripts"));
+	mkdirSync(join(repo, "app", "src"), { recursive: true });
+	mkdirSync(join(repo, "src"), { recursive: true });
+	copyFileSync(deploySh, join(repo, "scripts", "deploy.sh"));
+	writeFileSync(join(repo, ".gitignore"), "node_modules/\napp/dist/\n");
+	writeFileSync(join(repo, "package.json"), "deps-A\n");
+	writeFileSync(join(repo, "app", "src", "App.tsx"), "app-A\n");
+	writeFileSync(join(repo, "src", "index.ts"), "backend-A\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "deployment A");
+	const bin = fakeBin(dir);
+	const callsFile = join(dir, "calls");
+	return {
+		repo,
+		marker: resolve(repo, git(repo, "rev-parse", "--git-path", "GOBLIN_DEPLOYED_REV")),
+		attempt: resolve(repo, git(repo, "rev-parse", "--git-path", "GOBLIN_DEPLOY_INCOMPLETE")),
+		head: () => git(repo, "rev-parse", "HEAD"),
+		commit(changes: Record<string, string>) {
+			for (const [path, content] of Object.entries(changes)) {
+				mkdirSync(dirname(join(repo, path)), { recursive: true });
+				writeFileSync(join(repo, path), content);
+			}
+			git(repo, "add", ".");
+			git(repo, "commit", "-qm", "sequence deployment");
+		},
+		run(mode: string) {
+			rmSync(callsFile, { force: true });
+			const result = spawnSync("/bin/bash", [join(repo, "scripts", "deploy.sh")], {
+				cwd: home,
+				env: {
+					...env,
+					PATH: bin,
+					MODE: mode,
+					CALLS: callsFile,
+					REAL_GIT: realGit,
+					SERVICE_ROOT: repo,
+				},
+				encoding: "utf8",
+				timeout: 10_000,
+			});
+			if (result.error) throw result.error;
+			return {
+				status: result.status,
+				stdout: result.stdout,
+				stderr: result.stderr,
+				calls: existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n") : [],
+			};
+		},
+		cleanup() {
+			rmSync(dir, { recursive: true, force: true });
+		},
+	};
+}
+
+describe("interrupted deploy forces a refresh on retry", () => {
+	test("A→B→C: verification failure leaves the marker; retry rebuilds to source artifacts", () => {
+		const f = deploySequence();
+		try {
+			// A: the baseline deploy lands A's artifacts and clears nothing.
+			let run = f.run("healthy");
+			expect(run.status).toBe(0);
+			const revA = readFileSync(f.marker, "utf8").trim();
+			expect(existsSync(f.attempt)).toBe(false);
+			expect(readFileSync(join(f.repo, "app", "dist", "bundle.txt"), "utf8")).toBe("app-A\n");
+			expect(readFileSync(join(f.repo, "node_modules", "installed.txt"), "utf8")).toBe("deps-A\n");
+
+			// B: deps+app move and build B's artifacts, then verification
+			// fails — the successful marker stays on A while the attempt
+			// marker records B's interrupted revision.
+			f.commit({ "package.json": "deps-B\n", "app/src/App.tsx": "app-B\n" });
+			run = f.run("unhealthy");
+			expect(run.status).not.toBe(0);
+			expect(run.calls).toContain("bun install --frozen-lockfile");
+			expect(run.calls).toContain("bun run app:build");
+			expect(readFileSync(f.attempt, "utf8").trim()).toBe(f.head());
+			expect(readFileSync(f.marker, "utf8").trim()).toBe(revA);
+			expect(readFileSync(join(f.repo, "app", "dist", "bundle.txt"), "utf8")).toBe("app-B\n");
+			expect(readFileSync(join(f.repo, "node_modules", "installed.txt"), "utf8")).toBe("deps-B\n");
+
+			// C: dep/app source bytes return to A's, so the A→C diff is
+			// backend-only. The leftover marker, not the diff, must force
+			// reinstall/rebuild back to the deployed source's artifacts —
+			// then the marker clears only after full verification.
+			f.commit({
+				"package.json": "deps-A\n",
+				"app/src/App.tsx": "app-A\n",
+				"src/index.ts": "backend-C\n",
+			});
+			run = f.run("healthy");
+			expect(run.status).toBe(0);
+			expect(run.calls).toContain("bun install --frozen-lockfile");
+			expect(run.calls).toContain("bun run app:build");
+			expect(readFileSync(join(f.repo, "app", "dist", "bundle.txt"), "utf8")).toBe("app-A\n");
+			expect(readFileSync(join(f.repo, "node_modules", "installed.txt"), "utf8")).toBe("deps-A\n");
+			expect(existsSync(f.attempt)).toBe(false);
+			expect(readFileSync(f.marker, "utf8").trim()).toBe(f.head());
+		} finally {
+			f.cleanup();
+		}
+	});
+
+	// Whether the break is the dependency install or the client build,
+	// B's attempt marker outlives the failure while the successful
+	// marker stays on A; the clean retry refreshes on the marker, not
+	// the diff.
+	for (const mode of ["install", "build"] as const) {
+		test(`a failed ${mode} leaves the marker; the clean retry clears it`, () => {
+			const f = deploySequence();
+			try {
+				expect(f.run("healthy").status).toBe(0);
+				const revA = readFileSync(f.marker, "utf8").trim();
+				f.commit({ "package.json": "deps-B\n", "app/src/App.tsx": "app-B\n" });
+				const failed = f.run(mode);
+				expect(failed.status).not.toBe(0);
+				expect(readFileSync(f.attempt, "utf8").trim()).toBe(f.head());
+				expect(readFileSync(f.marker, "utf8").trim()).toBe(revA);
+				f.commit({
+					"package.json": "deps-A\n",
+					"app/src/App.tsx": "app-A\n",
+					"src/index.ts": "backend-C\n",
+				});
+				const retried = f.run("healthy");
+				expect(retried.status).toBe(0);
+				expect(retried.calls).toContain("bun install --frozen-lockfile");
+				expect(retried.calls).toContain("bun run app:build");
+				expect(existsSync(f.attempt)).toBe(false);
+				expect(readFileSync(f.marker, "utf8").trim()).toBe(f.head());
+			} finally {
+				f.cleanup();
+			}
+		});
+	}
+});
+
+test("shipped CI gates merges on the test suite", () => {
+	const ci = readFileSync(join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8");
+	expect(ci).toMatch(/run:\s*bun test\b/);
 });

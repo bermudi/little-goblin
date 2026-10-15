@@ -214,8 +214,13 @@ function NoteChip({
 		title?: string;
 		rev?: number;
 	};
-	if (typeof d.id !== "string" || typeof d.title !== "string") return null;
-	const label = `Note · ${d.title}${typeof d.rev === "number" ? ` · rev ${d.rev}` : ""}`;
+	if (typeof d.id !== "string") return null;
+	// An optimistic part (or older history) may carry only the id — it
+	// labels itself rather than dropping the chip. A rev only displays
+	// when the server's expansion actually stamped one.
+	const label = `Note · ${typeof d.title === "string" ? d.title : d.id}${
+		typeof d.rev === "number" ? ` · rev ${d.rev}` : ""
+	}`;
 	if (onOpenNote === undefined) {
 		return (
 			<a className="attachment note-chip" href={`/app/n/${encodeURIComponent(d.id)}`}>
@@ -270,6 +275,9 @@ export function MessageParts({
 						part={p}
 						onAction={onAction}
 						busy={busy}
+						token={token}
+						noteProjectId={noteProjectId}
+						onOpenNote={onOpenNote}
 						messages={messages}
 					/>,
 				);
@@ -665,7 +673,17 @@ function NotePicker({
 				autoFocus
 				onChange={(e) => setQuery(e.target.value)}
 				onKeyDown={(e) => {
-					if (e.key === "Escape") onClose();
+					// The input lives inside the composer form — an
+					// unguarded Enter would implicitly submit the draft.
+					// Both keys stay picker-local.
+					if (e.key === "Enter") {
+						e.preventDefault();
+						e.stopPropagation();
+					} else if (e.key === "Escape") {
+						e.preventDefault();
+						e.stopPropagation();
+						onClose();
+					}
 				}}
 			/>
 			{failed && <p className="error">Couldn't list notes.</p>}
@@ -708,6 +726,8 @@ export function Composer({
 	onStop,
 	quote,
 	focusSignal,
+	draftRestore,
+	onDraftRestored,
 }: {
 	token: string | null;
 	conversationId?: string;
@@ -726,8 +746,11 @@ export function Composer({
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
 	focusSignal?: number;
+	draftRestore?: { parts: UIMessage["parts"] } | null;
+	onDraftRestored?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
+	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
@@ -735,6 +758,7 @@ export function Composer({
 	}, [focusSignal]);
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
+		editedAfterSend.current = true;
 		setDraft((d) => appendQuote(d, quote.text));
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -744,6 +768,39 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
+	// The parent scopes this payload to its originating composer. Never
+	// replace text the operator wrote after the cancelled send.
+	useEffect(() => {
+		if (draftRestore == null) return;
+		const text = draftRestore.parts
+			.filter((p) => p.type === "text")
+			.map((p) => p.text)
+			.join("\n\n");
+		if (!editedAfterSend.current) setDraft(text);
+		const uploads: StagedUpload[] = [];
+		const notes: StagedNote[] = [];
+		for (const p of draftRestore.parts) {
+			if (p.type === "data-attachment") {
+				const data = p.data as AttachmentRef & { speech?: boolean };
+				uploads.push({
+					key: crypto.randomUUID(),
+					ref: data,
+					...(data.speech === true ? { speech: true } : {}),
+				});
+			} else if (p.type === "data-note") {
+				const data = p.data as { id: string; title: string };
+				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+			}
+		}
+		if (uploads.length > 0) setStaged((prev) => [...prev, ...uploads]);
+		if (notes.length > 0) setStagedNotes((prev) => [...prev, ...notes]);
+		onDraftRestored?.();
+		const ta = textareaRef.current;
+		if (ta !== null) {
+			ta.focus();
+			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
+		}
+	}, [draftRestore]);
 	// An entry leaves the staged list (sent or removed) — its preview
 	// URL goes with it. A composer unmount revokes nothing: staged
 	// entries outlive any one composer (#118), and an undropped thumb
@@ -945,10 +1002,15 @@ export function Composer({
 				type: "data-attachment",
 				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
 			} as UIMessage["parts"][number]);
-		// The client names the note only — intake expands it server-side.
+		// Intake expands the id into the authoritative snapshot; the
+		// title rides along only so the just-sent chip isn't bare.
 		for (const n of stagedNotes)
-			parts.push({ type: "data-note", data: { id: n.id } } as UIMessage["parts"][number]);
+			parts.push({
+				type: "data-note",
+				data: { id: n.id, title: n.title },
+			} as UIMessage["parts"][number]);
 		setDraft("");
+		editedAfterSend.current = false;
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the
 		// operator still sees in the composer.
@@ -1058,7 +1120,10 @@ export function Composer({
 					value={draft}
 					rows={1}
 					placeholder="Message goblin"
-					onChange={(e) => setDraft(e.target.value)}
+					onChange={(e) => {
+						editedAfterSend.current = true;
+						setDraft(e.target.value);
+					}}
 					onKeyDown={(e) => {
 						// isComposing: Enter that confirms an IME candidate is
 						// not a send.

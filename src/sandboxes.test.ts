@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
-import { makePodman, type PodmanExecOpts } from "./podman.ts";
+import { makePodman, type Podman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { tmpDb } from "./testkit.ts";
@@ -27,6 +27,8 @@ interface FakeContainer {
 	networks: Set<string>;
 	labels: Record<string, string>;
 	files: Map<string, Uint8Array>;
+	/** In-guest symlink paths — catFile must refuse these. */
+	links: Set<string>;
 }
 
 // A fake podman engine: runner routes on argv shape, holding container
@@ -52,6 +54,7 @@ function fakeEngine(opts?: {
 			networks: new Set(c.networks ?? []),
 			labels: c.labels ?? { "goblin.sandbox": "1" },
 			files: new Map(),
+			links: new Set(),
 		});
 	}
 	const networks = new Set<string>();
@@ -62,7 +65,15 @@ function fakeEngine(opts?: {
 	const flags = {
 		breakDisconnect: opts?.breakDisconnect ?? false,
 		failDisconnect: opts?.failDisconnect ?? false,
+		// Inspect fails once the ordinal count reaches this (relative
+		// arming: flags.failInspectFrom = flags.inspectCalls + k).
+		inspectCalls: 0,
+		failInspectFrom: undefined as number | undefined,
 		failRm: false,
+		failNetworkCreate: false,
+		// Canned exec results — the output-cap restart tests.
+		execResult: undefined as BoundedProc | undefined,
+		execBytesResult: undefined as BoundedProcBytes | undefined,
 		// Awaited before an rm is applied — the race tests park the
 		// sweep here to inject ordering.
 		onRm: undefined as undefined | ((name: string) => Promise<void>),
@@ -72,6 +83,10 @@ function fakeEngine(opts?: {
 		calls.push([...args]);
 		const [cmd, sub] = args;
 		if (cmd === "inspect") {
+			flags.inspectCalls += 1;
+			if (flags.failInspectFrom !== undefined && flags.inspectCalls >= flags.failInspectFrom) {
+				return { code: 1, stdout: "", stderr: "Error: engine connection reset" };
+			}
 			const c = containers.get(args[1]!);
 			if (c === undefined) {
 				return { code: 125, stdout: "[]", stderr: "Error: no such object" };
@@ -97,6 +112,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: JSON.stringify([{ options: { isolate: "strict" } }]), stderr: "" };
 		}
 		if (cmd === "network" && sub === "create") {
+			if (flags.failNetworkCreate) {
+				return { code: 1, stdout: "", stderr: "Error: network backend down" };
+			}
 			networks.add(args.at(-1)!);
 			return { code: 0, stdout: args.at(-1)! + "\n", stderr: "" };
 		}
@@ -133,6 +151,7 @@ function fakeEngine(opts?: {
 				networks: new Set([network]),
 				labels,
 				files: new Map(),
+				links: new Set(),
 			});
 			return { code: 0, stdout: "abc123\n", stderr: "" };
 		}
@@ -146,7 +165,7 @@ function fakeEngine(opts?: {
 		if (cmd === "rm") {
 			if (flags.onRm !== undefined) await flags.onRm(args.at(-1)!);
 			if (flags.failRm) {
-				return { code: 1, stdout: "", stderr: "Error: rm refused" };
+				return { code: 1, stdout: "", stderr: "Error: rm wedged on a locked layer" };
 			}
 			containers.delete(args.at(-1)!);
 			return { code: 0, stdout: "", stderr: "" };
@@ -166,18 +185,46 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
+		if (flags.execResult !== undefined) return flags.execResult;
+		// catFile's regular-file probe: `test -f "$1" && ! test -L "$1"`.
+		// exec argv is ["exec",-flags…, name, ...argv] — the container
+		// name is the element before the inner argv's head.
+		const checkIdx = args.indexOf("sb-check");
+		if (checkIdx !== -1) {
+			const name = args[args.indexOf("/bin/sh") - 1]!;
+			const c = containers.get(name);
+			const path = args[checkIdx + 1]!;
+			const ok = c !== undefined && c.files.has(path) && !c.links.has(path);
+			return { stdout: "", stderr: "", exitCode: ok ? 0 : 1, timedOut: false, truncated: false };
+		}
 		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 	};
 	const execBytesRunner = async (
-		_args: string[],
+		args: string[],
 		_opts: PodmanExecOpts,
-	): Promise<BoundedProcBytes> => ({
-		stdout: new Uint8Array(),
-		stderr: "",
-		exitCode: 0,
-		timedOut: false,
-		truncated: false,
-	});
+	): Promise<BoundedProcBytes> => {
+		if (flags.execBytesResult !== undefined) return flags.execBytesResult;
+		// catFile's read: `cat -- <path>` — name sits before "cat".
+		const catIdx = args.indexOf("cat");
+		const c = catIdx === -1 ? undefined : containers.get(args[catIdx - 1]!);
+		if (catIdx !== -1 && c !== undefined) {
+			const data = c.files.get(args.at(-1)!);
+			return {
+				stdout: data ?? new Uint8Array(),
+				stderr: "",
+				exitCode: data === undefined ? 1 : 0,
+				timedOut: false,
+				truncated: false,
+			};
+		}
+		return {
+			stdout: new Uint8Array(),
+			stderr: "",
+			exitCode: 0,
+			timedOut: false,
+			truncated: false,
+		};
+	};
 
 	return {
 		podman: makePodman({ runner, execRunner, execBytesRunner }),
@@ -189,7 +236,14 @@ function fakeEngine(opts?: {
 	};
 }
 
-function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConfig>) {
+function rig(
+	engine: ReturnType<typeof fakeEngine>,
+	config?: Partial<SandboxConfig>,
+	extra?: {
+		runLease?: (conversationId: string) => { id: number; status: string } | null;
+		onLifecycle?: (conversationId: string, note: string) => void;
+	},
+) {
 	const store = openSandboxes(tmpDb("goblin-sbx-"));
 	const sandboxes = makeSandboxes({
 		podman: engine.podman,
@@ -197,6 +251,8 @@ function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConf
 		config: () => ({ ...sandboxConfigSchema.parse({}), ...config }),
 		containerPrefix: PREFIX,
 		networkName: NETWORK,
+		...(extra?.runLease !== undefined ? { runLease: extra.runLease } : {}),
+		...(extra?.onLifecycle !== undefined ? { onLifecycle: extra.onLifecycle } : {}),
 	});
 	return { store, sandboxes };
 }
@@ -353,6 +409,85 @@ describe("sandboxes lifecycle", () => {
 		expect(store.get(conv)).toBeNull();
 	});
 
+	test("network off is fail-closed: a failed confirming inspect removes the container", async () => {
+		const conv = "dm:12";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: true,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		// ensureLocked inspect, the want-true reconcile inspect, the
+		// desired-off pre-inspect, then the post-disconnect
+		// confirmation — that fourth one throws.
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		// The disconnect ran first — the removal is the fail-closed
+		// verdict, not a skipped-off ramp.
+		const calls = engine.calls;
+		const disconnect = calls.findLastIndex((a) => a[0] === "network" && a[1] === "disconnect");
+		const rm = calls.findLastIndex((a) => a[0] === "rm");
+		expect(disconnect).toBeGreaterThanOrEqual(0);
+		expect(rm).toBeGreaterThan(disconnect);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("network off is fail-closed: a failed initial inspect removes the container", async () => {
+		const conv = "dm:13";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		// Attached container, off intent — ensureLocked inspects fine,
+		// then applyNetwork's own inspect throws before any verdict.
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 2;
+		await expect(sandboxes.exec(conv, "true", execOpts)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("a failed fail-closed removal surfaces the rm error and keeps the row", async () => {
+		const conv = "dm:14";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: true,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		engine.flags.failRm = true;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(
+			/could not be inspected.*could not be removed.*rm wedged/s,
+		);
+		// rm never landed — container and row both survive for the
+		// next call's retry, and the original inspect failure is the
+		// cause, not hidden behind the rm error.
+		expect(engine.containers.has(name)).toBe(true);
+		expect(store.get(conv)).not.toBeNull();
+	});
+
 	test("the sweep reaps idle rows but never the caller's", async () => {
 		const conv = "dm:caller";
 		const staleConv = "dm:stale";
@@ -502,5 +637,444 @@ describe("sandboxes lifecycle", () => {
 		await sandboxes.exec("dm:active", "true", execOpts);
 		expect(engine.containers.has(staleName)).toBe(false);
 		expect(store.get(staleConv)).toBeNull();
+	});
+});
+
+describe("reset preflight happens before destruction", () => {
+	function seededSandbox(conv: string) {
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const rigged = rig(engine);
+		rigged.store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		return { engine, ...rigged, name };
+	}
+
+	test("an unavailable replacement image refuses before rm — container, files and row survive", async () => {
+		const conv = "dm:reset-image";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		await expect(sandboxes.reset(conv, "docker.io/library/busybox:latest")).rejects.toThrow(
+			"podman pull docker.io/library/busybox:latest",
+		);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		const c = engine.containers.get(name)!;
+		expect(c.image).toBe(IMAGE);
+		expect(c.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+		expect(store.get(conv)!.image).toBe(IMAGE);
+	});
+
+	test("a failed replacement network preflight leaves the existing sandbox intact", async () => {
+		const conv = "dm:reset-net";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		engine.flags.failNetworkCreate = true;
+		await expect(sandboxes.reset(conv)).rejects.toThrow(/network create/);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+	});
+
+	test("a clean preflight still destroys and recreates, network off", async () => {
+		const conv = "dm:reset-ok";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		const out = await sandboxes.reset(conv);
+		expect(out.note).toContain("previous contents are gone");
+		const c = engine.containers.get(name)!;
+		expect(c.networks.size).toBe(0);
+		expect(c.files.has("/work/keep.txt")).toBe(false);
+		expect(store.get(conv)!.container).toBe(name);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(true);
+	});
+});
+
+describe("catFile regular-file contract", () => {
+	async function seeded(): Promise<{
+		engine: ReturnType<typeof fakeEngine>;
+		sandboxes: ReturnType<typeof rig>["sandboxes"];
+		name: string;
+	}> {
+		const conv = CONV;
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes } = rig(engine);
+		engine.containers.get(name)!.files.set("/work/ok.txt", new TextEncoder().encode("data"));
+		return { engine, sandboxes, name };
+	}
+
+	test("a regular file exports", async () => {
+		const { sandboxes } = await seeded();
+		const out = await sandboxes.catFile(CONV, "/work/ok.txt");
+		expect(new TextDecoder().decode(out.data)).toBe("data");
+	});
+
+	test("a leaf symlink is refused — test -L guards what -f follows", async () => {
+		const { engine, sandboxes, name } = await seeded();
+		engine.containers.get(name)!.files.set("/work/link.txt", new TextEncoder().encode("data"));
+		engine.containers.get(name)!.links.add("/work/link.txt");
+		await expect(sandboxes.catFile(CONV, "/work/link.txt")).rejects.toThrow(/not a regular file/);
+	});
+
+	test("missing paths and dirs are refused", async () => {
+		const { sandboxes } = await seeded();
+		await expect(sandboxes.catFile(CONV, "/work/nope")).rejects.toThrow(/not a regular file/);
+	});
+});
+
+describe("run leases pin the sandbox", () => {
+	test("reset refuses while a run lease is live", async () => {
+		const conv = "dm:20";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes, store } = rig(engine, undefined, {
+			runLease: (c) => (c === conv ? { id: 4, status: "running" } : null),
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		await expect(sandboxes.reset(conv)).rejects.toThrow(/run #4/);
+		expect(engine.containers.has(name)).toBe(true);
+		// The lease is only claimed by live statuses — done frees it.
+		const { sandboxes: freed } = rig(engine, undefined, {
+			runLease: () => null,
+		});
+		await freed.reset(conv);
+	});
+
+	test("the sweep skips a leased sandbox even past idleHours", async () => {
+		const staleConv = "dm:leased";
+		const staleName = containerNameFor(staleConv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name: staleName }] });
+		const { sandboxes, store } = rig(
+			engine,
+			{ idleHours: 1 },
+			{
+				runLease: (c) => (c === staleConv ? { id: 9, status: "needs_input" } : null),
+			},
+		);
+		const old = Date.now() - 2 * 3_600_000;
+		store.put({
+			conversationId: staleConv,
+			container: staleName,
+			image: IMAGE,
+			network: false,
+			createdAt: old,
+			lastUsedAt: old,
+		});
+		await sandboxes.exec("dm:caller2", "true", execOpts);
+		expect(engine.containers.has(staleName)).toBe(true);
+		expect(store.get(staleConv)).not.toBeNull();
+	});
+
+	test("a live lease announces itself on exec results", async () => {
+		const conv = "dm:21";
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine, undefined, {
+			runLease: (c) => (c === conv ? { id: 2, status: "running" } : null),
+		});
+		const out = await sandboxes.exec(conv, "true", execOpts);
+		expect(out.note).toContain("run #2 holds this sandbox");
+	});
+});
+
+describe("onLifecycle", () => {
+	test("recreate after a missing container reports the note", async () => {
+		const conv = "dm:30";
+		const name = containerNameFor(conv, PREFIX);
+		const notes: string[] = [];
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		const out = await sandboxes.exec(conv, "true", execOpts);
+		expect(out.note).toContain("previous contents are lost");
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toContain("previous contents are lost");
+	});
+
+	test("a killed exec's restart reports the note", async () => {
+		const conv = "dm:31";
+		const name = containerNameFor(conv, PREFIX);
+		const notes: string[] = [];
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		const timedOut = await sandboxes.exec(conv, "sleep 600", {
+			timeoutMs: 5_000,
+			maxOutput: 1024,
+			abortSignal: AbortSignal.abort(),
+		});
+		expect(timedOut.note).toContain("restarted");
+		expect(notes.some((n) => n.includes("restarted"))).toBe(true);
+	});
+});
+
+describe("output-capped execs restart the sandbox", () => {
+	// A stream-cap kill is not a deadline: the container restarts (the
+	// in-container command may outlive its client), the note names the
+	// cap, and the filesystem survives.
+	function rigCapped(notes: string[]) {
+		const conv = "dm:60";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		return { engine, sandboxes, store, conv, name };
+	}
+
+	function expectRestarted(
+		engine: ReturnType<typeof fakeEngine>,
+		name: string,
+		note: string | undefined,
+		notes: string[],
+	) {
+		expect(note).toContain("output cap");
+		expect(note).not.toContain("deadline");
+		expect(engine.calls.some((a) => a[0] === "restart")).toBe(true);
+		// Files and the row survive the restart — only processes died.
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(notes.some((n) => n.includes("output cap"))).toBe(true);
+	}
+
+	test("text exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execResult = {
+			stdout: "x".repeat(70_000),
+			stderr: "",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.exec(conv, "seq 1 500000", execOpts);
+		expectRestarted(engine, name, out.note, notes);
+	});
+
+	test("argv exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execResult = {
+			stdout: "",
+			stderr: "flooded",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.execArgv(conv, ["seq", "1", "500000"], execOpts);
+		expectRestarted(engine, name, out.note, notes);
+	});
+
+	test("binary argv exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execBytesResult = {
+			stdout: new Uint8Array(70_000),
+			stderr: "",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.execBytesArgv(conv, ["cat", "big.bin"], execOpts);
+		expectRestarted(engine, name, out.note, notes);
+	});
+});
+
+// Cancellation: a signal that lands while a call is parked — inside a
+// deferred preflight or queued on the conversation lane — must stop the
+// call before any mutation dispatches, not after.
+describe("aborted lifecycle calls never start a mutation", () => {
+	function seeded(conv: string) {
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const rigged = rig(engine);
+		rigged.store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		return { engine, ...rigged, name };
+	}
+
+	const until = async (cond: () => boolean): Promise<void> => {
+		for (let i = 0; i < 200 && !cond(); i++) {
+			await new Promise((r) => setImmediate(r));
+		}
+	};
+
+	// A podman read parked on a gate: `entered` flips when the op
+	// reaches it, `release()` lets it complete.
+	function hold(
+		podman: Podman,
+		method: "inspect" | "imageExists",
+	): { entered: () => boolean; release: () => void } {
+		let entered = false;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		if (method === "inspect") {
+			const orig = podman.inspect.bind(podman);
+			podman.inspect = async (n, c) => {
+				entered = true;
+				await gate;
+				return orig(n, c);
+			};
+		} else {
+			const orig = podman.imageExists.bind(podman);
+			podman.imageExists = async (ref, c) => {
+				entered = true;
+				await gate;
+				return orig(ref, c);
+			};
+		}
+		return { entered: () => entered, release };
+	}
+
+	test("cancellation during start still reconciles the stored network-off intent", async () => {
+		const conv = "dm:abort-start";
+		const { engine, sandboxes, name } = seeded(conv);
+		const container = engine.containers.get(name)!;
+		container.running = false;
+		container.networks.add(NETWORK);
+		const ctl = new AbortController();
+		const start = engine.podman.start.bind(engine.podman);
+		engine.podman.start = async (...args) => {
+			await start(...args);
+			ctl.abort();
+		};
+		await expect(
+			sandboxes.catFile(conv, "/work/keep.txt", { abortSignal: ctl.signal }),
+		).rejects.toThrow();
+		expect(container.running).toBe(true);
+		expect(container.networks.size).toBe(0);
+	});
+
+	test("reset rechecks a lease acquired during replacement preflight", async () => {
+		const conv = "dm:lease-preflight";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		let leased = false;
+		const { sandboxes } = rig(engine, undefined, {
+			runLease: () => (leased ? { id: 9, status: "queued" } : null),
+		});
+		const gate = hold(engine.podman, "imageExists");
+		const pending = sandboxes.reset(conv);
+		await until(gate.entered);
+		leased = true;
+		gate.release();
+		await expect(pending).rejects.toThrow(/run #9/);
+		expect(engine.calls.some((args) => args[0] === "rm")).toBe(false);
+		expect(engine.containers.has(name)).toBe(true);
+	});
+
+	test("reset aborted inside a deferred preflight never rms or recreates", async () => {
+		const conv = "dm:abort-preflight";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		const gate = hold(engine.podman, "imageExists");
+		const ctl = new AbortController();
+		const pending = sandboxes.reset(conv, undefined, { abortSignal: ctl.signal });
+		await until(gate.entered);
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+	});
+
+	test("reset aborted while parked behind the lane never rms or recreates", async () => {
+		const conv = "dm:abort-lane";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		// Park a network toggle inside the lane; the reset queues behind it.
+		const gate = hold(engine.podman, "inspect");
+		const first = sandboxes.setNetwork(conv, true);
+		await until(gate.entered);
+		const ctl = new AbortController();
+		const pending = sandboxes.reset(conv, undefined, { abortSignal: ctl.signal });
+		await new Promise((r) => setImmediate(r));
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		await first;
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+	});
+
+	test("setNetwork aborted mid-reconcile never connects or disconnects", async () => {
+		const conv = "dm:abort-net";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		const gate = hold(engine.podman, "inspect");
+		const ctl = new AbortController();
+		const pending = sandboxes.setNetwork(conv, true, { abortSignal: ctl.signal });
+		await until(gate.entered);
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		expect(
+			engine.calls.some((a) => a[0] === "network" && (a[1] === "connect" || a[1] === "disconnect")),
+		).toBe(false);
+		expect(engine.containers.get(name)!.networks.size).toBe(0);
+		expect(store.get(conv)!.network).toBe(false);
+	});
+
+	test("cpIn aborted while parked behind the lane never copies", async () => {
+		const conv = "dm:abort-import";
+		const { engine, sandboxes } = seeded(conv);
+		const gate = hold(engine.podman, "inspect");
+		const first = sandboxes.setNetwork(conv, true);
+		await until(gate.entered);
+		const ctl = new AbortController();
+		const pending = sandboxes.cpIn(conv, "/tmp/nope", "/work/x", { abortSignal: ctl.signal });
+		await new Promise((r) => setImmediate(r));
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		await first;
+		expect(engine.calls.some((a) => a[0] === "cp")).toBe(false);
 	});
 });

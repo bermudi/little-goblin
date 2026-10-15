@@ -7,14 +7,14 @@
 // a host path the container could aim).
 
 import { tool } from "ai";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { z } from "zod";
+import { readImport, resolveExport, writeExportBytes } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
-import { durableWriteBytes } from "../../durable.ts";
 import { PodmanError } from "../../podman.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
-import { resolvePath, writeThroughTarget } from "./paths.ts";
 import { truncateTail } from "./truncate.ts";
 
 const MAX_OUTPUT = 100 * 1024;
@@ -88,6 +88,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 		inputSchema: sandboxInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const input = actionSchema.parse(raw);
+			// Every action is a mutation or an engine read past this point —
+			// a dead call never starts one.
+			abortSignal?.throwIfAborted();
 			const conv = deps.conversation;
 			try {
 				switch (input.action) {
@@ -109,90 +112,43 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "import": {
-						const resolved = resolvePath(deps.workspace, input.from);
-						const wsReal = realpathSync(deps.workspace);
-						// A lexical `..` escape is refused before the
-						// filesystem is touched — the realpath check below
-						// only runs once the path exists, and an absolute
-						// `from` is refused the same way.
-						const wsLex = resolve(deps.workspace);
-						if (resolved !== wsLex && !resolved.startsWith(wsLex + sep)) {
-							return {
-								error: `import refused: ${input.from} resolves to ${resolved}, outside the workspace — copy it into the workspace first if this is deliberate`,
-							};
-						}
-						let real: string;
+						const stage = await mkdtemp(join(tmpdir(), "goblin-sbx-imp-"));
 						try {
-							real = realpathSync(resolved);
-						} catch (err) {
-							if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-								return { error: `import source not found: ${input.from}` };
-							}
-							throw err;
+							abortSignal?.throwIfAborted();
+							const source = readImport(deps.workspace, input.from);
+							if ("error" in source) return { error: `import ${source.error}` };
+							const staged = join(stage, basename(source.path));
+							await writeFile(staged, source.data);
+							const { note } = await deps.sandboxes.cpIn(conv, staged, input.to, {
+								...(abortSignal ? { abortSignal } : {}),
+							});
+							return { imported: input.to, ...(note !== undefined ? { note } : {}) };
+						} finally {
+							await rm(stage, { recursive: true, force: true });
 						}
-						if (real !== wsReal && !real.startsWith(wsReal + sep)) {
-							return {
-								error: `import refused: ${input.from} resolves to ${real}, outside the workspace — copy it into the workspace first if this is deliberate`,
-							};
-						}
-						const { note } = await deps.sandboxes.cpIn(conv, real, input.to);
-						return { imported: input.to, ...(note !== undefined ? { note } : {}) };
 					}
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));
-						if (isAbsolute(rel)) {
-							return {
-								error: `export destination must be a workspace-relative path, got absolute: ${rel}`,
-							};
-						}
-						const wsReal = realpathSync(deps.workspace);
-						const dest = resolvePath(wsReal, rel);
-						if (!dest.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${rel} resolves to ${dest}, outside the workspace`,
-							};
-						}
-						// A symlinked directory or leaf could aim the write
-						// anywhere — the parent realpath and the write-through
-						// target must both stay inside the workspace.
-						const parent = dirname(dest);
-						// Recursive mkdir follows an intermediate symlink, so
-						// before creating anything the containment check runs on
-						// the deepest ancestor that EXISTS — otherwise
-						// `link -> /outside` plus a missing `a/b` tail would seed
-						// empty dirs outside the workspace before refusing.
-						let anchor = parent;
-						while (anchor !== wsReal && anchor.startsWith(wsReal + sep)) {
-							try {
-								lstatSync(anchor);
-								break;
-							} catch (err) {
-								if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-								anchor = dirname(anchor);
-							}
-						}
-						const realAnchor = realpathSync(anchor);
-						if (realAnchor !== wsReal && !realAnchor.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${anchor} resolves to ${realAnchor}, outside the workspace`,
-							};
-						}
-						mkdirSync(parent, { recursive: true });
-						const realParent = realpathSync(parent);
-						if (realParent !== wsReal && !realParent.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${parent} resolves to ${realParent}, outside the workspace`,
-							};
-						}
-						const through = writeThroughTarget(dest);
-						if ("error" in through) return { error: through.error };
-						if (!through.target.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${rel} is a symlink to ${through.target}, outside the workspace`,
-							};
-						}
-						const { data, note } = await deps.sandboxes.catFile(conv, input.from);
-						durableWriteBytes(through.target, data);
+						// box-files owns the containment checks; unlike its export
+						// helpers, the sandbox writes the exact destination,
+						// overwriting in place rather than numbering. The early
+						// resolve refuses bad destinations before paying the
+						// container read.
+						const early = resolveExport(deps.workspace, rel);
+						if ("error" in early) return { error: early.error };
+						const { data, note } = await deps.sandboxes.catFile(conv, input.from, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
+						// The wait above is a cancellation gap: recheck before
+						// the host write so a call cancelled mid-read (or a nested
+						// export the script VM killed) never overwrites a
+						// workspace file.
+						abortSignal?.throwIfAborted();
+						// The resolved path is stale after the read — the write
+						// re-derives containment and pins the parent dir FD so a
+						// swapped ancestor can't redirect it.
+						const written = writeExportBytes(deps.workspace, rel, data);
+						if ("error" in written) return { error: written.error };
 						return {
 							exported: rel,
 							bytes: data.byteLength,
@@ -200,7 +156,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "network": {
-						const { note } = await deps.sandboxes.setNetwork(conv, input.enabled);
+						const { note } = await deps.sandboxes.setNetwork(conv, input.enabled, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						return {
 							enabled: input.enabled,
 							...(input.enabled
@@ -213,7 +171,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "reset": {
-						const { note } = await deps.sandboxes.reset(conv, input.image);
+						const { note } = await deps.sandboxes.reset(conv, input.image, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						return { reset: true, ...(note !== undefined ? { note } : {}) };
 					}
 				}

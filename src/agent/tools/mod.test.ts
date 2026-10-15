@@ -173,6 +173,20 @@ describe("toolNames ↔ makeTools", () => {
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
+			// Same for the subagents pair — the invariant only covers the
+			// tools the call actually mounts.
+			subagent: {
+				conversation: "dm:1",
+				workspace: "/tmp",
+				subagents: {} as never,
+				workerEnabled: true,
+				computerEnabled: true,
+			},
+			desktop: {
+				conversation: "dm:1",
+				workspace: "/tmp",
+				desktops: {} as never,
+			},
 			image: {} as unknown as ImageToolDeps,
 		});
 		for (const [name, t] of Object.entries(tools)) {
@@ -181,5 +195,34 @@ describe("toolNames ↔ makeTools", () => {
 			const wire = z.toJSONSchema(schema as z.ZodType);
 			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
+	});
+
+	test("subagent/desktop mount only with their deps, ordered before ui", () => {
+		const without = toolNames(makeTools({ cwd: "/tmp", ui: true }));
+		expect(without).not.toContain("subagent");
+		expect(without).not.toContain("desktop");
+		expect(without).toContain("ui");
+
+		const withBoth = toolNames(
+			makeTools({
+				cwd: "/tmp",
+				subagent: {
+					conversation: "dm:1",
+					workspace: "/tmp",
+					subagents: {} as never,
+					workerEnabled: true,
+					computerEnabled: true,
+				},
+				desktop: {
+					conversation: "dm:1",
+					workspace: "/tmp",
+					desktops: {} as never,
+				},
+				ui: true,
+			}),
+		);
+		expect(withBoth.indexOf("subagent")).toBeLessThan(withBoth.indexOf("ui"));
+		expect(withBoth.indexOf("desktop")).toBeLessThan(withBoth.indexOf("ui"));
+		expect(withBoth.at(-1)).toBe("ui");
 	});
 });

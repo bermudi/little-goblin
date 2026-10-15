@@ -9,6 +9,7 @@ import {
 	fchmodSync,
 	fsyncSync,
 	futimesSync,
+	linkSync,
 	lstatSync,
 	realpathSync,
 	readlinkSync,
@@ -30,6 +31,9 @@ export interface DurableWriteOptions {
 	 *  copy keeps the original's mtime so freshness checks still read it
 	 *  as old, and the stamp is durable with the data. */
 	times?: { atime: Date | number; mtime: Date | number };
+	/** Create-only: the destination appears by link(2), not rename(2) —
+	 *  EEXIST where rename would silently replace. */
+	exclusive?: boolean;
 }
 
 export function durableWriteFile(
@@ -48,6 +52,17 @@ export function durableWriteBytes(
 	options: number | DurableWriteOptions = 0o644,
 ): void {
 	durableWriteBuffer(path, Buffer.from(data), normalize(options));
+}
+
+/** The create-only twin: same durable ritual, but the destination
+ *  appears by link(2) instead of rename(2) — EEXIST where rename
+ *  would silently replace. Collision-numbering callers retry on it. */
+export function durableWriteBytesExclusive(
+	path: string,
+	data: Uint8Array,
+	modeIfNew = 0o644,
+): void {
+	durableWriteBuffer(path, Buffer.from(data), { modeIfNew, exclusive: true });
 }
 
 // 1 MiB per readSync/writeSync hop — big enough that a multi-MB copy
@@ -222,17 +237,30 @@ function durableWriteBuffer(
 		discardTmp(tmp);
 		throw err;
 	}
-	try {
-		renameSync(tmp, path);
-	} catch (err) {
-		// The target is untouched; the tmp must not pile up next to it
-		// (a program re-trying the write every tick would litter the
-		// directory unbounded).
-		discardTmp(tmp);
-		throw err;
+	if (options.exclusive === true) {
+		// link(2) is create-only — a taken name fails EEXIST and the
+		// incumbent survives, where rename(2) would clobber it. Same
+		// filesystem as tmp (same dir), so it never crosses devices.
+		try {
+			linkSync(tmp, path);
+		} catch (err) {
+			discardTmp(tmp);
+			throw err;
+		}
+		unlinkSync(tmp);
+	} else {
+		try {
+			renameSync(tmp, path);
+		} catch (err) {
+			// The target is untouched; the tmp must not pile up next to it
+			// (a program re-trying the write every tick would litter the
+			// directory unbounded).
+			discardTmp(tmp);
+			throw err;
+		}
 	}
-	// fsync the directory so the rename itself is durable, not just the
-	// file's data.
+	// fsync the directory so the rename/link itself is durable, not just
+	// the file's data.
 	try {
 		fsyncDirectory(dirname(path));
 	} catch (err) {

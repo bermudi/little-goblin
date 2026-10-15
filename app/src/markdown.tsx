@@ -176,7 +176,7 @@ function NoteAppendCard({
 	const [listFailed, setListFailed] = useState(false);
 	const [query, setQuery] = useState("");
 	const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
-	const [done, setDone] = useState<{ id: string; title: string } | null>(null);
+	const [done, setDone] = useState<{ id: string; title: string; created: boolean } | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
 
@@ -206,7 +206,7 @@ function NoteAppendCard({
 		void appendNote(token, id, body).then(
 			(n) => {
 				setStatus("done");
-				setDone({ id: n.id, title: n.title });
+				setDone({ id: n.id, title: n.title, created: false });
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -224,7 +224,7 @@ function NoteAppendCard({
 		}).then(
 			(n) => {
 				setStatus("done");
-				setDone({ id: n.id, title: n.title });
+				setDone({ id: n.id, title: n.title, created: true });
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -243,7 +243,7 @@ function NoteAppendCard({
 			</div>
 			{status === "done" ? (
 				<p className="note-card-status">
-					Appended to{" "}
+					{done!.created ? "Created" : "Appended to"}{" "}
 					<button type="button" className="link" onClick={() => onOpenNote?.(done!.id)}>
 						{done!.title}
 					</button>
@@ -291,6 +291,15 @@ function NoteAppendCard({
 	);
 }
 
+// What a `note` fence card needs from its host: the caller's auth, the
+// conversation's project (a card-created note binds to it), and note
+// navigation — threaded through every markdown-rendering container.
+export interface MarkdownNoteContext {
+	token?: string | null | undefined;
+	noteProjectId?: string | null | undefined;
+	onOpenNote?: ((id: string) => void) | undefined;
+}
+
 export function Markdown({
 	text,
 	token,
@@ -298,11 +307,7 @@ export function Markdown({
 	onOpenNote,
 }: {
 	text: string;
-	token?: string | null | undefined;
-	// The conversation's project — a card-created note binds to it.
-	noteProjectId?: string | null | undefined;
-	onOpenNote?: ((id: string) => void) | undefined;
-}) {
+} & MarkdownNoteContext) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
 	let i = 0;
@@ -334,11 +339,12 @@ export function Markdown({
 				codeLines.push(lines[i]!);
 				i++;
 			}
-			if (i < lines.length) i++; // consume the closing fence
+			const closed = i < lines.length;
+			if (closed) i++; // consume the closing fence
 			const body = codeLines.join("\n");
 			// A `note` fence (the prompt's append convention) renders as a
 			// card — content plus the append affordance, never code.
-			if (info === "note" || info.startsWith("note ")) {
+			if (closed && (info === "note" || info.startsWith("note "))) {
 				const titled = /^note\s+title="([^"]*)"\s*$/.exec(info);
 				const bare = info === "note";
 				if (bare || titled !== null) {

@@ -190,7 +190,12 @@ or the manifests moved — the bundle inlines dependency code, so a React
 or AI-SDK bump alone must rebuild it, and the client is served from
 disk, so client and backend restart as one rollout. A marker in
 `.git/GOBLIN_DEPLOYED_REV` tracks the last deployed revision (first run
-refreshes unconditionally). It then restarts the unit and gates on 75 s
+refreshes unconditionally). A second marker,
+`.git/GOBLIN_DEPLOY_INCOMPLETE`, is published before any mutation and
+removed only after the restart verifies — a leftover means the last
+deploy died mid-refresh, so the next run reinstalls dependencies and
+rebuilds the client regardless of the source diff. It then restarts
+the unit and gates on 75 s
 startup acceptance (`scripts/check-startup.ts --watch`, the installer's
 grammar): both lifecycle events in the new invocation's journal, `/app/`
 HTML and its local assets served on loopback, and no crash-restart
@@ -261,6 +266,53 @@ grep '"conversation":"topic:<chat>:<thread>"' ~/goblin/state/goblin.log
 # errors only
 grep '"level":"error"' ~/goblin/state/goblin.log
 ```
+
+## Desktop image
+
+The `desktop`/`computer`-subagent pool (design/subagents.md) runs
+`goblin-desk-*` containers from `localhost/goblin-desktop:1`. Goblin
+never builds or pulls images — a missing image errors with the build
+line. Build from the repo root:
+
+```sh
+podman build -t localhost/goblin-desktop:1 deploy/desktop
+```
+
+The image pins the cua-driver release by sha256; bump `CUA_VERSION`
+and `CUA_SHA256` in the Containerfile together.
+
+Desktop containers carry one capability the sandboxes do not:
+`CAP_SYS_CHROOT` on top of the five wall caps, so Chromium can run
+its own layer-1 sandbox as the `desk` user (operator ruling —
+sandboxes keep exactly the five). The live drift check
+(`GOBLIN_DESKTOP_LIVE=1`) verifies both halves: `CapEff 0x400cb`
+inside the desktop and `chrome://sandbox`'s real status read back
+from the page, with the screenshot and tree dump preserved under
+`/tmp/goblin-desktop-evidence/`.
+
+## Subagent drift checks
+
+Three env-gated checks cover the subagent stack (design/subagents.md):
+
+```sh
+# real harness + local fake model in a real cached-alpine sandbox —
+# local only, no external calls:
+GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents.podman.test.ts
+
+# real harness + real z.ai (worker glm-5.3, computer glm-5.3-flash):
+GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=<path-to-auth.jsonl> \
+  bun test src/subagents.live.test.ts
+```
+
+The live check resolves the `zai` credential through the auth file —
+the only secret-adjacent environment value is its path; never put a
+key in the environment. Every probe container and network carries a
+per-run token, is preflighted before creation, and only resources it
+created are removed. Logs, screenshots and a REPORT.md are preserved
+under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
+`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents.crash.test.ts`
+needs no gate — it runs in `bun test` and proves the
+kill-mid-unsafe-dispatch recovery path.
 
 ## Backups
 

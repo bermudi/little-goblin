@@ -9,7 +9,8 @@ import {
 	SHARED_CHAT_NOTE,
 } from "./mod.ts";
 import { GUEST_REFUSAL } from "./guest.ts";
-import { COMMANDS, DM_COMMANDS } from "./commands.ts";
+import { COMMANDS, DM_COMMANDS, type CommandMemoryDeps } from "./commands.ts";
+import { HindsightClient } from "../hindsight.ts";
 import { tmpDb } from "../testkit.ts";
 
 const baseConfig: Config = {
@@ -32,8 +33,13 @@ describe("accessGate", () => {
 		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
 	} as unknown as Api;
 	// The access-control boundary — everything else hangs off it.
+	// The guest block is configured here: without it the sandbox class
+	// is off entirely and an approved user's DM refuses like a
+	// stranger's (design/telegram.md → Roles and permissions).
 	test("operators pass everywhere; friends pass in the DM; strangers get the refusal line", async () => {
-		const configRef = { current: baseConfig };
+		const configRef: { current: Config } = {
+			current: { ...baseConfig, guest: { outputChars: 3500 } },
+		};
 		const gate = accessGate(configRef);
 		let reached = 0;
 		const next = async (): Promise<void> => {
@@ -55,7 +61,7 @@ describe("accessGate", () => {
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
-			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL);
+			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL, {}, expect.any(AbortSignal));
 			// Service update, no sender.
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
@@ -66,6 +72,157 @@ describe("accessGate", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	test("the guest block is the sandbox switch — an approved DM refuses without it, toggles live", async () => {
+		const configRef: { current: Config } = {
+			current: { ...baseConfig, guest: { outputChars: 3500 } },
+		};
+		const gate = accessGate(configRef);
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		const send = spyOn(api, "sendMessage");
+		try {
+			await gate(dm(2), next);
+			expect(reached).toBe(1);
+			// A mini-app/hand edit that drops the block applies on the
+			// very next message — the same sender is now refused.
+			configRef.current = { ...baseConfig };
+			await gate(dm(2), next);
+			expect(reached).toBe(1);
+			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL, {}, expect.any(AbortSignal));
+			// Operators never need the block.
+			await gate(dm(1), next);
+			expect(reached).toBe(2);
+			configRef.current = { ...baseConfig, guest: { outputChars: 3500 } };
+			await gate(dm(2), next);
+			expect(reached).toBe(3);
+		} finally {
+			send.mockRestore();
+		}
+	});
+
+	// The refusal send rides a detached promise so intake/polling never
+	// awaits Telegram — a wedged send must not stall the gate.
+	test("a held refusal send never blocks the gate or an operator's next", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const release = Promise.withResolvers<void>();
+		const calls: number[] = [];
+		const heldApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				await release.promise;
+				return { message_id: 1 };
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: heldApi });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		// Denied synchronously — the gate resolves while the send is held.
+		await gate(dm(9), next);
+		expect(reached).toBe(0);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9]);
+		// Operators pass immediately regardless of pending sends.
+		await gate(dm(1), next);
+		expect(reached).toBe(1);
+		release.resolve();
+		await Bun.sleep(0);
+		// The settled send freed its slot — the next stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9, 10]);
+	});
+
+	test("refusal sends are bounded at 8 pending and deduped per user — overload drops, never queues", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const release = Promise.withResolvers<void>();
+		const calls: number[] = [];
+		const heldApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				await release.promise;
+				return { message_id: 1 };
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: heldApi });
+		const next = async (): Promise<void> => {};
+		// A hundred unique strangers under a wedged boundary: eight real
+		// sends, every later update still denied but never queued.
+		for (let id = 100; id < 200; id++) await gate(dm(id), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(8);
+		// A pending user's repeat coalesces onto the in-flight refusal.
+		await gate(dm(100), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(8);
+		expect(calls.filter((id) => id === 100)).toHaveLength(1);
+		// No backlog — freeing the boundary admits the next stranger.
+		release.resolve();
+		await Bun.sleep(0);
+		await gate(dm(300), next);
+		await Bun.sleep(0);
+		expect(calls).toHaveLength(9);
+	});
+
+	test("the refusal timeout aborts a wedged send and the settled slot frees", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 30 });
+		const signals: AbortSignal[] = [];
+		const wedgedApi = {
+			sendMessage: (async (_id: number, _text: string, _other: unknown, signal: AbortSignal) => {
+				signals.push(signal);
+				return await new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("send aborted")));
+				});
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: wedgedApi });
+		const next = async (): Promise<void> => {};
+		await gate(dm(9), next);
+		await Bun.sleep(0);
+		expect(signals).toHaveLength(1);
+		// The deadline fires even though the send itself never settles.
+		await Bun.sleep(60);
+		expect(signals[0]!.aborted).toBe(true);
+		// The rejection settled the slot — a new stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(signals).toHaveLength(2);
+		await Bun.sleep(60); // drain the second send's abort timer
+	});
+
+	test("a failed refusal send releases its slot without rejecting the gate", async () => {
+		const configRef: { current: Config } = { current: { ...baseConfig } };
+		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const calls: number[] = [];
+		const failingApi = {
+			sendMessage: (async (id: number) => {
+				calls.push(id);
+				throw new Error("Telegram 500");
+			}) as unknown as Api["sendMessage"],
+		} as unknown as Api;
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: failingApi });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		await gate(dm(9), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9]);
+		await gate(dm(1), next);
+		expect(reached).toBe(1);
+		// The failure settled its slot — the next stranger schedules.
+		await gate(dm(10), next);
+		await Bun.sleep(0);
+		expect(calls).toEqual([9, 10]);
 	});
 });
 
@@ -166,7 +323,6 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
-import { HindsightClient } from "../hindsight.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
@@ -343,44 +499,6 @@ function flushTest(
 }
 
 describe("handleMessage", () => {
-	test("an allowed user's /memory on pins the lane guest before the command runs", () => {
-		const h = routerHarness({
-			...baseConfig,
-			memory: memoryConfigSchema.parse({
-				baseUrl: "http://127.0.0.1:1",
-				bankId: "g",
-				recallTimeoutMs: 500,
-				maxTokens: 256,
-				budget: "low" as const,
-			}),
-		});
-		h.env.deps.memory = {
-			client: new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }),
-			contexts: h.store.memoryContexts,
-			queue: h.store.memoryQueue,
-			withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-			lastRecallOk: () => null,
-			lastRecallAt: () => null,
-		};
-		// chat 2 is allowedUsers, not operators — its DM is the sandbox
-		// lane. A fresh roll lands personal+included; if the pin waited
-		// for flush the toggle would un-exclude a guest conversation.
-		handleTestMessage(
-			h.env,
-			tgMsg({ message_id: 1, chat: { id: 2, type: "private" }, text: "/memory on" }),
-		);
-		const conv = h.store.get(h.store.currentDm(2)!.id)!;
-		expect(conv.persona).toBe("guest");
-		expect(conv.memoryExcluded).toBe(true);
-		expect(
-			h.apiCalls.some(
-				(c) =>
-					c.method === "sendMessage" &&
-					c.text === "memory is off for this lane by class — it is not a setting here",
-			),
-		).toBe(true);
-	});
-
 	test("a batch buffered while the sender was demoted to stranger drops — no turn lands", async () => {
 		const h = routerHarness();
 		const submitted: string[] = [];
@@ -486,7 +604,12 @@ describe("handleMessage", () => {
 		});
 		handleTestMessage(
 			h.env,
-			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/voice" }),
+			tgMsg({
+				message_id: 1,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "/voice",
+			}),
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
@@ -670,6 +793,209 @@ describe("handleMessage", () => {
 	});
 });
 
+// The privileged-command gate (design/telegram.md → Roles and
+// permissions): /voice /memory /forget /compact are operator-only,
+// refused by sender at the parsed-command boundary — before
+// navigation, routing, conversation creation, or journaling. Approval
+// buys sandbox chat, not command authority.
+describe("operator-only command gate", () => {
+	const REFUSAL = "This command is only available to operators.";
+	const MEM_BLOCK = memoryConfigSchema.parse({
+		baseUrl: "http://127.0.0.1:1",
+		bankId: "g",
+		recallTimeoutMs: 500,
+		maxTokens: 256,
+		budget: "low" as const,
+	});
+	const guestChat = { id: 2, type: "private" } as const;
+	const guestMsg = (text: string, updateId: number): Message =>
+		tgMsg({
+			message_id: updateId,
+			chat: guestChat,
+			from: { id: 2, is_bot: false, first_name: "f" },
+			text,
+		});
+
+	// A memory deps whose remote and queue boundaries are counters —
+	// the proof a refused command never reached recall, delete, or the
+	// outbox. The client is a real HindsightClient (its derived target
+	// must satisfy the queue's validation) with the remote verbs
+	// wrapped; the queue delegates to the store's real one so an
+	// admitted operator command still behaves.
+	function countingMemory(store: ConversationStore): {
+		memory: CommandMemoryDeps;
+		calls: string[];
+	} {
+		const calls: string[] = [];
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		client.recall = (() => {
+			calls.push("client.recall");
+			return Promise.resolve([]);
+		}) as unknown as typeof client.recall;
+		client.deleteDocument = (() => {
+			calls.push("client.deleteDocument");
+			return Promise.resolve();
+		}) as unknown as typeof client.deleteDocument;
+		client.operation = (() => {
+			calls.push("client.operation");
+			return Promise.resolve(null);
+		}) as unknown as typeof client.operation;
+		const queue = new Proxy(store.memoryQueue, {
+			get(target, prop, recv) {
+				const v = Reflect.get(target, prop, recv);
+				if (typeof v !== "function") return v;
+				return (...args: unknown[]) => {
+					calls.push(`queue.${String(prop)}`);
+					return (v as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+		return {
+			calls,
+			memory: {
+				client,
+				contexts: store.memoryContexts,
+				queue,
+				withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
+					calls.push("withWorkerPaused");
+					return fn();
+				},
+				lastRecallOk: () => null,
+				lastRecallAt: () => null,
+			},
+		};
+	}
+
+	test("an approved user's /memory, /forget, /voice, /compact refuse — fixed reply, nothing created", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 }, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		for (const [i, text] of [
+			"/memory",
+			"/forget private",
+			"/forget delete 1",
+			"/voice on",
+			"/compact",
+		].entries()) {
+			handleMessage(h.env, guestMsg(text, 20 + i), 20 + i);
+		}
+		await Promise.all([...h.env.intake.values()]);
+		await Promise.resolve();
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			REFUSAL,
+		]);
+		// No conversation, no journaled or buffered input, no runtime
+		// stop — and neither the recall/delete boundary nor the memory
+		// queue was ever entered.
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.stopped).toEqual([]);
+		expect(calls).toEqual([]);
+		h.store.close();
+	});
+
+	test("privileged command refusals deduplicate one sender and cap actual unresolved sends", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const gate = Promise.withResolvers<{ message_id: number }>();
+		let sends = 0;
+		h.env.api.sendMessage = (() => {
+			sends++;
+			return gate.promise;
+		}) as unknown as typeof h.env.api.sendMessage;
+		for (let i = 0; i < 100; i++) handleMessage(h.env, guestMsg("/voice", 1000 + i), 1000 + i);
+		await Promise.resolve();
+		expect(sends).toBe(1);
+		for (let i = 0; i < 100; i++) {
+			handleMessage(
+				h.env,
+				tgMsg({
+					message_id: 2000 + i,
+					chat: guestChat,
+					from: { id: i + 10, is_bot: false, first_name: "guest" },
+					text: "/voice",
+				}),
+				2000 + i,
+			);
+		}
+		await Promise.resolve();
+		expect(sends).toBe(8);
+		gate.resolve({ message_id: 1 });
+		await gate.promise;
+		h.store.close();
+	});
+
+	test("the operator's own privileged command still routes and runs", async () => {
+		const h = routerHarness({ ...baseConfig, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 30,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "/memory",
+			}),
+			30,
+		);
+		await Promise.resolve();
+		expect(h.store.currentDm(1)?.id).toBe("dm:1:1");
+		const replies = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
+		// The roll marker leads; the status answer is the real command's.
+		expect(replies.at(-1)).toContain("memory:");
+		expect(replies).not.toContain(REFUSAL);
+		expect(calls).toContain("queue.counts");
+		h.store.close();
+	});
+
+	test("a guest's /voice@goblin is refused; /memory@otherbot is not ours — dropped silently", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 }, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		handleMessage(h.env, guestMsg("/voice@goblin", 40), 40);
+		handleMessage(h.env, guestMsg("/memory@otherbot", 41), 41);
+		await Promise.resolve();
+		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(calls).toEqual([]);
+		h.store.close();
+	});
+
+	test("a senderless update is not an operator — the privileged command refuses", async () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 50, chat: { id: 1, type: "private" }, text: "/memory" }),
+			50,
+		);
+		await Promise.resolve();
+		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
+		expect(h.store.currentDm(1)).toBeNull();
+		h.store.close();
+	});
+
+	test("an approved guest keeps the own-lane commands — /start /stop /new /back", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		handleMessage(h.env, guestMsg("/start", 60), 60);
+		handleMessage(h.env, guestMsg("/stop", 61), 61);
+		handleMessage(h.env, guestMsg("/new", 62), 62);
+		handleMessage(h.env, guestMsg("/back", 63), 63);
+		await Promise.resolve();
+		expect(h.apiCalls.map((c) => c.text)).toEqual([
+			// The first DM rolls — its boundary marker leads the greeting.
+			"— new conversation —",
+			expect.stringContaining("goblin online"),
+			"stopped",
+			"— new conversation —",
+			"— previous conversation —",
+		]);
+		expect(h.pushed).toEqual([]);
+		h.store.close();
+	});
+});
+
 describe("ping replies (Spin-off)", () => {
 	// A swipe-reply to a delegation ping routes into the app
 	// conversation that rang — the lane IS that id, the quoted ping
@@ -684,6 +1010,7 @@ describe("ping replies (Spin-off)", () => {
 			tgMsg({
 				message_id: 7,
 				chat: { id: 1, type: "private" },
+				from: { id: 1 },
 				text: "looks good",
 				reply_to_message: { message_id: 99, text: "the work: deployed" },
 			}),
@@ -692,6 +1019,36 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
 		expect(h.pushed.map((p) => p.conv)).toEqual([app.id]);
 		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "looks good" }]);
+		h.store.close();
+	});
+
+	// The ping route is operator-only: a demoted operator still holds
+	// the pings in their chat, but their reply must take the ordinary
+	// DM lane — the guest-persona pin and tool filter apply there.
+	test("a demoted operator's ping reply stays in their own DM lane", async () => {
+		const h = routerHarness();
+		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const app = h.store.forkToApp(src.id, "spun-1", "/w", "the work");
+		h.pings.record(2, 99, app.id); // delivered while 2 was an operator
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 7,
+				chat: { id: 2, type: "private" },
+				from: { id: 2 },
+				text: "looks good",
+				reply_to_message: { message_id: 99, text: "the work: deployed" },
+			}),
+		);
+		await h.env.intake.get("dm:2");
+		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe("dm:2");
+		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:2"]);
+		// The ping text degrades to an ordinary quote — nothing reaches
+		// the app conversation.
+		expect((h.pushed[0]!.parts[0] as { text: string }).text).toBe(
+			'[replying to: "the work: deployed"]',
+		);
+		expect(h.store.lastSeq(app.id)).toBeNull();
 		h.store.close();
 	});
 
@@ -748,6 +1105,7 @@ describe("ping replies (Spin-off)", () => {
 			tgMsg({
 				message_id: 8,
 				chat: { id: 1, type: "private" },
+				from: { id: 1 },
 				text: "and?",
 				reply_to_message: { message_id: 99, text: "old ping" },
 			}),
@@ -772,6 +1130,7 @@ describe("ping replies (Spin-off)", () => {
 		const reply = tgMsg({
 			message_id: 51,
 			chat: { id: 1, type: "private" },
+			from: { id: 1 },
 			text: "looks good",
 			reply_to_message: { message_id: 99, text: "the work: deployed" },
 		});
@@ -812,6 +1171,7 @@ describe("ping replies (Spin-off)", () => {
 		const reply = tgMsg({
 			message_id: 51,
 			chat: { id: 1, type: "private" },
+			from: { id: 1 },
 			text: "looks good",
 			reply_to_message: { message_id: 99, text: "the work: deployed" },
 		});
@@ -1472,11 +1832,11 @@ describe("rolling dm", () => {
 
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
 		// dmGapMinutes 0 makes every flush past the gap — the check is
-		// the only path a plain burst can take. chat 7 must be admitted:
-		// a stranger's batch now drops before the check runs.
+		// the only path a plain burst can take. chat 7 is allowed but
+		// no operator: admitted to the guest lane.
 		const h = routerHarness({
 			...baseConfig,
-			operators: [1, 7],
+			allowedUsers: [2, 7],
 			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
@@ -1511,7 +1871,10 @@ describe("rolling dm", () => {
 		]);
 		// Past the gap and NOT a reply — the follow-up check ran.
 		expect(calls).toHaveLength(1);
-		expect(h.store.currentDm(7)?.id).toBe("dm:7:1");
+		// Chat 7 is no operator: admission demotes the personal dm:7:1
+		// (it has history) — the reset deletes the row and the roll
+		// mints the NEXT ordinal off the tombstone, never reusing :1.
+		expect(h.store.currentDm(7)?.id).toBe("dm:7:2");
 		h.store.close();
 	});
 

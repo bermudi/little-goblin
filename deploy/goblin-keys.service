@@ -10,7 +10,7 @@ Type=oneshot
 # THIS unit's env, not a login shell's.
 Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
 # warm always refreshes from Pass. The installer renders one line per
-# config-referenced auth record at @WARM_AUTH_PROFILES@; the MCP
+# config-referenced auth record at the standalone placeholder; the MCP
 # lane's profile is pinned here and by scripts/mcp. Profiles share
 # agent/bootstrap and session, so sync stays sequential; snapshots
 # stay separate. Locked/unavailable wallets fail loud.

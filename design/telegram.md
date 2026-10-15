@@ -193,7 +193,8 @@ failing message by message.
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
   `telegram-web-app.js` is never fetched: both doors are one origin, the
-  app token lives in that origin's localStorage, and no third-party
+  app token lives in that origin's sessionStorage (dies with the tab,
+  never persists across browser sessions), and no third-party
   script — live, and per ruling 2026-10-13 not even a pinned copy —
   executes there. Webviews that inject `window.Telegram` use their own
   copy; Telegram Desktop does not inject, which silently killed this
@@ -207,7 +208,12 @@ failing message by message.
   browser — keeps initData empty and gets the same empty-initData
   notice.
   In-door navigation is component state with no history entries; the
-  webview's back gesture closes the mini app natively. A missing build
+  webview's back gesture closes the mini app natively. The unsaved-draft
+  protection is two layers of the same contract: the in-door confirm
+  guards page switches, and the draft also arms the webview's native
+  close confirmation (`WebApp.enableClosingConfirmation`) — disarmed on
+  save, on an approved discard, and on unmount, so the guard never
+  outlives the draft it was armed for. A missing build
   fail-louds a 500 + log line exactly like `/app/*` —
   settings-from-Telegram now depends on the app build (deploy.sh gates
   it, rollback rebuilds it; accepted by ruling). Widening the door's
@@ -361,7 +367,11 @@ records its predecessor; existing rolling conversations get their
 creation-order links at migration. `/back` follows that link rather
 than rewinding the id counter: `/back` → `/new` → `/back` returns to
 the conversation the new one came from, and future ids never reuse
-an abandoned conversation. Selecting an old conversation resets the
+an abandoned conversation. A deleted row's ordinal is never re-minted
+either: the epoch tombstone (`conversation_epoch_hwm`) outlives the
+row, so a pointer-less roll — demotion reset, reinstall — recovers the
+high-water mark from extant rows plus tombstones and mints `hwm + 1`.
+Selecting an old conversation resets the
 quiet-gap clock without rewriting historical timestamps; the configured
 gap rule then applies normally. Navigation selection and creation/link
 writes are atomic.
@@ -460,7 +470,10 @@ trust has nothing to admit and a meter has nothing to count. Two
 lists plus a refusal line is the whole model. The `guest` block
 stays the feature switch for the sandbox class (absent →
 operator-only; non-operator summons get the refusal wherever intake
-still runs).
+still runs). Settings and privileged commands (`/voice`, `/memory`,
+`/forget`, `/compact`) are operator-only, checked by sender before
+command routing or conversation creation; approval grants sandbox
+chat, not command authority.
 
 **Sandbox class invariants.** Persona follows class at conversation
 creation, and the sandbox tool filter is **persona-driven**: any
@@ -579,7 +592,11 @@ gate, and summons traffic never hits it. The gate is the Roles
 router's member-surface edge: operators pass to normal intake,
 allowed users pass in the bot DM to their sandbox lane, a stranger
 DM gets the refusal line, non-operator group chatter drops with one
-log line. `guest_message` updates bypass `tg_inbox`
+log line. The refusal send is detached from the gate — the update is
+denied synchronously while the send rides a bounded pool (8 pending,
+deduped per sender, 30s abort); overload drops the send with a log
+line, never queues a backlog and never stalls polling. `guest_message`
+updates bypass `tg_inbox`
 entirely (guest message ids share no namespace with the bot's own
 chats — a `UNIQUE(chat_id, message_id)` hit would exit the process);
 at-most-once rides a `guest_dedup(update_id)` insert-or-ignore

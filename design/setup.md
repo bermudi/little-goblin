@@ -163,6 +163,12 @@ or provider access — the operator handshake does.
 - Service PATH, not interactive PATH, is what every prerequisite check
   means. Snapshot metadata inspection is non-interactive: it never
   unlocks, warms, or reads a key value.
+- Auth command recognition is exactly one form: a `!` record whose first
+  word is `pass-keys` (bare or literal path-prefixed, identified by
+  basename) running `get <profile> <KEY>`. Wrappers, env prefixes,
+  quotes, shell operators and executable substitutions/globs keep the
+  record a general, unverified command. `src/auth.ts` owns this grammar,
+  shared between the installer's option inspection and doctor.
 
 ## Opt-in dependencies
 

@@ -172,7 +172,8 @@ export function deepLinkConv(pathname: string): string | null {
 }
 
 // The token is the operator-pasted credential (the value behind the
-// auth.jsonl record config.appToken names), kept in localStorage. When
+// auth.jsonl record config.appToken names), kept in sessionStorage — it
+// dies with the tab, so a new browser session re-asks for it. When
 // the server runs trust mode (appToken unset) no credential exists —
 // App probes unauthenticated first so the gate never shows.
 
@@ -481,9 +482,25 @@ function TelegramDoor() {
 	// save; window.Telegram is settled before first render — injected by
 	// the webview, or the local fallback installed in main.tsx.
 	const [authed] = useState(() => (window.Telegram?.WebApp.initData ?? "") !== "");
+	// One callback owns the draft bit and the webview's native close
+	// guard — the in-door confirm and the SDK confirmation protect the
+	// same draft. The SDK call mirrors the transition only: the editor
+	// reports its state on every mount too, and re-arming an armed
+	// guard is pointless. Both methods are optional in older clients.
+	const setSettingsDirty = useCallback((dirty: boolean) => {
+		if (settingsDirty.current === dirty) return;
+		settingsDirty.current = dirty;
+		const webApp = window.Telegram?.WebApp;
+		if (dirty) webApp?.enableClosingConfirmation?.();
+		else webApp?.disableClosingConfirmation?.();
+	}, []);
 	useEffect(() => {
 		window.Telegram?.WebApp.ready?.();
 		window.Telegram?.WebApp.expand?.();
+		// Mount clean, unmount clean: the guard must never outlive the
+		// draft it was armed for.
+		window.Telegram?.WebApp.disableClosingConfirmation?.();
+		return () => window.Telegram?.WebApp.disableClosingConfirmation?.();
 	}, []);
 	const openPage = (p: Exclude<Page, "chat">) => {
 		if (p === page) return;
@@ -493,6 +510,8 @@ function TelegramDoor() {
 			!window.confirm("Discard unsaved settings changes?")
 		)
 			return;
+		// Approved navigation throws the draft away — disarm the guard.
+		setSettingsDirty(false);
 		setPage(p);
 	};
 	return (
@@ -546,12 +565,7 @@ function TelegramDoor() {
 					</p>
 				)}
 				{authed && page === "settings" && (
-					<SettingsView
-						token={null}
-						onDirtyChange={(d) => {
-							settingsDirty.current = d;
-						}}
-					/>
+					<SettingsView token={null} onDirtyChange={setSettingsDirty} />
 				)}
 				{authed && page === "memory" && <MemoryView token={null} />}
 			</main>
@@ -612,6 +626,26 @@ function AppShell() {
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
+	// A cancelled send belongs only to the composer that dispatched it.
+	const [draftRestores, setDraftRestores] = useState<Record<string, { parts: UIMessage["parts"] }>>(
+		{},
+	);
+	const consumeRestore = (scope: string) =>
+		setDraftRestores((prev) => {
+			const next = { ...prev };
+			delete next[scope];
+			return next;
+		});
+	// Navigation (or a newer start) fences off a stale failure — the
+	// alert belongs to the page that saw the failed send, nowhere else.
+	const startSeq = useRef(0);
+	// Guard before the sequence bump: a duplicate start must not fence
+	// the first continuation or mint an empty conversation.
+	const startBusyRef = useRef(false);
+	const clearStartFailure = () => {
+		startSeq.current += 1;
+		setStartFailed(false);
+	};
 	// The rail's second pool: archived rows sit in a collapsed section
 	// under the active list (design/app.md → Archiving).
 	const [archivedOpen, setArchivedOpen] = useState(false);
@@ -638,6 +672,13 @@ function AppShell() {
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
 	const settingsDirty = useRef(false);
+	// Stale async completions — a held create's onCreated/onOpen firing
+	// after the operator already navigated — run the navigation guards
+	// from the render that issued them. The guard must ask which page
+	// is mounted now (a declined traversal deliberately leaves the old
+	// editor mounted), not which page rendered the callback.
+	const pageRef = useRef(page);
+	pageRef.current = page;
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
@@ -647,7 +688,7 @@ function AppShell() {
 		key: navigation?.currentEntry.key ?? null,
 	});
 	const leaveDirtySettings = () =>
-		page !== "settings" ||
+		pageRef.current !== "settings" ||
 		!settingsDirty.current ||
 		window.confirm("Discard unsaved settings changes?");
 	const pushRoute = (path: string) => {
@@ -716,6 +757,9 @@ function AppShell() {
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
+			// Same fence as the success path — a stale failure arriving
+			// after a newer refresh settled must not paint over its state.
+			if (seq !== listSeq.current) return;
 			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
 		}
 	}, [token]);
@@ -779,6 +823,7 @@ function AppShell() {
 				key: navigation?.currentEntry.key ?? null,
 			};
 			setNavigationError(null);
+			clearStartFailure();
 			if (p !== null) {
 				setPage(p);
 				setProjectId(null);
@@ -820,13 +865,18 @@ function AppShell() {
 	}, [page]);
 
 	// Debounced app-pool search — an empty box clears back to the list.
+	// The sequence bumps on every invocation, including the clear, so a
+	// reply dispatched before the box emptied can never reappear after.
+	// A stale error clears on empty (and on the next settled reply),
+	// never on a fresh query — clearing there would flash "No matches.".
 	useEffect(() => {
+		const seq = ++searchSeq.current;
 		const q = query.trim();
 		if (q === "") {
 			setHits(null);
+			setSearchError(null);
 			return;
 		}
-		const seq = ++searchSeq.current;
 		const t = setTimeout(() => {
 			void searchConversations(token, q).then(
 				(r) => {
@@ -836,6 +886,7 @@ function AppShell() {
 				},
 				(err) => {
 					if (seq !== searchSeq.current) return;
+					setHits([]);
 					setSearchError(err instanceof Error ? err.message : "search failed");
 				},
 			);
@@ -890,6 +941,7 @@ function AppShell() {
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = (id: string | null) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("chat");
 		setProjectId(null);
 		setNoteId(null);
@@ -900,6 +952,7 @@ function AppShell() {
 
 	const openProject = (id: string) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("project");
 		setProjectId(id);
 		setNoteId(null);
@@ -909,6 +962,7 @@ function AppShell() {
 
 	const openProjectsIndex = () => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("projects");
 		setProjectId(null);
 		setNoteId(null);
@@ -918,6 +972,7 @@ function AppShell() {
 
 	const openNotesIndex = () => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("notes");
 		setProjectId(null);
 		setNoteId(null);
@@ -927,6 +982,7 @@ function AppShell() {
 
 	const openNote = (id: string) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("note");
 		setProjectId(null);
 		setNoteId(id);
@@ -946,6 +1002,7 @@ function AppShell() {
 			return;
 		}
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage(p);
 		setNavOpen(false);
 		pushRoute(`/app/${p}`);
@@ -968,7 +1025,25 @@ function AppShell() {
 	// One start path for every composer — the empty state passes null,
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
-	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+	const startChat = async (
+		projectId: string | null,
+		parts: UIMessage["parts"],
+		composerScope?: string,
+	) => {
+		if (startBusyRef.current) {
+			// Refuse loudly — a silent no-op reads as success to awaited
+			// callers (the note page's chat surfaces this rejection as an
+			// opError; fire-and-forget composer sends catch it at the
+			// call site). A composer-scoped send parks its parts back in
+			// the draft first, the same shape as the fenced path —
+			// note-originated starts carry no scope and restore nothing.
+			if (composerScope !== undefined) {
+				setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+			}
+			throw new Error("a conversation is still starting — resend once it finishes");
+		}
+		startBusyRef.current = true;
+		const seq = ++startSeq.current;
 		setStarting(true);
 		setStartFailed(false);
 		try {
@@ -976,17 +1051,41 @@ function AppShell() {
 				token,
 				projectId === null ? undefined : { projectId },
 			);
+			// A navigation while the create was in flight bumped the
+			// sequence — this continuation closes over the old page, so
+			// its select would skip the dirty-settings guard entirely.
+			if (seq !== startSeq.current) {
+				if (composerScope !== undefined) {
+					setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+				}
+				try {
+					await deleteConversation(token, created.id);
+					await refresh();
+				} catch (err) {
+					setRowError(
+						`Couldn't remove the cancelled conversation: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+				return;
+			}
 			setSeed({ id: created.id, parts });
 			select(created.id);
 			await refresh();
 		} catch {
-			setStartFailed(true);
+			if (seq === startSeq.current) setStartFailed(true);
 		} finally {
+			startBusyRef.current = false;
 			setStarting(false);
 		}
 	};
 
-	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts);
+	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts, "chat");
+
+	// Composer sends are fire-and-forget — the only rejection startChat
+	// produces is the deliberate busy refusal, so it surfaces on the
+	// rail rather than dying as an unhandled rejection.
+	const reportStartRefusal = (err: unknown) =>
+		setRowError(err instanceof Error ? err.message : String(err));
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
@@ -1250,8 +1349,11 @@ function AppShell() {
 									noteId={noteId}
 									projects={projectList}
 									onChat={(note: AppNote) =>
-										void startChat(note.projectId, [
-											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
+										startChat(note.projectId, [
+											{
+												type: "data-note",
+												data: { id: note.id, title: note.title },
+											} as UIMessage["parts"][number],
 										])
 									}
 									onDeleted={openNotesIndex}
@@ -1287,13 +1389,20 @@ function AppShell() {
 								)}
 								{currentProject.archivedAt === null ? (
 									<Composer
+										key={`composer:${currentProject.id}`}
 										token={token}
 										busy={starting}
 										staged={staged}
 										setStaged={setStaged}
 										stagedNotes={stagedNotes}
 										setStagedNotes={setStagedNotes}
-										onSend={(parts) => void startChat(currentProject.id, parts)}
+										draftRestore={draftRestores[currentProject.id] ?? null}
+										onDraftRestored={() => consumeRestore(currentProject.id)}
+										onSend={(parts) =>
+											void startChat(currentProject.id, parts, currentProject.id).catch(
+												reportStartRefusal,
+											)
+										}
 									/>
 								) : (
 									<p className="empty">
@@ -1327,7 +1436,9 @@ function AppShell() {
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
-								onSend={(parts) => void startConversation(parts)}
+								draftRestore={draftRestores.chat ?? null}
+								onDraftRestored={() => consumeRestore("chat")}
+								onSend={(parts) => void startConversation(parts).catch(reportStartRefusal)}
 							/>
 						</div>
 					) : (

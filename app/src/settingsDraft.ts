@@ -132,6 +132,18 @@ export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): Tr
 	return { ...t, kind, model: "", auth: "" };
 }
 
+// Same rule as transcription kinds above: the auth reference is
+// kind-scoped — a secret name left over from openai-compatible would
+// resolve and be sent to openrouter's endpoint on the next autosave.
+// Blank is always safe: it materializes to the provider's own name
+// (openrouter: the kind's default record) at save. baseUrl rides
+// along — not a credential, and the kinds that need it restore the
+// editable field.
+export function switchProviderKind(p: ProvDraft, kind: string): ProvDraft {
+	if (kind === p.kind) return p;
+	return { ...p, kind, auth: "" };
+}
+
 function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
 	// Optional fields may hold an explicit undefined (zod's parse output).
 	const w: {

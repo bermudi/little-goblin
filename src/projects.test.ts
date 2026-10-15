@@ -206,6 +206,29 @@ describe("project store", () => {
 		store.close();
 	});
 
+	// The durable queue is always wired (index.ts): pending retention
+	// left over from a memory-on run must purge on shared → off even
+	// when no memory client exists — otherwise it submits on re-enable.
+	test("project memory off purges pending retention through the real outbox", () => {
+		const { store } = fixture();
+		const projects = openProjects(store, { memoryQueue: store.memoryQueue });
+		const project = projects.create({ name: "vault" });
+		const conv = store.resolve(appAddress("inside"), "/w");
+		store.bindProject(conv.id, project.id);
+		const target = "a".repeat(64);
+		const opId = store.memoryQueue.enqueue(target, {
+			id: "exchange/app/inside/1/a",
+			content: "Operator: hi\nGoblin: hello",
+			timestamp: new Date().toISOString(),
+			conversationId: conv.id,
+			sourceIds: ["u1", "a1"],
+		});
+		expect(store.memoryQueue.get(opId)).not.toBeNull();
+		projects.patch(project.id, { memory: "off" });
+		expect(store.memoryQueue.get(opId)).toBeNull();
+		store.close();
+	});
+
 	test("already-excluded project conversations don't re-bump on off", () => {
 		const { store, projects } = fixture();
 		const project = projects.create({ name: "vault" });

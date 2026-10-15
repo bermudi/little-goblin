@@ -46,18 +46,40 @@ import type {
 	ThinkingLevelsResponse,
 } from "../../src/http/operator-wire.ts";
 
+// sessionStorage, not localStorage — /t/ and /app/ are one origin, so
+// nothing origin-scoped isolates this key from the mini app's scripts;
+// the win is only that the credential dies with the tab.
 const TOKEN_KEY = "goblin.appToken";
 
+// Upgraded installs may still carry the same key in localStorage —
+// the tab-scoped move never deleted it, so without an eviction the
+// credential would stay persistently stored forever. Every credential
+// touch removes the local copy; a read with no session value adopts it
+// into this tab's session first, so the migration keeps the operator
+// logged in instead of dropping them at the gate.
+function evictLocalToken(): string | null {
+	const legacy = localStorage.getItem(TOKEN_KEY);
+	if (legacy !== null) localStorage.removeItem(TOKEN_KEY);
+	return legacy;
+}
+
 export function loadToken(): string | null {
-	return localStorage.getItem(TOKEN_KEY);
+	const session = sessionStorage.getItem(TOKEN_KEY);
+	const legacy = evictLocalToken();
+	if (session !== null) return session;
+	if (legacy === null) return null;
+	sessionStorage.setItem(TOKEN_KEY, legacy);
+	return legacy;
 }
 
 export function saveToken(token: string): void {
-	localStorage.setItem(TOKEN_KEY, token);
+	evictLocalToken();
+	sessionStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
-	localStorage.removeItem(TOKEN_KEY);
+	evictLocalToken();
+	sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export class ApiError extends Error {
@@ -219,9 +241,16 @@ export async function patchNote(
 		// 'rewrite' marks the accepted proposal so the version names it.
 		source?: "app" | "rewrite";
 	},
-	// keepalive: the pagehide flush — the request must outlive the page.
+	// keepalive: the pagehide flush — best effort that the request
+	// outlives the page, never a guarantee. Browsers cap keepalive
+	// bytes at their own discretion, so past the portable 64KiB bound
+	// the request goes as an ordinary fetch and the durable draft
+	// carries the edit.
 	opts: { ifMatch?: number; keepalive?: boolean } = {},
 ): Promise<{ data: AppNote; etag: string | null }> {
+	const payload = JSON.stringify(patch);
+	const keepalive =
+		opts.keepalive === true && new TextEncoder().encode(payload).byteLength <= 64 * 1024;
 	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}`, {
 		method: "PATCH",
 		headers: {
@@ -229,9 +258,15 @@ export async function patchNote(
 			"content-type": "application/json",
 			...(opts.ifMatch !== undefined ? { "if-match": `"${opts.ifMatch}"` } : {}),
 		},
-		body: JSON.stringify(patch),
-		...(opts.keepalive === true ? { keepalive: true } : {}),
+		body: payload,
+		...(keepalive ? { keepalive: true } : {}),
 	});
+	return decodeNoteMutation(res);
+}
+
+// Every note mutation that can conflict decodes the same way: a 409
+// carries the live note so the page's conflict bar never refetches.
+async function decodeNoteMutation(res: Response): Promise<{ data: AppNote; etag: string | null }> {
 	if (res.status === 409) {
 		const body = (await res.json()) as { note: AppNote };
 		throw new NoteConflictError(body.note);
@@ -289,14 +324,23 @@ export function getNoteVersion(
 	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}`);
 }
 
-export function restoreNoteVersion(
+// Restore is a content write — expectedRev is the caller's live rev,
+// sent as If-Match so a stale panel conflicts instead of rolling a
+// newer body back.
+export async function restoreNoteVersion(
 	token: string | null,
 	id: string,
 	rev: number,
+	expectedRev: number,
 ): Promise<AppNote> {
-	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}/restore`, {
+	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}/versions/${rev}/restore`, {
 		method: "POST",
+		headers: {
+			...(token === null ? {} : { authorization: `Bearer ${token}` }),
+			"if-match": `"${expectedRev}"`,
+		},
 	});
+	return (await decodeNoteMutation(res)).data;
 }
 
 export function getMessages(token: string | null, id: string): Promise<AppMessageList> {

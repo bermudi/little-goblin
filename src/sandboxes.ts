@@ -20,13 +20,13 @@ import { log } from "./log.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
-import type { BoundedProc } from "./proc.ts";
+import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 
 // Model/operator-actionable failures (missing image, bad path, a
 // fail-closed removal) — the tool maps these to {error} results.
 export class SandboxError extends Error {
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "SandboxError";
 	}
 }
@@ -145,6 +145,14 @@ export interface SandboxesDeps {
 	/** Test seams — prod leaves both at their defaults. */
 	containerPrefix?: string;
 	networkName?: string;
+	/** A live subagent run lease on this conversation's sandbox
+	 *  (queued/running/needs_input), or null. Read inside lifecycle
+	 *  ops: reset refuses while held; the reaper skips. */
+	runLease?(conversationId: string): { id: number; status: string } | null;
+	/** Destructive lifecycle events a worker run must learn about —
+	 *  recreate (prior state gone) and restart-after-killed-exec.
+	 *  Synchronous; the composition persists it onto the run row. */
+	onLifecycle?(conversationId: string, note: string): void;
 }
 
 export interface SandboxExecOutcome {
@@ -154,19 +162,55 @@ export interface SandboxExecOutcome {
 	note?: string;
 }
 
+/** Optional last param on the lifecycle ops: the caller's abort signal.
+ *  Checked before the call, after the sweep and lane waits, after each
+ *  preflight read, and immediately before a mutation is dispatched —
+ *  a cancelled call never starts a rm/create/connect/cp afterwards.
+ *  A mutation already dispatched still reconciles to the row's intent:
+ *  an abort never leaves a half-reset or unverified network state. */
+export interface SandboxOpOpts {
+	abortSignal?: AbortSignal;
+}
+
 export interface Sandboxes {
 	exec(
 		conversationId: string,
 		command: string,
 		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
 	): Promise<SandboxExecOutcome>;
-	cpIn(conversationId: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
+	/** exec without the /bin/sh -c wrapper — argv filesystem ops and
+	 *  binary output for the worker subagent's execution env. Same
+	 *  ensure/reconcile/restart path as exec. */
+	execArgv(
+		conversationId: string,
+		argv: string[],
+		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	): Promise<SandboxExecOutcome>;
+	execBytesArgv(
+		conversationId: string,
+		argv: string[],
+		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	): Promise<{ result: BoundedProcBytes; note?: string }>;
+	cpIn(
+		conversationId: string,
+		hostPath: string,
+		containerPath: string,
+		opts?: SandboxOpOpts,
+	): Promise<{ note?: string }>;
 	/** The file's bytes, or SandboxError (not a regular file, over the
 	 *  cap, unreadable). Nothing is written anywhere — the caller owns
 	 *  the destination. */
-	catFile(conversationId: string, path: string): Promise<{ data: Uint8Array; note?: string }>;
-	setNetwork(conversationId: string, enabled: boolean): Promise<{ note?: string }>;
-	reset(conversationId: string, image?: string): Promise<{ note?: string }>;
+	catFile(
+		conversationId: string,
+		path: string,
+		opts?: SandboxOpOpts,
+	): Promise<{ data: Uint8Array; note?: string }>;
+	setNetwork(
+		conversationId: string,
+		enabled: boolean,
+		opts?: SandboxOpOpts,
+	): Promise<{ note?: string }>;
+	reset(conversationId: string, image?: string, opts?: SandboxOpOpts): Promise<{ note?: string }>;
 }
 
 export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
@@ -187,12 +231,53 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	}
 
 	// Reconcile actual network state with intent. Off is fail-closed:
-	// if the disconnect fails or inspect can't confirm it, the
-	// container is removed rather than used in an unknown state.
-	async function applyNetwork(name: string, want: boolean, conv: string): Promise<void> {
-		const before = await podman.inspect(name, conv);
-		const has = before.networks.includes(networkName);
+	// any failure to verify it removes the container — an unknown
+	// state is not usable. Row out only after rm lands; intended-on
+	// failures never trigger this cleanup. An abort is honored only
+	// before the connect/disconnect dispatch — once the toggle has
+	// begun, the verifying inspect (and fail-closed drop) runs to
+	// completion so the caller never gets an unverified state.
+	async function applyNetwork(
+		name: string,
+		want: boolean,
+		conv: string,
+		signal?: AbortSignal,
+	): Promise<void> {
+		signal?.throwIfAborted();
+		const drop = async (why: string, cause?: unknown): Promise<never> => {
+			try {
+				await podman.rm(name, conv);
+			} catch (rmErr) {
+				throw new SandboxError(
+					`sandbox ${name} ${why} — the container could not be removed either (${rmErr instanceof Error ? rmErr.message : String(rmErr)})`,
+					{ cause: rmErr },
+				);
+			}
+			store.delete(conv);
+			log.warn("sandbox removed — network off could not be confirmed", {
+				conversation: conv,
+				container: name,
+				reason: why,
+			});
+			throw new SandboxError(`sandbox ${name} ${why} — the container was removed`, {
+				...(cause === undefined ? {} : { cause }),
+			});
+		};
+		let has: boolean;
+		try {
+			const before = await podman.inspect(name, conv);
+			has = before.networks.includes(networkName);
+		} catch (err) {
+			if (!want) {
+				await drop(
+					`network state could not be inspected (${err instanceof Error ? err.message : String(err)})`,
+					err,
+				);
+			}
+			throw err;
+		}
 		if (has === want) return;
+		signal?.throwIfAborted();
 		if (want) {
 			await podman.networkConnect(networkName, name, conv);
 			const after = await podman.inspect(name, conv);
@@ -205,20 +290,46 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			await podman.networkDisconnect(networkName, name, conv);
 		} catch (err) {
 			// Same unconfirmed-off state as a lying disconnect.
-			await podman.rm(name, conv);
-			store.delete(conv);
-			throw new SandboxError(
-				`sandbox ${name} network disconnect failed (${err instanceof Error ? err.message : String(err)}) — the container was removed`,
+			await drop(
+				`network disconnect failed (${err instanceof Error ? err.message : String(err)})`,
+				err,
 			);
 		}
-		const after = await podman.inspect(name, conv);
-		if (after.networks.includes(networkName)) {
-			await podman.rm(name, conv);
-			store.delete(conv);
-			throw new SandboxError(
-				`sandbox ${name} would not confirm network off — the container was removed`,
+		// The confirming inspect is in its own try so a thrown drop
+		// can't be mistaken for an inspect failure and drop twice.
+		let stillOn = false;
+		try {
+			const after = await podman.inspect(name, conv);
+			stillOn = after.networks.includes(networkName);
+		} catch (err) {
+			await drop(
+				`network state after disconnect could not be inspected (${err instanceof Error ? err.message : String(err)})`,
+				err,
 			);
 		}
+		if (stillOn) {
+			await drop("would not confirm network off");
+		}
+	}
+
+	// Everything a create needs that must be verified BEFORE reset can
+	// destroy the incumbent: the image in the local store, the isolated
+	// network, and the live config. Callers that already ran it pass the
+	// result through so post-destruction code never re-checks.
+	async function prepareContainer(
+		image: string,
+		conv: string,
+		signal?: AbortSignal,
+	): Promise<SandboxConfig> {
+		signal?.throwIfAborted();
+		if (!(await podman.imageExists(image, conv))) {
+			throw new SandboxError(
+				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
+			);
+		}
+		signal?.throwIfAborted();
+		await podman.networkEnsure(networkName, conv);
+		return cfg();
 	}
 
 	// The image gate belongs to the caller's timing: reset must fail
@@ -237,9 +348,11 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		image: string,
 		wantNetwork: boolean,
 		conv: string,
+		prepared?: SandboxConfig,
+		signal?: AbortSignal,
 	): Promise<void> {
-		await podman.networkEnsure(networkName, conv);
-		const c = cfg();
+		const c = prepared ?? (await prepareContainer(image, conv, signal));
+		signal?.throwIfAborted();
 		await podman.create(
 			{
 				name,
@@ -253,16 +366,23 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			conv,
 		);
 		// Created ON the network — a --network none container can never
-		// be connected later — then brought to the intended state.
+		// be connected later — then brought to the intended state. `run`
+		// already landed, so this reconcile finishes unconditionally: an
+		// abort here would strand a networked, possibly rowless container.
 		await applyNetwork(name, wantNetwork, conv);
 	}
 
 	// The reconcile, inside the conversation's lane.
-	async function ensureLocked(conv: string): Promise<{ container: string; note?: string }> {
+	async function ensureLocked(
+		conv: string,
+		signal?: AbortSignal,
+	): Promise<{ container: string; note?: string }> {
+		signal?.throwIfAborted();
 		const name = nameFor(conv);
 		const now = Date.now();
 		const row = store.get(conv);
 		const ins = await podman.inspect(name, conv);
+		signal?.throwIfAborted();
 		if (ins.state !== "missing") {
 			requireOurs(name, ins);
 			if (row === null) {
@@ -278,10 +398,11 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				};
 				store.put(adopted);
 				// The tool contract says network is OFF until enabled — an
-				// adopted container that happens to be attached must say so,
-				// or the model would run code believing it is isolated.
+				// adopted container that happens to be attached must say
+				// so, or the model runs code believing it is isolated.
 				const net = adopted.network ? "; its network is ON" : "";
 				if (ins.state === "stopped") {
+					signal?.throwIfAborted();
 					await podman.start(name, conv);
 					await applyNetwork(name, adopted.network, conv);
 					log.info("sandbox adopted and started", { conversation: conv, container: name });
@@ -298,37 +419,43 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			}
 			if (ins.state === "stopped") {
 				// E.g. a host reboot — filesystem intact, network re-applied
-				// from the row (the intent), not from whatever inspect saw.
+				// from the row (the intent), not from whatever inspect saw,
+				// but anything background the worker left running is gone.
+				signal?.throwIfAborted();
 				await podman.start(name, conv);
+				// Startup already dispatched: finish the safety reconciliation even on cancellation.
 				await applyNetwork(name, row.network, conv);
 				store.touch(conv, now);
+				const note =
+					"sandbox was stopped (e.g. host reboot) — restarted it; files and network state restored, but any background processes have died";
+				deps.onLifecycle?.(conv, note);
 				log.info("sandbox restarted", { conversation: conv, container: name });
 				return {
 					container: name,
-					note: "sandbox was stopped — restarted it; files and network state restored",
+					note,
 				};
 			}
 			// Running: the row's network intent wins over a drifted actual
 			// (a crash between connect and row update fails closed).
-			await applyNetwork(name, row.network, conv);
+			await applyNetwork(name, row.network, conv, signal);
 			store.touch(conv, now);
 			return { container: name };
 		}
 		if (row !== null) {
 			// Missing with a row: recreate from the row — image and
 			// intended network — and say the prior filesystem is gone.
-			await requireImage(row.image, conv);
-			await createContainer(name, row.image, row.network, conv);
+			await createContainer(name, row.image, row.network, conv, undefined, signal);
 			store.touch(conv, now);
+			const note = "sandbox container was gone — recreated fresh; its previous contents are lost";
+			deps.onLifecycle?.(conv, note);
 			log.info("sandbox recreated", { conversation: conv, container: name });
 			return {
 				container: name,
-				note: "sandbox container was gone — recreated fresh; its previous contents are lost",
+				note,
 			};
 		}
 		const image = cfg().image;
-		await requireImage(image, conv);
-		await createContainer(name, image, false, conv);
+		await createContainer(name, image, false, conv, undefined, signal);
 		store.put({
 			conversationId: conv,
 			container: name,
@@ -342,14 +469,15 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	}
 
 	// The killed-exec recovery, inside the lane: podman exec does not
-	// propagate the client kill (measured 2026-10-10 — the in-container
-	// process outlives its client), so a timed-out/aborted exec leaves
-	// work running. The restart reaps it; the filesystem survives, and
-	// network intent is re-applied from the row.
-	async function restartAfterKillLocked(name: string, conv: string): Promise<void> {
+	// propagate the client kill, so a timed-out/aborted/capped exec
+	// leaves work running. The restart reaps it; the filesystem
+	// survives, network intent is re-applied from the row, and the
+	// note names the real kill cause.
+	async function restartAfterKillLocked(name: string, conv: string, note: string): Promise<void> {
 		await podman.restart(name, conv);
 		const row = store.get(conv);
 		await applyNetwork(name, row?.network ?? false, conv);
+		deps.onLifecycle?.(conv, note);
 		log.info("sandbox restarted after killed exec", {
 			conversation: conv,
 			container: name,
@@ -361,14 +489,14 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
 		for (const row of store.staleBefore(cutoff, conv)) {
-			// The snapshot is stale the moment it is read: a call that
-			// landed meanwhile touches its row inside the row's lane, so
-			// the reap takes that lane and re-reads before removing —
-			// otherwise one conversation's sweep could destroy a
-			// sandbox whose owner just came back.
+			// The idle/lease verdict is re-read inside the target's
+			// lane, immediately before removal — a touch or a fresh
+			// run lease landing between the listing and the rm must
+			// win the race.
 			await lane(row.conversationId, async () => {
 				const fresh = store.get(row.conversationId);
 				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
+				if (deps.runLease?.(row.conversationId) != null) return;
 				try {
 					await podman.rm(fresh.container, conv);
 				} catch (err) {
@@ -418,59 +546,118 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		return run;
 	}
 
-	return {
-		async exec(conv, command, opts) {
-			await sweepOnce(conv);
-			const ready = await lane(conv, () => {
-				// Inside the lane so a foreign sweep's recheck sees the
-				// fresh row before it can remove this container.
-				store.touch(conv, Date.now());
-				return ensureLocked(conv);
-			});
-			const r = await podman.exec(ready.container, ["/bin/sh", "-c", command], opts, conv);
-			let note = ready.note;
-			if (r.timedOut || opts.abortSignal?.aborted === true) {
-				await lane(conv, () => restartAfterKillLocked(ready.container, conv));
-				const killed =
-					"the command outlived its deadline — the sandbox was restarted to stop anything still running; files were kept";
-				note = note === undefined ? killed : `${note}; ${killed}`;
-			}
-			store.touch(conv, Date.now());
-			return { result: r, ...(note !== undefined ? { note } : {}) };
-		},
+	// A run lease announces itself on every non-destructive result so
+	// goblin's own reach-ins stay honest (design/subagents.md → One
+	// sandbox, two users).
+	function leaseNote(conv: string): string | undefined {
+		const lease = deps.runLease?.(conv);
+		return lease === null || lease === undefined
+			? undefined
+			: `run #${lease.id} holds this sandbox`;
+	}
+	function mergeNote(a: string | undefined, b: string | undefined): string | undefined {
+		if (a === undefined) return b;
+		if (b === undefined) return a;
+		return `${a}; ${b}`;
+	}
 
-		async cpIn(conv, hostPath, containerPath) {
+	// Shared exec path: ensure in the lane, dispatch outside it, restart
+	// when the call's client was killed — deadline, abort, or cap
+	// (the note names which). execArgv variants feed the worker env's
+	// positional-argv filesystem ops.
+	async function execCommon<T extends { timedOut: boolean; outputCapped?: boolean }>(
+		conv: string,
+		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+		dispatch: (container: string) => Promise<T>,
+	): Promise<{ result: T; note?: string }> {
+		await sweepOnce(conv);
+		const ready = await lane(conv, () => {
+			// Inside the lane so a foreign sweep's recheck sees the
+			// fresh row before it can remove this container.
+			store.touch(conv, Date.now());
+			return ensureLocked(conv);
+		});
+		const r = await dispatch(ready.container);
+		let note = ready.note;
+		if (r.timedOut || opts.abortSignal?.aborted === true || r.outputCapped === true) {
+			const why =
+				r.outputCapped === true
+					? "ran past its output cap"
+					: r.timedOut
+						? "outlived its deadline"
+						: "was aborted";
+			const killed = `the command ${why} — the sandbox was restarted to stop anything still running; files were kept`;
+			await lane(conv, () => restartAfterKillLocked(ready.container, conv, killed));
+			note = mergeNote(note, killed);
+		}
+		note = mergeNote(note, leaseNote(conv));
+		store.touch(conv, Date.now());
+		return { result: r, ...(note !== undefined ? { note } : {}) };
+	}
+
+	return {
+		exec: (conv, command, opts) =>
+			execCommon(conv, opts, (container) =>
+				podman.exec(container, ["/bin/sh", "-c", command], opts, conv),
+			),
+
+		execArgv: (conv, argv, opts) =>
+			execCommon(conv, opts, (container) => podman.exec(container, argv, opts, conv)),
+
+		execBytesArgv: (conv, argv, opts) =>
+			execCommon(conv, opts, (container) => podman.execBytes(container, argv, opts, conv)),
+
+		async cpIn(conv, hostPath, containerPath, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
+			opts?.abortSignal?.throwIfAborted();
 			const ready = await lane(conv, () => {
 				store.touch(conv, Date.now());
-				return ensureLocked(conv);
+				return ensureLocked(conv, opts?.abortSignal);
 			});
+			opts?.abortSignal?.throwIfAborted();
 			await podman.cp(ready.container, hostPath, containerPath, conv);
 			store.touch(conv, Date.now());
-			return { ...(ready.note !== undefined ? { note: ready.note } : {}) };
+			const note = mergeNote(ready.note, leaseNote(conv));
+			return { ...(note !== undefined ? { note } : {}) };
 		},
 
-		async catFile(conv, path) {
+		async catFile(conv, path, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
+			opts?.abortSignal?.throwIfAborted();
 			const ready = await lane(conv, () => {
 				store.touch(conv, Date.now());
-				return ensureLocked(conv);
+				return ensureLocked(conv, opts?.abortSignal);
 			});
+			opts?.abortSignal?.throwIfAborted();
+			// -f follows a leaf symlink but the export contract is
+			// regular files only — reject links, dirs and devices alike.
 			const probe = await podman.exec(
 				ready.container,
-				["/bin/sh", "-c", 'test -f "$1"', "sb-check", path],
-				{ timeoutMs: PROBE_TIMEOUT_MS, maxOutput: PROBE_MAX_OUTPUT },
+				["/bin/sh", "-c", 'test -f "$1" && ! test -L "$1"', "sb-check", path],
+				{
+					timeoutMs: PROBE_TIMEOUT_MS,
+					maxOutput: PROBE_MAX_OUTPUT,
+					...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
+				},
 				conv,
 			);
+			opts?.abortSignal?.throwIfAborted();
 			if (probe.exitCode !== 0) {
 				throw new SandboxError(`${path} is not a regular file in the sandbox`);
 			}
 			const r = await podman.execBytes(
 				ready.container,
 				["cat", "--", path],
-				{ timeoutMs: EXPORT_TIMEOUT_MS, maxOutput: EXPORT_MAX_BYTES },
+				{
+					timeoutMs: EXPORT_TIMEOUT_MS,
+					maxOutput: EXPORT_MAX_BYTES,
+					...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
+				},
 				conv,
 			);
+			opts?.abortSignal?.throwIfAborted();
 			if (r.truncated || r.stdout.byteLength > EXPORT_MAX_BYTES) {
 				throw new SandboxError(
 					`export exceeds the ${EXPORT_MAX_BYTES / (1024 * 1024)} MiB cap — nothing was exported`,
@@ -482,15 +669,21 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				);
 			}
 			store.touch(conv, Date.now());
-			return { data: r.stdout, ...(ready.note !== undefined ? { note: ready.note } : {}) };
+			const note = mergeNote(ready.note, leaseNote(conv));
+			return { data: r.stdout, ...(note !== undefined ? { note } : {}) };
 		},
 
-		async setNetwork(conv, enabled) {
+		async setNetwork(conv, enabled, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
+			opts?.abortSignal?.throwIfAborted();
 			const out = await lane(conv, async () => {
 				store.touch(conv, Date.now());
-				const ready = await ensureLocked(conv);
-				await applyNetwork(ready.container, enabled, conv);
+				const ready = await ensureLocked(conv, opts?.abortSignal);
+				opts?.abortSignal?.throwIfAborted();
+				await applyNetwork(ready.container, enabled, conv, opts?.abortSignal);
+				// The toggle already dispatched and verified — the row
+				// update is its reconciliation, never abort between them.
 				store.setNetwork(conv, enabled);
 				store.touch(conv, Date.now());
 				log.info("sandbox network", {
@@ -500,13 +693,25 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				});
 				return ready;
 			});
-			return { ...(out.note !== undefined ? { note: out.note } : {}) };
+			const note = mergeNote(out.note, leaseNote(conv));
+			return { ...(note !== undefined ? { note } : {}) };
 		},
 
-		async reset(conv, image) {
+		async reset(conv, image, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			await sweepOnce(conv);
+			opts?.abortSignal?.throwIfAborted();
 			return await lane(conv, async () => {
 				store.touch(conv, Date.now());
+				opts?.abortSignal?.throwIfAborted();
+				// Inside the lane so a racing act can't resurrect a stale
+				// row — a live run would lose its state under reset.
+				const lease = deps.runLease?.(conv);
+				if (lease != null) {
+					throw new SandboxError(
+						`sandbox reset refused — run #${lease.id} (${lease.status}) holds this sandbox; stop it first`,
+					);
+				}
 				const name = nameFor(conv);
 				const target = image ?? cfg().image;
 				// The image gate runs before the rm: a bad ref must fail
@@ -514,11 +719,25 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				// filesystem is already gone.
 				await requireImage(target, conv);
 				const ins = await podman.inspect(name, conv);
-				if (ins.state !== "missing") {
-					requireOurs(name, ins);
-					await podman.rm(name, conv);
+				opts?.abortSignal?.throwIfAborted();
+				if (ins.state !== "missing") requireOurs(name, ins);
+				// Preflight the replacement BEFORE removing the incumbent —
+				// an unavailable image or network must never destroy the
+				// existing sandbox (design/sandbox.md). A cancelled
+				// preflight throws here and the incumbent survives.
+				const prepared = await prepareContainer(target, conv, opts?.abortSignal);
+				opts?.abortSignal?.throwIfAborted();
+				const currentLease = deps.runLease?.(conv);
+				if (currentLease != null) {
+					throw new SandboxError(
+						`sandbox reset refused — run #${currentLease.id} (${currentLease.status}) holds this sandbox; stop it first`,
+					);
 				}
-				await createContainer(name, target, false, conv);
+				if (ins.state !== "missing") await podman.rm(name, conv);
+				// rm already landed — the recreate runs without the signal:
+				// a cancelled call must still leave a coherent container and
+				// row rather than a half-reset.
+				await createContainer(name, target, false, conv, prepared);
 				const now = Date.now();
 				store.put({
 					conversationId: conv,

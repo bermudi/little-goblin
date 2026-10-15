@@ -98,17 +98,19 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 			try {
 				sizeBytes += statSync(join(skillDir, f)).size;
 			} catch (e) {
-				// Raced a delete mid-walk — count what's still there.
+				// A vanished file raced the walk — count what's still
+				// there. Anything else (a locked-down dir, say) is a real
+				// read failure, not an empty catalog.
 				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			}
 		}
 		let updatedAt: string | null = null;
 		try {
-			updatedAt = statSync(join(dir, entry.name, "SKILL.md")).mtime.toISOString();
+			updatedAt = statSync(join(skillDir, "SKILL.md")).mtime.toISOString();
 		} catch (e) {
 			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			try {
-				updatedAt = statSync(join(dir, entry.name)).mtime.toISOString();
+				updatedAt = statSync(skillDir).mtime.toISOString();
 			} catch (e2) {
 				// Dir vanished mid-walk — list it without a timestamp.
 				if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
@@ -180,7 +182,7 @@ export function readSkillFile(
 	rel: string,
 ): SkillFileResponse | null {
 	const base = origin === "skills" ? skillsDir : proposedDir;
-	if (name.includes("/") || name.includes("\\") || name.includes("..")) return null;
+	if (name.includes("/") || name.includes("\\") || name === "." || name === "..") return null;
 	// Match the catalog: a linked skill directory is not a viewer skill.
 	// Checking only the file would let a link redefine its trusted base.
 	try {
@@ -219,6 +221,9 @@ export function listAttachments(dir: string): AttachmentsResponse {
 	const files: OperatorAttachmentItem[] = [];
 	for (const entry of entries) {
 		if (!entry.isFile()) continue;
+		// persistAttachment stages uploads as dotfile temps that a later
+		// rename settles — an in-flight temp is not an attachment.
+		if (entry.name.startsWith(".")) continue;
 		const st = statSync(join(dir, entry.name));
 		files.push({ name: entry.name, sizeBytes: st.size, updatedAt: st.mtime.toISOString() });
 	}
@@ -231,7 +236,9 @@ export function listAttachments(dir: string): AttachmentsResponse {
  * is not a plain file directly inside `dir`.
  */
 export function attachmentPath(dir: string, name: string): string | null {
-	if (name.includes("/") || name.includes("\\") || name.includes("..")) return null;
+	// Leading-dot names are persistAttachment's upload temps — never
+	// servable, the same rule the composer read-back enforces.
+	if (name.includes("/") || name.includes("\\") || name.startsWith(".")) return null;
 	const full = contained(dir, name);
 	if (full === null) return null;
 	try {
@@ -347,7 +354,8 @@ const DEFAULT_LOG_WINDOW = 512 * 1024;
  * The last `limit` matching lines of the JSONL log, oldest first. The
  * scan reads at most `windowBytes` from the end; a first line with no
  * leading newline boundary inside the window is dropped as partial and
- * reported via `truncated`, never guessed at.
+ * reported via `truncated`, never guessed at — and a line that fails to
+ * parse (a torn write) is likewise dropped content, reported the same way.
  */
 export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse {
 	const windowBytes = opts.windowBytes ?? DEFAULT_LOG_WINDOW;
@@ -381,23 +389,26 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	const q = opts.q ?? null;
 	const level = opts.level ?? null;
 	const matching: LogTailItem[] = [];
-	// A torn write can leave a half line; it is skipped but counted as
-	// truncation so the view never silently hides content.
-	let torn = false;
+	// Parsing comes before the q/level filters: a line that cannot be
+	// read is dropped content wherever it lands, while a filtered-out
+	// record is intentional selection — only the former is truncation.
+	let discarded = 0;
 	for (const line of rawLines) {
 		if (line === "") continue;
-		if (q !== null && !line.includes(q)) continue;
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
 		} catch {
-			torn = true;
+			// A torn write can leave a half line; skip it, it counts as
+			// truncation so the view never silently hides content.
+			discarded++;
 			continue;
 		}
 		if (typeof parsed !== "object" || parsed === null) {
-			torn = true;
+			discarded++;
 			continue;
 		}
+		if (q !== null && !line.includes(q)) continue;
 		const rec = parsed as Record<string, unknown>;
 		if (level !== null && rec["level"] !== level) continue;
 		matching.push({
@@ -411,7 +422,7 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	const lines = matching.slice(-limit);
 	return {
 		lines,
-		truncated: windowCut || torn || matching.length > limit,
+		truncated: windowCut || discarded > 0 || matching.length > limit,
 		scannedBytes: len,
 	};
 }

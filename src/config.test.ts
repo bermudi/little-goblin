@@ -600,6 +600,34 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
 		expect(loadConfig()!.tts).toBe(false);
 	});
+
+	test("subagents: absent block is off; block applies the design defaults", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.subagents).toBeUndefined();
+		const model = `{auth:"zai",id:"glm-5.3-flash",baseUrl:"https://api.z.ai/api/coding/paas/v4",api:"openai-completions",thinking:"low"}`;
+		writeFileSync(join(dir, "goblin.json5"), `${base},subagents:{computer:{model:${model}}}}`);
+		const sub = loadConfig()!.subagents!;
+		expect(sub.maxRuns).toBe(3);
+		expect(sub.worker).toBeUndefined();
+		expect(sub.computer!.model.id).toBe("glm-5.3-flash");
+		expect(sub.desktops).toEqual({
+			image: "localhost/goblin-desktop:1",
+			max: 3,
+			idleHours: 24,
+			memory: "3g",
+			cpus: 2,
+			pids: 1024,
+		});
+		// A wrong transport is a boot error — pi-ai speaks only
+		// openai-completions here.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},subagents:{computer:{model:${model.replace(`"openai-completions"`, `"responses"`)}}}}`,
+		);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
 });
 
 describe("ensureHomeLayout", () => {
@@ -892,6 +920,26 @@ describe("authReferences", () => {
 			search: [{ kind: "brave", auth: "brave-key" }],
 			tts: { kind: "openrouter", auth: "or-tts" },
 			appToken: "app-token-record",
+			subagents: {
+				worker: {
+					model: {
+						auth: "zai",
+						id: "glm-5.3",
+						baseUrl: "https://fixture.invalid",
+						api: "openai-completions",
+						thinking: "high",
+					},
+				},
+				computer: {
+					model: {
+						auth: "zai-flash",
+						id: "glm-5.3-flash",
+						baseUrl: "https://fixture.invalid",
+						api: "openai-completions",
+						thinking: "low",
+					},
+				},
+			},
 		});
 		expect([...authReferences(c)].sort()).toEqual([
 			"app-token-record",
@@ -899,6 +947,7 @@ describe("authReferences", () => {
 			"or-tts",
 			"telegram",
 			"zai",
+			"zai-flash",
 		]);
 	});
 

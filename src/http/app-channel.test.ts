@@ -2391,15 +2391,146 @@ describe("app notes", () => {
 				pinnedAt: string | null;
 				archivedAt: string | null;
 				rev: number;
+				stateRev: number;
 			};
 			expect(after.pinnedAt).not.toBeNull();
 			expect(after.archivedAt).not.toBeNull();
-			// Flags bump nothing.
+			// Flags bump nothing content-visible — the token still
+			// moves, once per accepted flag write.
 			expect(after.rev).toBe(2);
+			expect(after.stateRev).toBe(4);
 			// Strictness: unknown keys refuse.
 			expect(
 				(await patchJson(call, `/api/app/notes/${note.id}`, { frobnicate: true })).status,
 			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a failed content write rolls back a combined patch's flags", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+			// Stand-in for "disk full": only the body_md write fails —
+			// flag updates don't target the column and still land.
+			store.db.run(`CREATE TRIGGER fault_on_big_body BEFORE UPDATE OF body_md ON notes
+				WHEN length(new.body_md) > 1000
+				BEGIN SELECT RAISE(ABORT, 'injected fault'); END`);
+			const res = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ archived: true, pinned: true, body: "x".repeat(2000) },
+				{ "if-match": '"1"' },
+			);
+			expect(res.status).toBe(500);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				pinnedAt: string | null;
+				archivedAt: string | null;
+				rev: number;
+				stateRev: number;
+			};
+			expect(after.body).toBe("v1");
+			expect(after.rev).toBe(1);
+			expect(after.stateRev).toBe(1); // the token rolled back too
+			expect(after.pinnedAt).toBeNull();
+			expect(after.archivedAt).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("note body caps at NOTE_BODY_MAX on every content door", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const over = "x".repeat(1_000_001);
+			const atCap = "x".repeat(1_000_000);
+
+			const refusedCreate = await create(call, { title: "t", body: over });
+			expect(refusedCreate.status).toBe(422);
+			const created = await create(call, { title: "t", body: atCap });
+			expect(created.status).toBe(201);
+			const note = (await created.json()) as { id: string; rev: number; body: string };
+			expect(note.body).toBe(atCap);
+
+			// A live etag keeps the size refusal unambiguous (422, not 428/409).
+			const refusedPatch = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: over },
+				{ "if-match": `"${note.rev}"` },
+			);
+			expect(refusedPatch.status).toBe(422);
+			const patched = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: "small" },
+				{ "if-match": `"${note.rev}"` },
+			);
+			expect(patched.status).toBe(200);
+
+			const refusedAppend = await postJson(call, `/api/app/notes/${note.id}/append`, {
+				text: over,
+			});
+			expect(refusedAppend.status).toBe(422);
+			const refusedResult = await postJson(call, `/api/app/notes/${note.id}/append`, {
+				text: atCap,
+			});
+			expect(refusedResult.status).toBe(422);
+			const unchanged = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+			};
+			expect(unchanged.body).toBe("small");
+			const text = "x".repeat(1_000_000 - "small\n\n".length);
+			const appended = await postJson(call, `/api/app/notes/${note.id}/append`, { text });
+			expect(appended.status).toBe(200);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+			};
+			// append joins with a blank line.
+			expect(after.body).toBe(`small\n\n${text}`);
+			expect(after.body.length).toBe(1_000_000);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("ordinary editor saves can rename and reduce existing oversized notes", async () => {
+		const { http, call, notes, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const n = notes.create({ title: "legacy" });
+			const body = "x".repeat(1_000_006);
+			store.db.run("UPDATE notes SET body_md = ? WHERE id = ?", [body, n.id]);
+			const path = `/api/app/notes/${n.id}`;
+			const renamed = await patchJson(
+				call,
+				path,
+				{ title: "renamed", body },
+				{ "if-match": `"${n.rev}"` },
+			);
+			expect(renamed.status).toBe(200);
+			const saved = (await renamed.json()) as { title: string; body: string; rev: number };
+			expect(saved.title).toBe("renamed");
+			expect(saved.body.length).toBe(body.length);
+			const refused = await patchJson(
+				call,
+				path,
+				{ body: `${body}x`, pinned: true },
+				{ "if-match": `"${saved.rev}"` },
+			);
+			expect(refused.status).toBe(422);
+			expect(notes.get(n.id)!.pinnedAt).toBeNull();
+			expect(notes.get(n.id)!.rev).toBe(saved.rev);
+			const reduced = await patchJson(
+				call,
+				path,
+				{ title: saved.title, body: body.slice(1) },
+				{ "if-match": `"${saved.rev}"` },
+			);
+			expect(reduced.status).toBe(200);
+			expect(notes.get(n.id)!.body.length).toBe(1_000_005);
 		} finally {
 			http.stop();
 		}
@@ -2459,11 +2590,58 @@ describe("app notes", () => {
 			expect(v1.body).toBe("one");
 			expect((await call(`/api/app/notes/${note.id}/versions/9`)).status).toBe(404);
 
-			const restored = await postJson(call, `/api/app/notes/${note.id}/versions/1/restore`, {});
+			const restored = await call(`/api/app/notes/${note.id}/versions/1/restore`, {
+				method: "POST",
+				headers: { "if-match": `"${after.rev}"` },
+			});
 			expect(restored.status).toBe(200);
 			const back = (await restored.json()) as { rev: number; body: string };
 			expect(back.rev).toBe(3);
 			expect(back.body).toBe("one");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("restore is a content write — If-Match is required and guards the live rev", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "one" });
+			const note = (await created.json()) as { id: string };
+			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "two" });
+			const restore = (headers: Record<string, string> = {}) =>
+				call(`/api/app/notes/${note.id}/versions/1/restore`, {
+					method: "POST",
+					headers,
+				});
+			// Missing or malformed — the write never reaches the store.
+			expect((await restore()).status).toBe(428);
+			expect((await restore({ "if-match": "abc" })).status).toBe(428);
+			// Stale — conflicts with the live note like a PATCH does.
+			const stale = await restore({ "if-match": '"1"' });
+			expect(stale.status).toBe(409);
+			expect(stale.headers.get("etag")).toBe('"2"');
+			const conflict = (await stale.json()) as { note: { rev: number; body: string } };
+			expect(conflict.note.rev).toBe(2);
+			expect(conflict.note.body).toBe("one\n\ntwo");
+			// A missing version stays 422 under a live guard.
+			const gone = await call(`/api/app/notes/${note.id}/versions/9/restore`, {
+				method: "POST",
+				headers: { "if-match": '"2"' },
+			});
+			expect(gone.status).toBe(422);
+			// The current rev restores — and nothing the refused calls
+			// touched shows up (body, versions, token all stand).
+			const ok = await restore({ "if-match": '"2"' });
+			expect(ok.status).toBe(200);
+			const back = (await ok.json()) as { rev: number; body: string; stateRev: number };
+			expect(back.rev).toBe(3);
+			expect(back.body).toBe("one");
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: { rev: number; source: string }[];
+			};
+			expect(versions.versions.map((v) => v.rev)).toEqual([2, 1]);
+			expect(versions.versions[0]!.source).toBe("restore");
 		} finally {
 			http.stop();
 		}
@@ -2527,8 +2705,9 @@ describe("app notes", () => {
 			await res.text();
 			const history = store.history("app/n-attach");
 			const part = history[0]?.parts.find((p) => p.type === "data-note") as
-				| { data?: { body?: string; title?: string; rev?: number } }
+				| { data?: { id?: string; body?: string; title?: string; rev?: number } }
 				| undefined;
+			expect(part?.data?.id).toBe(note.id);
 			expect(part?.data?.body).toBe("the real body");
 			expect(part?.data?.title).toBe("ref");
 			expect(part?.data?.rev).toBe(note.rev);

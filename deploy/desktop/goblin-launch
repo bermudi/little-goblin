@@ -1,0 +1,87 @@
+#!/bin/sh
+# goblin-launch <app> — start a whitelisted app on the desktop,
+# detached so the exec that launched it can return. The desk identity
+# and session env are fixed here — the same constants desktops.ts pins
+# as SESSION_ENV on every desk exec — never read from /run/desk, which
+# desk can write while this script may run as root. A root invocation
+# detaches through setpriv to the fixed desk uid/gid; the target
+# identity never comes from the environment.
+set -eu
+
+DESK_USER=desk
+DESK_HOME=/home/desk
+# Open the log as desk before detaching, so permission failures reach the
+# caller and the app inherits only log fds, never the spawning exec's pipes.
+# The override lets boundary tests run without the image's /run/desk.
+LOG_DIR="${GOBLIN_LAUNCH_LOG_DIR:-/run/desk}"
+
+run_detached() {
+	if [ "$(id -u)" = "0" ]; then
+		via=root
+	elif [ "$(id -un)" = "${DESK_USER}" ]; then
+		via=desk
+	else
+		echo "goblin-launch: refusing to detach as '$(id -un)' — run as root or ${DESK_USER}" >&2
+		exit 64
+	fi
+	if [ ! -d "${LOG_DIR}" ]; then
+		echo "goblin-launch: ${LOG_DIR} is missing — nowhere to put the app log" >&2
+		exit 1
+	fi
+	log="${LOG_DIR}/goblin-launch-$1.log"
+	if [ "${via}" = "root" ]; then
+		setpriv --reuid="${DESK_USER}" --regid="${DESK_USER}" --clear-groups \
+			--reset-env \
+			env HOME="${DESK_HOME}" \
+				DISPLAY=":99" \
+				DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
+				XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
+				GOBLIN_LAUNCH_LOG="${log}" \
+				/bin/sh -ec 'exec >>"${GOBLIN_LAUNCH_LOG}" 2>&1; "$@" </dev/null &' \
+				goblin-launch "$@" </dev/null
+	else
+		env HOME="${DESK_HOME}" \
+			DISPLAY=":99" \
+			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
+			XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
+			GOBLIN_LAUNCH_LOG="${log}" \
+			/bin/sh -ec 'exec >>"${GOBLIN_LAUNCH_LOG}" 2>&1; "$@" </dev/null &' \
+			goblin-launch "$@" </dev/null
+	fi
+}
+
+case "${1:-}" in
+	chromium)
+		# Chromium keeps its own sandbox: desktop containers carry
+		# CAP_SYS_CHROOT on top of the five wall caps, which is what the
+		# zygote needs ("Failed to receive hello message from zygote"
+		# without it). The session still runs as desk, so the browser is
+		# an unprivileged uid inside the container's own wall.
+		#
+		# $2 is a model-controlled URL landing on Chromium's argv: only
+		# a real URL or about:blank, never a bare --flag. desktops.ts
+		# refuses earlier; this guard is the in-image backstop.
+		url="${2:-}"
+		if [ -n "${url}" ]; then
+			case "${url}" in
+				http://*|https://*|file://*|about:blank) ;;
+				*)
+					echo "goblin-launch: refused url '${url}'" >&2
+					exit 64
+					;;
+			esac
+			case "${url}" in
+				*[[:space:]]*|*[[:cntrl:]]*)
+					echo "goblin-launch: refused url '${url}'" >&2
+					exit 64
+					;;
+			esac
+		fi
+		run_detached chromium --force-renderer-accessibility \
+			${url:+"${url}"}
+		;;
+	*)
+		echo "goblin-launch: unknown app '${1:-}' (whitelist: chromium)" >&2
+		exit 64
+		;;
+esac

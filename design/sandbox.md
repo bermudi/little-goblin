@@ -42,7 +42,10 @@ delegated):
   CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID --security-opt
   no-new-privileges`. Never `--privileged`, never `--env-host` (the
   container env is the image's, so no daemon env or secret reaches it),
-  never the podman socket.
+  never the podman socket. This is the sandbox wall — *desktops*
+  append `SYS_CHROOT` via `CreateSpec.extraCaps` so Chromium can run
+  its own sandbox (design/subagents.md); sandboxes always get exactly
+  the five.
 - **Filesystem: nothing shared.** No bind mounts, no volumes, no workspace
   exposure. Bind mounts were rejected on measurement: idmapped mounts fail
   under rootless runc, `:U` leaves host files owned by subuid 100000, and
@@ -52,7 +55,10 @@ delegated):
 - **Network: off by default, a live toggle.** Each sandbox is created on
   the dedicated `goblin-sandbox` network (`--opt isolate=strict`, created
   lazily, its isolate option verified on use) and disconnected before its
-  first command. `podman network connect/disconnect` toggles it live —
+  first command. Lazy creation converges on a racing creator: inspect →
+  create → on failure inspect again, accepting the network only if it now
+  exists with `isolate=strict` — two conversations first-ensuring in
+  parallel share the winner instead of one losing to "already exists". `podman network connect/disconnect` toggles it live —
   filesystem and processes survive the switch (measured). `--network none`
   was rejected: a container created with it can never be connected later.
   The isolated bridge cannot reach the memory network (10.89.0.2:5432
@@ -121,16 +127,21 @@ tool already makes. Flat schema, per-action contract enforced inside
 - `exec` — `command`, `timeout_ms` (bash's default and cap). Runs
   `/bin/sh -c` (alpine has no bash) in `/work`. Same bounded,
   tail-truncated output shape as `bash`, plus a note when the call
-  created, started, or recreated the sandbox. On timeout or abort the
-  `podman exec` client is group-killed by `boundedRun`; if the command
-  inside outlives its client (to verify — podman exec is not known to
-  propagate kills), the container is restarted (`-t 0`): background
-  processes die, files stay, and the result says so.
+  created, started, or recreated the sandbox. On timeout, abort, or a
+  stream output-cap the `podman exec` client is group-killed by
+  `boundedRun` (the cap is a distinct `outputCapped` cause — a drain
+  cutoff after exit is only `truncated`), but the client's death does
+  not guarantee the guest command died — so the container is restarted
+  (`-t 0`): background processes die, files stay, and the result's
+  note names the real cause.
 - `import` — `from` (host path, resolved under the workspace; its realpath
   must stay inside the workspace) → `to` (container path), via `podman
   cp`. The containment is the mechanical wall against copying host secrets
   into a networked sandbox by this path; moving something into the
-  workspace first is a deliberate act.
+  workspace first is a deliberate act. The shared `box-files.readImport`
+  pins an open regular file, validates the FD's realpath inside the
+  workspace and bounds its read before staging. Podman never reopens the
+  caller's mutable workspace pathname.
 - `export` — `from` (a regular file in the container) → `to` (relative
   path inside the workspace, default `sandbox-out/<basename>`). Bytes come
   out through `podman exec cat --` — file content only, never metadata, so
@@ -138,11 +149,30 @@ tool already makes. Flat schema, per-action contract enforced inside
   host write anywhere. Written tmp + fsync + rename; capped (100 MiB);
   non-regular files (directories, symlinks, devices) are refused outright
   rather than tarred — the safe subset ships, the tar path was never
-  built.
+  built. The destination is resolved once before the read (a bad path
+  refuses early), then re-derived at write time by
+  `box-files.writeExportBytes`, which pins the real parent to a
+  directory FD (`O_DIRECTORY|O_NOFOLLOW`, verified against the
+  realpath'd workspace via `/proc/self/fd/<fd>`) — a host path resolved
+  before the container await is stale, and an ancestor swapped for an
+  outside symlink while the read was in flight must not aim the write.
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
   confirmed off when off is intended is removed, not used.
-- `reset` — optional `image`.
+- `reset` — optional `image`. Destruction is gated on a successful
+  replacement preflight: after the run-lease and ownership checks it
+  verifies the target image is in the local store and the isolated
+  network exists BEFORE removing the incumbent — an unavailable
+  replacement never destroys the existing sandbox, its files or its row.
+
+Cancellation: `import`, `export`, `network` and `reset` take the call's
+abort signal and check it before the call, after the sweep and lane
+waits, after each preflight read, and immediately before a mutation
+dispatches — a `/stop`'d call parked behind the lane never starts a
+rm/create/connect/cp afterwards. Once a mutation has been dispatched
+its reconciliation finishes anyway (a begun `rm` still gets its
+recreate and row; a begun connect/disconnect still gets its verifying
+inspect) — an abort never leaves a half-reset or unverified state.
 
 The description says what the model needs: not the host; root inside;
 nothing here touches the operator's machine, files or services; network

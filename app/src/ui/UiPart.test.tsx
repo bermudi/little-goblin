@@ -134,11 +134,11 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 	let win: Window;
 	let container: HTMLElement;
 	let root: Root | null = null;
-	let installed: string[] = [];
+	let installed: [string, PropertyDescriptor | undefined][] = [];
 
 	const installGlobal = (name: string, value: unknown) => {
+		installed.push([name, Object.getOwnPropertyDescriptor(globalThis, name)]);
 		Reflect.set(globalThis, name, value);
-		installed.push(name);
 	};
 
 	beforeEach(() => {
@@ -165,7 +165,10 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		}
 		await win.happyDOM.close();
 		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		for (const [name, descriptor] of installed) {
+			if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
+			else Object.defineProperty(globalThis, name, descriptor);
+		}
 		installed = [];
 	});
 
@@ -273,6 +276,178 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
 		});
 		expect(actions).toEqual(["[ui] Plan ride: distance=30.5, terrain=flat, notes="]);
+	});
+
+	test("a form's uncontrolled inputs never leak into the next tab at the same index", async () => {
+		const actions: string[] = [];
+		const tabbedForm = (tag: string) => ({
+			type: "form",
+			fields: [{ name: "amount", label: "Amount", kind: "number" }],
+			submit: tag,
+		});
+		const input = {
+			blocks: [
+				{
+					type: "tabs",
+					tabs: [
+						{ label: "A", blocks: [tabbedForm("Send A")] },
+						{ label: "B", blocks: [tabbedForm("Send B")] },
+					],
+				},
+			],
+		};
+		await mount(
+			<UiPart
+				part={uiPart({ state: "output-available", input, output: "shown" })}
+				onAction={(t) => actions.push(t)}
+			/>,
+		);
+		const aInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
+		aInput.value = "750";
+		// Switch tabs — the same-index form must mount fresh, not
+		// reuse A's DOM node and its typed value.
+		await clickEl([...container.querySelectorAll("[role='tab']")][1] ?? null);
+		const bInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
+		expect(bInput).not.toBe(aInput);
+		expect(bInput.value).toBe("");
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
+		});
+		expect(actions).toEqual(["[ui] Send B: amount="]);
+	});
+
+	// Note fences inside ui blocks get the transcript's note context —
+	// token, project binding, in-app navigation — through every
+	// container depth (design/projects.md → Notes).
+	const fence = '````note title="Ideas"\nfenced body\n````';
+	const fakeNoteApi = (calls: { url: string; init: RequestInit | undefined }[]) => {
+		installGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			calls.push({ url, init });
+			const body =
+				init?.method === "POST" && url === "/api/app/notes"
+					? { id: "n-new", title: "Ideas", rev: 1, body: "stored" }
+					: { notes: [] };
+			return Promise.resolve(
+				new win.Response(JSON.stringify(body), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}) as unknown as Response,
+			);
+		});
+	};
+	const clickEl = async (el: Element | null) => {
+		expect(el).not.toBeNull();
+		await act(async () => {
+			el!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+	};
+	const drain = () =>
+		act(async () => {
+			await new Promise((r) => setTimeout(r, 250));
+		});
+
+	test("note fences at every depth carry token, project, and navigation", async () => {
+		const calls: { url: string; init: RequestInit | undefined }[] = [];
+		const opened: string[] = [];
+		fakeNoteApi(calls);
+		const ui = uiPart({
+			state: "output-available",
+			input: {
+				blocks: [
+					{ type: "text", md: fence },
+					{ type: "callout", title: "c", md: fence },
+					{ type: "steps", items: [{ title: "s", md: fence }] },
+					{
+						type: "tabs",
+						tabs: [
+							{ label: "t", blocks: [{ type: "text", md: fence }] },
+							{ label: "u", blocks: [{ type: "text", md: "other tab" }] },
+						],
+					},
+					{
+						type: "columns",
+						columns: [
+							{ blocks: [{ type: "text", md: fence }] },
+							{ blocks: [{ type: "text", md: "other col" }] },
+						],
+					},
+				],
+			},
+			output: "shown",
+		}) as unknown as UIMessage["parts"][number];
+		await mount(
+			<MessageParts
+				parts={[ui]}
+				token="tok-1"
+				noteProjectId="p-1"
+				onOpenNote={(id) => opened.push(id)}
+			/>,
+		);
+		const cards = container.querySelectorAll(".note-card");
+		expect(cards).toHaveLength(5);
+
+		// Every card — text, callout, steps, tabs, columns — runs the
+		// full flow with the context its container chain forwarded.
+		for (const [i, card] of [...cards].entries()) {
+			await clickEl(card.querySelector(".note-card-append"));
+			await drain();
+			const list = calls.filter((c) => c.url.startsWith("/api/app/notes?")).at(-1)!;
+			expect((list.init?.headers as Record<string, string>).authorization).toBe("Bearer tok-1");
+			await clickEl(
+				[...card.querySelectorAll("button")].find((b) => b.textContent?.includes("New note")) ??
+					null,
+			);
+			await act(async () => {
+				await new Promise((r) => setTimeout(r, 0));
+			});
+			const creates = calls.filter((c) => c.init?.method === "POST");
+			expect(creates).toHaveLength(i + 1);
+			const create = creates.at(-1)!;
+			expect((create.init?.headers as Record<string, string>).authorization).toBe("Bearer tok-1");
+			expect(JSON.parse(String(create.init?.body))).toEqual({
+				title: "Ideas",
+				body: "fenced body",
+				projectId: "p-1",
+			});
+			// The done link navigates in-app with the created id.
+			await clickEl(card.querySelector(".note-card-status button"));
+			expect(opened).toEqual(Array(i + 1).fill("n-new"));
+		}
+	});
+
+	test("a streaming ui block's note fence gets the context too — token null sends no Authorization", async () => {
+		const calls: { url: string; init: RequestInit | undefined }[] = [];
+		const opened: string[] = [];
+		fakeNoteApi(calls);
+		const ui = uiPart({
+			state: "input-streaming",
+			input: { blocks: [{ type: "text", md: fence }] },
+		}) as unknown as UIMessage["parts"][number];
+		await mount(
+			<MessageParts
+				parts={[ui]}
+				token={null}
+				noteProjectId="p-1"
+				onOpenNote={(id) => opened.push(id)}
+			/>,
+		);
+		const card = container.querySelector(".note-card");
+		expect(card).not.toBeNull();
+		await clickEl(card!.querySelector(".note-card-append"));
+		await drain();
+		await clickEl(
+			[...card!.querySelectorAll("button")].find((b) => b.textContent?.includes("New note")) ??
+				null,
+		);
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		const create = calls.find((c) => c.init?.method === "POST")!;
+		expect((create.init?.headers as Record<string, string>).authorization).toBeUndefined();
+		expect(JSON.parse(String(create.init?.body)).projectId).toBe("p-1");
+		await clickEl(card!.querySelector(".note-card-status button"));
+		expect(opened).toEqual(["n-new"]);
 	});
 
 	test("a checkbox/textarea/date form submits true/false, text and raw date", async () => {

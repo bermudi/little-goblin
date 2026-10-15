@@ -1,22 +1,91 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
+	clearToken,
 	forgetMemoryDocument,
 	getConfig,
 	getConversationConfig,
 	getMessages,
 	getOperatorConfig,
 	listMemoryDocuments,
+	loadToken,
+	NoteConflictError,
 	patchConfig,
+	patchNote,
 	patchConversationConfig,
+	restoreNoteVersion,
 	saveOperatorConfig,
+	saveToken,
 } from "./api.ts";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
+});
+
+// sessionStorage, not localStorage — /t/ and /app/ are one origin, so
+// this only narrows exposure (the credential dies with the tab), it
+// does not isolate; pinning the scope here so a casual revert to
+// localStorage has to argue with a test.
+describe("token store", () => {
+	const win = new Window();
+	const originalSession = globalThis.sessionStorage;
+	const originalLocal = globalThis.localStorage;
+
+	beforeEach(() => {
+		win.sessionStorage.clear();
+		win.localStorage.clear();
+		Reflect.set(globalThis, "sessionStorage", win.sessionStorage);
+		Reflect.set(globalThis, "localStorage", win.localStorage);
+	});
+
+	afterEach(() => {
+		if (originalSession !== undefined) globalThis.sessionStorage = originalSession;
+		else Reflect.deleteProperty(globalThis, "sessionStorage");
+		if (originalLocal !== undefined) globalThis.localStorage = originalLocal;
+		else Reflect.deleteProperty(globalThis, "localStorage");
+	});
+
+	test("the token round-trips through session storage and clears clean", () => {
+		expect(loadToken()).toBeNull();
+		saveToken("tok-1");
+		expect(loadToken()).toBe("tok-1");
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("tok-1");
+		clearToken();
+		expect(loadToken()).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBeNull();
+	});
+
+	// Upgraded installs: the pre-sessionStorage copy lived in
+	// localStorage under the same key and the move never deleted it.
+	test("a leftover localStorage token migrates into the session and the persistent copy dies", () => {
+		win.localStorage.setItem("goblin.appToken", "legacy");
+		expect(loadToken()).toBe("legacy");
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("legacy");
+		// The credential now dies with the tab — later reads stay
+		// session-scoped.
+		expect(loadToken()).toBe("legacy");
+	});
+
+	test("a live session token wins; the stale local copy is still evicted", () => {
+		saveToken("session");
+		win.localStorage.setItem("goblin.appToken", "stale");
+		expect(loadToken()).toBe("session");
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("session");
+	});
+
+	test("clearToken removes the persistent local copy too", () => {
+		win.localStorage.setItem("goblin.appToken", "legacy");
+		saveToken("tok-1");
+		clearToken();
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBeNull();
+		expect(loadToken()).toBeNull();
+	});
 });
 
 describe("model setting scopes", () => {
@@ -231,5 +300,99 @@ describe("telegram door", () => {
 		}) as typeof fetch;
 		await getMessages(null, "app/chat-1");
 		expect(new URL(requests[0]!.url).pathname).toBe("/api/conversations/chat-1/messages");
+	});
+});
+
+// restoreNoteVersion is a content write — the caller's live rev rides
+// If-Match, and a stale one decodes into the same conflict the editor
+// gets from a PATCH.
+describe("restoreNoteVersion", () => {
+	const NOTE = {
+		id: "n-1",
+		projectId: null,
+		title: "t",
+		body: "x",
+		rev: 8,
+		stateRev: 8,
+		lastSource: "app",
+		pinnedAt: null,
+		archivedAt: null,
+		createdAt: "x",
+		updatedAt: "x",
+	};
+
+	test("sends expectedRev as If-Match and returns the restored note", async () => {
+		const seen: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			seen.push(new Request(new URL(String(input), "http://localhost"), init));
+			return Response.json(NOTE);
+		}) as typeof fetch;
+		const restored = await restoreNoteVersion("tok", "n-1", 3, 7);
+		expect(restored.rev).toBe(8);
+		expect(seen[0]!.method).toBe("POST");
+		expect(new URL(seen[0]!.url).pathname).toBe("/api/app/notes/n-1/versions/3/restore");
+		expect(seen[0]!.headers.get("if-match")).toBe('"7"');
+		expect(seen[0]!.headers.get("authorization")).toBe("Bearer tok");
+	});
+
+	test("a 409 decodes the live note into NoteConflictError", async () => {
+		globalThis.fetch = (async (_input: string | URL | Request, _init?: RequestInit) =>
+			Response.json({ error: "conflict", note: NOTE }, { status: 409 })) as typeof fetch;
+		try {
+			await restoreNoteVersion(null, "n-1", 3, 7);
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(NoteConflictError);
+			expect((err as NoteConflictError).note.rev).toBe(8);
+		}
+	});
+});
+
+// patchNote's keepalive is best effort: past the portable 64KiB bound
+// the flag is dropped and the body still leaves whole — the durable
+// draft is the recovery path for big edits.
+describe("patchNote keepalive bound", () => {
+	const NOTE = {
+		id: "n-1",
+		projectId: null,
+		title: "t",
+		body: "x",
+		rev: 2,
+		stateRev: 2,
+		lastSource: "app",
+		pinnedAt: null,
+		archivedAt: null,
+		createdAt: "x",
+		updatedAt: "x",
+	};
+	const capture = (): { init: RequestInit | undefined; body: string }[] => {
+		const seen: { init: RequestInit | undefined; body: string }[] = [];
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			seen.push({ init, body: String(init?.body) });
+			return Response.json(NOTE);
+		}) as typeof fetch;
+		return seen;
+	};
+
+	test("an >80KiB body omits keepalive but sends every byte — ASCII and multibyte", async () => {
+		const seen = capture();
+		const big = "x".repeat(80 * 1024);
+		await patchNote(null, "n-1", { body: big }, { keepalive: true });
+		expect(seen[0]!.init?.keepalive).not.toBe(true);
+		expect((JSON.parse(seen[0]!.body) as { body: string }).body).toBe(big);
+
+		// 30Ki multibyte chars ≈ 90KiB UTF-8 — the cap is bytes, not chars.
+		const multi = "日".repeat(30 * 1024);
+		await patchNote(null, "n-1", { body: multi }, { keepalive: true });
+		expect(seen[1]!.init?.keepalive).not.toBe(true);
+		expect((JSON.parse(seen[1]!.body) as { body: string }).body).toBe(multi);
+	});
+
+	test("a small opt-in still rides keepalive; no opt-in stays ordinary", async () => {
+		const seen = capture();
+		await patchNote(null, "n-1", { body: "small" }, { keepalive: true });
+		expect(seen[0]!.init?.keepalive).toBe(true);
+		await patchNote(null, "n-1", { body: "small" });
+		expect(seen[1]!.init?.keepalive).not.toBe(true);
 	});
 });

@@ -17,6 +17,8 @@ import { memorySearchTool } from "./memory.ts";
 import { noteTool, type NoteToolDeps } from "./note.ts";
 import { readFileTool } from "./read.ts";
 import { sandboxTool, type SandboxToolDeps } from "./sandbox.ts";
+import { subagentTool, type SubagentToolDeps } from "./subagent.ts";
+import { desktopTool, type DesktopToolDeps } from "./desktop.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
@@ -67,6 +69,8 @@ export type { HistorySearchDeps };
 export type { MailToolDeps };
 export type { NoteToolDeps };
 export type { SandboxToolDeps };
+export type { SubagentToolDeps };
+export type { DesktopToolDeps };
 
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
@@ -91,6 +95,11 @@ export interface MakeToolsOptions {
 	vision?: VisionToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
+	// The subagent pool's own gate: mounted only while the subagents
+	// block exists and the owner was built — worker/computer kind
+	// availability rides inside the deps.
+	subagent?: SubagentToolDeps | undefined;
+	desktop?: DesktopToolDeps | undefined;
 	// App-channel gate: true mounts the interface tool (design/app.md →
 	// Intelligent UI). Boolean, not a dep bag — ui needs nothing.
 	ui?: boolean | undefined;
@@ -112,6 +121,8 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		vision,
 		image,
 		sandbox,
+		subagent,
+		desktop,
 		ui,
 	} = options;
 	return {
@@ -173,6 +184,11 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// Same per-turn gate as vision: deps arrive only while the
 		// sandbox block exists in the live config.
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
+		// Neither name enters the script allowlist (guests and scripted
+		// runs keep the pre-existing set), and both mount only when the
+		// subagents config block produced a live owner.
+		...(subagent ? { subagent: subagentTool(subagent) } : {}),
+		...(desktop ? { desktop: desktopTool(desktop) } : {}),
 		// Last in the set so the Tools: line's shared prefix stays stable.
 		...(ui === true ? { ui: uiTool() } : {}),
 	};

@@ -5,7 +5,7 @@ import { installTelegramFallback } from "./telegram.ts";
 import "./styles.css";
 
 // Telegram's SDK is never fetched: /t/ shares the PWA's origin — the
-// app token sits in this origin's localStorage — so no third-party
+// app token sits in this origin's sessionStorage — so no third-party
 // script, fetched or pinned, runs here. Webviews that inject
 // window.Telegram use their own copy; Telegram Desktop doesn't inject,
 // so the telegram door installs a local stand-in reading initData from

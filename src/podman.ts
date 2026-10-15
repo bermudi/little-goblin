@@ -4,7 +4,8 @@
 // container, conversation, exit code and ms, so a sandbox symptom plus
 // goblin.log reconstructs exactly what the engine was told. No prune
 // anywhere: lifecycle ops address an exact name or filter on the
-// goblin.sandbox label — the memory stack shares this container store.
+// goblin.sandbox or goblin.desktop label — the memory stack shares
+// this container store.
 //
 // Two argv seams: `runner` for lifecycle ops (fixed budget, text out),
 // and exec runners for in-container commands (per-call deadline, abort
@@ -33,6 +34,12 @@ export interface PodmanExecOpts {
 	timeoutMs: number;
 	maxOutput: number;
 	abortSignal?: AbortSignal;
+	/** exec -u: desktop containers keep a non-root session user. */
+	user?: string;
+	/** exec -e pairs: the session's DISPLAY/bus env for desk processes. */
+	env?: Record<string, string>;
+	/** exec -w: defaults to the sandbox workdir below. */
+	workdir?: string;
 }
 export type PodmanExecRunner = (args: string[], opts: PodmanExecOpts) => Promise<BoundedProc>;
 export type PodmanExecBytesRunner = (
@@ -91,6 +98,13 @@ export interface CreateSpec {
 	cpus: number;
 	pids: number;
 	labels: Record<string, string>;
+	/** PID 1 command — the sandbox's idle sleep when omitted. */
+	command?: string[];
+	hostname?: string;
+	shmSize?: string;
+	/** Caps appended to the five-cap wall — desktops only (SYS_CHROOT
+	 *  for Chromium's own sandbox). Never inferred from labels. */
+	extraCaps?: readonly string[];
 }
 
 export interface ContainerInspect {
@@ -100,6 +114,10 @@ export interface ContainerInspect {
 	/** Attached network names ([] when missing or disconnected). */
 	networks: string[];
 	labels: Record<string, string>;
+	/** State.StartedAt — the boot generation ("" when missing). A
+	 *  restart moves it while Running stays true, so it is the only
+	 *  witness that a recorded observation's boot is gone. */
+	startedAt: string;
 }
 
 // podman inspect: an array of container objects (or [] on a miss). Only
@@ -113,7 +131,11 @@ const inspectSchema = z.array(
 					Labels: z.record(z.string(), z.string()).nullable().optional(),
 				})
 				.passthrough(),
-			State: z.object({ Status: z.string(), Running: z.boolean() }).passthrough(),
+			// StartedAt optional: a build or fixture without it parses to
+			// "" — an unknown generation, which callers treat as stable.
+			State: z
+				.object({ Status: z.string(), Running: z.boolean(), StartedAt: z.string().optional() })
+				.passthrough(),
 			NetworkSettings: z
 				.object({ Networks: z.record(z.string(), z.unknown()).nullable().optional() })
 				.passthrough(),
@@ -185,12 +207,28 @@ export function makePodman(deps?: {
 		return new PodmanError(op, r.code, detail === "" ? "no output" : detail);
 	}
 
+	// exec -w/-u/-e share one argv shape between exec and execBytes.
+	function execArgs(name: string, argv: string[], opts: PodmanExecOpts): string[] {
+		return [
+			"exec",
+			"-w",
+			opts.workdir ?? SANDBOX_WORKDIR,
+			...(opts.user === undefined ? [] : ["-u", opts.user]),
+			...(opts.env === undefined
+				? []
+				: Object.entries(opts.env).flatMap(([k, v]) => ["-e", `${k}=${v}`])),
+			name,
+			...argv,
+		];
+	}
+
 	return {
 		async networkEnsure(name, conv) {
-			const r = await call("network inspect", ["network", "inspect", name], {
-				conversation: conv,
-			});
-			if (r.code === 0) {
+			const usable = async (): Promise<boolean> => {
+				const r = await call("network inspect", ["network", "inspect", name], {
+					conversation: conv,
+				});
+				if (r.code !== 0) return false;
 				let parsed: z.infer<typeof networkInspectSchema>;
 				try {
 					parsed = networkInspectSchema.parse(JSON.parse(r.stdout));
@@ -205,17 +243,31 @@ export function makePodman(deps?: {
 						`network ${name} exists without options.isolate=strict (found ${JSON.stringify(isolate ?? null)}) — refusing to use it`,
 					);
 				}
-				return;
-			}
+				return true;
+			};
+			if (await usable()) return;
 			const created = await call(
 				"network create",
 				["network", "create", "--opt", "isolate=strict", name],
 				{ conversation: conv },
 			);
-			if (created.code !== 0) throw fail("network create", created);
+			if (created.code === 0) return;
+			// Two ensures can race the create — only the re-inspect
+			// distinguishes a winner's identical network from a real
+			// failure.
+			if (await usable()) return;
+			throw fail("network create", created);
 		},
 
 		async create(spec, conv) {
+			const caps = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"];
+			for (const cap of spec.extraCaps ?? []) {
+				// Names only — a bad string must never reach the argv.
+				if (!/^[A-Z][A-Z0-9_]{0,31}$/.test(cap)) {
+					throw new Error(`invalid extra capability ${JSON.stringify(cap)}`);
+				}
+				if (!caps.includes(cap)) caps.push(cap);
+			}
 			const args = [
 				"run",
 				"-d",
@@ -230,7 +282,7 @@ export function makePodman(deps?: {
 				"--cap-drop",
 				"ALL",
 				"--cap-add",
-				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID",
+				caps.join(","),
 				"--security-opt",
 				"no-new-privileges",
 				"--network",
@@ -242,10 +294,11 @@ export function makePodman(deps?: {
 				"--pids-limit",
 				String(spec.pids),
 				"--hostname",
-				"sandbox",
+				spec.hostname ?? "sandbox",
+				...(spec.shmSize === undefined ? [] : ["--shm-size", spec.shmSize]),
 				"--init",
 				spec.image,
-				...SANDBOX_INIT_COMMAND,
+				...(spec.command ?? SANDBOX_INIT_COMMAND),
 			];
 			const r = await call("create", args, { container: spec.name, conversation: conv });
 			if (r.code !== 0) throw fail("create", r);
@@ -261,6 +314,7 @@ export function makePodman(deps?: {
 				image: "",
 				networks: [],
 				labels: {},
+				startedAt: "",
 			};
 			// Missing is an empty array on stdout (podman 6 answers "no such
 			// object" + 125). Portability: some builds exit non-zero with
@@ -287,6 +341,7 @@ export function makePodman(deps?: {
 				image: c.Config.Image,
 				networks: Object.keys(c.NetworkSettings.Networks ?? {}),
 				labels: c.Config.Labels ?? {},
+				startedAt: c.State.StartedAt ?? "",
 			};
 		},
 
@@ -316,13 +371,15 @@ export function makePodman(deps?: {
 
 		async exec(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
+			const r = await execRunner(execArgs(name, argv, opts), opts);
 			log.info("podman call", {
 				op: "exec",
 				container: name,
 				conversation: conv,
 				status: r.exitCode,
 				...(r.timedOut ? { timedOut: true } : {}),
+				...(r.outputCapped === true ? { outputCapped: true } : {}),
+				...(r.truncated ? { truncated: true } : {}),
 				ms: Date.now() - t0,
 			});
 			return r;
@@ -330,13 +387,15 @@ export function makePodman(deps?: {
 
 		async execBytes(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execBytesRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
+			const r = await execBytesRunner(execArgs(name, argv, opts), opts);
 			log.info("podman call", {
 				op: "execBytes",
 				container: name,
 				conversation: conv,
 				status: r.exitCode,
 				...(r.timedOut ? { timedOut: true } : {}),
+				...(r.outputCapped === true ? { outputCapped: true } : {}),
+				...(r.truncated ? { truncated: true } : {}),
 				ms: Date.now() - t0,
 			});
 			return r;

@@ -10,6 +10,7 @@
 // logs. This module must never log a resolved value.
 
 import { readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { z } from "zod";
 import { paths } from "./config.ts";
 import { log } from "./log.ts";
@@ -68,6 +69,42 @@ export function invokesPassCliDirectly(command: string): boolean {
 	return /(?:^|[\s;&|()"'`])(?:[^\s;&|()"'`/]*\/)*pass-cli(?:[\s;&|)"'`]|$)/.test(command);
 }
 
+// pass-keys command recognition, shared by the installer's options
+// inspection (scripts/install-options.ts) and doctor's snapshot probe
+// (src/health.ts): a `!` record whose FIRST word is `pass-keys` — bare
+// or literal path-prefixed, identified by basename — is a recognized
+// credential command. Everything else stays a general, unverified
+// command. This is parsing only: these helpers never execute the
+// command.
+export function passKeysCommandExecutable(value: string): string | undefined {
+	if (!value.startsWith("!")) return undefined;
+	const executable = value.slice(1).match(/^[^\s;&|()"'`]+/)?.[0];
+	if (executable?.startsWith("#") || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(executable ?? "")) {
+		return undefined;
+	}
+	return executable !== undefined && basename(executable) === "pass-keys" ? executable : undefined;
+}
+
+// The one recognized record form: `!<pass-keys> get <profile> <KEY>`,
+// a single direct command with two bare arguments — no shell
+// operators, quotes, substitutions, env prefixes or wrappers. The
+// executable word must be literal too: expansion, globbing or
+// redirection characters would resolve a different command at exec
+// time than the one preflight certified. The profile class is the
+// doctor's auth-probe class; key names follow the vault's looser
+// class (digit-leading names are real).
+const PASS_KEYS_GET = /^ get ([a-z][a-z0-9_-]{0,63}) ([A-Za-z0-9_-]+)$/;
+const NON_LITERAL_EXECUTABLE = /[$~\\*?[\]{}<>]/;
+export function parsePassKeysGet(
+	value: string,
+): { executable: string; profile: string; key: string } | null {
+	const executable = passKeysCommandExecutable(value);
+	if (executable === undefined || NON_LITERAL_EXECUTABLE.test(executable)) return null;
+	const match = PASS_KEYS_GET.exec(value.slice(1 + executable.length));
+	if (match?.[1] === undefined || match[2] === undefined) return null;
+	return { executable, profile: match[1], key: match[2] };
+}
+
 export interface AuthStore {
 	// Resolve a named secret. Rejects if absent or if a `!command` fails —
 	// callers handle "no such secret" as a configuration error at the
@@ -79,13 +116,20 @@ export interface AuthStore {
 }
 
 export function loadAuth(): AuthStore {
+	return loadAuthFile(paths.auth());
+}
+
+// The same loader at an explicit path — the live drift check resolves
+// through this instead of reading a secret env var; the path is the
+// only thing its environment carries.
+export function loadAuthFile(file: string): AuthStore {
 	const entries = new Map<string, string>();
 	let raw: string;
 	try {
-		raw = readFileSync(paths.auth(), "utf8");
+		raw = readFileSync(file, "utf8");
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			log.warn("auth.jsonl not found — no secrets available", { path: paths.auth() });
+			log.warn("auth.jsonl not found — no secrets available", { path: file });
 			return makeStore(entries, new Set());
 		}
 		throw err;
@@ -93,10 +137,10 @@ export function loadAuth(): AuthStore {
 
 	// Any group/world bit means the secrets file leaks to other users —
 	// refuse to load rather than warn and proceed.
-	const mode = statSync(paths.auth()).mode & 0o777;
+	const mode = statSync(file).mode & 0o777;
 	if ((mode & 0o077) !== 0) {
 		throw new Error(
-			`${paths.auth()}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
+			`${file}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
 		);
 	}
 

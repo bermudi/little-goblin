@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { boundedRun, spawnProc } from "./proc.ts";
+import { boundedRun, boundedRunBinary, spawnProc } from "./proc.ts";
 
 const OPTS = { timeoutMs: 30_000, maxOutput: 64 * 1024 };
 
@@ -33,6 +33,47 @@ describe("bounded subprocess", () => {
 		});
 		expect(p.truncated).toBe(true);
 		expect(p.stdout.length).toBeLessThanOrEqual(10 * 1024);
+	});
+
+	test("a flooded stdout is flagged outputCapped — not timedOut", async () => {
+		const p = await boundedRun(spawnProc(["/bin/sh", "-c", "seq 1 500000"]), {
+			...OPTS,
+			maxOutput: 10 * 1024,
+		});
+		expect(p.outputCapped).toBe(true);
+		expect(p.truncated).toBe(true);
+		expect(p.timedOut).toBe(false);
+	});
+
+	test("a flooded stderr is flagged outputCapped too", async () => {
+		const p = await boundedRun(spawnProc(["/bin/sh", "-c", "seq 1 500000 >&2"]), {
+			...OPTS,
+			maxOutput: 10 * 1024,
+		});
+		expect(p.outputCapped).toBe(true);
+		expect(p.truncated).toBe(true);
+		expect(p.timedOut).toBe(false);
+		expect(p.stderr.length).toBeLessThanOrEqual(10 * 1024);
+	});
+
+	test("the binary collector reports the same outputCapped verdict", async () => {
+		const p = await boundedRunBinary(spawnProc(["/bin/sh", "-c", "seq 1 500000"]), {
+			...OPTS,
+			maxOutput: 10 * 1024,
+		});
+		expect(p.outputCapped).toBe(true);
+		expect(p.truncated).toBe(true);
+		expect(p.timedOut).toBe(false);
+		expect(p.stdout.byteLength).toBeLessThanOrEqual(10 * 1024);
+	});
+
+	test("a post-exit drain cutoff is truncated but not outputCapped", async () => {
+		// The shell exits instantly; the orphaned writer keeps stdout
+		// open, so the drain window cuts it — no stream cap was hit.
+		const p = await boundedRun(spawnProc(["/bin/sh", "-c", "sleep 60 & echo hi"]), OPTS);
+		expect(p.truncated).toBe(true);
+		expect(p.outputCapped).not.toBe(true);
+		expect(p.timedOut).toBe(false);
 	});
 
 	test("a backgrounded child holding the pipe can't outlive the command", async () => {

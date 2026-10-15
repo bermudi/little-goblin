@@ -29,19 +29,20 @@ export function LogView({ token }: { token: string | null }) {
 	const [limit, setLimit] = useState<number>(200);
 	const [data, setData] = useState<LogTailResponse | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-
-	// Two tails can be in flight (apply + refresh); the last-issued
-	// wins, or a stale response can overwrite a newer slice.
-	const loadSeq = useRef(0);
+	// One fence for every tail — a slower filter's response must not
+	// overwrite the newer controls' results when it lands out of order.
+	const tailSeq = useRef(0);
 	const load = useCallback(() => {
+		const seq = ++tailSeq.current;
 		setErr(null);
-		const seq = ++loadSeq.current;
 		tailLog(token, { limit: applied.limit, level: applied.level, q: applied.q }).then(
 			(d) => {
-				if (seq === loadSeq.current) setData(d);
+				if (seq !== tailSeq.current) return;
+				setData(d);
 			},
 			(e) => {
-				if (seq === loadSeq.current) setErr(describe(e));
+				if (seq !== tailSeq.current) return;
+				setErr(describe(e));
 			},
 		);
 	}, [token, applied]);

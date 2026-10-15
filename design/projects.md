@@ -19,7 +19,9 @@ demand, designed here before any code.
 weighed as the engine for project work and declined on mechanism: it is
 built on pi-ai, the model layer this rewrite exists to leave (DESIGN.md →
 Why), and its crash recovery — re-send the cut-off model request, rerun
-replay-safe tools — contradicts the authority rule's notify-don't-retry.
+replay-safe tools — contradicts the authority rule's notify-don't-retry. (That rejection
+binds goblin's turn loop only; Pi Durable returned as the subagent
+runtime — design/subagents.md.)
 Projects need no new engine: a project is a scope over the existing turn
 loop, and long work inside a project directory already has a path —
 delegation through herdr, cwd = the project's `dir`. The idea worth
@@ -110,8 +112,8 @@ for attach and pin. An agent editing files with the generic
 `write`/`edit` tools bypasses all of it.
 
 - `notes`: `id`, `project_id` (nullable — loose notes), `title`,
-  `body_md`, `rev`, `pinned_at`, `archived_at`, `created_at`,
-  `updated_at`.
+  `body_md`, `rev`, `state_rev`, `pinned_at`, `archived_at`,
+  `created_at`, `updated_at`.
 - `note_versions`: `note_id`, `rev`, `body_md`, `source`
   (`app|agent|rewrite|append|restore` — the write that superseded this
   state), `conversation` (nullable), `at`. Full
@@ -143,7 +145,14 @@ its serialization differs from the serialization it produced right
 after load — opening an agent-written note never rewrites it.
 
 **Every mutation is one path.** `rev` increments per content write
-(title or body; pin/archive/project moves are flags and bump nothing).
+(title or body); pin/archive/project moves are flags — they bump
+nothing content-visible, not `rev`, not `updated_at`, not the version
+history. Alongside it a second monotonic `state_rev` advances on EVERY
+accepted mutation, flags included — `rev` can't order a delayed flag
+response against a content write, so every forward-only guard (adopt,
+conflict fence, ack bookkeeping) runs on `state_rev`. A refused write
+rolls the token back with everything else; the client sees it as
+`stateRev`.
 Before a content write the pre-write state is recorded as a version —
 always for `agent`, `rewrite`, `append`, and `restore` writes, so every
 non-operator edit is one restore away. Operator `app` writes are the
@@ -155,6 +164,37 @@ console's etag pattern); a stale rev is a 409 with the current note,
 never a silent overwrite. The single real conflict — the operator typing
 while the agent edits — surfaces as that 409, and the editor offers
 reload-or-keep-mine. No Yjs/CRDT: one human.
+
+**Body size is a write-path invariant.** New bodies are capped at
+1,000,000 UTF-16 code units, including the resulting body after append
+or range edits. The shared store enforces it for the app and note tool,
+before versioning or committing any combined flag changes. Existing
+oversized rows remain editable: a write may keep or reduce their body
+length, never grow it. The editor can rename them while resubmitting the
+unchanged body, then reduce them below the cap without losing content.
+Restoring a larger oversized historical body is also refused; its version
+remains readable so the operator can recover selected content within the cap.
+
+**The buffer outlives the page.** Every document change is captured
+synchronously — a plugin on the editor's doc, not the debounced
+listener — into a same-origin `localStorage` draft keyed per note: the
+current body plus the `{rev, body}` base it was typed against.
+`pagehide`/unmount persist again before the best-effort flush. On
+revisit the draft decides: a body equal to the server's current
+serialization already landed and the record is retired; a matching
+base restores the buffer dirty and resumes the guarded autosave; a
+stale base restores it behind the same conflict bar a remote edit
+raises — the record keeps its original base while the conflict stands,
+so a second revisit never silently rebases over the newer remote. A
+save's ack deletes only the exact snapshot it submitted — a late ack
+can't erase a newer draft or another tab's record — and editing back
+to baseline clears the record this editor wrote. The `pagehide` flush
+carries `keepalive` only under the portable 64KiB bound — browsers may
+reject anything past it, so larger bodies go as an ordinary request
+and rely on the draft.
+Quota-denied or malformed storage surfaces a persistent alert plus a
+diagnostic — the failure is shown, a corrupt record is left in place,
+and no recovery guarantee is claimed that can't be delivered.
 
 **The agent edits through a `note` tool**, mounted on every operator
 conversation (Telegram included — "add this to my groceries note" is
@@ -175,22 +215,47 @@ from a third party.
   `## project` section: id + title, pinned first then most recent,
   capped at 50 entries. Current text is a `note read` away.
 - **Attach.** The composer's attach picker adds notes. The client sends
-  only a reference (`data-note` with the id); intake resolves it and
-  stores the expanded part — id, title, rev, and the body as of send —
-  so history holds what the server read, never a client-supplied body.
-  The model view renders it fenced. Appended content — the cache invariant
-  holds — and an honest snapshot: a later edit is visible through `note
-  read`, never by rewriting the old message.
+  a reference (`data-note` with the id) and may add a display title —
+  labels only, so the just-sent chip isn't bare; the server ignores it.
+  Intake resolves the id and stores the expanded part — id, title, rev,
+  and the body as of send — so history holds what the server read, never
+  client-supplied content. The model view renders it fenced. Appended
+  content — the cache invariant holds — and an honest snapshot: a later
+  edit is visible through `note read`, never by rewriting the old
+  message.
 - "Chat with a note" is a new conversation with that note attached to
   its first message. No separate mechanism.
 
 **Refresh without push.** The editor fetches on mount and on window
-focus; a newer server rev under a clean editor reloads silently, under
-a dirty one it raises the conflict choice. In v1 a note and a chat
+focus; adoption is forward-only on `state_rev`, including the initial
+fetch. Older responses and equal-state refreshes are ignored. An
+equal-state own-save acknowledgement may clear a conflict at that
+same state without replacing content: focus can observe our landed
+write before its acknowledgement arrives. A delayed flag answer
+cannot resurrect older flags or roll a title back.
+A newer server state under a clean editor reloads silently — a clean
+title draft takes a remote rename and trim-equivalent drafts sync,
+while text typed over an in-flight title write stays dirty work — and
+under a dirty buffer or a dirty title it raises the conflict choice.
+Flag flips don't bump the rev — an archive arriving under a dirty
+buffer is the same conflict, and the mounted editor survives it so
+Keep mine can write back; only a clean page swaps to the archived
+readonly view. Title saves ride the editor's single save lane (one
+PATCH carries the serialized body plus the title), so a rename can
+never race a body autosave onto the same rev, and queued saves merge
+instead of replacing each other. A refresh that beats editor creation
+queues: the mounted doc, the write rev, and the draft's base judgment
+all stand on the freshest known state — a stored draft whose base no
+longer matches restores behind the bar with its original base. An
+in-flight restore holds the same rule, and restore is a guarded
+content write itself — `If-Match` is required, a stale guard 409s the
+live note through the same conflict path, edits that land while the
+POST flies raise the conflict instead of being replaced, and a reply
+that arrives under a newer rev is ignored. In v1 a note and a chat
 never share a screen, so there is no open editor for a streamed `note`
-tool result to refresh; when they do share one, that tool result is the
-refetch trigger. No socket, no new push channel (Streaming members'
-"parked" ruling stands).
+tool result to refresh; when they do share one, that tool result is
+the refetch trigger. No socket, no new push channel (Streaming
+members' "parked" ruling stands).
 
 **Fenced reply → append** (operator ask). In app conversations the
 model may wrap note-ready content in a `note` fence — four backticks so
@@ -247,8 +312,9 @@ trust-mode origin check; JSON bodies require `application/json`.
 - `notes` (GET list with `project`/`q`/archived filters, POST create),
   `notes/<id>` (GET, PATCH with `If-Match`, DELETE only when archived —
   the conversation archive pattern), `notes/<id>/versions` (GET),
-  `notes/<id>/versions/<rev>/restore` (POST — a write like any other,
-  current body versioned first), `notes/<id>/rewrite` (POST).
+  `notes/<id>/versions/<rev>/restore` (POST — a content write like any
+  other: `If-Match` on the live rev, the current body versioned first),
+  `notes/<id>/rewrite` (POST).
 - `conversations` POST accepts `projectId`; the list payload carries
   `projectId` per summary.
 

@@ -40,6 +40,11 @@ export interface BoundedProc {
 	// A capped stream killed the process, or the post-exit drain window cut
 	// output still in flight — the output is incomplete either way.
 	truncated: boolean;
+	// The kill was specifically a stream-cap overflow — a cause
+	// distinct from timedOut, not exclusive of it (the deadline can
+	// still fire while the cap-kill drain is in flight). Optional so
+	// external fakes building this shape stay valid.
+	outputCapped?: boolean;
 }
 
 // Binary variant for callers whose stdout isn't text (TTS remux returns
@@ -51,6 +56,7 @@ export interface BoundedProcBytes {
 	exitCode: number | null;
 	timedOut: boolean;
 	truncated: boolean;
+	outputCapped?: boolean;
 }
 
 // Fixed stdio for callers: both pipes captured, the daemon's environment
@@ -165,11 +171,13 @@ async function runBounded<S>(
 	exitCode: number | null;
 	timedOut: boolean;
 	truncated: boolean;
+	outputCapped?: boolean;
 }> {
 	const { timeoutMs, maxOutput, abortSignal } = opts;
 	const readers = new Set<CancellableReader>();
 	let timedOut = false;
 	let drainCut = false;
+	let outputCapped = false;
 
 	const killAndReap = async (): Promise<number | null> => {
 		killProc(proc, "SIGTERM", opts.processGroup);
@@ -222,9 +230,15 @@ async function runBounded<S>(
 			log.warn("process pipe drain failed", err, {});
 		});
 
+	// The collectors' truncate callback is the cap witness — a
+	// post-exit drain cutoff never reaches it.
+	const onOutputCap = () => {
+		outputCapped = true;
+		triggerKill();
+	};
 	const [out, err] = await Promise.all([
-		collectStdout(proc.stdout, maxOutput, triggerKill, readers),
-		collect(proc.stderr, maxOutput, triggerKill, readers),
+		collectStdout(proc.stdout, maxOutput, onOutputCap, readers),
+		collect(proc.stderr, maxOutput, onOutputCap, readers),
 	]);
 	const exitCode = await exitP;
 	return {
@@ -233,6 +247,7 @@ async function runBounded<S>(
 		exitCode,
 		timedOut,
 		truncated: out.truncated || err.truncated || drainCut,
+		outputCapped,
 	};
 }
 

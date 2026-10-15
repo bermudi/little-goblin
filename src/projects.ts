@@ -194,9 +194,9 @@ export function projectWorkdir(projects: ProjectStore, conv: Conversation): stri
 export function openProjects(
 	store: ConversationStore,
 	deps?: {
-		// The retention outbox — present only when memory is configured;
-		// switching a project off purges each conversation's queued rows
-		// the way /memory off does.
+		// The retention outbox — wired whenever a store exists, client
+		// or not: pending rows from an earlier memory-on run must still
+		// purge when a project switches to off, the way /memory off does.
 		memoryQueue?: Pick<MemoryQueue, "cancelConversation">;
 	},
 ): ProjectStore {

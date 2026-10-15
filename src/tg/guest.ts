@@ -37,6 +37,7 @@ import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { sendRefusal } from "./refusals.ts";
 
 // ---------- state: summons dedup (rows, not config) ----------
 
@@ -665,7 +666,10 @@ export async function routeMemberGuestMessage(
 			update: updateId,
 			surface: "member",
 		});
-		void sendMemberLine(env, chatId, GUEST_REFUSAL, msg.message_thread_id);
+		// The same bounded dispatcher the DM gate uses — a stranger
+		// mentioning the bot in a group must not amplify into one
+		// unbounded outbound send per mention.
+		sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
 		return true;
 	}
 
@@ -743,6 +747,10 @@ export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search"]);
 // guest summons keep the personal persona but never get tools that
 // pin work to, or reach beyond, the chat).
 export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
+	// Subagent starts and desktop control pin work to a workspace the
+	// guest channel has no business driving.
+	"subagent",
+	"desktop",
 	"program",
 	"mail",
 	"delegate",

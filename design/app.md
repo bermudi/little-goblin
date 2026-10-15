@@ -169,7 +169,11 @@ attachments, and the log. Deliberately out, forever: `auth.jsonl` (no
 route may ever render it, structure included) and any editing surface
 beyond what the console already has — the viewer reads state; writes
 stay where they are. The wall is two layers that each hold alone: the
-router zod-validates every name/path/param, and `src/stateview.ts`
+router zod-validates every name/path/param — a name is one segment and
+a skill-relative path is a `/`-joined run of segments, where a segment
+is any non-empty run without separators or controls and not exactly
+`.` or `..` (spaces, parens, dots and Unicode are ordinary names) —
+and `src/stateview.ts`
 re-verifies containment in **realpath space** (every component —
 including symlinked files and linked parent directories — resolves to
 its target before the prefix check), so neither lexical traversal nor
@@ -189,7 +193,12 @@ raw-log dump cannot ride a wide-open query. Attachment bytes ride their
 own route with a conservative content-type map (svg deliberately
 absent — it downloads instead of rendering same-origin), a serve cap
 equal to the upload cap, and the read-back route's inert-byte headers
-(nosniff, sandbox CSP, attachment disposition for non-media). Tails:
+(nosniff, sandbox CSP, attachment disposition for non-media). Client
+side, an attachment's object URL is owned by the row's lifecycle, not
+by render state (ruling 2026-10-13, finding #19): a fetch resolving
+after unmount mints nothing, unmount revokes whatever was minted
+whether it rendered or not, and an in-flight click can't start a
+second fetch. Tails:
 `skills`, `skills/file`, `attachments`, `attachments/file`, `identity`,
 `log`; pages `/app/skills`, `/app/files`, `/app/log`. The tails mount
 on both doors like the rest of the console — `/api/app/attachments` is
@@ -210,7 +219,28 @@ an entry, using native Navigation API keys or our indexed history.
 For legacy unindexed entries or gaps in a browser without Navigation
 API, direction/distance cannot be recovered: retain the draft and show a warning,
 never overwrite history or guess a traversal direction. A dirty-only
-`beforeunload` guard covers cross-document departures.
+`beforeunload` guard covers cross-document departures. "Dirty" for all
+of these is the departure flag, not the serialized diff alone (ruling
+2026-10-13, finding #15): a provider name still sitting in its card's
+blur-commit field is draft state no serialized field can see, so each
+card reports its divergence up and the flag is `serialized dirty OR
+any pending name`, keyed by the provider's render id and discharged on
+commit, invalid/no-op restore, or card unmount. While any name is
+pending the autosave is held — a write would land everything except
+the half-typed name yet announce "Saved" — and the explicit Save
+refuses for the same reason; the savebar discloses the pending name.
+Committing a valid rename is ordinary serialized dirty: it autosaves
+and the guard clears on the ack.
+Async creation does not retain navigation authority after its dialog or
+page is dismissed: project creation and both note indexes fence late
+completion, while navigation guards consult the currently mounted page
+rather than a captured page. Conversation starts have a synchronous
+single-flight guard before advancing their sequence; "Chat with this
+note" awaits that start and keeps its busy guard until it settles.
+A start fenced by navigation deletes its unselected server row; cleanup
+failure is visible. Composer sends restore only into their originating
+composer, never over newer text. Note-originated starts restore no draft
+or chips: attaching that note was an action, not a composer draft.
 Memory pagination belongs to the loaded filter, not the
 search box's pending text, and waits for replacement loads to finish.
 The memory view is the Memories tab's browser plus status polling;
@@ -546,8 +576,10 @@ splitter, a savings calculator, a small game — the `html` leaf
 renders model-written HTML in `<iframe sandbox="allow-scripts"
 srcdoc>`, never `allow-same-origin`, with an injected CSP meta
 (`default-src 'none'; script-src 'unsafe-inline'; style-src
-'unsafe-inline'; img-src data:`) and a minimal base stylesheet from
-the app's tokens. The opaque origin cannot read the app's token,
+'unsafe-inline'; img-src data:; base-uri 'none'`) and a minimal base
+stylesheet from the app's tokens. `base-uri 'none'` keeps a static or
+script-inserted `<base href>` inert, so no URL-resolution path in the
+document can ever be retargeted. The opaque origin cannot read the app's token,
 storage or DOM; its mutations reach `/api/app/*` as `Origin: null` /
 cross-site and the trust-mode gate refuses them; reads lack CORS.
 Height is reported by an injected resize script via `postMessage`,
@@ -557,8 +589,10 @@ Navigations out of the frame are neutralized at the source (ruling
 2026-10-10): CSP governs fetches, never navigations, and a navigated
 frame sheds the injected CSP while keeping `allow-scripts` — network
 egress plus rendering inside the app's trusted chrome. Meta refresh
-is stripped in `srcdoc()` and an injected capture-phase click guard
-prevents every non-`#` anchor navigation; popups and forms are
+is stripped in `srcdoc()` and the injected capture-phase click guard
+cancels every anchor click — a `#fragment` href is re-expressed as the
+document's own `location.hash`, an in-place update that never resolves
+through `<base>` or the embedding URL; popups and forms are
 already dead under the sandbox flags. **Accepted residual:** a
 direct `location` assignment from script can still navigate the
 frame — un-interceptable from inside the document — so the `html`

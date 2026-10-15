@@ -59,4 +59,39 @@ describe("Markdown", () => {
 		expect(html).toContain("<s>gone</s>");
 		expect(html).toContain("<strong>bold</strong>");
 	});
+
+	test("a note fence cut off at EOF renders as code — no card until the closer arrives", () => {
+		const partial = "```note\nappend this body";
+		const open = renderToStaticMarkup(<Markdown text={partial} />);
+		expect(open).not.toContain("note-card");
+		expect(open).toContain('class="codeblock"');
+		expect(open).toContain("append this body");
+		const closed = renderToStaticMarkup(<Markdown text={`${partial}\n\`\`\``} />);
+		expect(closed).toContain("note-card");
+		expect(closed).toContain("append this body");
+	});
+
+	test("a note fence with a title cut off at EOF renders as code — no card", () => {
+		const html = renderToStaticMarkup(<Markdown text={'```note title="Draft"\nsome body'} />);
+		expect(html).not.toContain("note-card");
+		expect(html).toContain('class="codeblock"');
+	});
+
+	test("a shorter fence inside a four-backtick note fence never closes it", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"````note\nkeep this\n```\ninner triple\n"} />,
+		);
+		expect(html).not.toContain("note-card");
+		expect(html).toContain('class="codeblock"');
+	});
+
+	test("a completed four-backtick note fence holds triple-backtick code intact", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"````note\nkeep this\n```\ninner code\n```\ntail of note\n````"} />,
+		);
+		expect(html).toContain("note-card");
+		expect(html).toContain("keep this");
+		expect(html).toContain("inner code");
+		expect(html).toContain("tail of note");
+	});
 });

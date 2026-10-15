@@ -5,11 +5,12 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, twenty:
+Hand-rolled, zod-validated, twenty-three:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
 `vision` `generate_image` `program` `delegate` `mail` `send_file`
-`memory_search` `memory_reflect` `search` `fetch` `history_search` `sandbox` `script` `ui`
+`memory_search` `memory_reflect` `search` `fetch` `history_search` `note`
+`sandbox` `script` `subagent` `desktop` `ui`
 
 `memory_reflect` is an on-demand Hindsight investigation with synthesis and
 supporting evidence, not automatic recall or an autonomous turn loop. It obeys
@@ -117,10 +118,12 @@ read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
 
 External agents arrived as `delegate` (see `Delegation`); MCP arrived
-as a skill over goblin's own mcporter (see `Web access`). Subagent
-tools do not exist — they arrive with the feature that needs them,
-designed then, not spec'd now. `script` composes the other tools inside
-one call and is not a subagent — see `Scripting`.
+as a skill over goblin's own mcporter (see `Web access`). In-process
+subagents arrived as `subagent` and `desktop` (see
+[Subagents & computer use](subagents.md)) — mounted only while the
+`subagents` config block produces a live owner, and deliberately
+outside the `script` callable set. `script` composes the other tools
+inside one call and is not a subagent — see `Scripting`.
 
 ## Scripting
 
@@ -167,20 +170,40 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   `memory_search`). Allowed: `read_file` `write_file` `edit_file`
   `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
   `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
-  sink), `mail` (per-send human approval), `delegate` `program` (spawn
-  agents / standing work), `vision` `memory_reflect` (model calls). Excluding writes
-  would be theater — `bash` writes.
+  sink), `mail` (per-send human approval), `delegate` `program`
+  `subagent` `desktop` (spawn agents / standing work), `vision`
+  `memory_reflect` (model calls). Excluding writes would be theater —
+  `bash` writes.
 - **Nested calls are real calls.** Each one is zod-validated against
   the tool's own input schema (the SDK validates direct calls; nothing
   validates inside the VM), runs the tool's live `execute` — looked up
   at call time, so the runtime's authority fence wraps nested calls too
   — under the turn's abort signal, with call id `<parent>/<n>`. A call
   rejects inside the script when it throws, returns `{ error }`, or
-  fails validation; `bash` resolves on non-zero exits. Capped per script
-  (`maxCalls`, default 50) and in flight (8 concurrent). Calls that
+  fails validation; `bash` resolves on non-zero exits. Calls that
   completed before a failure are not undone. Raw results, never
   `toModelOutput` — a fetched PDF is its `{ pdf: { url, path, size } }`
   ref.
+- **The bounds live in the worker, before a call can post.** Upstream
+  posts every call the VM makes; a cap checked only on the host would
+  run after the port flooded and every args blob parsed. The sandbox
+  runs a local worker entry (`src/agent/tools/script-worker.ts`,
+  `workerUrl`) that wraps the pinned upstream worker: it counts calls
+  against `maxCalls` (default 50), caps serialized arguments at 1 MiB
+  per call, and keeps at most 8 posted-outstanding — the rest queue
+  inside the worker and flush as results land. The first violation
+  crashes the whole script (`kind: sandbox`) and trips the shared
+  interrupt: the bound is a terminal contract, not a rejection a
+  catch-and-retry loop can spin against. Queued calls are dropped when
+  the script settles — an unawaited call can never execute afterwards.
+  A host interrupt fences calls and output without suppressing the
+  worker's first terminal message; a wrapper trip already sent its own.
+  The pinned host settles timeout/abort by interrupting and terminating
+  the worker, without waiting for a terminal message.
+  The host's own cap and semaphore stay as defense-in-depth; the
+  worker's config reaches it as a private one-line header the host
+  prepends to `workerData.code` and the wrapper strips before the eval,
+  so script line numbers are unchanged.
 - **Output is bounded, and tainted output rides fenced.** The result is
   a goblin-authored status line (completed/failed, error kind, wall
   time, call count) plus the script's `text()`/`console` items and

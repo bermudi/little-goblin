@@ -130,6 +130,12 @@ describe("toolNames ↔ makeTools", () => {
 			}
 		}
 	}
+	test("herdr mounts on its own dep — no delegation config required", () => {
+		const tools = makeTools({ cwd: "/tmp", herdr: { herdr: {} as never } });
+		expect(toolNames(tools)).toContain("herdr");
+		expect(toolNames(tools)).not.toContain("delegate");
+	});
+
 	test("every tool's wire schema is a root-level object (unions break providers)", () => {
 		// Some providers cannot generate arguments against a root-level
 		// oneOf — every call arrives as `{}` and fails validation. That
@@ -170,6 +176,8 @@ describe("toolNames ↔ makeTools", () => {
 				workspaceDir: "/tmp",
 			} as unknown as DelegateToolDeps,
 			mail: {} as unknown as MailToolDeps,
+			// Mounted so the wire-schema invariant covers herdr too.
+			herdr: { herdr: {} as never },
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,

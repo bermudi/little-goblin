@@ -46,7 +46,7 @@ import {
 	startDelegationLifecycle,
 } from "./delegation-lifecycle.ts";
 import { openDelegations } from "./delegations.ts";
-import { makeHerdr } from "./herdr.ts";
+import { makeHerdr, makeOperatorHerdr } from "./herdr.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -152,6 +152,10 @@ async function boot() {
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
 	// "goblin" is the local unit's --session — the default target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
+	// The operator's own `default` session needs no delegation config —
+	// the herdr tool mounts for every personal conversation (guest
+	// surfaces lose it in filterGuestTools).
+	const operatorHerdr = makeOperatorHerdr();
 	const delegationTargets = new Map<string, DelegationTargetDeps>();
 	if (delegationBoot && herdr !== null) {
 		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
@@ -470,6 +474,9 @@ async function boot() {
 						: undefined,
 				// Boot fixtures under a live gate (see delegateDeps above).
 				delegate: delegateDeps(conv, workdir),
+				// Unconditional — the operator's session isn't config-gated
+				// (guests are filtered below, script's allowlist excludes it).
+				herdr: { herdr: operatorHerdr },
 				// Only the approval gate's request closure — the send credential lives behind the taps.
 				mail:
 					telegram && configRef.current.mail !== undefined

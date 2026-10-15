@@ -561,3 +561,25 @@ describe("the app fence convention", () => {
 		}
 	});
 });
+
+describe("the herdr tool note", () => {
+	test("rides only when the tool is in the set — never on a guest persona", () => {
+		const home = useHome("goblin-prompt-");
+		process.env.GOBLIN_HOME = home;
+		try {
+			const withTool = buildSystemPrompt(conv, [...tools, "herdr"]);
+			expect(withTool.text).toContain("herdr reaches the operator's session `default`");
+			expect(withTool.text).toContain("never use raw herdr bash commands");
+			const without = buildSystemPrompt(conv, tools);
+			expect(without.text).not.toContain("reaches the operator's session");
+			// The guest path returns before any tool note — even if a bad
+			// filter let the name through, no operator-session guidance
+			// ever renders for it.
+			const guest = { ...conv, id: "guest:-100:9", persona: "guest" as const };
+			const g = buildSystemPrompt(guest, ["search", "herdr"]);
+			expect(g.text).not.toContain("reaches the operator's session");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+});

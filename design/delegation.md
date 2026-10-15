@@ -301,6 +301,46 @@ Rulings:
   and only the recipient's quota error contained it. Plain shell
   panes take `pane run`. The procedure lives in the herdr skill
   (`deploy/skills/herdr`, seeded by `ensureHomeLayout`).
+- **A `herdr` tool reaches the operator's session (2026-10-14,
+  designed, not built).** The 2026-10-13 procedure is model
+  discipline over raw bash; this moves it into a tool so the checks
+  run in code. A new narrow tool, not a `delegate` extension:
+  delegations are goblin's own acts with ids and async results, and
+  his panes are neither. Session is hard-coded `default` — not a
+  knob, so 2026-09-26 stands for `delegate`; this tool exists only
+  to reach the one session goblin doesn't host. It never creates,
+  closes, moves, renames, or sends raw keys/text. Verbs:
+  - `list {}` — every agent in `default`, named or not: `pane_id`,
+    workspace label, tab label, kind, `cwd`, `terminal_title`,
+    status, `name` when set (`pane list`/`tab list`/`workspace list`
+    joined on `tab_id`/`workspace_id`).
+  - `read {pane, lines?}` — `agent read`, fenced like a delegation
+    `read`; his context, quoted back only as far as asked.
+  - `prompt {pane, expect, text}` — `expect` is the agent kind the
+    model believes is there. Immediately before sending, the tool
+    runs `agent get <pane>` and refuses unless the pane hosts an
+    agent of kind `expect`; then `agent prompt <pane> <text> --wait
+    --timeout`. `agent_blocked`, `agent_prompt_stalled`, and
+    `timeout` surface verbatim — a timeout is not non-delivery, so
+    no retry, in code or by the model. The result echoes the
+    identity actually hit (pane, kind, cwd, workspace/tab label).
+
+  Targets are pane IDs: two pi agents in one cwd share kind, cwd,
+  tab, and title — the pane ID is the only handle that tells unnamed
+  agents apart (probed 2026-10-14, throwaway session). Closed pane IDs
+  are never reused, so a stale ID either fails or lands on that
+  pane's current occupant; the kind check catches a different-kind
+  occupant (the w8B:p8-vs-p1 misfire was pi-vs-devin) but not a
+  same-kind replacement — accepted. herdr agent names (unique, follow
+  the occupant, cleared on exit) were weighed and rejected as the
+  target: operator-launched agents are unnamed. Wire facts for the
+  adapter: an unnamed agent's record omits `name` — the delegation
+  `agentSchema`'s required `name` must not be reused here — and
+  records carry `tab_id`, `terminal_title`, and `agent_session`. Every
+  call logs verb, pane, resolved kind/cwd, and outcome. On ship, the
+  herdr skill's "Panes he points you at" section collapses to "use
+  the tool"; raw `herdr` from bash against `default` stays banned for
+  tasking.
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
   `bash` call — and says that it did. That judgment includes the

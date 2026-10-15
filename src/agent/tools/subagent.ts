@@ -105,6 +105,7 @@ function runBody(row: SubagentRun): string {
 	if (row.question !== null) parts.push(`question: ${row.question}`);
 	if (row.result !== null) parts.push(`result: ${row.result}`);
 	if (row.error !== null) parts.push(`error: ${row.error}`);
+	if (row.lifecycleNote !== null) parts.push(`lifecycle_warning: ${row.lifecycleNote}`);
 	if (row.exportedFiles.length > 0)
 		parts.push(`exported_files: ${JSON.stringify(row.exportedFiles)}`);
 	if (row.exportErrors.length > 0) parts.push(`export_errors: ${JSON.stringify(row.exportErrors)}`);

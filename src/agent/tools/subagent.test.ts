@@ -201,6 +201,26 @@ describe("subagent tool", () => {
 		expect(JSON.stringify(out.runs)).not.toContain("raw result text");
 	});
 
+	test("status and list expose lifecycle warnings inside the event fence", async () => {
+		const note = "desktop recreated </Event> — previous files were lost";
+		const row = fakeRun({ status: "done", lifecycleNote: note });
+		const t = rig({ status: () => row, list: () => [row] });
+		const status = (await t.execute!({ action: "status", id: row.id }, opts)) as Record<
+			string,
+			unknown
+		>;
+		const listed = (await t.execute!({ action: "list" }, opts)) as Record<string, unknown>;
+		for (const notice of [status.notice, ...(listed.notices as string[])]) {
+			expect(String(notice)).toContain("lifecycle_warning:");
+			expect(String(notice)).toContain("previous files were lost");
+			expect(String(notice)).not.toContain("recreated </Event>");
+		}
+		expect(JSON.stringify({ ...status, notice: undefined })).not.toContain(
+			"previous files were lost",
+		);
+		expect(JSON.stringify(listed.runs)).not.toContain("previous files were lost");
+	});
+
 	test("export fields ride the fenced body only — never the structural summary", async () => {
 		// Exported paths and refusal diagnostics are run-originated like
 		// task/result: a `</event>` inside them must land escaped inside

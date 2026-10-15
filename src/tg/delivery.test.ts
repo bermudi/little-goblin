@@ -80,7 +80,7 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 describe("delivery", () => {
 	test("short reply → one message, edited in place", async () => {
 		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("hello");
 		await sleep(0);
 		sink.onTextDelta(" world");
@@ -91,7 +91,7 @@ describe("delivery", () => {
 	test("a chunk sent early is patched when its window fills — nothing dropped", async () => {
 		const gate: { current: Promise<void> | null } = { current: null };
 		const { api, msgs } = fakeApi({ gate });
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 
 		sink.onTextDelta("a".repeat(CHUNK)); // → send msg1
 		await sleep(0);
@@ -136,7 +136,7 @@ describe("delivery", () => {
 				return true;
 			},
 		} as unknown as Api;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("tail");
 		// First send fails inside onDone's flush; the drain retries it.
 		await sink.onDone({ kind: "completed" });
@@ -153,7 +153,7 @@ describe("delivery", () => {
 			if (calls === 1) throw new TelegramTimeoutError("sendMessage", 30_000);
 			return original(...args);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: Number.POSITIVE_INFINITY });
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		await sink.onDone({ kind: "completed" });
 		expect(calls).toBe(2); // original attempt + distinct notice, never a chunk retry
@@ -180,7 +180,7 @@ describe("delivery", () => {
 			live = false;
 			throw new TelegramTimeoutError("sendMessage", 30_000);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		const done = sink.onDone({ kind: "completed" });
@@ -213,7 +213,7 @@ describe("delivery", () => {
 			}
 			return original(...args);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("first");
 		await sleep(0);
 		sink.onTextDelta("x".repeat(CHUNK * 2));
@@ -234,7 +234,7 @@ describe("delivery", () => {
 			calls++;
 			throw new TelegramTimeoutError("sendMessage", 30_000);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: Number.POSITIVE_INFINITY });
 		sink.onTextDelta("lost");
 		await sink.onDone({ kind: "completed" });
 		expect(calls).toBe(2);
@@ -248,9 +248,12 @@ describe("delivery", () => {
 			voiceCalls++;
 			throw new TelegramTimeoutError("sendVoice", 30_000);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => [new Uint8Array([1])],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => [new Uint8Array([1])],
+			},
 		});
 		sink.onTextDelta("spoken answer");
 		await sink.onDone({ kind: "completed" });
@@ -266,7 +269,7 @@ describe("delivery", () => {
 			calls++;
 			throw new TelegramTimeoutError("sendVoice", 30_000);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		await expect(sink.onVoiceNote!(new Uint8Array([1]))).rejects.toThrow("timed out");
 		await expect(sink.onVoiceNote!(new Uint8Array([2]))).rejects.toThrow("delivery uncertain");
 		expect(calls).toBe(1);
@@ -282,9 +285,12 @@ describe("delivery", () => {
 			if (calls === 1) throw new TelegramTimeoutError("sendMessage", 30_000);
 			return original(...args);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => [new Uint8Array([1])],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => [new Uint8Array([1])],
+			},
 		});
 		sink.onTextDelta("spoken answer\n```\ncode\n```\nend");
 		await sink.onDone({ kind: "completed" });
@@ -300,9 +306,12 @@ describe("delivery", () => {
 			live = false;
 			throw new TelegramTimeoutError("sendVoice", 30_000);
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => [new Uint8Array([1])],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => [new Uint8Array([1])],
+			},
 		});
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("spoken answer");
@@ -312,7 +321,7 @@ describe("delivery", () => {
 
 	test("a surrogate pair is never split across the chunk boundary", async () => {
 		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		// 😀 is one code point but two UTF-16 units — placed so the naive
 		// 3800-unit cut lands inside the pair.
 		const emoji = "\u{1f600}";
@@ -324,7 +333,7 @@ describe("delivery", () => {
 
 	test("a seam computed against the status tail re-seats when status changes", async () => {
 		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		// First send goes out before the status tail exists; the tool call
 		// then pushes body past CHUNK, so the seam is computed against
 		// status chars, which are still provisional.
@@ -362,7 +371,7 @@ describe("delivery", () => {
 				return true;
 			},
 		} as unknown as Api;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(3791)]);
@@ -393,7 +402,7 @@ describe("delivery", () => {
 				return true;
 			},
 		} as unknown as Api;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		// Two long status entries (the hint caps at 60 chars) push the body
 		// past the chunk limit, so a second message goes out showing the
 		// tail.
@@ -414,14 +423,14 @@ describe("delivery", () => {
 
 	test("permanently failing sends don't make onDone throw", async () => {
 		const { api } = fakeApi({ failSends: true });
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("lost");
 		await expect(sink.onDone({ kind: "completed" })).resolves.toBeUndefined();
 	});
 
 	test("completed turn reacts 🫡 on the last bubble", async () => {
 		const { api, msgs, reactions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("a".repeat(CHUNK)); // msg1
 		sink.onTextDelta("tail"); // msg2
 		await sink.onDone({ kind: "completed" });
@@ -431,7 +440,7 @@ describe("delivery", () => {
 
 	test("error turn gets no reaction", async () => {
 		const { api, reactions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("partial");
 		await sink.onDone({ kind: "error", message: "boom" });
 		expect(reactions).toEqual([]);
@@ -443,15 +452,11 @@ describe("delivery", () => {
 		// chunks wait for onDone; the drain sends one chunk per flush and
 		// only gets two iterations. Progress is steady (stagnant never
 		// trips) — the loop must still announce the dropped tail.
-		const sink = makeDeliverySink(
-			api,
-			conv,
-			undefined,
-			Number.POSITIVE_INFINITY,
-			undefined,
-			4_000, // typingIntervalMs — the module default, irrelevant here
-			2, // maxDrainIterations
-		);
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: Number.POSITIVE_INFINITY,
+			typingIntervalMs: 4_000, // the module default, irrelevant here
+			maxDrainIterations: 2,
+		});
 		const captured: string[] = [];
 		setLogFile("delivery-drain-test.log");
 		setLogWriter((_path, line) => {
@@ -485,7 +490,7 @@ describe("delivery", () => {
 			captured.push(line);
 		});
 		try {
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await sink.onDone({ kind: "completed" });
 		} finally {
 			setLogFile(null);
@@ -508,11 +513,14 @@ describe("delivery", () => {
 			captured.push(line);
 		});
 		try {
-			const sink = makeDeliverySink(api, conv, undefined, 0, {
-				voiceMode: true,
-				synthesize: async (t: string) => {
-					synthesized.push(t);
-					return [];
+			const sink = makeDeliverySink(api, conv, {
+				editIntervalMs: 0,
+				voice: {
+					voiceMode: true,
+					synthesize: async (t: string) => {
+						synthesized.push(t);
+						return [];
+					},
 				},
 			});
 			await sink.onDone({ kind: "completed" });
@@ -532,9 +540,12 @@ describe("delivery", () => {
 
 	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {
 		const { api, markups } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: false,
-			synthesize: async () => [],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: false,
+				synthesize: async () => [],
+			},
 		});
 		sink.onTextDelta("whole reply");
 		await sink.onDone({ kind: "completed" });
@@ -546,8 +557,11 @@ describe("delivery", () => {
 
 	test("a completed reply stamps the rating row — payload carries conv + anchor", async () => {
 		const { api, markups } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, {
-			lastReplyAnchor: () => 7,
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			rating: {
+				lastReplyAnchor: () => 7,
+			},
 		});
 		sink.onTextDelta("answer");
 		await sink.onDone({ kind: "completed" });
@@ -567,16 +581,11 @@ describe("delivery", () => {
 
 	test("rating and 🔊 share one row in one keyboard edit — neither erases the other", async () => {
 		const { api, markups } = fakeApi({});
-		const sink = makeDeliverySink(
-			api,
-			conv,
-			undefined,
-			0,
-			{ voiceMode: false, synthesize: async () => [] },
-			undefined,
-			undefined,
-			{ lastReplyAnchor: () => 7 },
-		);
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: { voiceMode: false, synthesize: async () => [] },
+			rating: { lastReplyAnchor: () => 7 },
+		});
 		sink.onTextDelta("answer");
 		await sink.onDone({ kind: "completed" });
 		expect(markups).toEqual([
@@ -596,8 +605,11 @@ describe("delivery", () => {
 
 	test("a landed reply with no user anchor still gets the row — x payload", async () => {
 		const { api, markups } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, {
-			lastReplyAnchor: () => null,
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			rating: {
+				lastReplyAnchor: () => null,
+			},
 		});
 		sink.onTextDelta("answer");
 		await sink.onDone({ kind: "completed" });
@@ -618,28 +630,10 @@ describe("delivery", () => {
 	test("error and fenced turns stamp no rating row", async () => {
 		const { api, markups } = fakeApi({});
 		const rating = { lastReplyAnchor: () => 7 };
-		const first = makeDeliverySink(
-			api,
-			conv,
-			undefined,
-			0,
-			undefined,
-			undefined,
-			undefined,
-			rating,
-		);
+		const first = makeDeliverySink(api, conv, { editIntervalMs: 0, rating: rating });
 		first.onTextDelta("partial");
 		await first.onDone({ kind: "error", message: "boom" });
-		const second = makeDeliverySink(
-			api,
-			conv,
-			undefined,
-			0,
-			undefined,
-			undefined,
-			undefined,
-			rating,
-		);
+		const second = makeDeliverySink(api, conv, { editIntervalMs: 0, rating: rating });
 		second.onTextDelta("partial");
 		await second.onDone({ kind: "fenced" });
 		expect(markups).toEqual([]);
@@ -648,11 +642,14 @@ describe("delivery", () => {
 	test("voice mode skips streamed text and sends synthesized ogg chunks", async () => {
 		const { api, msgs, voices } = fakeApi({});
 		const spoken: string[] = [];
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async (text) => {
-				spoken.push(text);
-				return [new Uint8Array([1]), new Uint8Array([2])];
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async (text) => {
+					spoken.push(text);
+					return [new Uint8Array([1]), new Uint8Array([2])];
+				},
 			},
 		});
 		sink.onTextDelta("**hello**");
@@ -667,7 +664,7 @@ describe("delivery", () => {
 		api.sendVoice = async () => {
 			throw new Error("voice send failed");
 		};
-		const sink = makeDeliverySink(api, conv, undefined);
+		const sink = makeDeliverySink(api, conv, {});
 		await expect(sink.onVoiceNote!(new Uint8Array([1]))).rejects.toThrow("voice send failed");
 		await sink.onDone({ kind: "fenced" });
 	});
@@ -675,9 +672,12 @@ describe("delivery", () => {
 	test("a queued voice-mode error notice cannot send after authority is revoked", async () => {
 		const { api, msgs } = fakeApi({});
 		let authoritative = true;
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => [],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => [],
+			},
 		});
 		sink.setAuthorityCheck?.(() => authoritative);
 		const done = sink.onDone({ kind: "error", message: "failed" });
@@ -691,9 +691,12 @@ describe("delivery", () => {
 		api.sendVoice = async () => {
 			throw new Error("voice send failed");
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => [new Uint8Array([1])],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => [new Uint8Array([1])],
+			},
 		});
 		const text = "x".repeat(CHUNK + 100);
 		sink.onTextDelta(text);
@@ -709,11 +712,14 @@ describe("delivery", () => {
 			release = resolve;
 		});
 		let authoritative = true;
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async () => {
-				await gate;
-				return [new Uint8Array([1])];
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async () => {
+					await gate;
+					return [new Uint8Array([1])];
+				},
 			},
 		});
 		sink.setAuthorityCheck?.(() => authoritative);
@@ -747,7 +753,7 @@ describe("delivery", () => {
 				return true;
 			},
 		} as unknown as Api;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(3791)]);
@@ -772,7 +778,7 @@ describe("delivery", () => {
 				return true;
 			},
 		} as unknown as Api;
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 2);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 2 });
 		await sleep(3);
 		expect(actions[0]).toBe("typing"); // construction's immediate ping
 		expect(actions.every((a) => a === "typing")).toBe(true);
@@ -806,7 +812,7 @@ describe("delivery", () => {
 	// below is a re-ping, never the tick.
 	test("a mid-turn voice note re-pings typing immediately", async () => {
 		const { api, actions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 60_000 });
 		actions.length = 0; // drop construction's immediate ping
 		await sink.onVoiceNote!(new Uint8Array([1]));
 		await sleep(0);
@@ -816,7 +822,7 @@ describe("delivery", () => {
 
 	test("a mid-turn send inside a synthesis window never stomps record_voice with typing", async () => {
 		const { api, actions, voices } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 60_000 });
 		const stop = sink.onVoiceSynthesisStart!();
 		actions.length = 0; // construction ping + synthesis-start record_voice
 		await sink.onVoiceNote!(new Uint8Array([1]));
@@ -829,7 +835,7 @@ describe("delivery", () => {
 
 	test("a landed chunk re-pings typing while the turn continues", async () => {
 		const { api, actions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 60_000 });
 		actions.length = 0;
 		sink.onTextDelta("a".repeat(CHUNK + 10));
 		await sleep(0);
@@ -838,7 +844,7 @@ describe("delivery", () => {
 
 	test("finalize sends after onDone ghost no typing", async () => {
 		const { api, actions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 60_000);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 60_000 });
 		sink.onTextDelta("a".repeat(CHUNK + 10));
 		await sleep(0);
 		actions.length = 0;
@@ -859,7 +865,7 @@ describe("delivery", () => {
 
 	test("fenced completion stamps an existing bubble even if the authority check still passes", async () => {
 		const { api, msgs, reactions } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("visible");
 		await sleep(0);
 		sink.onTextDelta(" queued");
@@ -871,7 +877,7 @@ describe("delivery", () => {
 	test("a queued send loses authority before execution — no new bubble or drain retry", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("stale");
 		live = false; // before the serialized send starts
@@ -883,7 +889,7 @@ describe("delivery", () => {
 	test("fencing drops queued edits and tail sends but stamps the visible partial", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("partial");
 		await sleep(0); // first bubble is visible
@@ -904,7 +910,7 @@ describe("delivery", () => {
 			live = false; // first send lands, before the next drain pass
 			return result;
 		};
-		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: Number.POSITIVE_INFINITY });
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		await sink.onDone({ kind: "completed" });
@@ -928,9 +934,12 @@ describe("delivery", () => {
 			await gate;
 			return true;
 		};
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: false,
-			synthesize: async () => [],
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: false,
+				synthesize: async () => [],
+			},
 		});
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("partial");
@@ -994,18 +1003,7 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				50,
-			);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 50 });
 			await sink.onFile!({ path: pngFile(dir), filename: "chart.png" });
 			expect(photos).toHaveLength(1);
 			expect(documents).toHaveLength(0);
@@ -1033,18 +1031,7 @@ describe("delivery files", () => {
 			const { api, photos, documents, mediaGroups } = fileApi();
 			// A huge window makes the onDone flush the only one — no timer
 			// race against real fs stat latencies under parallel test load.
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				60_000,
-			);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png", caption: "second" },
@@ -1064,18 +1051,7 @@ describe("delivery files", () => {
 			const pdf = join(dir, "report.pdf");
 			writeFileSync(pdf, "pdf-bytes");
 			const { api, photos, documents, mediaGroups } = fileApi();
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				60_000,
-			);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pdf, filename: "report.pdf" },
@@ -1093,18 +1069,7 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: true });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				60_000,
-			);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png" },
@@ -1121,18 +1086,7 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: "timeout" });
-			const sink = makeDeliverySink(
-				api,
-				conv,
-				undefined,
-				0,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				60_000,
-			);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			const results = await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png" },
@@ -1155,7 +1109,7 @@ describe("delivery files", () => {
 			const f = join(dir, "report.pdf");
 			writeFileSync(f, "pdf-bytes");
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await sink.onFile!({ path: f, filename: "report.pdf", caption: "here you go" });
 			expect(documents).toEqual([{ caption: "here you go" }]);
 			expect(photos).toHaveLength(0);
@@ -1168,7 +1122,7 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await sink.onFile!({ path: pngFile(dir), filename: "chart.png", asFile: true });
 			expect(documents).toHaveLength(1);
 			expect(photos).toHaveLength(0);
@@ -1184,7 +1138,7 @@ describe("delivery files", () => {
 			// Minimal GIF head: the "GIF8" magic is all the sniffer needs.
 			writeFileSync(f, Buffer.from("GIF89a"));
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await sink.onFile!({ path: f, filename: "loop.gif" });
 			expect(documents).toHaveLength(1);
 			expect(photos).toHaveLength(0);
@@ -1199,7 +1153,7 @@ describe("delivery files", () => {
 			const f = join(dir, "report.pdf");
 			writeFileSync(f, "pdf-bytes");
 			const { api, photos } = fileApi({ document: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await expect(sink.onFile!({ path: f, filename: "report.pdf" })).rejects.toThrow(
 				"sendDocument wedged",
 			);
@@ -1230,7 +1184,7 @@ describe("delivery files", () => {
 			api.sendDocument = async () => {
 				throw new TelegramTimeoutError("sendDocument", 30_000);
 			};
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			// The tool must see the ambiguity made explicit, not a bare timeout
 			// it could read as "didn't arrive — resend it".
 			await expect(sink.onFile!({ path: f, filename: "report.pdf" })).rejects.toBeInstanceOf(
@@ -1251,7 +1205,7 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, documents } = fileApi({ photo: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await expect(sink.onFile!({ path: pngFile(dir), filename: "chart.png" })).rejects.toThrow(
 				"sendPhoto wedged",
 			);
@@ -1282,7 +1236,7 @@ describe("delivery files", () => {
 				},
 				setMessageReaction: async () => true,
 			} as unknown as Api;
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			await expect(sink.onFile!({ path: f, filename: "a.txt" })).rejects.toThrow(
 				"sendDocument wedged",
 			);
@@ -1300,7 +1254,7 @@ describe("delivery files", () => {
 			const f = join(dir, "a.txt");
 			writeFileSync(f, "data");
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			sink.setAuthorityCheck?.(() => false);
 			await sink.onFile!({ path: f, filename: "a.txt" });
 			expect(photos).toHaveLength(0);
@@ -1318,7 +1272,7 @@ describe("channel guard", () => {
 	test("an app conversation cannot get a telegram sink", () => {
 		const { api, msgs } = fakeApi({});
 		expect(() =>
-			makeDeliverySink(api, { ...conv, id: "app/chat-01", chatId: 0 }, undefined, 0),
+			makeDeliverySink(api, { ...conv, id: "app/chat-01", chatId: 0 }, { editIntervalMs: 0 }),
 		).toThrow("app conversation");
 		expect(msgs).toHaveLength(0);
 	});
@@ -1337,7 +1291,7 @@ describe("forced-completion stamp", () => {
 		];
 		for (const { forced, stamp } of cases) {
 			const { api, msgs } = fakeApi({});
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 			sink.onTextDelta("the wrapped answer");
 			await sleep(0);
 			await sink.onDone({ kind: "completed", forced });
@@ -1347,7 +1301,7 @@ describe("forced-completion stamp", () => {
 
 	test("natural completion adds no stamp", async () => {
 		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("plain answer");
 		await sleep(0);
 		await sink.onDone({ kind: "completed" });
@@ -1356,12 +1310,15 @@ describe("forced-completion stamp", () => {
 
 	test("voice mode ships the stamp as its own notice line — never spoken", async () => {
 		const { api, msgs, voices } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true,
-			synthesize: async (text: string) => {
-				// The spoken payload must not carry the stamp.
-				expect(text).not.toContain("answer forced");
-				return [new Uint8Array([1])];
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			voice: {
+				voiceMode: true,
+				synthesize: async (text: string) => {
+					// The spoken payload must not carry the stamp.
+					expect(text).not.toContain("answer forced");
+					return [new Uint8Array([1])];
+				},
 			},
 		});
 		sink.onTextDelta("spoken answer");

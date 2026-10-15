@@ -54,24 +54,23 @@ export function makeWakeDelivery(
 		markRoll: (chatId, conversationId) => sendRollMarker(base.api, chatId, conversationId),
 		delivery: (conv) => {
 			const tts = base.configRef.current.tts;
-			return makeDeliverySink(
-				base.api,
-				conv,
-				undefined,
-				undefined,
-				tts && !base.configRef.ttsDown
-					? { voiceMode: conv.voice, synthesize: (t) => base.synthesize(t, tts) }
-					: undefined,
-				undefined,
-				undefined,
-				base.store,
+			return makeDeliverySink(base.api, conv, {
+				...(tts && !base.configRef.ttsDown
+					? {
+							voice: {
+								voiceMode: conv.voice,
+								synthesize: (text: string) => base.synthesize(text, tts),
+							},
+						}
+					: {}),
+				rating: base.store,
 				// Same rich switches as the intake path — scheduled turns land in
 				// the same DM and the ruling scopes by conversation, not origin.
-				{
+				rich: {
 					enabled: base.configRef.current.telegram.richReplies,
 					reasoning: base.configRef.current.telegram.showReasoning,
 				},
-			);
+			});
 		},
 	};
 }

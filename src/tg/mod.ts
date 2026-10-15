@@ -962,24 +962,25 @@ function admitBatch(
 			deps.store.append(conv.id, [message]);
 		},
 	);
-	const sink = makeDeliverySink(
-		env.api,
-		conv,
-		items[0]?.replyTo,
-		undefined,
-		tts && !deps.configRef.ttsDown
-			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
-			: undefined,
-		undefined,
-		undefined,
-		deps.store,
+	const replyTo = items[0]?.replyTo;
+	const sink = makeDeliverySink(env.api, conv, {
+		...(replyTo !== undefined ? { replyTo } : {}),
+		...(tts && !deps.configRef.ttsDown
+			? {
+					voice: {
+						voiceMode: conv.voice,
+						synthesize: (text: string) => deps.synthesize(text, tts),
+					},
+				}
+			: {}),
+		rating: deps.store,
 		// Rich replies + reasoning: the sink gates DMs and voice mode;
 		// these are the config kill switches (design/telegram.md).
-		{
+		rich: {
 			enabled: deps.configRef.current.telegram.richReplies,
 			reasoning: deps.configRef.current.telegram.showReasoning,
 		},
-	);
+	});
 	try {
 		deps.runtime.submitPersisted(conv, message, sink);
 	} catch (err) {

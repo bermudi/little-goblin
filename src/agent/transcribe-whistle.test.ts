@@ -1,27 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import {
-	chmodSync,
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { whistleEngine, type WhistleDeps } from "./transcribe-whistle.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-whistle-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../testkit.ts";
 
 // A stub engine binary — a bun script speaking the pinned CLI contract
 // (one JSON line on stdout; exit 1 + one-line stderr on failure). Mode
@@ -76,7 +57,7 @@ function audioFile(dir: string): { path: string; mediaType: string; filename: st
 
 describe("whistleEngine", () => {
 	test("prep is 16 kHz mono wav at 28 s segments; no upload cap", () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "ok"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -87,7 +68,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("returns the engine's transcript with its language", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "ok"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -97,7 +78,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("keywords ride a one-per-line temp file; language is forced", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{
 				engine: stubEngine(dir, "ok"),
@@ -112,7 +93,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("silence is the engine's empty text — the orchestrator's null", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "silence"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -121,7 +102,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("engine failure: exit 1's stderr reaches the caller", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "fail"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -132,7 +113,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("non-JSON stdout fails loud", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "garbage"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -141,7 +122,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("a language outside the engine's set is a config error", () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		expect(() =>
 			whistleEngine(
 				{ engine: stubEngine(dir, "ok"), weights: weightsStub(dir), language: "ja" },
@@ -151,7 +132,7 @@ describe("whistleEngine", () => {
 	});
 
 	test("a missing configured artifact fails loud", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: join(dir, "no-such-needle"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
@@ -168,7 +149,7 @@ describe("whistle artifact auto-fetch", () => {
 	const fakeDigest = (data: string): string => Bun.CryptoHasher.hash("sha256", data, "hex");
 
 	test("fetches each artifact once into the cache, then reuses", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const cache = join(dir, "cache");
 		// The "downloaded" engine is the stub script itself — shebang'd,
 		// so executing the fetched file runs the pinned contract.
@@ -198,7 +179,7 @@ describe("whistle artifact auto-fetch", () => {
 	});
 
 	test("a digest mismatch fails loud and caches nothing", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const cache = join(dir, "cache");
 		const deps: WhistleDeps = {
 			cacheDir: cache,
@@ -218,7 +199,7 @@ describe("whistle artifact auto-fetch", () => {
 	});
 
 	test("an unmapped platform errors with the manual-path instruction", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{},
 			{
@@ -236,7 +217,7 @@ describe("whistle artifact auto-fetch", () => {
 	});
 
 	test("overrides bypass the platform gate on an unmapped platform", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		// Both artifacts overridden: the fetcher must never resolve
 		// URLs (which throw off linux-x64), let alone call fetch.
 		const engine = whistleEngine(
@@ -254,7 +235,7 @@ describe("whistle artifact auto-fetch", () => {
 	});
 
 	test("a single override still gates the platform for the other artifact", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-whistle-");
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "ok") },
 			{

@@ -1,36 +1,23 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
 	closeSync,
 	existsSync,
 	ftruncateSync,
 	lstatSync,
-	mkdtempSync,
 	openSync,
 	readFileSync,
-	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { editFileTool } from "./edit.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-edit-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../../testkit.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
 
 describe("edit_file", () => {
 	test("new_string is literal — $&, $1, $` are not interpolated", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "f.txt"), "hello world\n");
 		const t = editFileTool(dir);
 		const out = (await t.execute!(
@@ -42,7 +29,7 @@ describe("edit_file", () => {
 	});
 
 	test("unique match required unless replace_all", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "f.txt"), "x x\n");
 		const t = editFileTool(dir);
 		const dup = (await t.execute!({ path: "f.txt", old_string: "x", new_string: "y" }, opts)) as {
@@ -58,7 +45,7 @@ describe("edit_file", () => {
 	});
 
 	test("oversized file is refused before it is read", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		const fd = openSync(join(dir, "big.log"), "w");
 		ftruncateSync(fd, 9 * 1024 * 1024);
 		closeSync(fd);
@@ -70,7 +57,7 @@ describe("edit_file", () => {
 	});
 
 	test("binary file is refused, not mangled by a utf8 round-trip", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		const bytes = Buffer.from([0x89, 0x00, 0x50, 0x4e, 0x47]);
 		writeFileSync(join(dir, "b.bin"), bytes);
 		const t = editFileTool(dir);
@@ -82,7 +69,7 @@ describe("edit_file", () => {
 	});
 
 	test("a no-match returns an error and leaves the file untouched", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "f.txt"), "original content\n");
 		const t = editFileTool(dir);
 		const out = (await t.execute!(
@@ -99,7 +86,7 @@ describe("edit_file through leaf symlinks", () => {
 	// managed target, never replaced — tmp+rename over the link path
 	// silently forks the config and the dots store stops propagating.
 	test("relative leaf symlink: edit lands on the target, link survives", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "real.txt"), "one\ntwo\n");
 		symlinkSync("real.txt", join(dir, "link.txt"));
 		const out = (await editFileTool(dir).execute!(
@@ -114,7 +101,7 @@ describe("edit_file through leaf symlinks", () => {
 	});
 
 	test("absolute leaf symlink: edit lands on the target", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "real.txt"), "alpha\n");
 		symlinkSync(join(dir, "real.txt"), join(dir, "abs-link.txt"));
 		const out = (await editFileTool(dir).execute!(
@@ -127,7 +114,7 @@ describe("edit_file through leaf symlinks", () => {
 	});
 
 	test("symlink chain resolves to the file it manages", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "real.txt"), "x\n");
 		symlinkSync("real.txt", join(dir, "link1.txt"));
 		symlinkSync("link1.txt", join(dir, "link2.txt"));
@@ -142,7 +129,7 @@ describe("edit_file through leaf symlinks", () => {
 	});
 
 	test("dangling leaf symlink fails loudly and the link is untouched", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-edit-");
 		symlinkSync("missing.txt", join(dir, "dangling.txt"));
 		const out = (await editFileTool(dir).execute!(
 			{ path: "dangling.txt", old_string: "x", new_string: "y" },

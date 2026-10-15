@@ -4,14 +4,11 @@ import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	readdirSync,
-	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
@@ -31,17 +28,10 @@ import {
 	type ReviewerDeps,
 	type ToolCallDigest,
 } from "./reviewer.ts";
+import { tmpDir } from "./testkit.ts";
 
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-test-"));
-	dirs.push(dir);
-	return dir;
-}
 afterEach(() => {
 	setLogFile(null);
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
 });
 
 // Fake skills-ref: records its argv + cwd, exits the planted code.
@@ -148,7 +138,7 @@ interface Harness {
 }
 
 function harness(): Harness {
-	const root = tmpdir_();
+	const root = tmpDir("goblin-test-");
 	const workspace = join(root, "ws");
 	const skills = join(workspace, "skills");
 	const proposed = join(workspace, "skills-proposed");
@@ -1388,7 +1378,7 @@ describe("/stop cancellation", () => {
 
 	test("stop while skills-ref validates discards staging instead of proposing", async () => {
 		const h = harness();
-		const binDir = tmpdir_();
+		const binDir = tmpDir("goblin-test-");
 		const started = join(binDir, "started");
 		const release = join(binDir, "release");
 		const bin = join(binDir, "skills-ref");

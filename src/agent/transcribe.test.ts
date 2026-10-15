@@ -1,19 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { transcribeAudio, type EngineTranscript, type SpeechEngine } from "./transcribe.ts";
-
-let dirs: string[] = [];
-function tmpdir_(): string {
-	const dir = mkdtempSync(join(tmpdir(), "goblin-tr-"));
-	dirs.push(dir);
-	return dir;
-}
-afterEach(() => {
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
-});
+import { tmpDir } from "../testkit.ts";
 
 // Fake engine: returns canned transcripts and records what it was fed.
 const fakeEngine = (
@@ -80,14 +69,14 @@ function wavShape(audio: Uint8Array): { channels: number; sampleRate: number } {
 
 describe("transcribeAudio", () => {
 	test("returns the trimmed transcript", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
 		expect(await transcribeAudio(keepEngine("  call me back  "), file(f))).toBe("call me back");
 	});
 
 	test("silence (empty transcript) → null", async () => {
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
 		expect(await transcribeAudio(keepEngine("   "), file(f))).toBeNull();
@@ -95,7 +84,7 @@ describe("transcribeAudio", () => {
 
 	test("over-cap media is segmented to mono opus and joined", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
 		// 25s of audio → 3 segments at a shrunken 10s split. A 1-byte cap
 		// forces the segment path without a real 25MiB fixture.
@@ -127,7 +116,7 @@ describe("transcribeAudio", () => {
 
 	test("the wav profile always segments to 16 kHz mono pcm and joins", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "note.ogg");
 		genAudio(src, 25);
 		const seen: { path: string; bytes: Uint8Array }[] = [];
@@ -156,7 +145,7 @@ describe("transcribeAudio", () => {
 
 	test("an over-cap outage with nothing transcribed fails loud, never reads as no-speech", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
 		genAudio(src, 5);
 		const engine: SpeechEngine = {
@@ -176,7 +165,7 @@ describe("transcribeAudio", () => {
 
 	test("an over-cap outage mid-stream keeps the segments before it", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
 		genAudio(src, 25);
 		let n = 0;
@@ -198,7 +187,7 @@ describe("transcribeAudio", () => {
 
 	test("every segment silent → null", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
 		genAudio(src, 5);
 		const engine: SpeechEngine = {
@@ -212,7 +201,7 @@ describe("transcribeAudio", () => {
 
 	test("past the segment ceiling the transcription fails loud, not slow", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpdir_();
+		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
 		genAudio(src, 11);
 		const engine: SpeechEngine = {
@@ -230,7 +219,7 @@ describe("transcribeAudio", () => {
 
 	test("a corrupt source fails loud through ffmpeg", async () => {
 		if (Bun.which("ffmpeg") === null) return;
-		const f = join(tmpdir_(), "junk.ogg");
+		const f = join(tmpDir("goblin-tr-"), "junk.ogg");
 		writeFileSync(f, "definitely not audio");
 		await expect(transcribeAudio(keepEngine("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
 			"ffmpeg",
@@ -239,7 +228,7 @@ describe("transcribeAudio", () => {
 
 	test("a missing file fails loud", async () => {
 		await expect(
-			transcribeAudio(keepEngine("x"), file(join(tmpdir_(), "gone.ogg"))),
+			transcribeAudio(keepEngine("x"), file(join(tmpDir("goblin-tr-"), "gone.ogg"))),
 		).rejects.toThrow();
 	});
 });

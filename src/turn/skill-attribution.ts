@@ -76,7 +76,8 @@ export function attributedSkills(watch: SkillWatch, tool: string, output: unknow
 		for (const call of parsed.data.calls) {
 			// A nested call that failed wrote nothing.
 			if (!call.ok) continue;
-			if (call.tool === "write_file" || call.tool === "edit_file") collect(call.result);
+			if (call.tool === "write_file" || call.tool === "edit_file")
+				collect(parseSummarized(call.result));
 		}
 	}
 	return [...names];

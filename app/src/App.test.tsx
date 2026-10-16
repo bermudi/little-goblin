@@ -625,6 +625,20 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				);
 			if (url.startsWith("/api/app/memory/documents"))
 				return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }));
+			if (url.startsWith("/api/app/skills/from"))
+				return Promise.resolve(
+					jsonResponse({
+						items: [
+							{
+								skill: "ci-helper",
+								state: "installed",
+								kind: "reviewer",
+								firstAt: "2026-10-10T00:00:00Z",
+								lastAt: "2026-10-10T00:00:00Z",
+							},
+						],
+					}),
+				);
 			if (url === "/api/app/programs") return Promise.resolve(jsonResponse({ programs: [] }));
 			if (url === "/api/app/delegations") return Promise.resolve(jsonResponse({ delegations: [] }));
 			if (url === "/api/app/status")
@@ -778,6 +792,22 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				(b) => (b.getAttribute("aria-label") ?? b.textContent) === action,
 			),
 		);
+
+	test("the chat header opens the thread-sources sheet for the open conversation", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		const action = container.querySelector('button[aria-label^="From this thread"]');
+		expect(action).not.toBeNull();
+		await click(action);
+		await settle();
+		const dialog = container.querySelector('[role="dialog"]');
+		expect(dialog?.getAttribute("aria-label")).toBe("From this conversation");
+		expect(dialog?.textContent).toContain("ci-helper");
+		expect(dialog?.textContent).toContain("Retained exchanges");
+		await click(dialog?.querySelector(".msheet-head button"));
+		expect(container.querySelector('[role="dialog"]')).toBeNull();
+	});
 
 	test("repeated conversation and empty-chat selection do not add history entries", async () => {
 		seedConversation();

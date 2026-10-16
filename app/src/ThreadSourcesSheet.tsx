@@ -13,7 +13,7 @@ const PAGE = 20;
 
 function SkillRow({ skill }: { skill: ThreadSkillItem }) {
 	return (
-		<div className="doc-row skill-row">
+		<div className="skill-row">
 			<span className="skill-name mono">{skill.skill}</span>
 			<span className="doc-sub">
 				<span className={`skill-state skill-${skill.state}`}>{skill.state}</span>

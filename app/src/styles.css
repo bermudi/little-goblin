@@ -2245,6 +2245,9 @@ a.hit-title {
 /* Thread-sources sheet: a skill row is display-only — same rhythm as
    a doc row, no hover, a state word instead of a chevron. */
 .skill-row {
+	display: flex;
+	align-items: center;
+	gap: 0.7rem;
 	padding: 0.45rem 0.35rem;
 }
 .skill-name {

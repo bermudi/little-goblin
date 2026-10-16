@@ -966,6 +966,10 @@ describe("cache contracts", () => {
 	});
 	test("a fully documented contract set passes without claiming warmth", async () => {
 		const f = fixture();
+		// The registry's review metadata is a fixed date — the assertion
+		// only holds inside its 30-day freshness window.
+		const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T00:00:00.000Z"));
+		restorers.push(() => clock.mockRestore());
 		writeFileSync(
 			join(f.home, "goblin.json5"),
 			JSON.stringify({

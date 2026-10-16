@@ -29,11 +29,14 @@ export interface CacheCallObservation {
 export interface CacheObservation {
 	begin(input: CacheCallInput): CacheCallObservation;
 	// Read-only lineage read for between-turns policy: the newest
-	// completed normal (purpose IS NULL) call on one conversation+route.
-	// Null = no completed call exists; never creates or mutates a row.
+	// completed normal (purpose IS NULL) call on one conversation+route
+	// recorded under this settings hash — a profile's evidence must be
+	// the same surface it authorizes. Null = no completed call exists;
+	// never creates or mutates a row.
 	lastCompleted(
 		conversationId: string,
 		routeKey: string,
+		settingsHash: string,
 	): {
 		finishedMs: number | null;
 		idleMs: number | null;
@@ -42,6 +45,22 @@ export interface CacheObservation {
 		prefixRelation: CachePrefixRelation;
 		settingsHash: string;
 	} | null;
+	// A contradicted pruning profile stays suspended until the profile
+	// itself changes — a later cache-hit receipt is evidence about a
+	// different window, never proof the measured one was right.
+	suspendPruning(input: {
+		conversationId: string;
+		routeKey: string;
+		settingsHash: string;
+		profileHash: string;
+		reason: string;
+	}): void;
+	pruningSuspension(
+		conversationId: string,
+		routeKey: string,
+		settingsHash: string,
+		profileHash: string,
+	): { reason: string; observedMs: number } | null;
 }
 
 const prevSchema = z.object({
@@ -122,12 +141,31 @@ export function openCacheObservation(
 	const qLastCompleted = db.query(
 		`SELECT finished_ms, idle_ms, cache_read, input_tokens, prefix_relation, settings_hash
 		FROM model_cache_calls
-		WHERE conversation_id = ? AND route_key = ? AND purpose IS NULL AND status = 'completed'
+		WHERE conversation_id = ? AND route_key = ? AND settings_hash = ?
+			AND purpose IS NULL AND status = 'completed'
 		ORDER BY started_ms DESC, rowid DESC LIMIT 1`,
 	);
+	db.run(`CREATE TABLE IF NOT EXISTS cache_pruning_suspensions (
+		conversation_id TEXT NOT NULL,
+		route_key TEXT NOT NULL,
+		settings_hash TEXT NOT NULL,
+		profile_hash TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		observed_ms INTEGER NOT NULL,
+		PRIMARY KEY (conversation_id, route_key, settings_hash, profile_hash)
+	)`);
+	const qSuspend = db.query(
+		`INSERT OR IGNORE INTO cache_pruning_suspensions
+			(conversation_id, route_key, settings_hash, profile_hash, reason, observed_ms)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+	);
+	const qSuspension = db.query(
+		`SELECT reason, observed_ms FROM cache_pruning_suspensions
+		WHERE conversation_id = ? AND route_key = ? AND settings_hash = ? AND profile_hash = ?`,
+	);
 	return {
-		lastCompleted(conversationId, routeKey) {
-			const raw = qLastCompleted.get(conversationId, routeKey);
+		lastCompleted(conversationId, routeKey, settingsHash) {
+			const raw = qLastCompleted.get(conversationId, routeKey, settingsHash);
 			if (raw === null) return null;
 			const row = lastCompletedSchema.parse(raw);
 			return {
@@ -138,6 +176,22 @@ export function openCacheObservation(
 				prefixRelation: row.prefix_relation,
 				settingsHash: row.settings_hash,
 			};
+		},
+		suspendPruning(input) {
+			qSuspend.run(
+				input.conversationId,
+				input.routeKey,
+				input.settingsHash,
+				input.profileHash,
+				input.reason,
+				now(),
+			);
+		},
+		pruningSuspension(conversationId, routeKey, settingsHash, profileHash) {
+			const raw = qSuspension.get(conversationId, routeKey, settingsHash, profileHash);
+			if (raw === null) return null;
+			const row = z.object({ reason: z.string(), observed_ms: z.number() }).parse(raw);
+			return { reason: row.reason, observedMs: row.observed_ms };
 		},
 		begin(input) {
 			const raw =

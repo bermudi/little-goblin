@@ -8,6 +8,8 @@
 // profile is fresh and no telemetry contradicts the presumed expiry
 // window.
 
+import { createHash } from "node:crypto";
+
 import { cacheContractFor, cacheContractFresh } from "./agent/cache-contracts.ts";
 import {
 	cacheRouteFor,
@@ -20,6 +22,9 @@ import type { CacheObservation } from "./cache-observation.ts";
 import type { Config } from "./config.ts";
 import { captureConversationSettings, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
+import { stableStringify } from "./loop-detect.ts";
+
+const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
 // The marker a projection row stores. It keeps a bounded head/tail of the
 // original text plus the history_search address that recovers the full
@@ -108,6 +113,22 @@ export function openCachePruning(deps: CachePruningDeps): {
 			(p) => p.routeKey === routeKey && p.settingsHash === settingsHash,
 		);
 		if (profile === undefined) return undefined;
+		// Any byte of profile change — a reviewedAt bump, a new idle
+		// window — is a new profile hash: the operator replacing or
+		// reviewing the profile is the only lift for a contradiction.
+		const profileHash = sha256hex(stableStringify(profile));
+		const suspension = deps.observation.pruningSuspension(
+			convId,
+			routeKey,
+			settingsHash,
+			profileHash,
+		);
+		if (suspension !== null) {
+			notice("contradicted", "cache policy contradicted — pruning suspended", convId, routeKey, {
+				observedMs: suspension.observedMs,
+			});
+			return { pruned: 0, reason: "drift-contradiction" };
+		}
 		if (Date.parse(profile.validUntil) <= now()) {
 			// The dedupe key carries the deadline — a renewed profile that
 			// expires again is a new finding, not a repeat.
@@ -136,22 +157,32 @@ export function openCachePruning(deps: CachePruningDeps): {
 				return { pruned: 0, reason: "documented-expiry-unsupported" };
 			}
 		}
-		const prev = deps.observation.lastCompleted(convId, routeKey);
-		// No completed call on this route: there is no observed input
-		// size to measure against the token gate and no finishedMs to
-		// start the idle clock — fail closed.
+		const prev = deps.observation.lastCompleted(convId, routeKey, settingsHash);
+		// No completed call on this route under these settings: there is
+		// no observed input size to measure against the token gate and no
+		// finishedMs to start the idle clock — fail closed.
 		if (prev === null || prev.finishedMs === null) return undefined;
 		const idleMs = Math.max(0, now() - prev.finishedMs);
 		// Drift check first, before the freshness gates: a same/append
 		// call inside the assumed cache window that reported zero cache
 		// reads means the presumed expiry is wrong — suspend new batches.
-		// Committed rows still replay; only new pruning stops.
+		// The suspension persists under this profile's hash: a later
+		// cache-hit receipt can't erase the evidence, only an edited
+		// profile lifts it. Committed rows still replay; only new
+		// pruning stops.
 		if (
 			(prev.prefixRelation === "same" || prev.prefixRelation === "append") &&
 			prev.idleMs !== null &&
 			prev.idleMs < profile.idleAfterMs &&
 			prev.cacheRead === 0
 		) {
+			deps.observation.suspendPruning({
+				conversationId: convId,
+				routeKey,
+				settingsHash,
+				profileHash,
+				reason: "drift-contradiction",
+			});
 			notice("contradicted", "cache policy contradicted — pruning suspended", convId, routeKey, {
 				idleMs: prev.idleMs,
 				idleAfterMs: profile.idleAfterMs,
@@ -219,6 +250,11 @@ export function openCachePruning(deps: CachePruningDeps): {
 					headChars: policy.retainHeadChars,
 					tailChars: policy.retainTailChars,
 				});
+				// Marker + retained head/tail can outweigh a short result —
+				// policy validation bounds the budget but not the marker's
+				// fixed overhead. A projection that doesn't shrink commits
+				// the context trade permanently, so it stays unpruned.
+				if (replacement.length >= p.output.length) continue;
 				projected.add(key);
 				charsBefore += p.output.length;
 				charsAfter += replacement.length;

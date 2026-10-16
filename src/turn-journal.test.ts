@@ -435,6 +435,75 @@ describe("turn journal", () => {
 		reopened.close();
 	});
 
+	test("a fault consuming the source rolls the whole resume back — row, inheritance, mark", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const j1 = openTurnJournal(store.db);
+		j1.beginRun({
+			runId: "source-run",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: {},
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:00:00.000Z",
+		});
+		j1.noteToolInput("source-run", "c-1", "probe", { q: 1 });
+		j1.noteToolDispatch("source-run", "c-1", "probe", { q: 1 });
+		j1.noteToolResult("source-run", "c-1", { out: "landed" });
+		store.close();
+
+		const reopened = openStore(dbPath);
+		const journal = openTurnJournal(reopened.db);
+		try {
+			// The injected fault lands past the successor's insert and the
+			// inherited call rows — on the write that consumes the source —
+			// so a throw here proves the transaction rolled all of it back.
+			reopened.db.run(`CREATE TRIGGER fail_source_consumption
+				BEFORE UPDATE OF status ON turn_runs
+				WHEN OLD.run_id = 'source-run' AND NEW.status = 'resumed'
+				BEGIN SELECT RAISE(ABORT, 'injected source-consumption failure'); END`);
+			const begin = (): void =>
+				journal.beginRun({
+					runId: "successor-run",
+					conversationId: conv.id,
+					epoch: 3,
+					anchorSeq: 7,
+					steerMark: 7,
+					convSnapshot: {},
+					toolNames: ["probe"],
+					startedAt: "2026-10-11T00:00:00.000Z",
+					resumedFrom: "source-run",
+				});
+			expect(begin).toThrow(/injected source-consumption failure/);
+			expect(journal.get("successor-run")).toBeNull();
+			expect(journal.callsFor("successor-run")).toEqual([]);
+			expect(journal.get("source-run")!.status).toBe("interrupted");
+			expect(journal.callsFor("source-run")).toMatchObject([
+				{ toolCallId: "c-1", name: "probe", state: "completed", result: '{"out":"landed"}' },
+			]);
+			// Fault gone: the same admission commits whole — successor
+			// running, source consumed, exactly one replayable call carried.
+			reopened.db.run("DROP TRIGGER fail_source_consumption");
+			begin();
+			expect(journal.get("successor-run")).toMatchObject({
+				status: "running",
+				resumedFrom: "source-run",
+			});
+			expect(journal.get("source-run")!.status).toBe("resumed");
+			expect(journal.callsFor("successor-run")).toMatchObject([
+				{ toolCallId: "c-1", name: "probe", state: "completed" },
+			]);
+			expect(journal.replayMap("successor-run").get(replayKey("probe", { q: 1 }))).toEqual([
+				{ out: "landed" },
+			]);
+		} finally {
+			reopened.close();
+		}
+	});
+
 	test("inheritFrom carries a terminal predecessor's settled calls into the new row", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -489,11 +558,23 @@ describe("turn journal", () => {
 		journal.noteToolDispatch(runId, "c-exec", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-exec", { out: "real" });
 		// The fence answered the model's re-ask from the record above —
-		// journaled as replayed, never as a second execution.
+		// journaled as replayed, never as a second execution. The re-ask
+		// rides the same chunk/dispatch seams as the real call, so the row
+		// carries full identity: without it the replayMap credit skip
+		// could pass on the marker row's empty name, provenance or not.
+		journal.noteToolInput(runId, "c-replay", "probe", { q: 1 });
+		journal.noteToolDispatch(runId, "c-replay", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-replay", { out: "real" }, { replayed: true });
 		const calls = journal.callsFor(runId);
-		expect(calls.find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
-		expect(calls.find((c) => c.toolCallId === "c-exec")!.replayed).toBe(false);
+		const executed = calls.find((c) => c.toolCallId === "c-exec")!;
+		const replayed = calls.find((c) => c.toolCallId === "c-replay")!;
+		expect(replayed.replayed).toBe(true);
+		expect(executed.replayed).toBe(false);
+		// Identical identity to the real execution — the credit skip must
+		// come from the replayed flag, not a missing name or hash.
+		expect(replayed.state).toBe("completed");
+		expect(replayed.name).toBe("probe");
+		expect(replayed.argsHash).toBe(executed.argsHash);
 		// One execution, one credit — the replay row adds nothing.
 		expect(journal.replayMap(runId).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
 		// Provenance survives inheritance into a successor row.

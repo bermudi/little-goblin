@@ -8,11 +8,13 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { UIMessage } from "ai";
+import { streamText, tool, type UIMessage } from "ai";
+import { z } from "zod";
 import {
 	cacheRouteFor,
 	cacheRouteKey,
 	hashCacheSettings,
+	observedModel,
 	thinkingOptions,
 	turnCallSettings,
 } from "./agent/providers.ts";
@@ -26,6 +28,7 @@ import {
 import type { Config } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
+import { scriptedModel, textParts } from "./testkit/fake-model.ts";
 import { tmpDb, tmpDir } from "./testkit.ts";
 
 const MODEL = "zai/glm-5.3-flash";
@@ -517,30 +520,72 @@ describe("openCachePruning", () => {
 		f.store.close();
 	});
 
-	test("the gate hashes the SDK-normalized settings — a telemetry-copied profile matches", () => {
+	test("the gate hashes the SDK-normalized settings — a telemetry-copied profile matches", async () => {
 		const f = fixture();
-		// What observedModel hashed for the turn's call: the SDK resolved
-		// the omitted toolChoice to {type:"auto"} before the middleware
-		// boundary (ai's prepareToolChoice), so the receipts carry that
-		// shape and any profile copied from them must too.
-		const sdkReceiptHash = hashCacheSettings({
-			providerOptions: thinkingOptions(f.cfg, MODEL, "medium"),
-			toolChoice: { type: "auto" },
-		});
-		expect(f.profile.settingsHash).toBe(sdkReceiptHash);
-		// A bare providerOptions-only hash — the pre-normalization gate —
-		// never matches the receipts.
-		expect(f.profile.settingsHash).not.toBe(
-			hashCacheSettings({ providerOptions: thinkingOptions(f.cfg, MODEL, "medium") }),
-		);
-		// End to end: receipts recorded under the SDK-shaped hash gate the
-		// profile and pruning proceeds.
-		completedCall(f.observation, f.conv.id, f.profile.routeKey, sdkReceiptHash, {
-			cacheRead: 0,
-		});
-		f.advance(IDLE_AFTER + 1);
-		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
-		f.store.close();
+		try {
+			// A real streamText through the observed middleware into the fake
+			// provider: the receipt then carries whatever the installed SDK
+			// actually put on the wire, not this test's claim about its shape.
+			const scripted = scriptedModel([textParts("ok", 50_000)]);
+			const model = observedModel(scripted.model, {
+				conversation: f.conv.id,
+				route: cacheRouteFor(f.cfg, MODEL)!,
+				observation: f.observation,
+			});
+			const result = streamText({
+				model,
+				prompt: "check the gate",
+				providerOptions: thinkingOptions(f.cfg, MODEL, "medium")!,
+				// A tool is on the wire but toolChoice is deliberately omitted —
+				// the SDK must resolve it before the provider boundary.
+				tools: { probe: tool({ inputSchema: z.object({}) }) },
+			});
+			expect(await result.text).toBe("ok");
+			expect(scripted.streamCalls).toHaveLength(1);
+			expect(scripted.streamCalls[0]!.toolChoice).toEqual({ type: "auto" });
+			// The frozen receipt is a profile's source of truth: its
+			// settings hash is the normalized wire options, byte for byte.
+			const receipts = f.store.db
+				.query<{ status: string; route_key: string; settings_hash: string }, [string]>(
+					"SELECT status, route_key, settings_hash FROM model_cache_calls WHERE conversation_id = ?",
+				)
+				.all(f.conv.id);
+			expect(receipts).toHaveLength(1);
+			const receipt = receipts[0]!;
+			expect(receipt.status).toBe("completed");
+			expect(receipt.settings_hash).toBe(hashCacheSettings(scripted.streamCalls[0]!));
+			expect(receipt.settings_hash).toBe(f.profile.settingsHash);
+			// A bare providerOptions-only hash — the pre-normalization gate —
+			// never matches the receipts.
+			expect(receipt.settings_hash).not.toBe(
+				hashCacheSettings({ providerOptions: thinkingOptions(f.cfg, MODEL, "medium") }),
+			);
+			// A profile copied off the frozen receipt gates the recorded call
+			// and pruning proceeds — no second model call needed.
+			const telemetryCfg: Config = {
+				...f.cfg,
+				cachePruning: {
+					...f.cfg.cachePruning!,
+					profiles: [
+						{
+							...f.cfg.cachePruning!.profiles[0]!,
+							routeKey: receipt.route_key,
+							settingsHash: receipt.settings_hash,
+						},
+					],
+				},
+			};
+			const pruning = openCachePruning({
+				store: f.store,
+				observation: f.observation,
+				getConfig: () => telemetryCfg,
+				now: f.now,
+			});
+			f.advance(IDLE_AFTER + 1);
+			expect(pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		} finally {
+			f.store.close();
+		}
 	});
 
 	test("an earlier zero-read contradiction buried under a later cache hit still suspends", () => {

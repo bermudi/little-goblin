@@ -1219,8 +1219,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	const admitAttempts = new Map<number, number>();
 	const admitRetryBaseMs = deps.admitRetryMs ?? ADMIT_RETRY_BASE_MS;
 	// In-flight monitors and admissions — close joins them so a paused
-	// run is left durable, never mutated after close.
+	// run is left durable, never mutated after close. runMonitors tracks
+	// WHICH runs still have a watcher: admission's approval-continuation
+	// branch must not resolve a waiter that nobody is watching.
 	const monitorTasks = new Set<Promise<void>>();
+	const runMonitors = new Map<number, Set<Promise<void>>>();
 	const recoveryPending = new Set<number>();
 	// Consecutive recovery cycles per run that have not yet re-attached
 	// settlement — recovery is the only thing that re-attaches it, so
@@ -2667,7 +2670,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 										: typeof settled.detail === "string"
 											? settled.detail
 											: JSON.stringify(settled.detail),
-							}
+						}
 						: undefined,
 				);
 				// A monitor that observed its submission through is the
@@ -2692,7 +2695,22 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 		})();
 		monitorTasks.add(task);
-		void task.finally(() => monitorTasks.delete(task));
+		const watching = runMonitors.get(rowId) ?? new Set<Promise<void>>();
+		watching.add(task);
+		runMonitors.set(rowId, watching);
+		void task.finally(() => {
+			monitorTasks.delete(task);
+			watching.delete(task);
+			if (watching.size === 0) runMonitors.delete(rowId);
+		});
+	}
+
+	// Is a settlement watcher still live for this run? A monitor's task
+	// stays counted through its finalize, so "watched" means somebody
+	// observes the current submission's settle — the fact admission's
+	// approval branch needs.
+	function monitored(rowId: number): boolean {
+		return (runMonitors.get(rowId)?.size ?? 0) > 0;
 	}
 
 	// ---------- admission ----------
@@ -2796,19 +2814,30 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				const key = approvalKey(fresh.piConversationId, fresh.pendingApproval.piTaskId);
 				runs.update(row.id, { status: "running", pendingApproval: null });
 				const waiter = approvalWaiters.get(key);
+				if (waiter === undefined) {
+					// No invocation is waiting — the gate re-enters on
+					// harness.resume().
+					approvalDecisions.set(key, d);
+				}
+				// The parked submission needs a settlement watcher on BOTH
+				// paths. A waiter registered by this process's parked
+				// invocation already has one (its monitor is mid-wait — a
+				// parked tool task cannot settle its submission); but a
+				// restart-registered waiter rode harness recovery, which
+				// attached no monitor — boot skips queued rows — and the
+				// no-waiter path re-enters the gate only after this. The
+				// watcher attaches before the waiter resolves or the
+				// scheduler runs, or the continuation settles unwatched
+				// and leaks its slot forever.
+				if (!monitored(row.id) && fresh.piSubmissionId !== null) {
+					const sub = await harness.submission(asSub(fresh.piSubmissionId), ctx);
+					if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
+				}
 				if (waiter !== undefined) {
 					approvalWaiters.delete(key);
 					waiter(d);
-				} else {
-					// No invocation is waiting — the gate re-enters on
-					// harness.resume(). The parked submission's monitor
-					// re-attaches FIRST or a settle lands unwatched.
-					approvalDecisions.set(key, d);
-					if (fresh.piSubmissionId !== null) {
-						const sub = await harness.submission(asSub(fresh.piSubmissionId), ctx);
-						if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
-					}
-					if (resumed && !harnessClosed) harness.resume();
+				} else if (resumed && !harnessClosed) {
+					harness.resume();
 				}
 				log.info("subagent approval decision admitted — the parked call continues", {
 					run: row.id,

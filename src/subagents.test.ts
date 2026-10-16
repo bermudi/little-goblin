@@ -4863,6 +4863,67 @@ describe("subagents crash approval", () => {
 		expect(sandboxes.dispatchCalls).toBe(2);
 	}, 60_000);
 
+	test("a decided run queued behind capacity across a restart still settles — the recovery waiter gets a monitor", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId: aId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		// Reopen with ONE slot; a sibling worker takes it and holds it
+		// mid-dispatch, so the verdict on the parked run queues behind
+		// capacity instead of admitting immediately.
+		const r2 = rig({
+			reuse: { dbPath, storagePath },
+			model: r1.model,
+			sandboxes,
+			maxRuns: 1,
+		});
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(aId)?.pendingApproval !== null, "parked");
+		sandboxes.sandboxDead = false;
+		sandboxes.execGate = new Promise<void>(() => {});
+		r2.model.push({
+			kind: "tools",
+			calls: [{ name: "bash", args: { command: "sibling-work" } }],
+		});
+		const b = await o2.start({
+			kind: "worker",
+			conversationId: "conv:other",
+			workspace: r2.workspace,
+			task: "u",
+		});
+		await until(() => r2.runs.get(b.id)?.status === "running", "sibling admitted");
+		await until(() => sandboxes.dispatchCalls >= 2, "sibling dispatch held mid-flight");
+		const decided = await o2.decide(aId, WS, {
+			kind: "record-result",
+			result: "verified by hand",
+		});
+		expect(decided.status).toBe("queued");
+		// The restart: the queued verdict and the held sibling persist.
+		// sandboxDead models the kill — the gate held the sibling's
+		// dispatch at death, and signal-less close cleanup must not wait
+		// it out (same convention as parkBashRun).
+		sandboxes.sandboxDead = true;
+		await o2.close();
+		owners = owners.filter((x) => x !== o2);
+
+		// Boot skips the queued row; harness recovery re-enters its gate
+		// and registers the waiter with no monitor attached. The sibling's
+		// own re-entry parks it and frees the slot — admission then
+		// resolves the waiter, and without a watcher the continuation
+		// would settle its Pi side unseen and hold the slot forever.
+		const r3 = rig({
+			reuse: { dbPath, storagePath },
+			model: r1.model,
+			sandboxes,
+			maxRuns: 1,
+		});
+		const o3 = await open(r3);
+		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed" } }] });
+		await until(() => r3.runs.get(aId)?.status === "done", "decided run settled after restart");
+		expect(r3.runs.get(aId)?.result).toBe("resumed");
+		// markit once, sibling-work once — the continuation replayed the
+		// recorded result and nothing re-dispatched.
+		expect(sandboxes.dispatchCalls).toBe(2);
+	}, 60_000);
+
 	test("a completed call replays the streamed output after a restart, not the bare return", async () => {
 		const sandboxes = fakeSandboxes();
 		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-done-"));

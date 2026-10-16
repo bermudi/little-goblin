@@ -858,7 +858,10 @@ export async function handleOperatorRoute(
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		if (deps.skillSources === undefined)
-			return Response.json({ error: "skill provenance unavailable" }, { status: 503, headers: NO_STORE });
+			return Response.json(
+				{ error: "skill provenance unavailable" },
+				{ status: 503, headers: NO_STORE },
+			);
 		const conversation = z
 			.string()
 			.min(1)

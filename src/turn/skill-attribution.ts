@@ -58,11 +58,7 @@ function parseSummarized(value: string): unknown {
 }
 
 /** Skill names authored by this completed call — empty when none. */
-export function attributedSkills(
-	watch: SkillWatch,
-	tool: string,
-	output: unknown,
-): string[] {
+export function attributedSkills(watch: SkillWatch, tool: string, output: unknown): string[] {
 	const names = new Set<string>();
 	const collect = (callOutput: unknown): void => {
 		const out = writeOutputSchema.safeParse(callOutput);

@@ -100,6 +100,7 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/delegations": "delegations",
 	"/api/app/status": "status",
 	"/api/app/skills": "skills",
+	"/api/app/skills/from": "skills/from",
 	"/api/app/skills/file": "skills/file",
 	// Exact key — it must win over the legacy /api/app/attachments/<name>
 	// read-back prefix below.

@@ -543,6 +543,17 @@ header h1 {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+/* The chat header's thread-sources action — pushed to the end so the
+   title keeps its place, icon-only with the accessible name. */
+.header-action {
+	margin-left: auto;
+	color: var(--app-fg-muted);
+	display: inline-flex;
+	padding: 0.25rem;
+}
+.header-action:hover {
+	color: var(--app-fg);
+}
 .nav-toggle {
 	display: none;
 	align-items: center;
@@ -2230,6 +2241,33 @@ a.hit-title {
 }
 .doc-row:hover {
 	background: var(--app-hover);
+}
+/* Thread-sources sheet: a skill row is display-only — same rhythm as
+   a doc row, no hover, a state word instead of a chevron. */
+.skill-row {
+	padding: 0.45rem 0.35rem;
+}
+.skill-name {
+	font-size: 12.5px;
+}
+.skill-state {
+	text-transform: uppercase;
+	font-size: 10px;
+	letter-spacing: 0.05em;
+}
+.skill-state.skill-installed {
+	color: #4ade80;
+}
+.skill-state.skill-proposed {
+	color: var(--app-accent);
+}
+.skill-state.skill-gone {
+	color: var(--app-fg-muted);
+	font-style: italic;
+}
+.thread-sources .ops-h2 {
+	font-size: 11px;
+	margin: 0.9rem 0.3rem 0.35rem;
 }
 .doc-id {
 	font-size: 12px;

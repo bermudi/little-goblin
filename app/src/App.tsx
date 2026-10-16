@@ -17,6 +17,7 @@ import {
 import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
+import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
 import { FilesView, SkillsView } from "./StateViews.tsx";
 import { LogView } from "./LogView.tsx";
@@ -602,6 +603,10 @@ function AppShell() {
 	// archived included; the rail shows only the active ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
+	// The chat header's thread-sources sheet — one open flag, reset on
+	// conversation change so the sheet never shows a previous thread.
+	const [sourcesOpen, setSourcesOpen] = useState(false);
+	useEffect(() => setSourcesOpen(false), [current]);
 	const [listError, setListError] = useState<string | null>(null);
 	// Row-action failures — cleared by the next successful action or
 	// refresh, like listError but per-action and named.
@@ -1344,6 +1349,31 @@ function AppShell() {
 						<span className="header-title">{flatTitle(currentTitle)}</span>
 					)}
 					{page === "projects" && <span className="header-title">Projects</span>}
+					{page === "chat" && current !== null && (
+						<button
+							type="button"
+							className="header-action"
+							title="From this thread"
+							aria-label="From this thread — memories and skills generated here"
+							onClick={() => setSourcesOpen(true)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="18"
+								height="18"
+							>
+								<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+								<path d="M12 12l8-4.5" />
+								<path d="M12 12v9" />
+								<path d="M12 12L4 7.5" />
+							</svg>
+						</button>
+					)}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}
@@ -1531,6 +1561,14 @@ function AppShell() {
 						</>
 					))}
 			</main>
+			{sourcesOpen && (
+				<ThreadSourcesSheet
+					token={token}
+					conversationId={current ?? ""}
+					title={currentTitle}
+					onClose={() => setSourcesOpen(false)}
+				/>
+			)}
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}

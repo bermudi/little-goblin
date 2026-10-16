@@ -1,35 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import {
-	forgetMemoryDocument,
-	getMemoryDocument,
-	getMemoryStatus,
-	listMemoryDocuments,
-} from "./api.ts";
+import { getMemoryStatus, listMemoryDocuments } from "./api.ts";
 import { describe } from "./opsShared.tsx";
-import type {
-	MemoryDocDetailResponse,
-	MemoryDocListItem,
-	MemoryStatusResponse,
-} from "../../src/http/operator-wire.ts";
+import { MemoryDocDetail, MemoryDocRow, relTime, useMemoryDocSheet } from "./memoryShared.tsx";
+import type { MemoryDocListItem, MemoryStatusResponse } from "../../src/http/operator-wire.ts";
 
 const PAGE = 20;
 type MemoryFilter = { query: string; token: string | null };
-
-function relTime(iso: string | null): string {
-	if (iso === null) return "—";
-	const ts = Date.parse(iso);
-	if (Number.isNaN(ts)) return iso;
-	const diffSec = Math.floor((Date.now() - ts) / 1000);
-	if (diffSec < 60) return "now";
-	if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-	if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-	return new Date(ts).toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
-}
 
 function StatusCard({ status }: { status: MemoryStatusResponse }) {
 	return (
@@ -94,17 +70,7 @@ export function MemoryView({ token }: { token: string | null }) {
 	const [loadedFilter, setLoadedFilter] = useState<MemoryFilter | null>(null);
 	const [listLoading, setListLoading] = useState(false);
 	const [listErr, setListErr] = useState<string | null>(null);
-	const [detail, setDetail] = useState<MemoryDocDetailResponse | null>(null);
-	const [detailErr, setDetailErr] = useState<string | null>(null);
-	const [forgetting, setForgetting] = useState(false);
 	const listSeq = useRef(0);
-	// Same supersede discipline as listSeq — a slow document fetch must
-	// not reopen a sheet the operator already left for a newer open.
-	const detailSeq = useRef(0);
-	// The open sheet's document id, separate from `detail`: while the
-	// sheet's GET is still in flight detail is null, and a forget that
-	// lands in that gap must still fence the pending fetch.
-	const openDocId = useRef<string | null>(null);
 	const latestFilter = useRef<MemoryFilter>({ query: "", token });
 
 	// Live view of the memory queue — polled while the tab is open,
@@ -170,66 +136,18 @@ export function MemoryView({ token }: { token: string | null }) {
 	const canAppend =
 		!listLoading && loadedFilter?.query === q.trim() && loadedFilter.token === token;
 
-	const openDoc = (id: string) => {
-		const seq = ++detailSeq.current;
-		openDocId.current = id;
-		setDetail(null);
-		setDetailErr(null);
-		void getMemoryDocument(token, id).then(
-			(d) => {
-				if (seq !== detailSeq.current) return;
-				setDetail(d);
+	// A forget invalidates the loaded list (the row is gone) and the
+	// status card (queue + completed counts moved).
+	const sheet = useMemoryDocSheet(token, () => {
+		loadDocs(0, latestFilter.current, false);
+		void getMemoryStatus(latestFilter.current.token).then(
+			(s) => {
+				setStatus(s);
+				setStatusErr(null);
 			},
-			(err) => {
-				if (seq !== detailSeq.current) return;
-				setDetailErr(describe(err));
-			},
+			(err) => setStatusErr(describe(err)),
 		);
-	};
-
-	const closeDetail = () => {
-		++detailSeq.current;
-		openDocId.current = null;
-		setDetail(null);
-	};
-
-	// The forget protocol lives on the server (suppress → park →
-	// delete remote → redact local); the client just asks.
-	const forget = (id: string) => {
-		if (
-			!window.confirm("Forget this exchange? It will be deleted from memory and redacted locally.")
-		)
-			return;
-		setForgetting(true);
-		setDetailErr(null);
-		void forgetMemoryDocument(token, id).then(
-			() => {
-				setForgetting(false);
-				// A forget that resolves late must not dump a document the
-				// operator opened in the meantime — and must not skip
-				// invalidation just because the forgotten doc's own sheet is
-				// mid-fetch (detail reads null then). The open id is the live
-				// identity either way.
-				if (openDocId.current === id) {
-					++detailSeq.current;
-					openDocId.current = null;
-					setDetail(null);
-				}
-				loadDocs(0, latestFilter.current, false);
-				void getMemoryStatus(latestFilter.current.token).then(
-					(s) => {
-						setStatus(s);
-						setStatusErr(null);
-					},
-					(err) => setStatusErr(describe(err)),
-				);
-			},
-			(err) => {
-				setForgetting(false);
-				setDetailErr(describe(err));
-			},
-		);
-	};
+	});
 
 	return (
 		<div className="ops">
@@ -237,57 +155,24 @@ export function MemoryView({ token }: { token: string | null }) {
 			{statusErr !== null && <p className="error">{statusErr}</p>}
 			{status === null ? <p className="empty">Loading…</p> : <StatusCard status={status} />}
 
-			{detail !== null ? (
+			{sheet.detail !== null ? (
 				<>
 					<div className="ops-back">
-						<button type="button" className="ghost" onClick={closeDetail}>
+						<button type="button" className="ghost" onClick={sheet.close}>
 							‹ Retained exchanges
 						</button>
 					</div>
-					<h2 className="ops-h2">
-						Exchange <span className="mono">{detail.document.id}</span>
-					</h2>
-					<div className="card">
-						<div className="doc-meta">
-							<span>retained {relTime(detail.document.createdAt)}</span>
-							<span>updated {relTime(detail.document.updatedAt)}</span>
-							{detail.document.conversationId !== null && (
-								<span className="mono">{detail.document.conversationId}</span>
-							)}
-						</div>
-						{detail.originalText !== null && <pre className="doc-text">{detail.originalText}</pre>}
-						<button
-							type="button"
-							className="danger"
-							disabled={forgetting}
-							onClick={() => forget(detail.document.id)}
-						>
-							{forgetting ? "Forgetting…" : "Forget this exchange"}
-						</button>
-						{detailErr !== null && <p className="error">{detailErr}</p>}
-					</div>
-					<h2 className="ops-h2">Facts ({detail.factsTotal})</h2>
-					<div className="card">
-						{detail.facts.length === 0 && <p className="empty">No facts extracted.</p>}
-						{detail.facts.map((f) => (
-							<div
-								key={f.id}
-								className={f.state === "valid" || f.state === null ? "fact" : "fact stale"}
-							>
-								<div className="fact-text">{f.text}</div>
-								<div className="cap">
-									{[f.factType, f.state, f.entities]
-										.filter((x): x is string => x !== null && x !== "")
-										.join(" · ")}
-								</div>
-							</div>
-						))}
-					</div>
+					<MemoryDocDetail
+						detail={sheet.detail}
+						forgetting={sheet.forgetting}
+						detailErr={sheet.detailErr}
+						onForget={sheet.forget}
+					/>
 				</>
 			) : (
 				<>
 					<h2 className="ops-h2">Retained exchanges</h2>
-					{detailErr !== null && <p className="error">{detailErr}</p>}
+					{sheet.detailErr !== null && <p className="error">{sheet.detailErr}</p>}
 					<input
 						className="rail-search ops-search"
 						type="search"
@@ -303,13 +188,7 @@ export function MemoryView({ token }: { token: string | null }) {
 					<div className="card">
 						{items.length === 0 && <p className="empty">No retained exchanges.</p>}
 						{items.map((d) => (
-							<button key={d.id} type="button" className="doc-row" onClick={() => openDoc(d.id)}>
-								<span className="doc-id mono">{d.id}</span>
-								<span className="doc-sub">
-									{relTime(d.createdAt)} · {d.textLength} chars · {d.factCount} facts
-								</span>
-								<span className="chev">›</span>
-							</button>
+							<MemoryDocRow key={d.id} doc={d} onOpen={sheet.open} />
 						))}
 					</div>
 					{items.length < total && (

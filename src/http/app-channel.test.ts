@@ -9,6 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { LanguageModel } from "ai";
 import { textModel } from "../testkit/fake-model.ts";
 import { loadConfig, type Config, type ConfigRef } from "../config.ts";
@@ -20,6 +21,8 @@ import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { setLogFile, setLogLevel } from "../log.ts";
+import { SkillSources } from "../skill-provenance.ts";
+import type { ThreadSkillItem } from "./operator-wire.ts";
 import { fakeModel, sleep, useHome, waitUntil } from "../testkit.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
@@ -1958,6 +1961,97 @@ describe("app operator surface", () => {
 			).json()) as { document: { id: string }; originalText: string };
 			expect(detail.document.id).toBe("exchange/dm:1/2/abc");
 			expect(detail.originalText).toBe("hi");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("thread panel tails: conversation filter reaches the bank, skills/from resolves liveness", async () => {
+		const seenQ: Array<string | undefined> = [];
+		const client = {
+			listDocuments: (opts: { q?: string; limit: number; offset: number }) => {
+				seenQ.push(opts.q);
+				return Promise.resolve({ items: [], total: 0, limit: opts.limit, offset: opts.offset });
+			},
+		} as unknown as HindsightClient;
+		const { http, call, configRef, home } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { memory: stubMemory({ client }) },
+		});
+		try {
+			configRef.current = {
+				...configRef.current,
+				memory: memoryConfigSchema.parse({
+					baseUrl: "http://127.0.0.1:8888",
+					bankId: "goblin",
+				}),
+			};
+			// The conversation param is a server-side translation into the
+			// bank's id-substring filter — the trailing slash keeps app/1
+			// from matching app/12.
+			const filtered = await call("/api/app/memory/documents?conversation=app%2F1");
+			expect(filtered.status).toBe(200);
+			expect(seenQ.at(-1)).toBe("exchange/app/1/");
+			const both = await call("/api/app/memory/documents?q=x&conversation=app%2F1");
+			expect(both.status).toBe(422);
+
+			// skills/from: provenance rows joined with live disk state.
+			// Absent wiring answers 503 — the status-gate pattern.
+			const unwired = await call("/api/app/skills/from?conversation=app%2F1");
+			expect(unwired.status).toBe(503);
+
+			const db = new Database(":memory:");
+			const sources = new SkillSources(db);
+			const skillsDir = join(home, "workspace", "skills");
+			const proposedDir = join(home, "workspace", "skills-proposed");
+			mkdirSync(join(skillsDir, "herdr"), { recursive: true });
+			mkdirSync(join(proposedDir, "staged-skill"), { recursive: true });
+			sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
+			sources.record("app/1", "gone-skill", "turn", "2026-10-16T02:00:00.000Z");
+			sources.record("app/1", "staged-skill", "reviewer", "2026-10-16T03:00:00.000Z", "r2");
+			const wired = setup({
+				token: APP_TOKEN_NAME,
+				operator: {
+					skillSources: {
+						forConversation: (id: string) => sources.forConversation(id),
+						skillsDir,
+						proposedDir,
+					},
+				},
+			});
+			try {
+				const missing = await wired.call("/api/app/skills/from");
+				expect(missing.status).toBe(422);
+				const res = await wired.call("/api/app/skills/from?conversation=app%2F1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { items: ThreadSkillItem[] };
+				expect(body.items).toEqual([
+					{
+						skill: "staged-skill",
+						state: "proposed",
+						kind: "reviewer",
+						firstAt: "2026-10-16T03:00:00.000Z",
+						lastAt: "2026-10-16T03:00:00.000Z",
+					},
+					{
+						skill: "gone-skill",
+						state: "gone",
+						kind: "turn",
+						firstAt: "2026-10-16T02:00:00.000Z",
+						lastAt: "2026-10-16T02:00:00.000Z",
+					},
+					{
+						skill: "herdr",
+						state: "installed",
+						kind: "reviewer",
+						firstAt: "2026-10-16T01:00:00.000Z",
+						lastAt: "2026-10-16T01:00:00.000Z",
+					},
+				]);
+			} finally {
+				wired.http.stop();
+			}
+			db.close();
 		} finally {
 			http.stop();
 		}

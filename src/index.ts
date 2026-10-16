@@ -774,7 +774,8 @@ async function boot() {
 				notify: (conversationId, skills) =>
 					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 				recordSources: (conversationId, reviewId, skills) => {
-					for (const skill of skills) skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
+					for (const skill of skills)
+						skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
 				},
 			}),
 		);

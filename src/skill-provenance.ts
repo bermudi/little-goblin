@@ -112,7 +112,9 @@ export class SkillSources {
 					last_at: string;
 				},
 				[string]
-			>(`SELECT ${rowColumns} FROM skill_sources WHERE conversation_id = ? ORDER BY last_at DESC, skill ASC`)
+			>(
+				`SELECT ${rowColumns} FROM skill_sources WHERE conversation_id = ? ORDER BY last_at DESC, skill ASC`,
+			)
 			.all(conversationId);
 		return rows.map(rowToItem);
 	}
@@ -125,7 +127,11 @@ export class SkillSources {
 	}
 }
 
-export function skillLiveState(skillsDir: string, proposedDir: string, skill: string): SkillLiveState {
+export function skillLiveState(
+	skillsDir: string,
+	proposedDir: string,
+	skill: string,
+): SkillLiveState {
 	if (existsSync(join(skillsDir, skill))) return "installed";
 	if (existsSync(join(proposedDir, skill))) return "proposed";
 	return "gone";

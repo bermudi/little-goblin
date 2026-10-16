@@ -345,9 +345,24 @@ describe("turn journal", () => {
 	});
 
 	test("resumed_from links the fresh run row to its interrupted source", () => {
-		const store = openStore(tmpDb("goblin-tj-"));
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const journal = openTurnJournal(store.db);
+		const j1 = openTurnJournal(store.db);
+		j1.beginRun({
+			runId: "old-run",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: {},
+			toolNames: [],
+			startedAt: "2026-10-11T00:00:00.000Z",
+		});
+		store.close();
+		// The crash: the running row reclassifies interrupted at open.
+		const reopened = openStore(dbPath);
+		const journal = openTurnJournal(reopened.db);
 		journal.beginRun({
 			runId: "new-run",
 			conversationId: conv.id,
@@ -361,6 +376,131 @@ describe("turn journal", () => {
 		});
 		expect(journal.get("new-run")!.resumedFrom).toBe("old-run");
 		expect(journal.get("new-run")!.status).toBe("running");
+		expect(journal.get("old-run")!.status).toBe("resumed");
+		reopened.close();
+	});
+
+	test("a resume consumes its source atomically — creation, inheritance, and mark commit together", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const j1 = openTurnJournal(store.db);
+		j1.beginRun({
+			runId: "bad-run",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: {},
+			toolNames: [],
+			startedAt: "2026-10-11T00:00:00.000Z",
+		});
+		j1.finishRun("bad-run", "error", "failed");
+		store.close();
+		const reopened = openStore(dbPath);
+		const journal = openTurnJournal(reopened.db);
+		// A source that is not 'interrupted' (and not already 'resumed')
+		// refuses — and the refusal rolls the successor row back with it,
+		// so no half-consumed pair can survive a crash between writes.
+		expect(() =>
+			journal.beginRun({
+				runId: "half-run",
+				conversationId: conv.id,
+				epoch: 3,
+				anchorSeq: 7,
+				steerMark: 7,
+				convSnapshot: {},
+				toolNames: [],
+				startedAt: "2026-10-11T00:00:00.000Z",
+				resumedFrom: "bad-run",
+			}),
+		).toThrow(/'error' — refusing/);
+		expect(journal.get("half-run")).toBeNull();
+		expect(journal.get("bad-run")!.status).toBe("error");
+		// A gone source refuses the same way.
+		expect(() =>
+			journal.beginRun({
+				runId: "ghost-run",
+				conversationId: conv.id,
+				epoch: 3,
+				anchorSeq: 7,
+				steerMark: 7,
+				convSnapshot: {},
+				toolNames: [],
+				startedAt: "2026-10-11T00:00:00.000Z",
+				resumedFrom: "missing-run",
+			}),
+		).toThrow(/is gone/);
+		expect(journal.get("ghost-run")).toBeNull();
+		reopened.close();
+	});
+
+	test("inheritFrom carries a terminal predecessor's settled calls into the new row", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const pred = begunRun(journal, conv.id, "run-pred");
+		journal.noteToolInput(pred, "done", "probe", { q: 1 });
+		journal.noteToolDispatch(pred, "done", "probe", { q: 1 });
+		journal.noteToolResult(pred, "done", { out: "pred-ran" });
+		journal.finishRun(pred, "error", "undelivered");
+
+		const next = "run-cont";
+		journal.beginRun({
+			runId: next,
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: { model: "z.ai/glm-5", thinking: "low" },
+			toolNames: ["probe", "bash"],
+			startedAt: "2026-10-11T00:00:00.000Z",
+			inheritFrom: [pred],
+		});
+		expect(journal.callsFor(next).map((c) => c.toolCallId)).toEqual(["done"]);
+		expect(journal.replayMap(next).get(replayKey("probe", { q: 1 }))).toEqual([
+			{ out: "pred-ran" },
+		]);
+		// A predecessor that no longer exists refuses — the evidence link
+		// is part of the row's creation, not a best-effort copy.
+		expect(() =>
+			journal.beginRun({
+				runId: "run-x",
+				conversationId: conv.id,
+				epoch: 3,
+				anchorSeq: 7,
+				steerMark: 7,
+				convSnapshot: {},
+				toolNames: [],
+				startedAt: "2026-10-11T00:00:00.000Z",
+				inheritFrom: ["missing-run"],
+			}),
+		).toThrow(/is gone/);
+		expect(journal.get("run-x")).toBeNull();
+		store.close();
+	});
+
+	test("a replayed result journals with provenance and adds no replay credit", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolInput(runId, "c-exec", "probe", { q: 1 });
+		journal.noteToolDispatch(runId, "c-exec", "probe", { q: 1 });
+		journal.noteToolResult(runId, "c-exec", { out: "real" });
+		// The fence answered the model's re-ask from the record above —
+		// journaled as replayed, never as a second execution.
+		journal.noteToolResult(runId, "c-replay", { out: "real" }, { replayed: true });
+		const calls = journal.callsFor(runId);
+		expect(calls.find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "c-exec")!.replayed).toBe(false);
+		// One execution, one credit — the replay row adds nothing.
+		expect(journal.replayMap(runId).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
+		// Provenance survives inheritance into a successor row.
+		const next = begunRun(journal, conv.id, "run-next");
+		journal.inheritCalls(runId, next);
+		expect(journal.callsFor(next).find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
+		expect(journal.replayMap(next).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
 		store.close();
 	});
 

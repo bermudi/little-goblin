@@ -543,12 +543,18 @@ export class Runtime {
 				// An operator-resumed turn's recorded results answer here —
 				// the side effect already ran (or the operator asserted it
 				// did), so the call never reaches execute. The dispatch and
-				// result still journal under this run's own row.
+				// result still journal under this run's own row, flagged as
+				// replayed: proof of what the model saw, never a second
+				// replay credit for the one execution behind it.
 				const recorded = replay?.get(replayKey(name, input));
 				if (recorded !== undefined && recorded.length > 0) {
 					const value = recorded.shift();
 					if (journal !== undefined && runId !== undefined) {
-						note(() => journal.noteToolResult(runId, options.toolCallId, value));
+						note(() =>
+							journal.noteToolResult(runId, options.toolCallId, value, {
+								replayed: true,
+							}),
+						);
 					}
 					log.info("replaying recorded tool result", {
 						conversation: convId,
@@ -559,11 +565,16 @@ export class Runtime {
 				}
 				// A re-ask for a call the operator skipped gets the recorded
 				// refusal, not the side effect — 'skip' means never execute.
+				// Journaled with replay provenance for the same reason.
 				const refusal = skipped?.get(replayKey(name, input));
 				if (refusal !== undefined) {
 					const value = { error: refusal };
 					if (journal !== undefined && runId !== undefined) {
-						note(() => journal.noteToolResult(runId, options.toolCallId, value));
+						note(() =>
+							journal.noteToolResult(runId, options.toolCallId, value, {
+								replayed: true,
+							}),
+						);
 					}
 					log.info("declined tool call answered with the operator's skip", {
 						conversation: convId,
@@ -871,11 +882,36 @@ export class Runtime {
 			};
 			// The run row lands before the SDK's loop can reach a tool:
 			// after this line every dispatch is journaled under runId.
+			// Creation, evidence inheritance (an operator-resume source
+			// and any overflow-failed predecessor), and the source's
+			// consumption are one journal transaction — a crash between
+			// them must never leave a successor that re-executes recorded
+			// side effects.
 			runId = randomUUID();
-			const replay = sourceRunId === undefined ? undefined : journal?.replayMap(sourceRunId);
-			const skipped = sourceRunId === undefined ? undefined : journal?.skippedMap(sourceRunId);
+			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts);
+			journal?.beginRun({
+				runId,
+				conversationId: convId,
+				epoch,
+				anchorSeq,
+				steerMark: snapshot.steerMarkSeed,
+				convSnapshot: { model: conv.model, thinking: conv.thinking },
+				toolNames: Object.keys(rawTools),
+				startedAt: new Date(turnStartMs).toISOString(),
+				resumedFrom: sourceRunId,
+				inheritFrom:
+					recovery?.predecessorRun === undefined
+						? undefined
+						: [recovery.predecessorRun],
+			});
+			// The fence's evidence reads the fresh row after inheritance:
+			// it already carries the source's decisions and every
+			// predecessor attempt's recorded results, so a replay answers
+			// from this run's own durable history.
+			const replay = journal === undefined ? undefined : journal.replayMap(runId);
+			const skipped = journal === undefined ? undefined : journal.skippedMap(runId);
 			const tools = this.fenceTools(
-				this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts),
+				rawTools,
 				convId,
 				epoch,
 				runId,
@@ -884,34 +920,6 @@ export class Runtime {
 				journalFault,
 				() => controller.abort(),
 			);
-			journal?.beginRun({
-				runId,
-				conversationId: convId,
-				epoch,
-				anchorSeq,
-				steerMark: snapshot.steerMarkSeed,
-				convSnapshot: { model: conv.model, thinking: conv.thinking },
-				toolNames: Object.keys(tools),
-				startedAt: new Date(turnStartMs).toISOString(),
-				resumedFrom: sourceRunId,
-			});
-			// The source run leaves 'interrupted' only after its successor
-			// carries its settled call history — a crash between the writes
-			// reopens the fresh row as 'interrupted' with the inherited
-			// results and decisions intact, rather than consuming the
-			// resume into an empty call history that re-executes them.
-			if (journal !== undefined && sourceRunId !== undefined) {
-				const src = journal.get(sourceRunId);
-				if (src === null) throw new Error(`resume source run ${sourceRunId} is gone`);
-				journal.inheritCalls(sourceRunId, runId);
-				if (src.status === "interrupted") {
-					journal.markRun(sourceRunId, "resumed");
-				} else if (src.status !== "resumed") {
-					throw new Error(
-						`resume source run ${sourceRunId} is '${src.status}' — refusing to continue it`,
-					);
-				}
-			}
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
@@ -1074,7 +1082,8 @@ export class Runtime {
 			} else if (err instanceof ContextOverflowError) {
 				// Recover once: compact the failed attempt and resume with its partial
 				// so completed tools are not repeated. A second overflow follows the
-				// terminal error path.
+				// terminal error path. The failed attempt's run id rides the
+				// recovery: the continuation's row inherits its settled calls.
 				const outcome = await recoverFromOverflow({
 					convId,
 					epoch,
@@ -1085,6 +1094,7 @@ export class Runtime {
 					live,
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
+					failedRunId: runId ?? undefined,
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),
@@ -1094,7 +1104,8 @@ export class Runtime {
 				if (outcome.kind === "resume") {
 					// This attempt's row is done — the stream failed and its
 					// output was withheld for recovery; the resume opens a
-					// fresh row for its own calls.
+					// fresh row that inherits this row's settled calls, so a
+					// crash of the continuation still resumes with them.
 					stampRun("error", "undelivered");
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}

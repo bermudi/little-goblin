@@ -52,6 +52,12 @@ export interface TurnRecovery {
 	// links to it (resumed_from) and the fence replays its recorded
 	// results.
 	resumedFrom?: string | undefined;
+	// The overflowed attempt's own run row — terminal (error,
+	// undelivered) by the time the continuation begins. Every later
+	// attempt inherits its settled calls, so a crash of the continuation
+	// still resumes with the side effects the failed attempt recorded;
+	// without the link that evidence dies with the terminal row.
+	predecessorRun?: string | undefined;
 	// The overflow rail's one-recovery-per-admission budget: set on a
 	// recovery the rail produced, so an operator-resume seed still gets
 	// its own compact-and-resume but a second overflow is terminal.
@@ -147,6 +153,9 @@ export interface OverflowDeps<M> {
 	// An operator-resume admission's source run — forwarded so the
 	// continuation's run rows keep the link and the replay map.
 	resumedFrom?: string | undefined;
+	// The overflowed attempt's run row — packaged onto the recovery so
+	// the continuation's row inherits its settled calls.
+	failedRunId?: string | undefined;
 	// The turn's membership — rides the decision so the resume claims
 	// it explicitly, never by closure.
 	members: M[];
@@ -218,6 +227,7 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			live: deps.live,
 			filterRetryUsed: deps.filterRetryUsed,
 			resumedFrom: deps.resumedFrom,
+			predecessorRun: deps.failedRunId,
 			overflowed: true,
 		},
 		members: deps.members,

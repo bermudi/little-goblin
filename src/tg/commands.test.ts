@@ -1087,6 +1087,7 @@ describe("recovery commands", () => {
 		args: { q: 1 },
 		argsHash: "h",
 		state: "dispatched",
+		replayed: false,
 		result: null,
 		error: null,
 		beganMs: 1,

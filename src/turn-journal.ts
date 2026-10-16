@@ -98,6 +98,11 @@ export interface TurnToolCall {
 	args: unknown;
 	argsHash: string;
 	state: ToolCallState;
+	// The fence answered this row from recorded evidence — the model
+	// saw the output, but no execution produced it. Replay credits
+	// (replayMap) skip such rows: one execution keeps exactly one
+	// credit across any number of resumes.
+	replayed: boolean;
 	// Bounded JSON text (~8000 chars) — possibly cut mid-document, so
 	// kept as text rather than promised-parseable JSON.
 	result: string | null;
@@ -124,6 +129,11 @@ export interface TurnJournal {
 		// Operator-resume admissions link their fresh run row to the
 		// interrupted source run they continue.
 		resumedFrom?: string | undefined;
+		// Terminal predecessor attempts of the same logical turn (an
+		// overflow stamped them error/undelivered) whose settled call
+		// evidence the new row carries. Everything — row insert,
+		// inheritance, source consumption — commits as one transaction.
+		inheritFrom?: string[] | undefined;
 	}): void;
 	// The stream saw the model's call. Upsert: a retried step
 	// re-emitting the same call id can't duplicate or rewrite the row,
@@ -138,7 +148,14 @@ export interface TurnJournal {
 	noteToolDispatch(runId: string, callId: string, name: string, args: unknown): void;
 	// The result, recorded before the loop continues. Upsert guards on
 	// unsettled states so a late duplicate can't rewrite a settled call.
-	noteToolResult(runId: string, callId: string, result: unknown): void;
+	// `replayed: true` marks a fence-answered call — proof of what the
+	// model saw, never a fresh execution credit.
+	noteToolResult(
+		runId: string,
+		callId: string,
+		result: unknown,
+		opts?: { replayed?: boolean },
+	): void;
 	noteToolError(runId: string, callId: string, error: unknown): void;
 	// Patch the nullable progress columns — only provided keys move.
 	checkpoint(
@@ -163,8 +180,10 @@ export interface TurnJournal {
 	// will. Terminal; only 'interrupted' rows accept them.
 	markRun(runId: string, status: "resumed" | "abandoned"): void;
 	// name:argsHash → recorded outputs (FIFO per key) for calls a resume
-	// may replay — completed and resolved-done only. Rebuilt per call;
-	// the fence consumes one entry per matching dispatch.
+	// may replay — completed and resolved-done only, never rows the
+	// fence itself replayed (those carry no execution behind them).
+	// Rebuilt per call; the fence consumes one entry per matching
+	// dispatch.
 	replayMap(runId: string): Map<string, unknown[]>;
 	// name:argsHash → refusal text for resolved-skip calls: the
 	// operator declined the side effect, so a resumed turn answers a
@@ -230,6 +249,7 @@ const callRowSchema = z.object({
 		"resolved-retry",
 		"resolved-skip",
 	]),
+	replayed: z.number(),
 	result: z.string().nullable(),
 	error: z.string().nullable(),
 	began_ms: z.number().nullable(),
@@ -340,6 +360,7 @@ function decodeCall(raw: unknown): TurnToolCall {
 		args: JSON.parse(r.args) as unknown,
 		argsHash: r.args_hash,
 		state: r.state,
+		replayed: r.replayed !== 0,
 		result: r.result,
 		error: r.error,
 		beganMs: r.began_ms,
@@ -385,6 +406,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 		args TEXT NOT NULL,
 		args_hash TEXT NOT NULL,
 		state TEXT NOT NULL,
+		replayed INTEGER NOT NULL DEFAULT 0,
 		result TEXT,
 		error TEXT,
 		began_ms INTEGER,
@@ -409,6 +431,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 	}
 	if (!callCols.has("resolved_ms")) {
 		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN resolved_ms INTEGER");
+	}
+	if (!callCols.has("replayed")) {
+		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN replayed INTEGER NOT NULL DEFAULT 0");
 	}
 	// A graceful shutdown fences live rows before it dies, so 'running'
 	// at open means the process was killed mid-turn — SIGKILL, OOM, host
@@ -460,12 +485,14 @@ export function openTurnJournal(db: Database): TurnJournal {
 	// The blind-insert half (a result whose planned row never landed —
 	// the stream was cut before the chunk) marks the unknowns — args as
 	// JSON null so decode still parses; the conflict half only moves
-	// unsettled rows.
+	// unsettled rows, carrying the replay provenance with it. A settled
+	// row never flips: the conflict guard excludes every settled state.
 	const qResult = db.query(
-		`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, result, settled_ms)
-		VALUES (?, ?, '', 'null', '', 'completed', ?, ?)
+		`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, replayed, result, settled_ms)
+		VALUES (?, ?, '', 'null', '', 'completed', ?, ?, ?)
 		ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
-			state = 'completed', result = excluded.result, settled_ms = excluded.settled_ms
+			state = 'completed', replayed = excluded.replayed,
+			result = excluded.result, settled_ms = excluded.settled_ms
 		WHERE turn_tool_calls.state IN ('planned', 'dispatched')`,
 	);
 	const qError = db.query(
@@ -500,21 +527,65 @@ export function openTurnJournal(db: Database): TurnJournal {
 		`${RUN_SELECT} WHERE r.status = 'interrupted' ORDER BY r.started_ms, r.run_id`,
 	);
 	const qCalls = db.query("SELECT * FROM turn_tool_calls WHERE run_id = ? ORDER BY rowid");
+	const qInherit = db.query(
+		`INSERT OR IGNORE INTO turn_tool_calls
+			(run_id, tool_call_id, name, args, args_hash, state, replayed, result, error,
+			 began_ms, settled_ms, resolution_note, resolved_ms)
+		 SELECT ?, tool_call_id, name, args, args_hash, state, replayed, result, error,
+			began_ms, settled_ms, resolution_note, resolved_ms
+		 FROM turn_tool_calls WHERE run_id = ? AND state != 'dispatched'`,
+	);
 
 	return {
 		beginRun(input) {
-			qBegin.run(
-				input.runId,
-				input.conversationId,
-				input.epoch,
-				input.anchorSeq,
-				input.steerMark,
-				JSON.stringify(input.convSnapshot),
-				JSON.stringify(input.toolNames),
-				Date.parse(input.startedAt),
-				input.startedAt,
-				input.resumedFrom ?? null,
-			);
+			const insert = (): void => {
+				qBegin.run(
+					input.runId,
+					input.conversationId,
+					input.epoch,
+					input.anchorSeq,
+					input.steerMark,
+					JSON.stringify(input.convSnapshot),
+					JSON.stringify(input.toolNames),
+					Date.parse(input.startedAt),
+					input.startedAt,
+					input.resumedFrom ?? null,
+				);
+			};
+			if (input.resumedFrom === undefined && (input.inheritFrom?.length ?? 0) === 0) {
+				insert();
+				return;
+			}
+			// One transaction: the successor row, the evidence it
+			// carries, and the source's consumption commit together. A
+			// crash between separate writes could reopen the successor
+			// 'interrupted' with an empty call history — resuming it
+			// would re-execute side effects the source already recorded.
+			let resumedMarked = false;
+			db.transaction(() => {
+				insert();
+				for (const pred of input.inheritFrom ?? []) {
+					if (qRunStatus.get(pred) === null) {
+						throw new Error(`inherit predecessor run ${pred} is gone`);
+					}
+					qInherit.run(input.runId, pred);
+				}
+				if (input.resumedFrom === undefined) return;
+				const src = qRunStatus.get(input.resumedFrom);
+				if (src === null) throw new Error(`resume source run ${input.resumedFrom} is gone`);
+				qInherit.run(input.runId, input.resumedFrom);
+				if (src.status === "interrupted") {
+					qMark.run("resumed", Date.now(), input.resumedFrom);
+					resumedMarked = true;
+				} else if (src.status !== "resumed") {
+					throw new Error(
+						`resume source run ${input.resumedFrom} is '${src.status}' — refusing to continue it`,
+					);
+				}
+			})();
+			if (resumedMarked) {
+				log.info("interrupted run marked", { run: input.resumedFrom, status: "resumed" });
+			}
 		},
 		noteToolInput(runId, callId, name, args) {
 			const canonical = stableStringify(args);
@@ -524,8 +595,14 @@ export function openTurnJournal(db: Database): TurnJournal {
 			const canonical = stableStringify(args);
 			qDispatch.run(runId, callId, name, canonical, sha256hex(canonical), Date.now());
 		},
-		noteToolResult(runId, callId, result) {
-			qResult.run(runId, callId, boundedJson(result, RESULT_BUDGET), Date.now());
+		noteToolResult(runId, callId, result, opts) {
+			qResult.run(
+				runId,
+				callId,
+				opts?.replayed === true ? 1 : 0,
+				boundedJson(result, RESULT_BUDGET),
+				Date.now(),
+			);
 		},
 		noteToolError(runId, callId, error) {
 			qError.run(runId, callId, boundedError(error, ERROR_BUDGET), Date.now());
@@ -588,6 +665,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 			const map = new Map<string, unknown[]>();
 			for (const c of qCalls.all(runId).map(decodeCall)) {
 				if (c.name === "") continue; // marker rows carry no call identity
+				if (c.replayed) continue; // a fence answer, not an execution
 				if (c.state !== "completed" && c.state !== "resolved-done") continue;
 				const queue = map.get(`${c.name}:${c.argsHash}`);
 				const output = recordedOutput(c);
@@ -609,14 +687,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 			return map;
 		},
 		inheritCalls(sourceRunId, intoRunId) {
-			db.query(
-				`INSERT OR IGNORE INTO turn_tool_calls
-					(run_id, tool_call_id, name, args, args_hash, state, result, error,
-					 began_ms, settled_ms, resolution_note, resolved_ms)
-				 SELECT ?, tool_call_id, name, args, args_hash, state, result, error,
-					 began_ms, settled_ms, resolution_note, resolved_ms
-				 FROM turn_tool_calls WHERE run_id = ? AND state != 'dispatched'`,
-			).run(intoRunId, sourceRunId);
+			qInherit.run(intoRunId, sourceRunId);
 		},
 		interrupted() {
 			return qInterrupted.all().map(decodeRun);

@@ -12,9 +12,14 @@
 //                      the call sits 'dispatched' mid-side-effect.
 //   complete-then-stall: probe returns, the second model call never
 //                      answers — the call sits 'completed' mid-turn.
+//   overflow-stall:    probe returns, the second model call overflows
+//                      the context (compaction wired, exchanges
+//                      pre-seeded), and the resumed attempt's first
+//                      model call never answers — the kill lands on the
+//                      continuation attempt, not the overflowed one.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { tool, type LanguageModel } from "ai";
 import { z } from "zod";
 import { openStore } from "../conversation.ts";
@@ -63,6 +68,16 @@ const parts = (list: LanguageModelV4StreamPart[]) =>
 		},
 	});
 
+// Same, but the step ends — the overflow mode's leg has to complete so
+// the next model call (the overflow) happens.
+const closedParts = (list: LanguageModelV4StreamPart[]) =>
+	new ReadableStream<LanguageModelV4StreamPart>({
+		start(controller) {
+			for (const p of list) controller.enqueue(p);
+			controller.close();
+		},
+	});
+
 let streamCalls = 0;
 const model = {
 	specificationVersion: "v4",
@@ -74,6 +89,22 @@ const model = {
 	},
 	doStream() {
 		streamCalls += 1;
+		if (MODE === "overflow-stall") {
+			// 1: probe runs (marker + journaled result); 2: the provider
+			// rejects for context size (compaction + resume); 3: the
+			// continuation's first call never answers — the kill point.
+			if (streamCalls === 1) return { stream: closedParts([streamStart, callPart, finishPart]) };
+			if (streamCalls === 2) {
+				throw new APICallError({
+					message:
+						"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+					url: "https://api.openai.com/v1/chat/completions",
+					requestBodyValues: {},
+					statusCode: 400,
+				});
+			}
+			return { stream: parts([]) };
+		}
 		if (streamCalls > 1) return { stream: parts([]) }; // second step never answers
 		if (MODE === "plan-only") {
 			return { stream: parts([streamStart, providerCallPart, finishPart]) };
@@ -100,11 +131,37 @@ mkdirSync(workspace, { recursive: true });
 const store = openStore(DB_PATH);
 const turnJournal = openTurnJournal(store.db);
 const conv = store.resolve({ kind: "dm", chatId: 1 }, workspace);
+if (MODE === "overflow-stall") {
+	// Completed exchanges for the overflow compaction to fold.
+	const big = "x".repeat(600);
+	for (let i = 0; i < 3; i++) {
+		store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			conv.id,
+			[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(conv.id) },
+		);
+	}
+}
 const runtime = new Runtime({
 	store,
 	turnJournal,
-	buildStep: () => ({ model, system: "crash test" }),
+	buildStep: () => ({
+		model,
+		system: "crash test",
+		// A small window makes the pre-seeded exchanges compactable —
+		// the overflow recovery needs a span to fold.
+		...(MODE === "overflow-stall" ? { contextWindow: 1000 } : {}),
+	}),
 	makeTools: () => tools,
+	...(MODE === "overflow-stall"
+		? {
+				compaction: {
+					modelRef: () => "m",
+					summarize: async () => "the folded era",
+				},
+			}
+		: {}),
 });
 const sink: TurnSink = {
 	onTextDelta() {},

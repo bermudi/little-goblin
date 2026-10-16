@@ -8,14 +8,38 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { tool } from "ai";
+import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
+import { Runtime } from "./runtime.ts";
+import { scriptedModel, textParts } from "./testkit/fake-model.ts";
+import { RecordingSink, waitUntil } from "./testkit.ts";
 import { openTurnJournal } from "./turn-journal.ts";
+import { makeResumeOps } from "./turn-resume.ts";
 
 setLogFile(null);
+
+// The resumed model's re-ask of the call the continuation inherited.
+const streamStartPart: LanguageModelV4StreamPart = { type: "stream-start", warnings: [] };
+const reaskCallPart: LanguageModelV4StreamPart = {
+	type: "tool-call",
+	toolCallId: "call-reask",
+	toolName: "probe",
+	input: "{}",
+};
+const toolCallsFinish: LanguageModelV4StreamPart = {
+	type: "finish",
+	finishReason: { unified: "tool-calls", raw: undefined },
+	usage: {
+		inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+		outputTokens: { total: 1, text: undefined, reasoning: undefined },
+	},
+};
 
 const dir = mkdtempSync(join(tmpdir(), "goblin-turn-crash-"));
 const children: Subprocess[] = [];
@@ -45,6 +69,17 @@ function probeCallState(db: Database): string[] {
 			.map((r) => r.state);
 	} catch {
 		return []; // table not created yet — the child is still booting
+	}
+}
+
+function probeRunStatuses(db: Database): string[] {
+	try {
+		return db
+			.query<{ status: string }, []>("SELECT status FROM turn_runs")
+			.all()
+			.map((r) => r.status);
+	} catch {
+		return [];
 	}
 }
 
@@ -138,6 +173,90 @@ describe("turn journal — a real killed process", () => {
 			expect(calls[0]!.result).toBe('{"ok":true}');
 			expect(calls[0]!.beganMs).not.toBeNull();
 			expect(calls[0]!.settledMs).not.toBeNull();
+		} finally {
+			store.close();
+		}
+	}, 60_000);
+
+	test("a killed overflow continuation carries the failed attempt's calls — resume replays, never re-executes", async () => {
+		const { child, dbPath, marker } = spawn("overflow-stall", "overflow");
+		// The overflowed attempt stamps error/undelivered and the
+		// continuation opens its own row before stalling — wait for both.
+		const probe = new Database(dbPath);
+		try {
+			await until(
+				() => {
+					const statuses = probeRunStatuses(probe);
+					return statuses.includes("error") && statuses.includes("running");
+				},
+				"overflowed attempt terminal, continuation running",
+			);
+		} finally {
+			probe.close();
+		}
+		const { store, journal } = await killAndReopen(child, dbPath);
+		try {
+			const runs = journal.interrupted();
+			expect(runs).toHaveLength(1);
+			const continuation = runs[0]!;
+			// The whole point: the continuation's own row already carries
+			// the overflowed attempt's settled evidence.
+			const calls = journal.callsFor(continuation.runId);
+			expect(calls.map((c) => c.toolCallId)).toEqual(["call-1"]);
+			expect(calls[0]!.state).toBe("completed");
+			expect(calls[0]!.result).toBe('{"ok":true}');
+
+			// Resume the continuation; the model re-asks the same call —
+			// the fence must answer from the record, not dispatch probe.
+			const executed: string[] = [];
+			const makeTools = () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executed.push("re-executed");
+						return { ok: true };
+					},
+				}),
+			});
+			const edge = scriptedModel([
+				[streamStartPart, reaskCallPart, toolCallsFinish],
+				textParts("the resumed answer"),
+			]);
+			const runtime = new Runtime({
+				store,
+				turnJournal: journal,
+				buildStep: () => ({ model: edge.model, system: "crash test" }),
+				makeTools,
+			});
+			const sink = new RecordingSink();
+			const ops = makeResumeOps({
+				store,
+				journal,
+				runtime,
+				captureConversation: (c) => c,
+				makeTools,
+				sinkFor: () => sink,
+				sinkHooks: () => ({ voice: false, recording: false, file: false }),
+			});
+			const conv = store.resolve({ kind: "dm", chatId: 1 }, join(dirname(dbPath), "ws"));
+			const outcome = ops.resume(conv.id, continuation.runId);
+			expect(outcome.kind).toBe("resumed");
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), "resumed lane drains");
+			await runtime.shutdown();
+			expect(executed).toEqual([]); // replayed, never re-executed
+			// The re-ask journaled on the successor with replay provenance
+			// — one execution, one replay credit, however many resumes.
+			const rows = store.db
+				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
+				.all()
+				.map((r) => r.run_id);
+			const successor = rows.find((r) => r !== continuation.runId)!;
+			const successorCalls = journal.callsFor(successor);
+			const reask = successorCalls.find((c) => c.toolCallId === "call-reask")!;
+			expect(reask.state).toBe("completed");
+			expect(reask.replayed).toBe(true);
+			expect(journal.get(continuation.runId)!.status).toBe("resumed");
 		} finally {
 			store.close();
 		}

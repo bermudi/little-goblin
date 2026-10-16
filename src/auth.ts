@@ -16,6 +16,7 @@ import {
 	fsyncSync,
 	openSync,
 	readFileSync,
+	readSync,
 	statSync,
 	writeSync,
 } from "node:fs";
@@ -147,19 +148,25 @@ export function appendAuthRecord(file: string, name: string, value: string): voi
 	let fd = -1;
 	try {
 		try {
-			fd = openSync(file, "wx", 0o600);
+			fd = openSync(file, "wx+", 0o600);
 			fchmodSync(fd, 0o600);
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-			fd = openSync(file, "a");
+			fd = openSync(file, "a+");
 		}
-		const mode = fstatSync(fd).mode & 0o777;
+		const { mode: fileMode, size } = fstatSync(fd);
+		const mode = fileMode & 0o777;
 		if ((mode & 0o077) !== 0) {
 			throw new Error(
 				`${file}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
 			);
 		}
-		const buf = Buffer.from(line, "utf8");
+		// A valid final JSONL record need not have a newline yet.
+		const last = Buffer.alloc(1);
+		if (size > 0 && readSync(fd, last, 0, 1, size - 1) !== 1) {
+			throw new Error(`${file}: could not read final byte before appending`);
+		}
+		const buf = Buffer.from(`${size > 0 && last[0] !== 0x0a ? "\n" : ""}${line}`, "utf8");
 		let off = 0;
 		while (off < buf.length) off += writeSync(fd, buf, off);
 		fsyncSync(fd);

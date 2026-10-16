@@ -73,6 +73,7 @@ const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const OPERATOR_TAILS: Record<string, string> = {
 	"/api/settings": "config",
 	"/api/thinking-levels": "thinking-levels",
+	"/api/secrets": "secrets",
 	"/api/memory/status": "memory/status",
 	"/api/memory/documents": "memory/documents",
 	"/api/programs": "programs",

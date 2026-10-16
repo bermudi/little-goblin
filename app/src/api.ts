@@ -42,6 +42,7 @@ import type {
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
+	SecretStoreResponse,
 	SkillFileResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
@@ -470,6 +471,19 @@ export function saveOperatorConfig(
 	return requestMeta(token, "/api/app/settings", {
 		method: "POST",
 		headers: { "content-type": "application/json", "if-match": ifMatch },
+		body: JSON.stringify(body),
+	});
+}
+
+/** POST /api/app/secrets — store a key as an auth.jsonl record. The
+ *  record resolves on the running process immediately (no restart). */
+export function storeSecret(
+	token: string | null,
+	body: { name: string; value: string },
+): Promise<SecretStoreResponse> {
+	return request(token, "/api/app/secrets", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
 }

@@ -98,6 +98,14 @@ export interface ThinkingLevelsResponse {
 	levels: string[];
 }
 
+/** POST secrets — a literal auth.jsonl record written over the wire.
+ *  `replaced` marks a rotation of an existing literal record. */
+export interface SecretStoreResponse {
+	ok: true;
+	name: string;
+	replaced: boolean;
+}
+
 export type MemoryState = "disabled" | "healthy" | "degraded" | "pending";
 
 export interface MemoryBlockedItem {

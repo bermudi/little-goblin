@@ -1,7 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse } from "../../src/http/operator-wire.ts";
-import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
+import {
+	ApiError,
+	getOperatorConfig,
+	getThinkingLevels,
+	saveOperatorConfig,
+	storeSecret,
+} from "./api.ts";
 import { saveFailure, shouldAutosave } from "./settingsSave.ts";
 import {
 	bodyFromDraft,
@@ -276,6 +282,97 @@ function ChipsEditor({
 	);
 }
 
+// The "+ key" affordance every secret-name field carries: a pasted key
+// lands in auth.jsonl under the field's effective name (the typed name,
+// else the kind's default record) and resolves on the running process —
+// no shell, no restart. Command records stay hand-managed; the server
+// refuses those names and the error lands here.
+function SecretEntry({
+	token,
+	name,
+	onStored,
+}: {
+	token: string | null;
+	/** The record name this store lands under — blank hides the affordance. */
+	name: string;
+	onStored: (name: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [value, setValue] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
+	const record = name.trim();
+	if (record === "") return null;
+	const submit = async () => {
+		setBusy(true);
+		setErr(null);
+		try {
+			const res = await storeSecret(token, { name: record, value });
+			setValue("");
+			setOpen(false);
+			onStored(res.name);
+		} catch (e) {
+			setErr(
+				e instanceof ApiError ? e.message : "Couldn't reach goblin — check the tailnet.",
+			);
+		} finally {
+			setBusy(false);
+		}
+	};
+	if (!open) {
+		return (
+			<button type="button" className="keylink" onClick={() => setOpen(true)}>
+				+ store a key
+			</button>
+		);
+	}
+	return (
+		<div className="keyentry">
+			<div className="addrow">
+				<input
+					className="mono"
+					type="password"
+					value={value}
+					onChange={(e) => setValue(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							void submit();
+						}
+					}}
+					placeholder={`the key for "${record}"`}
+					autoComplete="off"
+					spellCheck={false}
+					autoCapitalize="off"
+					aria-label={`key for ${record}`}
+				/>
+				<button
+					className="addbtn"
+					type="button"
+					disabled={busy || value.trim() === ""}
+					onClick={() => void submit()}
+				>
+					Store
+				</button>
+				<button
+					className="addbtn"
+					type="button"
+					onClick={() => {
+						setOpen(false);
+						setErr(null);
+					}}
+				>
+					Cancel
+				</button>
+			</div>
+			<div className="cap">
+				Writes to auth.jsonl as "{record}" — resolvable right away, no restart.
+			</div>
+			{err !== null && <div className="cap err-inline">{err}</div>}
+		</div>
+	);
+}
+
 // The model picker: favorites, the current ref, and a custom
 // provider/model-id pair — the mini app's sheet, verbatim semantics.
 function ModelSheet({
@@ -377,6 +474,8 @@ function ChainEditor({
 	meta,
 	defaults,
 	authNames,
+	token,
+	onSecretStored,
 	onChange,
 }: {
 	entries: ChainEntry[];
@@ -386,6 +485,8 @@ function ChainEditor({
 	 *  one source with the server schema. */
 	defaults: AuthDefaults;
 	authNames: string[];
+	token: string | null;
+	onSecretStored: (name: string) => void;
 	onChange: (next: ChainEntry[]) => void;
 }) {
 	const move = (i: number, d: number) => {
@@ -485,6 +586,14 @@ function ChainEditor({
 									<div className="cap">{m.note}</div>
 								)}
 								{hint !== undefined && <div className="cap">{hint}</div>}
+								<SecretEntry
+									token={token}
+									name={effective}
+									onStored={(n) => {
+										onSecretStored(n);
+										onChange(entries.map((x, j) => (j === i ? { ...x, auth: n } : x)));
+									}}
+								/>
 							</>
 						)}
 					</div>
@@ -511,6 +620,8 @@ function ProviderCard({
 	referencedBy,
 	authDefaults,
 	authNames,
+	token,
+	onSecretStored,
 	onPatch,
 	onRename,
 	onRemove,
@@ -521,6 +632,8 @@ function ProviderCard({
 	referencedBy: string[];
 	authDefaults: AuthDefaults;
 	authNames: string[];
+	token: string | null;
+	onSecretStored: (name: string) => void;
 	onPatch: (patch: Partial<ProvDraft>) => void;
 	onRename: (v: string) => string | null;
 	onRemove: () => void;
@@ -640,6 +753,16 @@ function ProviderCard({
 				/>
 			</div>
 			{authMissing !== undefined && <div className="cap">{authMissing}</div>}
+			{!codex && (
+				<SecretEntry
+					token={token}
+					name={prov.auth.trim() || authFallback}
+					onStored={(n) => {
+						onSecretStored(n);
+						onPatch({ auth: n });
+					}}
+				/>
+			)}
 		</div>
 	);
 }
@@ -670,6 +793,17 @@ export function SettingsView({
 		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
+	// A stored key's record joins the picker list so the "not in
+	// auth.jsonl" hint clears without a reload; apply() points the
+	// owning field's name at it.
+	const rememberAuthName = (name: string) =>
+		setAuthNames((n) => (n.includes(name) ? n : [...n, name].sort()));
+	const keyStored =
+		(apply: (name: string) => void) =>
+		(name: string) => {
+			rememberAuthName(name);
+			apply(name);
+		};
 	const [etag, setEtag] = useState("");
 	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
 	const [provs, setProvs] = useState<ProvDraft[]>([]);
@@ -1308,6 +1442,11 @@ export function SettingsView({
 											mono
 											list={AUTH_DL}
 										/>
+										<SecretEntry
+											token={token}
+											name={draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")}
+											onStored={keyStored((n) => patchTts({ auth: n }))}
+										/>
 									</>
 								)}
 								<Field
@@ -1452,6 +1591,14 @@ export function SettingsView({
 											mono
 											list={AUTH_DL}
 										/>
+										<SecretEntry
+											token={token}
+											name={
+												draft.transcription.auth.trim() ||
+												kinds.trDefaults[draft.transcription.kind].auth
+											}
+											onStored={keyStored((n) => patchTranscription({ auth: n }))}
+										/>
 									</>
 								)}
 								{draft.transcription.kind === "mimo" ? (
@@ -1509,6 +1656,8 @@ export function SettingsView({
 								meta={SEARCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
+								token={token}
+								onSecretStored={rememberAuthName}
 								onChange={(search) => patchDraft({ search })}
 							/>
 							<div className="cap ops-cap">
@@ -1544,6 +1693,8 @@ export function SettingsView({
 								meta={FETCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
+								token={token}
+								onSecretStored={rememberAuthName}
 								onChange={(fetch) => patchDraft({ fetch })}
 							/>
 							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
@@ -1625,6 +1776,16 @@ export function SettingsView({
 									mono
 									list={AUTH_DL}
 								/>
+								<SecretEntry
+									token={token}
+									name={draft.memory.auth}
+									onStored={keyStored((n) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, auth: n },
+										}))
+									)}
+								/>
 								<Row label="Recall budget" col>
 									<Seg
 										options={["low", "mid", "high"]}
@@ -1692,6 +1853,8 @@ export function SettingsView({
 								referencedBy={p.name !== "" ? providerRefs(p.name) : []}
 								authDefaults={kinds.authDefaults}
 								authNames={authNames}
+								token={token}
+								onSecretStored={rememberAuthName}
 								onPatch={(patch) => patchProv(p.id, patch)}
 								onRename={(v) => renameProvider(p.id, v)}
 								onRemove={() => removeProvider(p)}

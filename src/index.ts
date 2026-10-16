@@ -21,7 +21,7 @@ import { withScript } from "./agent/tools/script.ts";
 import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { loadAuth } from "./auth.ts";
+import { appendAuthRecord, loadAuth } from "./auth.ts";
 import {
 	type Config,
 	type ConfigRef,
@@ -1000,6 +1000,17 @@ async function boot() {
 		delegations,
 		service: { version: pkg.version, startedAt, restartHints },
 		authNames: () => auth.names(),
+		// Settings' "+ key" affordance — the record appends to auth.jsonl
+		// (durable, 0600) then lands in the live store, so a pasted key
+		// resolves without a restart.
+		secrets: {
+			has: (name: string) => auth.has(name),
+			isCommand: (name: string) => auth.isCommand(name),
+			store: (name: string, value: string) => {
+				appendAuthRecord(paths.auth(), name, value);
+				auth.put(name, value);
+			},
+		},
 		skillSources: {
 			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
 			skillsDir: paths.skills(),

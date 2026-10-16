@@ -98,6 +98,7 @@ const NO_STORE = { "cache-control": "no-store" };
 const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/settings": "config",
 	"/api/app/thinking-levels": "thinking-levels",
+	"/api/app/secrets": "secrets",
 	"/api/app/programs": "programs",
 	"/api/app/delegations": "delegations",
 	"/api/app/status": "status",

@@ -69,6 +69,7 @@ import type {
 	OperatorProgramItem,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
+	SecretStoreResponse,
 	ThreadSkillItem,
 	ThreadSkillsResponse,
 } from "./operator-wire.ts";
@@ -129,6 +130,14 @@ export interface OperatorDeps {
 	// edits need the approved restart). Absent = the pickers offer
 	// nothing; a name typed against an empty list still saves.
 	authNames?: () => string[];
+	// auth.jsonl writes for the secrets tail — store() appends the
+	// record on disk then updates the live store, so a pasted key
+	// resolves on this boot. Absent = the tail 503s.
+	secrets?: {
+		has(name: string): boolean;
+		isCommand(name: string): boolean;
+		store(name: string, value: string): void;
+	};
 	// Service identity for /status — the composition root owns boot
 	// time and knows which fields are boot-pinned.
 	service?: {
@@ -328,6 +337,17 @@ async function saveConfig(
 		return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
 	}
 }
+
+// The secrets tail takes name + literal value only: a `!`-led value
+// would resolve as a shell command at use — this surface must never
+// mint command records (same wall as the pass-cli poison rule), they
+// stay hand-edited. The value never logs; errors name the record only.
+const secretPostBody = z
+	.object({
+		name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+		value: z.string().trim().min(1).max(4096),
+	})
+	.strict();
 
 // ---------- memory gates ----------
 
@@ -529,10 +549,11 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 // ---------- the router ----------
 
 // tail is the operator route relative to the door's mount point:
-// "config", "thinking-levels", "memory/status", "memory/documents",
-// "memory/documents/<raw id>", "programs", "delegations", "status",
-// and the state viewer (ruling 2026-10-11): "skills", "skills/from",
-// "skills/file", "attachments", "attachments/file", "identity", "log".
+// "config", "thinking-levels", "secrets", "memory/status",
+// "memory/documents", "memory/documents/<raw id>", "programs",
+// "delegations", "status", and the state viewer (ruling 2026-10-11):
+// "skills", "skills/from", "skills/file", "attachments",
+// "attachments/file", "identity", "log".
 // Returns null when the tail matches nothing — the caller 404s.
 export async function handleOperatorRoute(
 	deps: OperatorDeps,
@@ -606,6 +627,66 @@ export async function handleOperatorRoute(
 			return attempt;
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	if (tail === "secrets") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const secrets = deps.secrets;
+		if (secrets === undefined) {
+			return Response.json(
+				{ error: "the auth store is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = secretPostBody.safeParse(raw);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const { name, value } = parsed.data;
+		if (value.startsWith("!")) {
+			return Response.json(
+				{
+					error:
+						'values starting with "!" resolve as shell commands — command records stay hand-edited',
+				},
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		// A `!command` record under this name is a pass-keys ref —
+		// shadowing it here would quietly sever the vault link. Literal
+		// records may be replaced (that IS a key rotation).
+		if (secrets.isCommand(name)) {
+			return Response.json(
+				{
+					error: `"${name}" resolves through a command record — it stays hand-managed; pick another name`,
+				},
+				{ status: 409, headers: NO_STORE },
+			);
+		}
+		const replaced = secrets.has(name);
+		try {
+			secrets.store(name, value);
+		} catch (err) {
+			log.error(`${actor.via} secret store failed`, err, { ...who, name });
+			return Response.json(
+				{ error: "the secret could not be written — check the service log" },
+				{ status: 500, headers: NO_STORE },
+			);
+		}
+		log.info(`auth record stored via ${actor.via}`, { ...who, name, replaced });
+		const stored: SecretStoreResponse = { ok: true, name, replaced };
+		return Response.json(stored, { headers: NO_STORE });
 	}
 
 	if (tail === "memory/status") {

@@ -125,6 +125,11 @@ export interface RuntimeDeps {
 			signal: AbortSignal,
 		): Promise<string>;
 	};
+	// Between-turns persisted pruning (DESIGN.md → Cache stability): runs
+	// after the next batch is claimed and before runTurn builds its view,
+	// so committed markers are visible to the admission read. A throw is
+	// logged and the turn proceeds — the projection commit is atomic.
+	pruneBetweenTurns?: (convId: string) => void;
 }
 
 export class FencedError extends Error {
@@ -518,6 +523,13 @@ export class Runtime {
 						log.info("queued submits coalesced", {
 							conversation: convId,
 							count: turns.length,
+						});
+					}
+					try {
+						this.deps.pruneBetweenTurns?.(convId);
+					} catch (err) {
+						log.error("cache pruning pass failed — turn proceeds", err, {
+							conversation: convId,
 						});
 					}
 					try {

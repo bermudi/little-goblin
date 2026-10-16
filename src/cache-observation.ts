@@ -28,6 +28,20 @@ export interface CacheCallObservation {
 
 export interface CacheObservation {
 	begin(input: CacheCallInput): CacheCallObservation;
+	// Read-only lineage read for between-turns policy: the newest
+	// completed normal (purpose IS NULL) call on one conversation+route.
+	// Null = no completed call exists; never creates or mutates a row.
+	lastCompleted(
+		conversationId: string,
+		routeKey: string,
+	): {
+		finishedMs: number | null;
+		idleMs: number | null;
+		cacheRead: number | null;
+		inputTokens: number | null;
+		prefixRelation: CachePrefixRelation;
+		settingsHash: string;
+	} | null;
 }
 
 const prevSchema = z.object({
@@ -36,6 +50,15 @@ const prevSchema = z.object({
 	head_hash: z.string(),
 	settings_hash: z.string(),
 	prompt_hashes: z.string(),
+});
+
+const lastCompletedSchema = z.object({
+	finished_ms: z.number().nullable(),
+	idle_ms: z.number().nullable(),
+	cache_read: z.number().nullable(),
+	input_tokens: z.number().nullable(),
+	prefix_relation: z.enum(["first", "same", "append", "rewrite"]),
+	settings_hash: z.string(),
 });
 
 const hashesSchema = z.array(z.string());
@@ -96,7 +119,26 @@ export function openCacheObservation(
 		WHERE conversation_id = ? AND route_key = ? AND purpose IS ? AND status = 'completed'
 		ORDER BY started_ms DESC, rowid DESC LIMIT 1`,
 	);
+	const qLastCompleted = db.query(
+		`SELECT finished_ms, idle_ms, cache_read, input_tokens, prefix_relation, settings_hash
+		FROM model_cache_calls
+		WHERE conversation_id = ? AND route_key = ? AND purpose IS NULL AND status = 'completed'
+		ORDER BY started_ms DESC, rowid DESC LIMIT 1`,
+	);
 	return {
+		lastCompleted(conversationId, routeKey) {
+			const raw = qLastCompleted.get(conversationId, routeKey);
+			if (raw === null) return null;
+			const row = lastCompletedSchema.parse(raw);
+			return {
+				finishedMs: row.finished_ms,
+				idleMs: row.idle_ms,
+				cacheRead: row.cache_read,
+				inputTokens: row.input_tokens,
+				prefixRelation: row.prefix_relation,
+				settingsHash: row.settings_hash,
+			};
+		},
 		begin(input) {
 			const raw =
 				input.conversationId === null

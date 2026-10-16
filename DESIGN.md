@@ -234,11 +234,24 @@ the orphaned turn to the operator, don't replay it.
     (`first`/`same`/`append`/`rewrite` and `shared_messages`) are
     structural facts about consecutive requests on one
     conversation+route — never proof of cache warmth, expiry or a
-    provider bug. No expiry-based pruning or other eviction policy
-    until this telemetry verifies it; `scripts/cache-report.ts`
-    aggregates the receipts and `scripts/check-cache-contracts.ts`
-    re-checks the public contract sources (design/model.md → Cache
-    contracts).
+    provider bug. Pruning old textual tool results is opt-in through the
+    hand-edited `cachePruning` config block: each profile pins a route
+    key + settings hash pair, and a committed `event_projections` row is
+    a sanctioned rewrite of the model-facing view only — the `events`
+    row is never modified, and the marker replays byte-identically on
+    every later read and restart, even if the policy becomes ineligible.
+    The marker names the tool call and a `history_search` context
+    address (`toolCallId` + `offset`) that pages the original result.
+    New batches commit only between turns and only when the profile is
+    unexpired, the route's observed idle time is at least
+    `idleAfterMs`, the last input size clears `minimumInputTokens`, and
+    no drift contradicts the presumed expiry. Three findings suspend new
+    batches — never committed rows: an unchanged-prefix call inside the
+    assumed window that reported zero cache reads, an expired profile,
+    or a `documented-expiry` profile the contract registry can't
+    support. `scripts/cache-report.ts` aggregates the receipts and
+    `scripts/check-cache-contracts.ts` re-checks the public contract
+    sources (design/model.md → Cache contracts).
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
   log: a model switch — or a catalog refresh that changes a model's
@@ -249,8 +262,9 @@ the orphaned turn to the operator, don't replay it.
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
   placeholder is a repair, not drift; a deploy that changes the read-time
   compaction marker's wording rewrites it once in every compacted
-  conversation. Everything else that moves the hash
-  is a bug.
+  conversation; a committed pruning marker replaces an old textual tool
+  result once, then replays verbatim forever. Everything else that moves
+  the hash is a bug.
 
 ## Design areas
 

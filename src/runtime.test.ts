@@ -2371,6 +2371,84 @@ describe("cache stability", () => {
 			store.close();
 		}
 	});
+
+	test("pruneBetweenTurns commits markers before the claimed batch's view is built", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [
+			userMessage([{ type: "text", text: "old question" }]),
+			{
+				id: "a-tool",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "t1",
+						state: "output-available",
+						input: { command: "seq" },
+						output: "ORIGINAL_TOOL_OUTPUT",
+					},
+				],
+			} as unknown as UIMessage,
+		]);
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const calls: string[] = [];
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+			pruneBetweenTurns: (convId) => {
+				calls.push(convId);
+				store.applyEventProjections(convId, [
+					{
+						seq: 2,
+						toolCallId: "t1",
+						replacement: "PRUNED_MARKER",
+						routeKey: "a".repeat(64),
+						settingsHash: "b".repeat(64),
+					},
+				]);
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "next" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(calls).toEqual([conv.id]);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("PRUNED_MARKER");
+		expect(prompts[0]).not.toContain("ORIGINAL_TOOL_OUTPUT");
+		// The events row keeps the original bytes.
+		const part = store.history(conv.id)[1]!.parts[0] as { output?: unknown };
+		expect(part.output).toBe("ORIGINAL_TOOL_OUTPUT");
+		store.close();
+	});
+
+	test("a throwing pruneBetweenTurns is logged and the turn still runs", async () => {
+		const dir = tmpDir("goblin-rt-log-");
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["ok"], 5), system: "test" }),
+			makeTools: () => ({}),
+			pruneBetweenTurns: () => {
+				throw new Error("projection store exploded");
+			},
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await runtime.shutdown();
+			expect(readFileSync(logFile, "utf8")).toContain("cache pruning pass failed");
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
+	});
 });
 
 describe("skill reviewer hook", () => {

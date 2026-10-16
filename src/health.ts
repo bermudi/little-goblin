@@ -540,6 +540,7 @@ function expectedTables(config: Config | undefined): string[] {
 		"tg_inbox_archives",
 		"guest_dedup",
 		"model_cache_calls",
+		"event_projections",
 	];
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");

@@ -219,8 +219,14 @@ agent loop.
   source (`unknown` where no fragments are pinned, e.g. logfare).
   `changed`/`unavailable`/overdue-metadata exits 1; it never edits
   policy. Contracts plus the `model_cache_calls` telemetry are inputs
-  to drift diagnosis only — goblin prunes nothing on an assumed
-  lifetime until the observed counters support it.
+  to drift diagnosis and to the opt-in pruning gate (DESIGN.md → Cache
+  stability): a `cachePruning` profile's `evidence` label separates
+  `documented-expiry` — valid only where the registry records a
+  rolling-expiry contract whose bound the profile respects — from
+  `empirical`, the operator's own measurement. Z.AI-class unpublished
+  lifetimes can carry empirical profiles only; an empirical profile is
+  a measurement, never a provider guarantee, and must never be
+  presented as one.
 - **Transcription**: voice notes and video notes are speech — the two
   media kinds Telegram only produces by recording someone — and a model
   that can't consume audio shouldn't lose them to a bare path. Attached

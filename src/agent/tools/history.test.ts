@@ -215,6 +215,76 @@ describe("history_search tool", () => {
 		expect(out).toContain("total 0");
 		store.close();
 	});
+
+	test("context with toolCallId pages one stored tool result in exact 8000-char slices", async () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const payload = "abcdefghij".repeat(1700); // 17_000 chars — three pages
+		store.append(c.id, [msg("run seq")]);
+		store.append(c.id, [
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "call-9",
+						state: "output-available",
+						input: { command: "seq 1 17000" },
+						output: payload,
+					},
+				],
+			} as unknown as UIMessage,
+		]);
+		const tool = historySearchTool(deps(store, false, c.id));
+		const page1 = (await exec(tool, {
+			action: "context",
+			conversation: c.id,
+			seq: 2,
+			toolCallId: "call-9",
+		})) as string;
+		expect(page1).toContain(
+			`tool result — ${c.id} seq 2 call call-9 (chars 0–8000 of 17000)`,
+		);
+		expect(page1).toContain(payload.slice(0, 8000));
+		expect(page1).toContain("[truncated — continue with offset 8000]");
+		expect(page1).toContain("<history>");
+		const page2 = (await exec(tool, {
+			action: "context",
+			conversation: c.id,
+			seq: 2,
+			toolCallId: "call-9",
+			offset: 8000,
+		})) as string;
+		expect(page2).toContain("(chars 8000–16000 of 17000)");
+		expect(page2).toContain(payload.slice(8000, 16000));
+		expect(page2).toContain("[truncated — continue with offset 16000]");
+		const page3 = (await exec(tool, {
+			action: "context",
+			conversation: c.id,
+			seq: 2,
+			toolCallId: "call-9",
+			offset: 16000,
+		})) as string;
+		expect(page3).toContain("(chars 16000–17000 of 17000)");
+		expect(page3).toContain(payload.slice(16000));
+		expect(page3).not.toContain("truncated");
+		store.close();
+	});
+
+	test("a toolCallId that has no tool result at seq N errors plainly", async () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("just text")]);
+		const out = (await exec(historySearchTool(deps(store, false, c.id)), {
+			action: "context",
+			conversation: c.id,
+			seq: 1,
+			toolCallId: "nope",
+		})) as { error: string };
+		expect(out.error).toBe("no tool result for that call at seq 1");
+		store.close();
+	});
 });
 
 describe("excerpt", () => {

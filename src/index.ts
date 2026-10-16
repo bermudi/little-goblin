@@ -12,6 +12,7 @@ import {
 } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { openCacheObservation } from "./cache-observation.ts";
+import { openCachePruning } from "./cache-pruning.ts";
 import { join } from "node:path";
 import { systemPromptFor } from "./agent/prompt.ts";
 import {
@@ -135,6 +136,13 @@ async function boot() {
 	const auth = loadAuth();
 	const store = openStore(paths.db());
 	const cacheObservations = openCacheObservation(store.db);
+	// Between-turns pruning of old textual tool outputs — inert without a
+	// hand-edited cachePruning block (DESIGN.md → Cache stability).
+	const cachePruning = openCachePruning({
+		store,
+		observation: cacheObservations,
+		getConfig: () => configRef.current,
+	});
 	// Skill provenance shares the store's SQLite (design/skills.md →
 	// Skill provenance): the reviewer and the turn stream record, the
 	// operator doors read.
@@ -389,6 +397,9 @@ async function boot() {
 	const runtime = new Runtime({
 		store,
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
+		pruneBetweenTurns: (convId) => {
+			cachePruning.pruneConversation(convId);
+		},
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
 			const modelRef = conv.model!;

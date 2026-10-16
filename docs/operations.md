@@ -301,9 +301,9 @@ carried over from the start observation. The same rows persist in
 `state/goblin.sqlite` `model_cache_calls`. `rewrite` means the prompt
 lineage changed (a compaction, a settings or tool-surface change — or
 drift worth a look); `first`/`same`/`append` are structural facts like
-it, not proof of cache warmth, expiry or a provider bug — and goblin
-deliberately has no expiry-based pruning until these counters justify
-one.
+it, not proof of cache warmth, expiry or a provider bug. Expiry-based
+pruning exists but is opt-in and gated on this telemetry — see
+`cachePruning` below.
 
 ```sh
 # aggregate usage receipts from a log file (the optional count selects
@@ -333,6 +333,68 @@ re-pin it; the script never edits policy. Its limit matters: fragment
 matching detects a pinned clause disappearing, not every semantic
 addition or rewording elsewhere on the page — an `unchanged` verdict is
 not proof the contract still reads the same.
+
+### `cachePruning` — persisted tool-result pruning (opt-in)
+
+Hand-edited only. When the block exists, goblin replaces old large
+textual tool outputs **in the model-facing view** with a stored marker
+(`event_projections` rows); the `events` rows keep the original bytes
+forever, and the marker prints a `history_search` context address
+(`toolCallId` + `offset`) that pages the original back in 8000-char
+slices. A committed marker replays byte-identically on every later read
+and restart — deleting the config never restores or rewrites a committed
+row, it only stops new pruning. New batches commit only between turns.
+
+```json5
+cachePruning: {
+  minimumInputTokens: 40000,   // last completed call on this route must report at least this
+  keepRecentExchanges: 4,      // user exchanges counted from the tail that stay verbatim (min 2)
+  minimumResultChars: 20000,   // a textual tool result must be at least this large to be replaced
+  retainHeadChars: 400,        // leading code points kept inside the marker
+  retainTailChars: 400,        // trailing code points kept; head+tail must be < minimumResultChars
+  profiles: [
+    {
+      model: "z.ai/glm-5.3",   // the ref this profile was reviewed for (label; matching is on hashes)
+      routeKey: "<64-hex>",    // sha256 of the JSON route identity — copy from the log's routeKey
+      settingsHash: "<64-hex>",// sha256 of the call settings surface — copy from the log
+      idleAfterMs: 3600000,    // presumed cache expiry: prune only when idle this long
+      reviewedAt: "2026-10-15T00:00:00.000Z",
+      validUntil: "2026-11-15T00:00:00.000Z",  // must follow reviewedAt
+      evidence: "empirical",   // or "documented-expiry" — only where the contract registry supports it
+    },
+  ],
+}
+```
+
+The `routeKey`/`settingsHash` values come from the `model call` log lines
+(full 64-hex digests are stored on `model_cache_calls` rows). A profile
+matches only the exact route+settings pair it was measured on; changing
+thinking level or providers silently selects no profile and disables
+pruning. Findings that suspend new batches — committed rows always keep
+replaying — are logged once each: `cache pruning profile expired`,
+`documented cache expiry unsupported for this route`, and `cache policy
+contradicted — pruning suspended` (an unchanged-prefix call inside the
+assumed window reported zero cache reads — the presumed expiry is wrong;
+lower `idleAfterMs` or drop the profile).
+
+The review loop for keeping profiles honest:
+
+```sh
+bun scripts/cache-report.ts ~/goblin/state/goblin.log 200   # observed idle/cache_read receipts
+bun scripts/check-cache-contracts.ts                      # public contract sources still read the same
+```
+
+Re-run `check-cache-contracts` before extending a `documented-expiry`
+profile's `validUntil`; `empirical` profiles are re-derived from
+`cache-report` output, never treated as provider guarantees.
+
+Committed markers inspect like any other table:
+
+```sh
+# what is projected in one conversation, and under which policy stamps
+sqlite3 ~/goblin/state/goblin.sqlite \
+  "SELECT seq, tool_call_id, substr(route_key,1,12), substr(settings_hash,1,12), created_at FROM event_projections WHERE conversation_id = 'app/example' ORDER BY seq;"
+```
 
 ## Desktop image
 

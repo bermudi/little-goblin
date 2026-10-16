@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
+import { cachePruningSchema } from "./cache-pruning-policy.ts";
 import { durableWriteFile } from "./durable.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./hindsight.ts";
 import { log } from "./log.ts";
@@ -833,6 +834,10 @@ const configSchema = z
 			.optional(),
 		// Subagents & computer use — hand-edited only, like delegation.
 		subagents: subagentsConfigSchema.optional(),
+		// Persisted tool-result pruning — hand-edited only, like
+		// delegation. Profiles pin route/settings hashes; docs/operations.md
+		// covers the review loop.
+		cachePruning: cachePruningSchema.optional(),
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),

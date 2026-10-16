@@ -1375,3 +1375,112 @@ test("app resolve commits creation and its initial settings atomically and never
 		store.close();
 	}
 });
+
+describe("event projections", () => {
+	const toolEvent = (toolCallId: string, output: string): UIMessage =>
+		({
+			id: `a-${toolCallId}`,
+			role: "assistant",
+			parts: [
+				{
+					type: "tool-bash",
+					toolCallId,
+					state: "output-available",
+					input: { command: "seq" },
+					output,
+				},
+			],
+		}) as unknown as UIMessage;
+	const row = (seq: number, toolCallId: string, replacement: string) => ({
+		seq,
+		toolCallId,
+		replacement,
+		routeKey: "a".repeat(64),
+		settingsHash: "b".repeat(64),
+	});
+	const output = (m: UIMessage | undefined): unknown =>
+		(m?.parts[0] as { output?: unknown } | undefined)?.output;
+
+	test("modelEntries overlays a committed projection; every other reader serves the original", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		store.append(c.id, [msg("q")]);
+		store.append(c.id, [toolEvent("t1", "the original bytes")]);
+		const marker = "<pruned-observation>marker</pruned-observation>";
+		expect(store.applyEventProjections(c.id, [row(2, "t1", marker)])).toBe(1);
+		const view = store.modelEntries(c.id);
+		expect(output(view.find((e) => e.seq === 2)?.message)).toBe(marker);
+		// The events row is untouched — history, detail, and context all
+		// return the original.
+		expect(output(store.history(c.id)[1])).toBe("the original bytes");
+		expect(output(store.historyDetail(c.id).find((e) => e.seq === 2)?.message)).toBe(
+			"the original bytes",
+		);
+		expect(output(store.eventContext(c.id, 2, 0)[0]?.message)).toBe("the original bytes");
+		// Re-applying the same key is an ignore, not a rewrite.
+		expect(store.applyEventProjections(c.id, [row(2, "t1", "different")])).toBe(0);
+		expect(store.eventProjections(c.id)[0]!.replacement).toBe(marker);
+		store.close();
+	});
+
+	test("projections respect the compaction boundary — folded events stay below it", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		store.append(c.id, [msg("q")]);
+		store.append(c.id, [toolEvent("t1", "folded original")]);
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "fold",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		store.applyEventProjections(c.id, [row(2, "t1", "marker")]);
+		// The model view never shows the folded event — projection or not.
+		expect(store.modelEntries(c.id).map((e) => e.seq)).toEqual([2]);
+		expect(output(store.history(c.id)[1])).toBe("folded original");
+		store.close();
+	});
+
+	test("deleteConversation cascades event_projections", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		store.append(c.id, [toolEvent("t1", "original")]);
+		store.applyEventProjections(c.id, [row(1, "t1", "marker")]);
+		expect(
+			store.db
+				.query<{ n: number }, [string]>(
+					"SELECT COUNT(*) AS n FROM event_projections WHERE conversation_id = ?",
+				)
+				.get(c.id)!.n,
+		).toBe(1);
+		store.deleteConversation(c.id);
+		expect(
+			store.db
+				.query<{ n: number }, [string]>(
+					"SELECT COUNT(*) AS n FROM event_projections WHERE conversation_id = ?",
+				)
+				.get(c.id)!.n,
+		).toBe(0);
+		store.close();
+	});
+
+	test("forkToApp copies projections — the fork's model view overlays, history stays original", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [msg("q")]);
+		store.append(src.id, [toolEvent("t1", "source original")]);
+		const marker = "<pruned-observation>marker</pruned-observation>";
+		store.applyEventProjections(src.id, [row(2, "t1", marker)]);
+		const app = store.forkToApp(src.id, "proj-1", "/w", "the work");
+		expect(store.eventProjections(app.id)).toEqual([
+			{ seq: 2, toolCallId: "t1", replacement: marker },
+		]);
+		const forkView = store.modelEntries(app.id);
+		expect(output(forkView.find((e) => e.seq === 2)?.message)).toBe(marker);
+		// Both histories keep the original event bytes.
+		expect(output(store.history(app.id)[1])).toBe("source original");
+		expect(output(store.history(src.id)[1])).toBe("source original");
+		store.close();
+	});
+});

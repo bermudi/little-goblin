@@ -126,6 +126,37 @@ export function cacheRouteFor(config: Config, modelRef: string): CacheRoute | un
 
 const sha256hex = (json: string) => createHash("sha256").update(json).digest("hex");
 
+// The telemetry route identity: a configured route via cacheRouteFor, or
+// the inferred provider/modelId fallback below (which also pins the call's
+// purpose so its key can't collide with configured lanes). The pruning
+// policy profiles key on this hash, so the byte shape is frozen.
+export function cacheRouteKey(route: CacheRoute & { purpose?: string | null }): string {
+	return sha256hex(JSON.stringify(route));
+}
+
+// The settings hash pins the non-prompt call surface — providerOptions and
+// the sampling/format knobs. Object key order is load-bearing: pruning
+// profiles key on this exact hash.
+export function hashCacheSettings(fields: {
+	providerOptions?: LanguageModelV4CallOptions["providerOptions"];
+	temperature?: LanguageModelV4CallOptions["temperature"];
+	topP?: LanguageModelV4CallOptions["topP"];
+	topK?: LanguageModelV4CallOptions["topK"];
+	toolChoice?: LanguageModelV4CallOptions["toolChoice"];
+	responseFormat?: LanguageModelV4CallOptions["responseFormat"];
+}): string {
+	return sha256hex(
+		JSON.stringify({
+			providerOptions: fields.providerOptions ?? null,
+			temperature: fields.temperature ?? null,
+			topP: fields.topP ?? null,
+			topK: fields.topK ?? null,
+			toolChoice: fields.toolChoice ?? null,
+			responseFormat: fields.responseFormat ?? null,
+		}),
+	);
+}
+
 const SAFE_ERROR_NAMES = new Set(["AbortError", "Error", "TypeError"]);
 
 function safeErrorFields(error: unknown): Record<string, unknown> {
@@ -158,16 +189,14 @@ export function observedModel(
 ): LanguageModel {
 	if (typeof model === "string") return model;
 	const label = context.route?.modelRef ?? `${model.provider}/${model.modelId}`;
-	const routeKey = sha256hex(
-		JSON.stringify(
-			context.route ?? {
-				provider: model.provider,
-				kind: "inferred",
-				base: "unknown",
-				modelRef: model.modelId,
-				purpose: context.purpose ?? null,
-			},
-		),
+	const routeKey = cacheRouteKey(
+		context.route ?? {
+			provider: model.provider,
+			kind: "inferred",
+			base: "unknown",
+			modelRef: model.modelId,
+			purpose: context.purpose ?? null,
+		},
 	);
 	const baseFields = {
 		...(context.conversation !== undefined ? { conversation: context.conversation } : {}),
@@ -185,16 +214,7 @@ export function observedModel(
 			}),
 		);
 		const requestHash = sha256hex(JSON.stringify(params.prompt));
-		const settingsHash = sha256hex(
-			JSON.stringify({
-				providerOptions: params.providerOptions ?? null,
-				temperature: params.temperature ?? null,
-				topP: params.topP ?? null,
-				topK: params.topK ?? null,
-				toolChoice: params.toolChoice ?? null,
-				responseFormat: params.responseFormat ?? null,
-			}),
-		);
+		const settingsHash = hashCacheSettings(params);
 		const promptHashes = params.prompt.map((m) => sha256hex(JSON.stringify(m)));
 		const callId = randomUUID();
 		const obs = context.observation?.begin({

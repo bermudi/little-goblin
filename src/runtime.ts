@@ -502,6 +502,13 @@ export class Runtime {
 	// loop's check to fence its side effects. The same seam writes the crash
 	// journal's dispatch/result/error transitions — dispatch only after the
 	// authority check passes, so a fenced call never reads as entered.
+	//
+	// A journal write that throws is fatal to the turn, not a tool error:
+	// the row is the only record of what ran — letting the SDK surface an
+	// ordinary tool failure invites the model to repeat a side effect the
+	// journal can no longer describe. The first fault aborts the attempt
+	// and fences every later dispatch; the attempt's catch reports it as
+	// a turn error, never 'fenced'.
 	private fenceTools(
 		tools: ToolSet,
 		convId: string,
@@ -509,15 +516,29 @@ export class Runtime {
 		runId?: string,
 		replay?: ReadonlyMap<string, unknown[]>,
 		skipped?: ReadonlyMap<string, string>,
+		journalFault?: { current: unknown },
+		onJournalFault?: () => void,
 	): ToolSet {
 		const journal = this.deps.turnJournal;
+		const note = (write: () => void): void => {
+			try {
+				write();
+			} catch (err) {
+				if (journalFault !== undefined && journalFault.current === undefined) {
+					journalFault.current = err;
+				}
+				onJournalFault?.();
+				throw err;
+			}
+		};
 		for (const [name, t] of Object.entries(tools)) {
 			const execute = t.execute?.bind(t);
 			if (execute === undefined) continue;
 			t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
 				this.checkAuthority(convId, epoch);
+				if (journalFault?.current !== undefined) throw journalFault.current;
 				if (journal !== undefined && runId !== undefined) {
-					journal.noteToolDispatch(runId, options.toolCallId);
+					note(() => journal.noteToolDispatch(runId, options.toolCallId, name, input));
 				}
 				// An operator-resumed turn's recorded results answer here —
 				// the side effect already ran (or the operator asserted it
@@ -527,7 +548,7 @@ export class Runtime {
 				if (recorded !== undefined && recorded.length > 0) {
 					const value = recorded.shift();
 					if (journal !== undefined && runId !== undefined) {
-						journal.noteToolResult(runId, options.toolCallId, value);
+						note(() => journal.noteToolResult(runId, options.toolCallId, value));
 					}
 					log.info("replaying recorded tool result", {
 						conversation: convId,
@@ -542,7 +563,7 @@ export class Runtime {
 				if (refusal !== undefined) {
 					const value = { error: refusal };
 					if (journal !== undefined && runId !== undefined) {
-						journal.noteToolResult(runId, options.toolCallId, value);
+						note(() => journal.noteToolResult(runId, options.toolCallId, value));
 					}
 					log.info("declined tool call answered with the operator's skip", {
 						conversation: convId,
@@ -556,7 +577,7 @@ export class Runtime {
 					result = execute(input as never, options);
 				} catch (err) {
 					if (journal !== undefined && runId !== undefined) {
-						journal.noteToolError(runId, options.toolCallId, err);
+						note(() => journal.noteToolError(runId, options.toolCallId, err));
 					}
 					throw err;
 				}
@@ -572,17 +593,17 @@ export class Runtime {
 					// the wrapper resolves only after the journal row lands.
 					return (result as PromiseLike<unknown>).then(
 						(value) => {
-							journal.noteToolResult(runId, options.toolCallId, value);
+							note(() => journal.noteToolResult(runId, options.toolCallId, value));
 							return value;
 						},
 						(err: unknown) => {
-							journal.noteToolError(runId, options.toolCallId, err);
+							note(() => journal.noteToolError(runId, options.toolCallId, err));
 							throw err;
 						},
 					);
 				}
 				if (journal !== undefined && runId !== undefined) {
-					journal.noteToolResult(runId, options.toolCallId, result);
+					note(() => journal.noteToolResult(runId, options.toolCallId, result));
 				}
 				return result;
 			};
@@ -793,6 +814,10 @@ export class Runtime {
 		// and replays its recorded results instead of re-executing.
 		const sourceRunId = recovery?.resumedFrom;
 		let runId: string | null = null;
+		// A thrown journal write anywhere in the fence lands here — the
+		// catch below aborts the turn instead of letting the SDK report a
+		// tool error the model could retry.
+		const journalFault: { current: unknown } = { current: undefined };
 		let runStamped = false;
 		const stampRun = (
 			status: "fenced" | "completed" | "error",
@@ -856,6 +881,8 @@ export class Runtime {
 				runId,
 				replay,
 				skipped,
+				journalFault,
+				() => controller.abort(),
 			);
 			journal?.beginRun({
 				runId,
@@ -869,11 +896,14 @@ export class Runtime {
 				resumedFrom: sourceRunId,
 			});
 			// The source run leaves 'interrupted' only after its successor
-			// row exists — a crash between the writes reopens the fresh row
-			// as 'interrupted' rather than consuming the resume silently.
+			// carries its settled call history — a crash between the writes
+			// reopens the fresh row as 'interrupted' with the inherited
+			// results and decisions intact, rather than consuming the
+			// resume into an empty call history that re-executes them.
 			if (journal !== undefined && sourceRunId !== undefined) {
 				const src = journal.get(sourceRunId);
 				if (src === null) throw new Error(`resume source run ${sourceRunId} is gone`);
+				journal.inheritCalls(sourceRunId, runId);
 				if (src.status === "interrupted") {
 					journal.markRun(sourceRunId, "resumed");
 				} else if (src.status !== "resumed") {
@@ -915,7 +945,10 @@ export class Runtime {
 				state,
 				journal,
 				runId,
-				assertAuthority: () => this.checkAuthority(convId, epoch),
+				assertAuthority: () => {
+					this.checkAuthority(convId, epoch);
+					if (journalFault.current !== undefined) throw journalFault.current;
+				},
 				holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
 				step,
 				messages: merged,
@@ -942,6 +975,9 @@ export class Runtime {
 				filterRetryUsed = outcome.filterRetryUsed;
 				throw failureFromStream(outcome);
 			}
+			// A stream that reached its finish while a journal write
+			// faulted must not land a reply the journal can't describe.
+			if (journalFault.current !== undefined) throw journalFault.current;
 			// Land the durable reply, then keep the post-delivery authority check:
 			// a stop during sink flushing must fence follow-up work. Persistence and
 			// delivery are both on the same authority-checked finish path.
@@ -1011,7 +1047,24 @@ export class Runtime {
 				}
 			}
 		} catch (err) {
-			if (err instanceof FencedError || controller.signal.aborted) {
+			if (journalFault.current !== undefined) {
+				// The crash journal is the only record of what the turn's
+				// tools did — when it cannot write, the turn dies as an
+				// error (never 'fenced', never completed) so no reported
+				// failure can invite a replay of an unjournaled effect.
+				controller.abort();
+				const fault = journalFault.current;
+				log.error("turn aborted — the turn journal cannot write", fault, {
+					conversation: convId,
+					epoch,
+				});
+				stampRun("error", "failed");
+				await notifyAll({
+					kind: "error",
+					message: terminalFailureMessage(fault, recovery !== undefined),
+					modelCalls: state.snapshot().modelCalls,
+				});
+			} else if (err instanceof FencedError || controller.signal.aborted) {
 				// Abort even an epoch-fenced provider call; otherwise it may keep
 				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();

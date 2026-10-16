@@ -36,7 +36,7 @@ describe("turn journal", () => {
 
 		journal.noteToolInput(runId, "call-1", "probe", { q: 1 });
 		journal.noteToolInput(runId, "call-2", "bash", { command: "ls" });
-		journal.noteToolDispatch(runId, "call-1");
+		journal.noteToolDispatch(runId, "call-1", "probe", { q: 1 });
 		journal.noteToolResult(runId, "call-1", { ok: true, out: "done" });
 		journal.finishRun(runId, "completed", "delivered");
 
@@ -77,10 +77,10 @@ describe("turn journal", () => {
 		const runId = begunRun(journal, conv.id);
 
 		journal.noteToolInput(runId, "call-1", "probe", {});
-		journal.noteToolDispatch(runId, "call-1");
+		journal.noteToolDispatch(runId, "call-1", "probe", {});
 		journal.noteToolResult(runId, "call-1", "first");
 		// A late duplicate transition must not move the settled row.
-		journal.noteToolDispatch(runId, "call-1");
+		journal.noteToolDispatch(runId, "call-1", "probe", {});
 		journal.noteToolError(runId, "call-1", new Error("late failure"));
 		journal.noteToolResult(runId, "call-1", "second");
 
@@ -91,7 +91,7 @@ describe("turn journal", () => {
 
 		// Errors settle too — a retry's success can't rewrite the failure.
 		journal.noteToolInput(runId, "call-2", "probe", {});
-		journal.noteToolDispatch(runId, "call-2");
+		journal.noteToolDispatch(runId, "call-2", "probe", {});
 		journal.noteToolError(runId, "call-2", new TypeError("boom"));
 		journal.noteToolResult(runId, "call-2", "recovered");
 		const failed = journal.callsFor(runId).find((c) => c.toolCallId === "call-2")!;
@@ -123,7 +123,7 @@ describe("turn journal", () => {
 		const done = begunRun(journal, conv.id, "run-done");
 		const fenced = begunRun(journal, conv.id, "run-fenced");
 		journal.noteToolInput(live, "call-1", "probe", {});
-		journal.noteToolDispatch(live, "call-1");
+		journal.noteToolDispatch(live, "call-1", "probe", {});
 		journal.finishRun(done, "completed", "delivered");
 		journal.finishRun(fenced, "fenced", "undelivered");
 		store.close();
@@ -199,11 +199,11 @@ describe("turn journal", () => {
 		const journal = openTurnJournal(store.db);
 		const runId = begunRun(journal, conv.id);
 		journal.noteToolInput(runId, "c-done", "probe", { q: 1 });
-		journal.noteToolDispatch(runId, "c-done");
+		journal.noteToolDispatch(runId, "c-done", "probe", { q: 1 });
 		journal.noteToolInput(runId, "c-retry", "probe", { q: 2 });
-		journal.noteToolDispatch(runId, "c-retry");
+		journal.noteToolDispatch(runId, "c-retry", "probe", { q: 2 });
 		journal.noteToolInput(runId, "c-skip", "probe", { q: 3 });
-		journal.noteToolDispatch(runId, "c-skip");
+		journal.noteToolDispatch(runId, "c-skip", "probe", { q: 3 });
 		journal.noteToolInput(runId, "c-planned", "probe", { q: 4 });
 		journal.noteToolInput(runId, "c-settled", "probe", { q: 5 });
 		journal.noteToolResult(runId, "c-settled", "ok");
@@ -243,7 +243,7 @@ describe("turn journal", () => {
 		const journal = openTurnJournal(store.db);
 		const runId = begunRun(journal, conv.id);
 		journal.noteToolInput(runId, "c1", "probe", {});
-		journal.noteToolDispatch(runId, "c1");
+		journal.noteToolDispatch(runId, "c1", "probe", {});
 		journal.resolveCall(runId, "c1", "skip");
 		// A result arriving after the decision (the old process's write
 		// landing late inside one open) must not unsettle the row.
@@ -324,22 +324,22 @@ describe("turn journal", () => {
 		const runId = begunRun(journal, conv.id);
 		// completed — replays its recorded result.
 		journal.noteToolInput(runId, "c-done", "probe", { q: 1 });
-		journal.noteToolDispatch(runId, "c-done");
+		journal.noteToolDispatch(runId, "c-done", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-done", { out: "first" });
 		// resolved-done — the operator's note is the result.
 		journal.noteToolInput(runId, "c-asserted", "probe", { q: 2 });
-		journal.noteToolDispatch(runId, "c-asserted");
+		journal.noteToolDispatch(runId, "c-asserted", "probe", { q: 2 });
 		journal.resolveCall(runId, "c-asserted", "record-result", "asserted output");
 		// resolved-done without a note — the explicit empty marker.
 		journal.noteToolInput(runId, "c-nonote", "probe", { q: 3 });
-		journal.noteToolDispatch(runId, "c-nonote");
+		journal.noteToolDispatch(runId, "c-nonote", "probe", { q: 3 });
 		journal.resolveCall(runId, "c-nonote", "record-result");
 		// retry and skip never replay; neither does failed/planned.
 		journal.noteToolInput(runId, "c-retry", "probe", { q: 4 });
-		journal.noteToolDispatch(runId, "c-retry");
+		journal.noteToolDispatch(runId, "c-retry", "probe", { q: 4 });
 		journal.resolveCall(runId, "c-retry", "authorize-retry");
 		journal.noteToolInput(runId, "c-skip", "probe", { q: 5 });
-		journal.noteToolDispatch(runId, "c-skip");
+		journal.noteToolDispatch(runId, "c-skip", "probe", { q: 5 });
 		journal.resolveCall(runId, "c-skip", "skip");
 		journal.noteToolInput(runId, "c-failed", "probe", { q: 6 });
 		journal.noteToolError(runId, "c-failed", new Error("x"));

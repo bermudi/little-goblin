@@ -281,6 +281,9 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 	// would validate and queue a second turn replaying the same calls.
 	// The claim is process-local by design — a crash in the window
 	// evaporates it AND leaves the row interrupted, the correct pair.
+	// It releases on the attempt's terminal onDone — an accepted resume
+	// that dies fenced, errored, or stopped before its markRun must not
+	// leave the source interrupted yet permanently un-resumable.
 	const claimed = new Set<string>();
 
 	return {
@@ -492,6 +495,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 						try {
 							await inner.onDone(done);
 						} finally {
+							claimed.delete(run.runId);
 							try {
 								deps.notifyDone?.(conv, run.runId, done);
 							} catch (err) {

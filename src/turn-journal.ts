@@ -130,10 +130,12 @@ export interface TurnJournal {
 	// and if a fence-seam write beat the chunk to the row, this fills
 	// its marker identity (name/args/hash) without touching the state.
 	noteToolInput(runId: string, callId: string, name: string, args: unknown): void;
-	// execute was entered. Upsert with the same marker shape — the SDK's
-	// execution pipeline can commit before the chunk seam lands; a
-	// settled row never regresses.
-	noteToolDispatch(runId: string, callId: string): void;
+	// execute was entered — the call's identity rides with it: the SDK's
+	// execution pipeline can commit before the chunk seam lands, and a
+	// crash inside execute must leave a 'dispatched' row the operator can
+	// decide on (a nameless marker can't match a replay or a skip
+	// refusal). A settled row never regresses.
+	noteToolDispatch(runId: string, callId: string, name: string, args: unknown): void;
 	// The result, recorded before the loop continues. Upsert guards on
 	// unsettled states so a late duplicate can't rewrite a settled call.
 	noteToolResult(runId: string, callId: string, result: unknown): void;
@@ -168,6 +170,14 @@ export interface TurnJournal {
 	// operator declined the side effect, so a resumed turn answers a
 	// re-ask with the decision instead of executing it.
 	skippedMap(runId: string): Map<string, string>;
+	// Copy the source run's settled call history into its successor —
+	// every state but 'dispatched' (ambiguity stays owned by the row
+	// that ran it). The successor must carry this BEFORE the source
+	// leaves 'interrupted': a crash before the new run's own calls land
+	// otherwise reads an empty history and re-executes completed work,
+	// because the fence maps, the seeded partial, and every later
+	// resume all read only the run's own rows.
+	inheritCalls(sourceRunId: string, intoRunId: string): void;
 	interrupted(): TurnRun[];
 	get(runId: string): TurnRun | null;
 	callsFor(runId: string): TurnToolCall[];
@@ -440,10 +450,12 @@ export function openTurnJournal(db: Database): TurnJournal {
 		WHERE turn_tool_calls.name = ''`);
 	const qDispatch = db.query(
 		`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, began_ms)
-		VALUES (?, ?, '', 'null', '', 'dispatched', ?)
+		VALUES (?, ?, ?, ?, ?, 'dispatched', ?)
 		ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
-			state = 'dispatched', began_ms = excluded.began_ms
-		WHERE turn_tool_calls.state = 'planned'`,
+			state = 'dispatched', began_ms = excluded.began_ms,
+			name = excluded.name, args = excluded.args, args_hash = excluded.args_hash
+		WHERE turn_tool_calls.state = 'planned'
+			OR (turn_tool_calls.state = 'dispatched' AND turn_tool_calls.name = '')`,
 	);
 	// The blind-insert half (a result whose planned row never landed —
 	// the stream was cut before the chunk) marks the unknowns — args as
@@ -508,8 +520,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 			const canonical = stableStringify(args);
 			qInput.run(runId, callId, name, canonical, sha256hex(canonical));
 		},
-		noteToolDispatch(runId, callId) {
-			qDispatch.run(runId, callId, Date.now());
+		noteToolDispatch(runId, callId, name, args) {
+			const canonical = stableStringify(args);
+			qDispatch.run(runId, callId, name, canonical, sha256hex(canonical), Date.now());
 		},
 		noteToolResult(runId, callId, result) {
 			qResult.run(runId, callId, boundedJson(result, RESULT_BUDGET), Date.now());
@@ -594,6 +607,16 @@ export function openTurnJournal(db: Database): TurnJournal {
 				map.set(`${c.name}:${c.argsHash}`, note);
 			}
 			return map;
+		},
+		inheritCalls(sourceRunId, intoRunId) {
+			db.query(
+				`INSERT OR IGNORE INTO turn_tool_calls
+					(run_id, tool_call_id, name, args, args_hash, state, result, error,
+					 began_ms, settled_ms, resolution_note, resolved_ms)
+				 SELECT ?, tool_call_id, name, args, args_hash, state, result, error,
+					 began_ms, settled_ms, resolution_note, resolved_ms
+				 FROM turn_tool_calls WHERE run_id = ? AND state != 'dispatched'`,
+			).run(intoRunId, sourceRunId);
 		},
 		interrupted() {
 			return qInterrupted.all().map(decodeRun);

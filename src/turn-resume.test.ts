@@ -122,10 +122,10 @@ describe("turn resume", () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		interruptedRun(store, journal, conv, "run-dead");
 		journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
-		journal.noteToolDispatch("run-dead", "c1");
+		journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 		journal.noteToolResult("run-dead", "c1", { out: "landed" });
 		journal.noteToolInput("run-dead", "c2", "probe", { q: 2 });
-		journal.noteToolDispatch("run-dead", "c2");
+		journal.noteToolDispatch("run-dead", "c2", "probe", { q: 2 });
 		journal.noteToolInput("run-dead", "c3", "probe", { q: 3 });
 
 		const views = ops.interrupted(conv.id);
@@ -141,9 +141,9 @@ describe("turn resume", () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		interruptedRun(store, journal, conv, "run-dead");
 		journal.noteToolInput("run-dead", "call-aa", "probe", { q: 1 });
-		journal.noteToolDispatch("run-dead", "call-aa");
+		journal.noteToolDispatch("run-dead", "call-aa", "probe", { q: 1 });
 		journal.noteToolInput("run-dead", "call-bb", "probe", { q: 2 });
-		journal.noteToolDispatch("run-dead", "call-bb");
+		journal.noteToolDispatch("run-dead", "call-bb", "probe", { q: 2 });
 
 		expect(ops.decide(conv.id, "run-dead", "9", "skip").kind).toBe("refused");
 		expect(ops.decide(conv.id, "run-dead", "nope", "skip").kind).toBe("refused");
@@ -169,7 +169,7 @@ describe("turn resume", () => {
 		const anchorSeq = appendUser(store, conv, "run the tool");
 		interruptedRun(store, journal, conv, "run-dead", { anchorSeq });
 		journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
-		journal.noteToolDispatch("run-dead", "c1");
+		journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 
 		const out = ops.resume(conv.id, "run-dead");
 		expect(out.kind).toBe("needs-decisions");
@@ -201,11 +201,11 @@ describe("turn resume", () => {
 		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
 		// completed — recorded, replays without executing.
 		journal.noteToolInput("run-src", "c-done", "probe", { q: 1 });
-		journal.noteToolDispatch("run-src", "c-done");
+		journal.noteToolDispatch("run-src", "c-done", "probe", { q: 1 });
 		journal.noteToolResult("run-src", "c-done", { out: "landed" });
 		// ambiguous — the operator authorizes re-running it.
 		journal.noteToolInput("run-src", "c-amb", "probe", { q: 2 });
-		journal.noteToolDispatch("run-src", "c-amb");
+		journal.noteToolDispatch("run-src", "c-amb", "probe", { q: 2 });
 		// planned — the dead model emitted it, execute never entered.
 		journal.noteToolInput("run-src", "c-plan", "probe", { q: 3 });
 
@@ -250,7 +250,7 @@ describe("turn resume", () => {
 		const anchorSeq = appendUser(store, conv, "run q7");
 		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
 		journal.noteToolInput("run-src", "c1", "probe", { q: 7 });
-		journal.noteToolDispatch("run-src", "c1");
+		journal.noteToolDispatch("run-src", "c1", "probe", { q: 7 });
 		expect(ops.decide(conv.id, "run-src", "c1", "record-result", "operator saw it land")).toEqual({
 			kind: "ok",
 		});
@@ -277,7 +277,7 @@ describe("turn resume", () => {
 		const anchorSeq = appendUser(store, conv, "run q5");
 		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
 		journal.noteToolInput("run-src", "c1", "probe", { q: 5 });
-		journal.noteToolDispatch("run-src", "c1");
+		journal.noteToolDispatch("run-src", "c1", "probe", { q: 5 });
 		expect(ops.decide(conv.id, "run-src", "c1", "skip", "do not rerun")).toEqual({ kind: "ok" });
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		expect(await sink()!.done).toEqual({ kind: "completed" });

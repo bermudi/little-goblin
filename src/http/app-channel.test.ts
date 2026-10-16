@@ -3430,7 +3430,7 @@ describe("app channel interrupted-run routes", () => {
 			const convId = await makeConv(call);
 			interruptedRun(store, wired.journal, convId, "run-dead");
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
-			wired.journal.noteToolDispatch("run-dead", "c1");
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 
 			const res = await call("/api/app/conversations/chat-01/interrupted");
 			expect(res.status).toBe(200);
@@ -3478,7 +3478,7 @@ describe("app channel interrupted-run routes", () => {
 			const convId = await makeConv(call);
 			interruptedRun(store, wired.journal, convId, "run-dead");
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
-			wired.journal.noteToolDispatch("run-dead", "c1");
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 
 			// Malformed JSON → 400; schema violation → 422; wrong media type → 415.
 			expect(
@@ -3561,7 +3561,7 @@ describe("app channel interrupted-run routes", () => {
 				anchorSeq: seq.at(-1)?.seq ?? null,
 			});
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
-			wired.journal.noteToolDispatch("run-dead", "c1");
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 
 			const blocked = await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
 				method: "POST",

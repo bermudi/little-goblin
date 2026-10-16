@@ -32,6 +32,7 @@ import {
 import type { AuthStore } from "../auth.ts";
 import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
+import { contextLimitCached } from "../agent/models-dev.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import {
 	ATTACHMENT_PART,
@@ -65,6 +66,7 @@ import { type Project, ProjectInputError, type ProjectStore } from "../projects.
 import type {
 	AppAttachmentResponse,
 	AppConfigView,
+	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationPatch,
@@ -653,6 +655,29 @@ function configView(cfg: Config, settings: ModelSettings = cfg): AppConfigView {
 			p === undefined
 				? [...thinkingLevels]
 				: [...thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined)],
+	};
+}
+
+// One stored turn's usage — the same narrowing the app client applies
+// to message.metadata (ChatView turnMeta). Unknown shapes read as
+// absent, never throw: history rows predate the stamp.
+function contextUsageOf(m: UIMessage): {
+	input: number | null;
+	output: number | null;
+	cacheRead: number | null;
+	cacheWrite: number | null;
+} | null {
+	const md = (m as { metadata?: unknown }).metadata;
+	if (typeof md !== "object" || md === null) return null;
+	const usage = (md as { usage?: unknown }).usage;
+	if (typeof usage !== "object" || usage === null) return null;
+	const u = usage as Record<string, unknown>;
+	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	return {
+		input: num(u.input),
+		output: num(u.output),
+		cacheRead: num(u.cacheRead),
+		cacheWrite: num(u.cacheWrite),
 	};
 }
 
@@ -1324,6 +1349,72 @@ export async function handleAppApi(
 		const cfg = deps.configRef.current;
 		const settings = store.initializeAppSettings(convId.id, cfg);
 		return Response.json(configView(cfg, settings), { headers: NO_STORE });
+	}
+
+	// GET /api/app/conversations/<id>/context — the last turn's window
+	// utilization plus cache-hit rates across stored turns. Read-only:
+	// no settings initialization, no epoch fence.
+	const contextMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/context$/);
+	if (contextMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(contextMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const row = store.get(convId.id);
+		if (row === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const model = row.model ?? deps.configRef.current.model;
+		const found: {
+			input: number | null;
+			output: number | null;
+			cacheRead: number | null;
+			cacheWrite: number | null;
+		}[] = [];
+		for (const m of store.history(convId.id)) {
+			if (m.role !== "assistant") continue;
+			const u = contextUsageOf(m);
+			if (u !== null) found.push(u);
+		}
+		const last = found.at(-1) ?? null;
+		const rates: number[] = [];
+		for (const u of found) {
+			if (u.input !== null && u.input > 0 && u.cacheRead !== null) {
+				rates.push(u.cacheRead / u.input);
+			}
+		}
+		let limit: number | null = null;
+		try {
+			const { provider, modelId } = splitModelRef(model);
+			limit = contextLimitCached(provider, modelId);
+		} catch {
+			limit = null;
+		}
+		const input = last?.input ?? null;
+		const body: AppContextView = {
+			model,
+			input,
+			output: last?.output ?? null,
+			cacheRead: last?.cacheRead ?? null,
+			cacheWrite: last?.cacheWrite ?? null,
+			cacheHitRate:
+				last !== null && last.input !== null && last.input > 0 && last.cacheRead !== null
+					? last.cacheRead / last.input
+					: null,
+			avgCacheHitRate:
+				rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
+			limit,
+			pct: input !== null && limit !== null && limit > 0 ? Math.round((input / limit) * 1000) / 10 : null,
+			turns: found.filter((u) => u.input !== null).length,
+		};
+		log.debug("app context served", {
+			conversation: convId.id,
+			input,
+			limit,
+			turns: body.turns,
+		});
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	const convMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/messages$/);

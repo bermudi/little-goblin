@@ -21,6 +21,7 @@ import {
 } from "ai";
 import {
 	getConfig,
+	getContext,
 	getConversationConfig,
 	getMessages,
 	listNotes,
@@ -36,7 +37,12 @@ import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
-import type { AppConfigView, AppNoteSummary, TurnMetadata } from "../../src/http/app-wire.ts";
+import type {
+	AppConfigView,
+	AppContextView,
+	AppNoteSummary,
+	TurnMetadata,
+} from "../../src/http/app-wire.ts";
 
 // ---------- transcript rendering ----------
 
@@ -725,6 +731,113 @@ function NotePicker({
 	);
 }
 
+// ---------- the context gauge ----------
+
+// Compact token counts — "340", "1.5k", "1.0M". One decimal only past
+// the thousand mark; below it the raw count.
+export function contextCount(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+	return `${n}`;
+}
+
+const contextRate = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
+
+// The gauge's one-line label for a context view. Null input reads as
+// "no turns yet" on a fresh conversation, "ctx ?" when turns exist but
+// the provider reported no usable counts.
+export function contextLabel(ctx: AppContextView | null): string {
+	if (ctx === null) return "…";
+	if (ctx.input === null) return ctx.turns === 0 ? "no turns yet" : "ctx ?";
+	if (ctx.limit === null) return `${contextCount(ctx.input)} tok`;
+	return `${contextCount(ctx.input)}/${contextCount(ctx.limit)} · ${ctx.pct === null ? "?" : `${ctx.pct}%`}`;
+}
+
+// The composer's context gauge — the last turn's window utilization
+// against the conversation model's catalog limit, with cache-hit rates
+// in the popover. Reads stay cheap: one GET on mount and one per
+// settled turn (busy → idle), never mid-stream.
+function ContextGauge({
+	token,
+	conversationId,
+	busy,
+}: {
+	token: string | null;
+	conversationId: string | undefined;
+	busy: boolean;
+}) {
+	const [ctx, setCtx] = useState<AppContextView | null>(null);
+	const [failed, setFailed] = useState(false);
+	const [open, setOpen] = useState(false);
+	const seq = useRef(0);
+	useEffect(() => {
+		if (conversationId === undefined || busy) return;
+		const n = ++seq.current;
+		setFailed(false);
+		void getContext(token, conversationId).then(
+			(c) => {
+				if (n === seq.current) setCtx(c);
+			},
+			() => {
+				if (n === seq.current) setFailed(true);
+			},
+		);
+	}, [token, conversationId, busy]);
+	if (conversationId === undefined) return null;
+	const barPct =
+		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	return (
+		<span className="ctx-gauge">
+			<button
+				type="button"
+				className="ctx-btn"
+				aria-label="Context window usage"
+				title={
+					ctx === null
+						? "Context window usage"
+						: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+				}
+				onClick={() => setOpen((v) => !v)}
+			>
+				{failed && ctx === null ? "ctx ?" : contextLabel(ctx)}
+			</button>
+			{open && ctx !== null && (
+				<div className="note-pick composer-pick ctx-pop" role="status">
+					<div className="ctx-head">
+						<span>Context window</span>
+						<span className="mono">
+							{ctx.input === null || ctx.limit === null
+								? "—"
+								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)} (${ctx.pct === null ? "?" : `${ctx.pct}%`})`}
+						</span>
+					</div>
+					<div className="ctx-bar" aria-hidden="true">
+						<span style={{ width: `${barPct}%` }} />
+					</div>
+					<dl className="ctx-rows">
+						<div>
+							<dt>Input</dt>
+							<dd className="mono">{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}</dd>
+						</div>
+						<div>
+							<dt>Cache hit</dt>
+							<dd className="mono">{contextRate(ctx.cacheHitRate)}</dd>
+						</div>
+						<div>
+							<dt>Avg cache hit</dt>
+							<dd className="mono">{contextRate(ctx.avgCacheHitRate)}</dd>
+						</div>
+					</dl>
+					<p className="empty">
+						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
+						{ctx.limit === null ? " · limit unknown" : ""}
+					</p>
+				</div>
+			)}
+		</span>
+	);
+}
+
 // Always present — on an empty conversation too. The draft is local;
 // staged attachments arrive from above so they outlive this instance
 // (#118). onSend hands the assembled parts up, where the caller either
@@ -1306,6 +1419,7 @@ export function Composer({
 						</label>
 					</>
 				)}
+				<ContextGauge token={token} conversationId={conversationId} busy={busy} />
 				{busy && onStop !== undefined ? (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.

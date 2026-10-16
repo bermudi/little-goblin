@@ -38,6 +38,7 @@ const catalogSchema = z.record(
 );
 
 type Catalog = z.infer<typeof catalogSchema>;
+export type ModelsDevCatalog = Catalog;
 
 function parseCatalog(disk: boolean, wire: unknown): Catalog {
 	const parsed = catalogSchema.safeParse(wire);
@@ -103,6 +104,23 @@ export function inputModalitiesCached(provider: string, modelId: string): Set<st
 // list the model — callers treat null as "unknown", never "unlimited".
 export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
 	const cat = await modelsDev.ensure();
+	if (!cat) return null;
+	const direct = cat[provider]?.models[modelId]?.limit?.context;
+	if (direct !== undefined) return direct;
+	for (const p of Object.values(cat)) {
+		const found = p.models[modelId]?.limit?.context;
+		if (found !== undefined) return found;
+	}
+	return null;
+}
+
+// Sync sibling of contextLimit for read paths that must never stall on
+// the network (HTTP routes). Reads only the in-memory catalog — null
+// when cold or unlisted, with no fetch kick: the turn path's async
+// ensure() warms it on the first real turn, which is also when stored
+// usage appears.
+export function contextLimitCached(provider: string, modelId: string): number | null {
+	const cat = modelsDev.current();
 	if (!cat) return null;
 	const direct = cat[provider]?.models[modelId]?.limit?.context;
 	if (direct !== undefined) return direct;
@@ -181,6 +199,11 @@ export function openrouterSupportedParams(modelId: string): Set<string> | null {
 // Test hook: prime or clear the sync cache without a network round-trip.
 export function _primeOpenRouterCatalog(catalog: Map<string, Set<string>> | null): void {
 	openrouter.prime(catalog);
+}
+
+// Test hook: prime or clear the sync cache without a network round-trip.
+export function _primeModelsDevForTest(catalog: ModelsDevCatalog | null): void {
+	modelsDev.prime(catalog);
 }
 
 // Test hook: force the next ensure onto the network path with a cold

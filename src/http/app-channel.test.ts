@@ -11,6 +11,10 @@ import {
 import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import { textModel } from "../testkit/fake-model.ts";
+import {
+	_primeModelsDevForTest,
+	_resetModelsDevForTest,
+} from "../agent/models-dev.ts";
 import { loadConfig, type Config, type ConfigRef } from "../config.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
@@ -1581,6 +1585,62 @@ test("conversation settings are isolated, durable, validated, and only future ch
 			reopened.close();
 		}
 	} finally {
+		http.stop();
+	}
+});
+
+test("conversation context reports last-turn usage, limit, and cache rates", async () => {
+	const { http, call } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
+	try {
+		expect((await call("/api/app/conversations/nope/context")).status).toBe(404);
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ctx-01" }),
+		});
+		// No turns yet — utilization unknown, zero turns, limit still known.
+		const empty = (await (await call("/api/app/conversations/ctx-01/context")).json()) as Record<
+			string,
+			unknown
+		>;
+		expect(empty).toMatchObject({
+			model: "zai/m",
+			input: null,
+			output: null,
+			limit: 1000,
+			pct: null,
+			turns: 0,
+			cacheHitRate: null,
+			avgCacheHitRate: null,
+		});
+		// One turn through the fake (input 1, output 2, no cache split).
+		await createAndChat(call, "hi", "ctx-01");
+		const one = (await (await call("/api/app/conversations/ctx-01/context")).json()) as Record<
+			string,
+			unknown
+		>;
+		expect(one).toMatchObject({
+			model: "zai/m",
+			input: 1,
+			output: 2,
+			limit: 1000,
+			pct: 0.1,
+			turns: 1,
+			cacheHitRate: null,
+			avgCacheHitRate: null,
+		});
+		expect(
+			(
+				await call("/api/app/conversations/ctx-01/context", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				})
+			).status,
+		).toBe(405);
+	} finally {
+		_resetModelsDevForTest();
 		http.stop();
 	}
 });

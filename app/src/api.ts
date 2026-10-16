@@ -12,6 +12,7 @@ import type {
 	AppAttachmentResponse,
 	AppConfigPatch,
 	AppConfigView,
+	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationPatch,
@@ -429,6 +430,13 @@ export function patchConversationConfig(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(patch),
 	});
+}
+
+// The composer's context gauge — last-turn window utilization for one
+// conversation. Null fields mean unknown (no turns yet, or the catalog
+// doesn't list the model), never zero.
+export function getContext(token: string | null, id: string): Promise<AppContextView> {
+	return request(token, `/api/app/conversations/${seg(id)}/context`);
 }
 
 // Read-aloud — reply text in, base64 ogg chunks out.

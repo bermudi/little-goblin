@@ -7,6 +7,7 @@ import {
 	fetchAttachment,
 	forgetMemoryDocument,
 	getConfig,
+	getContext,
 	getConversationConfig,
 	getMessages,
 	getOperatorConfig,
@@ -150,6 +151,37 @@ describe("model setting scopes", () => {
 			"unknown provider",
 		);
 		await expect(getConversationConfig(null, "app/missing")).rejects.toBeInstanceOf(ApiError);
+	});
+});
+
+describe("context", () => {
+	test("the gauge reads one conversation's context tail with the bearer", async () => {
+		const requests: Request[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				requests.push(new Request(new URL(String(input), "http://localhost"), init));
+				return Response.json({
+					model: "test/m",
+					input: 104000,
+					output: 2000,
+					cacheRead: 100000,
+					cacheWrite: null,
+					cacheHitRate: 0.9615,
+					avgCacheHitRate: 0.972,
+					limit: 1000000,
+					pct: 10.4,
+					turns: 3,
+				});
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		const view = await getContext("tok-1", "app/chat-1");
+		expect(view.pct).toBe(10.4);
+		expect(view.turns).toBe(3);
+		expect(requests.map((req) => [new URL(req.url).pathname, req.method])).toEqual([
+			["/api/app/conversations/chat-1/context", "GET"],
+		]);
+		expect(requests[0]!.headers.get("authorization")).toBe("Bearer tok-1");
 	});
 });
 

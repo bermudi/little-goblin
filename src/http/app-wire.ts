@@ -204,3 +204,26 @@ export interface TurnMetadata {
 		cacheWrite: number | null;
 	};
 }
+
+/** GET /api/app/conversations/<id>/context — the last turn's window
+ * utilization against the active model's catalog limit, plus the
+ * cache-hit rates across stored turns. Nulls mean unknown (no turns
+ * yet, or the catalog doesn't list the model) — never zero. */
+export interface AppContextView {
+	/** The active "<provider>/<model>" ref the limit was looked up for. */
+	model: string;
+	input: number | null;
+	output: number | null;
+	cacheRead: number | null;
+	cacheWrite: number | null;
+	/** Last turn's cacheRead/input, null when uncomputable. */
+	cacheHitRate: number | null;
+	/** Mean cacheRead/input across stored turns, null when none qualify. */
+	avgCacheHitRate: number | null;
+	/** Catalog context limit in tokens, null when unlisted. */
+	limit: number | null;
+	/** input/limit as a percentage with one decimal, null when unknown. */
+	pct: number | null;
+	/** Stored turns carrying usage — the average's denominator. */
+	turns: number;
+}

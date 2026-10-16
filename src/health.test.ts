@@ -817,6 +817,7 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 		const fake = {
 			type: 1n,
 			bsize: 1n,
+			frsize: 1n,
 			blocks: 100n,
 			bfree: 0n,
 			bavail: 8n * 1024n ** 3n,
@@ -882,6 +883,7 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				const statfs = spyOn(fs, "statfsSync").mockReturnValue({
 					type: 1n,
 					bsize: 1n,
+					frsize: 1n,
 					blocks: 100n,
 					bfree: 0n,
 					bavail: mode.startsWith("low-space") ? 1n : 8n * 1024n ** 3n,

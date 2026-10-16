@@ -206,6 +206,24 @@ describe("turn resume", () => {
 		store.close();
 	});
 
+	test("a digit-string tool call id decides itself, not the ordinal", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		interruptedRun(store, journal, conv, "run-dead");
+		journal.noteToolInput("run-dead", "c9", "probe", { q: 1 });
+		journal.noteToolDispatch("run-dead", "c9", "probe", { q: 1 });
+		journal.noteToolInput("run-dead", "1", "probe", { q: 2 });
+		journal.noteToolDispatch("run-dead", "1", "probe", { q: 2 });
+
+		// "1" is the second call's id, not the first numbered row —
+		// a pure-digit ref must name the call, not the ordinal.
+		expect(ops.decide(conv.id, "run-dead", "1", "skip").kind).toBe("ok");
+		const calls = journal.callsFor("run-dead");
+		expect(calls.find((c) => c.toolCallId === "1")!.state).toBe("resolved-skip");
+		expect(calls.find((c) => c.toolCallId === "c9")!.state).toBe("dispatched");
+		await runtime.shutdown();
+		store.close();
+	});
+
 	test("resume refuses while ambiguous calls stay undecided", async () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		const anchorSeq = appendUser(store, conv, "run the tool");

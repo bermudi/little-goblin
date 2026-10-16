@@ -319,7 +319,12 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const all = journal.callsFor(found.run.runId);
 			const numbered = numberedCalls(all);
 			let call: TurnToolCall | undefined;
-			if (/^\d+$/.test(callRef)) {
+			// An exact id wins over the ordinal namespace — a toolCallId
+			// that is itself all digits must still name its own call.
+			const exact = all.find((c) => c.toolCallId === callRef);
+			if (exact !== undefined) {
+				call = exact;
+			} else if (/^\d+$/.test(callRef)) {
 				// Ordinals index the numbered list — stable across decisions,
 				// the numbering /resume prints.
 				const i = Number.parseInt(callRef, 10) - 1;
@@ -330,12 +335,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					);
 				}
 				call = numbered[i];
-				if (call !== undefined && call.state !== "dispatched") {
-					return refused(
-						"conflict",
-						`call ${callRef} is already '${call.state}' — no decision to take`,
-					);
-				}
 			} else {
 				// Id refs search every journaled call, so a retry on a
 				// settled call reads as the conflict it is, not a miss.
@@ -353,15 +352,15 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					);
 				}
 				call = matches[0];
-				if (call !== undefined && call.state !== "dispatched") {
-					return refused(
-						"conflict",
-						`call ${call.toolCallId.slice(0, 8)} is already '${call.state}' — no decision to take`,
-					);
-				}
 			}
 			if (call === undefined) {
 				return refused("not-found", `no undecided call matching '${callRef}'`);
+			}
+			if (call.state !== "dispatched") {
+				return refused(
+					"conflict",
+					`call ${call.toolCallId.slice(0, 8)} is already '${call.state}' — no decision to take`,
+				);
 			}
 			try {
 				journal.resolveCall(found.run.runId, call.toolCallId, decision, note);

@@ -10,7 +10,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { openStore, type Conversation, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
-import { Runtime, type TurnDone, userMessage } from "./runtime.ts";
+import { Runtime, type RuntimeDeps, type TurnDone, userMessage } from "./runtime.ts";
 import {
 	finishPart,
 	scriptedModel,
@@ -32,21 +32,29 @@ function setup(opts: {
 	// What makeTools registers beyond `probe` — the surface check reads
 	// these names against the recorded tool surface.
 	tools?: Record<string, ReturnType<typeof tool>>;
+	// Journal wrapper — the fault-injection tests break writes on the
+	// runtime's own db, not a side store.
+	wrapJournal?: (journal: TurnJournal) => TurnJournal;
+	// Tool-factory override — the early-failure test throws inside it.
+	makeTools?: RuntimeDeps["makeTools"];
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	const journal = openTurnJournal(store.db);
+	const real = openTurnJournal(store.db);
+	const journal = opts.wrapJournal?.(real) ?? real;
 	const executed: { name: string; args: unknown }[] = [];
-	const makeTools = () => ({
-		probe: tool({
-			inputSchema: z.object({ q: z.number() }),
-			execute: async (args: { q: number }) => {
-				executed.push({ name: "probe", args });
-				return { ok: true, q: args.q };
-			},
-		}),
-		...(opts.tools ?? {}),
-	});
+	const makeTools =
+		opts.makeTools ??
+		(() => ({
+			probe: tool({
+				inputSchema: z.object({ q: z.number() }),
+				execute: async (args: { q: number }) => {
+					executed.push({ name: "probe", args });
+					return { ok: true, q: args.q };
+				},
+			}),
+			...(opts.tools ?? {}),
+		}));
 	const edge = scriptedModel(opts.attempts ?? [textParts("resumed answer")]);
 	const runtime = new Runtime({
 		store,
@@ -77,6 +85,7 @@ function setup(opts: {
 		ops,
 		executed,
 		notices,
+		edge,
 		sink: () => sink,
 	};
 }
@@ -228,10 +237,25 @@ describe("turn resume", () => {
 			.all("run-src");
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.status).toBe("completed");
-		// The replayed dispatch+result journaled under the new run row.
+		// The replayed dispatch+result journaled under the new run row —
+		// alongside the source's settled history it inherited.
 		const newCalls = journal.callsFor(rows[0]!.run_id);
-		expect(newCalls.map((c) => c.toolCallId).sort()).toEqual(["n1", "n2", "n3"]);
-		expect(newCalls.every((c) => c.state === "completed")).toBe(true);
+		expect(newCalls.map((c) => c.toolCallId).sort()).toEqual([
+			"c-amb",
+			"c-done",
+			"c-plan",
+			"n1",
+			"n2",
+			"n3",
+		]);
+		// The inherited rows carry the source's states verbatim: 'dispatched'
+		// stays un-inherited — ambiguity remains owned by the row that ran.
+		expect(newCalls.find((c) => c.toolCallId === "c-done")!.state).toBe("completed");
+		expect(newCalls.find((c) => c.toolCallId === "c-amb")!.state).toBe("resolved-retry");
+		expect(newCalls.find((c) => c.toolCallId === "c-plan")!.state).toBe("planned");
+		expect(
+			newCalls.filter((c) => c.toolCallId.startsWith("n")).every((c) => c.state === "completed"),
+		).toBe(true);
 		expect(newCalls.find((c) => c.toolCallId === "n1")!.result).toBe('{"out":"landed"}');
 		// Headless notice fired exactly once with the terminal outcome.
 		await waitUntil(() => notices.length === 1, "done notice");
@@ -425,6 +449,72 @@ describe("turn resume", () => {
 			kind: "refused",
 			code: "unavailable",
 		});
+		store.close();
+	});
+
+	test("a journal write failure is a fatal turn error — the call never repeats", async () => {
+		// The result write dies after execute() already ran — an ordinary
+		// tool error would invite the model to re-issue the side effect.
+		const { store, conv, runtime, executed, edge } = setup({
+			wrapJournal: (real) => ({
+				...real,
+				noteToolResult() {
+					throw new Error("journal write exploded");
+				},
+			}),
+			attempts: [[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")]],
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), sink);
+		const done = await sink.done;
+		expect(done.kind).toBe("error");
+		// Exactly one dispatch ran, and the model never saw a retryable
+		// tool error — the stream died with the journal.
+		expect(executed).toEqual([{ name: "probe", args: { q: 1 } }]);
+		expect(edge.streamCalls).toHaveLength(1);
+		// The run row reads error, not completed — a completed run with
+		// dispatched calls is the lie this fix removes.
+		const row = store.db
+			.query<{ status: string }, []>("SELECT status FROM turn_runs")
+			.get();
+		expect(row?.status).toBe("error");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a resume dying before its successor keeps the source resumable", async () => {
+		// makeTools is called once by ops.resume's surface check and once
+		// inside the admitted attempt — the second call throwing is the
+		// /stop-then-crash shape: admission accepted, successor never begun.
+		let calls = 0;
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			makeTools: () => {
+				calls++;
+				if (calls === 2) throw new Error("tool factory exploded");
+				return {
+					probe: tool({
+						inputSchema: z.object({ q: z.number() }),
+						execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
+					}),
+				};
+			},
+		});
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		const done = await sink()!.done;
+		expect(done.kind).toBe("error");
+		// The successor never began — the source row stays interrupted.
+		expect(journal.get("run-src")!.status).toBe("interrupted");
+		// The claim released on terminal delivery — once the dead attempt's
+		// lane drains, the operator can take the same run again instead of
+		// hitting 'already in flight'.
+		await waitUntil(() => !runtime.busy(conv.id), "dead attempt's lane drains");
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		expect(journal.get("run-src")!.status).toBe("resumed");
+		await runtime.shutdown();
 		store.close();
 	});
 });

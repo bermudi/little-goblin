@@ -475,6 +475,96 @@ describe("openCachePruning", () => {
 		});
 		f.store.close();
 	});
+
+	test("a contradiction stays suspended past a later cache hit — only a profile change lifts", () => {
+		const f = fixture();
+		// The contradiction: a same-prefix zero-read inside the window.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+		f.advance(1_000);
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+			cacheRead: 0,
+		});
+		f.advance(IDLE_AFTER + 1);
+		expect(f.pruning.pruneConversation(f.conv.id)).toEqual({
+			pruned: 0,
+			reason: "drift-contradiction",
+		});
+		// A healthy cache-hit receipt used to REPLACE the last-completed
+		// evidence and silently re-arm pruning under the same profile.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+			cacheRead: 40_000,
+		});
+		f.advance(IDLE_AFTER + 1);
+		expect(f.pruning.pruneConversation(f.conv.id)).toEqual({
+			pruned: 0,
+			reason: "drift-contradiction",
+		});
+		// The only lift is a changed profile — even a reviewedAt bump
+		// hashes differently. Same store, same conversation, new policy.
+		f.advance(IDLE_AFTER + 1);
+		const revised = {
+			...f.cfg,
+			cachePruning: policyFor(f.cfg, { profile: { reviewedAt: "2026-10-21T00:00:00.000Z" } }),
+		};
+		const lifted = openCachePruning({
+			store: f.store,
+			observation: f.observation,
+			getConfig: () => revised,
+			now: f.now,
+		});
+		expect(lifted.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		f.store.close();
+	});
+
+	test("evidence from other settings neither suspends nor gates the selected profile", () => {
+		const f = fixture();
+		// Contradicting receipts recorded under a DIFFERENT settings
+		// hash — the shape a thinking-level change leaves behind.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, "0".repeat(64));
+		f.advance(1_000);
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, "0".repeat(64), {
+			cacheRead: 0,
+		});
+		f.advance(IDLE_AFTER + 1);
+		// No completed call exists under the selected settings — the
+		// old evidence must not stand in as the idle basis NOR suspend.
+		expect(f.pruning.pruneConversation(f.conv.id)).toBeUndefined();
+		// A healthy call under the selected settings then prunes — the
+		// foreign receipts never governed this profile either way.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+			cacheRead: 40_000,
+		});
+		f.advance(IDLE_AFTER + 1);
+		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		f.store.close();
+	});
+
+	test("a marker that would not shrink the result commits nothing", () => {
+		// minimumResultChars admits the candidate, but head+tail plus the
+		// fixed marker outweigh it — the old path committed the growth.
+		const f = fixture({ policy: { minimumResultChars: 400 } });
+		const small = "y".repeat(450);
+		// Two trailing user events move the recency cutoff past seq 5.
+		f.store.append(f.conv.id, [toolMsg("call-small", small)]); // seq 5
+		f.store.append(f.conv.id, [userMsg("third"), userMsg("fourth")]); // seq 6-7
+		const marker = pruningReplacement({
+			conversation: f.conv.id,
+			seq: 5,
+			toolCallId: "call-small",
+			text: small,
+			headChars: 10,
+			tailChars: 10,
+		});
+		expect(marker.length).toBeGreaterThanOrEqual(small.length);
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+		f.advance(IDLE_AFTER + 1);
+		// The big result still prunes; the would-grow one is skipped.
+		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		expect(f.store.eventProjections(f.conv.id)).toHaveLength(1);
+		const view = f.store.modelEntries(f.conv.id);
+		expect(toolOutput(view.find((e) => e.seq === 5)?.message)).toBe(small);
+		f.store.close();
+	});
 });
 
 describe("cachePruningSchema", () => {

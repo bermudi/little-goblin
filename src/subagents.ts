@@ -1722,7 +1722,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					diagnostics: [...capturedDiagnostics, ...(result.diagnostics ?? [])],
 				};
 				await commitApprovalLease(api, approvalDoneRow(asJson(effective)), context);
-				return result;
+				// The settled tool-result replay and the model-facing
+				// result both come from this return — the lease doc
+				// itself retires with the tool task, so it can only
+				// cover a crash inside the call's own window.
+				return effective;
 			},
 		} as T;
 	}

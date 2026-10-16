@@ -7,6 +7,7 @@
 // never the model.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import {
 	chmodSync,
 	existsSync,
@@ -4759,6 +4760,146 @@ describe("subagents crash approval", () => {
 		const row = r2.runs.get(rowId)!;
 		expect(row.status).toBe("stopped");
 		expect(row.pendingApproval).toBeNull();
+	}, 60_000);
+
+	test("a park write that cannot persist fences the run — no undecided retry", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1, resume: false });
+		const o2 = await open(r2);
+		// The durable park update throws — the wedged-store shape the
+		// review reproduced. It must never degrade to a tool error the
+		// model can answer with an undecided retry.
+		const orig = r2.runs.update.bind(r2.runs);
+		r2.runs.update = (id, patch) => {
+			if (patch.status === "needs_input" && patch.pendingApproval !== undefined) {
+				throw new Error("pending_approval write rejected");
+			}
+			return orig(id, patch);
+		};
+		await o2.resume();
+		await until(async () => {
+			const s = r2.runs.get(rowId)?.status;
+			if (s === "stopped" || s === "failed") return true;
+			try {
+				await o2.scan();
+			} catch {
+				// a scan during the fence may fail — keep polling
+			}
+			return false;
+		}, "the fenced run settles");
+		const settled = r2.runs.get(rowId)!;
+		expect(settled.status).not.toBe("done");
+		expect(settled.status).not.toBe("running");
+		expect(settled.status).not.toBe("needs_input");
+		// The model never got the call back — the sandbox ran it once, ever.
+		expect(sandboxes.dispatchCalls).toBe(1);
+	}, 60_000);
+
+	test("a decided run waits for a global slot — it cannot jump a running sibling", async () => {
+		const sandboxes = fakeSandboxes();
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-approval-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes, maxRuns: 1 });
+		const o1 = await open(r1);
+		sandboxes.execGate = new Promise<void>(() => {});
+		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
+		sandboxes.sandboxDead = true;
+		await o1.close();
+		owners = owners.filter((x) => x !== o1);
+
+		const r2 = rig({
+			reuse: { dbPath, storagePath },
+			model: r1.model,
+			sandboxes,
+			maxRuns: 1,
+		});
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.pendingApproval !== null, "parked");
+		// The box answers again; a sibling run takes the freed slot and
+		// holds it mid-dispatch on a fresh gate — resolving THAT promise
+		// is what frees the held call, not clearing execGate.
+		sandboxes.sandboxDead = false;
+		let releaseSibling: (() => void) | null = null;
+		sandboxes.execGate = new Promise<void>((res) => (releaseSibling = res));
+		r2.model.push({
+			kind: "tools",
+			calls: [{ name: "bash", args: { command: "sibling-work" } }],
+		});
+		const b = await o2.start({
+			kind: "worker",
+			conversationId: "conv:other",
+			workspace: r2.workspace,
+			task: "u",
+		});
+		await until(() => r2.runs.get(b.id)?.status === "running", "sibling admitted");
+		await until(() => sandboxes.dispatchCalls >= 2, "sibling dispatch held mid-flight");
+		// The verdict is durable but the run stays queued — maxRuns:1 has
+		// no slot while the sibling holds it.
+		const decided = await o2.decide(a.id, WS, {
+			kind: "record-result",
+			result: "verified by hand",
+		});
+		expect(decided.status).toBe("queued");
+		await Bun.sleep(400);
+		expect(r2.runs.get(a.id)?.status).toBe("queued");
+		// Once the sibling settles the queued verdict admits.
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "sib done" } }] });
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed" } }] });
+		releaseSibling!();
+		sandboxes.execGate = null;
+		await until(() => r2.runs.get(b.id)?.status === "done", "sibling done");
+		await until(() => r2.runs.get(a.id)?.status === "done", "decided run admitted and settled");
+		// markit dispatched once, sibling-work once — nothing more.
+		expect(sandboxes.dispatchCalls).toBe(2);
+	}, 60_000);
+
+	test("a completed call replays the streamed output after a restart, not the bare return", async () => {
+		const sandboxes = fakeSandboxes();
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-done-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes });
+		const o1 = await open(r1);
+		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "echo lease-out" } }] });
+		// Pi's bash streams stdout through api.output() and returns {}
+		// — the gate must fold the stream into the call's durable
+		// result or a post-settle restart replays "(no tool output)".
+		// Hold the model call that follows the completed call, then
+		// drop the owner: the crash lands AFTER the tool settled, so
+		// recovery replays the stored result.
+		r1.model.push({ kind: "hold", gate: new Promise<void>(() => {}) });
+		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => r1.model.seen.length === 2, "post-tool model call held");
+		expect(sandboxes.dispatchCalls).toBe(1);
+		await o1.close();
+		owners = owners.filter((x) => x !== o1);
+
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.status === "done", "recovered run done");
+		expect(sandboxes.dispatchCalls).toBe(1);
+		// The recovery-side model request carries the replayed tool
+		// result — it must be the streamed output, not the bare {}.
+		const recovered = JSON.stringify(r2.model.seen.at(-1)?.messages);
+		expect(recovered).toContain("lease-out");
+		expect(recovered).not.toContain("(no tool output)");
 	}, 60_000);
 });
 

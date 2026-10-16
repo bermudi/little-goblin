@@ -255,6 +255,53 @@ describe("turn journal", () => {
 		store.close();
 	});
 
+	test("dispatch journals the call's identity even without a stream row", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		// The SDK's execution pipeline committed before the input chunk
+		// landed — the row must still decide-and-refuse by identity.
+		journal.noteToolDispatch(runId, "c1", "probe", { q: 9 });
+		const call = journal.callsFor(runId)[0]!;
+		expect(call.state).toBe("dispatched");
+		expect(call.name).toBe("probe");
+		expect(call.argsHash).not.toBe("");
+		journal.resolveCall(runId, "c1", "skip", "not again");
+		// A re-asked identical call matches the refusal by name:argsHash.
+		expect([...journal.skippedMap(runId).keys()]).toHaveLength(1);
+		store.close();
+	});
+
+	test("inheritCalls carries settled history to the successor, never 'dispatched'", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const src = begunRun(journal, conv.id, "run-src");
+		journal.noteToolInput(src, "done", "probe", { q: 1 });
+		journal.noteToolDispatch(src, "done", "probe", { q: 1 });
+		journal.noteToolResult(src, "done", { out: "landed" });
+		journal.noteToolInput(src, "amb", "probe", { q: 2 });
+		journal.noteToolDispatch(src, "amb", "probe", { q: 2 });
+		journal.noteToolInput(src, "plan", "probe", { q: 3 });
+		journal.resolveCall(src, "amb", "skip", "nope");
+
+		const next = begunRun(journal, conv.id, "run-next");
+		journal.inheritCalls(src, next);
+		const calls = journal.callsFor(next);
+		// 'resolved-skip' and 'planned' and 'completed' inherit; the
+		// source's own undecided 'dispatched' window does not move.
+		expect(calls.map((c) => c.toolCallId).sort()).toEqual(["amb", "done", "plan"]);
+		expect(calls.find((c) => c.toolCallId === "done")!.result).toBe('{"out":"landed"}');
+		expect(calls.find((c) => c.toolCallId === "amb")!.state).toBe("resolved-skip");
+		// The successor's replay surface sees the inherited result.
+		expect(journal.replayMap(next).size).toBe(1);
+		// Idempotent: a second inherit adds nothing.
+		journal.inheritCalls(src, next);
+		expect(journal.callsFor(next)).toHaveLength(3);
+		store.close();
+	});
+
 	test("markRun moves only an interrupted run to resumed or abandoned", () => {
 		const dbPath = tmpDb("goblin-tj-");
 		const store = openStore(dbPath);

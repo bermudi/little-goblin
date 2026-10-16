@@ -179,6 +179,23 @@ describe("voice cast", () => {
 		expect(detectLanguage("Sure, the work is done and the build is green")).toBe("en");
 	});
 
+	test("an accented loanword or name in english doesn't cast spanish", () => {
+		// é/á/ü ride english text (résumé, café, José) — a borrowed word is
+		// weak evidence, never a whole-sentence verdict.
+		for (const text of [
+			"José fixed it.",
+			"Send me your résumé.",
+			"Meet me at the café after lunch.",
+			"The piñata was the best part of the party.",
+		]) {
+			expect(detectLanguage(text), text).not.toBe("es");
+		}
+		// The strong marks stay decisive on their own.
+		expect(detectLanguage("Mañana.")).toBe("es");
+		expect(detectLanguage("¿Seguro?")).toBe("es");
+		expect(detectLanguage("Está lindísimo todo esto")).toBe("es");
+	});
+
 	test("without a cast, the default voice speaks everything", () => {
 		expect(pickVoice("Hola, ¿qué tal?", "en-US-AndrewNeural", undefined)).toBe(
 			"en-US-AndrewNeural",

@@ -247,11 +247,11 @@ describe("turn journal — a real killed process", () => {
 			expect(executed).toEqual([]); // replayed, never re-executed
 			// The re-ask journaled on the successor with replay provenance
 			// — one execution, one replay credit, however many resumes.
-			const rows = store.db
-				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
-				.all()
-				.map((r) => r.run_id);
-			const successor = rows.find((r) => r !== continuation.runId)!;
+			const successor = store.db
+				.query<{ run_id: string }, [string]>(
+					"SELECT run_id FROM turn_runs WHERE resumed_from = ?",
+				)
+				.get(continuation.runId)!.run_id;
 			const successorCalls = journal.callsFor(successor);
 			const reask = successorCalls.find((c) => c.toolCallId === "call-reask")!;
 			expect(reask.state).toBe("completed");

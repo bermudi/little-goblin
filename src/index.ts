@@ -42,6 +42,7 @@ import {
 	type TtsConfig,
 } from "./config.ts";
 import {
+	APP_ID_PREFIX,
 	type Conversation,
 	captureConversationSettings,
 	channelOf,
@@ -980,12 +981,19 @@ async function boot() {
 	// boot; the log line is the record.
 	for (const run of turnJournal.interrupted()) {
 		const conv = store.get(run.conversationId);
+		// The notice lands in the operator DM, but /resume resolves against
+		// the conversation the command arrives in — say where to send it.
+		// App lanes are unreachable from Telegram; only the app surfaces
+		// them (its /interrupted route).
+		const resumeHow = run.conversationId.startsWith(APP_ID_PREFIX)
+			? "open that conversation in the app to resume it — Telegram /resume can't reach app lanes."
+			: `resume explicitly with /resume ${run.runId.slice(0, 8)} sent in that conversation, not in this DM.`;
 		const text =
 			`interrupted turn ${run.runId.slice(0, 8)} — ` +
 			`${conv?.title ?? run.conversationId}, started ${new Date(run.startedMs).toISOString()}: ` +
 			`${run.calls.completed} completed, ${run.calls.dispatched} dispatched (ambiguous), ` +
 			`${run.calls.resolved} decided, ${run.calls.planned} planned tool call(s). ` +
-			`The turn was not replayed — resume explicitly with /resume ${run.runId.slice(0, 8)}.`;
+			`The turn was not replayed — ${resumeHow}`;
 		for (const chat of configRef.current.operators) {
 			try {
 				await withTimeout(

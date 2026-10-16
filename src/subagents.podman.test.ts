@@ -22,6 +22,7 @@ import { makePodman, type Podman } from "./podman.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "./sandboxes.ts";
 import type { Context } from "@earendil-works/chord";
+import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import { makeSandboxEnv, openSubagents, type Subagents } from "./subagents.ts";
 
@@ -426,6 +427,38 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			await sandboxes!.catFile(CONV, spill!);
 		}
 	}, 180_000);
+
+	// The upstream conformance runner against the same real sandbox:
+	// every case gets a fresh /work directory as its cwd, and every call
+	// inside is a real podman exec. `it` floors the case budget at 60 s —
+	// the runner's own 30 s watch budget stays — because a real exec is
+	// ~200 ms and bun's 5 s default kills mid-case, restarts cascading.
+	let confSeq = 0;
+	registerEnvConformance(
+		{
+			describe,
+			it: (name: string, fn: () => Promise<void>, timeoutMs?: number) =>
+				test(name, fn, timeoutMs ?? 60_000),
+			expect,
+		},
+		"ExecutionEnv conformance (real sandbox)",
+		async (run) => {
+			const seq = confSeq++;
+			const dir = `/work/conf-${seq}`;
+			const mk = await sandboxes!.exec(CONV, `mkdir -p -- ${dir}`, {
+				timeoutMs: 30_000,
+				maxOutput: 1024,
+			});
+			if (mk.result.exitCode !== 0) {
+				throw new Error(
+					`conformance mkdir ${dir}: exit ${mk.result.exitCode ?? "killed"}: ${mk.result.stderr.trim()}`,
+				);
+			}
+			const env = makeSandboxEnv(sandboxes!, join(cwd, `transfer-conf-${seq}`), CONV);
+			env.cwd = dir;
+			await run(env);
+		},
+	);
 
 	// The crash-gap promise against a real container: the owner process
 	// dies mid-bash, recovery reports the call interrupted, and the

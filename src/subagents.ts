@@ -17,84 +17,87 @@
 // replay-unsafe; only observation and the terminal writes are
 // replay:"safe".
 
+import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, posix } from "node:path";
-import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
+import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+	type CredentialStore,
 	createModels,
 	createProvider,
 	envApiKeyAuth,
 	InMemoryCredentialStore,
-	Type,
-	type CredentialStore,
 	type Model,
+	Type,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
 import {
+	type ConversationId,
 	createRegistry,
 	defineDoc,
 	defineExtension,
 	defineTool,
-	hook,
-	ToolTask,
 	GenerationTask,
 	Harness,
-	type Submission,
 	type HookApi,
+	hook,
+	type Submission,
+	type SubmissionId,
 	type ToolExecutionApi,
 	type ToolExecutionResult,
 	type ToolRegistration,
-	type ConversationId,
-	type SubmissionId,
+	ToolTask,
 } from "@earendil-works/pi-durable";
+import type {
+	BinaryReader,
+	DirReader,
+	ExecutionEnv,
+	ExecutionError,
+	FileInfo,
+	FileWatcher,
+	LineScan,
+	Result,
+	ShellExecOptions,
+	ShellExecResult,
+	ShellOutputInfo,
+	ShellOutputSkip,
+	ShellOutputWindow,
+	TextLine,
+	TextLineReader,
+	WatchChange,
+	WatchTarget,
+} from "@earendil-works/pi-durable/env";
+import {
+	err,
+	FileError,
+	LineScanner,
+	ok,
+	ExecutionError as PiExecutionError,
+} from "@earendil-works/pi-durable/env";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
 	createBashTool,
 	createEditTool,
 	createReadTool,
 	createWriteTool,
 } from "@earendil-works/pi-durable/tools";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-	ShellExecResult,
-	TextLine,
-	TextLineReader,
-} from "@earendil-works/pi-durable/env";
-import {
-	err,
-	FileError,
-	ok,
-	ExecutionError as PiExecutionError,
-} from "@earendil-works/pi-durable/env";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
+import { exportNamedBytes, readImport } from "./box-files.ts";
 import type { SubagentsConfig } from "./config.ts";
 import {
 	CUA_TOOLS,
+	type CuaTool,
 	DesktopError,
 	DesktopLeaseError,
 	type Desktops,
-	type CuaTool,
 	type LeaseHolder,
 } from "./desktops.ts";
+import { log } from "./log.ts";
 import { PodmanError } from "./podman.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
-import {
-	MAX_INPUT_FILES,
-	MAX_MESSAGE_CHARS,
-	MAX_RESULT_CHARS,
-	MAX_TASK_CHARS,
-	type InputMode,
-	type SubagentKind,
-	type SubagentRun,
-	type SubagentRuns,
-} from "./subagent-runs.ts";
 import {
 	ASK_OPERATOR_TOOL_DESCRIPTION,
 	COMPUTER_PROMPT,
@@ -106,8 +109,16 @@ import {
 	WORKER_BASH_DESCRIPTION,
 	WORKER_PROMPT,
 } from "./subagent-prompts.ts";
-import { exportNamedBytes, readImport } from "./box-files.ts";
-import { log } from "./log.ts";
+import {
+	type InputMode,
+	MAX_INPUT_FILES,
+	MAX_MESSAGE_CHARS,
+	MAX_RESULT_CHARS,
+	MAX_TASK_CHARS,
+	type SubagentKind,
+	type SubagentRun,
+	type SubagentRuns,
+} from "./subagent-runs.ts";
 
 export class SubagentError extends Error {
 	constructor(message: string) {
@@ -128,11 +139,34 @@ const ADMIT_RETRY_BASE_MS = 5_000;
 // path may hold its slot and lease forever.
 const RECOVERY_MAX_ATTEMPTS = 10;
 const READ_CAP = 100 * 1024 * 1024;
+/** Bounded scan reads; 8 MiB keeps a 1 GiB scan at ~128 podman execs. */
+const SCAN_CHUNK_BYTES = 8 * 1024 * 1024;
+const WATCH_POLL_MS = 500;
 const SHELL_TIMEOUT_DEFAULT_S = 60;
 const SHELL_TIMEOUT_CAP_S = 600;
-const SPILL_TAIL_BYTES = 256 * 1024;
 const SPILL_CAP_BYTES = 100 * 1024 * 1024;
 const INSPECT_STATE_CAP = 200_000;
+
+// One goblin exec captures stdout and stderr in separate guest files — the
+// streams must stay apart for delivery (ShellOutputInfo.stream), and
+// `ulimit -f` bounds each file on its own. The wrapper's own exit status is
+// reserved for start failures (96 = cd failed, 97 = program missing), so the
+// command's exit code exists only in the rc file: a command exiting 96/97 or
+// 125–127 itself can never be misread as a wrapper failure.
+const EXEC_SH_SCRIPT =
+	'cd "$1" || { echo "cd failed: $1" >&2; exit 96; }; ( ulimit -f "$6" 2>/dev/null; /bin/sh -c "$5" >"$2" 2>"$3"; printf %s "$?" >"$4" )';
+const EXEC_ARGV_SCRIPT =
+	'cd "$1" || { echo "cd failed: $1" >&2; exit 96; }; p="$5"; command -v "$p" >/dev/null 2>&1 || { echo "program not found: $p" >&2; exit 97; }; cap="$6"; out="$2"; err="$3"; rc="$4"; shift 6; ( ulimit -f "$cap" 2>/dev/null; "$p" "$@" >"$out" 2>"$err"; printf %s "$?" >"$rc" )';
+
+/** `wc -l -c` over one captured stream. */
+type StreamMeasure = { path: string; bytes: number; newlines: number };
+/** The caller's retained tail, normalized for arithmetic. */
+type TailWindow = { maxBytes: number; maxLines: number };
+type StreamDelivery = { kind: "ok" } | { kind: "aborted" } | { kind: "failed"; message: string };
+
+function finiteFloor(value: number): number {
+	return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
 
 // ---------- the typed run document ----------
 
@@ -538,6 +572,387 @@ class SandboxEnv implements ExecutionEnv {
 	readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
 		return this.catBytes(path, context);
 	}
+	// `openBinaryReader` must keep reading the file it opened even after
+	// the path is renamed, and no guest process can hold an fd for us
+	// across podman execs — a hidden same-directory hardlink pins the
+	// inode instead. When linking fails (read-only directory, filesystem
+	// without links) reads fall back to the path: weaker (a rename steals
+	// them), warned about, never silent.
+	private async pinFile(
+		path: string,
+		abs: string,
+		context: Context,
+	): Promise<Result<{ readPath: string; pinPath: string | null }, FileError>> {
+		const pinPath = `${posix.dirname(abs)}/.goblin-br-${Math.random().toString(16).slice(2)}`;
+		const link = await this.run(["ln", abs, pinPath], undefined, context);
+		if (!link.timedOut && link.exitCode === 0) {
+			return ok({ readPath: pinPath, pinPath });
+		}
+		if (context.abortSignal?.aborted) return aborted();
+		log.warn("sandbox binary reader unpinned", {
+			conversation: this.origin,
+			path: abs,
+			exitCode: link.exitCode,
+			timedOut: link.timedOut,
+			stderr: link.stderr.trim().slice(0, 200),
+		});
+		return ok({ readPath: abs, pinPath: null });
+	}
+	/** One positional read. dd's `iflag=skip_bytes` seeks on regular files,
+	 *  so the cost is the transferred bytes, not the offset. */
+	private async readBytesAt(
+		readPath: string,
+		offset: number,
+		length: number,
+		path: string,
+		context: Context,
+	): Promise<Result<Uint8Array, FileError>> {
+		const { result } = await this.sandboxes.execBytesArgv(
+			this.origin,
+			[
+				"dd",
+				`if=${readPath}`,
+				"iflag=skip_bytes,count_bytes",
+				`skip=${offset}`,
+				`count=${length}`,
+				"bs=1M",
+			],
+			{
+				timeoutMs: 120_000,
+				maxOutput: length + 4096,
+				...(context.abortSignal !== undefined ? { abortSignal: context.abortSignal } : {}),
+			},
+		);
+		if (result.timedOut) return envErr("unknown", `${path}: read timed out`, path);
+		if (context.abortSignal?.aborted) return aborted();
+		if (result.truncated) {
+			return envErr("unknown", `${path}: read exceeded the transfer bound`, path);
+		}
+		if (result.exitCode !== 0) {
+			return envErr(await this.fileError(path, context), `${path}: ${result.stderr.trim()}`, path);
+		}
+		return ok<Uint8Array, FileError>(result.stdout);
+	}
+	async openBinaryReader(
+		path: string,
+		options: { noFollow?: boolean } | undefined,
+		context: Context,
+	): Promise<Result<BinaryReader, FileError>> {
+		if (context.abortSignal?.aborted) return aborted();
+		const abs = this.resolve(path);
+		// `stat -L` classifies the referent; `noFollow` refuses a symbolic
+		// link as the final component instead.
+		const kindOut = await this.runOut(
+			options?.noFollow ? ["stat", "-c", "%F", "--", abs] : ["stat", "-L", "-c", "%F", "--", abs],
+			path,
+			context,
+		);
+		if (!kindOut.ok) return kindOut;
+		const kind = FILE_KINDS.get(kindOut.value.trim());
+		if (kind === "directory") return envErr("is_directory", `${path} is a directory`, path);
+		if (kind !== "file") {
+			return envErr("invalid", `${path} is not a regular file`, path);
+		}
+		const pin = await this.pinFile(path, abs, context);
+		if (!pin.ok) return pin;
+		const readPath = pin.value.readPath;
+		const pinPath = pin.value.pinPath;
+		if (context.abortSignal?.aborted) {
+			if (pinPath !== null) await this.guestRm([pinPath]);
+			return aborted();
+		}
+		let closed = false;
+		const reader: BinaryReader = {
+			info: async (rctx) => {
+				if (rctx.abortSignal?.aborted) return aborted();
+				if (closed) return envErr("invalid", `${path}: reader is closed`, path);
+				// The pin's metadata is the opened file's, not whatever the
+				// original path names now.
+				const st = await this.runOut(["stat", "-L", "-c", "%F|%s|%Y", "--", readPath], path, rctx);
+				if (!st.ok) return st;
+				const parsed = this.parseStat(st.value, path);
+				if (!parsed.ok) return parsed;
+				return ok<FileInfo, FileError>({ name: basename(abs), path: abs, ...parsed.value });
+			},
+			read: async (offset, length, rctx) => {
+				if (rctx.abortSignal?.aborted) return aborted();
+				if (closed) return envErr("invalid", `${path}: reader is closed`, path);
+				if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 0) {
+					return envErr(
+						"invalid",
+						`${path}: read(${offset}, ${length}) needs non-negative integer offset and length`,
+						path,
+					);
+				}
+				if (length === 0) return ok<Uint8Array, FileError>(new Uint8Array());
+				return this.readBytesAt(readPath, offset, length, path, rctx);
+			},
+			scanLines: async (scan, rctx) => {
+				if (rctx.abortSignal?.aborted) return aborted();
+				if (closed) return envErr("invalid", `${path}: reader is closed`, path);
+				const { startLine, endLine } = scan;
+				if (
+					!Number.isInteger(startLine) ||
+					startLine < 0 ||
+					(endLine !== undefined && (!Number.isInteger(endLine) || endLine <= startLine))
+				) {
+					return envErr(
+						"invalid",
+						`${path}: scanLines(${startLine}, ${endLine ?? "end"}) is not a line range`,
+						path,
+					);
+				}
+				// Whole-file pass in bounded chunks — a 1 GiB scan is ~128
+				// reads; upstream LineScanner owns the line semantics.
+				const scanner = new LineScanner(startLine, endLine);
+				let pos = 0;
+				for (;;) {
+					const chunk = await this.readBytesAt(readPath, pos, SCAN_CHUNK_BYTES, path, rctx);
+					if (!chunk.ok) return chunk;
+					if (chunk.value.length > 0) scanner.push(chunk.value);
+					pos += chunk.value.length;
+					if (chunk.value.length < SCAN_CHUNK_BYTES) break;
+				}
+				return ok<LineScan, FileError>(scanner.finish());
+			},
+			close: async () => {
+				if (closed) return;
+				closed = true;
+				if (pinPath !== null) await this.guestRm([pinPath]);
+			},
+		};
+		return ok<BinaryReader, FileError>(reader);
+	}
+	/** One stat batch for a DirReader page: `name\0stat\0` pairs, a stat of
+	 *  `MISSING` for an entry that vanished since the directory was listed. */
+	private async statEntries(
+		batch: string[],
+		path: string,
+		context: Context,
+	): Promise<Result<Array<FileInfo | null>, FileError>> {
+		const out = await this.runOut(
+			[
+				"/bin/sh",
+				"-c",
+				'for f in "$@"; do if s=$(stat -c "%F|%s|%Y" -- "$f" 2>/dev/null); then printf "%s\\0%s\\0" "$f" "$s"; else printf "%s\\0MISSING\\0" "$f"; fi; done',
+				"stat-batch",
+				...batch,
+			],
+			path,
+			context,
+		);
+		if (!out.ok) return out;
+		const fields = out.value.split("\0");
+		const entries: Array<FileInfo | null> = [];
+		for (let i = 0; i + 1 < fields.length; i += 2) {
+			const name = fields[i]!;
+			const raw = fields[i + 1]!;
+			if (raw === "MISSING") {
+				entries.push(null);
+				continue;
+			}
+			const parsed = this.parseStat(raw, name);
+			if (!parsed.ok) {
+				// Unsupported kinds are skipped per the DirReader contract;
+				// anything else is the call's error.
+				if (parsed.error.code === "not_supported") {
+					entries.push(null);
+					continue;
+				}
+				return parsed;
+			}
+			entries.push({ name: basename(name), path: name, ...parsed.value });
+		}
+		return ok(entries);
+	}
+	async openDirReader(path: string, context: Context): Promise<Result<DirReader, FileError>> {
+		if (context.abortSignal?.aborted) return aborted();
+		const abs = this.resolve(path);
+		const out = await this.runOut(
+			[
+				"/bin/sh",
+				"-c",
+				'if [ ! -d "$1" ]; then if [ -e "$1" ] || [ -L "$1" ]; then printf "not a directory: %s\\n" "$1" >&2; exit 3; else printf "no such directory: %s\\n" "$1" >&2; exit 2; fi; fi; for f in "$1"/.[!.]* "$1"/..?* "$1"/*; do [ -e "$f" ] || [ -L "$f" ] || continue; printf "%s\\0" "$f"; done',
+				"ls-names",
+				abs,
+			],
+			path,
+			context,
+			{ 2: "not_found", 3: "not_directory" },
+		);
+		if (!out.ok) return out;
+		if (context.abortSignal?.aborted) return aborted();
+		// Names are the directory's state at open; metadata is read per
+		// page, so an entry that vanishes before its stat is skipped.
+		const names = out.value === "" ? [] : out.value.split("\0");
+		if (names[names.length - 1] === "") names.pop();
+		let next = 0;
+		let done = false;
+		let closed = false;
+		return ok<DirReader, FileError>({
+			next: async (maxEntries, rctx) => {
+				if (rctx.abortSignal?.aborted) return aborted();
+				if (closed) return envErr("invalid", `${path}: reader is closed`, path);
+				if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+					return envErr(
+						"invalid",
+						`${path}: next(${maxEntries}) needs a page size of at least 1`,
+						path,
+					);
+				}
+				if (done) return ok({ entries: [], done: true });
+				const batch = names.slice(next, next + maxEntries);
+				next += batch.length;
+				const entries: FileInfo[] = [];
+				if (batch.length > 0) {
+					const scanned = await this.statEntries(batch, path, rctx);
+					if (!scanned.ok) return scanned;
+					for (const info of scanned.value) {
+						if (info !== null) entries.push(info);
+					}
+				}
+				if (next >= names.length) done = true;
+				return ok({ entries, done });
+			},
+			close: async () => {
+				closed = true;
+			},
+		});
+	}
+	/** The state of one watch target: canonical root, then one
+	 *  `kind|size|mtime|name` stat record per entry (`MISSING` for an
+	 *  absent target). `%y` carries nanosecond mtime, so a same-size
+	 *  rewrite inside one poll still differs. Symbolic links below a
+	 *  directory are listed, never followed (find without -L); the target
+	 *  itself is followed, so a watched link reports its referent's
+	 *  changes. Excludes are pruned here, not in the guest. */
+	private async targetSnapshot(
+		abs: string,
+		recursive: boolean,
+		exclude: WatchTarget["exclude"],
+		context: Context,
+	): Promise<Result<string, FileError>> {
+		const out = await this.runOut(
+			[
+				"/bin/sh",
+				"-c",
+				`p=$(readlink -f "$1"); printf "%s\\n" "$p"; if [ ! -e "$p" ] && [ ! -L "$p" ]; then printf "MISSING\\n"; exit 0; fi; if [ -d "$p" ]; then find "$p" ${recursive ? "" : "-maxdepth 1 "}-exec stat -c "%F|%s|%y|%n" {} +; else stat -L -c "%F|%s|%y|%n" "$p" 2>/dev/null || stat -c "%F|%s|%y|%n" "$p"; fi`,
+				"snapshot",
+				abs,
+			],
+			abs,
+			context,
+		);
+		if (!out.ok) return out;
+		const lines = out.value.split("\n");
+		const root = lines.shift() ?? "";
+		const hidden = exclude?.hidden === true;
+		const names = new Set(exclude?.names ?? []);
+		const kept: string[] = [];
+		for (const line of lines) {
+			if (line === "") continue;
+			if (line === "MISSING") {
+				kept.push(line);
+				continue;
+			}
+			// The name is the field after the third '|' (it may contain '|').
+			let at = -1;
+			for (let k = 0; k < 3; k++) at = line.indexOf("|", at + 1);
+			const name = at === -1 ? line : line.slice(at + 1);
+			const rel =
+				name === root ? "" : name.startsWith(`${root}/`) ? name.slice(root.length + 1) : name;
+			if (rel !== "") {
+				const segments = rel.split("/");
+				if (hidden && segments.some((s) => s.startsWith("."))) continue;
+				if (names.size > 0 && segments.some((s) => names.has(s))) continue;
+			}
+			kept.push(line);
+		}
+		return ok<string, FileError>(kept.join("\n"));
+	}
+	async watch(
+		targets: readonly WatchTarget[],
+		onChange: (change: WatchChange) => void,
+		context: Context,
+	): Promise<Result<FileWatcher, FileError>> {
+		if (context.abortSignal?.aborted) return aborted();
+		// Polling: the sandbox filesystem is reached only through one-shot
+		// podman execs, so there is no live fs event stream to subscribe
+		// to. `mode: "polling"` is the contract's own escape hatch for
+		// this — a change undone between two snapshots can be missed.
+		const plans = targets.map((t) => ({
+			abs: this.resolve(t.path),
+			recursive: t.recursive === true,
+			exclude: t.exclude,
+			state: null as string | null,
+			owed: true,
+		}));
+		for (const plan of plans) {
+			const snap = await this.targetSnapshot(plan.abs, plan.recursive, plan.exclude, context);
+			if (context.abortSignal?.aborted) return aborted();
+			if (snap.ok) {
+				plan.state = snap.value;
+				plan.owed = false;
+			}
+			// A failed baseline is not fatal: the next successful snapshot
+			// reports overflow (rescan everything) and re-baselines.
+		}
+		let closed = false;
+		let running: Promise<void> | null = null;
+		const emit = (change: WatchChange): void => {
+			if (closed || context.abortSignal?.aborted === true) return;
+			try {
+				onChange(change);
+			} catch (error) {
+				log.warn("sandbox watch callback failed", error, { conversation: this.origin });
+			}
+		};
+		const tick = async (): Promise<void> => {
+			for (const plan of plans) {
+				if (closed) return;
+				const snap = await this.targetSnapshot(plan.abs, plan.recursive, plan.exclude, context);
+				if (closed) return;
+				if (!snap.ok) {
+					// Coverage was uncertain: report overflow once, then a
+					// fresh baseline (no second overflow for the same gap).
+					if (plan.state !== null) emit({ overflow: true });
+					else plan.owed = true;
+					plan.state = null;
+					continue;
+				}
+				if (plan.state === null) {
+					plan.state = snap.value;
+					if (plan.owed) {
+						plan.owed = false;
+						emit({ overflow: true });
+					}
+					continue;
+				}
+				if (plan.state !== snap.value) {
+					plan.state = snap.value;
+					emit({ paths: [plan.abs] });
+				}
+			}
+		};
+		const timer = setInterval(() => {
+			if (closed || context.abortSignal?.aborted === true || running !== null) return;
+			running = tick()
+				.catch((error) =>
+					log.warn("sandbox watch poll failed", error, { conversation: this.origin }),
+				)
+				.finally(() => {
+					running = null;
+				});
+		}, WATCH_POLL_MS);
+		return ok<FileWatcher, FileError>({
+			mode: "polling",
+			close: async () => {
+				closed = true;
+				clearInterval(timer);
+				await running;
+			},
+		});
+	}
 	private async stage(
 		content: string | Uint8Array,
 		destScript: string,
@@ -811,8 +1226,198 @@ class SandboxEnv implements ExecutionEnv {
 			return e instanceof Error ? e.message : String(e);
 		}
 	}
+	/** Deliver one captured stream to `onOutput`, trimmed to the caller's tail
+	 *  window with an exact skip descriptor. A trimmed chunk always exceeds
+	 *  the window by a byte or a line — OutputBuffer's requirement for a
+	 *  skip — and its cut is fenced back onto a character boundary.
+	 *  Skipped bytes count decoded text, including replacement characters,
+	 *  rather than raw file offsets. */
+	private async deliverStream(
+		rec: StreamMeasure,
+		stream: "stdout" | "stderr",
+		window: TailWindow | undefined,
+		onOutput: (text: string, context: Context, info: ShellOutputInfo) => void,
+		context: Context,
+	): Promise<StreamDelivery> {
+		if (rec.bytes === 0) return { kind: "ok" };
+		let start = 0;
+		let omittedLast: number | null = null;
+		if (
+			window !== undefined &&
+			(rec.bytes > window.maxBytes + 1 || rec.newlines > window.maxLines)
+		) {
+			if (rec.bytes > window.maxBytes + 1) start = rec.bytes - (window.maxBytes + 1);
+			if (rec.newlines > window.maxLines) {
+				// `tail -n +K` keeps maxLines+1 complete lines — one more than
+				// the window, so a line-based cut satisfies the skip rule on
+				// its own. `head -c` bounds the transfer: a tail larger than
+				// the byte window (plus one) can never win the max() below.
+				const keepFrom = rec.newlines - window.maxLines;
+				const counted = await this.runOut(
+					[
+						"/bin/sh",
+						"-c",
+						'tail -n "+$1" "$2" | head -c "$3" | wc -c',
+						"tail-bytes",
+						String(keepFrom),
+						rec.path,
+						String(window.maxBytes + 2),
+					],
+					rec.path,
+					context,
+				);
+				if (!counted.ok) {
+					if (context.abortSignal?.aborted) return { kind: "aborted" };
+					return {
+						kind: "failed",
+						message: "command output could not be measured — result not claimed complete",
+					};
+				}
+				const tailBytes = Number(counted.value.trim());
+				// A failed tail leaves `wc` over an empty pipe; a real tail
+				// here always holds at least one byte.
+				if (!Number.isInteger(tailBytes) || tailBytes < 1) {
+					return {
+						kind: "failed",
+						message: "command output could not be measured — result not claimed complete",
+					};
+				}
+				if (tailBytes <= window.maxBytes + 1) {
+					start = Math.max(start, rec.bytes - tailBytes);
+				}
+			}
+			if (start > 0) {
+				// A six-byte window — the byte at the cut plus five back —
+				// covers every valid character; the cut moves back at most
+				// three bytes, so a byte-based cut still exceeds the byte
+				// window and a line-based cut stays inside one line.
+				const fenceFrom = Math.max(0, start - 5);
+				const fence = await this.readBytesAt(
+					rec.path,
+					fenceFrom,
+					start + 1 - fenceFrom,
+					rec.path,
+					context,
+				);
+				if (!fence.ok) {
+					if (context.abortSignal?.aborted) return { kind: "aborted" };
+					return {
+						kind: "failed",
+						message: "command output could not be read back — result not claimed complete",
+					};
+				}
+				const probe = fence.value;
+				let at = probe.length - 1;
+				if ((probe[at]! & 0xc0) === 0x80) {
+					while (at >= 0 && (probe[at]! & 0xc0) === 0x80) at--;
+					const span = start - (fenceFrom + at);
+					if (at >= 0 && span <= 3) {
+						if (fenceFrom + at === 0) {
+							// The cut was already the stream's first character:
+							// deliver everything, omit nothing.
+							start = 0;
+						} else {
+							start = fenceFrom + at;
+							omittedLast = probe[at - 1]!;
+						}
+					}
+					// A continuation run with no nearby lead byte has no
+					// character crossing the cut; leave the cut where it was.
+				} else {
+					omittedLast = probe[at - 1]!;
+				}
+			}
+		}
+		const length = rec.bytes - start;
+		if (length > READ_CAP) {
+			return {
+				kind: "failed",
+				message: `command output exceeds the ${READ_CAP / (1024 * 1024)} MiB delivery bound — result not claimed complete`,
+			};
+		}
+		let skippedBytes = 0;
+		if (start > 0) {
+			const decoder = new TextDecoder();
+			for (let offset = 0; offset < start; ) {
+				if (context.abortSignal?.aborted) return { kind: "aborted" };
+				const count = Math.min(SCAN_CHUNK_BYTES, start - offset);
+				const chunk = await this.readBytesAt(rec.path, offset, count, rec.path, context);
+				if (!chunk.ok || chunk.value.length !== count) {
+					if (context.abortSignal?.aborted) return { kind: "aborted" };
+					return {
+						kind: "failed",
+						message: "command output could not be read back — result not claimed complete",
+					};
+				}
+				skippedBytes += Buffer.byteLength(decoder.decode(chunk.value, { stream: true }), "utf8");
+				offset += count;
+			}
+			// Flush any incomplete sequence immediately before the fenced cut.
+			skippedBytes += Buffer.byteLength(decoder.decode(), "utf8");
+		}
+		if (context.abortSignal?.aborted) return { kind: "aborted" };
+		const read = await this.readBytesAt(rec.path, start, length, rec.path, context);
+		if (!read.ok || read.value.length !== length) {
+			if (context.abortSignal?.aborted) return { kind: "aborted" };
+			return {
+				kind: "failed",
+				message: "command output could not be read back — result not claimed complete",
+			};
+		}
+		// A byte-order mark drops only at the very start of the stream; a
+		// U+FEFF after a cut (or later in the file) is text.
+		const text =
+			start > 0
+				? new TextDecoder("utf-8", { ignoreBOM: true }).decode(read.value)
+				: new TextDecoder().decode(read.value);
+		if (text === "") return { kind: "ok" };
+		if (start === 0) {
+			onOutput(text, context, { stream });
+			return { kind: "ok" };
+		}
+		let newlines = 0;
+		for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) newlines++;
+		onOutput(text, context, {
+			stream,
+			skipped: {
+				bytes: skippedBytes,
+				newlines: rec.newlines - newlines,
+				endsWithNewline: omittedLast === 0x0a,
+			},
+		});
+		return { kind: "ok" };
+	}
+	/** Merge the two captured streams into the advertised spill file: stdout
+	 *  first, then stderr — arrival order across separate files is not
+	 *  recoverable (design/subagents.md → worker subagents). Best-effort:
+	 *  callers decide what an unreadable spill means. */
+	private async mergeSpill(
+		outPath: string,
+		errPath: string,
+		spillPath: string,
+		context: Context,
+	): Promise<{ ok: true } | { ok: false; detail: string }> {
+		try {
+			const r = await this.run(
+				["/bin/sh", "-c", 'cat -- "$1" "$2" > "$3"', "merge-spill", outPath, errPath, spillPath],
+				undefined,
+				context,
+			);
+			if (r.timedOut) return { ok: false, detail: "merge timed out" };
+			if (r.truncated) return { ok: false, detail: "merge was cut short" };
+			if (r.exitCode !== 0) {
+				return {
+					ok: false,
+					detail: `merge exited ${r.exitCode ?? "killed"}: ${r.stderr.trim().slice(0, 200)}`,
+				};
+			}
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	async exec(
-		command: string,
+		command: string | readonly string[],
 		options: ShellExecOptions | undefined,
 		context: Context,
 	): Promise<Result<ShellExecResult, ExecutionError>> {
@@ -821,11 +1426,6 @@ class SandboxEnv implements ExecutionEnv {
 				new PiExecutionError("aborted", "command aborted"),
 			);
 		}
-		// Output lands in a guest spill file; what rides back to the
-		// model is the tail within the harness's thresholds, and a
-		// reported spill path is a real, retained file — never a
-		// phantom. `ulimit -f` bounds the file itself so a runaway
-		// command can't write past the 100 MiB wall.
 		const timeoutS = Math.min(options?.timeout ?? SHELL_TIMEOUT_DEFAULT_S, SHELL_TIMEOUT_CAP_S);
 		const pairs = Object.entries(options?.env ?? {});
 		for (const [k] of pairs) {
@@ -835,58 +1435,111 @@ class SandboxEnv implements ExecutionEnv {
 				);
 			}
 		}
+		if (typeof command !== "string" && command.length === 0) {
+			return err<ShellExecResult, ExecutionError>(
+				new PiExecutionError("spawn_error", "empty argv: no program to run"),
+			);
+		}
 		const tag = Math.random().toString(16).slice(2);
-		const spill = `/tmp/.goblin-spill-${tag}`;
-		const rcpath = `/tmp/.goblin-rc-${tag}`;
-		const cwd = options?.cwd ?? this.cwd;
-		const capBlocks = Math.ceil(SPILL_CAP_BYTES / 512);
+		const outPath = `/tmp/.goblin-out-${tag}`;
+		const errPath = `/tmp/.goblin-err-${tag}`;
+		const rcPath = `/tmp/.goblin-rc-${tag}`;
+		const spillPath = `/tmp/.goblin-spill-${tag}`;
+		// Relative cwd resolves against the env's own cwd, like every path.
+		const cwd = this.resolve(options?.cwd ?? this.cwd);
+		const capBlocks = String(Math.ceil(SPILL_CAP_BYTES / 512));
+		// $1..$4 are cwd/out/err/rc for both forms; the tail follows.
+		const form =
+			typeof command === "string"
+				? [EXEC_SH_SCRIPT, "goblin-sh", command, capBlocks]
+				: [EXEC_ARGV_SCRIPT, "goblin-argv", command[0]!, capBlocks, ...command.slice(1)];
 		const argv = [
 			"env",
 			...(options?.inheritEnv === false ? ["-i"] : []),
 			...pairs.map(([k, v]) => `${k}=${v}`),
 			"/bin/sh",
 			"-c",
-			'cd "$1" || { echo "cd failed: $1" >&2; exit 96; }; ( ulimit -f "$5" 2>/dev/null; /bin/sh -c "$4" >"$2" 2>&1; printf %s "$?" >"$3" )',
-			"env-shell",
+			form[0]!,
+			form[1]!,
 			cwd,
-			spill,
-			rcpath,
-			command,
-			String(capBlocks),
+			outPath,
+			errPath,
+			rcPath,
+			...form.slice(2),
 		];
-		const { result } = await this.sandboxes.execArgv(this.origin, argv, {
-			timeoutMs: timeoutS * 1000,
-			maxOutput: 4 * 1024 * 1024,
-			...(context.abortSignal !== undefined ? { abortSignal: context.abortSignal } : {}),
-		});
-		if (result.timedOut) {
-			// The sandbox restarted after the kill — the spill file
-			// survived (files are kept) and stays readable; report it.
-			await this.guestRm([rcpath]);
-			const e = new PiExecutionError(
-				"timeout",
-				`command timed out after ${timeoutS}s — partial output at ${spill}`,
-			);
-			e.spillPath = spill;
-			return err<ShellExecResult, ExecutionError>(e);
+		try {
+			const { result } = await this.sandboxes.execArgv(this.origin, argv, {
+				timeoutMs: timeoutS * 1000,
+				maxOutput: 4 * 1024 * 1024,
+				...(context.abortSignal !== undefined ? { abortSignal: context.abortSignal } : {}),
+			});
+			if (result.timedOut) {
+				// The sandbox restarted after the kill — files were kept, and
+				// the partial streams merge into the advertised file. Nothing
+				// is advertised that could not be read back.
+				const merged = await this.mergeSpill(outPath, errPath, spillPath, context);
+				await this.guestRm(
+					merged.ok ? [outPath, errPath, rcPath] : [outPath, errPath, rcPath, spillPath],
+				);
+				const e = new PiExecutionError(
+					"timeout",
+					merged.ok
+						? `command timed out after ${timeoutS}s — partial output at ${spillPath}`
+						: `command timed out after ${timeoutS}s`,
+				);
+				if (merged.ok) e.spillPath = spillPath;
+				return err<ShellExecResult, ExecutionError>(e);
+			}
+			if (context.abortSignal?.aborted) {
+				await this.guestRm([outPath, errPath, rcPath]);
+				return err<ShellExecResult, ExecutionError>(
+					new PiExecutionError("aborted", "command aborted"),
+				);
+			}
+			if (result.truncated || result.exitCode !== 0) {
+				await this.guestRm([outPath, errPath, rcPath]);
+				return err<ShellExecResult, ExecutionError>(
+					new PiExecutionError(
+						"spawn_error",
+						`sandbox shell failed (exit ${result.exitCode ?? "truncated"}): ${result.stderr.trim().slice(0, 500)}`,
+					),
+				);
+			}
+			return await this.finishExec(outPath, errPath, rcPath, spillPath, options, context);
+		} catch (error) {
+			// An abort that lands mid-flight surfaces as a throw from the
+			// executor, not a result — same contract, same cleanup.
+			if (context.abortSignal?.aborted === true) {
+				await this.guestRm([outPath, errPath, rcPath, spillPath]);
+				return err<ShellExecResult, ExecutionError>(
+					new PiExecutionError("aborted", "command aborted"),
+				);
+			}
+			throw error;
 		}
-		if (context.abortSignal?.aborted) {
-			await this.guestRm([spill, rcpath]);
+	}
+	/** Post-exit classification of one finished command: recorded exit code,
+	 *  stream measures, windowed delivery, spill, cleanup. */
+	private async finishExec(
+		outPath: string,
+		errPath: string,
+		rcPath: string,
+		spillPath: string,
+		options: ShellExecOptions | undefined,
+		context: Context,
+	): Promise<Result<ShellExecResult, ExecutionError>> {
+		const abortedExec = async (): Promise<Result<ShellExecResult, ExecutionError>> => {
+			await this.guestRm([outPath, errPath, rcPath, spillPath]);
 			return err<ShellExecResult, ExecutionError>(
 				new PiExecutionError("aborted", "command aborted"),
 			);
-		}
-		if (result.truncated || result.exitCode !== 0) {
-			await this.guestRm([spill, rcpath]);
-			return err<ShellExecResult, ExecutionError>(
-				new PiExecutionError(
-					"spawn_error",
-					`sandbox shell failed (exit ${result.exitCode ?? "truncated"}): ${result.stderr.trim().slice(0, 500)}`,
-				),
-			);
-		}
+		};
+		const failed = async (message: string): Promise<Result<ShellExecResult, ExecutionError>> => {
+			await this.guestRm([outPath, errPath, rcPath, spillPath]);
+			return err<ShellExecResult, ExecutionError>(new PiExecutionError("unknown", message));
+		};
 		// The rc file must parse or nothing is claimed.
-		const rc = await this.run(["cat", "--", rcpath], undefined, context);
+		const rc = await this.run(["cat", "--", rcPath], undefined, context);
 		const rcText = rc.stdout.trim();
 		const exitCode = /^[0-9]{1,3}$/.test(rcText) ? Number(rcText) : NaN;
 		if (
@@ -897,102 +1550,107 @@ class SandboxEnv implements ExecutionEnv {
 			exitCode < 0 ||
 			exitCode > 255
 		) {
-			await this.guestRm([spill, rcpath]);
-			return err<ShellExecResult, ExecutionError>(
-				new PiExecutionError(
-					"unknown",
-					`command exit code was not recorded (rc file: ${JSON.stringify(rcText.slice(0, 60))})`,
-				),
+			if (context.abortSignal?.aborted) return abortedExec();
+			return failed(
+				`command exit code was not recorded (rc file: ${JSON.stringify(rcText.slice(0, 60))})`,
 			);
 		}
-		const wc = await this.run(["wc", "-l", "-c", "--", spill], undefined, context);
-		const wcFields = wc.stdout.trim().split(/\s+/).map(Number);
-		const lines = wcFields[0];
-		const bytes = wcFields[1];
+		// Per-stream lines and bytes; wc appends a `total` row — ignored.
+		const wc = await this.run(["wc", "-l", "-c", "--", outPath, errPath], undefined, context);
+		const rows = wc.stdout.trim().split("\n");
+		const fields = (row: string | undefined): { lines: number; bytes: number } | null => {
+			if (row === undefined) return null;
+			const f = row.trim().split(/\s+/);
+			if (f.length < 2) return null;
+			const lines = Number(f[0]);
+			const bytes = Number(f[1]);
+			if (!Number.isInteger(lines) || lines < 0 || !Number.isInteger(bytes) || bytes < 0) {
+				return null;
+			}
+			return { lines, bytes };
+		};
+		const outFields = fields(rows[0]);
+		const errFields = fields(rows[1]);
 		if (
 			wc.timedOut ||
 			wc.truncated ||
 			wc.exitCode !== 0 ||
-			lines === undefined ||
-			bytes === undefined ||
-			!Number.isInteger(lines) ||
-			!Number.isInteger(bytes) ||
-			lines < 0 ||
-			bytes < 0
+			outFields === null ||
+			errFields === null
 		) {
-			await this.guestRm([spill, rcpath]);
-			return err<ShellExecResult, ExecutionError>(
-				new PiExecutionError(
-					"unknown",
-					"command output could not be measured — result not claimed complete",
-				),
+			if (context.abortSignal?.aborted) return abortedExec();
+			return failed("command output could not be measured — result not claimed complete");
+		}
+		const outRec: StreamMeasure = {
+			path: outPath,
+			bytes: outFields.bytes,
+			newlines: outFields.lines,
+		};
+		const errRec: StreamMeasure = {
+			path: errPath,
+			bytes: errFields.bytes,
+			newlines: errFields.lines,
+		};
+		if (exitCode === 153 && (outRec.bytes >= SPILL_CAP_BYTES || errRec.bytes >= SPILL_CAP_BYTES)) {
+			// 128+SIGXFSZ with an output file itself at the wall: nothing is
+			// claimed. A 153 from some other file's write is just the
+			// command's exit code — the explanation below rides along.
+			return failed(
+				`command output exceeded the ${SPILL_CAP_BYTES / (1024 * 1024)} MiB wall — killed by ulimit, output not claimed`,
 			);
 		}
-		if (exitCode === 153) {
-			// 128+SIGXFSZ: `ulimit -f` caps EVERY file this command writes,
-			// not just the spill — a legitimate large artifact dies as a
-			// bare 153 unless the explanation always rides along. The
-			// spill-sized case stays a hard error: nothing is claimed.
-			if (bytes >= SPILL_CAP_BYTES) {
-				await this.guestRm([spill, rcpath]);
-				return err<ShellExecResult, ExecutionError>(
-					new PiExecutionError(
-						"unknown",
-						`command output exceeded the ${SPILL_CAP_BYTES / (1024 * 1024)} MiB wall — killed by ulimit, output not claimed`,
-					),
+		if (options?.onOutput !== undefined) {
+			const onOutput = options.onOutput;
+			const window =
+				options.window === undefined
+					? undefined
+					: {
+							maxBytes: finiteFloor(options.window.maxBytes),
+							maxLines: finiteFloor(options.window.maxLines),
+						};
+			for (const [rec, stream] of [
+				[outRec, "stdout"],
+				[errRec, "stderr"],
+			] as const) {
+				const delivered = await this.deliverStream(rec, stream, window, onOutput, context);
+				if (delivered.kind === "aborted") return abortedExec();
+				if (delivered.kind === "failed") return failed(delivered.message);
+			}
+			if (exitCode === 153) {
+				// After the chunks: with a tail window anything sent before
+				// later output can be dropped, and the notice must survive.
+				onOutput(
+					`[goblin] exit 153: a file write exceeded the sandbox's ${SPILL_CAP_BYTES / (1024 * 1024)} MiB per-file cap (SIGXFSZ) — produce large artifacts in chunks or stream them\n`,
+					context,
+					{ stream: "stderr" },
 				);
 			}
-			options?.onOutput?.(
-				`[goblin] exit 153: a file write exceeded the sandbox's ${SPILL_CAP_BYTES / (1024 * 1024)} MiB per-file cap (SIGXFSZ) — produce large artifacts in chunks or stream them\n`,
-				context,
-			);
 		}
-		const afterBytes = options?.spill?.afterBytes ?? 100 * 1024;
-		const afterLines = options?.spill?.afterLines ?? 2_000;
-		if (bytes > afterBytes || lines > afterLines) {
-			const tail = await this.run(
-				["tail", "-c", String(SPILL_TAIL_BYTES), "--", spill],
-				{ maxOutput: SPILL_TAIL_BYTES + 4096 },
-				context,
-			);
-			if (tail.timedOut || tail.exitCode !== 0 || tail.truncated) {
-				await this.guestRm([spill, rcpath]);
-				return err<ShellExecResult, ExecutionError>(
-					new PiExecutionError(
-						"unknown",
-						"output spilled but its tail could not be read back — result not claimed",
-					),
+		const spillOpt = options?.spill;
+		if (
+			spillOpt !== undefined &&
+			(outRec.bytes + errRec.bytes > spillOpt.afterBytes ||
+				outRec.newlines + errRec.newlines > spillOpt.afterLines)
+		) {
+			const merged = await this.mergeSpill(outPath, errPath, spillPath, context);
+			if (!merged.ok) {
+				if (context.abortSignal?.aborted) return abortedExec();
+				return failed(
+					`command output could not be preserved complete (${merged.detail}) — result not claimed`,
 				);
 			}
-			options?.onOutput?.(
-				`[goblin] output exceeded ${afterBytes} bytes/${afterLines} lines — tail follows; full output at ${spill}\n`,
-				context,
-			);
-			options?.onOutput?.(tail.stdout, context);
-			// The advertised file is retained; only the rc file goes.
-			const rcRm = await this.guestRm([rcpath]);
-			if (rcRm !== null) {
+			const rm = await this.guestRm([outPath, errPath, rcPath]);
+			if (rm !== null) {
 				const e = new PiExecutionError(
 					"unknown",
-					`command rc-file cleanup failed: ${rcRm} — spilled output remains at ${spill}`,
+					`command output cleanup failed: ${rm} — spilled output remains at ${spillPath}`,
 				);
-				e.spillPath = spill;
+				e.spillPath = spillPath;
 				return err<ShellExecResult, ExecutionError>(e);
 			}
-			return ok<ShellExecResult, ExecutionError>({ exitCode, spillPath: spill });
+			return ok<ShellExecResult, ExecutionError>({ exitCode, spillPath });
 		}
-		const out = await this.run(["cat", "--", spill], { maxOutput: afterBytes + 4096 }, context);
-		if (out.timedOut || out.exitCode !== 0 || out.truncated) {
-			await this.guestRm([spill, rcpath]);
-			return err<ShellExecResult, ExecutionError>(
-				new PiExecutionError(
-					"unknown",
-					"command output could not be read back — result not claimed complete",
-				),
-			);
-		}
-		options?.onOutput?.(out.stdout, context);
-		const rm = await this.guestRm([spill, rcpath]);
+		const rm = await this.guestRm([outPath, errPath, rcPath]);
 		if (rm !== null) {
 			return err<ShellExecResult, ExecutionError>(
 				new PiExecutionError("unknown", `command output cleanup failed: ${rm}`),
@@ -1152,7 +1810,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				if (doc?.outcome !== undefined && doc?.outcome !== null) {
 					return {
 						control: { terminate: true },
-						content: [
+						output: [
 							{
 								type: "text" as const,
 								text: "this run already recorded a terminal outcome — the action was not performed",
@@ -1282,7 +1940,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			await recordOutcome(api, { kind: "done", result: args.result, files });
 			return {
 				control: { terminate: true },
-				content: [{ type: "text", text: "run finished" }],
+				output: [{ type: "text", text: "run finished" }],
 			};
 		},
 	});
@@ -1296,7 +1954,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			await recordOutcome(api, { kind: "ask", question: args.question });
 			return {
 				control: { terminate: true },
-				content: [{ type: "text", text: "question recorded — the run pauses until answered" }],
+				output: [{ type: "text", text: "question recorded — the run pauses until answered" }],
 			};
 		},
 	});
@@ -1326,7 +1984,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				const row = requireRow(api);
 				const shot = await deps.desktops.screenshot(row.desktop!);
 				return {
-					content: [
+					output: [
 						{
 							type: "text",
 							text: `observation_id: ${shot.id}\naudited path: ${shot.path}${shot.note ? `\n${shot.note}` : ""}`,
@@ -1371,7 +2029,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				delete stateObj["screenshot"];
 				const state = stateObj;
 				const text = JSON.stringify(state);
-				const content: NonNullable<ToolExecutionResult["content"]> = [
+				const output: NonNullable<ToolExecutionResult["output"]> = [
 					{
 						type: "text",
 						text:
@@ -1381,8 +2039,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 								: text),
 					},
 				];
-				if (image !== null) content.push(image);
-				return { content };
+				if (image !== null) output.push(image);
+				return { output };
 			},
 		}),
 		defineTool({
@@ -1407,7 +2065,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					args: args.args,
 				});
 				return {
-					content: [
+					output: [
 						{
 							type: "text",
 							text: JSON.stringify(out.result) + (out.note ? `\n${out.note}` : ""),
@@ -1432,7 +2090,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					...(args.url !== undefined ? { url: args.url } : {}),
 				});
 				return {
-					content: [
+					output: [
 						{ type: "text", text: JSON.stringify(out.result) + (out.note ? `\n${out.note}` : "") },
 					],
 				};

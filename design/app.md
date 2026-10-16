@@ -498,6 +498,29 @@ showing over the faded line. A persistent pushpin marker on pinned
 rows still keeps the top slot explaining itself. Pinning never fences
 a turn and never touches selection: it is list order, nothing more.
 
+## Thread sources (ruling 2026-10-16, operator ask)
+
+On a conversation, everything that conversation produced — visible
+in place, not by digging through global tabs. The chat header gains
+one action (icon + aria-label; the header's first) opening a sheet
+with two sections:
+
+- **Retained exchanges** — `GET
+  /api/memory/documents?conversation=` (the filter ruling in
+  design/memory.md → Memories browser), the same paginated rows and
+detail/facts/forget affordances as the Memories tab, from components
+shared with it, not duplicated.
+- **Skills from this thread** — `GET /api/skills/from?conversation=`
+  (provenance ruling in design/skills.md → Skill provenance),
+  read-only: name, state (installed / proposed / gone), when first
+  written here. Approve/discard stays conversational/Telegram; the
+  sheet never mutates skills.
+
+App conversations only, by the channel rule: Telegram threads keep
+the global Memories tab — per-thread views of them would be
+cross-surface reading. A spin-off fork shows only what it retained
+itself; the copied history retains under its source conversation.
+
 ## Intelligent UI (ruling 2026-10-09)
 
 Operator ask, after OpenAI's GPT-6 "Intelligent UI" launch (2026-10-07):

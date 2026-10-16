@@ -71,6 +71,7 @@ import {
 import { OutageTracker } from "./memory-outage.ts";
 import { wakeConversation } from "./wake.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
+import { SkillSources } from "./skill-provenance.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
@@ -126,6 +127,10 @@ async function boot() {
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();
 	const store = openStore(paths.db());
+	// Skill provenance shares the store's SQLite (design/skills.md →
+	// Skill provenance): the reviewer and the turn stream record, the
+	// operator doors read.
+	const skillSources = new SkillSources(store.db);
 	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
 	const programs = openPrograms(paths.db());
 	programs.rePinDmTopics();
@@ -646,6 +651,14 @@ async function boot() {
 					withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => late().retention(fn),
 				};
 
+	// Turn-write attribution is independent of the reviewer — a manual
+	// skill authored mid-thread is provenance even when reviews are off.
+	runtime.setSkillWatch({
+		skillsDir: paths.skills(),
+		proposedDir: paths.skillsProposed(),
+		record: (conversationId, skill) => skillSources.record(conversationId, skill, "turn"),
+	});
+
 	const tg = await startBot({
 		configRef,
 		auth,
@@ -760,6 +773,9 @@ async function boot() {
 				workspaceDir: paths.workspace(),
 				notify: (conversationId, skills) =>
 					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
+				recordSources: (conversationId, reviewId, skills) => {
+					for (const skill of skills) skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
+				},
 			}),
 		);
 	}
@@ -983,6 +999,11 @@ async function boot() {
 		delegations,
 		service: { version: pkg.version, startedAt, restartHints },
 		authNames: () => auth.names(),
+		skillSources: {
+			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
+			skillsDir: paths.skills(),
+			proposedDir: paths.skillsProposed(),
+		},
 	};
 	const http = startHttp({
 		configRef,

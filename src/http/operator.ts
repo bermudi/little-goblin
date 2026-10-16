@@ -53,6 +53,7 @@ import {
 } from "../stateview.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
+import { skillLiveState, type SkillSourceRow } from "../skill-provenance.ts";
 import type {
 	ConfigPostBody,
 	ConfigResponse,
@@ -67,6 +68,8 @@ import type {
 	OperatorProgramItem,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
+	ThreadSkillItem,
+	ThreadSkillsResponse,
 } from "./operator-wire.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -131,6 +134,13 @@ export interface OperatorDeps {
 		version: string;
 		startedAt: string;
 		restartHints(): string[];
+	};
+	// Skill provenance reads (design/skills.md → Skill provenance) —
+	// the thread panel's data. Absent = the tail 503s with the reason.
+	skillSources?: {
+		forConversation(conversationId: string): SkillSourceRow[];
+		skillsDir: string;
+		proposedDir: string;
 	};
 }
 
@@ -463,12 +473,19 @@ function memoryFactItem(source: MemoryFact): MemoryFactItem {
 }
 
 // Query params for the documents list — bounded like every boundary;
-// an out-of-range or malformed value is a 422, not a guess.
-const browseQuerySchema = z.object({
-	q: z.string().min(1).max(256).optional(),
-	limit: z.coerce.number().int().min(1).max(100).default(25),
-	offset: z.coerce.number().int().min(0).default(0),
-});
+// an out-of-range or malformed value is a 422, not a guess. The two
+// filters are mutually exclusive: `conversation` is the thread panel's
+// server-side translation into the bank's id-substring `q`.
+const browseQuerySchema = z
+	.object({
+		q: z.string().min(1).max(256).optional(),
+		conversation: z.string().min(1).max(256).optional(),
+		limit: z.coerce.number().int().min(1).max(100).default(25),
+		offset: z.coerce.number().int().min(0).default(0),
+	})
+	.refine((v) => !(v.q !== undefined && v.conversation !== undefined), {
+		message: "q and conversation are mutually exclusive",
+	});
 
 // ---------- list projections ----------
 
@@ -513,8 +530,8 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 // tail is the operator route relative to the door's mount point:
 // "config", "thinking-levels", "memory/status", "memory/documents",
 // "memory/documents/<raw id>", "programs", "delegations", "status",
-// and the state viewer (ruling 2026-10-11): "skills", "skills/file",
-// "attachments", "attachments/file", "identity", "log".
+// and the state viewer (ruling 2026-10-11): "skills", "skills/from",
+// "skills/file", "attachments", "attachments/file", "identity", "log".
 // Returns null when the tail matches nothing — the caller 404s.
 export async function handleOperatorRoute(
 	deps: OperatorDeps,
@@ -613,6 +630,9 @@ export async function handleOperatorRoute(
 		}
 		const parsed = browseQuerySchema.safeParse({
 			...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
+			...(url.searchParams.has("conversation")
+				? { conversation: url.searchParams.get("conversation") ?? undefined }
+				: {}),
 			limit: url.searchParams.get("limit") ?? undefined,
 			offset: url.searchParams.get("offset") ?? undefined,
 		});
@@ -622,9 +642,16 @@ export async function handleOperatorRoute(
 				{ status: 422, headers: NO_STORE },
 			);
 		}
+		// The thread panel's filter: the document-id scheme stays server
+		// knowledge (design/memory.md → Memories browser) — the trailing
+		// slash is what keeps `app/1` from matching `app/12`.
+		const filter =
+			parsed.data.conversation !== undefined
+				? `exchange/${parsed.data.conversation}/`
+				: parsed.data.q;
 		try {
 			const page = await gate.client.listDocuments({
-				...(parsed.data.q !== undefined ? { q: parsed.data.q } : {}),
+				...(filter !== undefined ? { q: filter } : {}),
 				limit: parsed.data.limit,
 				offset: parsed.data.offset,
 			});
@@ -637,7 +664,8 @@ export async function handleOperatorRoute(
 			log.debug("memory browse served", {
 				...who,
 				via: actor.via,
-				q: parsed.data.q ?? null,
+				q: filter ?? null,
+				conversation: parsed.data.conversation ?? null,
 				total: body.total,
 				offset: body.offset,
 				returned: body.items.length,
@@ -819,6 +847,44 @@ export async function handleOperatorRoute(
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		const body = listSkills(paths.skills(), paths.skillsProposed());
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// The thread panel's skills half (design/skills.md → Skill
+	// provenance): rows the conversation authored, liveness resolved
+	// from the catalog at read time. Read-only — approve/discard stays
+	// conversational.
+	if (tail === "skills/from") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		if (deps.skillSources === undefined)
+			return Response.json({ error: "skill provenance unavailable" }, { status: 503, headers: NO_STORE });
+		const conversation = z
+			.string()
+			.min(1)
+			.max(256)
+			.safeParse(url.searchParams.get("conversation") ?? "");
+		if (!conversation.success)
+			return Response.json(
+				{ error: "expected conversation (1-256 chars)" },
+				{ status: 422, headers: NO_STORE },
+			);
+		const sources = deps.skillSources;
+		const rows = sources.forConversation(conversation.data);
+		const items: ThreadSkillItem[] = rows.map((row) => ({
+			skill: row.skill,
+			state: skillLiveState(sources.skillsDir, sources.proposedDir, row.skill),
+			kind: row.kind,
+			firstAt: row.firstAt,
+			lastAt: row.lastAt,
+		}));
+		log.debug("thread skills served", {
+			...who,
+			via: actor.via,
+			conversation: conversation.data,
+			returned: items.length,
+		});
+		const body: ThreadSkillsResponse = { items };
 		return Response.json(body, { headers: NO_STORE });
 	}
 

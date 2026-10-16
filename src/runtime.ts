@@ -33,6 +33,7 @@ import {
 } from "./turn/overflow.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
+import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 
 const LOOP_CHECK_EVERY = 16;
@@ -194,6 +195,8 @@ export class Runtime {
 	// Reviewer state is owned by Reviewer; the runtime only submits snapshots.
 	// The runtime supplies ordering and the prior-turn chain, not gate logic.
 	private reviewer: Reviewer | undefined;
+	// Skill attribution — the stream records turn writes into the catalog.
+	private skillWatch: SkillWatch | undefined;
 	// Optional watchdog; repeat detection and context limits still apply when
 	// it is absent.
 	private loopWatchdog: { decide: System1Client["decide"]; every: number } | null = null;
@@ -207,6 +210,13 @@ export class Runtime {
 
 	setReviewer(reviewer: Reviewer): void {
 		this.reviewer = reviewer;
+	}
+
+	// Skill attribution (design/skills.md → Skill provenance): the
+	// composition root owns the dirs and the recorder; the stream owns
+	// the observation. Null unwires it (tests, provenance off).
+	setSkillWatch(watch: SkillWatch | null): void {
+		this.skillWatch = watch ?? undefined;
 	}
 
 	setLoopWatchdog(watchdog: { decide: System1Client["decide"]; every?: number } | null): void {
@@ -735,6 +745,7 @@ export class Runtime {
 				filterRetryUsed,
 				overflowRecoverable: overflowHoldable(recovery, this.deps.compaction !== undefined),
 				evidence: this.reviewer?.evidence,
+				skillWatch: this.skillWatch,
 				turnStartMs,
 				signal: controller.signal,
 			});

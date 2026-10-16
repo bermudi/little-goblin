@@ -136,6 +136,10 @@ export interface ReviewerDeps {
 	// written when this runs — a delivery failure logs, it doesn't
 	// unpick the proposal.
 	notify(conversationId: string, skills: string[]): Promise<void>;
+	// Provenance (design/skills.md → Skill provenance): rows for every
+	// successfully proposed skill. Runs after the history event, so a
+	// provenance failure logs without unpicking the proposal either.
+	recordSources?(conversationId: string, reviewId: string, skills: string[]): void;
 	/** Test door — the production path always uses `skills-ref`. */
 	skillsRefBin?: string;
 }
@@ -1253,6 +1257,19 @@ async function runStagedReview(
 				conversation: conv,
 				skills: proposedNames,
 			});
+		}
+		// Provenance after the announcement: the proposal is durable and
+		// announced — a recorder failure must not unwind either.
+		if (deps.recordSources !== undefined) {
+			try {
+				deps.recordSources(conv, reviewId, proposedNames);
+			} catch (err) {
+				log.error("skill provenance record failed — proposal stands", err, {
+					review_id: reviewId,
+					conversation: conv,
+					skills: proposedNames,
+				});
+			}
 		}
 		log.info(
 			proposeError === null ? "reviewer review done" : "reviewer review partially proposed",

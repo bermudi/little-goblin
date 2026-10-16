@@ -395,6 +395,46 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("a proposal records provenance — conversation, review id, proposed skills", async () => {
+		const h = harness();
+		const recorded: { conversationId: string; reviewId: string; skills: string[] }[] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		deps.recordSources = (conversationId, reviewId, skills) => {
+			recorded.push({ conversationId, reviewId, skills });
+		};
+		await new Reviewer(deps).considerTurn(turn());
+		expect(recorded).toHaveLength(1);
+		expect(recorded[0]).toMatchObject({ conversationId: h.convId, skills: ["pdf-tables"] });
+		expect(recorded[0]!.reviewId).toMatch(/^[0-9a-f-]{36}$/);
+		h.store.close();
+	});
+
+	test("a review that proposes nothing records no provenance", async () => {
+		const h = harness();
+		const recorded: unknown[][] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [{ text: "nothing to do" }],
+		});
+		deps.recordSources = (...args: unknown[]) => recorded.push(args);
+		await new Reviewer(deps).considerTurn(turn());
+		expect(recorded).toEqual([]);
+		h.store.close();
+	});
+
 	test("a newer review replaces an undecided proposal of the same skill, and logs it", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");

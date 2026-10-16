@@ -113,6 +113,43 @@ Still out — machinery that returns only on demand: additional catalog
 roots (host, project), per-conversation selection, a `/skills` command or
 mini-app surface, immutable skill snapshots.
 
+## Skill provenance (ruling 2026-10-16)
+
+Operator ask: which skills a conversation generated must be
+answerable from durable state, not from the log — the PWA shows it on
+the thread (design/app.md → Thread sources). Generation has exactly
+two authoring paths, and each records itself into the same table at
+the moment it writes:
+
+- **Reviewer proposals** — the reviewer knows the conversation and
+  review id; it records `(skill, conversation, review)` after a
+  successful proposal swap.
+- **Turn writes** — a `write_file`/`edit_file` call (a script's
+  nested calls included) whose resolved output path lands under
+  `skills/` or `skills-proposed/` records `(skill, conversation)`;
+  the turn stream owns the observation because it owns the
+  conversation id. Resolved paths keep project conversations
+  honest — `skills/…` written inside a project workdir is that
+  project's file, not the catalog. A symlinked skill dir that
+  writes through to its outside target is a documented miss (the
+  state viewer's symlink precedent: links are second-class). Bash
+  is not scanned: arbitrary shell is not parseable, and approvals
+  move directories through bash, so a string match would record an
+  approval as a generation. The miss is a documented edge, not a
+  secret: the panel shows what is recorded, never a claim of
+  completeness.
+
+`skill_sources` in the conversation store's SQLite, keyed
+`(skill, conversation_id)` — a skill regenerated in two threads
+shows in both, first and last write preserved. The row is immutable
+source fact; current state (installed / proposed / gone) resolves
+live from the filesystem at read time, so the conversational
+approve/discard path (out-of-band dir moves) can never desync it.
+`GET /api/skills/from?conversation=` (both doors) is the read; the
+PWA sheet never mutates skills. Backfill is a one-shot `goblin.log`
+parse of `reviewer review done` lines — pre-deploy skills predate
+the table and the log is their only surviving source.
+
 ## Skill reviewer
 
 On demand (2026-09-26, the second slice of "richer inner life").

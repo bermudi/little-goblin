@@ -324,9 +324,19 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 	];
 	for (const ref of config.favorites) refs.push(["favorites", ref]);
 	const groups = new Map<CacheContract["id"], { contract: CacheContract; refs: string[] }>();
+	// favorites isn't model-ref validated — one malformed entry must not
+	// take the whole report down, so an unresolvable ref degrades to a
+	// named unmappable entry instead of propagating.
+	const unmappable: string[] = [];
 	for (const [slot, ref] of refs) {
 		if (ref === undefined) continue;
-		const contract = cacheContractFor(config, ref);
+		let contract: CacheContract;
+		try {
+			contract = cacheContractFor(config, ref);
+		} catch {
+			unmappable.push(`${slot}=${ref}`);
+			continue;
+		}
 		let group = groups.get(contract.id);
 		if (group === undefined) {
 			group = { contract, refs: [] };
@@ -338,14 +348,17 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 	const undocumented = [...groups.values()].filter(
 		(g) => g.contract.lifetime === "unpublished" || g.contract.lifetime === "unknown",
 	);
-	const parts = [
-		[...groups.values()]
-			.map(
-				(g) =>
-					`${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`,
-			)
-			.join("; "),
-	];
+	const parts: string[] = [];
+	const mapped = [...groups.values()]
+		.map(
+			(g) =>
+				`${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`,
+		)
+		.join("; ");
+	if (mapped !== "") parts.push(mapped);
+	if (unmappable.length > 0) {
+		parts.push(`unmappable model refs: ${unmappable.join(", ")}`);
+	}
 	if (undocumented.length > 0) {
 		parts.push(
 			`unpublished/unknown cache duration for ${undocumented.map((g) => g.contract.id).join(", ")}`,
@@ -358,7 +371,7 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 	return result(
 		"cache.contracts",
 		scope,
-		stale || undocumented.length > 0 ? "warn" : "pass",
+		stale || undocumented.length > 0 || unmappable.length > 0 ? "warn" : "pass",
 		parts.join(". "),
 		start,
 	);

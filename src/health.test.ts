@@ -986,6 +986,23 @@ describe("cache contracts", () => {
 		expect(c.detail).toContain("openai");
 		expect(c.detail).not.toContain("unpublished/unknown");
 	});
+	test("a malformed favorite warns as unmappable instead of sinking the report", async () => {
+		const f = fixture();
+		// favorites isn't model-ref validated — a bare entry used to
+		// throw out of the contract map and reject runHealth whole.
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				...f.config,
+				favorites: ["fake/model", "no-slash-ref"],
+			}),
+		);
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("favorites=no-slash-ref");
+		expect(c.detail).toContain("favorites=fake/model");
+	});
 	test("unparseable config skips the check instead of guessing", async () => {
 		const f = fixture();
 		writeFileSync(join(f.home, "goblin.json5"), "not { json5");

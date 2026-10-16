@@ -140,9 +140,10 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    boot-time destination or degrade to an operator-facing reason
    ("restart to apply"), never a read or delete against a stale bank.
    The documents route takes an optional `conversation` param — the
-   server translates it to the bank's id-substring filter
-   (`exchange/<id>/`, trailing slash exact: `app/1` cannot match
-   `app/12`); the document-id scheme stays server knowledge. It backs
+   server matches the conversation portion of exchange IDs literally
+   and case-sensitively. The bank offers only SQL `ILIKE`, so this path
+   scans exchange documents, filters, then paginates and counts matches;
+   the document-id scheme stays server knowledge. It backs
    the PWA's per-thread panel (design/app.md → Thread sources); the
    global Memories tab is unchanged.
 

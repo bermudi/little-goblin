@@ -22,7 +22,7 @@ import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { setLogFile, setLogLevel } from "../log.ts";
 import { SkillSources } from "../skill-provenance.ts";
-import type { ThreadSkillItem } from "./operator-wire.ts";
+import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
 import { fakeModel, sleep, useHome, waitUntil } from "../testkit.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
@@ -1654,7 +1654,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 import { memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
 import { openPrograms } from "../programs.ts";
-import type { HindsightClient } from "../hindsight.ts";
+import { HindsightClient } from "../hindsight.ts";
 import type { OperatorDeps } from "./operator.ts";
 
 function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
@@ -1966,7 +1966,74 @@ describe("app operator surface", () => {
 		}
 	});
 
-	test("thread panel tails: conversation filter reaches the bank, skills/from resolves liveness", async () => {
+	for (const [conversation, collision] of [
+		["app/foo_bar", "app/fooxbar"],
+		["app/abc", "app/ABC"],
+		["app/1", "app/12"],
+		["app/parent", "app/parent/child"],
+	] as const) {
+		test(`thread memory filtering matches ${conversation} literally with accurate pages and totals`, async () => {
+			const matching = [1, 2, 3].map((seq) => ({ id: `exchange/${conversation}/${seq}/answer` }));
+			const docs = [
+				matching[0]!,
+				...Array.from({ length: 99 }, (_, seq) => ({ id: `exchange/${collision}/${seq}/answer` })),
+				...matching.slice(1),
+			];
+			const scanned: number[] = [];
+			let failSecondPage = false;
+			const upstream = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				fetch: (req) => {
+					const params = new URL(req.url).searchParams;
+					const offset = Number(params.get("offset"));
+					const limit = Number(params.get("limit"));
+					scanned.push(offset);
+					if (failSecondPage && offset > 0) return new Response("unavailable", { status: 500 });
+					return Response.json({
+						items: docs.slice(offset, offset + limit),
+						total: docs.length,
+						offset,
+						limit,
+					});
+				},
+			});
+			const baseUrl = `http://127.0.0.1:${upstream.port}`;
+			const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+			const { http, call, configRef } = setup({
+				token: APP_TOKEN_NAME,
+				operator: { memory: stubMemory({ client, target: { baseUrl, bankId: "goblin" } }) },
+			});
+			try {
+				configRef.current = {
+					...configRef.current,
+					memory: memoryConfigSchema.parse({ baseUrl, bankId: "goblin" }),
+				};
+				for (const offset of [0, 1, 3]) {
+					const res = await call(
+						`/api/app/memory/documents?conversation=${encodeURIComponent(conversation)}&limit=1&offset=${offset}`,
+					);
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as MemoriesListResponse;
+					expect(body).toMatchObject({ total: 3, offset, limit: 1 });
+					expect(body.items.map((item) => item.id)).toEqual(
+						matching.slice(offset, offset + 1).map((item) => item.id),
+					);
+				}
+				expect(scanned).toEqual([0, 100, 0, 100, 0, 100]);
+				failSecondPage = true;
+				expect(
+					(await call(`/api/app/memory/documents?conversation=${encodeURIComponent(conversation)}`))
+						.status,
+				).toBe(503);
+			} finally {
+				http.stop();
+				upstream.stop();
+			}
+		});
+	}
+
+	test("thread panel tails: conversation filter and skills/from resolve through app auth", async () => {
 		const seenQ: Array<string | undefined> = [];
 		const client = {
 			listDocuments: (opts: { q?: string; limit: number; offset: number }) => {
@@ -1986,12 +2053,10 @@ describe("app operator surface", () => {
 					bankId: "goblin",
 				}),
 			};
-			// The conversation param is a server-side translation into the
-			// bank's id-substring filter — the trailing slash keeps app/1
-			// from matching app/12.
+			// Upstream supplies a superset; literal filtering stays in goblin.
 			const filtered = await call("/api/app/memory/documents?conversation=app%2F1");
 			expect(filtered.status).toBe(200);
-			expect(seenQ.at(-1)).toBe("exchange/app/1/");
+			expect(seenQ.at(-1)).toBe("exchange/");
 			const both = await call("/api/app/memory/documents?q=x&conversation=app%2F1");
 			expect(both.status).toBe(422);
 

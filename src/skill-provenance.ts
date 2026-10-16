@@ -4,7 +4,7 @@
 // resolves from the filesystem at read time so the conversational
 // approve/discard dir moves can never desync it.
 import { type Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -121,8 +121,8 @@ export class SkillSources {
 
 	// Backfill semantics (goblin.log parse): the row stands as the log
 	// saw it ONLY when nothing newer exists — a rerun after live writes
-	// must not rewind kind/last_at to log time. Insert-if-absent, and on
-	// conflict take only the earlier first_at.
+	// must not rewind kind/last_at to log time. Preserve the earliest
+	// first_at and advance authorship only for strictly newer evidence.
 	recordInitial(
 		conversationId: string,
 		skill: string,
@@ -134,7 +134,12 @@ export class SkillSources {
 			`INSERT INTO skill_sources (skill, conversation_id, kind, review_id, first_at, last_at)
 			 VALUES (?, ?, 'reviewer', ?, ?, ?)
 			 ON CONFLICT (skill, conversation_id) DO UPDATE SET
-				first_at = MIN(skill_sources.first_at, excluded.first_at)`,
+				first_at = MIN(skill_sources.first_at, excluded.first_at),
+				kind = CASE WHEN excluded.last_at > skill_sources.last_at
+					THEN excluded.kind ELSE skill_sources.kind END,
+				review_id = CASE WHEN excluded.last_at > skill_sources.last_at
+					THEN excluded.review_id ELSE skill_sources.review_id END,
+				last_at = MAX(skill_sources.last_at, excluded.last_at)`,
 			[parsed, conversationId, reviewId, at, at],
 		);
 	}
@@ -145,7 +150,18 @@ export function skillLiveState(
 	proposedDir: string,
 	skill: string,
 ): SkillLiveState {
-	if (existsSync(join(skillsDir, skill))) return "installed";
-	if (existsSync(join(proposedDir, skill))) return "proposed";
+	for (const [dir, state] of [
+		[skillsDir, "installed"],
+		[proposedDir, "proposed"],
+	] as const) {
+		try {
+			statSync(join(dir, skill));
+			return state;
+		} catch (err) {
+			// Only absence is a live state; other filesystem errors retain
+			// their syscall/path context and must fail the read.
+			if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) throw err;
+		}
+	}
 	return "gone";
 }

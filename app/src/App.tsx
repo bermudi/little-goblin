@@ -603,10 +603,8 @@ function AppShell() {
 	// archived included; the rail shows only the active ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
-	// The chat header's thread-sources sheet — one open flag, reset on
-	// conversation change so the sheet never shows a previous thread.
+	// The chat header's thread-sources sheet belongs to the chat page.
 	const [sourcesOpen, setSourcesOpen] = useState(false);
-	useEffect(() => setSourcesOpen(false), [current]);
 	const [listError, setListError] = useState<string | null>(null);
 	// Row-action failures — cleared by the next successful action or
 	// refresh, like listError but per-action and named.
@@ -672,6 +670,7 @@ function AppShell() {
 					? "note"
 					: "chat"),
 	);
+	useEffect(() => setSourcesOpen(false), [current, page]);
 	// /app/p/<id> — set whenever the path names a project page.
 	const [projectId, setProjectId] = useState<string | null>(() =>
 		projectFromPath(window.location.pathname),
@@ -1561,7 +1560,7 @@ function AppShell() {
 						</>
 					))}
 			</main>
-			{sourcesOpen && current !== null && (
+			{page === "chat" && sourcesOpen && current !== null && (
 				<ThreadSourcesSheet
 					token={token}
 					conversationId={current}

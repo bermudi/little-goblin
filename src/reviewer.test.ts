@@ -15,6 +15,7 @@ import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { scriptedModel } from "./testkit/fake-model.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { System1Error } from "./system1.ts";
+import { SkillSources } from "./skill-provenance.ts";
 import { setLogFile } from "./log.ts";
 import {
 	buildGateState,
@@ -434,6 +435,112 @@ describe("review run — staging and publication", () => {
 		expect(recorded).toEqual([]);
 		h.store.close();
 	});
+
+	test("a delayed proposal notification and later backfill preserve a subsequent turn's provenance", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const sources = new SkillSources(h.store.db);
+		const entered = Promise.withResolvers<void>();
+		const released = Promise.withResolvers<void>();
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		deps.notify = async () => {
+			entered.resolve();
+			await released.promise;
+		};
+		deps.recordSources = (conversationId, reviewId, skills) => {
+			for (const skill of skills)
+				sources.record(conversationId, skill, "reviewer", undefined, reviewId);
+		};
+		const reviewing = new Reviewer(deps).considerTurn(turn());
+		let turnAt = "";
+		try {
+			try {
+				await entered.promise;
+				expect(sources.forConversation(h.convId)[0]?.kind).toBe("reviewer");
+				turnAt = new Date(Date.now() + 1).toISOString();
+				sources.record(h.convId, "pdf-tables", "turn", turnAt);
+				await waitUntil(
+					() => Date.now() > Date.parse(turnAt),
+					"notification completes after the turn write",
+				);
+			} finally {
+				released.resolve();
+				await reviewing;
+			}
+			expect(sources.forConversation(h.convId)[0]).toMatchObject({
+				kind: "turn",
+				lastAt: turnAt,
+			});
+			const done = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { msg: string; ts: string; review_id: string })
+				.find((line) => line.msg === "reviewer review done");
+			expect(done).toBeDefined();
+			expect(Date.parse(done!.ts)).toBeLessThan(Date.parse(turnAt));
+			sources.recordInitial(h.convId, "pdf-tables", done!.ts, done!.review_id);
+			expect(sources.forConversation(h.convId)[0]).toMatchObject({ kind: "turn", lastAt: turnAt });
+		} finally {
+			h.store.close();
+		}
+	});
+
+	for (const failure of ["provenance", "notification"] as const) {
+		test(`proposal ${failure} failure propagates without undoing the durable proposal`, async () => {
+			const h = harness();
+			const deps = h.depsFor({
+				nouls: { correction: 0.9, procedure: 0.1 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			});
+			const sources = new SkillSources(h.store.db);
+			deps.recordSources = (conversationId, reviewId, skills) => {
+				if (failure === "provenance") throw new Error("provenance unavailable");
+				for (const skill of skills)
+					sources.record(conversationId, skill, "reviewer", undefined, reviewId);
+			};
+			deps.notify = async () => {
+				throw new Error("notification unavailable");
+			};
+			try {
+				await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow(
+					`${failure} unavailable`,
+				);
+				expect(existsSync(join(h.proposed, "pdf-tables", "SKILL.md"))).toBe(true);
+				if (failure === "notification") {
+					expect(sources.forConversation(h.convId)[0]?.kind).toBe("reviewer");
+					expect(h.store.history(h.convId)).toHaveLength(1);
+				} else {
+					expect(h.store.history(h.convId)).toHaveLength(0);
+				}
+			} finally {
+				h.store.close();
+			}
+		});
+	}
 
 	test("a newer review replaces an undecided proposal of the same skill, and logs it", async () => {
 		const h = harness();

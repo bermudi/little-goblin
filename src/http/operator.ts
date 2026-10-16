@@ -38,6 +38,7 @@ import {
 	HindsightError,
 	identifier,
 	type HindsightClient,
+	type MemoryDocPage,
 	type MemoryDocSummary,
 	type MemoryFact,
 } from "../hindsight.ts";
@@ -474,8 +475,8 @@ function memoryFactItem(source: MemoryFact): MemoryFactItem {
 
 // Query params for the documents list — bounded like every boundary;
 // an out-of-range or malformed value is a 422, not a guess. The two
-// filters are mutually exclusive: `conversation` is the thread panel's
-// server-side translation into the bank's id-substring `q`.
+// filters are mutually exclusive: `conversation` selects a literal thread,
+// while q retains the global browser's upstream search semantics.
 const browseQuerySchema = z
 	.object({
 		q: z.string().min(1).max(256).optional(),
@@ -642,19 +643,39 @@ export async function handleOperatorRoute(
 				{ status: 422, headers: NO_STORE },
 			);
 		}
-		// The thread panel's filter: the document-id scheme stays server
-		// knowledge (design/memory.md → Memories browser) — the trailing
-		// slash is what keeps `app/1` from matching `app/12`.
-		const filter =
-			parsed.data.conversation !== undefined
-				? `exchange/${parsed.data.conversation}/`
-				: parsed.data.q;
 		try {
-			const page = await gate.client.listDocuments({
-				...(filter !== undefined ? { q: filter } : {}),
-				limit: parsed.data.limit,
-				offset: parsed.data.offset,
-			});
+			const { conversation, q, limit, offset } = parsed.data;
+			let page: MemoryDocPage<MemoryDocSummary>;
+			if (conversation !== undefined) {
+				// Upstream q is SQL ILIKE, not a literal conversation filter.
+				// Scan the exchange superset before paginating and counting.
+				const prefix = `exchange/${conversation}/`;
+				const items: MemoryDocSummary[] = [];
+				let total = 0;
+				for (let scanOffset = 0; ; ) {
+					const batch = await gate.client.listDocuments({
+						q: "exchange/",
+						limit: 100,
+						offset: scanOffset,
+					});
+					for (const item of batch.items) {
+						if (!item.id.startsWith(prefix) || item.id.slice(prefix.length).split("/").length !== 2)
+							continue;
+						if (total >= offset && items.length < limit) items.push(item);
+						total++;
+					}
+					scanOffset += batch.items.length;
+					if (scanOffset >= batch.total) break;
+					if (batch.items.length === 0) throw new HindsightError("protocol");
+				}
+				page = { items, total, limit, offset };
+			} else {
+				page = await gate.client.listDocuments({
+					...(q !== undefined ? { q } : {}),
+					limit,
+					offset,
+				});
+			}
 			const body: MemoriesListResponse = {
 				items: page.items.map(memoryDocListItem),
 				total: page.total,
@@ -664,7 +685,7 @@ export async function handleOperatorRoute(
 			log.debug("memory browse served", {
 				...who,
 				via: actor.via,
-				q: filter ?? null,
+				q: q ?? null,
 				conversation: parsed.data.conversation ?? null,
 				total: body.total,
 				offset: body.offset,

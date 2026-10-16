@@ -98,7 +98,7 @@ describe("backfill-skill-sources", () => {
 		expect(rowsAt(db).map((r) => r.skill)).toEqual(["good-skill"]);
 	});
 
-	test("a rerun after live writes never rewinds — insert-only first_at", () => {
+	test("a rerun after live writes never rewinds authorship", () => {
 		const { home, db, log } = mkHome();
 		writeFileSync(log, `${doneLine({ ts: "2026-10-16T01:00:00.000Z" })}\n`);
 		expect(run(home, log).code).toBe(0);
@@ -116,6 +116,27 @@ describe("backfill-skill-sources", () => {
 			firstAt: "2026-10-16T01:00:00.000Z",
 			lastAt: "2026-10-16T05:00:00.000Z",
 		});
+	});
+
+	test("multiple historical proposals preserve both endpoints across reruns", () => {
+		const { home, db, log } = mkHome();
+		writeFileSync(
+			log,
+			[
+				doneLine({ ts: "2026-10-16T01:00:00.000Z", review_id: "r-first" }),
+				doneLine({ ts: "2026-10-16T03:00:00.000Z", review_id: "r-last" }),
+				doneLine({ ts: "2026-10-16T02:00:00.000Z", review_id: "r-middle" }),
+			].join("\n"),
+		);
+		for (let runIndex = 0; runIndex < 2; runIndex++) {
+			expect(run(home, log).code).toBe(0);
+			expect(rowsAt(db)[0]).toMatchObject({
+				kind: "reviewer",
+				reviewId: "r-last",
+				firstAt: "2026-10-16T01:00:00.000Z",
+				lastAt: "2026-10-16T03:00:00.000Z",
+			});
+		}
 	});
 
 	test("missing log is a hard error, not a clean empty run", () => {

@@ -809,6 +809,24 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
+	test("Back to Settings closes thread sources and Forward does not reopen them", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		await click(container.querySelector('button[aria-label^="From this thread"]'));
+		expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Retained exchanges");
+
+		await traverse("back");
+		expect(win.location.pathname).toBe("/app/settings");
+		expect(container.querySelector(".settings")).not.toBeNull();
+		expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+		await traverse("forward");
+		expect(win.location.pathname).toBe("/app/c/fixture");
+		expect(container.querySelector(".chat")).not.toBeNull();
+		expect(container.querySelector('[role="dialog"]')).toBeNull();
+	});
+
 	test("repeated conversation and empty-chat selection do not add history entries", async () => {
 		seedConversation();
 		await mount();

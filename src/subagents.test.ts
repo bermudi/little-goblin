@@ -4577,8 +4577,11 @@ describe("subagents crash approval", () => {
 		sandboxes.execGate = null;
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "retried" } }] });
 		const resumed = await o2.decide(rowId, WS, { kind: "authorize-retry" });
-		expect(resumed.status).toBe("running");
-		expect(resumed.pendingApproval).toBeNull();
+		// The verdict queues for a global slot — the scheduler's grant
+		// flips it running and releases the parked call.
+		expect(resumed.status).toBe("queued");
+		expect(resumed.pendingApproval?.decision?.kind).toBe("authorize-retry");
+		await until(() => r2.runs.get(rowId)?.status === "running", "decision admitted");
 		await until(() => r2.runs.get(rowId)?.status === "done", "settled after retry");
 		expect(sandboxes.dispatchCalls).toBe(2);
 		expect(r2.runs.get(rowId)?.result).toBe("retried");
@@ -4643,7 +4646,7 @@ describe("subagents crash approval", () => {
 			kind: "record-result",
 			result: "stored verdict",
 		});
-		expect(decided.status).toBe("running");
+		expect(decided.status).toBe("queued");
 		await o3.resume();
 		await until(() => r3.runs.get(rowId)?.status === "done", "settled via stored decision");
 		expect(sandboxes.dispatchCalls).toBe(1);
@@ -4663,7 +4666,7 @@ describe("subagents crash approval", () => {
 		const deciding = o2.decide(rowId, WS, { kind: "authorize-retry" });
 		await until(() => sandboxes.dispatchCalls >= 2, "retry dispatched");
 		sandboxes.sandboxDead = true;
-		await deciding; // decide returns once the row flips running
+		await deciding; // decide returns once the verdict is queued
 		await o2.close();
 		owners = owners.filter((x) => x !== o2);
 

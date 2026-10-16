@@ -43,6 +43,7 @@ import {
 	Harness,
 	type Submission,
 	type HookApi,
+	type ToolDiagnostic,
 	type ToolExecutionApi,
 	type ToolExecutionResult,
 	type ToolRegistration,
@@ -86,12 +87,14 @@ import {
 import { PodmanError } from "./podman.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import {
+	approvalDecisionSchema,
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
 	MAX_RESULT_CHARS,
 	MAX_TASK_CHARS,
 	type InputMode,
 	type PendingApproval,
+	type SubagentApprovalDecision,
 	type SubagentKind,
 	type SubagentRun,
 	type SubagentRuns,
@@ -177,26 +180,9 @@ const RunDoc = defineDoc<RunDocState>({
 // transcript has. The run row's pendingApproval is only a routing mirror
 // — this doc is the truth.
 
-/** The operator's verdict on a crash-ambiguous call (design/subagents.md):
- *  `record-result` supplies the call's result text — the tool never
- *  re-executes and the model sees the text as the call's output;
- *  `authorize-retry` re-executes the call exactly once more; `abandon`
- *  terminates the call and the run. */
-export type SubagentApprovalDecision = {
-	kind: "record-result" | "authorize-retry" | "abandon";
-	note?: string | undefined;
-	result?: string | undefined;
-};
-
-const approvalDecisionSchema = z.object({
-	kind: z.union([
-		z.literal("record-result"),
-		z.literal("authorize-retry"),
-		z.literal("abandon"),
-	]),
-	note: z.string().max(MAX_MESSAGE_CHARS).optional(),
-	result: z.string().max(MAX_RESULT_CHARS).optional(),
-});
+// The decision type and its boundary schema live in subagent-runs.ts —
+// the verdict now persists on the row's pendingApproval mirror.
+export type { SubagentApprovalDecision } from "./subagent-runs.ts";
 
 const ApprovalLeaseSchema = z.discriminatedUnion("state", [
 	z.object({ state: z.literal("absent") }),
@@ -456,8 +442,10 @@ export interface Subagents {
 	send(id: number, conversationId: string, message: string): Promise<SubagentRun>;
 	stop(id: number, conversationId: string): Promise<SubagentRun>;
 	/** Operator verdict on a run parked by the crash-approval gate —
-	 *  resolves the parked tool task and un-parks the run. Only valid
-	 *  on a `needs_input` row carrying `pendingApproval`. */
+	 *  persists the decision on the row and queues the continuation
+	 *  for scheduler admission (a global slot plus resource checks);
+	 *  the grant resolves the parked tool task. Only valid on a
+	 *  `needs_input` row carrying `pendingApproval`. */
 	decide(
 		id: number,
 		conversationId: string,
@@ -1489,22 +1477,88 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					`run #${row.id} is ${row.stopRequested ? "stopping" : row.status} — no approval is parked`,
 				);
 			}
+			if (row.status === "queued" && row.pendingApproval?.decision !== undefined) {
+				// The verdict is durable on the row and the run waits only
+				// for a global slot — re-parking would clobber it. The
+				// scheduler's grant resolves this wait; the invocation's
+				// abort still ends it on a stop or close.
+				try {
+					return await awaitWithContext(
+						new Promise<SubagentApprovalDecision>((resolve) => {
+							approvalWaiters.set(key, resolve);
+						}),
+						context,
+					);
+				} finally {
+					approvalWaiters.delete(key);
+				}
+			}
 			// needs_input frees the run's global slot, and for a computer
 			// run the desktop controller lease releases — the same rules
 			// as an ask_operator park. The write is idempotent across
 			// re-entries: a crash between the operator's decision and its
 			// lease commit re-parks the same ask.
-			const parked = runs.update(row.id, {
-				status: "needs_input",
-				question: approvalQuestion(request),
-				pendingApproval: {
-					piTaskId: request.taskId,
-					callId: request.callId,
+			let parked: SubagentRun;
+			try {
+				parked = runs.update(row.id, {
+					status: "needs_input",
+					question: approvalQuestion(request),
+					pendingApproval: {
+						piTaskId: request.taskId,
+						callId: request.callId,
+						tool: request.tool,
+						args: request.args,
+						attempts: request.attempts,
+					},
+				});
+			} catch (err) {
+				// A park the store can't record must NOT become an ordinary
+				// tool error — the model would retry the interrupted side
+				// effect with no operator decision behind it. Persisted
+				// stop intent fences every later tool re-entry (requireLive
+				// refuses a stopping row), the fired abort ends this
+				// invocation, and the scan's pendingStops completes the
+				// terminal mark. When even the intent can't land, a direct
+				// 'failed' mark is the last fence a retry can hit.
+				log.error("crash-approval park could not persist — fencing the run", err, {
+					run: row.id,
 					tool: request.tool,
-					args: request.args,
-					attempts: request.attempts,
-				},
-			});
+					callId: request.callId,
+				});
+				try {
+					runs.update(row.id, { stopRequested: true });
+				} catch (e) {
+					log.warn("stop intent could not persist after the failed park", e, { run: row.id });
+					try {
+						runs.update(row.id, {
+							status: "failed",
+							error: "the approval park could not persist — the interrupted call's effect is unobserved",
+							noticePending: true,
+							finishedAt: Date.now(),
+						});
+					} catch (e2) {
+						log.warn("the failed-park fence could not settle the row either", e2, {
+							run: row.id,
+						});
+					}
+				}
+				if (row.piConversationId !== null && !harnessClosed) {
+					try {
+						const conv = await harness.conversation(asConv(row.piConversationId), ctx);
+						// No waitForIdle here — this task IS the work being
+						// aborted; the throw below ends it and the scan's stop
+						// retry finishes the mark.
+						void conv?.abort(ctx, { background: true }).catch((e) => {
+							log.warn("abort after a failed park could not be fired", e, { run: row.id });
+						});
+					} catch (e) {
+						log.warn("the failed-park abort could not be reached", e, { run: row.id });
+					}
+				}
+				throw new SubagentError(
+					`run #${row.id} approval park could not persist — the run is fenced`,
+				);
+			}
 			releaseLeases(parked);
 			log.info("subagent parked on a crash-ambiguous tool call", {
 				run: row.id,
@@ -1624,8 +1678,50 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				// Fresh call, or an authorized re-execution. Either way the
 				// gate admits exactly one dispatch under this generation.
 				await commitApprovalLease(api, approvalClaimRow(prior.attempts + 1), context);
-				const result = await inner(args, api, context);
-				await commitApprovalLease(api, approvalDoneRow(asJson(result)), context);
+				// The lease must replay the result the model actually saw —
+				// Pi folds streamed output(), diagnostic() and details()
+				// calls into the resolved result when the return value
+				// omits them (bash returns {} and streams stdout/stderr).
+				// Persisting the raw return would replay "(no tool
+				// output)" after a restart, so the durable row carries the
+				// effective result instead.
+				const capturedOutput: string[] = [];
+				const capturedDiagnostics: ToolDiagnostic[] = [];
+				let capturedDetails: JsonValue | undefined;
+				const decoder = new TextDecoder();
+				const observed: ToolExecutionApi = {
+					...api,
+					output(chunk) {
+						capturedOutput.push(
+							typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }),
+						);
+						api.output(chunk);
+					},
+					diagnostic(d) {
+						capturedDiagnostics.push(d);
+						api.diagnostic(d);
+					},
+					async details(v, ctx) {
+						capturedDetails = v as JsonValue;
+						await api.details(v, ctx);
+					},
+				};
+				const result = await inner(args, observed, context);
+				const tail = decoder.decode();
+				if (tail !== "") capturedOutput.push(tail);
+				const effective: ToolExecutionResult = {
+					...(result.content === undefined && capturedOutput.length > 0
+						? {
+								content: [{ type: "text" as const, text: capturedOutput.join("") }],
+							}
+						: {}),
+					...result,
+					...(result.details === undefined && capturedDetails !== undefined
+						? { details: capturedDetails }
+						: {}),
+					diagnostics: [...capturedDiagnostics, ...(result.diagnostics ?? [])],
+				};
+				await commitApprovalLease(api, approvalDoneRow(asJson(effective)), context);
 				return result;
 			},
 		} as T;
@@ -2676,6 +2772,49 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				fresh = runs.get(row.id)!;
 			}
 			throwIfHalted(row.id);
+			if (fresh.pendingApproval !== null) {
+				// An approval continuation rides the parked tool task — no
+				// new input submits. Capacity and the resource gates above
+				// already passed, so the durable verdict can release the
+				// gate: the row flips running so the gate's requireLive
+				// sees it, then the parked waiter resolves or the verdict
+				// stores for the post-restart re-entry.
+				if (fresh.piConversationId === null) {
+					throw new SubagentError("queued approval run has no Pi conversation — corrupt park");
+				}
+				const d = fresh.pendingApproval.decision;
+				if (d === undefined) {
+					// decide() writes the verdict and queues in one update —
+					// an empty one is a wedged row, not a slot to burn.
+					retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
+					return { kind: "blocked", reason: "no persisted approval decision" };
+				}
+				const key = approvalKey(fresh.piConversationId, fresh.pendingApproval.piTaskId);
+				runs.update(row.id, { status: "running", pendingApproval: null });
+				const waiter = approvalWaiters.get(key);
+				if (waiter !== undefined) {
+					approvalWaiters.delete(key);
+					waiter(d);
+				} else {
+					// No invocation is waiting — the gate re-enters on
+					// harness.resume(). The parked submission's monitor
+					// re-attaches FIRST or a settle lands unwatched.
+					approvalDecisions.set(key, d);
+					if (fresh.piSubmissionId !== null) {
+						const sub = await harness.submission(asSub(fresh.piSubmissionId), ctx);
+						if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
+					}
+					if (resumed && !harnessClosed) harness.resume();
+				}
+				log.info("subagent approval decision admitted — the parked call continues", {
+					run: row.id,
+					piTaskId: fresh.pendingApproval.piTaskId,
+					tool: fresh.pendingApproval.tool,
+					kind: d.kind,
+					waiter: waiter !== undefined,
+				});
+				return { kind: "admitted" };
+			}
 			// Persist the input intent + revision BEFORE admit: a crash
 			// between submit and row write re-submits the same requestId
 			// and gets the already-admitted submission back.
@@ -2919,7 +3058,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			if (
 				row === null ||
 				row.stopRequested ||
-				row.status !== "needs_input" ||
+				(row.status !== "needs_input" && row.status !== "queued") ||
 				row.pendingApproval === null
 			) {
 				return;
@@ -2954,7 +3093,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			const live = runs.get(id);
 			const parked =
 				live !== null &&
-				live.status === "needs_input" &&
+				(live.status === "needs_input" || live.status === "queued") &&
 				live.pendingApproval !== null;
 			if (live === null || live.stopRequested || (live.status !== "running" && !parked)) {
 				return true;
@@ -2978,7 +3117,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			const afterCancel = runs.get(id);
 			const stillParked =
 				afterCancel !== null &&
-				afterCancel.status === "needs_input" &&
+				(afterCancel.status === "needs_input" || afterCancel.status === "queued") &&
 				afterCancel.pendingApproval !== null;
 			if (
 				afterCancel === null ||
@@ -3276,36 +3415,25 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					throw new SubagentError(`run #${id} has no Pi conversation — corrupt park`);
 				}
 				const pending = row.pendingApproval;
-				// Flip the row first: the gate's admitted path re-runs
-				// requireLive, which must already see `running`.
+				// The verdict lands ON the parked mirror — durable across a
+				// crash in the grant window — and the row queues for a
+				// global slot: the drain's admit() runs the same capacity
+				// and resource checks every resumed row passes before
+				// model work may continue. Marking running directly would
+				// let a parked run jump the queue while another run holds
+				// the only slot.
 				const updated = runs.update(id, {
-					status: "running",
-					pendingApproval: null,
+					status: "queued",
+					pendingApproval: { ...pending, decision: d },
 				});
-				const key = approvalKey(row.piConversationId, pending.piTaskId);
-				const waiter = approvalWaiters.get(key);
-				if (waiter !== undefined) {
-					approvalWaiters.delete(key);
-					waiter(d);
-				} else {
-					// No parked invocation is waiting — the run survived a
-					// restart and the gate has not re-entered yet (or resume
-					// has not run). Store the verdict; the host consumes it
-					// when the task re-parks, so the decision can never be
-					// lost by ordering. Re-drive scheduling when the owner
-					// is already resumed — before resume() the boot sequence
-					// owns the re-entry and this nudge must not race it.
-					approvalDecisions.set(key, d);
-					if (resumed && !harnessClosed) harness.resume();
-				}
-				log.info("subagent approval decided", {
+				log.info("subagent approval decided — queued for admission", {
 					run: id,
 					piTaskId: pending.piTaskId,
 					tool: pending.tool,
 					callId: pending.callId,
 					kind: d.kind,
-					waiter: waiter !== undefined,
 				});
+				scheduleDrain();
 				return updated;
 			});
 		},
@@ -3329,9 +3457,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				try {
 					recoveryPending.delete(id);
 					const row = runs.get(id);
+					// needs_input waits on the operator; queued carries a
+					// recorded verdict and waits on a slot — both still
+					// own their parked call, so recovery watches them.
 					const parked =
 						row !== null &&
-						row.status === "needs_input" &&
+						(row.status === "needs_input" || row.status === "queued") &&
 						row.pendingApproval !== null;
 					if (row === null || row.stopRequested || (row.status !== "running" && !parked)) {
 						recoveryAttempts.delete(id);
@@ -3351,11 +3482,12 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						exhausted = true;
 					} else if (parked) {
 						await recoverParked(id);
+						scheduleDrain();
 						const after = runs.get(id);
 						if (
 							after === null ||
 							after.stopRequested ||
-							after.status !== "needs_input" ||
+							(after.status !== "needs_input" && after.status !== "queued") ||
 							after.pendingApproval === null
 						) {
 							recoveryAttempts.delete(id);

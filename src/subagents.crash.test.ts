@@ -293,8 +293,9 @@ describe("subagent crash approval — a real killed process", () => {
 		// exactly once more — the model sees the fresh bash result.
 		replies.push(finishReply());
 		const resumed = await owner.decide(1, "crash:one", { kind: "authorize-retry" });
-		expect(resumed.status).toBe("running");
-		expect(resumed.pendingApproval).toBeNull();
+		expect(resumed.status).toBe("queued");
+		expect(resumed.pendingApproval?.decision?.kind).toBe("authorize-retry");
+		await until(() => runs.get(1)?.status === "running", "decision admitted");
 		await until(() => runs.get(1)?.status === "done", "run settled after retry");
 		expect(markerLines(b.marker)).toEqual(["dispatched", "REPLAYED"]);
 		expect(dispatches()).toBe(1);

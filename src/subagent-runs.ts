@@ -30,6 +30,22 @@ export type InputMode = "initial" | "resume" | "steer";
  *  restart reuses the artifact instead of recopying the box file. */
 export type ExportProgress = Record<string, { rel: string } | { error: string }>;
 
+/** The operator's verdict on a crash-ambiguous call (design/subagents.md):
+ *  `record-result` supplies the call's result text — the tool never
+ *  re-executes and the model sees the text as the call's output;
+ *  `authorize-retry` re-executes the call exactly once more; `abandon`
+ *  terminates the call and the run. */
+export const approvalDecisionSchema = z.object({
+	kind: z.union([
+		z.literal("record-result"),
+		z.literal("authorize-retry"),
+		z.literal("abandon"),
+	]),
+	note: z.string().max(MAX_MESSAGE_CHARS).optional(),
+	result: z.string().max(MAX_RESULT_CHARS).optional(),
+});
+export type SubagentApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
 const pendingApprovalSchema = z.object({
 	/** The durable Pi tool-task id — the lease key the gate re-parks on. */
 	piTaskId: z.string(),
@@ -37,6 +53,10 @@ const pendingApprovalSchema = z.object({
 	tool: z.string(),
 	args: z.unknown(),
 	attempts: z.number(),
+	/** The recorded verdict — decide() persists it on the row BEFORE the
+	 *  scheduler's grant consumes it, so a crash in between can't lose
+	 *  the decision. Absent = the operator hasn't decided. */
+	decision: approvalDecisionSchema.optional(),
 });
 /** The durable mirror of a parked crash-approval: which tool call the
  *  operator is being asked about (design/subagents.md → crash approval). */
@@ -301,15 +321,17 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 	);
 	const qList = db.query("SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY id");
 	// The lease holder is the row furthest along, not the oldest: a
-	// parked (needs_input) or resuming (queued with a persisted input
-	// intent) run beats an ordinary queued second worker, so a queued
-	// row never steals the lease the active run resumes onto.
+	// parked (needs_input), resuming (queued with a persisted input
+	// intent), or approval-queued (queued with a recorded decision) run
+	// beats an ordinary queued second worker, so a queued row never
+	// steals the lease the active run resumes onto.
 	const qLease = db.query(
 		`SELECT * FROM subagent_runs
 		 WHERE conversation_id = ? AND kind = 'worker'
 		   AND status IN ('queued','running','needs_input')
 		 ORDER BY
-		   CASE WHEN status != 'queued' OR input_intent IS NOT NULL THEN 0 ELSE 1 END,
+		   CASE WHEN status != 'queued' OR input_intent IS NOT NULL
+		         OR pending_approval IS NOT NULL THEN 0 ELSE 1 END,
 		   id`,
 	);
 	const qUnfinished = db.query(

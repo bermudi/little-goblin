@@ -173,6 +173,39 @@ describe("turn resume", () => {
 		store.close();
 	});
 
+	test("decide ordinals stay fixed as decisions land", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		interruptedRun(store, journal, conv, "run-dead");
+		for (const [id, q] of [
+			["c1", 1],
+			["c2", 2],
+			["c3", 3],
+		] as const) {
+			journal.noteToolInput("run-dead", id, "probe", { q });
+			journal.noteToolDispatch("run-dead", id, "probe", { q });
+		}
+
+		expect(ops.decide(conv.id, "run-dead", "1", "skip").kind).toBe("ok");
+		// #2 must still name c2 — an ordinal over the shrunk dispatched
+		// list would hit c3 (an unapproved side effect) or refuse.
+		expect(ops.decide(conv.id, "run-dead", "2", "authorize-retry").kind).toBe("ok");
+		// A decided ordinal refuses like the id path does.
+		const again = ops.decide(conv.id, "run-dead", "1", "skip");
+		expect(again.kind).toBe("refused");
+		if (again.kind === "refused") {
+			expect(again.code).toBe("conflict");
+			expect(again.reason).toContain("resolved-skip");
+		}
+		const calls = journal.callsFor("run-dead");
+		expect(calls.map((c) => c.state)).toEqual([
+			"resolved-skip",
+			"resolved-retry",
+			"dispatched",
+		]);
+		await runtime.shutdown();
+		store.close();
+	});
+
 	test("resume refuses while ambiguous calls stay undecided", async () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		const anchorSeq = appendUser(store, conv, "run the tool");
@@ -185,6 +218,7 @@ describe("turn resume", () => {
 		if (out.kind === "needs-decisions") {
 			expect(out.runId).toBe("run-dead");
 			expect(out.calls.map((c) => c.toolCallId)).toEqual(["c1"]);
+			expect(out.numbered.map((c) => c.toolCallId)).toEqual(["c1"]);
 		}
 		expect(ops.decide(conv.id, "run-dead", "c1", "skip").kind).toBe("ok");
 		const done = ops.resume(conv.id, "run-dead");

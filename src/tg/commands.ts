@@ -17,7 +17,7 @@ import { memoryStatus, type MemoryContexts, type MemoryWorker } from "../memory.
 import { forgetDocument } from "../memory-forget.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
-import type { ResumeOps } from "../turn-resume.ts";
+import { numberedCalls, type ResumeOps } from "../turn-resume.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget-listings.ts";
@@ -235,12 +235,18 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 						`interrupted run ${id} — started ${new Date(run.startedMs).toISOString()}`,
 						`  ${run.calls.completed} completed · ${run.calls.dispatched} ambiguous · ${run.calls.resolved} decided · ${run.calls.planned} planned · ${run.calls.failed} failed`,
 					);
-					const undecided = calls.filter((c) => c.state === "dispatched");
-					for (const [i, c] of undecided.entries()) {
+					// /decide's ordinal namespace: decided rows keep their slot
+					// so a number printed earlier still names the same call.
+					const numbered = numberedCalls(calls);
+					for (const [i, c] of numbered.entries()) {
 						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						lines.push(`  ${i + 1}. ${c.name} ${args.slice(0, 120)}`);
+						lines.push(
+							c.state === "dispatched"
+								? `  ${i + 1}. ${c.name} ${args.slice(0, 120)}`
+								: `  ${i + 1}. ${c.name} — ${c.state}`,
+						);
 					}
-					if (undecided.length > 0) {
+					if (numbered.some((c) => c.state === "dispatched")) {
 						lines.push(
 							`  decide first: /decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
 						);
@@ -257,11 +263,14 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			}
 			if (outcome.kind === "needs-decisions") {
 				const id = outcome.runId.slice(0, 8);
+				// Same numbering the bare listing prints — decided rows keep
+				// their slot and are skipped over here.
 				const lines = [
 					"undecided tool calls block resume:",
-					...outcome.calls.map((c, i) => {
+					...outcome.numbered.flatMap((c, i) => {
+						if (c.state !== "dispatched") return [];
 						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						return `  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`;
+						return [`  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`];
 					}),
 					`/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
 				];

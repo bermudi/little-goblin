@@ -47,7 +47,9 @@ export type ResumeRefusalCode = "not-found" | "conflict" | "invalid" | "unavaila
 
 export type ResumeOutcome =
 	| { kind: "resumed"; runId: string }
-	| { kind: "needs-decisions"; runId: string; calls: TurnToolCall[] }
+	// `calls` is what still blocks (dispatched only); `numbered` is the
+	// ordinal namespace the surfaces print — see numberedCalls.
+	| { kind: "needs-decisions"; runId: string; calls: TurnToolCall[]; numbered: TurnToolCall[] }
 	| { kind: "refused"; code: ResumeRefusalCode; reason: string };
 
 export type DecideOutcome =
@@ -112,6 +114,16 @@ function findRun(journal: TurnJournal, convId: string, ref: string): RunRef {
 
 function refused(code: ResumeRefusalCode, reason: string) {
 	return { kind: "refused" as const, code, reason };
+}
+
+// The ordinal namespace /decide and the /resume listings share: calls
+// that are or were decidable — dispatched plus every resolved-* — in
+// journal order. A decision moves its row dispatched → resolved-* but
+// keeps its slot, so a number printed before the decision still names
+// the same call after it. Completed/planned/failed calls never took a
+// decision and never join the list.
+export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
+	return calls.filter((c) => c.state === "dispatched" || c.state.startsWith("resolved-"));
 }
 
 const convSnapshotSchema = z.object({
@@ -305,18 +317,25 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				);
 			}
 			const all = journal.callsFor(found.run.runId);
-			const ambiguous = all.filter((c) => c.state === "dispatched");
+			const numbered = numberedCalls(all);
 			let call: TurnToolCall | undefined;
 			if (/^\d+$/.test(callRef)) {
-				// Ordinals index the undecided list — the numbering /resume prints.
+				// Ordinals index the numbered list — stable across decisions,
+				// the numbering /resume prints.
 				const i = Number.parseInt(callRef, 10) - 1;
-				if (i < 0 || i >= ambiguous.length) {
+				if (i < 0 || i >= numbered.length) {
 					return refused(
 						"invalid",
-						`no undecided call ${callRef} — run ${found.run.runId.slice(0, 8)} has ${ambiguous.length}`,
+						`no call ${callRef} — run ${found.run.runId.slice(0, 8)} has ${numbered.length}`,
 					);
 				}
-				call = ambiguous[i];
+				call = numbered[i];
+				if (call !== undefined && call.state !== "dispatched") {
+					return refused(
+						"conflict",
+						`call ${callRef} is already '${call.state}' — no decision to take`,
+					);
+				}
 			} else {
 				// Id refs search every journaled call, so a retry on a
 				// settled call reads as the conflict it is, not a miss.
@@ -395,7 +414,12 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const calls = journal.callsFor(run.runId);
 			const undecided = calls.filter((c) => c.state === "dispatched");
 			if (undecided.length > 0) {
-				return { kind: "needs-decisions", runId: run.runId, calls: undecided };
+				return {
+					kind: "needs-decisions",
+					runId: run.runId,
+					calls: undecided,
+					numbered: numberedCalls(calls),
+				};
 			}
 			// The contract the dead turn ran under: model + thinking must
 			// still be what the row recorded, or the resume is a different

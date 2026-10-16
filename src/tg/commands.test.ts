@@ -1178,7 +1178,7 @@ describe("recovery commands", () => {
 		const { store, conv, sent, deps } = setup({
 			resumeOps: () =>
 				fakeOps({
-					resume: () => ({ kind: "needs-decisions", runId: run.runId, calls }),
+					resume: () => ({ kind: "needs-decisions", runId: run.runId, calls, numbered: calls }),
 				}),
 		});
 		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
@@ -1204,6 +1204,7 @@ describe("recovery commands", () => {
 									kind: "needs-decisions",
 									runId: run.runId,
 									calls: [call],
+									numbered: [call],
 								},
 				}),
 		});

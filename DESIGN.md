@@ -217,6 +217,28 @@ the orphaned turn to the operator, don't replay it.
     catalog context limit. History compaction is an explicit logged
     boundary that starts a fresh stable prefix — never silent eviction
     (see Compaction).
+  - Per-call telemetry lands in `model_cache_calls` (goblin.sqlite;
+    `src/cache-observation.ts` owns the table on the store's handle).
+    The `observedModel` middleware (agent/providers.ts) writes a
+    `started` row before invoking the provider — fresh call id,
+    conversation/purpose, route key (SHA-256 of the provider-config
+    identity: config name, kind, credential-free base, model ref;
+    Codex/OpenRouter pin their constant endpoints, and wrappers without
+    config get an inferred provider/modelId+purpose key labelled as
+    such), head/request/settings hashes and per-message prompt hashes —
+    then `completed` with the usage split only on a provider finish, or
+    `failed` on rejection, stream error or cancellation. The log carries
+    the same correlation: `model call` opens a callId, `model call
+    usage`/`model call failed` close it, with `idleMs` and
+    `prefixRelation` copied from the start observation. Prefix relations
+    (`first`/`same`/`append`/`rewrite` and `shared_messages`) are
+    structural facts about consecutive requests on one
+    conversation+route — never proof of cache warmth, expiry or a
+    provider bug. No expiry-based pruning or other eviction policy
+    until this telemetry verifies it; `scripts/cache-report.ts`
+    aggregates the receipts and `scripts/check-cache-contracts.ts`
+    re-checks the public contract sources (design/model.md → Cache
+    contracts).
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
   log: a model switch — or a catalog refresh that changes a model's

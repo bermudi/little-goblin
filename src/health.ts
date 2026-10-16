@@ -19,6 +19,11 @@ import {
 	parsePassKeysGet,
 	type AuthRecord,
 } from "./auth.ts";
+import {
+	cacheContractFor,
+	cacheContractFresh,
+	type CacheContract,
+} from "./agent/cache-contracts.ts";
 import { authReferences, parseConfig, type Config } from "./config.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
@@ -80,6 +85,8 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Inspect memory readiness and local installation metadata under the approved runbook; do not print credentials or alter bank data.",
 	sandbox:
 		"Inspect the podman engine and the configured image locally; images are pulled only with operator approval.",
+	"cache.contracts":
+		"Run the bounded public-doc check `bun scripts/check-cache-contracts.ts` — it verifies the pinned source fragments only and never changes policy; empirical lifetime policies wait on model_cache_calls telemetry.",
 };
 
 function result(
@@ -297,6 +304,62 @@ function configCheck(home: string): { finding: HealthResult; config?: Config } {
 		return { finding: failure("config", scope, error, start, "Read/validate goblin.json5") };
 	}
 }
+function cacheContracts(config: Config | undefined, home: string): HealthResult {
+	const start = performance.now(),
+		scope = `caller-home:${home}`;
+	if (config === undefined) {
+		return result(
+			"cache.contracts",
+			scope,
+			"skip",
+			"no parsed config — contract coverage not listed",
+			start,
+		);
+	}
+	const refs: [string, string | undefined][] = [
+		["model", config.model],
+		["telegram.model", config.telegram.model],
+		["titleModel", config.titleModel],
+		["reviewer.model", config.reviewer?.model],
+	];
+	for (const ref of config.favorites) refs.push(["favorites", ref]);
+	const groups = new Map<CacheContract["id"], { contract: CacheContract; refs: string[] }>();
+	for (const [slot, ref] of refs) {
+		if (ref === undefined) continue;
+		const contract = cacheContractFor(config, ref);
+		let group = groups.get(contract.id);
+		if (group === undefined) {
+			group = { contract, refs: [] };
+			groups.set(contract.id, group);
+		}
+		group.refs.push(`${slot}=${ref}`);
+	}
+	const stale = !cacheContractFresh(Date.now());
+	const undocumented = [...groups.values()].filter(
+		(g) => g.contract.lifetime === "unpublished" || g.contract.lifetime === "unknown",
+	);
+	const parts = [
+		[...groups.values()]
+			.map((g) => `${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`)
+			.join("; "),
+	];
+	if (undocumented.length > 0) {
+		parts.push(
+			`unpublished/unknown cache duration for ${undocumented.map((g) => g.contract.id).join(", ")}`,
+		);
+	}
+	if (stale) parts.push("lead contract metadata review is overdue");
+	parts.push(
+		"cache warmth and expiry are not verified — raw counters and route telemetry in model_cache_calls are needed for empirical policies",
+	);
+	return result(
+		"cache.contracts",
+		scope,
+		stale || undocumented.length > 0 ? "warn" : "pass",
+		parts.join(". "),
+		start,
+	);
+}
 function authCheck(
 	home: string,
 	config?: Config,
@@ -476,6 +539,7 @@ function expectedTables(config: Config | undefined): string[] {
 		"tg_inbox",
 		"tg_inbox_archives",
 		"guest_dedup",
+		"model_cache_calls",
 	];
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");
@@ -1307,6 +1371,7 @@ export async function runHealth(options: {
 	const auth = authCheck(home, config.config);
 	const local = [
 		config.finding,
+		cacheContracts(config.config, home),
 		...auth.findings,
 		...workspace(home, options.phase),
 		capacity(home, "storage.home", `caller-home:${home}`),

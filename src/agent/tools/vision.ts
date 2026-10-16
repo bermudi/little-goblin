@@ -22,6 +22,7 @@ export interface VisionToolDeps {
 	auth: AuthStore;
 	/** Conversation id for the model-call log lines. */
 	conversation: string;
+	observation?: import("../../cache-observation.ts").CacheObservation | undefined;
 	/** Test door over the provider edge (production omits it — the
 	 *  engine resolves through the configured provider registry). */
 	resolve?: import("../vision.ts").VisionCallDeps["resolve"];
@@ -109,6 +110,7 @@ export function visionTool(cwd: string, deps: VisionToolDeps) {
 						// undefined to an optional field.
 						...(options.abortSignal ? { signal: options.abortSignal } : {}),
 						...(deps.resolve ? { resolve: deps.resolve } : {}),
+						...(deps.observation ? { observation: deps.observation } : {}),
 					},
 				);
 				return {

@@ -201,6 +201,26 @@ agent loop.
   cold cache. Only disk failure (file gone) degrades an item that would
   have inlined, with a warn.
 - **Cache stability** — moved to the core: DESIGN.md → Cache stability.
+- **Cache contracts** (`src/agent/cache-contracts.ts`, reviewed
+  policy data): each provider kind/base-URL family maps to a contract —
+  cache mode (implicit / explicit / route-dependent / unknown), a
+  lifetime class, and the public source(s) the mapping was reviewed
+  against, stamped `CACHE_CONTRACT_REVIEWED_AT` with a 30-day review
+  window. The contracts are honest about the gaps: z.ai publishes no
+  retention, OpenRouter's 10-minute routing affinity is not cache
+  expiry, the Codex backend's retention is unverified, and an
+  OpenAI-compatible relay establishes nothing about its upstream.
+  Doctor surfaces the mapping for the configured models
+  (`cache.contracts`; design/doctor.md) and warns on unpublished or
+  unknown durations and on overdue review metadata. The bounded
+  re-check is manual: `bun scripts/check-cache-contracts.ts` fetches
+  each pinned source URL — public docs only, no credentials, 15 s per
+  source, ≤1 MiB — and reports `unchanged`/`changed`/`unavailable` per
+  source (`unknown` where no fragments are pinned, e.g. logfare).
+  `changed`/`unavailable`/overdue-metadata exits 1; it never edits
+  policy. Contracts plus the `model_cache_calls` telemetry are inputs
+  to drift diagnosis only — goblin prunes nothing on an assumed
+  lifetime until the observed counters support it.
 - **Transcription**: voice notes and video notes are speech — the two
   media kinds Telegram only produces by recording someone — and a model
   that can't consume audio shouldn't lose them to a bare path. Attached

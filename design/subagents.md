@@ -36,10 +36,7 @@ computer subagent. Goblin's own turn stays for chat and short work.
 - **Not the AI SDK for the long loop.** The operator trusts it for chat,
   not for long agentic runs; pi is the polished, widely used harness. The
   `Why` section's exit from pi-ai is about goblin's *chat engine*; a
-  subagent runtime running on pi-ai underneath does not reverse it. The
-  same distinction answers design/projects.md's rejection of Pi Durable
-  as goblin's engine — that ruling stands for the turn loop and does not
-  bind subagents.
+  subagent runtime running on pi-ai underneath does not reverse it.
 
 ### Subagent runtime: Pi Durable, in-process
 

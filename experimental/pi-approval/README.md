@@ -67,9 +67,3 @@ repeat and input never is. The `ApprovalHost` rides the existing
 `needs_input`/wake path; a parked run holding a `maxRuns` slot past a
 timeout should convert to a terminated `needs_input` run (the `ask_operator`
 shape) — that productization step is not part of this experiment.
-
-Re evaluation of the 2026-10-01 rejection (design/projects.md): the modality
-ground still holds at the pin — pi-ai 1.0.2 user content is
-`string | (TextContent | ImageContent)[]`, no PDF/file parts, which goblin's
-chat engine sends natively (`src/agent/attachments.ts`). The crash-recovery
-ground is now bridgeable per-tool, as demonstrated here.

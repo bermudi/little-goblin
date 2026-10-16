@@ -24,6 +24,7 @@ import { openSandboxes } from "./sandboxes.ts";
 import { openGuestStore } from "./tg/guest.ts";
 import { openTelegramInbox } from "./tg/inbox.ts";
 import { openPings } from "./tg/pings.ts";
+import { openCacheObservation } from "./cache-observation.ts";
 import {
 	checkAppAssets,
 	healthReportSchema,
@@ -593,6 +594,7 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 	function bootSchema(path: string): { close(): void } {
 		const store = openStore(path);
 		const extras = [openPrograms(path), openOutbox(path), openSandboxes(path)];
+		openCacheObservation(store.db);
 		openPings(store.db);
 		openTelegramInbox(store.db);
 		openGuestStore(store.db);
@@ -947,4 +949,51 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				}
 			}
 		});
+});
+
+describe("cache contracts", () => {
+	test("configured models map to their contracts; unpublished/unknown durations warn", async () => {
+		const f = fixture();
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("codex");
+		expect(c.detail).toContain("model=fake/model");
+		expect(c.detail).toContain("not verified");
+		expect(c.next).toContain("check-cache-contracts");
+	});
+	test("a fully documented contract set passes without claiming warmth", async () => {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				providers: {
+					oai: { kind: "openai-compatible", baseUrl: "https://api.openai.com/v1", auth: "oai" },
+				},
+				model: "oai/gpt-5",
+				operators: [1],
+			}),
+		);
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("pass");
+		expect(c.detail).toContain("openai");
+		expect(c.detail).not.toContain("unpublished/unknown");
+	});
+	test("unparseable config skips the check instead of guessing", async () => {
+		const f = fixture();
+		writeFileSync(join(f.home, "goblin.json5"), "not { json5");
+		const report = await runHealth(f.options);
+		expect(finding(report, "config").status).toBe("fail");
+		expect(finding(report, "cache.contracts").status).toBe("skip");
+	});
+	test("overdue review metadata warns", async () => {
+		const f = fixture();
+		const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2027-06-01T00:00:00.000Z"));
+		restorers.push(() => clock.mockRestore());
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("overdue");
+	});
 });

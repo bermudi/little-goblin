@@ -15,9 +15,10 @@
 
 import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
+import type { CacheObservation } from "../cache-observation.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
-import { observedModel, resolveModel, thinkingOptions } from "./providers.ts";
+import { cacheRouteFor, observedModel, resolveModel, thinkingOptions } from "./providers.ts";
 
 // One side model call must settle — a wedged vision request would pin
 // the turn's serial lane (transcribe's 60s rule, doubled: image calls
@@ -134,6 +135,7 @@ export interface VisionCallDeps {
 	configRef: ConfigRef;
 	auth: AuthStore;
 	conversation: string;
+	observation?: CacheObservation | undefined;
 	/** The turn's abort signal (/stop, Esc-equivalent) — rides the call. */
 	signal?: AbortSignal | undefined;
 	/** Test door over the provider edge — production is resolveModel.
@@ -199,7 +201,12 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 
 	const model = observedModel(
 		await (deps.resolve ?? defaultResolve)(deps.configRef.current, deps.auth, cfg.model),
-		{ conversation: deps.conversation, purpose: "vision" },
+		{
+			conversation: deps.conversation,
+			purpose: "vision",
+			observation: deps.observation,
+			route: cacheRouteFor(deps.configRef.current, cfg.model),
+		},
 	);
 	// The configured ref IS the label — resolveModel's instances spell
 	// it "provider/modelId", and LanguageModel's type also admits the

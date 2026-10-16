@@ -11,9 +11,16 @@ import {
 	inputModalitiesCached,
 } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
+import { openCacheObservation } from "./cache-observation.ts";
 import { join } from "node:path";
 import { systemPromptFor } from "./agent/prompt.ts";
-import { carriesMedia, observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
+import {
+	cacheRouteFor,
+	carriesMedia,
+	observedModel,
+	resolveModel,
+	thinkingOptions,
+} from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
@@ -127,6 +134,7 @@ async function boot() {
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();
 	const store = openStore(paths.db());
+	const cacheObservations = openCacheObservation(store.db);
 	// Skill provenance shares the store's SQLite (design/skills.md →
 	// Skill provenance): the reviewer and the turn stream record, the
 	// operator doors read.
@@ -375,7 +383,7 @@ async function boot() {
 				return undefined;
 			}
 		}
-		return { configRef, auth, conversation: conv.id };
+		return { configRef, auth, conversation: conv.id, observation: cacheObservations };
 	};
 
 	const runtime = new Runtime({
@@ -415,7 +423,11 @@ async function boot() {
 			});
 			return {
 				// Observed at the model boundary — tool-loop continuations included.
-				model: observedModel(model, { conversation: conv.id }),
+				model: observedModel(model, {
+					conversation: conv.id,
+					observation: cacheObservations,
+					route: cacheRouteFor(cfg, modelRef),
+				}),
 				system: prompt.text,
 				label: modelRef,
 				inputModalities: modalities,
@@ -433,6 +445,8 @@ async function boot() {
 				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
 					conversation: conv.id,
 					purpose: "compaction",
+					observation: cacheObservations,
+					route: cacheRouteFor(cfg, modelRef),
 				});
 				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
 				const { text } = await generateText({
@@ -620,7 +634,11 @@ async function boot() {
 		if (!cfg.titleModel) return null;
 		const model = await resolveModel(cfg, auth, cfg.titleModel);
 		return generateTopicTitle(
-			observedModel(model, { purpose: "topic-title" }),
+			observedModel(model, {
+				purpose: "topic-title",
+				observation: cacheObservations,
+				route: cacheRouteFor(cfg, cfg.titleModel),
+			}),
 			text,
 			thinkingOptions(cfg, cfg.titleModel, "off"),
 		);
@@ -764,6 +782,8 @@ async function boot() {
 						model: observedModel(await resolveModel(cfg, auth, ref), {
 							conversation: conversationId,
 							purpose: "review",
+							observation: cacheObservations,
+							route: cacheRouteFor(cfg, ref),
 						}),
 					};
 				},
@@ -1048,7 +1068,7 @@ async function boot() {
 				// generation only, the accepted proposal returns via PATCH.
 				rewriteNote: (noteId, input, signal) =>
 					generateNoteRewrite(
-						{ configRef, auth },
+						{ configRef, auth, observation: cacheObservations },
 						{ noteId, selection: input.selection, instruction: input.instruction, signal },
 					),
 			}),

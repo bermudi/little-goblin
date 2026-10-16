@@ -290,6 +290,50 @@ grep '"conversation":"topic:<chat>:<thread>"' ~/goblin/state/goblin.log
 grep '"level":"error"' ~/goblin/state/goblin.log
 ```
 
+## Cache telemetry
+
+Every physical model call is correlated: `model call` opens a fresh
+`callId` (with the route key and truncated head/request/settings
+hashes), and `model call usage` — or `model call failed` — closes it
+with the usage split (`inputTokens`, `cacheReadTokens`,
+`cacheWriteTokens`, `outputTokens`) plus `idleMs` and `prefixRelation`
+carried over from the start observation. The same rows persist in
+`state/goblin.sqlite` `model_cache_calls`. `rewrite` means the prompt
+lineage changed (a compaction, a settings or tool-surface change — or
+drift worth a look); `first`/`same`/`append` are structural facts like
+it, not proof of cache warmth, expiry or a provider bug — and goblin
+deliberately has no expiry-based pruning until these counters justify
+one.
+
+```sh
+# aggregate usage receipts from a log file (the optional count selects
+# the most recent parseable usage receipts, not lines)
+bun scripts/cache-report.ts ~/goblin/state/goblin.log 200
+# settled calls for one conversation
+sqlite3 ~/goblin/state/goblin.sqlite \
+  "SELECT started_ms, status, idle_ms, prefix_relation, shared_messages, cache_read, input_tokens FROM model_cache_calls WHERE conversation_id = 'app/example' ORDER BY started_ms DESC LIMIT 200;"
+```
+
+Doctor's `cache.contracts` finding maps the configured models to their
+reviewed contract metadata and warns when a duration is unpublished or
+unknown, or when the review metadata is overdue. The bounded re-check
+of the public contract sources is manual and network-only — public
+docs over https, no credentials:
+
+```sh
+bun scripts/check-cache-contracts.ts    # one JSON report on stdout; exit 1 on changed/unavailable/overdue
+```
+
+It fetches each pinned source URL (15 s per source including redirects,
+≤1 MiB, Accept: text/markdown, at most five https hops) and reports
+`unchanged`/`changed`/`unavailable` per source — `unknown` where no
+fragments are pinned. `changed` means a pinned fragment drifted:
+review `src/agent/cache-contracts.ts` and have the contract owner
+re-pin it; the script never edits policy. Its limit matters: fragment
+matching detects a pinned clause disappearing, not every semantic
+addition or rewording elsewhere on the page — an `unchanged` verdict is
+not proof the contract still reads the same.
+
 ## Desktop image
 
 The `desktop`/`computer`-subagent pool (design/subagents.md) runs

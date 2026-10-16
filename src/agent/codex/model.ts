@@ -22,7 +22,7 @@ import type {
 } from "@ai-sdk/provider";
 import { codexCredentials, defaultCodexAuthFile, expandHome, type FetchLike } from "./auth.ts";
 
-const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+export const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
 // ---------- prompt → responses input ----------
 

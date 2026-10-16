@@ -771,10 +771,12 @@ export function ContextGauge({
 	const [open, setOpen] = useState(false);
 	const seq = useRef(0);
 	// A read belongs to the conversation that produced it — an id (or
-	// credential) switch makes the last one stale. The reset can't live
-	// in the fetch effect: its post-turn re-runs should hold the last
-	// read until the new one lands.
+	// credential) switch makes it stale, and a still-in-flight read for
+	// the old identity must never land: bump seq here, since the fetch
+	// effect's early returns skip the bump. Kept out of that effect so
+	// its post-turn re-runs hold the last read until the new one lands.
 	useEffect(() => {
+		seq.current++;
 		setCtx(null);
 		setFailed(false);
 	}, [token, conversationId]);

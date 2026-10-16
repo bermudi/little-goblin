@@ -135,4 +135,54 @@ describe("ContextGauge conversation switch", () => {
 		});
 		expect(label()).toBe("ctx ?");
 	});
+
+	test("a late read for the previous conversation is dropped on switch", async () => {
+		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
+		const ctxB = view({ input: 2000, limit: 10000, pct: 20, turns: 1 });
+		let resolveA!: (res: Response) => void;
+		let resolveB!: (res: Response) => void;
+		const aFetch = new Promise<Response>((res) => {
+			resolveA = res;
+		});
+		const bFetch = new Promise<Response>((res) => {
+			resolveB = res;
+		});
+		const json = (body: unknown) =>
+			new Response(JSON.stringify(body), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/aaa/context") return aFetch;
+			if (url === "/api/app/conversations/bbb/context") return bFetch;
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		act(() => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const label = () => container.querySelector(".ctx-btn")?.textContent;
+		expect(label()).toBe("…");
+
+		// The switch lands on a conversation mid-turn — its fetch effect
+		// early-returns on busy, so the identity reset alone must retire
+		// A's still-pending read.
+		act(() => {
+			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={true} />);
+		});
+		await act(async () => {
+			resolveA(json(ctxA));
+		});
+		expect(label()).toBe("…");
+
+		act(() => {
+			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={false} />);
+		});
+		await act(async () => {
+			resolveB(json(ctxB));
+		});
+		expect(label()).toBe("2.0k/10.0k · 20%");
+	});
 });

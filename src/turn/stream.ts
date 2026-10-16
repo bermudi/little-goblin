@@ -885,13 +885,23 @@ export async function driveStream<M extends WireMember>(
 				// Skill attribution rides the same completed-call seam as the
 				// reviewer's evidence: only successful write_file/edit_file
 				// outputs (and a script's nested ones) carry the resolved path,
-				// so failed and soft-failed writes attribute nothing.
+				// so failed and soft-failed writes attribute nothing. The write
+				// is observational — its failure logs and never unpicks the
+				// in-flight turn (the reviewer's provenance guard, same rule).
 				if (deps.skillWatch !== undefined) {
 					const tool = callById.get(chunk.toolCallId)?.tool ?? "";
 					if (tool === "write_file" || tool === "edit_file" || tool === "script") {
 						for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
-							deps.skillWatch.record(convId, skill);
-							log.info("skill write attributed", { conversation: convId, tool, skill });
+							try {
+								deps.skillWatch.record(convId, skill);
+								log.info("skill write attributed", { conversation: convId, tool, skill });
+							} catch (err) {
+								log.error("skill provenance record failed — turn continues", err, {
+									conversation: convId,
+									tool,
+									skill,
+								});
+							}
 						}
 					}
 				}

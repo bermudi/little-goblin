@@ -32,7 +32,7 @@ export function MemoryDocRow({
 	onOpen: (id: string) => void;
 }) {
 	return (
-		<button key={doc.id} type="button" className="doc-row" onClick={() => onOpen(doc.id)}>
+		<button type="button" className="doc-row" onClick={() => onOpen(doc.id)}>
 			<span className="doc-id mono">{doc.id}</span>
 			<span className="doc-sub">
 				{relTime(doc.createdAt)} · {doc.textLength} chars · {doc.factCount} facts

@@ -99,6 +99,9 @@ describe("http door", () => {
 			writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "body");
 			expect((await get("/api/skills")).status).toBe(200);
 			expect((await get("/api/skills/file?name=weather")).status).toBe(200);
+			// Thread-panel tails mount on this door too (design/skills.md →
+			// Skill provenance) — unwired provenance 503s, never 404s.
+			expect((await get("/api/skills/from?conversation=app%2F1")).status).toBe(503);
 			expect((await get("/api/identity")).status).toBe(200);
 			expect((await get("/api/attachments")).status).toBe(200);
 			expect((await get("/api/attachments/file?name=nope.png")).status).toBe(404);

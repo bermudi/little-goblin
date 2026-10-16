@@ -940,6 +940,54 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("provenance records only the skills that actually proposed — a drift-skipped skill is not provenance", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "clash"), { recursive: true });
+		writeFileSync(join(h.skills, "clash", "SKILL.md"), SKILL_MD("clash", "original"));
+		const recorded: string[][] = [];
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.1 } });
+		let step = 0;
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "clash/SKILL.md", content: SKILL_MD("clash", "review's take") },
+							},
+							{
+								name: "write_file",
+								input: { path: "fresh-skill/SKILL.md", content: SKILL_MD("fresh-skill") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+				async () => {
+					if (++step === 2) {
+						writeFileSync(
+							join(h.skills, "clash", "SKILL.md"),
+							SKILL_MD("clash", "operator's edit"),
+						);
+					}
+				},
+			),
+		});
+		deps.recordSources = (_conversationId, _reviewId, skills) => {
+			recorded.push(skills);
+		};
+		await new Reviewer(deps).considerTurn(turn());
+		// The clash proposal skipped (live drift); only fresh-skill is
+		// provenance — the panel must not claim a skill never proposed.
+		expect(recorded).toEqual([["fresh-skill"]]);
+		expect(readFileSync(join(h.proposed, "fresh-skill", "SKILL.md"), "utf8")).toContain(
+			"name: fresh-skill",
+		);
+		h.store.close();
+	});
+
 	test("an operator edit to the same skill mid-review skips the proposal, never clobbers", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "clash"), { recursive: true });

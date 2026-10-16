@@ -818,4 +818,51 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("ok");
 		expect(recorded).toEqual([]);
 	});
+
+	test("a script's nested write into the catalog records provenance — the seam adc003fd pinned", async () => {
+		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
+		const recorded: Array<{ conversationId: string; skill: string }> = [];
+		const script = tool({
+			inputSchema: z.object({ code: z.string() }),
+			execute: async () => ({
+				text: "done",
+				calls: [
+					{
+						tool: "write_file",
+						args: '{"path":"skills/nested/SKILL.md","content":"x"}',
+						ok: true,
+						result: JSON.stringify({ path: join(ws, "skills/nested/SKILL.md"), bytes: 1 }),
+					},
+				],
+			}),
+		});
+		const scriptStep: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "tool-call", toolCallId: "c1", toolName: "script", input: '{"code":"x"}' },
+			{
+				type: "finish",
+				finishReason: { unified: "tool-calls", raw: undefined },
+				usage: {
+					inputTokens: {
+						total: 1,
+						noCache: undefined,
+						cacheRead: undefined,
+						cacheWrite: undefined,
+					},
+					outputTokens: { total: 1, text: undefined, reasoning: undefined },
+				},
+			},
+		];
+		const r = rig([scriptStep, textReply("done")], {
+			skillWatch: {
+				skillsDir: join(ws, "skills"),
+				proposedDir: join(ws, "skills-proposed"),
+				record: (conversationId, skill) => recorded.push({ conversationId, skill }),
+			},
+		});
+		r.deps.tools = { script };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		expect(recorded).toEqual([{ conversationId: "c1", skill: "nested" }]);
+	});
 });

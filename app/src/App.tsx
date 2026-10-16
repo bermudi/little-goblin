@@ -1561,10 +1561,10 @@ function AppShell() {
 						</>
 					))}
 			</main>
-			{sourcesOpen && (
+			{sourcesOpen && current !== null && (
 				<ThreadSourcesSheet
 					token={token}
-					conversationId={current ?? ""}
+					conversationId={current}
 					title={currentTitle}
 					onClose={() => setSourcesOpen(false)}
 				/>

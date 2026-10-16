@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { goblinHome, paths } from "../src/config.ts";
 import { openStore } from "../src/conversation.ts";
-import { SkillSources } from "../src/skill-provenance.ts";
+import { skillNameSchema, SkillSources } from "../src/skill-provenance.ts";
 
 const args = process.argv.slice(2);
 const dry = args.includes("--dry");
@@ -38,6 +38,8 @@ type DoneLine = {
 };
 
 const rows: Array<{ conversationId: string; reviewId: string; skill: string; at: string }> = [];
+let unparseable = 0;
+let badNames = 0;
 for (const line of readFileSync(logPath, "utf8").split("\n")) {
 	if (
 		!line.includes("reviewer review done") &&
@@ -48,6 +50,10 @@ for (const line of readFileSync(logPath, "utf8").split("\n")) {
 	try {
 		rec = JSON.parse(line) as DoneLine;
 	} catch {
+		// A mid-append final line can be partial while the daemon runs;
+		// anything unparseable is counted and reported so a log-field
+		// rename never reads as a clean empty backfill.
+		unparseable++;
 		continue;
 	}
 	const conversationId = rec.conversation;
@@ -59,13 +65,20 @@ for (const line of readFileSync(logPath, "utf8").split("\n")) {
 		typeof reviewId !== "string" ||
 		!Array.isArray(skills) ||
 		typeof at !== "string"
-	)
+	) {
+		unparseable++;
 		continue;
+	}
 	for (const skill of skills) {
-		if (typeof skill !== "string") continue;
+		if (typeof skill !== "string" || !skillNameSchema.safeParse(skill).success) {
+			badNames++;
+			continue;
+		}
 		rows.push({ conversationId, reviewId, skill, at });
 	}
 }
+if (unparseable > 0 || badNames > 0)
+	process.stderr.write(`skipped: ${unparseable} unparseable line(s), ${badNames} bad name(s)\n`);
 
 if (rows.length === 0) {
 	process.stdout.write("no proposal lines found — nothing to backfill\n");
@@ -86,7 +99,7 @@ try {
 	const sources = new SkillSources(store.db);
 	store.db.transaction(() => {
 		for (const row of rows)
-			sources.record(row.conversationId, row.skill, "reviewer", row.at, row.reviewId);
+			sources.recordInitial(row.conversationId, row.skill, row.at, row.reviewId);
 	})();
 	process.stdout.write(`recorded ${rows.length} rows into ${dbPath}\n`);
 } finally {

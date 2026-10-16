@@ -119,11 +119,24 @@ export class SkillSources {
 		return rows.map(rowToItem);
 	}
 
-	// True when nothing is recorded — the sheet still renders, with its
-	// empty sections; absence of provenance is not an error.
-	isEmpty(): boolean {
-		const row = this.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM skill_sources").get();
-		return (row?.n ?? 0) === 0;
+	// Backfill semantics (goblin.log parse): the row stands as the log
+	// saw it ONLY when nothing newer exists — a rerun after live writes
+	// must not rewind kind/last_at to log time. Insert-if-absent, and on
+	// conflict take only the earlier first_at.
+	recordInitial(
+		conversationId: string,
+		skill: string,
+		at: string = new Date().toISOString(),
+		reviewId: string | null = null,
+	): void {
+		const parsed = skillNameSchema.parse(skill);
+		this.db.run(
+			`INSERT INTO skill_sources (skill, conversation_id, kind, review_id, first_at, last_at)
+			 VALUES (?, ?, 'reviewer', ?, ?, ?)
+			 ON CONFLICT (skill, conversation_id) DO UPDATE SET
+				first_at = MIN(skill_sources.first_at, excluded.first_at)`,
+			[parsed, conversationId, reviewId, at, at],
+		);
 	}
 }
 

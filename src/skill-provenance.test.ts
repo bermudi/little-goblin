@@ -66,7 +66,26 @@ test("rejects names outside the catalog rule", () => {
 	expect(() => sources.record("app/1", "UPPER", "turn")).toThrow();
 	expect(() => sources.record("app/1", "a--b", "turn")).toThrow();
 	expect(() => sources.record("app/1", "-lead", "turn")).toThrow();
-	expect(sources.isEmpty()).toBe(true);
+	expect(sources.forConversation("app/1")).toEqual([]);
+});
+
+test("backfill rows never rewind live writes — only the earlier first_at survives", () => {
+	const { sources } = fixture();
+	// A live turn write at 05:00, then the log backfill claims a review
+	// at 03:00 and a rerun replays 03:00: kind and last_at stay live,
+	// first_at keeps the earliest evidence.
+	sources.record("app/1", "herdr", "turn", "2026-10-16T05:00:00.000Z");
+	sources.recordInitial("app/1", "herdr", "2026-10-16T03:00:00.000Z", "r1");
+	sources.recordInitial("app/1", "herdr", "2026-10-16T03:00:00.000Z", "r1");
+	expect(sources.forConversation("app/1")).toMatchObject([
+		{
+			skill: "herdr",
+			kind: "turn",
+			reviewId: null,
+			firstAt: "2026-10-16T03:00:00.000Z",
+			lastAt: "2026-10-16T05:00:00.000Z",
+		},
+	]);
 });
 
 test("live state resolves from the filesystem", () => {

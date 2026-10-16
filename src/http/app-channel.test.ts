@@ -12,10 +12,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LanguageModel } from "ai";
 import { textModel } from "../testkit/fake-model.ts";
-import {
-	_primeModelsDevForTest,
-	_resetModelsDevForTest,
-} from "../agent/models-dev.ts";
+import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
 import { loadConfig, type Config, type ConfigRef } from "../config.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";

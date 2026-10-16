@@ -286,8 +286,7 @@ export function detectLanguage(text: string): "en" | "es" | null {
 	// word. The plain accented vowels don't get that weight: they ride
 	// english loanwords and names (résumé, café, José), and one borrowed
 	// word must not cast a whole english sentence into the spanish voice.
-	let es =
-		3 * (lower.match(/[¿¡ñ]/g)?.length ?? 0) + (lower.match(/[áéíóúü]/g)?.length ?? 0);
+	let es = 3 * (lower.match(/[¿¡ñ]/g)?.length ?? 0) + (lower.match(/[áéíóúü]/g)?.length ?? 0);
 	let en = 0;
 	for (const word of lower.split(/[^a-záéíóúüñ]+/)) {
 		if (!word) continue;

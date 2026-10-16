@@ -312,9 +312,7 @@ function SecretEntry({
 			setOpen(false);
 			onStored(res.name);
 		} catch (e) {
-			setErr(
-				e instanceof ApiError ? e.message : "Couldn't reach goblin — check the tailnet.",
-			);
+			setErr(e instanceof ApiError ? e.message : "Couldn't reach goblin — check the tailnet.");
 		} finally {
 			setBusy(false);
 		}
@@ -798,12 +796,10 @@ export function SettingsView({
 	// owning field's name at it.
 	const rememberAuthName = (name: string) =>
 		setAuthNames((n) => (n.includes(name) ? n : [...n, name].sort()));
-	const keyStored =
-		(apply: (name: string) => void) =>
-		(name: string) => {
-			rememberAuthName(name);
-			apply(name);
-		};
+	const keyStored = (apply: (name: string) => void) => (name: string) => {
+		rememberAuthName(name);
+		apply(name);
+	};
 	const [etag, setEtag] = useState("");
 	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
 	const [provs, setProvs] = useState<ProvDraft[]>([]);
@@ -1444,7 +1440,9 @@ export function SettingsView({
 										/>
 										<SecretEntry
 											token={token}
-											name={draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")}
+											name={
+												draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")
+											}
 											onStored={keyStored((n) => patchTts({ auth: n }))}
 										/>
 									</>
@@ -1783,7 +1781,7 @@ export function SettingsView({
 										setDraft((d) => ({
 											...d,
 											memory: d.memory === null ? d.memory : { ...d.memory, auth: n },
-										}))
+										})),
 									)}
 								/>
 								<Row label="Recall budget" col>

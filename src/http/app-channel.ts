@@ -1404,10 +1404,12 @@ export async function handleAppApi(
 				last !== null && last.input !== null && last.input > 0 && last.cacheRead !== null
 					? last.cacheRead / last.input
 					: null,
-			avgCacheHitRate:
-				rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
+			avgCacheHitRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
 			limit,
-			pct: input !== null && limit !== null && limit > 0 ? Math.round((input / limit) * 1000) / 10 : null,
+			pct:
+				input !== null && limit !== null && limit > 0
+					? Math.round((input / limit) * 1000) / 10
+					: null,
 			turns: found.filter((u) => u.input !== null).length,
 		};
 		log.debug("app context served", {

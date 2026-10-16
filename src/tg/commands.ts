@@ -1,5 +1,7 @@
 // Commands are deliberately few: /voice /memory /forget /stop /compact
-// plus DM-only /new /back (handled by intake before settings routing).
+// plus DM-only /new /back (handled by intake before settings routing),
+// plus the crash-recovery verbs /resume /decide /abandon
+// (design/runtime-turn.md → Resuming an interrupted turn).
 // — plus /start, the one non-settings command: a canned greeting for the
 // message every Telegram client fires automatically on first open.
 // /model and /think are retired — the mini app owns model and thinking
@@ -15,6 +17,7 @@ import { memoryStatus, type MemoryContexts, type MemoryWorker } from "../memory.
 import { forgetDocument } from "../memory-forget.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
+import type { ResumeOps } from "../turn-resume.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget-listings.ts";
@@ -54,6 +57,10 @@ export interface CommandDeps {
 	botUsername: string;
 	// Long-term memory wiring — absent = memory not configured.
 	memory?: CommandMemoryDeps;
+	// Crash-recovery verbs — absent = the turn journal is not wired.
+	// Resolved per tap — the ops are built after the bot starts, so a
+	// verb landing in the boot window reads undefined, not a TDZ throw.
+	resumeOps?: () => ResumeOps | undefined;
 }
 
 export function parseCommand(
@@ -177,6 +184,111 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					reply(deps, conv, `compact failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			})();
+			return true;
+		}
+
+		case "/resume": {
+			// Bare /resume lists this conversation's interrupted runs and
+			// their ambiguous calls; /resume <runId> admits the fresh turn.
+			const ops = deps.resumeOps?.();
+			if (ops === undefined) {
+				reply(deps, conv, "turn resume is not wired");
+				return true;
+			}
+			if (arg === "") {
+				const runs = ops.interrupted(conv.id);
+				if (runs.length === 0) {
+					reply(deps, conv, "no interrupted turns in this conversation");
+					return true;
+				}
+				const lines: string[] = [];
+				for (const { run, calls } of runs) {
+					const id = run.runId.slice(0, 8);
+					lines.push(
+						`interrupted run ${id} — started ${new Date(run.startedMs).toISOString()}`,
+						`  ${run.calls.completed} completed · ${run.calls.dispatched} ambiguous · ${run.calls.resolved} decided · ${run.calls.planned} planned · ${run.calls.failed} failed`,
+					);
+					const undecided = calls.filter((c) => c.state === "dispatched");
+					for (const [i, c] of undecided.entries()) {
+						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
+						lines.push(`  ${i + 1}. ${c.name} ${args.slice(0, 120)}`);
+					}
+					if (undecided.length > 0) {
+						lines.push(
+							`  decide first: /decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
+						);
+					}
+					lines.push(`  /resume ${id} · /abandon ${id}`);
+				}
+				reply(deps, conv, lines.join("\n"));
+				return true;
+			}
+			const outcome = ops.resume(conv.id, arg);
+			if (outcome.kind === "resumed") {
+				reply(deps, conv, `resumed ${outcome.runId.slice(0, 8)} — running as a fresh turn`);
+				return true;
+			}
+			if (outcome.kind === "needs-decisions") {
+				const id = outcome.runId.slice(0, 8);
+				const lines = outcome.calls.map((c, i) => {
+					const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
+					return `  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`;
+				});
+				reply(
+					deps,
+					conv,
+					`undecided tool calls block resume:\n${lines.join("\n")}\n/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
+				);
+				return true;
+			}
+			reply(deps, conv, outcome.reason);
+			return true;
+		}
+
+		case "/decide": {
+			const ops = deps.resumeOps?.();
+			if (ops === undefined) {
+				reply(deps, conv, "turn resume is not wired");
+				return true;
+			}
+			const m = /^(\S+)\s+(\S+)\s+(record-result|authorize-retry|skip)(?:\s+([\s\S]+))?$/.exec(arg);
+			if (m === null) {
+				reply(
+					deps,
+					conv,
+					"usage: /decide <runId> <call#|callId> record-result|authorize-retry|skip [note]",
+				);
+				return true;
+			}
+			const outcome = ops.decide(
+				conv.id,
+				m[1]!,
+				m[2]!,
+				m[3]! as "record-result" | "authorize-retry" | "skip",
+				m[4],
+			);
+			reply(deps, conv, outcome.kind === "ok" ? `call ${m[2]!} → ${m[3]!}` : outcome.reason);
+			return true;
+		}
+
+		case "/abandon": {
+			const ops = deps.resumeOps?.();
+			if (ops === undefined) {
+				reply(deps, conv, "turn resume is not wired");
+				return true;
+			}
+			if (arg === "") {
+				reply(deps, conv, "usage: /abandon <runId>");
+				return true;
+			}
+			const outcome = ops.abandon(conv.id, arg);
+			reply(
+				deps,
+				conv,
+				outcome.kind === "ok"
+					? `abandoned ${arg.slice(0, 8)} — it will not resume`
+					: outcome.reason,
+			);
 			return true;
 		}
 
@@ -469,6 +581,9 @@ export const COMMANDS = [
 	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "stop", description: "fence the running turn" },
 	{ command: "compact", description: "summarize older history to free context" },
+	{ command: "resume", description: "resume an interrupted turn" },
+	{ command: "decide", description: "resolve an interrupted tool call" },
+	{ command: "abandon", description: "drop an interrupted turn" },
 ] as const;
 
 export const DM_COMMANDS = [

@@ -6,6 +6,8 @@ import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
 import { startMemoryWorker } from "../memory.ts";
 import type { Runtime } from "../runtime.ts";
+import type { ResumeOps } from "../turn-resume.ts";
+import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
 import { handleCommand, type CommandDeps } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
@@ -26,7 +28,7 @@ const config: Config = {
 	logLevel: "info",
 };
 
-function setup(overrides?: { compact?: Runtime["compact"] }) {
+function setup(overrides?: { compact?: Runtime["compact"]; resumeOps?: () => ResumeOps }) {
 	const store = openStore(tmpDb("goblin-cmd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const sent: string[] = [];
@@ -48,6 +50,7 @@ function setup(overrides?: { compact?: Runtime["compact"] }) {
 			...(overrides?.compact ? { compact: overrides.compact } : {}),
 		} as unknown as Runtime,
 		botUsername: "goblin",
+		...(overrides?.resumeOps ? { resumeOps: overrides.resumeOps } : {}),
 	};
 	return { store, conv, sent, stopped, deps };
 }
@@ -1050,5 +1053,181 @@ describe("forget delete against in-flight retention", () => {
 			server.stop(true);
 			store.close();
 		}
+	});
+});
+
+// /resume /decide /abandon — the crash-recovery verbs. The ops surface
+// is faked at the boundary; its own semantics live in
+// turn-resume.test.ts — these tests pin the command parsing and reply
+// shapes.
+describe("recovery commands", () => {
+	const run: TurnRun = {
+		runId: "abcdef01-2345-6789-0000-000000000000",
+		conversationId: "dm:1",
+		epoch: 0,
+		anchorSeq: 1,
+		steerMark: null,
+		convSnapshot: {},
+		toolNames: ["probe"],
+		startedMs: 1_700_000_000_000,
+		finishedMs: null,
+		status: "interrupted",
+		delivery: "pending",
+		partial: null,
+		loopState: null,
+		filterRetryUsed: false,
+		createdAt: "2026-10-11T00:00:00.000Z",
+		resumedFrom: null,
+		calls: { planned: 1, dispatched: 1, completed: 2, failed: 0, resolved: 0 },
+	};
+	const call: TurnToolCall = {
+		runId: run.runId,
+		toolCallId: "call-xyz789",
+		name: "probe",
+		args: { q: 1 },
+		argsHash: "h",
+		state: "dispatched",
+		result: null,
+		error: null,
+		beganMs: 1,
+		settledMs: null,
+		resolutionNote: null,
+		resolvedMs: null,
+	};
+
+	function fakeOps(over: Partial<ResumeOps> = {}): ResumeOps {
+		return {
+			interrupted: () => [],
+			resume: () => ({ kind: "refused", code: "not-found", reason: "no such run" }),
+			decide: () => ({ kind: "ok" }),
+			abandon: () => ({ kind: "ok" }),
+			...over,
+		};
+	}
+
+	test("/resume lists interrupted runs with their ambiguous calls", async () => {
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () =>
+				fakeOps({
+					interrupted: () => [
+						{ run, calls: [call, { ...call, toolCallId: "c2", state: "planned" }] },
+					],
+				}),
+		});
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("interrupted run abcdef01");
+		expect(sent[0]).toContain("1 ambiguous");
+		expect(sent[0]).toContain("probe");
+		expect(sent[0]).toContain("/decide abcdef01");
+		expect(sent[0]).toContain("/abandon abcdef01");
+		store.close();
+	});
+
+	test("/resume with nothing interrupted says so", async () => {
+		const { store, conv, sent, deps } = setup({ resumeOps: () => fakeOps() });
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		expect(sent[0]).toBe("no interrupted turns in this conversation");
+		store.close();
+	});
+
+	test("/resume <id> admits the fresh turn and reports the blocked list", async () => {
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () =>
+				fakeOps({
+					resume: (_c, ref) =>
+						ref === "abcdef01"
+							? { kind: "resumed", runId: run.runId }
+							: {
+									kind: "needs-decisions",
+									runId: run.runId,
+									calls: [call],
+								},
+				}),
+		});
+		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("resumed abcdef01 — running as a fresh turn");
+
+		expect(handleCommand(deps, conv, "/resume 99999999")).toBe(true);
+		await tick();
+		expect(sent[1]).toContain("undecided tool calls block resume");
+		expect(sent[1]).toContain("call-xyz");
+		expect(sent[1]).toContain("/decide abcdef01");
+		store.close();
+	});
+
+	test("/resume <id> surfaces the refusal reason", async () => {
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () =>
+				fakeOps({
+					resume: () => ({
+						kind: "refused",
+						code: "invalid",
+						reason: "model changed a → b since the interruption — not resumed",
+					}),
+				}),
+		});
+		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("model changed a → b");
+		store.close();
+	});
+
+	test("/decide parses run, call, decision, and note", async () => {
+		const got: unknown[][] = [];
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () =>
+				fakeOps({
+					decide: (...a) => {
+						got.push(a);
+						return { kind: "ok" };
+					},
+				}),
+		});
+		expect(handleCommand(deps, conv, "/decide abcdef01 2 record-result it landed fine")).toBe(true);
+		await tick();
+		expect(got[0]).toEqual([conv.id, "abcdef01", "2", "record-result", "it landed fine"]);
+		expect(sent[0]).toBe("call 2 → record-result");
+
+		expect(handleCommand(deps, conv, "/decide abcdef01 call-x skip")).toBe(true);
+		await tick();
+		expect(got[1]).toEqual([conv.id, "abcdef01", "call-x", "skip", undefined]);
+
+		expect(handleCommand(deps, conv, "/decide abcdef01")).toBe(true);
+		await tick();
+		expect(sent[2]).toContain("usage: /decide");
+
+		expect(handleCommand(deps, conv, "/decide abcdef01 1 maybe")).toBe(true);
+		await tick();
+		expect(sent[3]).toContain("usage: /decide");
+		store.close();
+	});
+
+	test("/abandon drops the run and answers plainly", async () => {
+		const { store, conv, sent, deps } = setup({ resumeOps: () => fakeOps() });
+		expect(handleCommand(deps, conv, "/abandon abcdef01")).toBe(true);
+		await tick();
+		expect(sent[0]).toBe("abandoned abcdef01 — it will not resume");
+
+		expect(handleCommand(deps, conv, "/abandon")).toBe(true);
+		await tick();
+		expect(sent[1]).toContain("usage: /abandon");
+		store.close();
+	});
+
+	test("the verbs answer 'not wired' without resume ops", async () => {
+		const { store, conv, sent, deps } = setup();
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		expect(handleCommand(deps, conv, "/decide a b skip")).toBe(true);
+		expect(handleCommand(deps, conv, "/abandon a")).toBe(true);
+		await tick();
+		expect(sent).toEqual([
+			"turn resume is not wired",
+			"turn resume is not wired",
+			"turn resume is not wired",
+		]);
+		store.close();
 	});
 });

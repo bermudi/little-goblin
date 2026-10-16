@@ -31,6 +31,8 @@ import {
 } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
+import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
+import type { TurnToolCall } from "../turn-journal.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
@@ -70,6 +72,9 @@ import type {
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationPatch,
+	AppDecideResponse,
+	AppInterruptedList,
+	AppInterruptedRun,
 	AppMessageList,
 	AppNote,
 	AppNoteList,
@@ -80,6 +85,9 @@ import type {
 	AppNoteVersionList,
 	AppProject,
 	AppProjectList,
+	AppResumeBlocked,
+	AppResumeResponse,
+	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
@@ -150,6 +158,11 @@ export interface AppChannelDeps {
 	// deps object so the bundle carries only the extra seams. Absent =
 	// the operator routes refuse 503.
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
+	// Crash-recovery verbs (turn-resume.ts) — the interrupted/decide/
+	// resume routes. Absent = they refuse 503.
+	// Resolved per request — the ops are built after the listener starts,
+	// so a route hit in the boot window reads undefined, not a TDZ throw.
+	resumeOps?: () => ResumeOps | undefined;
 }
 
 // ---------- auth ----------
@@ -489,6 +502,57 @@ const configPatchBody = z
 // Synthesis cost scales with input — 40k chars is well past any real
 // reply and still inside chunkSpeech's stride.
 const ttsBody = z.object({ text: z.string().min(1).max(40_000) });
+
+// The operator's verdict on one ambiguous journaled call — `note` is
+// the asserted result for 'record-result', free context for
+// 'authorize-retry'/'skip'.
+const decideBody = z.object({
+	callId: z.string().min(1).max(200),
+	decision: z.enum(["record-result", "authorize-retry", "skip"]),
+	note: z.string().max(4000).optional(),
+});
+
+// Journaled call → wire shape — the decision UI reads state, args,
+// and any recorded outcome.
+function appRunCall(c: TurnToolCall): AppRunCall {
+	return {
+		toolCallId: c.toolCallId,
+		name: c.name,
+		args: c.args,
+		state: c.state,
+		result: c.result,
+		error: c.error,
+		resolutionNote: c.resolutionNote,
+		resolvedMs: c.resolvedMs,
+	};
+}
+
+function appInterruptedRun(view: InterruptedRunView): AppInterruptedRun {
+	return {
+		runId: view.run.runId,
+		resumedFrom: view.run.resumedFrom,
+		startedMs: view.run.startedMs,
+		finishedMs: view.run.finishedMs,
+		calls: view.run.calls,
+		toolCalls: view.calls.map(appRunCall),
+	};
+}
+
+// turn-resume's refusal classes → HTTP: unknown row 404, a state fight
+// 409, a broken contract (drift, unreadable snapshot) 422, a closed
+// runtime 503.
+function refusalStatus(code: ResumeRefusalCode): number {
+	switch (code) {
+		case "not-found":
+			return 404;
+		case "conflict":
+			return 409;
+		case "invalid":
+			return 422;
+		case "unavailable":
+			return 503;
+	}
+}
 
 // Multipart uploads buffer — cap before formData reads the body, so a
 // hostile content-length never reaches memory. 32 MiB covers phone-grade
@@ -1403,10 +1467,12 @@ export async function handleAppApi(
 				last !== null && last.input !== null && last.input > 0 && last.cacheRead !== null
 					? last.cacheRead / last.input
 					: null,
-			avgCacheHitRate:
-				rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
+			avgCacheHitRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
 			limit,
-			pct: input !== null && limit !== null && limit > 0 ? Math.round((input / limit) * 1000) / 10 : null,
+			pct:
+				input !== null && limit !== null && limit > 0
+					? Math.round((input / limit) * 1000) / 10
+					: null,
 			turns: found.filter((u) => u.input !== null).length,
 		};
 		log.debug("app context served", {
@@ -1451,6 +1517,134 @@ export async function handleAppApi(
 		log.info("app stop", { conversation: convId.id, stopped });
 		const body: AppStopResponse = { stopped };
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// GET /api/app/conversations/<id>/interrupted — the crash journal's
+	// resumable rows for this conversation: runs the process died on,
+	// each with every journaled call so the client can render the
+	// decision list. Validation and admission live in turn-resume.ts.
+	const interruptedMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/interrupted$/);
+	if (interruptedMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(interruptedMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const body: AppInterruptedList = {
+			runs: ops.interrupted(convId.id).map(appInterruptedRun),
+		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// POST /api/app/conversations/<id>/runs/<runId>/decide — the
+	// operator's verdict on one ambiguous call: done records the
+	// asserted outcome, retry authorizes re-execution, skip drops it.
+	const decideMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/decide$/);
+	if (decideMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(decideMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = decideBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const outcome = ops.decide(
+			convId.id,
+			decideMatch[2]!,
+			parsed.data.callId,
+			parsed.data.decision,
+			parsed.data.note,
+		);
+		if (outcome.kind === "ok") {
+			const body: AppDecideResponse = { ok: true };
+			return Response.json(body, { headers: NO_STORE });
+		}
+		log.info("app decide refused", {
+			conversation: convId.id,
+			run: decideMatch[2],
+			reason: outcome.reason,
+		});
+		return Response.json(
+			{ error: outcome.reason },
+			{ status: refusalStatus(outcome.code), headers: NO_STORE },
+		);
+	}
+
+	// POST /api/app/conversations/<id>/runs/<runId>/resume — the fresh
+	// admission for an interrupted run. 409 with the undecided calls
+	// when ambiguity remains; refusal codes map via refusalStatus.
+	const resumeMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/resume$/);
+	if (resumeMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(resumeMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const outcome = ops.resume(convId.id, resumeMatch[2]!);
+		if (outcome.kind === "resumed") {
+			log.info("app resume admitted", { conversation: convId.id, run: outcome.runId });
+			const body: AppResumeResponse = { resumed: true, runId: outcome.runId };
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (outcome.kind === "needs-decisions") {
+			const body: AppResumeBlocked = {
+				error: "undecided tool calls block resume",
+				calls: outcome.calls.map(appRunCall),
+			};
+			return Response.json(body, { status: 409, headers: NO_STORE });
+		}
+		log.info("app resume refused", {
+			conversation: convId.id,
+			run: resumeMatch[2],
+			reason: outcome.reason,
+		});
+		return Response.json(
+			{ error: outcome.reason },
+			{ status: refusalStatus(outcome.code), headers: NO_STORE },
+		);
 	}
 
 	// GET /api/app/conversations/<id>/stream — the resumable-stream

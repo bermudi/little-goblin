@@ -23,6 +23,7 @@ import {
 	type RollDeps,
 } from "../rolling.ts";
 import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
+import type { ResumeOps } from "../turn-resume.ts";
 import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";
 import { CoalescingBuffer } from "./buffer.ts";
@@ -82,7 +83,15 @@ const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
 const OPERATOR_ONLY_REPLY = "This command is only available to operators.";
 // Settings and memory verbs — refused to non-operators before routing
 // or conversation creation (design/telegram.md → Roles and permissions).
-const OPERATOR_ONLY_COMMANDS = new Set(["/voice", "/memory", "/forget", "/compact"]);
+const OPERATOR_ONLY_COMMANDS = new Set([
+	"/voice",
+	"/memory",
+	"/forget",
+	"/compact",
+	"/resume",
+	"/decide",
+	"/abandon",
+]);
 
 // Conversation identity IS the Telegram address. `message_thread_id`
 // also rides on non-forum comment threads (is_topic_message stays
@@ -149,6 +158,11 @@ export interface BotDeps {
 	// The Rolling DM follow-up check, resolved per call (the shared client
 	// is built after the bot). Absent = no check: a past-gap burst joins current.
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
+	// Crash-recovery verbs (turn-resume.ts) — resolved per tap like mail;
+	// absent = no journal wired, the commands answer "not wired". The
+	// ops land after the bot starts, so the closure may read undefined
+	// in the boot window — same answer.
+	resumeOps?: () => ResumeOps | undefined;
 }
 
 export interface RunningBot {
@@ -481,6 +495,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					runtime: deps.runtime,
 					botUsername: env.botUsername,
 					...(deps.memory ? { memory: deps.memory } : {}),
+					...(deps.resumeOps ? { resumeOps: deps.resumeOps } : {}),
 				},
 				target,
 				text,

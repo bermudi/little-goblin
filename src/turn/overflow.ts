@@ -26,10 +26,16 @@ import type { LiveChunks, StreamOutcome } from "./stream.ts";
 // moved), and the turn-scoped evidence so block separation, the
 // reviewer's gate, and durationMs cover the whole turn. This list is
 // the exhaustive whitelist — anything not on it dies with the attempt.
+//
+// An operator-resume seed (src/turn-resume.ts) fills the same slot:
+// `memory` stays absent so admission re-recalls (a fresh admission,
+// not an overflow continuation), `resumedFrom` links the new run row
+// to the interrupted source and arms the fence's replay map, and
+// `live` is always the fresh wire — the dead turn's log is gone.
 export interface TurnRecovery {
 	conversation: Conversation;
 	partial: UIMessage | null;
-	memory: { prior: RecallContext[]; current: RecallContext | null };
+	memory?: { prior: RecallContext[]; current: RecallContext | null } | undefined;
 	seenText: boolean;
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
@@ -41,6 +47,15 @@ export interface TurnRecovery {
 	// attempt boundary.
 	live: LiveChunks;
 	filterRetryUsed: boolean;
+	// Set only on an operator-resume seed and forwarded through that
+	// admission's own overflow continuations: the attempt's run row
+	// links to it (resumed_from) and the fence replays its recorded
+	// results.
+	resumedFrom?: string | undefined;
+	// The overflow rail's one-recovery-per-admission budget: set on a
+	// recovery the rail produced, so an operator-resume seed still gets
+	// its own compact-and-resume but a second overflow is terminal.
+	overflowed?: boolean | undefined;
 }
 
 // The provider rejected the request for context size mid-turn. Not an
@@ -81,16 +96,16 @@ export function failureFromStream(outcome: StreamFailure): Error {
 	return new Error(outcome.errorText, { cause: outcome.rawError });
 }
 
-// The one-recovery budget: only a first attempt with compaction wired
-// may hold an overflow off the wire for a compact-and-resume. The
-// budget belongs to the classifier, not to the attempt loop — a second
-// overflow on the same logical turn is terminal
-// (terminalFailureMessage below).
+// The one-recovery budget: an admission may hold one overflow off the
+// wire for a compact-and-resume. The budget belongs to the classifier,
+// not to the attempt loop — a second overflow on the same admission is
+// terminal (terminalFailureMessage below). An operator-resume seed
+// carries recovery but has not spent this budget.
 export function overflowHoldable(
 	recovery: TurnRecovery | undefined,
 	compactionWired: boolean,
 ): boolean {
-	return recovery === undefined && compactionWired;
+	return recovery?.overflowed !== true && compactionWired;
 }
 
 // The give-up wording for an overflow the budget already spent: the
@@ -129,6 +144,9 @@ export interface OverflowDeps<M> {
 	startedAt: number;
 	live: LiveChunks;
 	filterRetryUsed: boolean;
+	// An operator-resume admission's source run — forwarded so the
+	// continuation's run rows keep the link and the replay map.
+	resumedFrom?: string | undefined;
 	// The turn's membership — rides the decision so the resume claims
 	// it explicitly, never by closure.
 	members: M[];
@@ -199,6 +217,8 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			startedAt: deps.startedAt,
 			live: deps.live,
 			filterRetryUsed: deps.filterRetryUsed,
+			resumedFrom: deps.resumedFrom,
+			overflowed: true,
 		},
 		members: deps.members,
 	};

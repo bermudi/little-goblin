@@ -120,10 +120,28 @@ A graceful shutdown fences its live rows first, so a row still
 `running` at open means the process died mid-turn: open reclassifies
 it `interrupted` and boot sends each operator one terse notice per
 run (counts by state, never the partial itself). Nothing replays
-automatically — the rows exist so a future explicit resume can decide
-what is safe to redo; until then `interrupted` is terminal. Each
-attempt gets its own run row, so an overflow resume leaves the failed
-attempt's record intact.
+automatically — boot is notice-only, and an `interrupted` turn
+resumes ONLY by explicit operator decision, into a FRESH admission
+(new epoch, new run row linked by `resumed_from`). Each attempt gets
+its own run row, so an overflow resume leaves the failed attempt's
+record intact.
+
+`src/turn-resume.ts` owns the operator half (`makeResumeOps`): list
+interrupted runs, take per-call decisions, abandon, resume. Both
+surfaces — Telegram `/resume` `/decide` `/abandon` and the app's
+`/interrupted` `/decide` `/resume` routes — drive the same `ResumeOps`.
+The preconditions resume refuses on: undecided `dispatched` calls
+(each needs `record-result` | `authorize-retry` | `skip`), model or
+thinking drift against the run's recorded snapshot, any recorded tool
+missing from the rebuilt surface, a busy lane, and a source that is
+not `interrupted`. In the resumed attempt the fence replays recorded
+outputs for `completed`/`resolved-done` calls (the tool never runs),
+`resolved-retry` and `planned` calls execute normally, and
+`resolved-skip` calls carry a refusal map — a re-ask gets the
+operator's decline as the result, never the side effect. The model
+sees only what the journal says happened. The source row flips to
+`resumed` only after the successor row is durable; a headless resumed
+turn notifies operators on terminal `onDone`.
 
 ## What must not change
 

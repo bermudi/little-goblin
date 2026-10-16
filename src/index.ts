@@ -80,7 +80,7 @@ import { OutageTracker } from "./memory-outage.ts";
 import { wakeConversation } from "./wake.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { SkillSources } from "./skill-provenance.ts";
-import { Runtime } from "./runtime.ts";
+import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
@@ -97,6 +97,7 @@ import {
 import { openPings } from "./tg/pings.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
+import { makeResumeOps, type ResumeOps } from "./turn-resume.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -399,6 +400,170 @@ async function boot() {
 		return { configRef, auth, conversation: conv.id, observation: cacheObservations };
 	};
 
+	// The one tool factory — the runtime builds the live set per turn
+	// through it, and the resume contract check (turn-resume.ts)
+	// rebuilds the surface through the same closure so the drift
+	// comparison reads the set the resumed attempt would actually get.
+	const makeTurnTools: RuntimeDeps["makeTools"] = (
+		conv,
+		deliverVoice,
+		recording,
+		deliverFile,
+		accepts,
+	) => {
+		const tts = configRef.current.tts;
+		// Telegram-bound tools don't register on app turns — disjoint
+		// pools (DESIGN.md → App channel); delegate is the exception
+		// since the spin-off.
+		const telegram = channelOf(conv.id) === "telegram";
+		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
+		// relative-path anchor, and delegation's workspaceDir — a
+		// project conversation works in its dir end to end; a vanished
+		// dir throws here and the turn fails at admission.
+		const workdir = workdirFor(conv);
+		const tools = makeTools({
+			cwd: workdir,
+			voice:
+				tts && !configRef.ttsDown && deliverVoice
+					? {
+							// A per-call voice replaces the config voice outright — Edge
+							// derives the language from the voice name; the allowlist
+							// always carries the default. The cast is edge-only:
+							// openrouter voice ids carry no language to match on.
+							synthesize: (text, voice) =>
+								synthesizeSpeech(
+									text,
+									voice !== undefined && tts.kind === "edge" ? { ...tts, voice, voices: [] } : tts,
+									{ auth },
+								),
+							deliver: deliverVoice,
+							...(recording ? { recording } : {}),
+							...(tts.kind === "edge" && tts.voices?.length
+								? { voices: [...new Set([tts.voice, ...tts.voices])] }
+								: {}),
+						}
+					: undefined,
+			// sendPrivate keeps hook URLs out of model context — a DM per
+			// operator, never in history. publicUrl reads live.
+			program: telegram
+				? {
+						programs,
+						chatId: conv.chatId,
+						threadId: conv.threadId,
+						publicUrl: () => configRef.current.publicUrl,
+						sendPrivate: makePrivateSender(
+							// The one send composed outside tg/ — same deadline as
+							// every tg/ sender, or a wedged API stalls the
+							// program turn's tool call forever.
+							(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
+							() => configRef.current.operators,
+						),
+					}
+				: undefined,
+			file: deliverFile ? { deliver: deliverFile } : undefined,
+			memory:
+				memoryClient && memoryBootConfig
+					? {
+							client: memoryClient,
+							maxTokens: memoryBootConfig.searchMaxTokens,
+							budget: memoryBootConfig.searchBudget,
+							timeoutMs: memoryBootConfig.searchTimeoutMs,
+							minScores: memoryBootConfig.searchMinScores,
+							preferObservations: memoryBootConfig.preferObservations,
+							reflection: {
+								maxTokens: memoryBootConfig.reflectMaxTokens,
+								budget: memoryBootConfig.reflectBudget,
+								timeoutMs: memoryBootConfig.reflectTimeoutMs,
+							},
+							isExcluded: () => conv.memoryExcluded,
+							noteRecall,
+						}
+					: undefined,
+			// fetch is local (always on), search behind its config block —
+			// both read configRef live; the accepts ref rides for PDF rendering.
+			web: { configRef, auth, ...(accepts ? { accepts } : {}) },
+			transcribe:
+				configRef.current.transcription !== undefined ? { transcribe: transcribeFile } : undefined,
+			// Boot fixtures under a live gate (see delegateDeps above).
+			delegate: delegateDeps(conv, workdir),
+			// Unconditional — the operator's session isn't config-gated
+			// (guests are filtered below, script's allowlist excludes it).
+			herdr: { herdr: operatorHerdr },
+			// Only the approval gate's request closure — the send credential lives behind the taps.
+			mail:
+				telegram && configRef.current.mail !== undefined
+					? {
+							requestDraft: (input) =>
+								mailApproval.requestDraft(input, {
+									chatId: conv.chatId,
+									threadId: conv.threadId,
+								}),
+						}
+					: undefined,
+			history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
+			// Notes mount for every operator conversation — guests are
+			// excluded by the filter below, never by dep absence.
+			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
+			// Threads are process-global; a model change drops them on the next call.
+			vision: visionDepsFor(conv),
+			// Same live-read gate as vision — the image block mounts
+			// generate_image; Telegram channels deliver each image
+			// inline, other channels save + report paths.
+			image:
+				configRef.current.image !== undefined
+					? {
+							configRef,
+							auth,
+							conversation: conv.id,
+							...(deliverFile ? { deliver: deliverFile } : {}),
+						}
+					: undefined,
+			// Live-read like vision/search: the sandbox block mounts the
+			// tool for any channel (guest personas are filtered out below).
+			sandbox:
+				configRef.current.sandbox !== undefined
+					? {
+							conversation: conv.id,
+							workspace: workdir,
+							sandboxes,
+						}
+					: undefined,
+			// The subagents block is boot-frozen — a live config read
+			// can only hide the tools, never swap models mid-run.
+			subagent:
+				subagents !== null && configRef.current.subagents !== undefined
+					? {
+							conversation: conv.id,
+							workspace: workdir,
+							subagents,
+							workerEnabled:
+								subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
+							computerEnabled: subagentsBoot?.computer !== undefined,
+						}
+					: undefined,
+			desktop:
+				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
+					? { conversation: conv.id, workspace: workdir, desktops }
+					: undefined,
+			// The interface tool mounts on app turns only — Telegram
+			// and guests render plain text (design/app.md → Intelligent UI).
+			ui: channelOf(conv.id) === "app",
+		});
+		// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
+		const filtered = filterGuestTools(conv, tools);
+		// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
+		const scripting = configRef.current.scripting;
+		return scripting
+			? filterGuestTools(
+					conv,
+					withScript(filtered, {
+						conversation: conv.id,
+						maxCalls: scripting.maxCalls ?? 50,
+					}),
+				)
+			: filtered;
+	};
+
 	const runtime = new Runtime({
 		store,
 		turnJournal,
@@ -476,163 +641,7 @@ async function boot() {
 				return text;
 			},
 		},
-		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
-			const tts = configRef.current.tts;
-			// Telegram-bound tools don't register on app turns — disjoint
-			// pools (DESIGN.md → App channel); delegate is the exception
-			// since the spin-off.
-			const telegram = channelOf(conv.id) === "telegram";
-			// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
-			// relative-path anchor, and delegation's workspaceDir — a
-			// project conversation works in its dir end to end; a vanished
-			// dir throws here and the turn fails at admission.
-			const workdir = workdirFor(conv);
-			const tools = makeTools({
-				cwd: workdir,
-				voice:
-					tts && !configRef.ttsDown && deliverVoice
-						? {
-								// A per-call voice replaces the config voice outright — Edge
-								// derives the language from the voice name; the allowlist
-								// always carries the default. The cast is edge-only:
-								// openrouter voice ids carry no language to match on.
-								synthesize: (text, voice) =>
-									synthesizeSpeech(
-										text,
-										voice !== undefined && tts.kind === "edge"
-											? { ...tts, voice, voices: [] }
-											: tts,
-										{ auth },
-									),
-								deliver: deliverVoice,
-								...(recording ? { recording } : {}),
-								...(tts.kind === "edge" && tts.voices?.length
-									? { voices: [...new Set([tts.voice, ...tts.voices])] }
-									: {}),
-							}
-						: undefined,
-				// sendPrivate keeps hook URLs out of model context — a DM per
-				// operator, never in history. publicUrl reads live.
-				program: telegram
-					? {
-							programs,
-							chatId: conv.chatId,
-							threadId: conv.threadId,
-							publicUrl: () => configRef.current.publicUrl,
-							sendPrivate: makePrivateSender(
-								// The one send composed outside tg/ — same deadline as
-								// every tg/ sender, or a wedged API stalls the
-								// program turn's tool call forever.
-								(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
-								() => configRef.current.operators,
-							),
-						}
-					: undefined,
-				file: deliverFile ? { deliver: deliverFile } : undefined,
-				memory:
-					memoryClient && memoryBootConfig
-						? {
-								client: memoryClient,
-								maxTokens: memoryBootConfig.searchMaxTokens,
-								budget: memoryBootConfig.searchBudget,
-								timeoutMs: memoryBootConfig.searchTimeoutMs,
-								minScores: memoryBootConfig.searchMinScores,
-								preferObservations: memoryBootConfig.preferObservations,
-								reflection: {
-									maxTokens: memoryBootConfig.reflectMaxTokens,
-									budget: memoryBootConfig.reflectBudget,
-									timeoutMs: memoryBootConfig.reflectTimeoutMs,
-								},
-								isExcluded: () => conv.memoryExcluded,
-								noteRecall,
-							}
-						: undefined,
-				// fetch is local (always on), search behind its config block —
-				// both read configRef live; the accepts ref rides for PDF rendering.
-				web: { configRef, auth, ...(accepts ? { accepts } : {}) },
-				transcribe:
-					configRef.current.transcription !== undefined
-						? { transcribe: transcribeFile }
-						: undefined,
-				// Boot fixtures under a live gate (see delegateDeps above).
-				delegate: delegateDeps(conv, workdir),
-				// Unconditional — the operator's session isn't config-gated
-				// (guests are filtered below, script's allowlist excludes it).
-				herdr: { herdr: operatorHerdr },
-				// Only the approval gate's request closure — the send credential lives behind the taps.
-				mail:
-					telegram && configRef.current.mail !== undefined
-						? {
-								requestDraft: (input) =>
-									mailApproval.requestDraft(input, {
-										chatId: conv.chatId,
-										threadId: conv.threadId,
-									}),
-							}
-						: undefined,
-				history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
-				// Notes mount for every operator conversation — guests are
-				// excluded by the filter below, never by dep absence.
-				note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
-				// Threads are process-global; a model change drops them on the next call.
-				vision: visionDepsFor(conv),
-				// Same live-read gate as vision — the image block mounts
-				// generate_image; Telegram channels deliver each image
-				// inline, other channels save + report paths.
-				image:
-					configRef.current.image !== undefined
-						? {
-								configRef,
-								auth,
-								conversation: conv.id,
-								...(deliverFile ? { deliver: deliverFile } : {}),
-							}
-						: undefined,
-				// Live-read like vision/search: the sandbox block mounts the
-				// tool for any channel (guest personas are filtered out below).
-				sandbox:
-					configRef.current.sandbox !== undefined
-						? {
-								conversation: conv.id,
-								workspace: workdir,
-								sandboxes,
-							}
-						: undefined,
-				// The subagents block is boot-frozen — a live config read
-				// can only hide the tools, never swap models mid-run.
-				subagent:
-					subagents !== null && configRef.current.subagents !== undefined
-						? {
-								conversation: conv.id,
-								workspace: workdir,
-								subagents,
-								workerEnabled:
-									subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
-								computerEnabled: subagentsBoot?.computer !== undefined,
-							}
-						: undefined,
-				desktop:
-					subagents !== null && desktops !== null && configRef.current.subagents !== undefined
-						? { conversation: conv.id, workspace: workdir, desktops }
-						: undefined,
-				// The interface tool mounts on app turns only — Telegram
-				// and guests render plain text (design/app.md → Intelligent UI).
-				ui: channelOf(conv.id) === "app",
-			});
-			// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
-			const filtered = filterGuestTools(conv, tools);
-			// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
-			const scripting = configRef.current.scripting;
-			return scripting
-				? filterGuestTools(
-						conv,
-						withScript(filtered, {
-							conversation: conv.id,
-							maxCalls: scripting.maxCalls ?? 50,
-						}),
-					)
-				: filtered;
-		},
+		makeTools: makeTurnTools,
 		...(memoryClient && memoryBootConfig
 			? {
 					memory: {
@@ -694,6 +703,11 @@ async function boot() {
 		record: (conversationId, skill) => skillSources.record(conversationId, skill, "turn"),
 	});
 
+	// The explicit-resume surface (turn-resume.ts) is built below — it
+	// needs the bot for its operator notices — but both doors resolve the
+	// seam lazily, so the binding must exist before the awaits that let
+	// traffic in. `undefined` in that window answers "not wired".
+	let resumeOps: ResumeOps | undefined;
 	const tg = await startBot({
 		configRef,
 		auth,
@@ -707,6 +721,7 @@ async function boot() {
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
 		mail: () => mailApproval,
 		followUpGate: () => system1Gate ?? undefined,
+		resumeOps: () => resumeOps,
 	});
 
 	// The mail approval gate — the draft's one owner (queue → post →
@@ -831,6 +846,44 @@ async function boot() {
 		followUpGate: () => system1Gate ?? undefined,
 		pings,
 	});
+
+	// The explicit-resume surface (turn-resume.ts): /resume /decide
+	// /abandon on Telegram, the app runs/* routes on the app channel.
+	// Sinks mirror the wake path — an app lane's resumed turn pings the
+	// operators through the bell; a telegram lane's delivers into its
+	// own topic and DMs each operator the terminal outcome, since a
+	// resumed turn is headless and nobody is watching a stream.
+	resumeOps = makeResumeOps({
+		store,
+		journal: turnJournal,
+		runtime,
+		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
+		makeTools: makeTurnTools,
+		sinkFor: (conv) =>
+			channelOf(conv.id) === "app" ? wakeDeps.bell(conv) : wakeDeps.delivery(conv),
+		sinkHooks: (conv) =>
+			channelOf(conv.id) === "app"
+				? { voice: false, recording: false, file: false }
+				: { voice: true, recording: true, file: true },
+		notifyDone: (conv, sourceRunId, done) => {
+			if (channelOf(conv.id) === "app") return; // the bell is already the notice
+			const text =
+				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
+				(done.kind === "error" ? ` — ${done.message}` : "");
+			for (const chat of configRef.current.operators) {
+				void withTimeout(
+					tg.bot.api.sendMessage(chat, text),
+					"sendMessage (resumed turn notice)",
+				).catch((err: unknown) => {
+					log.warn("resumed turn notice failed", {
+						conversation: conv.id,
+						chat,
+						error: String(err),
+					});
+				});
+			}
+		},
+	});
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
@@ -931,7 +984,8 @@ async function boot() {
 			`interrupted turn ${run.runId.slice(0, 8)} — ` +
 			`${conv?.title ?? run.conversationId}, started ${new Date(run.startedMs).toISOString()}: ` +
 			`${run.calls.completed} completed, ${run.calls.dispatched} dispatched (ambiguous), ` +
-			`${run.calls.planned} planned tool call(s). The turn was not replayed.`;
+			`${run.calls.resolved} decided, ${run.calls.planned} planned tool call(s). ` +
+			`The turn was not replayed — resume explicitly with /resume ${run.runId.slice(0, 8)}.`;
 		for (const chat of configRef.current.operators) {
 			try {
 				await withTimeout(
@@ -1104,6 +1158,7 @@ async function boot() {
 				// Same seams the mini-app door reads — app-channel mounts
 				// them under /api/app/* with the bearer/trust gate.
 				operator: operatorSeams,
+				resumeOps: () => resumeOps,
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

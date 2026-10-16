@@ -27,6 +27,9 @@ describe("main branch regressions", () => {
 	let savedBodies: ConfigPostBody[] = [];
 	let dirtyLog: boolean[] = [];
 	let settingsGate: Promise<void> | null = null;
+	let settings: typeof SETTINGS;
+	let secretGate: ReturnType<typeof Promise.withResolvers<void>>;
+	let secretPosts: { name: string; value: string }[] = [];
 	const realFetch = globalThis.fetch;
 	const globals = new Map<string, PropertyDescriptor | undefined>();
 
@@ -48,6 +51,9 @@ describe("main branch regressions", () => {
 		savedBodies = [];
 		dirtyLog = [];
 		settingsGate = null;
+		settings = SETTINGS;
+		secretGate = Promise.withResolvers<void>();
+		secretPosts = [];
 		for (const [name, value] of [
 			["window", win],
 			["document", win.document],
@@ -59,6 +65,16 @@ describe("main branch regressions", () => {
 		}
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/secrets" && init?.method === "POST") {
+				const body = JSON.parse(String(init.body)) as { name: string; value: string };
+				secretPosts.push(body);
+				return secretGate.promise.then(
+					() =>
+						new Response(JSON.stringify({ name: body.name }), {
+							headers: { "content-type": "application/json" },
+						}),
+				);
+			}
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
 				return (settingsGate ?? Promise.resolve()).then(
@@ -72,10 +88,10 @@ describe("main branch regressions", () => {
 				return Promise.resolve(
 					new Response(
 						JSON.stringify({
-							config: SETTINGS,
+							config: settings,
 							providerKinds: ["openai-compatible", "openrouter"],
-							searchKinds: ["ddg", "brave", "jina"],
-							fetchKinds: ["local", "firecrawl", "jina"],
+							searchKinds,
+							fetchKinds,
 							transcriptionKinds,
 							transcriptionDefaults,
 							authDefaults,
@@ -96,6 +112,7 @@ describe("main branch regressions", () => {
 
 	afterEach(async () => {
 		settingsGate = null;
+		await act(async () => secretGate.resolve());
 		await act(async () => root?.unmount());
 		root = null;
 		await win.happyDOM.close();
@@ -174,6 +191,135 @@ describe("main branch regressions", () => {
 	const nameInput = () =>
 		container.querySelector('.prov.card input[aria-label="provider name"]') as HTMLInputElement;
 	const lastDirty = () => dirtyLog.at(-1);
+
+	const openWeb = async () => {
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Web")),
+		);
+	};
+	const button = (card: Element, text: string) =>
+		[...card.querySelectorAll("button")].find((b) => b.textContent === text);
+	const changeProvider = async (card: Element, kind: string) => {
+		await act(async () => {
+			const select = card.querySelector("select")!;
+			select.value = kind;
+			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	const startStore = async (card: Element) => {
+		await click(button(card, "+ store a key"));
+		await typeInto(card.querySelector('input[type="password"]')!, "fixture-pending-key");
+		await click(button(card, "Store"));
+		expect(secretPosts).toHaveLength(1);
+	};
+
+	for (const chain of ["search", "fetch"] as const) {
+		const kind = chain === "search" ? "brave" : "firecrawl";
+		for (const edit of ["remove target", "remove other", "reorder", "edit target", "edit other"]) {
+			test(`${chain}: delayed Store preserves ${edit} and the saved chain`, async () => {
+				settings = parseConfig({
+					...SETTINGS,
+					[chain]: [{ kind }, { kind: "jina", auth: "fallback" }],
+				});
+				await openWeb();
+				const cards = () => [...container.querySelectorAll(".chain-card")];
+				const authInput = (card: Element) => card.querySelector('input:not([type="password"])')!;
+				await typeInto(authInput(cards()[0]!), "");
+				await startStore(cards()[0]!);
+				let expected = [
+					{ kind, auth: kind },
+					{ kind: "jina", auth: "fallback" },
+				];
+				if (edit === "remove target") {
+					await click(cards()[0]!.querySelector('[aria-label="remove"]'));
+					expected = expected.slice(1);
+				} else if (edit === "remove other") {
+					await click(cards()[1]!.querySelector('[aria-label="remove"]'));
+					expected = expected.slice(0, 1);
+				} else if (edit === "reorder") {
+					await click(cards()[0]!.querySelector('[aria-label="move down"]'));
+					expected.reverse();
+				} else {
+					const index = edit === "edit target" ? 0 : 1;
+					await typeInto(authInput(cards()[index]!), "edited");
+					expected[index]!.auth = "edited";
+				}
+				await act(async () => secretGate.resolve());
+				await settle();
+				expect(
+					cards().map((card) => ({
+						kind: card.querySelector("select")!.value,
+						auth: (authInput(card) as HTMLInputElement).value,
+					})),
+				).toEqual(expected);
+				await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "updated chain save");
+				expect(savedBodies.at(-1)?.[chain]).toEqual(expected);
+			});
+		}
+	}
+
+	test("changing a chain provider clears the pending password before Store", async () => {
+		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
+		await openWeb();
+		const card = container.querySelector(".chain-card")!;
+		await click(button(card, "+ store a key"));
+		await typeInto(card.querySelector('input[type="password"]')!, "fixture-brave-key");
+		await changeProvider(card, "tavily");
+		expect(card.querySelector('input[type="password"]')).toBeNull();
+		await click(button(card, "+ store a key"));
+		const password = card.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(password.value).toBe("");
+		expect(button(card, "Store")?.disabled).toBe(true);
+		expect(secretPosts).toEqual([]);
+		await typeInto(password, "fixture-tavily-key");
+		await click(button(card, "Store"));
+		expect(secretPosts).toEqual([{ name: "tavily", value: "fixture-tavily-key" }]);
+		await act(async () => secretGate.resolve());
+	});
+
+	test("changing the credential record clears the pending password", async () => {
+		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
+		await openWeb();
+		const card = container.querySelector(".chain-card")!;
+		await click(button(card, "+ store a key"));
+		await typeInto(card.querySelector('input[type="password"]')!, "fixture-old-record-key");
+		await typeInto(card.querySelector('input[aria-label="step 1 secret name"]')!, "another-record");
+		expect(card.querySelector('input[type="password"]')).toBeNull();
+		await click(button(card, "+ store a key"));
+		expect(card.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
+		expect(button(card, "Store")?.disabled).toBe(true);
+		expect(secretPosts).toEqual([]);
+	});
+
+	test("a completed Store does not retarget a changed provider", async () => {
+		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
+		await openWeb();
+		const card = container.querySelector(".chain-card")!;
+		await startStore(card);
+		await changeProvider(card, "tavily");
+		await act(async () => secretGate.resolve());
+		await settle();
+		expect(card.querySelector("select")!.value).toBe("tavily");
+		expect(
+			card.querySelector<HTMLInputElement>('input[aria-label="step 1 secret name"]')!.value,
+		).toBe("");
+		await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "changed provider save");
+		expect(savedBodies.at(-1)?.search).toEqual([{ kind: "tavily" }]);
+	});
+
+	test("a completed Store does not re-enable a disabled chain", async () => {
+		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
+		await openWeb();
+		await startStore(container.querySelector(".chain-card")!);
+		await click(container.querySelector('[aria-label="search tool"]'));
+		await act(async () => secretGate.resolve());
+		await settle();
+		expect(container.querySelector(".chain-card")).toBeNull();
+		await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "disabled chain save");
+		expect(savedBodies.at(-1)?.search).toBe("");
+	});
 
 	test("an uncommitted provider name arms the guard and holds the autosave", async () => {
 		await mount();

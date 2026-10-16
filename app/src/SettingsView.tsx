@@ -485,7 +485,7 @@ function ChainEditor({
 	authNames: string[];
 	token: string | null;
 	onSecretStored: (name: string) => void;
-	onChange: (next: ChainEntry[]) => void;
+	onChange: (next: ChainEntry[] | ((current: ChainEntry[]) => ChainEntry[])) => void;
 }) {
 	const move = (i: number, d: number) => {
 		const j = i + d;
@@ -585,11 +585,13 @@ function ChainEditor({
 								)}
 								{hint !== undefined && <div className="cap">{hint}</div>}
 								<SecretEntry
+									key={`${e.kind}:${effective}`}
 									token={token}
 									name={effective}
 									onStored={(n) => {
 										onSecretStored(n);
-										onChange(entries.map((x, j) => (j === i ? { ...x, auth: n } : x)));
+										// Only an unchanged, still-present entry owns this response.
+										onChange((current) => current.map((x) => (x === e ? { ...x, auth: n } : x)));
 									}}
 								/>
 							</>
@@ -753,6 +755,7 @@ function ProviderCard({
 			{authMissing !== undefined && <div className="cap">{authMissing}</div>}
 			{!codex && (
 				<SecretEntry
+					key={`${prov.kind}:${prov.auth.trim() || authFallback}`}
 					token={token}
 					name={prov.auth.trim() || authFallback}
 					onStored={(n) => {
@@ -1439,6 +1442,7 @@ export function SettingsView({
 											list={AUTH_DL}
 										/>
 										<SecretEntry
+											key={`${draft.tts.kind}:${draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")}`}
 											token={token}
 											name={
 												draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")
@@ -1590,6 +1594,7 @@ export function SettingsView({
 											list={AUTH_DL}
 										/>
 										<SecretEntry
+											key={`${draft.transcription.kind}:${draft.transcription.auth.trim() || kinds.trDefaults[draft.transcription.kind].auth}`}
 											token={token}
 											name={
 												draft.transcription.auth.trim() ||
@@ -1656,7 +1661,13 @@ export function SettingsView({
 								authNames={authNames}
 								token={token}
 								onSecretStored={rememberAuthName}
-								onChange={(search) => patchDraft({ search })}
+								onChange={(next) =>
+									setDraft((d) => ({
+										...d,
+										search:
+											d.search === null ? null : typeof next === "function" ? next(d.search) : next,
+									}))
+								}
 							/>
 							<div className="cap ops-cap">
 								Tried top to bottom. A failure moves on to the next; an empty result is an answer
@@ -1693,7 +1704,13 @@ export function SettingsView({
 								authNames={authNames}
 								token={token}
 								onSecretStored={rememberAuthName}
-								onChange={(fetch) => patchDraft({ fetch })}
+								onChange={(next) =>
+									setDraft((d) => ({
+										...d,
+										fetch:
+											d.fetch === null ? null : typeof next === "function" ? next(d.fetch) : next,
+									}))
+								}
 							/>
 							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
 						</>
@@ -1775,6 +1792,7 @@ export function SettingsView({
 									list={AUTH_DL}
 								/>
 								<SecretEntry
+									key={draft.memory.auth}
 									token={token}
 									name={draft.memory.auth}
 									onStored={keyStored((n) =>

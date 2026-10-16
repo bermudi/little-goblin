@@ -164,6 +164,13 @@ export function captureConversationSettings(
 	return { ...conv, ...settings };
 }
 
+// The address of one pruning projection: a seq/toolCallId pair encoded
+// without concatenation ambiguity — (2, "34") and (23, "4") are distinct
+// addresses, where a plain concat would collide and cross-replace.
+export function projectionKey(seq: number, toolCallId: string): string {
+	return JSON.stringify([seq, toolCallId]);
+}
+
 // Provider edits must not strand persisted app selections; a refusal
 // leaves disk untouched.
 export function prepareAppSettingsForConfig(
@@ -1676,7 +1683,7 @@ export function openStore(dbPath: string): ConversationStore {
 			const projections = qProjections.all(id);
 			if (projections.length > 0) {
 				const byPart = new Map(
-					projections.map((p) => [`${p.seq}${p.tool_call_id}`, p.replacement] as const),
+					projections.map((p) => [projectionKey(p.seq, p.tool_call_id), p.replacement] as const),
 				);
 				for (const entry of entries) {
 					for (const part of entry.message.parts) {
@@ -1693,7 +1700,7 @@ export function openStore(dbPath: string): ConversationStore {
 							typeof p.output !== "string"
 						)
 							continue;
-						const replacement = byPart.get(`${entry.seq}${p.toolCallId}`);
+						const replacement = byPart.get(projectionKey(entry.seq, p.toolCallId));
 						if (replacement !== undefined) p.output = replacement;
 					}
 				}

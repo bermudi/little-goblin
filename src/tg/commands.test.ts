@@ -1133,6 +1133,66 @@ describe("recovery commands", () => {
 		store.close();
 	});
 
+	test("/resume splits oversized listings under Telegram's message cap", async () => {
+		// Enough runs and parallel ambiguous calls that the joined
+		// listing far exceeds 4096 characters — one sendMessage would be
+		// rejected whole, taking every decision number with it.
+		const runs = Array.from({ length: 60 }, (_, i) => {
+			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
+			return {
+				run: { ...run, runId },
+				calls: Array.from({ length: 3 }, (_, j) => ({
+					...call,
+					toolCallId: `call-${i}-${j}`,
+					args: { q: `detail-${i}-${j}-${"x".repeat(90)}` },
+				})),
+			};
+		});
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => runs }),
+		});
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		// Split, not truncated: several messages, each under the cap,
+		// together carrying the first and the last run intact.
+		expect(sent.length).toBeGreaterThan(1);
+		for (const s of sent) expect(s.length).toBeLessThanOrEqual(4096);
+		const joined = sent.join("\n");
+		expect(joined).toContain("interrupted run 00000000");
+		expect(joined).toContain("/resume 00000000 · /abandon 00000000");
+		expect(joined).toContain("interrupted run 00000059");
+		expect(joined).toContain("/resume 00000059 · /abandon 00000059");
+		// Decision numbering rides the lines — every chunk boundary
+		// falls between whole lines.
+		for (const s of sent) expect(s.endsWith("\n")).toBe(false);
+		expect(joined).toContain("2. probe");
+		store.close();
+	});
+
+	test("/resume <id> blocked-list splits under the cap too", async () => {
+		const calls = Array.from({ length: 80 }, (_, j) => ({
+			...call,
+			toolCallId: `call-block-${j}`,
+			args: { q: `blocked-${j}-${"y".repeat(100)}` },
+		}));
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () =>
+				fakeOps({
+					resume: () => ({ kind: "needs-decisions", runId: run.runId, calls }),
+				}),
+		});
+		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
+		await tick();
+		expect(sent.length).toBeGreaterThan(1);
+		for (const s of sent) expect(s.length).toBeLessThanOrEqual(4096);
+		const joined = sent.join("\n");
+		expect(joined).toContain("undecided tool calls block resume:");
+		expect(joined).toContain("1. probe");
+		expect(joined).toContain("80. probe");
+		expect(joined).toContain("/decide abcdef01");
+		store.close();
+	});
+
 	test("/resume <id> admits the fresh turn and reports the blocked list", async () => {
 		const { store, conv, sent, deps } = setup({
 			resumeOps: () =>

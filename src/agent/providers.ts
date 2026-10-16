@@ -157,6 +157,26 @@ export function hashCacheSettings(fields: {
 	);
 }
 
+// The settings-hash input for an ordinary turn call. The SDK's
+// prepareToolChoice normalizes an omitted toolChoice to {type:"auto"}
+// BEFORE the middleware boundary sees the call options — so the
+// receipts observedModel records hash that shape, and the pruning gate
+// (plus any profile copied from telemetry) must hash the identical
+// bytes or never match.
+export function turnCallSettings(
+	config: Config,
+	modelRef: string,
+	thinking: ThinkingLevel,
+): {
+	providerOptions: LanguageModelV4CallOptions["providerOptions"];
+	toolChoice: { type: "auto" };
+} {
+	return {
+		providerOptions: thinkingOptions(config, modelRef, thinking),
+		toolChoice: { type: "auto" },
+	};
+}
+
 const SAFE_ERROR_NAMES = new Set(["AbortError", "Error", "TypeError"]);
 
 function safeErrorFields(error: unknown): Record<string, unknown> {

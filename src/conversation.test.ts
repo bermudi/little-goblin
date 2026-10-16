@@ -1423,6 +1423,23 @@ describe("event projections", () => {
 		store.close();
 	});
 
+	test("projection addresses do not collide across seq/toolCallId splits", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		// (2, "34") and (23, "4") concatenate to the same "234" — a
+		// concat-keyed overlay would replace the second result with the
+		// first's marker.
+		store.append(c.id, [msg("q")]); // seq 1
+		store.append(c.id, [toolEvent("34", "the early original")]); // seq 2
+		for (let i = 0; i < 20; i++) store.append(c.id, [msg(`filler ${i}`)]); // seqs 3..22
+		store.append(c.id, [toolEvent("4", "the late original")]); // seq 23
+		expect(store.applyEventProjections(c.id, [row(2, "34", "early marker")])).toBe(1);
+		const view = store.modelEntries(c.id);
+		expect(output(view.find((e) => e.seq === 2)?.message)).toBe("early marker");
+		expect(output(view.find((e) => e.seq === 23)?.message)).toBe("the late original");
+		store.close();
+	});
+
 	test("projections respect the compaction boundary — folded events stay below it", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");

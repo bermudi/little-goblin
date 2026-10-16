@@ -11,16 +11,11 @@
 import { createHash } from "node:crypto";
 
 import { cacheContractFor, cacheContractFresh } from "./agent/cache-contracts.ts";
-import {
-	cacheRouteFor,
-	cacheRouteKey,
-	hashCacheSettings,
-	thinkingOptions,
-} from "./agent/providers.ts";
+import { cacheRouteFor, cacheRouteKey, hashCacheSettings, turnCallSettings } from "./agent/providers.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 import type { CacheObservation } from "./cache-observation.ts";
 import type { Config } from "./config.ts";
-import { captureConversationSettings, type ConversationStore } from "./conversation.ts";
+import { captureConversationSettings, projectionKey, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
 
@@ -105,9 +100,12 @@ export function openCachePruning(deps: CachePruningDeps): {
 		const route = cacheRouteFor(cfg, modelRef);
 		if (route === undefined) return undefined;
 		const routeKey = cacheRouteKey(route);
-		const settingsHash = hashCacheSettings({
-			providerOptions: thinkingOptions(cfg, modelRef, captured.thinking),
-		});
+		// The gate must hash the exact normalized settings the turn's
+		// SDK calls hash — the SDK resolves an omitted toolChoice to
+		// {type:"auto"} before observedModel sees the options, so a
+		// profile copied from telemetry never matches a bare
+		// providerOptions-only hash.
+		const settingsHash = hashCacheSettings(turnCallSettings(cfg, modelRef, captured.thinking));
 
 		const profile = policy.profiles.find(
 			(p) => p.routeKey === routeKey && p.settingsHash === settingsHash,
@@ -166,16 +164,29 @@ export function openCachePruning(deps: CachePruningDeps): {
 		// Drift check first, before the freshness gates: a same/append
 		// call inside the assumed cache window that reported zero cache
 		// reads means the presumed expiry is wrong — suspend new batches.
-		// The suspension persists under this profile's hash: a later
-		// cache-hit receipt can't erase the evidence, only an edited
-		// profile lifts it. Committed rows still replay; only new
+		// EVERY completed receipt since the profile's review is
+		// inspected, not only the latest: a multi-call turn can bury an
+		// earlier zero-read contradiction under a later cache hit, and
+		// the latest receipt alone would hide it. Receipts the review
+		// already saw stay acknowledged — a changed profile (new hash,
+		// new reviewedAt) remains the one lift. The suspension persists
+		// under this profile's hash: a later cache-hit receipt can't
+		// erase the evidence. Committed rows still replay; only new
 		// pruning stops.
-		if (
-			(prev.prefixRelation === "same" || prev.prefixRelation === "append") &&
-			prev.idleMs !== null &&
-			prev.idleMs < profile.idleAfterMs &&
-			prev.cacheRead === 0
-		) {
+		const receipts = deps.observation.completedReceipts(
+			convId,
+			routeKey,
+			settingsHash,
+			Date.parse(profile.reviewedAt),
+		);
+		const contradiction = receipts.find(
+			(r) =>
+				(r.prefixRelation === "same" || r.prefixRelation === "append") &&
+				r.idleMs !== null &&
+				r.idleMs < profile.idleAfterMs &&
+				r.cacheRead === 0,
+		);
+		if (contradiction !== undefined) {
 			deps.observation.suspendPruning({
 				conversationId: convId,
 				routeKey,
@@ -184,7 +195,7 @@ export function openCachePruning(deps: CachePruningDeps): {
 				reason: "drift-contradiction",
 			});
 			notice("contradicted", "cache policy contradicted — pruning suspended", convId, routeKey, {
-				idleMs: prev.idleMs,
+				idleMs: contradiction.idleMs,
 				idleAfterMs: profile.idleAfterMs,
 			});
 			return { pruned: 0, reason: "drift-contradiction" };
@@ -209,9 +220,7 @@ export function openCachePruning(deps: CachePruningDeps): {
 		// event anyway — cut on the same causal key modelEntries uses.
 		const boundary = deps.store.getCompaction(convId)?.boundarySeq ?? null;
 		const projected = new Set(
-			deps.store
-				.eventProjections(convId)
-				.map((p) => `${p.seq}${p.toolCallId}`),
+			deps.store.eventProjections(convId).map((p) => projectionKey(p.seq, p.toolCallId)),
 		);
 		const rows: {
 			seq: number;
@@ -240,7 +249,7 @@ export function openCachePruning(deps: CachePruningDeps): {
 					p.output.length < policy.minimumResultChars
 				)
 					continue;
-				const key = `${entry.seq}${p.toolCallId}`;
+				const key = projectionKey(entry.seq, p.toolCallId);
 				if (projected.has(key)) continue;
 				const replacement = pruningReplacement({
 					conversation: convId,

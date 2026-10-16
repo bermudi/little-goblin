@@ -14,6 +14,7 @@ import {
 	cacheRouteKey,
 	hashCacheSettings,
 	thinkingOptions,
+	turnCallSettings,
 } from "./agent/providers.ts";
 import { openCacheObservation, type CacheObservation } from "./cache-observation.ts";
 import { openCachePruning, pruningReplacement } from "./cache-pruning.ts";
@@ -56,7 +57,9 @@ function baseConfig(cachePruning?: CachePruningPolicy): Config {
 }
 
 // The profile's hashes come from the same functions the turn's buildStep
-// feeds — exactly what an operator copies out of the model_cache_calls row.
+// feeds — exactly what an operator copies out of the model_cache_calls
+// row. toolChoice rides turnCallSettings' normalized shape: the SDK
+// resolves an omitted choice to {type:"auto"} before the receipts hash.
 function profileFor(
 	cfg: Config,
 	over?: Partial<CachePruningProfile>,
@@ -65,9 +68,7 @@ function profileFor(
 	return {
 		model,
 		routeKey: cacheRouteKey(cacheRouteFor(cfg, model)!),
-		settingsHash: hashCacheSettings({
-			providerOptions: thinkingOptions(cfg, model, "medium"),
-		}),
+		settingsHash: hashCacheSettings(turnCallSettings(cfg, model, "medium")),
 		idleAfterMs: IDLE_AFTER,
 		reviewedAt: "2026-10-15T00:00:00.000Z",
 		validUntil: "2027-10-15T00:00:00.000Z",
@@ -513,6 +514,54 @@ describe("openCachePruning", () => {
 			now: f.now,
 		});
 		expect(lifted.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		f.store.close();
+	});
+
+	test("the gate hashes the SDK-normalized settings — a telemetry-copied profile matches", () => {
+		const f = fixture();
+		// What observedModel hashed for the turn's call: the SDK resolved
+		// the omitted toolChoice to {type:"auto"} before the middleware
+		// boundary (ai's prepareToolChoice), so the receipts carry that
+		// shape and any profile copied from them must too.
+		const sdkReceiptHash = hashCacheSettings({
+			providerOptions: thinkingOptions(f.cfg, MODEL, "medium"),
+			toolChoice: { type: "auto" },
+		});
+		expect(f.profile.settingsHash).toBe(sdkReceiptHash);
+		// A bare providerOptions-only hash — the pre-normalization gate —
+		// never matches the receipts.
+		expect(f.profile.settingsHash).not.toBe(
+			hashCacheSettings({ providerOptions: thinkingOptions(f.cfg, MODEL, "medium") }),
+		);
+		// End to end: receipts recorded under the SDK-shaped hash gate the
+		// profile and pruning proceeds.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, sdkReceiptHash, {
+			cacheRead: 0,
+		});
+		f.advance(IDLE_AFTER + 1);
+		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
+		f.store.close();
+	});
+
+	test("an earlier zero-read contradiction buried under a later cache hit still suspends", () => {
+		const f = fixture();
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+		f.advance(1_000);
+		// The multi-call turn shape: the earlier same-prefix call inside
+		// the window reported zero cache reads; the LATEST one hit — the
+		// latest-only check missed the contradiction entirely.
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+			cacheRead: 0,
+		});
+		f.advance(500);
+		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+			cacheRead: 40_000,
+		});
+		f.advance(IDLE_AFTER + 1);
+		expect(f.pruning.pruneConversation(f.conv.id)).toEqual({
+			pruned: 0,
+			reason: "drift-contradiction",
+		});
 		f.store.close();
 	});
 

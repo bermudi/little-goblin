@@ -102,6 +102,33 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	});
 }
 
+// Telegram rejects any message over 4096 characters — a recovery
+// listing with enough interrupted runs or parallel ambiguous calls
+// would fail WHOLE, taking every decision number with it. Split on
+// line boundaries under the cap; the numbering lives on the lines
+// themselves, so a split never renumbers. Margin absorbs entity
+// overhead differences between here and Telegram's counting.
+const REPLY_CHUNK_LIMIT = 4000;
+
+function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): void {
+	let batch: string[] = [];
+	let len = 0;
+	const flush = (): void => {
+		if (batch.length === 0) return;
+		reply(deps, conv, batch.join("\n"));
+		batch = [];
+		len = 0;
+	};
+	for (const line of lines) {
+		const capped =
+			line.length > REPLY_CHUNK_LIMIT ? line.slice(0, REPLY_CHUNK_LIMIT) : line;
+		if (batch.length > 0 && len + capped.length + 1 > REPLY_CHUNK_LIMIT) flush();
+		batch.push(capped);
+		len += capped.length + 1;
+	}
+	flush();
+}
+
 // /forget's numbered listings live in the store's own SQLite file — one
 // ForgetListings per database, built on first use. Not a CommandDeps
 // field: /forget is the only consumer, and the cache is command UX, not
@@ -220,7 +247,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					}
 					lines.push(`  /resume ${id} · /abandon ${id}`);
 				}
-				reply(deps, conv, lines.join("\n"));
+				replyLines(deps, conv, lines);
 				return true;
 			}
 			const outcome = ops.resume(conv.id, arg);
@@ -230,15 +257,15 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			}
 			if (outcome.kind === "needs-decisions") {
 				const id = outcome.runId.slice(0, 8);
-				const lines = outcome.calls.map((c, i) => {
-					const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-					return `  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`;
-				});
-				reply(
-					deps,
-					conv,
-					`undecided tool calls block resume:\n${lines.join("\n")}\n/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
-				);
+				const lines = [
+					"undecided tool calls block resume:",
+					...outcome.calls.map((c, i) => {
+						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
+						return `  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`;
+					}),
+					`/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
+				];
+				replyLines(deps, conv, lines);
 				return true;
 			}
 			reply(deps, conv, outcome.reason);

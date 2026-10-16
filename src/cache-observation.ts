@@ -4,6 +4,15 @@ import { z } from "zod";
 
 export type CachePrefixRelation = "first" | "same" | "append" | "rewrite";
 
+export interface CacheCompletedReceipt {
+	finishedMs: number | null;
+	idleMs: number | null;
+	cacheRead: number | null;
+	inputTokens: number | null;
+	prefixRelation: CachePrefixRelation;
+	settingsHash: string;
+}
+
 export interface CacheCallInput {
 	callId: string;
 	conversationId: string | null;
@@ -37,14 +46,19 @@ export interface CacheObservation {
 		conversationId: string,
 		routeKey: string,
 		settingsHash: string,
-	): {
-		finishedMs: number | null;
-		idleMs: number | null;
-		cacheRead: number | null;
-		inputTokens: number | null;
-		prefixRelation: CachePrefixRelation;
-		settingsHash: string;
-	} | null;
+	): CacheCompletedReceipt | null;
+	// The same surface, every completed receipt started after `sinceMs`,
+	// newest-first — the drift check must see receipts a later cache hit
+	// masks, not only the latest one (a multi-call turn can bury an
+	// earlier zero-read contradiction). `sinceMs` is the profile's
+	// review: receipts the operator already saw when authorizing the
+	// profile are acknowledged evidence, not fresh contradictions.
+	completedReceipts(
+		conversationId: string,
+		routeKey: string,
+		settingsHash: string,
+		sinceMs: number,
+	): CacheCompletedReceipt[];
 	// A contradicted pruning profile stays suspended until the profile
 	// itself changes — a later cache-hit receipt is evidence about a
 	// different window, never proof the measured one was right.
@@ -145,6 +159,13 @@ export function openCacheObservation(
 			AND purpose IS NULL AND status = 'completed'
 		ORDER BY started_ms DESC, rowid DESC LIMIT 1`,
 	);
+	const qCompletedAll = db.query(
+		`SELECT finished_ms, idle_ms, cache_read, input_tokens, prefix_relation, settings_hash
+		FROM model_cache_calls
+		WHERE conversation_id = ? AND route_key = ? AND settings_hash = ?
+			AND purpose IS NULL AND status = 'completed' AND started_ms > ?
+		ORDER BY started_ms DESC, rowid DESC`,
+	);
 	db.run(`CREATE TABLE IF NOT EXISTS cache_pruning_suspensions (
 		conversation_id TEXT NOT NULL,
 		route_key TEXT NOT NULL,
@@ -176,6 +197,19 @@ export function openCacheObservation(
 				prefixRelation: row.prefix_relation,
 				settingsHash: row.settings_hash,
 			};
+		},
+		completedReceipts(conversationId, routeKey, settingsHash, sinceMs) {
+			return qCompletedAll
+				.all(conversationId, routeKey, settingsHash, sinceMs)
+				.map((raw) => lastCompletedSchema.parse(raw))
+				.map((row) => ({
+					finishedMs: row.finished_ms,
+					idleMs: row.idle_ms,
+					cacheRead: row.cache_read,
+					inputTokens: row.input_tokens,
+					prefixRelation: row.prefix_relation,
+					settingsHash: row.settings_hash,
+				}));
 		},
 		suspendPruning(input) {
 			qSuspend.run(

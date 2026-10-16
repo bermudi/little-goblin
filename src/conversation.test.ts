@@ -12,6 +12,7 @@ import {
 	type ConversationStore,
 	type ParsedAddress,
 } from "./conversation.ts";
+import { pruningReplacement } from "./cache-pruning.ts";
 import { tmpDb } from "./testkit.ts";
 
 const msg = (text: string): UIMessage => ({
@@ -1498,6 +1499,30 @@ describe("event projections", () => {
 		// Both histories keep the original event bytes.
 		expect(output(store.history(app.id)[1])).toBe("source original");
 		expect(output(store.history(src.id)[1])).toBe("source original");
+		store.close();
+	});
+
+	test("forkToApp re-points a real pruning marker's recovery address at the fork", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [msg("q")]);
+		store.append(src.id, [toolEvent("t1", "source original")]);
+		// A real committed marker — its embedded history_search address
+		// names the source conversation.
+		const marker = pruningReplacement({
+			conversation: src.id,
+			seq: 2,
+			toolCallId: "t1",
+			text: "y".repeat(400),
+			headChars: 40,
+			tailChars: 40,
+		});
+		store.applyEventProjections(src.id, [row(2, "t1", marker)]);
+		const app = store.forkToApp(src.id, "proj-2", "/w", "the work");
+		const copied = store.eventProjections(app.id)[0]!.replacement;
+		expect(copied).toContain(`"conversation":${JSON.stringify(app.id)}`);
+		expect(copied).not.toContain(JSON.stringify(src.id));
+		expect(output(store.modelEntries(app.id).find((e) => e.seq === 2)?.message)).toBe(copied);
 		store.close();
 	});
 });

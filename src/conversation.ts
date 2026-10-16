@@ -14,6 +14,7 @@ import { MemoryQueue } from "./memory-queue.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
+import { retargetPruningMarker } from "./pruning-marker.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
 // The channel address IS the conversation identity: routing picks the
@@ -1372,15 +1373,18 @@ export function openStore(dbPath: string): ConversationStore {
 				for (const c of qContextsFor.all(fromId)) {
 					qInsertContext.run(id, c.anchor_seq, c.content, c.source_ids, c.created_at);
 				}
-				// Committed projections ride along verbatim — the fork's
-				// model view must replay the same markers, and the events
-				// they overlay came through the copy above untouched.
+				// Committed projections ride along — the fork's model view
+				// replays the same markers, and the events they overlay came
+				// through the copy above untouched. One rewrite: the marker's
+				// recovery address names the source id, so point it at the
+				// fork or recovery would read another conversation's events
+				// (refused for an excluded fork) and die with the source.
 				for (const p of qAllProjections.all(fromId)) {
 					qInsertProjection.run(
 						id,
 						p.seq,
 						p.tool_call_id,
-						p.replacement,
+						retargetPruningMarker(p.replacement, p.seq, p.tool_call_id, fromId, id),
 						p.route_key,
 						p.settings_hash,
 						p.created_at,

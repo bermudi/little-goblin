@@ -18,6 +18,7 @@ import type { Config } from "./config.ts";
 import { captureConversationSettings, projectionKey, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
+import { pruningRecoveryAddress } from "./pruning-marker.ts";
 
 const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -35,14 +36,7 @@ export function pruningReplacement(input: {
 }): string {
 	const head = Array.from(input.text).slice(0, input.headChars).join("");
 	const tail = input.tailChars === 0 ? "" : Array.from(input.text).slice(-input.tailChars).join("");
-	const recovery = JSON.stringify({
-		action: "context",
-		conversation: input.conversation,
-		seq: input.seq,
-		window: 0,
-		toolCallId: input.toolCallId,
-		offset: 0,
-	});
+	const recovery = pruningRecoveryAddress(input.conversation, input.seq, input.toolCallId);
 	const marker =
 		`[Old textual tool observation reduced; original result preserved in history. ` +
 		`Tool call ${JSON.stringify(input.toolCallId)}; recover with history_search ${recovery}. ` +

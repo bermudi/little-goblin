@@ -757,7 +757,7 @@ export function contextLabel(ctx: AppContextView | null): string {
 // against the conversation model's catalog limit, with cache-hit rates
 // in the popover. Reads stay cheap: one GET on mount and one per
 // settled turn (busy → idle), never mid-stream.
-function ContextGauge({
+export function ContextGauge({
 	token,
 	conversationId,
 	busy,
@@ -770,6 +770,14 @@ function ContextGauge({
 	const [failed, setFailed] = useState(false);
 	const [open, setOpen] = useState(false);
 	const seq = useRef(0);
+	// A read belongs to the conversation that produced it — an id (or
+	// credential) switch makes the last one stale. The reset can't live
+	// in the fetch effect: its post-turn re-runs should hold the last
+	// read until the new one lands.
+	useEffect(() => {
+		setCtx(null);
+		setFailed(false);
+	}, [token, conversationId]);
 	useEffect(() => {
 		if (conversationId === undefined || busy) return;
 		const n = ++seq.current;
@@ -817,7 +825,9 @@ function ContextGauge({
 					<dl className="ctx-rows">
 						<div>
 							<dt>Input</dt>
-							<dd className="mono">{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}</dd>
+							<dd className="mono">
+								{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}
+							</dd>
 						</div>
 						<div>
 							<dt>Cache hit</dt>

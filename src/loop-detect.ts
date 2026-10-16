@@ -37,8 +37,10 @@ export type LoopVerdict = { action: "none" | "warn" | "cut"; count: number };
 // Sorted object keys, full values: a reordered argument object is the
 // same call, and nothing is truncated before hashing. Unserializable
 // input (circular, BigInt) degrades to its String() form rather than
-// throwing mid-stream.
-function stableStringify(value: unknown): string {
+// throwing mid-stream. Exported: the turn journal hashes args under
+// the same canonical form so its args_hash stays comparable to the
+// detector's.
+export function stableStringify(value: unknown): string {
 	try {
 		return JSON.stringify(sortKeys(value)) ?? "undefined";
 	} catch {

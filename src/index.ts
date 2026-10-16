@@ -96,6 +96,7 @@ import {
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
+import { openTurnJournal } from "./turn-journal.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -136,6 +137,10 @@ async function boot() {
 	const auth = loadAuth();
 	const store = openStore(paths.db());
 	const cacheObservations = openCacheObservation(store.db);
+	// The crash journal shares the store's handle like the tg inbox.
+	// Its open reclassifies rows left 'running' — a graceful shutdown
+	// fences first, so 'running' at open means the process died mid-turn.
+	const turnJournal = openTurnJournal(store.db);
 	// Between-turns pruning of old textual tool outputs — inert without a
 	// hand-edited cachePruning block (DESIGN.md → Cache stability).
 	const cachePruning = openCachePruning({
@@ -396,6 +401,7 @@ async function boot() {
 
 	const runtime = new Runtime({
 		store,
+		turnJournal,
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
@@ -913,6 +919,39 @@ async function boot() {
 			subagents = null;
 			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
 		}
+	}
+
+	// The crash journal's boot notice (design/runtime-turn.md → The turn
+	// journal): rows reclassified 'interrupted' at open get one DM per
+	// operator — terse facts, never a replay. A failed send must not hold
+	// boot; the log line is the record.
+	for (const run of turnJournal.interrupted()) {
+		const conv = store.get(run.conversationId);
+		const text =
+			`interrupted turn ${run.runId.slice(0, 8)} — ` +
+			`${conv?.title ?? run.conversationId}, started ${new Date(run.startedMs).toISOString()}: ` +
+			`${run.calls.completed} completed, ${run.calls.dispatched} dispatched (ambiguous), ` +
+			`${run.calls.planned} planned tool call(s). The turn was not replayed.`;
+		for (const chat of configRef.current.operators) {
+			try {
+				await withTimeout(
+					tg.bot.api.sendMessage(chat, text),
+					"sendMessage (interrupted turn notice)",
+				);
+			} catch (err) {
+				log.error("interrupted turn notice send failed", err, {
+					run: run.runId,
+					conversation: run.conversationId,
+					chat,
+				});
+			}
+		}
+		log.info("interrupted turn notice sent", {
+			run: run.runId,
+			conversation: run.conversationId,
+			started: new Date(run.startedMs).toISOString(),
+			calls: run.calls,
+		});
 	}
 
 	// Recover inbox rows before polling: the wirings above must exist before

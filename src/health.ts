@@ -340,7 +340,10 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 	);
 	const parts = [
 		[...groups.values()]
-			.map((g) => `${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`)
+			.map(
+				(g) =>
+					`${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`,
+			)
 			.join("; "),
 	];
 	if (undocumented.length > 0) {
@@ -541,6 +544,8 @@ function expectedTables(config: Config | undefined): string[] {
 		"guest_dedup",
 		"model_cache_calls",
 		"event_projections",
+		"turn_runs",
+		"turn_tool_calls",
 	];
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");

@@ -12,8 +12,11 @@ import {
 import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import {
+	finishPart,
 	scriptedModel as scriptedEdge,
 	textModel,
+	textParts,
+	toolCallPart,
 	type StreamAttempt,
 } from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
@@ -23,6 +26,7 @@ import { appAddress, captureConversationSettings, openStore } from "./conversati
 import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
+import { openTurnJournal } from "./turn-journal.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import {
 	deferred,
@@ -3667,4 +3671,81 @@ test("invalid durable app settings report admission error exactly once without s
 	} finally {
 		store.close();
 	}
+});
+
+describe("turn journal", () => {
+	test("a completed tool loop leaves a completed run with settled call rows", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const edge = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => ({ ok: true, out: "done" }),
+				}),
+			}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			await runtime.shutdown();
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("completed");
+			expect(run.delivery).toBe("delivered");
+			expect(run.finishedMs).not.toBeNull();
+			expect(journal.interrupted()).toEqual([]);
+			const calls = journal.callsFor(run.runId);
+			expect(calls).toHaveLength(1);
+			expect(calls[0]!.toolCallId).toBe("call-1");
+			expect(calls[0]!.state).toBe("completed");
+			expect(calls[0]!.result).toBe('{"ok":true,"out":"done"}');
+		} finally {
+			store.close();
+		}
+	});
+
+	test("a fenced turn stamps 'fenced' — reopen must not read it as interrupted", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: gated.model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			await sink.firstDelta;
+			await gated.entered;
+			store.bumpEpoch(conv.id);
+			gated.release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("fenced");
+			expect(run.delivery).toBe("undelivered");
+			// 'fenced' is terminal: a boot reclassify must never claim it.
+			expect(journal.interrupted()).toEqual([]);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 });

@@ -179,10 +179,15 @@ stamps "⏹ superseded" on its already-visible partial reply (if any),
 without flushing unsent content — and drains the intake
 buffer into history, all under a bounded budget. A crash mid-turn leaves
 the same shape minus the flush: the user message is in history, the next
-turn answers it. Boot never auto-retries a half-run turn — tool calls
-aren't idempotent, and an unanswered tail can't be told apart from
-`/stop`. If recovery is ever wanted it is notify-don't-retry: surface
-the orphaned turn to the operator, don't replay it.
+turn answers it. The turn journal (design/runtime-turn.md → The turn
+journal) makes the distinction durable: a graceful shutdown stamps its
+runs `fenced`; a row still `running` at open means the process died, is
+reclassified `interrupted`, and is surfaced to the operator as a boot
+notice — counts and facts, never a replay. Boot never auto-retries a
+half-run turn — tool calls aren't idempotent, and an unanswered tail
+can't be told apart from `/stop`. Resuming an interrupted turn is a
+separate explicit decision riding the journaled rows, not a boot
+behavior.
 
 ## Cache stability
 

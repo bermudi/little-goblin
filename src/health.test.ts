@@ -25,6 +25,7 @@ import { openGuestStore } from "./tg/guest.ts";
 import { openTelegramInbox } from "./tg/inbox.ts";
 import { openPings } from "./tg/pings.ts";
 import { openCacheObservation } from "./cache-observation.ts";
+import { openTurnJournal } from "./turn-journal.ts";
 import {
 	checkAppAssets,
 	healthReportSchema,
@@ -598,6 +599,7 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		openPings(store.db);
 		openTelegramInbox(store.db);
 		openGuestStore(store.db);
+		openTurnJournal(store.db);
 		return {
 			close() {
 				for (const extra of extras) extra.close();

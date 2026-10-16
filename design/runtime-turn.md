@@ -107,6 +107,24 @@ loops:
 - One logical turn, one loop history — unchanged (model.md →
   review-round rulings). The loop is where that sentence is visible.
 
+## The turn journal
+
+`src/turn-journal.ts` is the crash journal: two tables on the
+conversation store's handle (`turn_runs`, `turn_tool_calls`) that
+durably record what an admitted turn owned — epoch, anchor, settings
+snapshot, tool surface — and how far each tool call got
+(`planned → dispatched → completed|failed`). The run row lands before
+any tool side effect can execute; `dispatched` without a result is
+the ambiguous state — the side effect may or may not have happened.
+A graceful shutdown fences its live rows first, so a row still
+`running` at open means the process died mid-turn: open reclassifies
+it `interrupted` and boot sends each operator one terse notice per
+run (counts by state, never the partial itself). Nothing replays
+automatically — the rows exist so a future explicit resume can decide
+what is safe to redo; until then `interrupted` is terminal. Each
+attempt gets its own run row, so an overflow resume leaves the failed
+attempt's record intact.
+
 ## What must not change
 
 These are the invariants a refactor can still break silently; they are

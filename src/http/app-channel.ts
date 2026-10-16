@@ -812,7 +812,7 @@ export async function handleAppApi(
 		}
 		// JSON-body mutations carry the same CSRF backstop as every other
 		// app mutation (wire contract, not trust).
-		if (opTail === "config" && req.method === "POST") {
+		if ((opTail === "config" || opTail === "secrets") && req.method === "POST") {
 			const refusedJson = jsonBodyRefusal(req);
 			if (refusedJson !== null) return refusedJson;
 		}

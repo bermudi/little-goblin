@@ -1850,6 +1850,59 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 });
 
 describe("app operator surface", () => {
+	for (const mode of ["bearer", "trust"] as const) {
+		test(`secrets POST requires JSON content type before storing in ${mode} mode`, async () => {
+			const stored: string[] = [];
+			const { http, call } = setup({
+				...(mode === "bearer" ? { token: APP_TOKEN_NAME } : {}),
+				operator: {
+					secrets: {
+						has: () => false,
+						isCommand: () => false,
+						store: (name) => {
+							stored.push(name);
+						},
+					},
+				},
+			});
+			try {
+				const body = JSON.stringify({ name: "fixture-key", value: "fixture-value" });
+				const post = (contentType?: string) =>
+					call(
+						"/api/app/secrets",
+						{
+							method: "POST",
+							headers: {
+								origin: `http://127.0.0.1:${http.port}`,
+								"sec-fetch-site": "same-origin",
+								...(contentType === undefined ? {} : { "content-type": contentType }),
+							},
+							body: new TextEncoder().encode(body),
+						},
+						mode === "bearer" ? APP_TOKEN_VALUE : null,
+					);
+				for (const contentType of [undefined, "text/plain", "application/x-www-form-urlencoded"]) {
+					const refused = await post(contentType);
+					expect(refused.status).toBe(415);
+					expect(await refused.json()).toEqual({ error: "expected application/json" });
+					expect(stored).toEqual([]);
+				}
+				for (const contentType of ["application/json", "application/json; charset=utf-8"]) {
+					const accepted = await post(contentType);
+					expect(accepted.status).toBe(200);
+					expect(await accepted.json()).toEqual({
+						ok: true,
+						name: "fixture-key",
+						replaced: false,
+					});
+				}
+				expect(stored).toEqual(["fixture-key", "fixture-key"]);
+			} finally {
+				http.stop();
+			}
+		});
+	}
+
 	test("operator routes are bearer-gated before the wire check, then 503 unwired", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

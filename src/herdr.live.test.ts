@@ -210,7 +210,8 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 		const run = async (args: string[], opts?: HerdrCallOpts): Promise<HerdrRunResult> => {
 			opCalls.push(args);
 			expect(args[0]).toBe("--session");
-			const rewritten = args.map((a) => (a === "default" ? SESSION : a));
+			expect(args[1]).toBe("default");
+			const rewritten = ["--session", SESSION, ...args.slice(2)];
 			const r = await boundedRun(spawnClean(["herdr", ...rewritten]), {
 				timeoutMs: opts?.timeoutMs ?? 45_000,
 				maxOutput: 1 << 20,

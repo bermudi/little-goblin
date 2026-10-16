@@ -16,5 +16,5 @@
 		"noEmit": true,
 		"resolveJsonModule": true
 	},
-	"include": ["src/**/*.ts", "scripts/**/*.ts"]
+	"include": ["src/**/*.ts", "scripts/**/*.ts", "experimental/**/*.ts"]
 }

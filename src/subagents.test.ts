@@ -3266,6 +3266,56 @@ describe("subagents owner", () => {
 		expect(JSON.stringify(toolMsg)).toContain("sandbox was recreated");
 	});
 
+	test.each([
+		["write", { name: "write", args: { path: "/work/gated.txt", content: "after" } }],
+		[
+			"edit",
+			{
+				name: "edit",
+				args: {
+					path: "/work/gated.txt",
+					edits: [{ oldText: "before", newText: "after" }],
+				},
+			},
+		],
+		["bash", { name: "bash", args: { command: "echo gated-output" } }],
+	] as const)(
+		"a lifecycle note reaches the model on a gated %s result exactly once",
+		async (tool, call) => {
+			const r = rig();
+			const o = await open(r);
+			let release: (() => void) | null = null;
+			const gate = new Promise<void>((res) => (release = res));
+			const NOTE = "sandbox was recreated — earlier files may be gone";
+			r.box.write("/work/gated.txt", new TextEncoder().encode("before"));
+			r.model.push({
+				kind: "tools",
+				calls: [{ name: "read", args: { path: "/work/gated.txt" } }],
+			});
+			r.model.push({ kind: "hold", gate, then: { kind: "tools", calls: [call] } });
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.model.seen.length >= 2, "gated request in flight");
+			r.runs.noteLifecycle(WS, NOTE);
+			release!();
+			await until(() => r.runs.get(a.id)?.status === "done", "done");
+			const msgs = r.model.seen[2]!.messages as { role: string; content: unknown }[];
+			const toolMsg = msgs.filter((m) => m.role === "tool").at(-1);
+			const serialized = JSON.stringify(toolMsg);
+			expect(serialized.split(NOTE).length - 1).toBe(1);
+			if (tool === "bash") {
+				expect(serialized).toContain("gated-output");
+			} else {
+				expect(new TextDecoder().decode(r.box.read("/work/gated.txt"))).toBe("after");
+			}
+		},
+	);
+
 	test("missing desktop fails with an operator instruction", async () => {
 		const desktops = fakeDesktops();
 		desktops.claim = async (name) => {
@@ -4480,6 +4530,47 @@ describe("subagents owner", () => {
 		expect(r.runs.get(a.id)?.lifecycleNote).toBe(note);
 		expect(r.wakes[0]?.text).toContain(`Lifecycle warning: ${note}`);
 	});
+
+	test.each([
+		[
+			"act",
+			{
+				name: "act",
+				args: { observation_id: "obs-any", tool: "click", args: { x: 1, y: 2 } },
+			},
+		],
+		["launch", { name: "launch", args: { observation_id: "obs-any" } }],
+	] as const)(
+		"a lifecycle note reaches the model on a gated %s result exactly once",
+		async (tool, call) => {
+			const r = rig();
+			const o = await open(r);
+			await r.desktops.allocate("d1");
+			let release: (() => void) | null = null;
+			const gate = new Promise<void>((res) => (release = res));
+			const NOTE = "desktop d1's container was recreated — files and processes are gone";
+			r.model.push({ kind: "tools", calls: [{ name: "screenshot", args: {} }] });
+			r.model.push({ kind: "hold", gate, then: { kind: "tools", calls: [call] } });
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
+			const a = await o.start({
+				kind: "computer",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+				desktop: "d1",
+			});
+			await until(() => r.model.seen.length >= 2, "gated request in flight");
+			r.runs.update(a.id, { lifecycleNote: NOTE });
+			release!();
+			await until(() => r.runs.get(a.id)?.status === "done", "done");
+			expect(r.desktops.actCalls).toBe(1);
+			const msgs = r.model.seen[2]!.messages as { role: string; content: unknown }[];
+			const toolMsg = msgs.filter((m) => m.role === "tool").at(-1);
+			const serialized = JSON.stringify(toolMsg);
+			expect(serialized.split(NOTE).length - 1).toBe(1);
+			void tool;
+		},
+	);
 });
 
 // ---------- the crash-approval gate ----------
@@ -4594,6 +4685,8 @@ describe("subagents crash approval", () => {
 		const r2 = reopenParked({ dbPath, storagePath, r1 });
 		const o2 = await open(r2);
 		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const NOTE = "sandbox was recreated — earlier files may be gone";
+		r2.runs.noteLifecycle(WS, NOTE);
 		const base = r2.model.seen.length;
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "done" } }] });
 		await o2.decide(rowId, WS, {
@@ -4604,9 +4697,11 @@ describe("subagents crash approval", () => {
 		// The recorded result — never a re-dispatch — fed the next request.
 		expect(sandboxes.dispatchCalls).toBe(1);
 		await until(() => r2.model.seen.length > base, "next model request");
-		expect(JSON.stringify(r2.model.seen.at(-1)?.messages)).toContain(
-			"operator-saw: markit already ran",
-		);
+		const msgs = r2.model.seen[base]!.messages as { role: string; content: unknown }[];
+		const toolMsg = msgs.filter((m) => m.role === "tool").at(-1);
+		const serialized = JSON.stringify(toolMsg);
+		expect(serialized).toContain("operator-saw: markit already ran");
+		expect(serialized.split(NOTE).length - 1).toBe(1);
 		expect(r2.runs.get(rowId)?.result).toBe("done");
 	}, 60_000);
 

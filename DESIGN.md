@@ -140,8 +140,10 @@ Conversation ─────── (channel address) → durable event history
 
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
-(operator ruling, 2026-10-05). Neither command applies to group topics;
-there is no `/resume` command. Durable work moves to the app (Spin-off). In the group, a forum
+(operator ruling, 2026-10-05). Neither command applies to group topics.
+`/resume` is not a DM/topic navigation command: it resumes only interrupted
+turns from [the turn journal](design/runtime-turn.md#the-turn-journal).
+Durable work moves to the app (Spin-off). In the group, a forum
 topic is a conversation: create a topic to start one, post in an old topic to
 resume it. The bot may also create topics itself (`createForumTopic`). A chat
 without topics is one standing conversation. Conversation management is

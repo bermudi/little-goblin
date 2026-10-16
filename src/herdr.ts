@@ -21,7 +21,15 @@ export interface HerdrRunResult {
 	stdout: string;
 	stderr: string;
 }
-export type HerdrRunner = (args: string[]) => Promise<HerdrRunResult>;
+/** Per-call overrides: `signal` cancels the process (the caller's
+ *  boundary checks run before and after the run); `timeoutMs` replaces
+ *  the runner's default budget for calls whose own deadline is longer
+ *  (the operator prompt's `--wait`). Runners may ignore both. */
+export interface HerdrCallOpts {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+}
+export type HerdrRunner = (args: string[], opts?: HerdrCallOpts) => Promise<HerdrRunResult>;
 
 // CLI calls are local-socket round trips — fast. The budget sits above
 // `agent start`'s own 30 s startup wait so a timed-out start returns
@@ -56,11 +64,13 @@ function cliFallbackMessage(verb: string, r: HerdrRunResult): string {
 const defaultRunner: HerdrRunner = makeRunner(HERDR_TIMEOUT_MS);
 
 function makeRunner(timeoutMs: number): HerdrRunner {
-	return async (args) => {
+	return async (args, opts) => {
+		const budget = opts?.timeoutMs ?? timeoutMs;
 		const proc = spawnProc(["herdr", ...args]);
 		const r = await boundedRun(proc, {
-			timeoutMs,
+			timeoutMs: budget,
 			maxOutput: HERDR_MAX_OUTPUT,
+			...(opts?.signal !== undefined ? { abortSignal: opts.signal } : {}),
 		});
 		return {
 			code: r.exitCode ?? -1,
@@ -70,12 +80,19 @@ function makeRunner(timeoutMs: number): HerdrRunner {
 			// (a real stderr envelope survives — only an empty one is
 			// replaced, so the JSON error path keeps its code+message).
 			stderr: r.timedOut
-				? `herdr timed out after ${timeoutMs}ms`
+				? `herdr timed out after ${budget}ms`
 				: r.truncated && r.stderr === ""
 					? `herdr output exceeded the ${HERDR_MAX_OUTPUT}-byte cap and was killed`
 					: r.stderr,
 		};
 	};
+}
+
+// An aborted signal throws the reason — an Error when there is one, a
+// plain abort Error otherwise (script.ts's rule for AbortSignal.reason
+// being `any`).
+function abortError(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("aborted");
 }
 
 export class HerdrError extends Error {
@@ -198,36 +215,31 @@ export function attachHintFor(
 	return `herdr session attach ${t.session ?? "goblin"}`;
 }
 
-export function makeHerdr(
-	target: HerdrTarget,
-	run: HerdrRunner = defaultRunner,
-	timeoutMs = "machine" in target ? HERDR_REMOTE_TIMEOUT_MS : HERDR_TIMEOUT_MS,
-): Herdr {
-	// `--machine` and `--session` are mutually exclusive per herdr's CLI
-	// (the machine profile pins its own remote session); each call site
-	// logs through `call` below regardless of the target kind.
-	const prefix =
-		"session" in target ? ["--session", target.session] : ["--machine", target.machine];
-	// Forwarded calls are ssh round trips — machine adapters get the
-	// longer budget (design/delegation.md, "Targets").
-	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
-	// The one call site: log success only after this verb's result has
-	// passed validation. Runner rejection and invalid output each get
-	// their own boundary line; neither can masquerade as a good call.
-	async function call<T>(
+// The one call path both adapters share — the delegation adapter's
+// --session/--machine prefix and the operator adapter's hard-coded
+// --session default. Log success only after this verb's result has
+// passed validation: runner rejection and invalid output each get
+// their own boundary line; neither can masquerade as a good call.
+// An aborting signal refuses the call before spawn and reports the
+// abort after a killed run — never a fake CLI error for our own cancel.
+function makeCaller(prefix: string[], runner: HerdrRunner) {
+	return async function call<T>(
 		verb: string,
 		target: string,
 		args: string[],
 		parse: (stdout: string) => T,
+		opts?: HerdrCallOpts,
 	): Promise<T> {
 		const t0 = Date.now();
+		if (opts?.signal?.aborted) throw abortError(opts.signal);
 		let r: HerdrRunResult;
 		try {
-			r = await runner([...prefix, ...args]);
+			r = await runner([...prefix, ...args], opts);
 		} catch (err) {
 			log.error("herdr call runner failed", err, { verb, target, ms: Date.now() - t0 });
 			throw err;
 		}
+		if (opts?.signal?.aborted) throw abortError(opts.signal);
 		const ms = Date.now() - t0;
 		if (r.code !== 0) {
 			let code = `exit_${r.code}`;
@@ -251,7 +263,23 @@ export function makeHerdr(
 		}
 		log.info("herdr call", { verb, target, ms, outcome: "ok" });
 		return result;
-	}
+	};
+}
+
+export function makeHerdr(
+	target: HerdrTarget,
+	run: HerdrRunner = defaultRunner,
+	timeoutMs = "machine" in target ? HERDR_REMOTE_TIMEOUT_MS : HERDR_TIMEOUT_MS,
+): Herdr {
+	// `--machine` and `--session` are mutually exclusive per herdr's CLI
+	// (the machine profile pins its own remote session); each call site
+	// logs through `call` below regardless of the target kind.
+	const prefix =
+		"session" in target ? ["--session", target.session] : ["--machine", target.machine];
+	// Forwarded calls are ssh round trips — machine adapters get the
+	// longer budget (design/delegation.md, "Targets").
+	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
+	const call = makeCaller(prefix, runner);
 
 	return {
 		async createWorkspace(cwd, label) {
@@ -359,6 +387,302 @@ export function makeHerdr(
 		async closeWorkspace(id) {
 			await call("workspace close", id, ["workspace", "close", id], (stdout) =>
 				envelopeSchema.parse(parseJson("workspace close", stdout)),
+			);
+		},
+	};
+}
+
+// ---------- the operator's session ----------
+
+// The narrow adapter for the operator's own `default` session
+// (design/delegation.md): read/list/prompt by pane ID only — no
+// creation, raw keys, or session/machine arguments.
+
+const OPERATOR_SESSION = "default";
+// `agent prompt --wait` gets 120 s to observe a working/blocked state;
+// the process budget sits just above so a genuine wait expiry comes
+// back as herdr's own `timeout` code, not our kill.
+const OPERATOR_PROMPT_WAIT_MS = 120_000;
+const OPERATOR_PROMPT_BUDGET_MS = 125_000;
+
+/** A refusal decided BEFORE any bytes reach the pane — the kind/pane
+ *  check or a missing target. Distinct from HerdrError so callers can
+ *  say "nothing was sent" truthfully; send-time HerdrError codes
+ *  (`timeout`, `agent_prompt_stalled`) leave delivery uncertain. */
+export class HerdrRefusal extends Error {
+	readonly code: string;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "HerdrRefusal";
+		this.code = code;
+	}
+}
+
+// The operator-session agent record — NOT the delegation schema:
+// operator-launched agents are unnamed (`name` absent) and `agent`,
+// `cwd`, `terminal_title` are optional on the wire.
+const operatorAgentSchema = z.object({
+	agent: z.string().optional(),
+	agent_status: z.string(),
+	name: z.string().optional(),
+	pane_id: z.string(),
+	workspace_id: z.string(),
+	tab_id: z.string(),
+	terminal_title: z.string().optional(),
+	state_change_seq: z.number().int().optional(),
+	cwd: z.string().optional(),
+});
+type OperatorAgentWire = z.infer<typeof operatorAgentSchema>;
+
+const operatorAgentListSchema = z.object({
+	result: z.object({ agents: z.array(operatorAgentSchema) }),
+});
+const operatorAgentResultSchema = z.object({
+	result: z.object({ agent: operatorAgentSchema }),
+});
+const workspaceListSchema = z.object({
+	result: z.object({
+		workspaces: z.array(z.object({ workspace_id: z.string(), label: z.string() })),
+	}),
+});
+const tabListSchema = z.object({
+	result: z.object({
+		tabs: z.array(z.object({ tab_id: z.string(), workspace_id: z.string(), label: z.string() })),
+	}),
+});
+
+/** An operator-session agent joined with workspace/tab labels — null
+ *  when a topology record vanished mid-read, never invented. */
+export interface OperatorAgent {
+	pane_id: string;
+	workspace_id: string;
+	tab_id: string;
+	agent: string | null;
+	agent_status: string;
+	/** Present only when the agent is named — unnamed agents omit it. */
+	name?: string;
+	cwd: string | null;
+	terminal_title: string | null;
+	workspace_label: string | null;
+	tab_label: string | null;
+}
+
+interface OperatorTopology {
+	workspaces: Map<string, string>; // workspace_id → label
+	tabs: Map<string, string>; // tab_id → label
+}
+
+export interface OperatorHerdr {
+	/** Every agent in the session, label-joined; an empty set returns
+	 *  [] without the topology round-trips. */
+	list(signal?: AbortSignal): Promise<OperatorAgent[]>;
+	/** The agent's screen tail — untrusted content; the caller fences. */
+	read(pane: string, lines: number, signal?: AbortSignal): Promise<string>;
+	/** Verify `pane` hosts kind `expect` (checked at `agent get` time —
+	 *  the occupant can still change before the send lands), then submit
+	 *  `text` through `agent prompt --wait --until working --until
+	 *  blocked`. The wait proves a working/blocked state was observed —
+	 *  not a new turn, and never task completion. HerdrRefusal =
+	 *  nothing was sent; HerdrError from the send leaves delivery
+	 *  uncertain. Returns the identity the response reported. */
+	prompt(pane: string, expect: string, text: string, signal?: AbortSignal): Promise<OperatorAgent>;
+}
+
+export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHerdr {
+	const call = makeCaller(["--session", OPERATOR_SESSION], run);
+
+	async function topology(signal?: AbortSignal): Promise<OperatorTopology> {
+		const ws = await call(
+			"workspace list",
+			"-",
+			["workspace", "list"],
+			(stdout) => workspaceListSchema.parse(parseJson("workspace list", stdout)),
+			{ ...(signal !== undefined ? { signal } : {}) },
+		);
+		const workspaces = new Map<string, string>();
+		// Per-workspace tab list: the unscoped form covers all
+		// workspaces today, but the scoped form cannot regress.
+		const tabs = new Map<string, string>();
+		for (const w of ws.result.workspaces) {
+			try {
+				const listed = await call(
+					"tab list",
+					w.workspace_id,
+					["tab", "list", "--workspace", w.workspace_id],
+					(stdout) => tabListSchema.parse(parseJson("tab list", stdout)),
+					{ ...(signal !== undefined ? { signal } : {}) },
+				);
+				workspaces.set(w.workspace_id, w.label);
+				for (const tab of listed.result.tabs) tabs.set(tab.tab_id, tab.label);
+			} catch (err) {
+				// A workspace can close after list; omit its stale labels.
+				// Every other failure was logged by call and must propagate.
+				if (!(err instanceof HerdrError) || err.code !== "workspace_not_found") throw err;
+				log.info("herdr topology workspace vanished", {
+					workspace: w.workspace_id,
+					session: OPERATOR_SESSION,
+				});
+			}
+		}
+		return { workspaces, tabs };
+	}
+
+	function viewAgent(agent: OperatorAgentWire, topo: OperatorTopology): OperatorAgent {
+		return {
+			pane_id: agent.pane_id,
+			workspace_id: agent.workspace_id,
+			tab_id: agent.tab_id,
+			agent: agent.agent ?? null,
+			agent_status: agent.agent_status,
+			...(agent.name !== undefined ? { name: agent.name } : {}),
+			cwd: agent.cwd ?? null,
+			terminal_title: agent.terminal_title ?? null,
+			workspace_label: topo.workspaces.get(agent.workspace_id) ?? null,
+			tab_label: topo.tabs.get(agent.tab_id) ?? null,
+		};
+	}
+
+	return {
+		async list(signal) {
+			const listed = await call(
+				"agent list",
+				"-",
+				["agent", "list"],
+				(stdout) => operatorAgentListSchema.parse(parseJson("agent list", stdout)),
+				{ ...(signal !== undefined ? { signal } : {}) },
+			);
+			const agents = listed.result.agents;
+			if (agents.length === 0) return [];
+			const topo = await topology(signal);
+			return agents.map((agent) => viewAgent(agent, topo));
+		},
+
+		async read(pane, lines, signal) {
+			return call(
+				"agent read",
+				pane,
+				["agent", "read", pane, "--source", "recent-unwrapped", "--lines", String(lines)],
+				(stdout) => stdout,
+				{ ...(signal !== undefined ? { signal } : {}) },
+			);
+		},
+
+		async prompt(pane, expect, text, signal) {
+			// Labels first; `agent get` is the LAST read before the send
+			// and nothing is read after it — post-submit churn must not
+			// turn a delivered prompt into an error.
+			const topo = await topology(signal);
+			let record: OperatorAgentWire;
+			try {
+				record = (
+					await call(
+						"agent get",
+						pane,
+						["agent", "get", pane],
+						(stdout) => operatorAgentResultSchema.parse(parseJson("agent get", stdout)),
+						{ ...(signal !== undefined ? { signal } : {}) },
+					)
+				).result.agent;
+			} catch (err) {
+				// `agent get` resolves pane targets only onto panes hosting
+				// an agent — a bare pane is agent_not_found, same as gone.
+				if (err instanceof HerdrError && err.code === "agent_not_found") {
+					log.info("herdr prompt preflight", {
+						pane,
+						session: OPERATOR_SESSION,
+						expect,
+						outcome: "refuse:agent_not_found",
+					});
+					throw new HerdrRefusal("agent_not_found", `pane ${pane} does not host an agent`);
+				}
+				throw err;
+			}
+			// One preflight boundary line: what was verified at get time —
+			// never the text.
+			const preflight = {
+				pane,
+				session: OPERATOR_SESSION,
+				expect,
+				agent: record.agent ?? null,
+				cwd: record.cwd ?? null,
+				status: record.agent_status,
+			};
+			if (record.pane_id !== pane) {
+				log.info("herdr prompt preflight", {
+					...preflight,
+					outcome: "refuse:pane_mismatch",
+				});
+				throw new HerdrRefusal(
+					"pane_mismatch",
+					`agent get ${pane} resolved to pane ${record.pane_id}`,
+				);
+			}
+			if (record.agent !== expect) {
+				log.info("herdr prompt preflight", {
+					...preflight,
+					outcome: "refuse:kind_mismatch",
+				});
+				throw new HerdrRefusal(
+					"kind_mismatch",
+					`pane ${pane} hosts ${record.agent ?? "no recognized agent kind"} — expected ${expect}`,
+				);
+			}
+			log.info("herdr prompt preflight", { ...preflight, outcome: "allow" });
+			// Flags precede `--` so a leading-dash prompt body stays a
+			// literal positional, never a parsed flag.
+			return viewAgent(
+				await call(
+					"agent prompt",
+					pane,
+					[
+						"agent",
+						"prompt",
+						"--wait",
+						"--until",
+						"working",
+						"--until",
+						"blocked",
+						"--timeout",
+						String(OPERATOR_PROMPT_WAIT_MS),
+						"--",
+						pane,
+						text,
+					],
+					(stdout) => {
+						// A malformed or mismatched success response AFTER the
+						// send means delivery is uncertain — a named code, never
+						// "nothing was sent". Raw stdout is never quoted.
+						let parsed: z.infer<typeof operatorAgentResultSchema>;
+						try {
+							parsed = operatorAgentResultSchema.parse(parseJson("agent prompt", stdout));
+						} catch {
+							throw new HerdrError(
+								"agent prompt",
+								"agent_prompt_invalid_response",
+								"prompt response was not a recognized agent record",
+							);
+						}
+						const a = parsed.result.agent;
+						if (a.pane_id !== pane || a.agent !== expect)
+							throw new HerdrError(
+								"agent prompt",
+								"agent_prompt_invalid_response",
+								`prompt response did not match the submitted target (pane ${a.pane_id}, kind ${a.agent ?? "none"})`,
+							);
+						if (a.agent_status !== "working" && a.agent_status !== "blocked")
+							throw new HerdrError(
+								"agent prompt",
+								"agent_prompt_invalid_response",
+								`prompt response carries an unmatched status (${a.agent_status})`,
+							);
+						return a;
+					},
+					{
+						...(signal !== undefined ? { signal } : {}),
+						timeoutMs: OPERATOR_PROMPT_BUDGET_MS,
+					},
+				),
+				topo,
 			);
 		},
 	};

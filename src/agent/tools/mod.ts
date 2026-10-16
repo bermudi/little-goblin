@@ -5,6 +5,7 @@
 
 import type { ToolSet } from "ai";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
+import { herdrTool, type HerdrToolDeps } from "./herdr.ts";
 import { programTool, type ProgramToolDeps } from "./program.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
@@ -65,6 +66,7 @@ export type { VisionToolDeps };
 export type { ImageToolDeps };
 
 export type { DelegateToolDeps };
+export type { HerdrToolDeps };
 export type { HistorySearchDeps };
 export type { MailToolDeps };
 export type { NoteToolDeps };
@@ -89,6 +91,9 @@ export interface MakeToolsOptions {
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
 	delegate?: DelegateToolDeps | undefined;
+	// The operator's own `default` session — always wired at the
+	// composition root; guest surfaces lose it via filterGuestTools.
+	herdr?: HerdrToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
@@ -115,6 +120,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		web,
 		transcribe,
 		delegate,
+		herdr,
 		mail,
 		history,
 		note,
@@ -148,6 +154,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
+		// The operator-session tool sits next to delegate — a different
+		// session and a different trust surface, but the same CLI edge.
+		...(herdr ? { herdr: herdrTool(herdr) } : {}),
 		// Same live gate on the mail block — the tool holds only the
 		// approval gate's request closure; the send credential is never
 		// in this dep tree (reads ride the goblin-mail wrapper via bash).

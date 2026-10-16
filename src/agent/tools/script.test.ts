@@ -17,7 +17,7 @@ import type { Conversation } from "../../conversation.ts";
 import { filterGuestTools } from "../../tg/guest.ts";
 import { bashTool } from "./bash.ts";
 import { fetchTool } from "./fetch.ts";
-import { withScript } from "./script.ts";
+import { SCRIPT_CALLABLE, withScript } from "./script.ts";
 
 interface Out {
 	text: string;
@@ -586,4 +586,16 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 		const tools = assemble(conv("guest"));
 		expect(Object.keys(tools)).toEqual(["search"]);
 	});
+});
+
+// The operator-session tool is never scriptable (design/delegation.md):
+// prompting the operator's panes is deliberate per-call work, and the
+// allowlist — not the tool's own guards — is what keeps it out.
+test("herdr is not in the script's callable set", () => {
+	expect(SCRIPT_CALLABLE.has("herdr")).toBe(false);
+	const tools = composed({
+		herdr: counter(() => "unreachable"),
+		bash: counter(() => "x"),
+	});
+	expect(descriptionOf(tools)).not.toContain("tools.herdr");
 });

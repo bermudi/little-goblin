@@ -789,6 +789,7 @@ export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"program",
 	"mail",
 	"delegate",
+	"herdr",
 	"memory_search",
 	"memory_reflect",
 	"history_search",

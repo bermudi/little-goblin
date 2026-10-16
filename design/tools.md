@@ -5,10 +5,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, twenty-three:
+Hand-rolled, zod-validated, twenty-four:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`vision` `generate_image` `program` `delegate` `mail` `send_file`
+`vision` `generate_image` `program` `delegate` `herdr` `mail` `send_file`
 `memory_search` `memory_reflect` `search` `fetch` `history_search` `note`
 `sandbox` `script` `subagent` `desktop` `ui`
 
@@ -71,7 +71,11 @@ provider-calling tools.
 hook) — see `Programs`. `delegate` hands tasks to other harnesses —
 see `Delegation`. Both are bound per-turn to the running conversation
 so what they create is pinned to the chat/topic it was born in; the
-model never handles chat ids.
+model never handles chat ids. `herdr` inspects and prompts agents in
+the operator's own `default` session by pane ID (list/read/prompt, a
+kind check at send time) — see `Delegation`; it mounts for every
+personal conversation with no config gate, and guest surfaces lose it
+through the same hard filter as delegate.
 
 **Tool results are text — except where the pipe verifiably carries
 documents.** The SDK's `toModelOutput` media-parts hook exists, but
@@ -171,9 +175,10 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
   `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
   sink), `mail` (per-send human approval), `delegate` `program`
-  `subagent` `desktop` (spawn agents / standing work), `vision`
-  `memory_reflect` (model calls). Excluding writes would be theater —
-  `bash` writes.
+  `subagent` `desktop` (spawn agents / standing work), `herdr` (the
+  operator's panes — prompting them is deliberate per-call work, not
+  scriptable fan-out), `vision` `memory_reflect` (model calls).
+  Excluding writes would be theater — `bash` writes.
 - **Nested calls are real calls.** Each one is zod-validated against
   the tool's own input schema (the SDK validates direct calls; nothing
   validates inside the VM), runs the tool's live `execute` — looked up

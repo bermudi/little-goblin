@@ -350,6 +350,15 @@ export function buildSystemPrompt(
 					`  'answer' for a keypress, 'send' for text.`,
 				]
 			: []),
+		...(tools.includes("herdr")
+			? [
+					`- herdr reaches the operator's session \`default\`, only when he asks.`,
+					`  Use it to list/read agents or prompt an explicit pane ID with an`,
+					`  expected agent kind; never use raw herdr bash commands for this.`,
+					`  These are his panes, not your delegations. If the target is`,
+					`  ambiguous, ask him rather than choosing by kind and cwd.`,
+				]
+			: []),
 		...(tools.includes("mail")
 			? [
 					`- mail drafts a mail the operator approves with a Send button`,

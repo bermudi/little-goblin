@@ -27,9 +27,12 @@ from the repo: browser, pass-cli, mcp, gws, and herdr are seeded by
 because a rebuilt box must regain them without operator prompting or agent
 memory. Write-if-absent also means a seed update never overwrites an
 installed copy — when the repo text changes, the live
-`workspace/skills/` copy is synced in the same change (the herdr seed
+`workspace/skills/` copy is synced in the same change, except when the
+skill requires a new backend tool: defer that sync until the approved
+backend deployment verifies it is available (docs/operations.md →
+Deploying). The herdr seed
 reached v2.0 while the live copy stayed v1.0 and goblin improvised a
-pane-send that misfired, 2026-10-13).
+pane-send that misfired, 2026-10-13.
 Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
 policy, no selection UI. One sibling directory exists:

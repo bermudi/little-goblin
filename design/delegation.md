@@ -281,26 +281,86 @@ Rulings:
   `read` result, never interpolated into error prose. Done
   delegations keep their workspace so the operator can inspect it;
   `stop` on a finished one is the cleanup.
-- **The operator's session is reachable on ask; tasking there goes
-  through herdr's agent surface (2026-10-13).** When the operator
-  points goblin at a tab in `default` ("send the P2s to Devin on
-  tab 1"), `delegate` can't express it — those panes aren't
-  goblin's delegations. Reads of `default` (snapshot, `pane read`,
-  `agent list`/`get`/`read`, `worktree`) are sanctioned when he
-  asks; what they return is his context, quoted back only as far
-  as requested. Submitting work to a recognized agent there is
-  `herdr agent prompt <pane> "<text>" --wait`: herdr validates the
-  target hosts an agent, submits text plus encoded Enter as one
-  bracketed-paste-safe act, refuses a blocked agent before any
-  input, and `--wait`'s activity gate proves the turn started.
-  Identity is pinned from `agent get` JSON (kind + cwd) at send
-  time — never assumed from a remembered pane ID. Raw
-  `pane send-text`/`send-keys` into an agent pane is banned: a P2
-  handoff went line-by-line into the π review pane (`w8B:p8`)
-  instead of devin (`w8B:p1`), was submitted with a manual Enter,
-  and only the recipient's quota error contained it. Plain shell
-  panes take `pane run`. The procedure lives in the herdr skill
-  (`deploy/skills/herdr`, seeded by `ensureHomeLayout`).
+- **The operator's session is reachable on ask, only through the
+  `herdr` tool (2026-10-13, tool-enforced 2026-10-14).** When the
+  operator points goblin at a tab in `default` ("send the P2s to Devin
+  on tab 1"), `delegate` can't express it — those panes aren't
+  goblin's delegations. Inspection and prompting of `default` go
+  through the `herdr` tool — pane IDs, a kind check at send time —
+  never the raw CLI from bash. What it reads is his context, quoted
+  back only as far as requested. Raw `pane send-text`/`send-keys`
+  into an agent pane is banned: a P2 handoff went line-by-line into
+  the π review pane (`w8B:p8`) instead of devin (`w8B:p1`), was
+  submitted with a manual Enter, and only the recipient's quota
+  error contained it — that misfire is why the procedure is code.
+- **A `herdr` tool reaches the operator's session (2026-10-14,
+  implemented).** The 2026-10-13 procedure was model discipline over
+  raw bash; the tool runs the checks in code. A new narrow tool, not
+  a `delegate` extension: delegations are goblin's own acts with ids
+  and async results, and his panes are neither. Session is
+  hard-coded `default` — not a knob, so 2026-09-26 stands for
+  `delegate`; this tool exists only to reach the one session goblin
+  doesn't host. It never creates, closes, moves, renames, or sends
+  raw keys/text, and it is not in `script`'s callable set —
+  prompting his panes is deliberate per-call work, not scriptable
+  fan-out. The backend is a separate `OperatorHerdr` adapter in
+  `src/herdr.ts` sharing the delegation adapter's call/logging path.
+  Verbs:
+  - `list {}` — every agent in `default`, named or not: `pane_id`,
+    workspace id+label, tab id+label, kind, `cwd`,
+    `terminal_title`, status, `name` when set. `agent list` joined
+    against `workspace list` plus a per-workspace `tab list
+    --workspace <id>` (the unscoped form happens to cover all
+    workspaces today; the scoped form can't regress). An empty
+    agent set returns `[]` without the topology round-trips, and a
+    record whose topology rows vanish mid-read gets null labels —
+    never an invented one. The rendered list rides the untrusted
+    fence: labels, titles and cwds are remote-controlled metadata.
+  - `read {pane, lines?}` — `agent read --source recent-unwrapped`
+    (default 200 lines, max 1000), fenced like a delegation
+    `read`; his context, quoted back only as far as asked.
+  - `prompt {pane, expect, text}` — `expect` is the agent kind the
+    model believes is there. The adapter reads topology labels
+    first, then `agent get <pane>` as the LAST read before sending
+    and refuses (`HerdrRefusal`: missing/non-agent, pane id that
+    resolved elsewhere, kind mismatch) before any bytes reach the
+    pane; then a single `agent prompt --wait --until working
+    --until blocked --timeout 120000 -- <pane> <text>`. The `--`
+    keeps leading-dash text literal. The wait observes working or
+    blocked, not task completion or a new turn: an already-working
+    agent may still be on its previous turn. The process budget sits above
+    the CLI's own wait (125 s vs 120 s) so `timeout`,
+    `agent_prompt_stalled`, and `agent_blocked` arrive as herdr's
+    codes, not our kill. A timeout is not non-delivery — no retry,
+    in code or by the model, and no post-send reads that could turn
+    a delivered prompt into an error. Abort signals gate every CLI
+    boundary (before each call, and the get→send seam). The result
+    echoes the identity actually hit (pane, kind, matched status,
+    cwd, workspace/tab label). The kind check applies at get time:
+    it cannot catch a same-kind replacement or any occupant change
+    in the get-to-send gap. A `/stop` during the send can only kill
+    the wait, not unsend the prompt.
+
+  Targets are pane IDs: two pi agents in one cwd share kind, cwd,
+  tab, and title — the pane ID is the only handle that tells unnamed
+  agents apart (probed 2026-10-14, throwaway session). Closed pane IDs
+  are never reused, so a stale ID either fails or lands on that
+  pane's current occupant; the kind check catches a different-kind
+  occupant (the w8B:p8-vs-p1 misfire was pi-vs-devin) but not a
+  same-kind replacement — accepted. herdr agent names (unique, follow
+  the occupant, cleared on exit) were weighed and rejected as the
+  target: operator-launched agents are unnamed. Wire facts for the
+  adapter: an unnamed agent's record omits `name` — the delegation
+  `agentSchema`'s required `name` must not be reused here — and
+  records carry `tab_id`, `terminal_title`, and `agent_session`. Every
+  call logs verb, pane, expected/resolved kind/cwd/status, and
+  outcome; this module never logs the prompt text (the generic
+  per-turn `tool call` line still records bounded tool input like
+  every tool — that is conversation history, not extra exposure).
+  The herdr skill's operator section points at the tool; raw
+  `herdr` from bash against `default` stays banned for tasking.
+  The seeded skill (v2.2) syncs to the live workspace only with the
+  approved backend deploy — not ahead of it.
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
   `bash` call — and says that it did. Which harness (2026-10-11):
@@ -315,4 +375,3 @@ Rulings:
 Still out: subagent fleets inside goblin (a delegation is one
 external agent per task, not an orchestrator), nesting, fan-out
 tooling, ACP, the AI SDK harness wrappers.
-

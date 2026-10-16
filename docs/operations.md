@@ -162,6 +162,15 @@ separately reviewed operator update; it is not overwritten by deployment.
 
 ## Deploying
 
+Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
+source of truth for the seeded copy; `ensureHomeLayout` installs it on
+first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
+which assumes the `herdr` tool exists) must NOT be synced into the live
+workspace ahead of the backend deploy that ships the tool. After the
+approved `scripts/deploy.sh` rollout verifies the new backend, explicitly
+sync the changed seed to its installed workspace copy as part of that
+rollout. The script does not update existing installed skills.
+
 Prod is this tree on g7 — `goblin.service` runs from the working copy,
 plus the local memory stack (Podman). With bermudi's OK, one command:
 

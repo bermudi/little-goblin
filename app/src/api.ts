@@ -45,6 +45,7 @@ import type {
 	SkillFileResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
+	ThreadSkillsResponse,
 } from "../../src/http/operator-wire.ts";
 
 // sessionStorage, not localStorage — /t/ and /app/ are one origin, so
@@ -492,14 +493,25 @@ export function getMemoryStatus(token: string | null): Promise<MemoryStatusRespo
 
 export function listMemoryDocuments(
 	token: string | null,
-	opts: { q?: string; limit?: number; offset?: number } = {},
+	opts: { q?: string; conversation?: string; limit?: number; offset?: number } = {},
 ): Promise<MemoriesListResponse> {
 	const params = new URLSearchParams();
 	if (opts.q !== undefined && opts.q !== "") params.set("q", opts.q);
+	// The thread panel's filter — server-side translation into the
+	// bank's id-substring filter (design/memory.md → Memories browser).
+	if (opts.conversation !== undefined) params.set("conversation", opts.conversation);
 	if (opts.limit !== undefined) params.set("limit", String(opts.limit));
 	if (opts.offset !== undefined) params.set("offset", String(opts.offset));
 	const q = params.toString();
 	return request(token, `/api/app/memory/documents${q === "" ? "" : `?${q}`}`);
+}
+
+/** GET skills/from — the thread's generated skills (provenance join). */
+export function listThreadSkills(
+	token: string | null,
+	conversation: string,
+): Promise<ThreadSkillsResponse> {
+	return request(token, `/api/app/skills/from?conversation=${encodeURIComponent(conversation)}`);
 }
 
 export function getMemoryDocument(

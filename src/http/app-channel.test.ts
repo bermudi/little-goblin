@@ -9,6 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { LanguageModel } from "ai";
 import { textModel } from "../testkit/fake-model.ts";
 import {
@@ -24,6 +25,8 @@ import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { setLogFile, setLogLevel } from "../log.ts";
+import { SkillSources } from "../skill-provenance.ts";
+import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
 import { fakeModel, sleep, useHome, waitUntil } from "../testkit.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
@@ -1711,7 +1714,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 import { memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
 import { openPrograms } from "../programs.ts";
-import type { HindsightClient } from "../hindsight.ts";
+import { HindsightClient } from "../hindsight.ts";
 import type { OperatorDeps } from "./operator.ts";
 
 function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
@@ -2018,6 +2021,162 @@ describe("app operator surface", () => {
 			).json()) as { document: { id: string }; originalText: string };
 			expect(detail.document.id).toBe("exchange/dm:1/2/abc");
 			expect(detail.originalText).toBe("hi");
+		} finally {
+			http.stop();
+		}
+	});
+
+	for (const [conversation, collision] of [
+		["app/foo_bar", "app/fooxbar"],
+		["app/abc", "app/ABC"],
+		["app/1", "app/12"],
+		["app/parent", "app/parent/child"],
+	] as const) {
+		test(`thread memory filtering matches ${conversation} literally with accurate pages and totals`, async () => {
+			const matching = [1, 2, 3].map((seq) => ({ id: `exchange/${conversation}/${seq}/answer` }));
+			const docs = [
+				matching[0]!,
+				...Array.from({ length: 99 }, (_, seq) => ({ id: `exchange/${collision}/${seq}/answer` })),
+				...matching.slice(1),
+			];
+			const scanned: number[] = [];
+			let failSecondPage = false;
+			const upstream = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				fetch: (req) => {
+					const params = new URL(req.url).searchParams;
+					const offset = Number(params.get("offset"));
+					const limit = Number(params.get("limit"));
+					scanned.push(offset);
+					if (failSecondPage && offset > 0) return new Response("unavailable", { status: 500 });
+					return Response.json({
+						items: docs.slice(offset, offset + limit),
+						total: docs.length,
+						offset,
+						limit,
+					});
+				},
+			});
+			const baseUrl = `http://127.0.0.1:${upstream.port}`;
+			const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+			const { http, call, configRef } = setup({
+				token: APP_TOKEN_NAME,
+				operator: { memory: stubMemory({ client, target: { baseUrl, bankId: "goblin" } }) },
+			});
+			try {
+				configRef.current = {
+					...configRef.current,
+					memory: memoryConfigSchema.parse({ baseUrl, bankId: "goblin" }),
+				};
+				for (const offset of [0, 1, 3]) {
+					const res = await call(
+						`/api/app/memory/documents?conversation=${encodeURIComponent(conversation)}&limit=1&offset=${offset}`,
+					);
+					expect(res.status).toBe(200);
+					const body = (await res.json()) as MemoriesListResponse;
+					expect(body).toMatchObject({ total: 3, offset, limit: 1 });
+					expect(body.items.map((item) => item.id)).toEqual(
+						matching.slice(offset, offset + 1).map((item) => item.id),
+					);
+				}
+				expect(scanned).toEqual([0, 100, 0, 100, 0, 100]);
+				failSecondPage = true;
+				expect(
+					(await call(`/api/app/memory/documents?conversation=${encodeURIComponent(conversation)}`))
+						.status,
+				).toBe(503);
+			} finally {
+				http.stop();
+				upstream.stop();
+			}
+		});
+	}
+
+	test("thread panel tails: conversation filter and skills/from resolve through app auth", async () => {
+		const seenQ: Array<string | undefined> = [];
+		const client = {
+			listDocuments: (opts: { q?: string; limit: number; offset: number }) => {
+				seenQ.push(opts.q);
+				return Promise.resolve({ items: [], total: 0, limit: opts.limit, offset: opts.offset });
+			},
+		} as unknown as HindsightClient;
+		const { http, call, configRef, home } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { memory: stubMemory({ client }) },
+		});
+		try {
+			configRef.current = {
+				...configRef.current,
+				memory: memoryConfigSchema.parse({
+					baseUrl: "http://127.0.0.1:8888",
+					bankId: "goblin",
+				}),
+			};
+			// Upstream supplies a superset; literal filtering stays in goblin.
+			const filtered = await call("/api/app/memory/documents?conversation=app%2F1");
+			expect(filtered.status).toBe(200);
+			expect(seenQ.at(-1)).toBe("exchange/");
+			const both = await call("/api/app/memory/documents?q=x&conversation=app%2F1");
+			expect(both.status).toBe(422);
+
+			// skills/from: provenance rows joined with live disk state.
+			// Absent wiring answers 503 — the status-gate pattern.
+			const unwired = await call("/api/app/skills/from?conversation=app%2F1");
+			expect(unwired.status).toBe(503);
+
+			const db = new Database(":memory:");
+			const sources = new SkillSources(db);
+			const skillsDir = join(home, "workspace", "skills");
+			const proposedDir = join(home, "workspace", "skills-proposed");
+			mkdirSync(join(skillsDir, "herdr"), { recursive: true });
+			mkdirSync(join(proposedDir, "staged-skill"), { recursive: true });
+			sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
+			sources.record("app/1", "gone-skill", "turn", "2026-10-16T02:00:00.000Z");
+			sources.record("app/1", "staged-skill", "reviewer", "2026-10-16T03:00:00.000Z", "r2");
+			const wired = setup({
+				token: APP_TOKEN_NAME,
+				operator: {
+					skillSources: {
+						forConversation: (id: string) => sources.forConversation(id),
+						skillsDir,
+						proposedDir,
+					},
+				},
+			});
+			try {
+				const missing = await wired.call("/api/app/skills/from");
+				expect(missing.status).toBe(422);
+				const res = await wired.call("/api/app/skills/from?conversation=app%2F1");
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { items: ThreadSkillItem[] };
+				expect(body.items).toEqual([
+					{
+						skill: "staged-skill",
+						state: "proposed",
+						kind: "reviewer",
+						firstAt: "2026-10-16T03:00:00.000Z",
+						lastAt: "2026-10-16T03:00:00.000Z",
+					},
+					{
+						skill: "gone-skill",
+						state: "gone",
+						kind: "turn",
+						firstAt: "2026-10-16T02:00:00.000Z",
+						lastAt: "2026-10-16T02:00:00.000Z",
+					},
+					{
+						skill: "herdr",
+						state: "installed",
+						kind: "reviewer",
+						firstAt: "2026-10-16T01:00:00.000Z",
+						lastAt: "2026-10-16T01:00:00.000Z",
+					},
+				]);
+			} finally {
+				wired.http.stop();
+			}
+			db.close();
 		} finally {
 			http.stop();
 		}

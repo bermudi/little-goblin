@@ -132,10 +132,13 @@ export interface ReviewerDeps {
 	// live catalog in skillsDir is read-only to the reviewer.
 	proposedDir: string;
 	workspaceDir: string;
-	// Posts the proposal note to the topic. History is already
-	// written when this runs — a delivery failure logs, it doesn't
-	// unpick the proposal.
+	// Posts the proposal note after history and provenance are durable.
+	// Delivery failures propagate without undoing those writes.
 	notify(conversationId: string, skills: string[]): Promise<void>;
+	// Provenance (design/skills.md → Skill provenance): rows for every
+	// successfully proposed skill, before notification can yield.
+	// Recorder failures propagate without undoing the proposal.
+	recordSources?(conversationId: string, reviewId: string, skills: string[]): void;
 	/** Test door — the production path always uses `skills-ref`. */
 	skillsRefBin?: string;
 }
@@ -1226,6 +1229,9 @@ async function runStagedReview(
 			if (proposeError !== null) throw proposeError;
 			return;
 		}
+		// Attribute the durable write before notification can yield to a
+		// later turn editing the same skill.
+		deps.recordSources?.(conv, reviewId, proposedNames);
 		// It proposes, then tells: history first (the durable record),
 		// the topic note second. An approval next turn moves these dirs
 		// into skills/; a discard deletes them.
@@ -1245,15 +1251,7 @@ async function runStagedReview(
 				],
 			},
 		]);
-		try {
-			await deps.notify(conv, proposedNames);
-		} catch (err) {
-			log.error("skill proposal notice failed — history event already written", err, {
-				review_id: reviewId,
-				conversation: conv,
-				skills: proposedNames,
-			});
-		}
+		// Backfill uses this timestamp as write evidence, not delivery time.
 		log.info(
 			proposeError === null ? "reviewer review done" : "reviewer review partially proposed",
 			{
@@ -1266,6 +1264,7 @@ async function runStagedReview(
 				written: [...written].sort(),
 			},
 		);
+		await deps.notify(conv, proposedNames);
 		// A later skill's failed swap does not undo earlier proposals.
 		// Record and announce those durable changes before surfacing the
 		// failure to the review runner.

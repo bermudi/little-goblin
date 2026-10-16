@@ -15,6 +15,7 @@ import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { scriptedModel } from "./testkit/fake-model.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { System1Error } from "./system1.ts";
+import { SkillSources } from "./skill-provenance.ts";
 import { setLogFile } from "./log.ts";
 import {
 	buildGateState,
@@ -394,6 +395,152 @@ describe("review run — staging and publication", () => {
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["pdf-tables"] }]);
 		h.store.close();
 	});
+
+	test("a proposal records provenance — conversation, review id, proposed skills", async () => {
+		const h = harness();
+		const recorded: { conversationId: string; reviewId: string; skills: string[] }[] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		deps.recordSources = (conversationId, reviewId, skills) => {
+			recorded.push({ conversationId, reviewId, skills });
+		};
+		await new Reviewer(deps).considerTurn(turn());
+		expect(recorded).toHaveLength(1);
+		expect(recorded[0]).toMatchObject({ conversationId: h.convId, skills: ["pdf-tables"] });
+		expect(recorded[0]!.reviewId).toMatch(/^[0-9a-f-]{36}$/);
+		h.store.close();
+	});
+
+	test("a review that proposes nothing records no provenance", async () => {
+		const h = harness();
+		const recorded: unknown[][] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [{ text: "nothing to do" }],
+		});
+		deps.recordSources = (...args: unknown[]) => recorded.push(args);
+		await new Reviewer(deps).considerTurn(turn());
+		expect(recorded).toEqual([]);
+		h.store.close();
+	});
+
+	test("a delayed proposal notification and later backfill preserve a subsequent turn's provenance", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const sources = new SkillSources(h.store.db);
+		const entered = Promise.withResolvers<void>();
+		const released = Promise.withResolvers<void>();
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		deps.notify = async () => {
+			entered.resolve();
+			await released.promise;
+		};
+		deps.recordSources = (conversationId, reviewId, skills) => {
+			for (const skill of skills)
+				sources.record(conversationId, skill, "reviewer", undefined, reviewId);
+		};
+		const reviewing = new Reviewer(deps).considerTurn(turn());
+		let turnAt = "";
+		try {
+			try {
+				await entered.promise;
+				expect(sources.forConversation(h.convId)[0]?.kind).toBe("reviewer");
+				turnAt = new Date(Date.now() + 1).toISOString();
+				sources.record(h.convId, "pdf-tables", "turn", turnAt);
+				await waitUntil(
+					() => Date.now() > Date.parse(turnAt),
+					"notification completes after the turn write",
+				);
+			} finally {
+				released.resolve();
+				await reviewing;
+			}
+			expect(sources.forConversation(h.convId)[0]).toMatchObject({
+				kind: "turn",
+				lastAt: turnAt,
+			});
+			const done = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { msg: string; ts: string; review_id: string })
+				.find((line) => line.msg === "reviewer review done");
+			expect(done).toBeDefined();
+			expect(Date.parse(done!.ts)).toBeLessThan(Date.parse(turnAt));
+			sources.recordInitial(h.convId, "pdf-tables", done!.ts, done!.review_id);
+			expect(sources.forConversation(h.convId)[0]).toMatchObject({ kind: "turn", lastAt: turnAt });
+		} finally {
+			h.store.close();
+		}
+	});
+
+	for (const failure of ["provenance", "notification"] as const) {
+		test(`proposal ${failure} failure propagates without undoing the durable proposal`, async () => {
+			const h = harness();
+			const deps = h.depsFor({
+				nouls: { correction: 0.9, procedure: 0.1 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			});
+			const sources = new SkillSources(h.store.db);
+			deps.recordSources = (conversationId, reviewId, skills) => {
+				if (failure === "provenance") throw new Error("provenance unavailable");
+				for (const skill of skills)
+					sources.record(conversationId, skill, "reviewer", undefined, reviewId);
+			};
+			deps.notify = async () => {
+				throw new Error("notification unavailable");
+			};
+			try {
+				await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow(
+					`${failure} unavailable`,
+				);
+				expect(existsSync(join(h.proposed, "pdf-tables", "SKILL.md"))).toBe(true);
+				if (failure === "notification") {
+					expect(sources.forConversation(h.convId)[0]?.kind).toBe("reviewer");
+					expect(h.store.history(h.convId)).toHaveLength(1);
+				} else {
+					expect(h.store.history(h.convId)).toHaveLength(0);
+				}
+			} finally {
+				h.store.close();
+			}
+		});
+	}
 
 	test("a newer review replaces an undecided proposal of the same skill, and logs it", async () => {
 		const h = harness();
@@ -897,6 +1044,54 @@ describe("review run — staging and publication", () => {
 		expect(readFileSync(join(h.skills, "editme", "SKILL.md"), "utf8")).toContain("old body");
 		expect(readFileSync(join(h.skills, "editme", "helper.md"), "utf8")).toBe("old helper");
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["editme"] }]);
+		h.store.close();
+	});
+
+	test("provenance records only the skills that actually proposed — a drift-skipped skill is not provenance", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "clash"), { recursive: true });
+		writeFileSync(join(h.skills, "clash", "SKILL.md"), SKILL_MD("clash", "original"));
+		const recorded: string[][] = [];
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.1 } });
+		let step = 0;
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "clash/SKILL.md", content: SKILL_MD("clash", "review's take") },
+							},
+							{
+								name: "write_file",
+								input: { path: "fresh-skill/SKILL.md", content: SKILL_MD("fresh-skill") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+				async () => {
+					if (++step === 2) {
+						writeFileSync(
+							join(h.skills, "clash", "SKILL.md"),
+							SKILL_MD("clash", "operator's edit"),
+						);
+					}
+				},
+			),
+		});
+		deps.recordSources = (_conversationId, _reviewId, skills) => {
+			recorded.push(skills);
+		};
+		await new Reviewer(deps).considerTurn(turn());
+		// The clash proposal skipped (live drift); only fresh-skill is
+		// provenance — the panel must not claim a skill never proposed.
+		expect(recorded).toEqual([["fresh-skill"]]);
+		expect(readFileSync(join(h.proposed, "fresh-skill", "SKILL.md"), "utf8")).toContain(
+			"name: fresh-skill",
+		);
 		h.store.close();
 	});
 

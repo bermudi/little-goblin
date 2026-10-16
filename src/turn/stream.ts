@@ -37,6 +37,7 @@ import {
 } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
+import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
@@ -318,6 +319,10 @@ export interface StreamDeps<M extends WireMember> {
 	// Reviewer evidence capture — undefined = the feature is off, zero
 	// cost.
 	evidence: EvidenceLimits | undefined;
+	// Skill attribution (design/skills.md → Skill provenance) — the
+	// stream is the one seam that sees both the conversation id and
+	// every completed tool call. Absent = provenance off.
+	skillWatch?: SkillWatch | undefined;
 	// The logical turn's clock — finish metadata durationMs.
 	turnStartMs: number;
 	// The abort handle — the runtime pins it on the lane; /stop pulls
@@ -875,6 +880,29 @@ export async function driveStream<M extends WireMember>(
 							conversation: convId,
 							toolCallId: chunk.toolCallId,
 						});
+					}
+				}
+				// Skill attribution rides the same completed-call seam as the
+				// reviewer's evidence: only successful write_file/edit_file
+				// outputs (and a script's nested ones) carry the resolved path,
+				// so failed and soft-failed writes attribute nothing. The write
+				// is observational — its failure logs and never unpicks the
+				// in-flight turn (the reviewer's provenance guard, same rule).
+				if (deps.skillWatch !== undefined) {
+					const tool = callById.get(chunk.toolCallId)?.tool ?? "";
+					if (tool === "write_file" || tool === "edit_file" || tool === "script") {
+						for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
+							try {
+								deps.skillWatch.record(convId, skill);
+								log.info("skill write attributed", { conversation: convId, tool, skill });
+							} catch (err) {
+								log.error("skill provenance record failed — turn continues", err, {
+									conversation: convId,
+									tool,
+									skill,
+								});
+							}
+						}
 					}
 				}
 				noteCompletedCall(chunk.toolCallId, chunk.output, false);

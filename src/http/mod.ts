@@ -82,6 +82,7 @@ const OPERATOR_TAILS: Record<string, string> = {
 	// this table's convention — the mini app's PAGES stay settings/memory,
 	// but initData-authed API access matches the rest of the console.
 	"/api/skills": "skills",
+	"/api/skills/from": "skills/from",
 	"/api/skills/file": "skills/file",
 	"/api/attachments": "attachments",
 	"/api/attachments/file": "attachments/file",

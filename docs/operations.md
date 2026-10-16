@@ -228,6 +228,20 @@ authentication runs before routing, so nonexistent tails return 401 too.
 Use the existing authenticated browser session; never paste bearer
 tokens or raw private state into an agent transcript.
 
+**Skill-provenance backfill (one-time, 2026-10-16).** The
+`skill_sources` table ships empty; skills proposed before the deploy
+predate it. After the rollout, run once:
+
+```sh
+bun scripts/backfill-skill-sources.ts
+```
+
+It parses `goblin.log`'s `reviewer review done` lines (7 records at
+the time of writing) into the table, idempotently. `--dry` prints
+what would be recorded. Then verify the thread panel on a known
+generating conversation (e.g. the `open-source-check` spin-off):
+header action → sheet lists the skill with the right state.
+
 lithium ran prod until 2026-10-09; its goblin stack is torn down and its
 state was merged here. Archives: `~/goblin-migration-20261008/`
 (snapshots, DB bundle, memory dump).

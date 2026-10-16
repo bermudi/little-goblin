@@ -155,6 +155,20 @@ test("malformed persisted payload fails loudly, including a mismatched address",
 	db.close();
 });
 
+test("an unknown key in a persisted payload fails loudly — strict, not stripped", () => {
+	const db = new Database(":memory:");
+	const inbox = openTelegramInbox(db);
+	inbox.record(1, payload(1));
+	// Address fields still match; the only fault is the extra key. A
+	// permissive parse would silently drop it and hand the turn a
+	// payload the journal never recorded.
+	db.run("UPDATE tg_inbox SET payload_json = ? WHERE update_id = 1", [
+		JSON.stringify({ ...payload(1), injected: "x" }),
+	]);
+	expect(() => inbox.pending()).toThrow(/update 1/);
+	db.close();
+});
+
 test("database errors propagate rather than becoming duplicate results", () => {
 	const db = new Database(":memory:");
 	const inbox = openTelegramInbox(db);

@@ -17,45 +17,39 @@
 // replay-unsafe; only observation and the terminal writes are
 // replay:"safe".
 
+import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, posix } from "node:path";
-import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
+import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+	type CredentialStore,
 	createModels,
 	createProvider,
 	envApiKeyAuth,
 	InMemoryCredentialStore,
-	Type,
-	type CredentialStore,
 	type Model,
+	Type,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
 import {
+	type ConversationId,
 	createRegistry,
 	defineDoc,
 	defineExtension,
 	defineTool,
-	hook,
-	ToolTask,
 	GenerationTask,
 	Harness,
-	type Submission,
 	type HookApi,
+	hook,
+	type Submission,
+	type SubmissionId,
 	type ToolExecutionApi,
 	type ToolExecutionResult,
 	type ToolRegistration,
-	type ConversationId,
-	type SubmissionId,
+	ToolTask,
 } from "@earendil-works/pi-durable";
-import {
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
-} from "@earendil-works/pi-durable/tools";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type {
 	BinaryReader,
 	DirReader,
@@ -82,29 +76,28 @@ import {
 	ok,
 	ExecutionError as PiExecutionError,
 } from "@earendil-works/pi-durable/env";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import {
+	createBashTool,
+	createEditTool,
+	createReadTool,
+	createWriteTool,
+} from "@earendil-works/pi-durable/tools";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
+import { exportNamedBytes, readImport } from "./box-files.ts";
 import type { SubagentsConfig } from "./config.ts";
 import {
 	CUA_TOOLS,
+	type CuaTool,
 	DesktopError,
 	DesktopLeaseError,
 	type Desktops,
-	type CuaTool,
 	type LeaseHolder,
 } from "./desktops.ts";
+import { log } from "./log.ts";
 import { PodmanError } from "./podman.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
-import {
-	MAX_INPUT_FILES,
-	MAX_MESSAGE_CHARS,
-	MAX_RESULT_CHARS,
-	MAX_TASK_CHARS,
-	type InputMode,
-	type SubagentKind,
-	type SubagentRun,
-	type SubagentRuns,
-} from "./subagent-runs.ts";
 import {
 	ASK_OPERATOR_TOOL_DESCRIPTION,
 	COMPUTER_PROMPT,
@@ -116,8 +109,16 @@ import {
 	WORKER_BASH_DESCRIPTION,
 	WORKER_PROMPT,
 } from "./subagent-prompts.ts";
-import { exportNamedBytes, readImport } from "./box-files.ts";
-import { log } from "./log.ts";
+import {
+	type InputMode,
+	MAX_INPUT_FILES,
+	MAX_MESSAGE_CHARS,
+	MAX_RESULT_CHARS,
+	MAX_TASK_CHARS,
+	type SubagentKind,
+	type SubagentRun,
+	type SubagentRuns,
+} from "./subagent-runs.ts";
 
 export class SubagentError extends Error {
 	constructor(message: string) {
@@ -138,7 +139,7 @@ const ADMIT_RETRY_BASE_MS = 5_000;
 // path may hold its slot and lease forever.
 const RECOVERY_MAX_ATTEMPTS = 10;
 const READ_CAP = 100 * 1024 * 1024;
-/** One positional read per scanLines pass; 8 MiB keeps a 1 GiB scan at ~128 podman execs. */
+/** Bounded scan reads; 8 MiB keeps a 1 GiB scan at ~128 podman execs. */
 const SCAN_CHUNK_BYTES = 8 * 1024 * 1024;
 const WATCH_POLL_MS = 500;
 const SHELL_TIMEOUT_DEFAULT_S = 60;
@@ -1228,9 +1229,9 @@ class SandboxEnv implements ExecutionEnv {
 	/** Deliver one captured stream to `onOutput`, trimmed to the caller's tail
 	 *  window with an exact skip descriptor. A trimmed chunk always exceeds
 	 *  the window by a byte or a line — OutputBuffer's requirement for a
-	 *  skip — and its cut is fenced back onto a character boundary, so the
-	 *  reported counts stay exact for valid UTF-8 (an invalid sequence at
-	 *  the cut is counted raw). */
+	 *  skip — and its cut is fenced back onto a character boundary.
+	 *  Skipped bytes count decoded text, including replacement characters,
+	 *  rather than raw file offsets. */
 	private async deliverStream(
 		rec: StreamMeasure,
 		stream: "stdout" | "stderr",
@@ -1320,8 +1321,8 @@ class SandboxEnv implements ExecutionEnv {
 							omittedLast = probe[at - 1]!;
 						}
 					}
-					// An invalid-UTF-8 run spanning the window edge leaves the
-					// cut where it was — the skip then counts raw bytes.
+					// A continuation run with no nearby lead byte has no
+					// character crossing the cut; leave the cut where it was.
 				} else {
 					omittedLast = probe[at - 1]!;
 				}
@@ -1334,6 +1335,27 @@ class SandboxEnv implements ExecutionEnv {
 				message: `command output exceeds the ${READ_CAP / (1024 * 1024)} MiB delivery bound — result not claimed complete`,
 			};
 		}
+		let skippedBytes = 0;
+		if (start > 0) {
+			const decoder = new TextDecoder();
+			for (let offset = 0; offset < start; ) {
+				if (context.abortSignal?.aborted) return { kind: "aborted" };
+				const count = Math.min(SCAN_CHUNK_BYTES, start - offset);
+				const chunk = await this.readBytesAt(rec.path, offset, count, rec.path, context);
+				if (!chunk.ok || chunk.value.length !== count) {
+					if (context.abortSignal?.aborted) return { kind: "aborted" };
+					return {
+						kind: "failed",
+						message: "command output could not be read back — result not claimed complete",
+					};
+				}
+				skippedBytes += Buffer.byteLength(decoder.decode(chunk.value, { stream: true }), "utf8");
+				offset += count;
+			}
+			// Flush any incomplete sequence immediately before the fenced cut.
+			skippedBytes += Buffer.byteLength(decoder.decode(), "utf8");
+		}
+		if (context.abortSignal?.aborted) return { kind: "aborted" };
 		const read = await this.readBytesAt(rec.path, start, length, rec.path, context);
 		if (!read.ok || read.value.length !== length) {
 			if (context.abortSignal?.aborted) return { kind: "aborted" };
@@ -1358,7 +1380,7 @@ class SandboxEnv implements ExecutionEnv {
 		onOutput(text, context, {
 			stream,
 			skipped: {
-				bytes: start,
+				bytes: skippedBytes,
 				newlines: rec.newlines - newlines,
 				endsWithNewline: omittedLast === 0x0a,
 			},

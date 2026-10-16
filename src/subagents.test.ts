@@ -12,8 +12,8 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -21,25 +21,26 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { Context } from "@earendil-works/chord";
+import { OutputBuffer } from "@earendil-works/chord/output";
+import { CompactionTask, type ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { LanguageModel } from "ai";
-import { CompactionTask, Harness, type ConversationId } from "@earendil-works/pi-durable";
-import { openStore } from "./conversation.ts";
-import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { Config, SubagentsConfig } from "./config.ts";
-import { makeDeliverySink, type DeliveryApi } from "./tg/delivery.ts";
-import { wakeConversation, type WakeDeps } from "./wake.ts";
-import type { Desktops, DesktopRow, DesktopAction, LeaseHolder } from "./desktops.ts";
+import { openStore } from "./conversation.ts";
+import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "./desktops.ts";
 import { DesktopError, DesktopLeaseError } from "./desktops.ts";
+import { setLogFile } from "./log.ts";
+import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import {
 	makeSandboxEnv,
 	openSubagents,
-	subagentModelProfileSchema,
 	type SubagentModelProfile,
 	type Subagents,
+	subagentModelProfileSchema,
 } from "./subagents.ts";
-import { setLogFile } from "./log.ts";
+import { type DeliveryApi, makeDeliverySink } from "./tg/delivery.ts";
+import { type WakeDeps, wakeConversation } from "./wake.ts";
 
 setLogFile(null);
 
@@ -5142,7 +5143,7 @@ describe("origin responsiveness over the real wake path", () => {
 // Stages the wrapped-shell outcome directly: the `env` call writes the
 // given rc + stdout into the guest fs instead of evaluating a script,
 // so the SIGXFSZ exit can be pinned without a 100 MiB stdout.
-function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
+function stageShellExit(sb: MemSandbox, rc: number, spillText: string | Uint8Array): void {
 	const enc = new TextEncoder();
 	const real = sb.execArgv;
 	sb.execArgv = async (conv, argv, opts) => {
@@ -5152,7 +5153,10 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
 			const outPath = rest[shIdx + 5] ?? "/tmp/x";
 			const errPath = rest[shIdx + 6] ?? "/tmp/y";
 			const rcPath = rest[shIdx + 7] ?? "/tmp/z";
-			sb.fs.write(sb.fs.norm(outPath), enc.encode(spillText));
+			sb.fs.write(
+				sb.fs.norm(outPath),
+				typeof spillText === "string" ? enc.encode(spillText) : spillText,
+			);
 			sb.fs.write(sb.fs.norm(errPath), enc.encode(""));
 			sb.fs.write(sb.fs.norm(rcPath), enc.encode(String(rc)));
 			return {
@@ -5510,6 +5514,129 @@ describe("sandbox env contract (fake guest fs)", () => {
 		expect(enc.encode(c.text).length > 20 || c.text.split("\n").length - 1 > 3).toBe(true);
 		expect(c.text.endsWith("198\n199\n200\n")).toBe(true);
 	});
+
+	test("windowed exec counts replacement characters throughout the omitted prefix", async () => {
+		const { sb, env } = newEnv("invalid-prefix");
+		const bytes = new Uint8Array(10_064).fill(0xff);
+		bytes.fill(0x61, 10_000);
+		stageShellExit(sb, 0, bytes);
+		const output = new OutputBuffer({ retain: "tail", maxBytes: 32, maxLines: 100 });
+		let skippedBytes = 0;
+		let deliveredBytes = 0;
+		const result = await env.exec(
+			"binary output",
+			{
+				window: { maxBytes: 32, maxLines: 100, minIntervalMs: 0, bytesPerSecond: 1_000_000_000 },
+				onOutput: (text, _ctx, info) => {
+					expect(info.skipped).toEqual({ bytes: 30_031, newlines: 0, endsWithNewline: false });
+					skippedBytes += info.skipped?.bytes ?? 0;
+					deliveredBytes += new TextEncoder().encode(text).length;
+					output.push(text, info.skipped);
+				},
+			},
+			CTX,
+		);
+		must(result);
+		output.end();
+		expect(skippedBytes).toBe(30_031);
+		expect(deliveredBytes).toBe(33);
+		expect(skippedBytes + deliveredBytes).toBe(30_064);
+		expect(output.snapshot()).toEqual({
+			text: "a".repeat(32),
+			droppedBytes: 30_032,
+			droppedLines: 0,
+		});
+	});
+
+	test("omitted-prefix decoding preserves state across bounded reads and handles BOMs and incomplete UTF-8", async () => {
+		const { sb, env } = newEnv("prefix-chunks");
+		const chunkBytes = 8 * 1024 * 1024;
+		const bytes = new Uint8Array(chunkBytes + 128).fill(0x61);
+		const cut = bytes.length - 33;
+		bytes.set([0xef, 0xbb, 0xbf], 0); // Only this initial BOM is dropped.
+		bytes.set([0xe2, 0x82, 0xac], chunkBytes - 1); // Split a valid character across reads.
+		bytes.set([0xef, 0xbb, 0xbf], chunkBytes + 12);
+		bytes.set([0xff, 0xff], 100);
+		bytes.set([0xe2, 0x82], cut - 2); // The omitted prefix ends with an incomplete character.
+		stageShellExit(sb, 0, bytes);
+		const reads: number[] = [];
+		const real = sb.execBytesArgv;
+		sb.execBytesArgv = async (conv, argv, opts) => {
+			const count = Number(argv.find((a) => a.startsWith("count="))?.slice(6));
+			if (argv[0] === "dd" && count > 33) reads.push(count);
+			return real(conv, argv, opts);
+		};
+		const enc = new TextEncoder();
+		const totalBytes = enc.encode(new TextDecoder().decode(bytes)).length;
+		const expectedSkipped = enc.encode(new TextDecoder().decode(bytes.subarray(0, cut))).length;
+		const output = new OutputBuffer({ retain: "tail", maxBytes: 32, maxLines: 100 });
+		let measuredBytes = 0;
+		must(
+			await env.exec(
+				"binary output",
+				{
+					window: { maxBytes: 32, maxLines: 100, minIntervalMs: 0, bytesPerSecond: 1_000_000_000 },
+					onOutput: (text, _ctx, info) => {
+						expect(info.skipped?.bytes).toBe(expectedSkipped);
+						measuredBytes += (info.skipped?.bytes ?? 0) + enc.encode(text).length;
+						output.push(text, info.skipped);
+					},
+				},
+				CTX,
+			),
+		);
+		output.end();
+		expect(reads).toEqual([chunkBytes, cut - chunkBytes]);
+		expect(measuredBytes).toBe(totalBytes);
+		expect(output.snapshot()).toEqual({
+			text: "a".repeat(32),
+			droppedBytes: totalBytes - 32,
+			droppedLines: 0,
+		});
+	});
+
+	test.each(["short", "aborted"] as const)(
+		"omitted-prefix scan refuses %s reads without delivering output",
+		async (failure) => {
+			const { sb, env } = newEnv(`prefix-${failure}`);
+			stageShellExit(sb, 0, new Uint8Array(10_064).fill(0xff));
+			const ctl = new AbortController();
+			const real = sb.execBytesArgv;
+			let scans = 0;
+			sb.execBytesArgv = async (conv, argv, opts) => {
+				const result = await real(conv, argv, opts);
+				if (argv[0] === "dd" && argv.includes("skip=0")) {
+					scans++;
+					if (failure === "aborted") {
+						expect(opts?.abortSignal).toBe(ctl.signal);
+						ctl.abort();
+					} else {
+						result.result.stdout = result.result.stdout.subarray(1);
+					}
+				}
+				return result;
+			};
+			let deliveries = 0;
+			const result = await env.exec(
+				"binary output",
+				{
+					window: { maxBytes: 32, maxLines: 100, minIntervalMs: 0, bytesPerSecond: 1_000_000_000 },
+					onOutput: () => {
+						deliveries++;
+					},
+				},
+				{ abortSignal: ctl.signal } as Context,
+			);
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error.code).toBe(failure === "aborted" ? "aborted" : "unknown");
+				if (failure === "short") expect(result.error.message).toContain("could not be read back");
+			}
+			expect(scans).toBe(1);
+			expect(deliveries).toBe(0);
+			expect(tmpLeftovers(sb)).toEqual([]);
+		},
+	);
 
 	test("a spill over the threshold merges into a readable file with no temp files left behind", async () => {
 		const { sb, env } = newEnv("spill");

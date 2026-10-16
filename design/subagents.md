@@ -336,10 +336,13 @@ The env's mechanics:
   the command's exit code.
 - **Tail window.** With `window`, both streams are measured (`wc -l
   -c`) and only the tail is delivered, with skip counts (bytes,
-  newlines, trailing newline) exact for valid UTF-8 — a cut inside an
-  invalid sequence counts raw bytes; the delivered chunk then still
-  exceeds the window, as `OutputBuffer.push` requires. Without a
-  window every chunk is delivered.
+  newlines, trailing newline) measured on decoded text, not raw file
+  offsets: every replacement character counts as three UTF-8 bytes.
+  The omitted prefix is decoded in abort-aware, bounded 8 MiB reads,
+  preserving decoder state between reads; only the stream's initial
+  BOM is dropped. The cut is fenced onto a character boundary, and
+  the delivered chunk still exceeds the window, as `OutputBuffer.push`
+  requires. Without a window every chunk is delivered.
 - **Spill.** Past `afterBytes`/`afterLines` (counted over the combined
   streams; a partial final line is not counted), the captured files
   merge into the advertised spill path: stdout then stderr, because
@@ -577,7 +580,7 @@ built once).
   `lastObsId`, no `shotSeq` advance; the error names the capped or
   truncated readback.
 - **Pinned.** `@earendil-works/pi-durable`, `pi-ai`, `chord` at
-  exactly `1.0.2`, `typebox` at `1.3.27` — exact versions in
+  exactly `1.3.0`, `typebox` at `1.3.37` — exact versions in
   package.json; the catalog metadata (context windows, thinking
   levels) is read from the pinned package, not re-declared.
 - **Live check.** `src/subagents.live.test.ts`, gated

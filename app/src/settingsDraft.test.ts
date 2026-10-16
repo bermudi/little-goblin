@@ -10,6 +10,8 @@ import {
 	type SettingsDraft,
 	switchTranscriptionKind,
 	switchTtsKind,
+	type TrKindStash,
+	type TtsKindStash,
 	validateDraft,
 } from "./settingsDraft.ts";
 
@@ -575,6 +577,38 @@ describe("transcription block", () => {
 		const groq = { ...emptyTranscription("groq"), model: "my-model", auth: "MY_KEY" };
 		expect(switchTranscriptionKind(groq, "groq")).toEqual(groq);
 	});
+
+	test("the stash restores a kind's own fields on the way back", () => {
+		const stash: TrKindStash = {};
+		const groq = {
+			...emptyTranscription("groq"),
+			model: "whisper-large-v3-turbo",
+			auth: "groq-record",
+			language: "en",
+		};
+		const mimo = switchTranscriptionKind(groq, "mimo", stash);
+		expect(mimo).toMatchObject({ kind: "mimo", model: "", auth: "" });
+		// "en" is in MiMo's closed vocabulary, so it carried rather than cleared.
+		expect(mimo.language).toBe("en");
+		// Clearing on the way out — groq's credential must not sit on a mimo save.
+		expect(mimo.auth).toBe("");
+
+		const back = switchTranscriptionKind(mimo, "groq", stash);
+		expect(back).toMatchObject({
+			kind: "groq",
+			model: "whisper-large-v3-turbo",
+			auth: "groq-record",
+			language: "en",
+		});
+
+		// MiMo's own stashed language survives a round trip through a kind
+		// where it isn't valid: auto clears under groq and returns under mimo.
+		const fresh: TrKindStash = {};
+		const mimoAuto = { ...emptyTranscription("mimo"), language: "auto" };
+		const viaGroq = switchTranscriptionKind(mimoAuto, "groq", fresh);
+		expect(viaGroq.language).toBe("");
+		expect(switchTranscriptionKind(viaGroq, "mimo", fresh).language).toBe("auto");
+	});
 });
 
 describe("provider kind switch", () => {
@@ -607,6 +641,14 @@ describe("provider kind switch", () => {
 	test("re-selecting the current kind keeps what the operator typed", () => {
 		const p = prov({ auth: "KEY" });
 		expect(switchProviderKind(p, "openai-compatible")).toEqual(p);
+	});
+
+	test("the stash restores a kind's auth on the way back", () => {
+		const stash: Record<string, string> = {};
+		const or = prov({ kind: "openrouter", auth: "or-key" });
+		const compat = switchProviderKind(or, "openai-compatible", stash);
+		expect(compat.auth).toBe("");
+		expect(switchProviderKind(compat, "openrouter", stash).auth).toBe("or-key");
 	});
 });
 
@@ -709,5 +751,26 @@ describe("tts block", () => {
 			voices: ["es-ES-ElviraNeural"],
 			rate: "+5%",
 		});
+	});
+
+	test("the stash restores a kind's identity fields on the way back", () => {
+		const stash: TtsKindStash = {};
+		const edge = {
+			kind: "edge" as const,
+			voice: "en-US-AndrewNeural",
+			rate: "",
+			voices: ["es-MX-JorgeNeural"],
+			model: "",
+			auth: "",
+		};
+		const or = switchTtsKind(
+			{ ...switchTtsKind(edge, "openrouter", stash), model: "fish-x", auth: "or-key" },
+			"edge",
+			stash,
+		);
+		// edge's voice returns; openrouter's own arm was stashed too —
+		// switching to it again would restore model + auth.
+		expect(or).toMatchObject({ kind: "edge", voice: "en-US-AndrewNeural" });
+		expect(stash.openrouter).toEqual({ voice: "", model: "fish-x", auth: "or-key" });
 	});
 });

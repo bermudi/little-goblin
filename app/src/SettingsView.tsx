@@ -21,7 +21,9 @@ import {
 	THINKING_ORDER,
 	type TranscriptionKind,
 	type TrDraft,
+	type TrKindStash,
 	type TtsDraft,
+	type TtsKindStash,
 	type TtsKind,
 	type VisDraft,
 	VOICE_SUGGESTIONS,
@@ -528,6 +530,9 @@ function ProviderCard({
 	// refs while the operator is mid-word (the mini app's rule).
 	const [nameDraft, setNameDraft] = useState(prov.name);
 	const [nameErr, setNameErr] = useState<string | null>(null);
+	// Per-kind auth memory — a kind switch clears the field (it must
+	// never leak across kinds) and a switch back restores it.
+	const authStash = useRef<Record<string, string>>({});
 	useEffect(() => setNameDraft(prov.name), [prov.name]);
 	// The uncommitted name is departure hazard the serialized diff can't
 	// see: report divergence on every change, and clear on unmount —
@@ -592,7 +597,7 @@ function ProviderCard({
 					className="mono"
 					value={prov.kind}
 					aria-label="provider type"
-					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value))}
+					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value, authStash.current))}
 				>
 					{kinds.map((k) => (
 						<option key={k} value={k}>
@@ -690,6 +695,11 @@ export function SettingsView({
 		fetch: ChainEntry[] | null;
 		memory: MemDraft | null;
 	}>({ tts: null, transcription: null, vision: null, search: null, fetch: null, memory: null });
+	// Kind-switch memory — each engine's identity fields survive a
+	// round-trip through another kind (switch*Kind clears them on
+	// purpose; the stash restores what was entered for that kind).
+	const ttsStash = useRef<TtsKindStash>({});
+	const trStash = useRef<TrKindStash>({});
 	// values = the rungs the Seg control offers; unavailable = the
 	// capability lookup failed, so the full ladder is shown as a
 	// stand-in and the caption says so — the server clamps silently at
@@ -1254,7 +1264,14 @@ export function SettingsView({
 											setDraft((d) =>
 												d.tts === null
 													? d
-													: { ...d, tts: switchTtsKind(d.tts, e.target.value as TtsKind) },
+													: {
+															...d,
+															tts: switchTtsKind(
+																d.tts,
+																e.target.value as TtsKind,
+																ttsStash.current,
+															),
+														},
 											)
 										}
 									>
@@ -1386,7 +1403,11 @@ export function SettingsView({
 													? d
 													: {
 															...d,
-															transcription: switchTranscriptionKind(d.transcription, next),
+															transcription: switchTranscriptionKind(
+																d.transcription,
+																next,
+																trStash.current,
+															),
 														},
 											);
 										}}

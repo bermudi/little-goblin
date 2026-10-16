@@ -96,10 +96,16 @@ export interface TtsDraft {
 // Identity fields don't carry across kinds: an edge voice name left
 // under openrouter would go upstream as a Fish voice-library id and
 // 400, and a stale model/auth would point a key at the wrong model.
-// Blank falls back to the kind's defaults server-side.
-export function switchTtsKind(t: TtsDraft, kind: TtsKind): TtsDraft {
+// Blank falls back to the kind's defaults server-side. The stash
+// remembers each kind's fields so a switch away and back restores
+// them — session memory only, never part of the saved body.
+export type TtsKindStash = Partial<Record<TtsKind, { voice: string; model: string; auth: string }>>;
+
+export function switchTtsKind(t: TtsDraft, kind: TtsKind, stash?: TtsKindStash): TtsDraft {
 	if (kind === t.kind) return t;
-	return { ...t, kind, voice: "", model: "", auth: "" };
+	if (stash !== undefined) stash[t.kind] = { voice: t.voice, model: t.model, auth: t.auth };
+	const back = stash?.[kind];
+	return { ...t, kind, voice: back?.voice ?? "", model: back?.model ?? "", auth: back?.auth ?? "" };
 }
 export type TranscriptionKind = (typeof transcriptionKinds)[number];
 
@@ -127,17 +133,33 @@ export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft
 // DO ride along: they are hand-edit-only, so clearing them would
 // destroy config the form cannot restore, and transcriptionBody emits
 // them on the whistle arm only — they cannot leak into a cloud save.
-export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): TrDraft {
+// The stash remembers each kind's fields so a switch away and back
+// restores them — session memory only, never part of the saved body.
+export type TrKindStash = Partial<
+	Record<TranscriptionKind, { model: string; auth: string; language: string }>
+>;
+
+export function switchTranscriptionKind(
+	t: TrDraft,
+	kind: TranscriptionKind,
+	stash?: TrKindStash,
+): TrDraft {
 	if (kind === t.kind) return t;
-	let language = t.language;
+	if (stash !== undefined) stash[t.kind] = { model: t.model, auth: t.auth, language: t.language };
+	const back = stash?.[kind];
+	let language = back?.language ?? t.language;
 	// MiMo has a closed vocabulary; its explicit auto is not an ISO code
 	// for other cloud kinds, and Whistle cannot accept Chinese either.
-	if (
-		(kind === "mimo" && !["auto", "zh", "en"].includes(language)) ||
-		(t.kind === "mimo" && (language === "auto" || (kind === "whistle" && language === "zh")))
-	)
-		language = "";
-	return { ...t, kind, model: "", auth: "", language };
+	// A stashed value is verbatim by construction — it was valid on
+	// that kind when it was stashed — so only carried text needs this.
+	if (back === undefined) {
+		if (
+			(kind === "mimo" && !["auto", "zh", "en"].includes(language)) ||
+			(t.kind === "mimo" && (language === "auto" || (kind === "whistle" && language === "zh")))
+		)
+			language = "";
+	}
+	return { ...t, kind, model: back?.model ?? "", auth: back?.auth ?? "", language };
 }
 
 // Same rule as transcription kinds above: the auth reference is
@@ -146,10 +168,16 @@ export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): Tr
 // Blank is always safe: it materializes to the provider's own name
 // (openrouter: the kind's default record) at save. baseUrl rides
 // along — not a credential, and the kinds that need it restore the
-// editable field.
-export function switchProviderKind(p: ProvDraft, kind: string): ProvDraft {
+// editable field. The stash remembers each kind's auth so a switch
+// away and back restores it — session memory only.
+export function switchProviderKind(
+	p: ProvDraft,
+	kind: string,
+	stash?: Record<string, string>,
+): ProvDraft {
 	if (kind === p.kind) return p;
-	return { ...p, kind, auth: "" };
+	if (stash !== undefined) stash[p.kind] = p.auth;
+	return { ...p, kind, auth: stash?.[kind] ?? "" };
 }
 
 function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {

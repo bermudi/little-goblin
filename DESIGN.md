@@ -241,7 +241,11 @@ behavior.
     conversation+route — never proof of cache warmth, expiry or a
     provider bug. Pruning old textual tool results is opt-in through the
     hand-edited `cachePruning` config block: each profile pins a route
-    key + settings hash pair, and a committed `event_projections` row is
+    key + settings hash pair — the hash of the SDK-normalized call
+    settings (`turnCallSettings`: the SDK resolves an omitted
+    `toolChoice` to `{type:"auto"}` before the middleware boundary, so
+    telemetry-copied profiles and the gate hash identical bytes) — and
+    a committed `event_projections` row is
     a sanctioned rewrite of the model-facing view only — the `events`
     row is never modified, and the marker replays byte-identically on
     every later read and restart, even if the policy becomes ineligible.
@@ -250,7 +254,11 @@ behavior.
     New batches commit only between turns and only when the profile is
     unexpired, the route's observed idle time is at least
     `idleAfterMs`, the last input size clears `minimumInputTokens`, and
-    no drift contradicts the presumed expiry. Three findings suspend new
+    no drift contradicts the presumed expiry — the drift check inspects
+    every completed receipt recorded since the profile's `reviewedAt`
+    (a multi-call turn can bury an earlier zero-read call under a
+    later cache hit; receipts the review already saw stay
+    acknowledged). Three findings suspend new
     batches — never committed rows: an unchanged-prefix call inside the
     assumed window that reported zero cache reads, an expired profile,
     or a `documented-expiry` profile the contract registry can't

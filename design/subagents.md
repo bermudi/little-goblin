@@ -507,7 +507,14 @@ built once).
   records an aborted outcome and ends the run. The decision commits
   to the lease before acting — a crash mid-decision re-asks. A `done`
   lease replays its recorded result with zero dispatch: the
-  result-committed-but-unsettled window needs no operator. `finish`,
+  result-committed-but-unsettled window needs no operator. A decided
+  verdict may queue behind global capacity; the scheduler's admission
+  releases it on BOTH paths — a live waiter or a stored decision —
+  and attaches a settlement monitor either way unless one is already
+  watching: a waiter registered by harness recovery (boot skips
+  queued rows) has no monitor of its own, and releasing it unwatched
+  would settle the Pi side unseen and leak the run's slot forever.
+  `finish`,
   `ask_operator` and the observation tools stay ungated — the
   result/question machinery must never gate itself.
 - **Only expected refusals become export errors.** Export and the

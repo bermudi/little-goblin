@@ -124,7 +124,17 @@ automatically — boot is notice-only, and an `interrupted` turn
 resumes ONLY by explicit operator decision, into a FRESH admission
 (new epoch, new run row linked by `resumed_from`). Each attempt gets
 its own run row, so an overflow resume leaves the failed attempt's
-record intact.
+record intact — and the continuation's row INHERITS the failed
+attempt's settled calls (as a fresh admission inherits its source's),
+so a crash of the continuation still resumes with every side effect
+the logical turn already recorded. Evidence handoff is one
+transaction: the successor row's creation, the inheritance of settled
+calls, and the source's consumption commit together — a crash between
+the writes can never leave two interrupted runs where the successor
+re-executes recorded effects. A call the fence answered from recorded
+evidence journals with replay provenance (`replayed`); replay credits
+count executions only, so one execution keeps exactly one replay
+across any number of resumes.
 
 `src/turn-resume.ts` owns the operator half (`makeResumeOps`): list
 interrupted runs, take per-call decisions, abandon, resume. Both
@@ -140,8 +150,8 @@ outputs for `completed`/`resolved-done` calls (the tool never runs),
 `resolved-skip` calls carry a refusal map — a re-ask gets the
 operator's decline as the result, never the side effect. The model
 sees only what the journal says happened. The source row flips to
-`resumed` only after the successor row is durable; a headless resumed
-turn notifies operators on terminal `onDone`.
+`resumed` only inside the successor row's creation transaction; a
+headless resumed turn notifies operators on terminal `onDone`.
 
 ## What must not change
 

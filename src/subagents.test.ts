@@ -242,6 +242,8 @@ type ExecResult = {
 	timedOut: boolean;
 	truncated: boolean;
 	killed: boolean;
+	/** Binary stdout for ops that carry bytes (dd, cat through execBytesArgv). */
+	stdoutBytes?: Uint8Array;
 };
 
 type MemNode = { data: Uint8Array; mtime: number } | { dir: true };
@@ -664,7 +666,7 @@ function fakeSandboxes(): MemSandbox {
 		execBytesArgv: async (_conv, argv, opts) => {
 			await gateOrAbort(opts.abortSignal);
 			const r = dispatchArgv(argv);
-			return { result: { ...r, stdout: enc.encode(r.stdout) } };
+			return { result: { ...r, stdout: r.stdoutBytes ?? enc.encode(r.stdout) } };
 		},
 		cpIn: async (_conv, hostPath, containerPath) => {
 			fake.cpCalls++;
@@ -721,26 +723,47 @@ function fakeSandboxes(): MemSandbox {
 	function dispatchArgv(argv: string[]): ExecResult {
 		try {
 			const [cmd, ...rest] = argv;
-			// env -i K=V ... /bin/sh -c script env-shell cwd spill rc inner cap
+			// The env wrapper's two forms, positional tail after $0:
+			//   goblin-sh   cwd out err rc command cap
+			//   goblin-argv cwd out err rc program cap args...
 			if (cmd === "env") {
 				const shIdx = rest.indexOf("/bin/sh");
 				if (shIdx < 0) return fail("env: unsupported", 127);
-				const script = rest[shIdx + 2]!;
 				const tag = rest[shIdx + 3];
-				if (tag !== "env-shell") return fail("env: unexpected payload", 127);
-				const [, cwd, spill, rc, inner, cap] = rest.slice(shIdx + 3);
-				const cd = fs.norm(cwd ?? "/work");
-				if (!fs.isDir(cd)) return fail(`cd failed: ${cd}`, 96);
-				const r = shEval(inner ?? "", fs, cd);
-				const capBytes = Number(cap ?? "0") * 512;
+				if (tag !== "goblin-sh" && tag !== "goblin-argv") {
+					return fail("env: unexpected payload", 127);
+				}
+				const cwd = fs.norm(rest[shIdx + 4] ?? "/work");
+				const outPath = fs.norm(rest[shIdx + 5] ?? "/tmp/x");
+				const errPath = fs.norm(rest[shIdx + 6] ?? "/tmp/y");
+				const rcPath = fs.norm(rest[shIdx + 7] ?? "/tmp/z");
+				if (!fs.isDir(cwd)) return fail(`cd failed: ${cwd}`, 96);
+				const tail = rest.slice(shIdx + 8);
+				let r: { out: string; code: number };
+				if (tag === "goblin-sh") {
+					r = shEval(tail[0] ?? "", fs, cwd);
+				} else {
+					const program = tail[0] ?? "";
+					const args = tail.slice(2);
+					if (program === "echo" || program === "/bin/echo") {
+						r = { out: `${args.join(" ")}\n`, code: 0 };
+					} else if (program === "/bin/sh" || program === "sh" || program === "bash") {
+						const idx = args.indexOf("-c");
+						r = shEval(args[idx + 1] ?? "", fs, cwd);
+					} else {
+						return fail(`program not found: ${program}`, 97);
+					}
+				}
+				const capBytes = Number(tail[1] ?? "0") * 512;
 				let out = r.out;
 				let exitCode = r.code;
 				if (capBytes > 0 && out.length > capBytes) {
 					out = out.slice(0, capBytes);
 					exitCode = 153;
 				}
-				fs.write(fs.norm(spill ?? "/tmp/x"), enc.encode(out));
-				fs.write(fs.norm(rc ?? "/tmp/y"), enc.encode(String(exitCode)));
+				fs.write(outPath, enc.encode(out));
+				fs.write(errPath, enc.encode(""));
+				fs.write(rcPath, enc.encode(String(exitCode)));
 				return okOut("");
 			}
 			if (cmd === "/bin/sh" && rest[0] === "-c") {
@@ -791,6 +814,47 @@ function fakeSandboxes(): MemSandbox {
 						truncated: false,
 					};
 				}
+				if (tag === "tail-bytes") {
+					// tail -n "+K" file | head -c cap | wc -c
+					const keepFrom = Number(rest[3] ?? "1");
+					const data = fs.read(fs.norm(rest[4] ?? ""));
+					const headCap = Number(rest[5] ?? "0");
+					let pos = 0;
+					for (let line = 1; line < keepFrom; line++) {
+						const nl = data.indexOf(10, pos);
+						if (nl === -1) {
+							pos = data.length;
+							break;
+						}
+						pos = nl + 1;
+					}
+					return okOut(String(Math.min(data.length - pos, headCap)));
+				}
+				if (tag === "merge-spill") {
+					const outData = fs.read(fs.norm(rest[3] ?? ""));
+					const errData = fs.read(fs.norm(rest[4] ?? ""));
+					fs.write(fs.norm(rest[5] ?? ""), new Uint8Array([...outData, ...errData]));
+					return okOut("");
+				}
+				if (tag === "ls-names") {
+					const dir = fs.norm(rest[3] ?? "");
+					if (!fs.exists(dir)) return fail(`no such directory: ${dir}`, 2);
+					if (!fs.isDir(dir)) return fail(`not a directory: ${dir}`, 3);
+					return okOut(
+						fs
+							.children(dir)
+							.map((f) => `${f}\0`)
+							.join(""),
+					);
+				}
+				if (tag === "stat-batch") {
+					const out: string[] = [];
+					for (const name of rest.slice(3)) {
+						const f = fs.norm(name);
+						out.push(fs.exists(f) ? `${name}\0${fs.statLine(f)}\0` : `${name}\0MISSING\0`);
+					}
+					return okOut(out.join(""));
+				}
 				const r = shEval(script, fs, "/work");
 				return {
 					stdout: r.out,
@@ -809,14 +873,27 @@ function fakeSandboxes(): MemSandbox {
 					const target = p(rest.at(-1));
 					if (!fs.exists(target))
 						return fail(`stat: cannot statx '${rest.at(-1)}': No such file or directory`, 1);
+					const fmtIdx = rest.indexOf("-c");
+					if (fmtIdx >= 0 && rest[fmtIdx + 1] === "%F") {
+						const kind = fs.isDir(target)
+							? "directory"
+							: fs.read(target).length === 0
+								? "regular empty file"
+								: "regular file";
+						return okOut(`${kind}\n`);
+					}
 					return okOut(`${fs.statLine(target)}\n`);
 				}
 				case "mkdir":
 					fs.mkdir(p(rest.at(-1)), rest.includes("-p"));
 					return okOut("");
-				case "mv":
-					fs.mv(p(rest[0]), p(rest[1]));
+				case "mv": {
+					// `renameFile` emits `mv -- src dst`; skip the terminator
+					// so the operands land in order.
+					const operands = rest.filter((a) => a !== "--" && !a.startsWith("-"));
+					fs.mv(p(operands[0]), p(operands[1]));
 					return okOut("");
+				}
 				case "rm":
 					for (const f of rest.filter((a) => !a.startsWith("-") && a !== "--")) {
 						fs.rm(p(f), {
@@ -851,10 +928,33 @@ function fakeSandboxes(): MemSandbox {
 				case "sync":
 					return okOut("");
 				case "wc": {
-					const f = p(rest.at(-1));
-					const data = fs.read(f);
-					const nl = data.filter((b) => b === 10).length;
-					return okOut(`${nl} ${data.length} ${f}\n`);
+					const files = rest.filter((a) => !a.startsWith("-") && a !== "--");
+					if (files.length === 0) return okOut("0 0\n");
+					let totalLines = 0;
+					let totalBytes = 0;
+					const rows: string[] = [];
+					for (const f of files) {
+						const data = fs.read(p(f));
+						const nl = data.filter((b) => b === 10).length;
+						rows.push(`${nl} ${data.length} ${p(f)}`);
+						totalLines += nl;
+						totalBytes += data.length;
+					}
+					if (files.length > 1) rows.push(`${totalLines} ${totalBytes} total`);
+					return okOut(`${rows.join("\n")}\n`);
+				}
+				case "dd": {
+					const ifArg = rest.find((a) => a.startsWith("if="))?.slice(3) ?? "";
+					const skip = Number(rest.find((a) => a.startsWith("skip="))?.slice(5) ?? "0");
+					const count = Number(rest.find((a) => a.startsWith("count="))?.slice(6) ?? "0");
+					const data = fs.read(p(ifArg));
+					return { ...okOut(""), stdoutBytes: data.slice(skip, skip + count) };
+				}
+				case "ln": {
+					const src = p(rest[0]);
+					if (!fs.exists(src)) return fail(`ln: ${rest[0]}: No such file or directory`, 1);
+					fs.write(p(rest[1]), fs.read(src));
+					return okOut("");
 				}
 				case "tail": {
 					const n = rest.includes("-c") ? Number(rest[rest.indexOf("-c") + 1]) : 10 * 1024;
@@ -5040,7 +5140,7 @@ describe("origin responsiveness over the real wake path", () => {
 // ---------- the worker shell wall (SandboxEnv.exec) ----------
 
 // Stages the wrapped-shell outcome directly: the `env` call writes the
-// given rc + spill into the guest fs instead of evaluating a script,
+// given rc + stdout into the guest fs instead of evaluating a script,
 // so the SIGXFSZ exit can be pinned without a 100 MiB stdout.
 function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
 	const enc = new TextEncoder();
@@ -5049,9 +5149,11 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
 		if (argv[0] === "env") {
 			const rest = argv.slice(1);
 			const shIdx = rest.indexOf("/bin/sh");
-			const spill = rest[shIdx + 5] ?? "/tmp/x";
-			const rcPath = rest[shIdx + 6] ?? "/tmp/y";
-			sb.fs.write(sb.fs.norm(spill), enc.encode(spillText));
+			const outPath = rest[shIdx + 5] ?? "/tmp/x";
+			const errPath = rest[shIdx + 6] ?? "/tmp/y";
+			const rcPath = rest[shIdx + 7] ?? "/tmp/z";
+			sb.fs.write(sb.fs.norm(outPath), enc.encode(spillText));
+			sb.fs.write(sb.fs.norm(errPath), enc.encode(""));
 			sb.fs.write(sb.fs.norm(rcPath), enc.encode(String(rc)));
 			return {
 				result: {
@@ -5257,5 +5359,290 @@ describe("worker shell wall", () => {
 		if (blocked.ok) return;
 		expect(blocked.error.code).toBe("not_directory");
 		expect(blocked.error.message).not.toContain("cleanup");
+	});
+});
+
+// ---------- the sandbox env's reader/exec contract (fake guest fs) ----------
+
+// The live gate runs the same contract through the upstream
+// `registerEnvConformance` against real podman execs; these cases keep
+// the boundary exercised on every `bun test` with the in-memory guest.
+describe("sandbox env contract (fake guest fs)", () => {
+	const CTX = {} as Context; // no abortSignal, no scope
+	const must = <T>(r: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
+		if (!r.ok) throw new Error(r.error.message);
+		return r.value;
+	};
+	const tmpLeftovers = (sb: MemSandbox): string[] =>
+		sb.fs.children("/tmp").filter((p) => p.startsWith("/tmp/.goblin-"));
+	const newEnv = (tag: string) => {
+		const sb = fakeSandboxes();
+		const root = mkdtempSync(join(tmpdir(), `goblin-env-${tag}-`));
+		dirs.push(root);
+		return { sb, env: makeSandboxEnv(sb, root, `conv:${tag}`) };
+	};
+	const failureCode = async (
+		r: Promise<{ ok: boolean; error?: { code: string } }>,
+	): Promise<string> => {
+		const result = await r;
+		expect(result.ok).toBe(false);
+		return result.error?.code ?? "missing";
+	};
+
+	test("binary reader reads ranges, keeps the opened file across a rename, and refuses after close", async () => {
+		const { sb, env } = newEnv("br");
+		must(await env.writeFile("/work/data.txt", "hello\nworld\n", CTX));
+		const reader = must(await env.openBinaryReader("/work/data.txt", undefined, CTX));
+		const dec = new TextDecoder();
+		expect(dec.decode(must(await reader.read(0, 5, CTX)))).toBe("hello");
+		expect(dec.decode(must(await reader.read(6, 100, CTX)))).toBe("world\n");
+		expect(must(await reader.read(12, 4, CTX)).length).toBe(0);
+		expect(must(await reader.read(50, 1, CTX)).length).toBe(0);
+		expect(must(await reader.read(3, 0, CTX)).length).toBe(0);
+		expect(must(await reader.info(CTX))).toMatchObject({
+			name: "data.txt",
+			kind: "file",
+			size: 12,
+		});
+		// scanLines walks the same pinned file — the selected range reads
+		// back as the second line plus its newline.
+		const scan = must(await reader.scanLines({ startLine: 1 }, CTX));
+		expect(scan.newlines).toBe(2);
+		expect(dec.decode(must(await reader.read(scan.start, scan.end - scan.start, CTX)))).toBe(
+			"world\n",
+		);
+		expect(await failureCode(reader.read(-1, 1, CTX))).toBe("invalid");
+		expect(await failureCode(reader.read(0, 1.5, CTX))).toBe("invalid");
+		// The abort check precedes closed/arg checks — an aborted context
+		// wins over an otherwise-valid call.
+		expect(
+			await failureCode(reader.read(0, 1, { abortSignal: AbortSignal.abort() } as Context)),
+		).toBe("aborted");
+		// The reader keeps the opened file: the path is renamed and
+		// rewritten, the pin still serves the original bytes.
+		must(await env.renameFile("/work/data.txt", "/work/moved.txt", CTX));
+		must(await env.writeFile("/work/data.txt", "two", CTX));
+		expect(dec.decode(must(await reader.read(0, 12, CTX)))).toBe("hello\nworld\n");
+		await reader.close(CTX);
+		await reader.close(CTX);
+		expect(await failureCode(reader.read(0, 1, CTX))).toBe("invalid");
+		expect(await failureCode(reader.info(CTX))).toBe("invalid");
+		// No hidden pin survives the close.
+		expect(
+			sb.fs.children("/work").filter((p) => posix.basename(p).startsWith(".goblin-br-")),
+		).toEqual([]);
+		// Open classifications: a directory and a missing path are refused
+		// before any reader exists.
+		expect(await failureCode(env.openBinaryReader("/work", undefined, CTX))).toBe("is_directory");
+		expect(await failureCode(env.openBinaryReader("/work/nope.txt", undefined, CTX))).toBe(
+			"not_found",
+		);
+	});
+
+	test("directory reader pages entries once, skips the vanished, and refuses use after close", async () => {
+		const { env } = newEnv("dir");
+		for (const n of ["a", "b", "c", "d", "e"]) {
+			must(await env.writeFile(`/work/d/${n}.txt`, n, CTX));
+		}
+		const reader = must(await env.openDirReader("/work/d", CTX));
+		const first = must(await reader.next(2, CTX));
+		expect(first.done).toBe(false);
+		expect(first.entries.map((e) => e.name)).toEqual(["a.txt", "b.txt"]);
+		expect(first.entries[0]).toMatchObject({ kind: "file", size: 1 });
+		// c and d vanish after the listing: their page reports no entries
+		// but still advances, and the final page hands over e and claims
+		// done — repeating later without another stat pass.
+		must(await env.remove("/work/d/c.txt", undefined, CTX));
+		must(await env.remove("/work/d/d.txt", undefined, CTX));
+		expect(must(await reader.next(2, CTX))).toEqual({ entries: [], done: false });
+		const last = must(await reader.next(2, CTX));
+		expect(last.entries.map((e) => e.name)).toEqual(["e.txt"]);
+		expect(last.done).toBe(true);
+		expect(must(await reader.next(2, CTX))).toEqual({ entries: [], done: true });
+		// The abort check precedes the page-size and done short-circuits:
+		// an aborted context wins even on a done reader.
+		expect(await failureCode(reader.next(1, { abortSignal: AbortSignal.abort() } as Context))).toBe(
+			"aborted",
+		);
+		expect(await failureCode(reader.next(0, CTX))).toBe("invalid");
+		await reader.close(CTX);
+		await reader.close(CTX);
+		expect(await failureCode(reader.next(1, CTX))).toBe("invalid");
+	});
+
+	test("windowed exec delivers the exact tail and counts every skipped byte and line", async () => {
+		const { env } = newEnv("window");
+		const chunks: {
+			text: string;
+			stream: "stdout" | "stderr";
+			skipped?: { bytes: number; newlines: number; endsWithNewline: boolean };
+		}[] = [];
+		const r = await env.exec(
+			"seq 1 200",
+			{
+				window: { maxBytes: 20, maxLines: 3, minIntervalMs: 0, bytesPerSecond: 1_000_000_000 },
+				onOutput: (text, _ctx, info) => {
+					chunks.push({
+						text,
+						stream: info.stream,
+						...(info.skipped === undefined ? {} : { skipped: info.skipped }),
+					});
+				},
+			},
+			CTX,
+		);
+		expect(r.ok).toBe(true);
+		if (!r.ok) return;
+		expect(r.value.exitCode).toBe(0);
+		expect(chunks.length).toBe(1);
+		const c = chunks[0]!;
+		expect(c.stream).toBe("stdout");
+		expect(c.text).toBe("197\n198\n199\n200\n");
+		const skipped = c.skipped;
+		expect(skipped).toBeDefined();
+		if (skipped === undefined) return;
+		expect(skipped).toEqual({ bytes: 676, newlines: 196, endsWithNewline: true });
+		// skip + delivered reconstruct the full 692-byte, 200-newline stream.
+		const enc = new TextEncoder();
+		expect(skipped.bytes + enc.encode(c.text).length).toBe(692);
+		expect(skipped.newlines + c.text.split("\n").length - 1).toBe(200);
+		// The skip rule: a chunk after a skip exceeds the window.
+		expect(enc.encode(c.text).length > 20 || c.text.split("\n").length - 1 > 3).toBe(true);
+		expect(c.text.endsWith("198\n199\n200\n")).toBe(true);
+	});
+
+	test("a spill over the threshold merges into a readable file with no temp files left behind", async () => {
+		const { sb, env } = newEnv("spill");
+		const r = await env.exec("seq 1 100", { spill: { afterBytes: 10, afterLines: 0 } }, CTX);
+		expect(r.ok).toBe(true);
+		if (!r.ok) return;
+		expect(r.value.exitCode).toBe(0);
+		const spill = r.value.spillPath;
+		expect(spill).toBeDefined();
+		expect(new TextDecoder().decode(sb.fs.read(sb.fs.norm(spill!)))).toBe(
+			Array.from({ length: 100 }, (_, i) => `${i + 1}\n`).join(""),
+		);
+		// The measured files and the rc are gone; only the advertised
+		// spill remains.
+		expect(tmpLeftovers(sb)).toEqual([spill!]);
+	});
+
+	test("argv exec hands the program its arguments unparsed", async () => {
+		const { sb, env } = newEnv("argv");
+		const captured: string[][] = [];
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			captured.push([...argv]);
+			return real(conv, argv, opts);
+		};
+		const hostile = "it's $(touch pwned) `touch pwned` *; touch pwned";
+		let out = "";
+		const r = await env.exec(
+			["echo", hostile, "a b"],
+			{
+				onOutput: (text, _ctx, info) => {
+					if (info.stream === "stdout") out += text;
+				},
+			},
+			CTX,
+		);
+		expect(r.ok).toBe(true);
+		if (!r.ok) return;
+		expect(r.value.exitCode).toBe(0);
+		expect(out).toBe(`${hostile} a b\n`);
+		const call = captured.find((a) => a.includes("goblin-argv"));
+		expect(call).toBeDefined();
+		if (call === undefined) return;
+		// The wrapper layout is tag/cwd/out/err/rc/program/cap/args…: the
+		// hostile text and the spaced argument each ride as ONE argv
+		// element after the cap — never re-joined or shell-quoted.
+		const i = call.indexOf("goblin-argv");
+		expect(call[i + 5]).toBe("echo");
+		const args = call.slice(i + 6);
+		expect(args.filter((a) => a === hostile).length).toBe(1);
+		expect(args.filter((a) => a === "a b").length).toBe(1);
+		expect(sb.fs.exists("/work/pwned")).toBe(false);
+	});
+
+	test("a missing program and an empty argv are spawn errors; empty argv never reaches the sandbox", async () => {
+		const { sb, env } = newEnv("argv-missing");
+		const missing = await env.exec(["pi-durable-conformance-missing-program"], undefined, CTX);
+		expect(missing.ok).toBe(false);
+		if (!missing.ok) {
+			expect(missing.error.code).toBe("spawn_error");
+			expect(missing.error.message).toContain("program not found");
+		}
+		const calls = sb.execCalls;
+		expect(calls).toBeGreaterThan(0);
+		const empty = await env.exec([], undefined, CTX);
+		expect(empty.ok).toBe(false);
+		if (!empty.ok) expect(empty.error.code).toBe("spawn_error");
+		expect(sb.execCalls).toBe(calls);
+	});
+
+	test("a timed-out command advertises a readable spill and leaves no temp files", async () => {
+		const { sb, env } = newEnv("timeout");
+		const enc = new TextEncoder();
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			if (argv[0] === "env" && argv.includes("goblin-sh")) {
+				// The kill left both stream files behind with partial output;
+				// the rc was never written.
+				const rest = argv.slice(1);
+				const shIdx = rest.indexOf("/bin/sh");
+				sb.fs.write(sb.fs.norm(rest[shIdx + 5] ?? ""), enc.encode("partial-out\n"));
+				sb.fs.write(sb.fs.norm(rest[shIdx + 6] ?? ""), enc.encode("partial-err\n"));
+				return {
+					result: {
+						stdout: "",
+						stderr: "",
+						exitCode: null,
+						timedOut: true,
+						killed: true,
+						truncated: false,
+					},
+				};
+			}
+			return real(conv, argv, opts);
+		};
+		const r = await env.exec("sleep 30; echo late", { timeout: 1 }, CTX);
+		expect(r.ok).toBe(false);
+		if (r.ok) return;
+		expect(r.error.code).toBe("timeout");
+		expect(r.error.message).toContain("timed out after 1s");
+		const spill = r.error.spillPath;
+		expect(spill).toBeDefined();
+		expect(new TextDecoder().decode(sb.fs.read(sb.fs.norm(spill!)))).toBe(
+			"partial-out\npartial-err\n",
+		);
+		expect(tmpLeftovers(sb)).toEqual([spill!]);
+	});
+
+	test("a failed spill merge refuses the result and advertises no spill path", async () => {
+		const { sb, env } = newEnv("merge-fail");
+		const real = sb.execArgv;
+		sb.execArgv = async (conv, argv, opts) => {
+			if (argv[0] === "/bin/sh" && argv[3] === "merge-spill") {
+				return {
+					result: {
+						stdout: "",
+						stderr: "merge dead",
+						exitCode: 1,
+						timedOut: false,
+						killed: false,
+						truncated: false,
+					},
+				};
+			}
+			return real(conv, argv, opts);
+		};
+		const r = await env.exec("seq 1 100", { spill: { afterBytes: 10, afterLines: 0 } }, CTX);
+		expect(r.ok).toBe(false);
+		if (r.ok) return;
+		expect(r.error.code).toBe("unknown");
+		expect(r.error.message).toContain("could not be preserved complete");
+		expect(r.error.message).toContain("merge dead");
+		expect(r.error.spillPath).toBeUndefined();
+		expect(tmpLeftovers(sb)).toEqual([]);
 	});
 });

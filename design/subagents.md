@@ -304,9 +304,47 @@ ruling) — never the host. Pi Durable's `ExecutionEnv` is its
 `FileSystem` (about twenty file operations) plus a `Shell`; goblin
 implements it over `sandboxes.ts` exec, so every command and file op
 inherits the sandbox's wall, reconcile, logging and network state. No
-container-backed env exists upstream: this is goblin code, verified in
-phase 3. File tools are replay-safe for reads only; `bash`, `write` and
-`edit` are not.
+container-backed env exists upstream: this is goblin code, gated by
+upstream's `registerEnvConformance` suite against the real container
+(`GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test
+src/subagents.podman.test.ts`), with the fake-guest unit suite pinning
+the same contract without podman. File tools are replay-safe for reads
+only; `bash`, `write` and `edit` are not.
+
+The env's mechanics:
+
+- **Readers.** `openBinaryReader` pins the opened file as a hidden
+  same-directory hardlink (podman execs share no fd; a rename would
+  otherwise steal the reader), falling back to path reads with a
+  warning when linking fails. Reads are positional (`dd
+  iflag=skip_bytes,count_bytes` — cost is the transferred bytes, not
+  the offset); `scanLines` streams 8 MiB chunks through upstream's
+  `LineScanner`. `openDirReader` snapshots names at open and stats per
+  page, skipping entries that vanish first.
+- **Watch.** No fd or event stream crosses `podman exec`, so `watch()`
+  polls (500 ms): `readlink -f` root plus `find`+`stat` records per
+  target, `MISSING` for an absent one, excludes filtered in goblin. A
+  failed snapshot reports one `overflow` and re-baselines. `mode:
+  "polling"` is the contract's own escape hatch — a change undone
+  within a poll interval can be missed.
+- **Exec.** stdout, stderr and the command's exit code land in
+  separate `/tmp` files; `ulimit -f` caps each stream file (SIGXFSZ →
+  exit 153 plus a notice sent after the chunks), and the wrapper's own
+  status is reserved for start failures (96 = cd failed, 97 = argv
+  program missing, after a `command -v` preflight) so a command
+  exiting 96/97 itself can never be misread. Only the rc file carries
+  the command's exit code.
+- **Tail window.** With `window`, both streams are measured (`wc -l
+  -c`) and only the tail is delivered, with skip counts (bytes,
+  newlines, trailing newline) exact for valid UTF-8 — a cut inside an
+  invalid sequence counts raw bytes; the delivered chunk then still
+  exceeds the window, as `OutputBuffer.push` requires. Without a
+  window every chunk is delivered.
+- **Spill.** Past `afterBytes`/`afterLines` (counted over the combined
+  streams; a partial final line is not counted), the captured files
+  merge into the advertised spill path: stdout then stderr, because
+  arrival order across separate capture files is not recoverable. A
+  `spillPath` exists only when the merged file was readable back.
 
 **One sandbox, two users.** Serious work runs through the worker; goblin
 still checks and reaches in with its own `sandbox` tool (operator

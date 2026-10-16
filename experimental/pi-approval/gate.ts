@@ -192,7 +192,7 @@ export function gateTool(tool: ToolRegistration, host: ApprovalHost): ToolRegist
 			} else {
 				await commitLease(api, decidedRow(prior.attempts, asJson(decision)), context);
 				return {
-					content: [
+					output: [
 						{
 							type: "text",
 							text: `Operator aborted the run after an interrupted ${name} call; the call's effect is unobserved.${decisionNote(decision)}`,

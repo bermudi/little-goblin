@@ -76,7 +76,7 @@ export function makeActTool(hang: boolean, markerPath: string): ToolRegistration
 		execute: async (args) => {
 			appendFileSync(markerPath, `${JSON.stringify({ target: args.target, pid: process.pid })}\n`);
 			if (hang) await new Promise<never>(() => {});
-			return { content: [{ type: "text", text: `acted on ${args.target}` }] };
+			return { output: [{ type: "text", text: `acted on ${args.target}` }] };
 		},
 	});
 }

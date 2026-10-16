@@ -30,6 +30,20 @@ export type InputMode = "initial" | "resume" | "steer";
  *  restart reuses the artifact instead of recopying the box file. */
 export type ExportProgress = Record<string, { rel: string } | { error: string }>;
 
+const pendingApprovalSchema = z.object({
+	/** The durable Pi tool-task id — the lease key the gate re-parks on. */
+	piTaskId: z.string(),
+	callId: z.string(),
+	tool: z.string(),
+	args: z.unknown(),
+	attempts: z.number(),
+});
+/** The durable mirror of a parked crash-approval: which tool call the
+ *  operator is being asked about (design/subagents.md → crash approval). */
+export type PendingApproval = z.infer<typeof pendingApprovalSchema>;
+const parsePendingApproval = (s: string): PendingApproval =>
+	pendingApprovalSchema.parse(JSON.parse(s));
+
 export interface SubagentRun {
 	id: number;
 	kind: SubagentKind;
@@ -72,6 +86,10 @@ export interface SubagentRun {
 	/** Latest destructive sandbox lifecycle note the run hasn't seen —
 	 *  replaced, never cleared before a tool result carries it. */
 	lifecycleNote: string | null;
+	/** The parked crash-approval this run waits on — non-null only
+	 *  while `needs_input` was set by the gate, never by ask_operator.
+	 *  `send` refuses; only `decide` resolves it. */
+	pendingApproval: PendingApproval | null;
 	/** A settle/question notice still owes a wake (retry on scan). */
 	noticePending: boolean;
 	/** Bumped per notice so a stale ack can't clear a newer one. */
@@ -106,6 +124,7 @@ const runRowSchema = z.object({
 	export_progress: z.string(),
 	final_screenshot: z.string().nullable(),
 	lifecycle_note: z.string().nullable(),
+	pending_approval: z.string().nullable(),
 	notice_pending: z.number(),
 	notice_rev: z.number(),
 	created_at: z.number(),
@@ -144,6 +163,8 @@ function toRun(row: unknown): SubagentRun {
 			.parse(JSON.parse(r.export_progress)),
 		finalScreenshot: r.final_screenshot,
 		lifecycleNote: r.lifecycle_note,
+		pendingApproval:
+			r.pending_approval === null ? null : parsePendingApproval(r.pending_approval),
 		noticePending: r.notice_pending !== 0,
 		noticeRev: r.notice_rev,
 		createdAt: r.created_at,
@@ -169,6 +190,7 @@ export interface SubagentRunPatch {
 	exportProgress?: ExportProgress;
 	finalScreenshot?: string | null;
 	lifecycleNote?: string | null;
+	pendingApproval?: PendingApproval | null;
 	noticePending?: boolean;
 	noticeRev?: number;
 	finishedAt?: number | null;
@@ -244,6 +266,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 		export_progress TEXT NOT NULL DEFAULT '{}',
 		final_screenshot TEXT,
 		lifecycle_note TEXT,
+		pending_approval TEXT,
 		notice_pending INTEGER NOT NULL DEFAULT 0,
 		notice_rev INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
@@ -266,6 +289,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 			"ALTER TABLE subagent_runs ADD COLUMN export_progress TEXT NOT NULL DEFAULT '{}'",
 		],
 		["notice_rev", "ALTER TABLE subagent_runs ADD COLUMN notice_rev INTEGER NOT NULL DEFAULT 0"],
+		["pending_approval", "ALTER TABLE subagent_runs ADD COLUMN pending_approval TEXT"],
 	] as const) {
 		if (!cols.has(col)) db.exec(ddl);
 	}
@@ -350,6 +374,11 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 				put("export_progress", JSON.stringify(patch.exportProgress));
 			if (patch.finalScreenshot !== undefined) put("final_screenshot", patch.finalScreenshot);
 			if (patch.lifecycleNote !== undefined) put("lifecycle_note", patch.lifecycleNote);
+			if (patch.pendingApproval !== undefined)
+				put(
+					"pending_approval",
+					patch.pendingApproval === null ? null : JSON.stringify(patch.pendingApproval),
+				);
 			if (patch.noticePending !== undefined) put("notice_pending", patch.noticePending ? 1 : 0);
 			if (patch.noticeRev !== undefined) put("notice_rev", patch.noticeRev);
 			if (patch.finishedAt !== undefined) put("finished_at", patch.finishedAt);

@@ -1,8 +1,10 @@
-// Child process for the unsafe-replay crash test: a real owner over
-// real Pi storage whose sandbox "bash" records a dispatch marker on
-// the host and then never returns. The parent SIGKILLs mid-dispatch;
-// only the marker survives, proving the unsafe call ran at most once.
-// Env (no secrets): MODEL_URL, DB_PATH, STORAGE_PATH, MARKER_PATH.
+// Child process for the crash-approval tests: a real owner over real
+// Pi storage whose sandbox "bash" records a dispatch marker on the
+// host and then never returns. The parent SIGKILLs mid-dispatch; only
+// the marker survives, proving the gated call ran at most once.
+// Env (no secrets): MODEL_URL, DB_PATH, STORAGE_PATH, MARKER_PATH;
+// MODE=submit starts a run after resume (default), MODE=resume only
+// resumes; WAKE_PATH, when set, receives one JSON notice per line.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { subagentsConfigSchema } from "../config.ts";
@@ -16,8 +18,13 @@ const MODEL_URL = process.env.MODEL_URL ?? "";
 const DB_PATH = process.env.DB_PATH ?? "";
 const STORAGE_PATH = process.env.STORAGE_PATH ?? "";
 const MARKER_PATH = process.env.MARKER_PATH ?? "";
+const MODE = process.env.MODE ?? "submit";
+const WAKE_PATH = process.env.WAKE_PATH ?? "";
 if (MODEL_URL === "" || DB_PATH === "" || STORAGE_PATH === "" || MARKER_PATH === "") {
 	throw new Error("MODEL_URL/DB_PATH/STORAGE_PATH/MARKER_PATH are required");
+}
+if (MODE !== "submit" && MODE !== "resume") {
+	throw new Error(`MODE must be submit or resume, got ${MODE}`);
 }
 setLogFile(null);
 
@@ -115,14 +122,19 @@ const owner = await openSubagents({
 	desktops,
 	storagePath: STORAGE_PATH,
 	transferRoot: join(workspace, "transfer"),
-	wake: () => true,
+	wake: (_conv, text) => {
+		if (WAKE_PATH !== "") appendFileSync(WAKE_PATH, `${JSON.stringify(text)}\n`);
+		return true;
+	},
 });
 await owner.resume();
-await owner.start({
-	kind: "worker",
-	conversationId: "crash:one",
-	workspace,
-	task: "run markit",
-});
+if (MODE === "submit") {
+	await owner.start({
+		kind: "worker",
+		conversationId: "crash:one",
+		workspace,
+		task: "run markit",
+	});
+}
 // The parent watches the marker; this process never exits on its own.
 await idle();

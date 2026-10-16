@@ -356,7 +356,11 @@ interface MemSandbox extends Sandboxes {
 	fs: MemFS;
 	/** A promise every execArgv awaits first — holds a gated bash call. */
 	execGate: Promise<void> | null;
+	/** The sandbox "died" — calls skip the gate entirely (SIGKILL model). */
+	sandboxDead: boolean;
 	execCalls: number;
+	/** Signal-bearing `env` dispatches — one per bash command run. */
+	dispatchCalls: number;
 	/** A promise every cpIn awaits first — holds a gated import. */
 	cpGate: Promise<void> | null;
 	cpCalls: number;
@@ -650,7 +654,9 @@ function fakeSandboxes(): MemSandbox {
 	const fake: MemSandbox = {
 		fs,
 		execGate: null,
+		sandboxDead: false,
 		execCalls: 0,
+		dispatchCalls: 0,
 		cpGate: null,
 		cpCalls: 0,
 		exec: async (_conv, command, opts) => ({
@@ -658,6 +664,9 @@ function fakeSandboxes(): MemSandbox {
 		}),
 		execArgv: async (_conv, argv, opts) => {
 			fake.execCalls++;
+			// env is the bash command dispatch; cat/wc are its spill
+			// machinery — dispatchCalls isolates the dispatch itself.
+			if (argv[0] === "env") fake.dispatchCalls++;
 			await gateOrAbort(opts.abortSignal);
 			return { result: dispatchArgv(argv) };
 		},
@@ -687,12 +696,14 @@ function fakeSandboxes(): MemSandbox {
 	};
 
 	async function gateOrAbort(signal: AbortSignal | undefined): Promise<void> {
-		if (fake.execGate !== null) {
-			await Promise.race([
-				fake.execGate,
-				new Promise<void>((res) => signal?.addEventListener("abort", () => res())),
-			]);
-		}
+		// sandboxDead is the SIGKILL model: the gate held a dispatch at
+		// kill time and every later call — signal-less cleanup like
+		// guestRm — is bookkeeping the dead box would have dropped.
+		if (fake.execGate === null || fake.sandboxDead) return;
+		await Promise.race([
+			fake.execGate,
+			new Promise<void>((res) => signal?.addEventListener("abort", () => res())),
+		]);
 	}
 	function fail(msg: string, code = 1): ExecResult {
 		return {
@@ -4468,6 +4479,284 @@ describe("subagents owner", () => {
 		expect(r.runs.get(a.id)?.lifecycleNote).toBe(note);
 		expect(r.wakes[0]?.text).toContain(`Lifecycle warning: ${note}`);
 	});
+});
+
+// ---------- the crash-approval gate ----------
+
+// A gated side-effecting call held mid-dispatch by execGate, then the
+// owner closed: the close seal leaves the tool task's record mid-flight
+// — exactly what a SIGKILL leaves — so reopening re-enters the gate on
+// a `claimed` lease and parks the run for an operator decision.
+describe("subagents crash approval", () => {
+	// Start a worker whose bash call hangs inside the sandbox dispatch,
+	// close the owner underneath it, and reopen — the run parks as
+	// needs_input with pendingApproval describing the interrupted call.
+	async function parkBashRun(sandboxes: MemSandbox): Promise<{
+		rowId: number;
+		r1: Rig;
+		dbPath: string;
+		storagePath: string;
+	}> {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-approval-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes });
+		const o1 = await open(r1);
+		sandboxes.execGate = new Promise<void>(() => {});
+		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
+		// The "kill" — a dead sandbox drops the call mid-dispatch and
+		// never answers another exec.
+		sandboxes.sandboxDead = true;
+		await o1.close();
+		owners = owners.filter((x) => x !== o1);
+		// The gate's claim committed before dispatch — the lease is
+		// durably `claimed` even though the execute never returned.
+		return { rowId: a.id, r1, dbPath, storagePath };
+	}
+
+	function reopenParked(opts: {
+		dbPath: string;
+		storagePath: string;
+		r1: Rig;
+		resume?: boolean;
+		maxRuns?: number;
+	}): Rig {
+		const r2 = rig({
+			reuse: { dbPath: opts.dbPath, storagePath: opts.storagePath },
+			model: opts.r1.model,
+			sandboxes: opts.r1.sandboxes,
+			...(opts.maxRuns !== undefined ? { maxRuns: opts.maxRuns } : {}),
+			...(opts.resume !== undefined ? { resume: opts.resume } : {}),
+		});
+		return r2;
+	}
+
+	test("a killed side-effect dispatch parks the run — no replay, no model guess", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		expect(sandboxes.dispatchCalls).toBe(1);
+
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(
+			() =>
+				r2.runs.get(rowId)?.status === "needs_input" &&
+				r2.runs.get(rowId)?.pendingApproval !== null,
+			"parked on the ambiguous call",
+		);
+		const parked = r2.runs.get(rowId)!;
+		expect(parked.pendingApproval?.tool).toBe("bash");
+		expect(parked.pendingApproval?.piTaskId).not.toBe("");
+		expect(parked.question ?? "").toContain("bash");
+		// The operator wake carried the approval ask.
+		expect(r2.wakes.some((w) => /interrupted|partially run/.test(w.text))).toBe(true);
+		// Zero further dispatches — the gate never re-ran the call.
+		expect(sandboxes.dispatchCalls).toBe(1);
+		// send is refused while a decision is pending.
+		await expect(o2.send(rowId, WS, "answer")).rejects.toThrow(/approval decision/);
+		// decide on a run that isn't parked refuses too.
+		await expect(o2.decide(999, WS, { kind: "abandon" })).rejects.toThrow(/no subagent run/);
+		void o2;
+	}, 60_000);
+
+	test("decide authorize-retry re-executes the call exactly once more", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		// Release the dispatch gate so the authorized retry can run.
+		sandboxes.execGate = null;
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "retried" } }] });
+		const resumed = await o2.decide(rowId, WS, { kind: "authorize-retry" });
+		expect(resumed.status).toBe("running");
+		expect(resumed.pendingApproval).toBeNull();
+		await until(() => r2.runs.get(rowId)?.status === "done", "settled after retry");
+		expect(sandboxes.dispatchCalls).toBe(2);
+		expect(r2.runs.get(rowId)?.result).toBe("retried");
+	}, 60_000);
+
+	test("decide record-result feeds the operator's text without dispatching", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const base = r2.model.seen.length;
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "done" } }] });
+		await o2.decide(rowId, WS, {
+			kind: "record-result",
+			result: "operator-saw: markit already ran",
+		});
+		await until(() => r2.runs.get(rowId)?.status === "done", "settled on recorded result");
+		// The recorded result — never a re-dispatch — fed the next request.
+		expect(sandboxes.dispatchCalls).toBe(1);
+		await until(() => r2.model.seen.length > base, "next model request");
+		expect(JSON.stringify(r2.model.seen.at(-1)?.messages)).toContain(
+			"operator-saw: markit already ran",
+		);
+		expect(r2.runs.get(rowId)?.result).toBe("done");
+	}, 60_000);
+
+	test("decide abandon ends the run with no further model call", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const base = r2.model.seen.length;
+		await o2.decide(rowId, WS, { kind: "abandon", note: "unverifiable" });
+		await until(() => r2.runs.get(rowId)?.status === "failed", "failed on abandon");
+		expect(r2.runs.get(rowId)?.error ?? "").toContain("abandoned");
+		expect(sandboxes.dispatchCalls).toBe(1);
+		await Bun.sleep(300);
+		expect(r2.model.seen.length).toBe(base);
+	}, 60_000);
+
+	test("close while parked re-parks on reopen — a stored decide lands on re-entry", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		// Kill the parked process equivalent: closing drops the in-memory
+		// waiter; the durable park is untouched.
+		await o2.close();
+		owners = owners.filter((x) => x !== o2);
+		expect(r2.runs.get(rowId)?.status).toBe("needs_input");
+		expect(r2.runs.get(rowId)?.pendingApproval).not.toBeNull();
+
+		// Reopen WITHOUT resuming, decide before the gate can re-enter —
+		// the verdict stores, then resume's re-entry consumes it.
+		const r3 = reopenParked({ dbPath, storagePath, r1, resume: false });
+		const o3 = await open(r3);
+		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recorded" } }] });
+		const decided = await o3.decide(rowId, WS, {
+			kind: "record-result",
+			result: "stored verdict",
+		});
+		expect(decided.status).toBe("running");
+		await o3.resume();
+		await until(() => r3.runs.get(rowId)?.status === "done", "settled via stored decision");
+		expect(sandboxes.dispatchCalls).toBe(1);
+		expect(r3.runs.get(rowId)?.result).toBe("recorded");
+	}, 60_000);
+
+	test("a retry that dies mid-dispatch re-parks with the raised attempt count", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		// Re-arm the sandbox: the authorized retry dispatches, then the
+		// process dies again mid-dispatch.
+		sandboxes.sandboxDead = false;
+		sandboxes.execGate = new Promise<void>(() => {});
+		const deciding = o2.decide(rowId, WS, { kind: "authorize-retry" });
+		await until(() => sandboxes.dispatchCalls >= 2, "retry dispatched");
+		sandboxes.sandboxDead = true;
+		await deciding; // decide returns once the row flips running
+		await o2.close();
+		owners = owners.filter((x) => x !== o2);
+
+		const r3 = reopenParked({ dbPath, storagePath, r1 });
+		const o3 = await open(r3);
+		await until(() => r3.runs.get(rowId)?.pendingApproval !== null, "re-parked after retry kill");
+		expect(r3.runs.get(rowId)?.pendingApproval?.attempts).toBe(2);
+		// Exactly two dispatches ever ran — the killed retry did not
+		// re-dispatch on its own.
+		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
+		await o3.decide(rowId, WS, { kind: "record-result", result: "verified by hand" });
+		await until(() => r3.runs.get(rowId)?.status === "done", "settled");
+		expect(sandboxes.dispatchCalls).toBe(2);
+	}, 60_000);
+
+	test("a second kill while parked re-parks and re-surfaces the ask", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked once");
+		await o2.close();
+		owners = owners.filter((x) => x !== o2);
+
+		const r3 = reopenParked({ dbPath, storagePath, r1 });
+		const o3 = await open(r3);
+		// The row was already parked persistently — the re-park signal
+		// is the SECOND wake, not a status change.
+		await until(
+			() => r3.wakes.some((w) => /interrupted|partially run/.test(w.text)),
+			"re-parked and re-asked after the second close",
+		);
+		expect(r3.runs.get(rowId)?.pendingApproval).not.toBeNull();
+		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recorded" } }] });
+		await o3.decide(rowId, WS, { kind: "record-result", result: "still recorded" });
+		await until(() => r3.runs.get(rowId)?.status === "done", "settled");
+		expect(sandboxes.dispatchCalls).toBe(1);
+	}, 60_000);
+
+	test("a parked approval frees its global slot", async () => {
+		const sandboxes = fakeSandboxes();
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-approval-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes, maxRuns: 1 });
+		const o1 = await open(r1);
+		sandboxes.execGate = new Promise<void>(() => {});
+		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
+		sandboxes.sandboxDead = true;
+		await o1.close();
+		owners = owners.filter((x) => x !== o1);
+
+		const r2 = rig({
+			reuse: { dbPath, storagePath },
+			model: r1.model,
+			sandboxes,
+			maxRuns: 1,
+		});
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.pendingApproval !== null, "parked");
+		// maxRuns: 1, the parked run holds no slot — a second run on
+		// another conversation admits and finishes.
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b done" } }] });
+		const b = await o2.start({
+			kind: "worker",
+			conversationId: "conv:other",
+			workspace: r2.workspace,
+			task: "u",
+		});
+		await until(() => r2.runs.get(b.id)?.status === "done", "second run admitted and done");
+		expect(r2.runs.get(a.id)?.status).toBe("needs_input");
+	}, 60_000);
+
+	test("stop settles a parked approval — no deadlock", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const stopped = await o2.stop(rowId, WS);
+		expect(stopped.status).toBe("stopped");
+		const row = r2.runs.get(rowId)!;
+		expect(row.status).toBe("stopped");
+		expect(row.pendingApproval).toBeNull();
+	}, 60_000);
 });
 
 // ---------- explicit model profile seam (phase 4 experiment) ----------

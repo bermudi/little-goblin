@@ -76,6 +76,21 @@ describe("subagent_runs store", () => {
 		expect(bumped.inputRev).toBe(3);
 		expect(bumped.inputIntent).toBe("do more");
 		expect(bumped.inbox).toEqual(["/inbox/subagents/1/f.txt"]);
+		expect(bumped.pendingApproval).toBeNull();
+		const parked = runs.update(row.id, {
+			pendingApproval: {
+				piTaskId: "11",
+				callId: "c1",
+				tool: "bash",
+				args: { command: "markit" },
+				attempts: 1,
+			},
+		});
+		expect(parked.pendingApproval?.tool).toBe("bash");
+		expect(parked.pendingApproval?.attempts).toBe(1);
+		expect(runs.get(row.id)?.pendingApproval?.callId).toBe("c1");
+		const unparked = runs.update(row.id, { pendingApproval: null });
+		expect(unparked.pendingApproval).toBeNull();
 		expect(bumped.updatedAt).toBeGreaterThanOrEqual(row.updatedAt);
 		const done = runs.update(row.id, {
 			status: "done",

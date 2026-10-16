@@ -58,12 +58,13 @@ the storage in the test process and resumes — five scenarios:
 bun test experimental/pi-approval/crash.test.ts
 ```
 
-## If adopted (design/subagents.md scope)
+## Status — adopted
 
-`gateTool` composes into the existing tool-wrap chains in `src/subagents.ts`
-(`withRunGuards`/`withTerminalWrap`), gated for input tools, raw for
-observation tools — matching the recorded rule that observation is safe to
-repeat and input never is. The `ApprovalHost` rides the existing
-`needs_input`/wake path; a parked run holding a `maxRuns` slot past a
-timeout should convert to a terminated `needs_input` run (the `ask_operator`
-shape) — that productization step is not part of this experiment.
+This experiment landed in production: `src/subagents.ts` gates the
+side-effecting worker/computer tools behind `withApprovalGate` +
+`approvalLeaseDoc`, parks the row `needs_input` with a `pendingApproval`
+mirror, and resolves through `Subagents.decide` (`subagent` tool's
+`decide` action) with a fourth decision, `record-result`, that supplies
+the call's result text without re-executing. See design/subagents.md →
+the crash-approval ruling and `src/subagents.crash.test.ts` for the
+production evidence. This directory stays as the isolated prototype.

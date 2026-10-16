@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SubagentRun } from "../../subagent-runs.ts";
-import type { Subagents } from "../../subagents.ts";
+import { SubagentError, type Subagents } from "../../subagents.ts";
 import { subagentInputSchema, subagentTool, type SubagentToolDeps } from "./subagent.ts";
 
 const CONV = "dm:test";
@@ -38,6 +38,7 @@ function fakeRun(over: Partial<SubagentRun> = {}): SubagentRun {
 		exportErrors: [],
 		finalScreenshot: null,
 		lifecycleNote: null,
+		pendingApproval: null,
 		noticePending: false,
 		createdAt: 1000,
 		updatedAt: 1000,
@@ -53,6 +54,7 @@ function rig(owner: Partial<Subagents>, flags?: { worker?: boolean; computer?: b
 		status: () => fakeRun(),
 		send: async () => fakeRun(),
 		stop: async () => fakeRun({ status: "stopped" }),
+		decide: async () => fakeRun(),
 		scan: async () => {},
 		resume: async () => {},
 		close: async () => {},
@@ -77,6 +79,13 @@ describe("subagentInputSchema", () => {
 			{ action: "status", id: 1 },
 			{ action: "send", id: 2, message: "go on" },
 			{ action: "stop", id: 2 },
+			{ action: "decide", id: 2, decision: { kind: "authorize-retry" } },
+			{
+				action: "decide",
+				id: 2,
+				decision: { kind: "record-result", result: "it landed" },
+			},
+			{ action: "decide", id: 2, decision: { kind: "abandon", note: "not worth it" } },
 		];
 		for (const v of valid) expect(subagentInputSchema.safeParse(v).success).toBe(true);
 	});
@@ -88,6 +97,9 @@ describe("subagentInputSchema", () => {
 			{ action: "status" }, // no id
 			{ action: "send", id: 1 }, // no message
 			{ action: "stop" }, // no id
+			{ action: "decide", id: 1 }, // no decision
+			{ action: "decide", id: 1, decision: { kind: "record-result" } }, // no result
+			{ action: "decide", id: 1, decision: { kind: "guess" } },
 			{ action: "start", kind: "computer", task: "t", desktop: "BAD NAME" },
 			{ action: "start", kind: "robot", task: "t" },
 			{ action: "shell", command: "ls" },
@@ -170,6 +182,37 @@ describe("subagent tool", () => {
 			["send", 3, CONV, "answer"],
 			["stop", 3, CONV],
 		]);
+	});
+
+	test("decide routes the verdict through the bound conversation", async () => {
+		const calls: unknown[][] = [];
+		const t = rig({
+			decide: async (id, conv, decision) => {
+				calls.push([id, conv, decision]);
+				return fakeRun({ status: "running" });
+			},
+		});
+		const out = (await t.execute!(
+			{ action: "decide", id: 3, decision: { kind: "record-result", result: "marker is on disk" } },
+			opts,
+		)) as Record<string, unknown>;
+		expect(out.error).toBeUndefined();
+		expect(calls).toEqual([
+			[3, CONV, { kind: "record-result", result: "marker is on disk" }],
+		]);
+	});
+
+	test("decide surfaces owner refusals as errors", async () => {
+		const t = rig({
+			decide: async () => {
+				throw new SubagentError("run #3 is not parked on an approval decision");
+			},
+		});
+		const out = (await t.execute!(
+			{ action: "decide", id: 3, decision: { kind: "authorize-retry" } },
+			opts,
+		)) as Record<string, unknown>;
+		expect(String(out.error)).toContain("not parked on an approval decision");
 	});
 
 	test("run-originated text is fenced; </event> in mixed case cannot escape", async () => {

@@ -440,8 +440,11 @@ per-run token, is preflighted before creation, and only resources it
 created are removed. Logs, screenshots and a REPORT.md are preserved
 under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
 `/tmp/goblin-subenv-evidence-<token>/`. `src/subagents.crash.test.ts`
-needs no gate — it runs in `bun test` and proves the
-kill-mid-unsafe-dispatch recovery path.
+needs no gate — it runs in `bun test` and proves the crash-approval
+path: a SIGKILL mid-dispatch of a side-effecting call parks the run
+`needs_input` on reopen, and each `decide` verdict (authorize-retry,
+record-result, abandon) plus the kill-while-parked and
+result-committed windows behave as designed.
 
 ## Backups
 

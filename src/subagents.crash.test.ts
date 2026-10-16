@@ -1,26 +1,33 @@
-// Unsafe-replay crash test: a real owner + real Pi Durable storage in
-// a CHILD process whose sandbox "bash" marks the host and then never
-// returns; the test SIGKILLs the child mid-dispatch and reopens the
-// two stores. The durable transcript must show the call interrupted —
-// visible to the model — and the unsafe tool must NOT be dispatched
-// again (exactly one marker line). Reuses the fake model edge; no
-// external calls.
+// Crash-approval gate tests against a real killed process: a child
+// owns a run whose sandbox "bash" writes a host-side marker and then
+// never returns; the test SIGKILLs it mid-dispatch and reopens the two
+// stores. The gate's claimed lease must park the run for an operator
+// decision — never re-dispatch, never let the model guess — and each
+// decision kind (authorize-retry, record-result, abandon) plus the
+// kill-while-parked and pre-seeded-done windows must behave as
+// designed. Reuses the fake model edge; no external calls.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { subagentsConfigSchema } from "./config.ts";
 import type { Desktops, DesktopRow } from "./desktops.ts";
 import type { Sandboxes } from "./sandboxes.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents } from "./subagents.ts";
+import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
+import { approvalLeaseDoc, openSubagents, type Subagents } from "./subagents.ts";
 import { setLogFile } from "./log.ts";
 
 setLogFile(null);
 
-// Same localhost OpenAI-completions fake as subagents.test.ts.
+// Same localhost OpenAI-completions fake as subagents.test.ts — each
+// test pushes its replies onto a shared queue; `seen` accumulates and
+// tests slice from their own base.
 function sse(events: object[]): Response {
 	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });
@@ -58,33 +65,27 @@ function toolReply(calls: { name: string; args: Record<string, unknown> }[]): Re
 		},
 	]);
 }
+const bashReply = () => toolReply([{ name: "bash", args: { command: "markit" } }]);
+const finishReply = () => toolReply([{ name: "finish", args: { result: "recovered" } }]);
 
-const dir = mkdtempSync(join(tmpdir(), "goblin-crash-"));
-const dbPath = join(dir, "goblin.sqlite");
-const storagePath = join(dir, "subagents.sqlite");
-const marker = join(dir, "marker.txt");
-const workspace = join(dir, "ws");
-mkdirSync(workspace, { recursive: true });
-
-let child: Subprocess | null = null;
+const root = mkdtempSync(join(tmpdir(), "goblin-crash-"));
 const seen: { messages: unknown }[] = [];
+const replies: Response[] = [];
+const children: Subprocess[] = [];
 const server = Bun.serve({
 	port: 0,
 	hostname: "127.0.0.1",
 	async fetch(req) {
 		const body = (await req.json()) as { messages?: unknown };
 		seen.push({ messages: body.messages });
-		if (seen.length === 1) {
-			return toolReply([{ name: "bash", args: { command: "markit" } }]);
-		}
-		return toolReply([{ name: "finish", args: { result: "recovered" } }]);
+		return replies.shift() ?? finishReply();
 	},
 });
 
 afterAll(async () => {
-	child?.kill(9);
+	for (const c of children.splice(0)) c.kill(9);
 	await server.stop(true);
-	rmSync(dir, { recursive: true, force: true });
+	rmSync(root, { recursive: true, force: true });
 });
 
 async function until(fn: () => boolean, what: string, ms = 30_000): Promise<void> {
@@ -96,6 +97,51 @@ async function until(fn: () => boolean, what: string, ms = 30_000): Promise<void
 	throw new Error(`timed out waiting for: ${what}`);
 }
 
+// One isolated pair of stores + marker + workspace per test.
+function bed(tag: string): {
+	dir: string;
+	dbPath: string;
+	storagePath: string;
+	marker: string;
+	workspace: string;
+} {
+	const dir = mkdtempSync(join(root, `${tag}-`));
+	const workspace = join(dir, "ws");
+	mkdirSync(workspace, { recursive: true });
+	return {
+		dir,
+		dbPath: join(dir, "goblin.sqlite"),
+		storagePath: join(dir, "subagents.sqlite"),
+		marker: join(dir, "marker.txt"),
+		workspace,
+	};
+}
+
+function markerLines(path: string): string[] {
+	if (!existsSync(path)) return [];
+	return readFileSync(path, "utf8").split("\n").filter(Boolean);
+}
+
+function spawnChild(
+	b: ReturnType<typeof bed>,
+	extra: Record<string, string> = {},
+): Subprocess {
+	const child = Bun.spawn(["bun", "run", "src/test-helpers/subagent-crash-child.ts"], {
+		env: {
+			...process.env,
+			MODEL_URL: `http://127.0.0.1:${server.port}`,
+			DB_PATH: b.dbPath,
+			STORAGE_PATH: b.storagePath,
+			MARKER_PATH: b.marker,
+			...extra,
+		},
+		stdout: "ignore",
+		stderr: "inherit",
+	});
+	children.push(child);
+	return child;
+}
+
 const idleResult = {
 	stdout: "",
 	stderr: "",
@@ -105,129 +151,294 @@ const idleResult = {
 	truncated: false,
 };
 
-describe("subagent crash recovery — a real killed process", () => {
-	test("an interrupted unsafe tool is not dispatched again", async () => {
-		child = Bun.spawn(["bun", "run", "src/test-helpers/subagent-crash-child.ts"], {
-			env: {
-				...process.env,
-				MODEL_URL: `http://127.0.0.1:${server.port}`,
-				DB_PATH: dbPath,
-				STORAGE_PATH: storagePath,
-				MARKER_PATH: marker,
-			},
-			stdout: "ignore",
-			stderr: "inherit",
-		});
-		await until(() => existsSync(marker), "unsafe tool dispatched in child");
-		child.kill(9);
-		await child.exited;
+const fakeDesktops: Desktops = (() => {
+	const drow: DesktopRow = {
+		name: "d",
+		container: "fake",
+		image: "fake",
+		network: false,
+		reserved: false,
+		leaseKind: null,
+		leaseId: null,
+		leaseExpiresAt: null,
+		lastObsId: null,
+		lastObsUsed: false,
+		lastObsHash: null,
+		lastActSig: null,
+		lastActFrameHash: null,
+		shotSeq: 0,
+		createdAt: 0,
+		lastUsedAt: 0,
+	};
+	return {
+		allocate: async () => ({ row: drow }),
+		list: () => [drow],
+		get: () => drow,
+		claim: async () => drow,
+		release: async () => {},
+		handoff: async () => {},
+		reserve: async () => {},
+		setNetwork: async () => {},
+		destroy: async () => {},
+		screenshot: async () => ({ id: "o", path: "/tmp/x", bytes: new Uint8Array([0]) }),
+		inspect: async () => ({ id: "o", state: {} }),
+		act: async () => ({ result: {} }),
+		cpIn: async () => ({}),
+		catFile: async () => ({ data: new Uint8Array() }),
+	};
+})();
 
-		// Reopen the same two stores in THIS process — the recovered
-		// generation must surface the interrupted call to the model and
-		// must never re-dispatch it.
-		let dispatches = 0;
-		const sandboxes: Sandboxes = {
-			exec: async () => ({ result: idleResult }),
-			execArgv: async (_conv, argv) => {
-				if (argv.join(" ").includes("markit")) {
-					dispatches++;
-					appendFileSync(marker, "REPLAYED\n");
-				}
-				return { result: idleResult };
+// The parent-side owner over a test's stores: sandboxes count "markit"
+// dispatches and append a REPLAYED marker line — any gated re-dispatch
+// is visible on the host and counted.
+async function openOwner(b: ReturnType<typeof bed>): Promise<{
+	owner: Subagents;
+	runs: SubagentRuns;
+	dispatches: () => number;
+	wakes: { conv: string; text: string }[];
+}> {
+	let dispatchCount = 0;
+	const sandboxes: Sandboxes = {
+		exec: async () => ({ result: idleResult }),
+		execArgv: async (_conv, argv) => {
+			if (argv.join(" ").includes("markit")) {
+				dispatchCount++;
+				appendFileSync(b.marker, "REPLAYED\n");
+			}
+			return { result: idleResult };
+		},
+		execBytesArgv: async () => ({ result: { ...idleResult, stdout: new Uint8Array() } }),
+		cpIn: async () => ({}),
+		catFile: async () => ({ data: new Uint8Array() }),
+		setNetwork: async () => ({}),
+		reset: async () => ({}),
+	};
+	const config = subagentsConfigSchema.parse({
+		maxRuns: 1,
+		worker: {
+			model: {
+				auth: "test",
+				id: "glm-5.3",
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				api: "openai-completions",
+				thinking: "low",
 			},
-			execBytesArgv: async () => ({ result: { ...idleResult, stdout: new Uint8Array() } }),
-			cpIn: async () => ({}),
-			catFile: async () => ({ data: new Uint8Array() }),
-			setNetwork: async () => ({}),
-			reset: async () => ({}),
-		};
-		const drow: DesktopRow = {
-			name: "d",
-			container: "fake",
-			image: "fake",
-			network: false,
-			reserved: false,
-			leaseKind: null,
-			leaseId: null,
-			leaseExpiresAt: null,
-			lastObsId: null,
-			lastObsUsed: false,
-			lastObsHash: null,
-			lastActSig: null,
-			lastActFrameHash: null,
-			shotSeq: 0,
-			createdAt: 0,
-			lastUsedAt: 0,
-		};
-		const desktops: Desktops = {
-			allocate: async () => ({ row: drow }),
-			list: () => [drow],
-			get: () => drow,
-			claim: async () => drow,
-			release: async () => {},
-			handoff: async () => {},
-			reserve: async () => {},
-			setNetwork: async () => {},
-			destroy: async () => {},
-			screenshot: async () => ({ id: "o", path: "/tmp/x", bytes: new Uint8Array([0]) }),
-			inspect: async () => ({ id: "o", state: {} }),
-			act: async () => ({ result: {} }),
-			cpIn: async () => ({}),
-			catFile: async () => ({ data: new Uint8Array() }),
-		};
-		const config = subagentsConfigSchema.parse({
-			maxRuns: 1,
-			worker: {
-				model: {
-					auth: "test",
-					id: "glm-5.3",
-					baseUrl: `http://127.0.0.1:${server.port}`,
-					api: "openai-completions",
-					thinking: "low",
-				},
+		},
+		computer: {
+			model: {
+				auth: "test",
+				id: "glm-5.3-flash",
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				api: "openai-completions",
+				thinking: "low",
 			},
-			computer: {
-				model: {
-					auth: "test",
-					id: "glm-5.3-flash",
-					baseUrl: `http://127.0.0.1:${server.port}`,
-					api: "openai-completions",
-					thinking: "low",
-				},
-			},
-			desktops: {
-				image: "localhost/goblin-desktop:1",
-				max: 1,
-				idleHours: 0,
-				memory: "1g",
-				cpus: 1,
-				pids: 16,
-			},
+		},
+		desktops: {
+			image: "localhost/goblin-desktop:1",
+			max: 1,
+			idleHours: 0,
+			memory: "1g",
+			cpus: 1,
+			pids: 16,
+		},
+	});
+	const runs = openSubagentRuns(b.dbPath);
+	const wakes: { conv: string; text: string }[] = [];
+	const owner = await openSubagents({
+		config,
+		runs,
+		auth: { resolve: async () => "k" },
+		sandboxes,
+		desktops: fakeDesktops,
+		storagePath: b.storagePath,
+		transferRoot: join(b.dir, "transfer"),
+		wake: (conv, text) => {
+			wakes.push({ conv, text });
+			return true;
+		},
+	});
+	await owner.resume();
+	return { owner, runs, dispatches: () => dispatchCount, wakes };
+}
+
+async function dispatchAndKill(b: ReturnType<typeof bed>): Promise<void> {
+	replies.push(bashReply());
+	const child = spawnChild(b);
+	await until(() => existsSync(b.marker), "gated tool dispatched in child");
+	child.kill(9);
+	await child.exited;
+}
+
+describe("subagent crash approval — a real killed process", () => {
+	test("mid-dispatch kill parks on reopen; authorize-retry runs it once more", async () => {
+		const b = bed("retry");
+		await dispatchAndKill(b);
+
+		const { owner, runs, dispatches, wakes } = await openOwner(b);
+		await until(
+			() => runs.get(1)?.status === "needs_input" && runs.get(1)?.pendingApproval !== null,
+			"run parked on the ambiguous call",
+		);
+		// The park is needs_input + a durable mirror of the call — the
+		// marker ran once in the child and zero times here.
+		const parked = runs.get(1)!;
+		expect(parked.pendingApproval?.tool).toBe("bash");
+		expect(parked.question ?? "").toContain("bash");
+		expect(markerLines(b.marker)).toEqual(["dispatched"]);
+		expect(dispatches()).toBe(0);
+		expect(wakes.some((w) => /interrupted|partially run/.test(w.text))).toBe(true);
+		expect(runs.get(1)?.noticePending).toBe(false); // the wake delivered
+
+		// authorize-retry: the gate commits the decision, then dispatches
+		// exactly once more — the model sees the fresh bash result.
+		replies.push(finishReply());
+		const resumed = await owner.decide(1, "crash:one", { kind: "authorize-retry" });
+		expect(resumed.status).toBe("running");
+		expect(resumed.pendingApproval).toBeNull();
+		await until(() => runs.get(1)?.status === "done", "run settled after retry");
+		expect(markerLines(b.marker)).toEqual(["dispatched", "REPLAYED"]);
+		expect(dispatches()).toBe(1);
+		expect(runs.get(1)?.result).toBe("recovered");
+		await owner.close();
+		runs.close();
+	}, 90_000);
+
+	test("record-result feeds the operator's text to the model with zero re-dispatch", async () => {
+		const b = bed("record");
+		await dispatchAndKill(b);
+		const base = seen.length;
+
+		const { owner, runs, dispatches } = await openOwner(b);
+		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
+		replies.push(finishReply());
+		await owner.decide(1, "crash:one", {
+			kind: "record-result",
+			result: "operator-verified: the marker already landed",
 		});
-		const runs = openSubagentRuns(dbPath);
-		const owner = await openSubagents({
-			config,
-			runs,
-			auth: { resolve: async () => "k" },
-			sandboxes,
-			desktops,
-			storagePath,
-			transferRoot: join(dir, "transfer"),
-			wake: () => true,
-		});
-		await owner.resume();
-		await until(() => runs.get(1)?.status === "done", "run settled after crash", 30_000);
-		expect(dispatches).toBe(0);
-		// Exactly one dispatch, ever.
-		expect(readFileSync(marker, "utf8").split("\n").filter(Boolean)).toEqual(["dispatched"]);
-		// The model saw the interrupted result before finishing.
-		const secondRequest = seen[1];
-		expect(secondRequest).not.toBeUndefined();
-		expect(JSON.stringify(secondRequest!.messages)).toMatch(
-			/interrupt|abort|did not complete|terminated/i,
+		await until(() => runs.get(1)?.status === "done", "run settled on the recorded result");
+		// The recorded result, not a fresh dispatch, fed the next request.
+		expect(markerLines(b.marker)).toEqual(["dispatched"]);
+		expect(dispatches()).toBe(0);
+		const next = seen[base];
+		expect(next).not.toBeUndefined();
+		expect(JSON.stringify(next!.messages)).toContain(
+			"operator-verified: the marker already landed",
 		);
 		expect(runs.get(1)?.result).toBe("recovered");
 		await owner.close();
 		runs.close();
-	}, 60_000);
+	}, 90_000);
+
+	test("abandon terminates the run with no further model call", async () => {
+		const b = bed("abandon");
+		await dispatchAndKill(b);
+		const base = seen.length;
+
+		const { owner, runs, dispatches } = await openOwner(b);
+		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
+		await owner.decide(1, "crash:one", { kind: "abandon", note: "too risky" });
+		await until(() => runs.get(1)?.status === "failed", "run failed on abandon");
+		expect(runs.get(1)?.error ?? "").toContain("abandoned");
+		expect(markerLines(b.marker)).toEqual(["dispatched"]);
+		expect(dispatches()).toBe(0);
+		// Terminate settled the submission at the round boundary — the
+		// model was never asked again.
+		await Bun.sleep(400);
+		expect(seen.length).toBe(base);
+		await owner.close();
+		runs.close();
+	}, 90_000);
+
+	test("kill while parked re-parks on the next open and the decision still lands", async () => {
+		const b = bed("repark");
+		const wakeLog = join(b.dir, "wakes.jsonl");
+		await dispatchAndKill(b);
+		// Second process: resume only — the gate re-enters, parks the
+		// row needs_input + pendingApproval, and wakes the ask.
+		const c2 = spawnChild(b, { MODE: "resume", WAKE_PATH: wakeLog });
+		const probe = openSubagentRuns(b.dbPath);
+		try {
+			await until(
+				() => {
+					const row = probe.get(1);
+					return row?.status === "needs_input" && row.pendingApproval !== null;
+				},
+				"child re-parked the run",
+			);
+		} finally {
+			probe.close();
+		}
+		expect(readFileSync(wakeLog, "utf8")).toContain("interrupted");
+		c2.kill(9);
+		await c2.exited;
+
+		// Third open: the claimed lease still guards the call. The row
+		// is already parked persistently, so the re-park signal is the
+		// re-asked wake, not a status change.
+		const { owner, runs, dispatches, wakes } = await openOwner(b);
+		await until(
+			() => wakes.some((w) => /interrupted|partially run/.test(w.text)),
+			"run re-parked and re-asked after second kill",
+		);
+		expect(runs.get(1)?.pendingApproval).not.toBeNull();
+		replies.push(finishReply());
+		await owner.decide(1, "crash:one", {
+			kind: "record-result",
+			result: "operator-verified after two kills",
+		});
+		await until(() => runs.get(1)?.status === "done", "settled after re-park");
+		expect(markerLines(b.marker)).toEqual(["dispatched"]);
+		expect(dispatches()).toBe(0);
+		expect(runs.get(1)?.result).toBe("recovered");
+		await owner.close();
+		runs.close();
+	}, 90_000);
+
+	test("a pre-seeded done lease replays the recorded result with zero dispatch", async () => {
+		const b = bed("seeded");
+		await dispatchAndKill(b);
+
+		// The settle-only crash window: the tool's result committed to
+		// the lease but the call never settled. Seed `done` directly in
+		// pi-durable's own task-scoped storage through a bare harness —
+		// no scheduling, just the commit line.
+		const storage = await openNodeSqliteStorage(b.storagePath);
+		const bare = await Harness.open(
+			storage,
+			{
+				models: createModels({ credentials: new InMemoryCredentialStore() }),
+				registry: createRegistry(),
+			},
+			BACKGROUND_CONTEXT,
+		);
+		try {
+			const live = await bare.inspect(BACKGROUND_CONTEXT);
+			const toolTask = live.tasks.find((t) => t.record.kind === "pi.tool");
+			expect(toolTask).not.toBeUndefined();
+			await bare.commit(async (tx) => {
+				const draft = await tx.doc(approvalLeaseDoc, toolTask!.record.id);
+				draft.state = "done";
+				draft.attempts = null;
+				draft.decision = null;
+				draft.result = {
+					content: [{ type: "text", text: "seeded-result: the marker already landed" }],
+				};
+			}, BACKGROUND_CONTEXT);
+		} finally {
+			await bare.close(BACKGROUND_CONTEXT);
+		}
+
+		const { owner, runs, dispatches } = await openOwner(b);
+		const base = seen.length;
+		replies.push(finishReply());
+		await until(() => runs.get(1)?.status === "done", "run settled on the seeded result");
+		expect(markerLines(b.marker)).toEqual(["dispatched"]);
+		expect(dispatches()).toBe(0);
+		expect(JSON.stringify(seen[base]?.messages)).toContain(
+			"seeded-result: the marker already landed",
+		);
+		expect(runs.get(1)?.result).toBe("recovered");
+		await owner.close();
+		runs.close();
+	}, 90_000);
 });

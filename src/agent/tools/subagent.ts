@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
+	MAX_RESULT_CHARS,
 	MAX_TASK_CHARS,
 	type SubagentRun,
 } from "../../subagent-runs.ts";
@@ -57,6 +58,19 @@ const stopSchema = z.object({
 	action: z.literal("stop"),
 	id: z.number().int().positive(),
 });
+// The operator verdict on a run parked by the crash-approval gate:
+// record-result supplies the call's result text (required — the model
+// sees it as the call's output), authorize-retry runs the interrupted
+// call once more, abandon ends the run.
+const decideSchema = z.object({
+	action: z.literal("decide"),
+	id: z.number().int().positive(),
+	decision: z.object({
+		kind: z.enum(["record-result", "authorize-retry", "abandon"]),
+		note: z.string().min(1).max(MAX_MESSAGE_CHARS).optional(),
+		result: z.string().min(1).max(MAX_RESULT_CHARS).optional(),
+	}),
+});
 
 const actionSchema = z.discriminatedUnion("action", [
 	startSchema,
@@ -64,24 +78,39 @@ const actionSchema = z.discriminatedUnion("action", [
 	statusSchema,
 	sendSchema,
 	stopSchema,
+	decideSchema,
 ]);
 
 export const subagentInputSchema = z
 	.object({
-		action: z.enum(["start", "list", "status", "send", "stop"]),
+		action: z.enum(["start", "list", "status", "send", "stop", "decide"]),
 		kind: startSchema.shape.kind.optional(),
 		task: startSchema.shape.task.optional(),
 		files: startSchema.shape.files,
 		desktop: startSchema.shape.desktop,
 		id: statusSchema.shape.id.optional(),
 		message: sendSchema.shape.message.optional(),
+		decision: decideSchema.shape.decision.optional(),
 	})
 	.superRefine((value, ctx) => {
 		const result = actionSchema.safeParse(value);
-		if (!result.success)
+		if (!result.success) {
 			for (const issue of result.error.issues) {
 				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
 			}
+			return;
+		}
+		if (
+			result.data.action === "decide" &&
+			result.data.decision.kind === "record-result" &&
+			result.data.decision.result === undefined
+		) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["decision", "result"],
+				message: "record-result needs result text",
+			});
+		}
 	});
 
 // Trusted fields stay structural; everything the run produced rides
@@ -95,6 +124,7 @@ function runSummary(row: SubagentRun) {
 		files: row.files.length > 0 ? row.files : undefined,
 		inbox: row.inbox.length > 0 ? row.inbox : undefined,
 		final_screenshot: row.finalScreenshot ?? undefined,
+		awaiting_decision: row.pendingApproval !== null ? true : undefined,
 		created_at: new Date(row.createdAt).toISOString(),
 		finished_at: row.finishedAt === null ? undefined : new Date(row.finishedAt).toISOString(),
 	};
@@ -181,6 +211,16 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 					}
 					case "stop": {
 						const row = await deps.subagents.stop(input.id, deps.conversation);
+						return { ...runSummary(row), notice: fenced(row) };
+					}
+					case "decide": {
+						const row = await deps.subagents.decide(input.id, deps.conversation, {
+							kind: input.decision.kind,
+							...(input.decision.note !== undefined ? { note: input.decision.note } : {}),
+							...(input.decision.result !== undefined
+								? { result: input.decision.result }
+								: {}),
+						});
 						return { ...runSummary(row), notice: fenced(row) };
 					}
 				}

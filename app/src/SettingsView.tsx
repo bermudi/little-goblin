@@ -1338,7 +1338,7 @@ export function SettingsView({
 											placeholder="add a voice"
 											ariaLabel="add alternate voice"
 											suggestions={VOICE_SUGGESTIONS}
-											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Only English and Spanish are recognized, matched on each name's language tag."
 										/>
 									</>
 								)}

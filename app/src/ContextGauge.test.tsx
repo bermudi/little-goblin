@@ -136,6 +136,57 @@ describe("ContextGauge conversation switch", () => {
 		expect(label()).toBe("ctx ?");
 	});
 
+	test("Compact now posts through the conversation's lane and reports the fold", async () => {
+		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
+		const hit = { compacted: null as string | null };
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/aaa/context")
+				return Promise.resolve(
+					new Response(JSON.stringify(ctxA), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+				);
+			if (url === "/api/app/conversations/aaa/compact" && init?.method === "POST") {
+				hit.compacted = url;
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							compacted: true,
+							eventsCompacted: 7,
+							tailEvents: 3,
+							tokensBefore: 4100,
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					),
+				);
+			}
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const btn = container.querySelector(".ctx-btn") as HTMLButtonElement;
+		act(() => {
+			btn.click();
+		});
+		const act1 = container.querySelector(".ctx-act") as HTMLButtonElement;
+		expect(act1.textContent).toBe("Compact now");
+		await act(async () => {
+			act1.click();
+		});
+		expect(hit.compacted).toBe("/api/app/conversations/aaa/compact");
+		expect(container.querySelector(".ctx-outcome")?.textContent).toBe(
+			"folded 7 messages (~4k tok) — kept the last 3",
+		);
+		// The numbers are the last turn's usage — a fold moves the next
+		// turn, not this readout.
+		expect(container.querySelector(".ctx-btn")?.textContent).toBe("5.0k/10.0k · 50%");
+	});
+
 	test("a late read for the previous conversation is dropped on switch", async () => {
 		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
 		const ctxB = view({ input: 2000, limit: 10000, pct: 20, turns: 1 });

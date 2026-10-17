@@ -1518,9 +1518,11 @@ a.hit-title {
 
 /* Context gauge — the composer's window-utilization readout. Reads as
    a knob until clicked; the popover floats above the bar like the
-   note picker. */
+   note picker. Deliberately NOT position:relative — the popover's
+   width/offsets must resolve against form.composer's box, not this
+   button-width span. */
 .ctx-gauge {
-	position: relative;
+	display: inline-flex;
 }
 .ctx-btn {
 	display: inline-flex;
@@ -1587,6 +1589,9 @@ a.hit-title {
 	display: flex;
 	align-items: baseline;
 	justify-content: space-between;
+	/* space-between alone collapses to a zero gap when the popover is
+	   narrow — the pair must never touch. */
+	gap: 0.75rem;
 	font-size: 12.5px;
 	font-weight: 600;
 }
@@ -1596,6 +1601,7 @@ a.hit-title {
 	font-weight: 400;
 	color: var(--app-fg-muted);
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 .ctx-bar {
 	height: 0.4rem;
@@ -1619,6 +1625,7 @@ a.hit-title {
 	display: flex;
 	align-items: baseline;
 	justify-content: space-between;
+	gap: 0.75rem;
 	font-size: 12px;
 }
 .ctx-rows dt {
@@ -1633,6 +1640,27 @@ a.hit-title {
 .ctx-pop .empty {
 	padding: 0;
 	font-size: 11px;
+}
+/* The manual lever — same flat-list affordance as the note picker's
+   rows. */
+.ctx-act {
+	font-size: 12px;
+	text-align: left;
+	padding: 0.35rem 0.45rem;
+	border-radius: 6px;
+	border: 1px solid var(--app-border);
+	color: var(--app-fg);
+}
+.ctx-act:hover:not(:disabled) {
+	background: var(--app-hover);
+}
+.ctx-act:disabled {
+	opacity: 0.55;
+}
+.ctx-outcome {
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	margin: 0;
 }
 
 /* Recording state replaces the textarea with a live pill. */

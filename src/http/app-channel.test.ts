@@ -47,6 +47,7 @@ function setup(
 		titleFor?: AppChannelDeps["titleFor"];
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
+		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
 	const home = useHome("goblin-app-");
@@ -61,6 +62,7 @@ function setup(
 			}).model,
 			system: "test",
 		}),
+		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 		// projectWorkdir mirrors index.ts's workdirFor — a vanished
 		// project dir throws here, inside the turn's admission.
 		makeTools: (conv) => {
@@ -708,6 +710,61 @@ describe("app channel http", () => {
 			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(
 				404,
 			);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("compact folds history through the lane — the manual lever", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			// The fold needs a span past the tail budget (20k tokens
+			// when the step reports no contextWindow) — big user
+			// messages put the earlier exchanges over it.
+			const big = "past ".repeat(25000);
+			for (let i = 0; i < 4; i++) {
+				store.append("app/chat-01", [
+					{ id: `u${i}`, role: "user", parts: [{ type: "text", text: `${big} ${i}` }] },
+				]);
+				store.append("app/chat-01", [
+					{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+				]);
+			}
+			const res = await call("/api/app/conversations/chat-01/compact", { method: "POST" });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as
+				| { compacted: true; eventsCompacted: number; tailEvents: number; tokensBefore: number }
+				| { compacted: false; reason: string };
+			expect(body).toMatchObject({ compacted: true });
+			if (body.compacted) {
+				expect(body.eventsCompacted).toBeGreaterThan(0);
+				expect(body.tokensBefore).toBeGreaterThan(0);
+			}
+			expect(store.getCompaction("app/chat-01")).not.toBeNull();
+
+			// Nothing to fold and a ghost stay honest — noop, 404, 405.
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-02" }),
+			});
+			const noop = await call("/api/app/conversations/chat-02/compact", { method: "POST" });
+			expect(await noop.json()).toEqual({
+				compacted: false,
+				reason: "nothing worth compacting",
+			});
+			expect(
+				(await call("/api/app/conversations/ghost/compact", { method: "POST" })).status,
+			).toBe(404);
+			expect((await call("/api/app/conversations/chat-02/compact")).status).toBe(405);
 		} finally {
 			http.stop();
 		}

@@ -65,6 +65,7 @@ import {
 import { type Project, ProjectInputError, type ProjectStore } from "../projects.ts";
 import type {
 	AppAttachmentResponse,
+	AppCompactResponse,
 	AppConfigView,
 	AppContextView,
 	AppConversationCreate,
@@ -1454,6 +1455,48 @@ export async function handleAppApi(
 		log.info("app stop", { conversation: convId.id, stopped });
 		const body: AppStopResponse = { stopped };
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// /compact is the same lane job the Telegram command queues — the
+	// request awaits it, so a running turn finishing first shows up as a
+	// slow response, not a 202 the client then has to poll past.
+	const compactMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/compact$/);
+	if (compactMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(compactMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		try {
+			const outcome = await runtime.compact(conv);
+			const body: AppCompactResponse =
+				outcome.kind === "compacted"
+					? {
+							compacted: true,
+							eventsCompacted: outcome.eventsCompacted,
+							tailEvents: outcome.tailEvents,
+							tokensBefore: outcome.tokensBefore,
+						}
+					: { compacted: false, reason: outcome.reason };
+			log.info("app compact", {
+				conversation: convId.id,
+				kind: outcome.kind,
+				...(outcome.kind === "compacted"
+					? { events: outcome.eventsCompacted, tokensBefore: outcome.tokensBefore }
+					: { reason: outcome.reason }),
+			});
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			log.error("app compact failed", err, { conversation: convId.id });
+			return Response.json(
+				{ error: `compact failed: ${err instanceof Error ? err.message : String(err)}` },
+				{ status: 500, headers: NO_STORE },
+			);
+		}
 	}
 
 	// GET /api/app/conversations/<id>/stream — the resumable-stream

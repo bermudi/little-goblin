@@ -20,6 +20,7 @@ import {
 	type UIMessage,
 } from "ai";
 import {
+	compactConversation,
 	getConfig,
 	getContext,
 	getConversationConfig,
@@ -769,6 +770,11 @@ export function ContextGauge({
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [open, setOpen] = useState(false);
+	const [compacting, setCompacting] = useState(false);
+	// The manual lever's own readout — the gauge numbers are the last
+	// turn's usage, so a fold doesn't move them until the next turn;
+	// the outcome line is the feedback that it happened.
+	const [compactNote, setCompactNote] = useState<string | null>(null);
 	const seq = useRef(0);
 	// A read belongs to the conversation that produced it — an id (or
 	// credential) switch makes it stale, and a still-in-flight read for
@@ -779,6 +785,8 @@ export function ContextGauge({
 		seq.current++;
 		setCtx(null);
 		setFailed(false);
+		setCompacting(false);
+		setCompactNote(null);
 	}, [token, conversationId]);
 	useEffect(() => {
 		if (conversationId === undefined || busy) return;
@@ -830,7 +838,7 @@ export function ContextGauge({
 				<span className="ctx-label">{failedRead ? "ctx ?" : contextLabel(ctx)}</span>
 			</button>
 			{open && ctx !== null && (
-				<div className="note-pick composer-pick ctx-pop" role="status">
+				<div className="note-pick composer-pick ctx-pop">
 					<div className="ctx-head">
 						<span>Context window</span>
 						<span className="mono">
@@ -862,6 +870,43 @@ export function ContextGauge({
 						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
 						{ctx.limit === null ? " · limit unknown" : ""}
 					</p>
+					<button
+						type="button"
+						className="ctx-act"
+						disabled={compacting}
+						onClick={() => {
+							if (conversationId === undefined) return;
+							const id = conversationId;
+							const n = seq.current;
+							setCompacting(true);
+							setCompactNote(null);
+							void compactConversation(token, id)
+								.then((outcome) => {
+									if (n !== seq.current) return;
+									setCompactNote(
+										outcome.compacted
+											? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
+											: `nothing to compact — ${outcome.reason}`,
+									);
+								})
+								.catch((err: unknown) => {
+									if (n === seq.current)
+										setCompactNote(
+											`compact failed: ${err instanceof Error ? err.message : String(err)}`,
+										);
+								})
+								.finally(() => {
+									if (n === seq.current) setCompacting(false);
+								});
+						}}
+					>
+						{compacting ? "Compacting…" : "Compact now"}
+					</button>
+					{compactNote !== null && (
+						<p className="ctx-outcome" role="status">
+							{compactNote}
+						</p>
+					)}
 				</div>
 			)}
 		</span>

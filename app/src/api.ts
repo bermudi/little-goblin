@@ -10,6 +10,7 @@
 
 import type {
 	AppAttachmentResponse,
+	AppCompactResponse,
 	AppConfigPatch,
 	AppConfigView,
 	AppContextView,
@@ -439,6 +440,16 @@ export function patchConversationConfig(
 // doesn't list the model), never zero.
 export function getContext(token: string | null, id: string): Promise<AppContextView> {
 	return request(token, `/api/app/conversations/${seg(id)}/context`);
+}
+
+// The manual lever — the same lane compaction /compact runs in
+// Telegram. The POST awaits the job, so a running turn finishing first
+// shows up as a slow response.
+export function compactConversation(
+	token: string | null,
+	id: string,
+): Promise<AppCompactResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/compact`, { method: "POST" });
 }
 
 // Read-aloud — reply text in, base64 ogg chunks out.

@@ -36,6 +36,14 @@ format = wire format — no translation layer to design, drift, or test
 twice. `POST /api/app/conversations/<id>/stop` rides `runtime.stop` —
 the same epoch bump + abort the Telegram `/stop` command owns — so the
 client's Stop button ends the turn server-side, not just its stream.
+`POST /api/app/conversations/<id>/compact` rides `runtime.compact` the
+same way (ruling 2026-10-16): the manual lever lives in the context
+gauge's popover, not a composer command grammar — the app channel
+parses no slash commands, its controls are routes plus buttons. The
+request awaits the lane job, so a running turn completing first shows
+up as a slow response; the gauge numbers are the last turn's usage, so
+the popover reports the fold as its own line rather than pretending
+the readout moved.
 
 **Auth.** No Telegram `initData` exists outside Telegram. The app
 channel's lock is a bearer token on `/api/app/*` — optional since

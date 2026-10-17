@@ -133,6 +133,19 @@ export interface AppStopResponse {
 	stopped: boolean;
 }
 
+/** POST /api/app/conversations/<id>/compact — the manual lever, the same
+ * compaction /compact runs in Telegram, serialized through the lane (a
+ * running turn completes first). `noop` carries the why — history too
+ * small, boundary already current, compaction unconfigured. */
+export type AppCompactResponse =
+	| {
+			compacted: true;
+			eventsCompacted: number;
+			tailEvents: number;
+			tokensBefore: number;
+	  }
+	| { compacted: false; reason: string };
+
 /** PATCH /api/app/conversations/<id> — applied fields echoed back. An
  * explicit title always wins over auto-titling; archived moves the row
  * between the rail and the archived section (activity clears it

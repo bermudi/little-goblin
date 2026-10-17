@@ -61,7 +61,7 @@ import { openNotes } from "./notes.ts";
 import { openProjects, projectWorkdir } from "./projects.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents, type Subagents } from "./subagents.ts";
+import { openSubagents, type Subagents } from "./subagents/mod.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,

@@ -11,16 +11,16 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { subagentsConfigSchema } from "./config.ts";
-import type { Desktops, DesktopRow } from "./desktops.ts";
-import type { Sandboxes } from "./sandboxes.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents } from "./subagents.ts";
-import { setLogFile } from "./log.ts";
+import { subagentsConfigSchema } from "../config.ts";
+import type { DesktopRow, Desktops } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
+import type { Sandboxes } from "../sandboxes.ts";
+import { openSubagentRuns } from "../subagent-runs.ts";
+import { openSubagents } from "./mod.ts";
 
 setLogFile(null);
 
-// Same localhost OpenAI-completions fake as subagents.test.ts.
+// Same localhost OpenAI-completions fake as mod.test.ts.
 function sse(events: object[]): Response {
 	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });
@@ -107,7 +107,7 @@ const idleResult = {
 
 describe("subagent crash recovery — a real killed process", () => {
 	test("an interrupted unsafe tool is not dispatched again", async () => {
-		child = Bun.spawn(["bun", "run", "src/test-helpers/subagent-crash-child.ts"], {
+		child = Bun.spawn(["bun", "run", join(import.meta.dir, "crash-child.ts")], {
 			env: {
 				...process.env,
 				MODEL_URL: `http://127.0.0.1:${server.port}`,

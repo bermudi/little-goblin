@@ -1,10 +1,11 @@
 // The subagent runtime (design/subagents.md): two purpose-typed runs —
 // worker (coding tools over the origin conversation's sandbox) and
-// computer (the desktop pool's observation/input surface). This is the
-// ONLY module that imports Pi Durable / pi-ai / chord (the herdr.ts
-// rule): harness, registry, extensions, env adapter, monitors, queue
-// admission and close live here; goblin rows in subagent-runs.ts hold
-// routing so a restart is pause-and-resume, never kill.
+// computer (the desktop pool's observation/input surface). Only this
+// directory imports Pi Durable, pi-ai and chord (the herdr.ts rule):
+// harness, registry, extensions and env adapter live in its satellites,
+// while monitors, queue admission and close live here; goblin rows in
+// subagent-runs.ts hold routing so a restart is pause-and-resume, never
+// kill.
 //
 // Crash gaps are the design's load-bearing detail: every input text is
 // persisted with its revision AND mode before admit (the deterministic
@@ -34,19 +35,19 @@ import {
 	type SubmissionId,
 	type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
-import type { AuthStore } from "./auth.ts";
-import { exportNamedBytes } from "./box-files.ts";
-import type { SubagentsConfig } from "./config.ts";
-import { DesktopError, DesktopLeaseError, type Desktops, type LeaseHolder } from "./desktops.ts";
-import { log } from "./log.ts";
-import { PodmanError } from "./podman.ts";
-import { SandboxError, type Sandboxes } from "./sandboxes.ts";
+import type { AuthStore } from "../auth.ts";
+import { exportNamedBytes } from "../box-files.ts";
+import type { SubagentsConfig } from "../config.ts";
+import { DesktopError, DesktopLeaseError, type Desktops, type LeaseHolder } from "../desktops.ts";
+import { log } from "../log.ts";
+import { PodmanError } from "../podman.ts";
+import { SandboxError, type Sandboxes } from "../sandboxes.ts";
 import {
 	COMPUTER_PROMPT,
 	subagentNotice,
 	subagentTaskInput,
 	WORKER_PROMPT,
-} from "./subagent-prompts.ts";
+} from "../subagent-prompts.ts";
 import {
 	type InputMode,
 	MAX_INPUT_FILES,
@@ -55,14 +56,14 @@ import {
 	type SubagentKind,
 	type SubagentRun,
 	type SubagentRuns,
-} from "./subagent-runs.ts";
+} from "../subagent-runs.ts";
 
-import { SandboxEnv } from "./subagents/env.ts";
-import { SubagentError } from "./subagents/errors.ts";
-import { type KindSpec, kindSpec, type SubagentModelProfile } from "./subagents/models.ts";
-import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./subagents/run-doc.ts";
-import { buildHarness } from "./subagents/tools.ts";
-import { buildTransfer } from "./subagents/transfer.ts";
+import { SandboxEnv } from "./env.ts";
+import { SubagentError } from "./errors.ts";
+import { type KindSpec, kindSpec, type SubagentModelProfile } from "./models.ts";
+import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./run-doc.ts";
+import { buildHarness } from "./tools.ts";
+import { buildTransfer } from "./transfer.ts";
 
 export { SubagentError };
 

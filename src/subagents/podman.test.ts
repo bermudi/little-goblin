@@ -4,7 +4,7 @@
 // boundary executes in an actual container and is verified through
 // catFile/execArgv, not by what the model claims:
 //
-//     GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents.podman.test.ts
+//     GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
 //
 // Store safety mirrors the drift check: a unique per-run token means
 // "exists" == "created by this run"; preflight refuses on collision
@@ -15,17 +15,17 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { subagentsConfigSchema } from "./config.ts";
-import type { Desktops, DesktopRow } from "./desktops.ts";
-import { setLogFile } from "./log.ts";
-import { makePodman, type Podman } from "./podman.ts";
-import { boundedRun, spawnProc } from "./proc.ts";
-import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "./sandboxes.ts";
 import type { Context } from "@earendil-works/chord";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
-import { makeSandboxEnv } from "./subagents/env.ts";
-import { openSubagents, type Subagents } from "./subagents.ts";
+import { subagentsConfigSchema } from "../config.ts";
+import type { DesktopRow, Desktops } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
+import { makePodman, type Podman } from "../podman.ts";
+import { boundedRun, spawnProc } from "../proc.ts";
+import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "../sandboxes.ts";
+import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
+import { makeSandboxEnv } from "./env.ts";
+import { openSubagents, type Subagents } from "./mod.ts";
 
 const LIVE = process.env.GOBLIN_SUBAGENTS_PODMAN_LIVE === "1";
 const TOKEN = `${process.pid.toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -480,7 +480,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		const proc = Bun.spawn(
 			[
 				"bun",
-				join(import.meta.dir, "subagents-kill.driver.ts"),
+				join(import.meta.dir, "kill.driver.ts"),
 				dir,
 				`http://127.0.0.1:${server!.port}`,
 				CONV,

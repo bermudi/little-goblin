@@ -1,22 +1,22 @@
-// Spawned by src/subagents.podman.test.ts (GOBLIN_SUBAGENTS_PODMAN_LIVE=1):
+// Spawned by src/subagents/podman.test.ts (GOBLIN_SUBAGENTS_PODMAN_LIVE=1):
 // a second process that owns a real Pi Durable worker run against a real
 // podman sandbox, writes a ready file with its pid, then is SIGKILLed by
 // the test mid-bash. Recovery is verified by the test reopening the same
 // state — the interrupted, replay-unsafe bash call must be reported
 // interrupted, never re-executed in the container.
 //
-// usage: bun src/subagents-kill.driver.ts \
+// usage: bun src/subagents/kill.driver.ts \
 //   <dbDir> <modelUrl> <conv> <workspace> <sbxPrefix> <network> <readyFile>
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { subagentsConfigSchema } from "./config.ts";
-import type { Desktops, DesktopRow } from "./desktops.ts";
-import { setLogFile } from "./log.ts";
-import { makePodman } from "./podman.ts";
-import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents } from "./subagents.ts";
+import { subagentsConfigSchema } from "../config.ts";
+import type { DesktopRow, Desktops } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
+import { makePodman } from "../podman.ts";
+import { makeSandboxes, openSandboxes } from "../sandboxes.ts";
+import { openSubagentRuns } from "../subagent-runs.ts";
+import { openSubagents } from "./mod.ts";
 
 const [dbDir, modelUrl, conv, workspace, sbxPrefix, network, readyFile] = process.argv.slice(2);
 if (!dbDir || !modelUrl || !conv || !workspace || !sbxPrefix || !network || !readyFile) {

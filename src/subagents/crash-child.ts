@@ -6,11 +6,11 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { subagentsConfigSchema } from "../config.ts";
-import type { Desktops, DesktopRow } from "../desktops.ts";
+import type { DesktopRow, Desktops } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { openSubagentRuns } from "../subagent-runs.ts";
-import { openSubagents } from "../subagents.ts";
-import { setLogFile } from "../log.ts";
+import { openSubagents } from "./mod.ts";
 
 const MODEL_URL = process.env.MODEL_URL ?? "";
 const DB_PATH = process.env.DB_PATH ?? "";

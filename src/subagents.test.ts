@@ -32,13 +32,9 @@ import { setLogFile } from "./log.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
-import {
-	makeSandboxEnv,
-	openSubagents,
-	type SubagentModelProfile,
-	type Subagents,
-	subagentModelProfileSchema,
-} from "./subagents.ts";
+import { makeSandboxEnv } from "./subagents/env.ts";
+import { subagentModelProfileSchema, type SubagentModelProfile } from "./subagents/models.ts";
+import { openSubagents, type Subagents } from "./subagents.ts";
 import { type DeliveryApi, makeDeliverySink } from "./tg/delivery.ts";
 import { type WakeDeps, wakeConversation } from "./wake.ts";
 

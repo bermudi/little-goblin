@@ -369,10 +369,11 @@ src/
   tg/               grammy: intake, buffer, delivery, commands, guest
                     mode (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
-  memory.ts         recall contexts, retention builders, status, worker timer
-                    (wire client in hindsight.ts, outbox in memory-queue.ts,
-                    outage episodes in memory-outage.ts, destinations in
-                    memory-destinations.ts, forget in memory-forget.ts)
+  memory/           mod.ts: recall contexts, retention builders, status,
+                    worker timer; hindsight.ts: wire client; queue.ts:
+                    outbox; outage.ts: episodes; destinations.ts: bindings;
+                    forget.ts: deletion owner; policy.ts: config schema;
+                    screen.ts: retained-text screening
   projects.ts       projects — rows + goblin-owned home scoping an app
                     conversation's cwd, instructions and memory choice
                     (design/projects.md → Projects)

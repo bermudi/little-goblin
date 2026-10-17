@@ -131,7 +131,7 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    render dimmed so corrections are visible. Forgetting is the one
    mutation: the route runs the same protocol as `/forget delete` —
    quiesce, settle in-flight retention, suppress, park outbox rows,
-   delete, redact — extracted into one owner (`src/memory-forget.ts`)
+   delete, redact — extracted into one owner (`src/memory/forget.ts`)
    that both surfaces call, with a confirm dialog as the go-ahead. The
    command's issuing-conversation fence stays in the command; the
    cross-conversation recall-in-flight window it already tolerates is
@@ -264,7 +264,7 @@ It never meant dropping the operator's words: a voice or video note whose
 transcript is stored in history is the completed text exchange itself, paid
 for at intake and durable on disk, the same class of loss compaction's #84
 fix addressed on the model-context side. Memory's text projection (the one
-`messageText` in `memory.ts`, shared by the recall query, the retained user
+`messageText` in `memory/mod.ts`, shared by the recall query, the retained user
 burst, prior context, and the assistant text) therefore embeds stored
 transcripts with a path reference, compaction's format
 (`[attachment: path — transcript: …]`). Transcript-less attachments stay
@@ -487,3 +487,12 @@ portable container assets and operations guidance → memory client, durable
 queue, controls, and turn integration → boundary tests → explicitly
 configured live verification. Reranker selection and exact provider
 configuration must be resolved before the live-verification step.
+
+### Module map
+
+`src/memory/mod.ts` composes recall, retention, status and the worker.
+Its siblings are `hindsight.ts` (wire client), `queue.ts` (outbox),
+`outage.ts` (outage episodes), `destinations.ts` (destination bindings),
+`forget.ts` (forget owner), `policy.ts` (configuration schema), and
+`screen.ts` (retained-text screening). Tests are colocated. The forget
+owner's edge back to the composition module is type-only.

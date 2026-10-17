@@ -26,7 +26,7 @@ import { appAddress, captureConversationSettings, openStore } from "./conversati
 import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
-import { openTurnJournal } from "./turn-journal.ts";
+import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import {
 	deferred,
@@ -3743,6 +3743,81 @@ describe("turn journal", () => {
 			expect(run.delivery).toBe("undelivered");
 			// 'fenced' is terminal: a boot reclassify must never claim it.
 			expect(journal.interrupted()).toEqual([]);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("a journal dispatch write that throws fails the turn — later calls never execute", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const real = openTurnJournal(store.db);
+		let dispatchNotes = 0;
+		const journal: TurnJournal = {
+			...real,
+			noteToolDispatch(runId, callId, name, args) {
+				dispatchNotes++;
+				if (dispatchNotes === 2) {
+					throw new Error("injected journal dispatch failure");
+				}
+				return real.noteToolDispatch(runId, callId, name, args);
+			},
+		};
+		const edge = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			[
+				toolCallPart("call-2", "probe", "{}"),
+				toolCallPart("call-3", "probe", "{}"),
+				finishPart("tool-calls"),
+			],
+			textParts("SENTINEL-SHOULD-NOT-STREAM"),
+		]);
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return { ok: true };
+					},
+				}),
+			}),
+		});
+		try {
+			const sink = new RecordingSink();
+			let dones = 0;
+			const onDone = sink.onDone.bind(sink);
+			sink.onDone = (d) => {
+				dones++;
+				onDone(d);
+			};
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			const done = await sink.done;
+			expect(done.kind).toBe("error");
+			if (done.kind === "error") {
+				expect(done.message).toContain("injected journal dispatch failure");
+			}
+			expect(dones).toBe(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			expect(dispatchNotes).toBe(2);
+			expect(dones).toBe(1);
+			expect(edge.streamCalls).toHaveLength(2);
+			expect(edge.streamCalls[1]?.abortSignal?.aborted).toBe(true);
+			expect(executions).toBe(1);
+			expect(store.history(conv.id).map((m) => m.role)).not.toContain("assistant");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("error");
+			expect(run.delivery).toBe("failed");
+			const calls = journal.callsFor(run.runId);
+			expect(calls.find((c) => c.toolCallId === "call-1")?.state).toBe("completed");
+			expect(calls.find((c) => c.toolCallId === "call-1")?.result).toBe('{"ok":true}');
 		} finally {
 			await runtime.shutdown();
 			store.close();

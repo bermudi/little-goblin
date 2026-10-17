@@ -128,6 +128,12 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				if (doc?.outcome !== undefined && doc?.outcome !== null) {
 					return {
 						control: { terminate: true },
+						// The action was not performed, so it produced no
+						// observed result: an error result, as the harness
+						// itself encodes a call with no result. A tool that
+						// declares a structured output schema (bash) cannot
+						// answer success without it.
+						isError: true,
 						output: [
 							{
 								type: "text" as const,

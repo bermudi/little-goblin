@@ -37,6 +37,7 @@ import {
 	armConversationFaults,
 	armSubmissionWaitFault,
 	armSubmitFault,
+	captureLog,
 	dirs,
 	type FakeModel,
 	type FakeReply,
@@ -45,6 +46,7 @@ import {
 	forgetOwner,
 	HAIKU_PROFILE,
 	haikuConfig,
+	harnessReports,
 	type MemSandbox,
 	open,
 	openRunStore,
@@ -1473,6 +1475,34 @@ describe("subagents owner", () => {
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("early");
 		expect(r.box.exists("/work/x.txt")).toBe(false);
+	});
+
+	test("a bash call bundled after finish is refused as an error result, never a success claim", async () => {
+		const captured = captureLog();
+		const sandboxes = fakeSandboxes();
+		const r = rig({ sandboxes });
+		const o = await open(r);
+		// One round, two sequential calls: finish records the outcome, then
+		// bash reaches the terminal wrapper, which refuses it.
+		r.model.push({
+			kind: "tools",
+			calls: [
+				{ name: "finish", args: { result: "early" } },
+				{ name: "bash", args: { command: "echo late > /work/late.txt" } },
+			],
+		});
+		const a = await o.start(job(r, "t"));
+		await until(() => r.runs.get(a.id)?.status === "done", "done");
+		expect(r.runs.get(a.id)?.result).toBe("early");
+		captured.stop();
+		// The action was not performed: the sandbox never saw the command.
+		expect(sandboxes.dispatchCalls).toBe(0);
+		expect(sandboxes.fs.exists("/work/late.txt")).toBe(false);
+		// A refusal is not a success claim. bash declares a structured
+		// output schema, so a success-shaped answer without it logged
+		// pi-durable's "Tool bash returned no structuredOutput" report.
+		expect(harnessReports(captured.lines)).toEqual([]);
+		expect(captured.lines.some((l) => l.includes("subagent settle"))).toBe(true);
 	});
 
 	test("a committed finish survives an unanswered submission", async () => {

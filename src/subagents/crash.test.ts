@@ -22,6 +22,7 @@ import { setLogFile } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { approvalLeaseDoc, openSubagents, type Subagents } from "./mod.ts";
+import { captureLog, harnessReports } from "./testing.ts";
 
 setLogFile(null);
 
@@ -317,6 +318,7 @@ describe("subagent crash approval — a real killed process", () => {
 		const b = bed("record");
 		await dispatchAndKill(b);
 		const base = seen.length;
+		const captured = captureLog();
 
 		const { owner, runs, dispatches, wakes } = await openOwner(b);
 		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
@@ -353,6 +355,15 @@ describe("subagent crash approval — a real killed process", () => {
 			outcome: "unverified",
 		});
 		expect(wakes.some((w) => w.text.includes("Crash resolution warning"))).toBe(true);
+		// A declared answer is an error result, never a success-shaped one:
+		// a success would have to carry bash's declared structured output,
+		// and answering without it made pi-durable report a broken tool —
+		// "Tool bash returned no structuredOutput" — on every resolution.
+		captured.stop();
+		expect(harnessReports(captured.lines)).toEqual([]);
+		// The resumed run logged its own lines, so an empty report list is
+		// the report's absence, not a failed capture.
+		expect(captured.lines.some((l) => l.includes("subagent settle"))).toBe(true);
 		await owner.close();
 		runs.close();
 	}, 90_000);
@@ -361,6 +372,7 @@ describe("subagent crash approval — a real killed process", () => {
 		const b = bed("abandon");
 		await dispatchAndKill(b);
 		const base = seen.length;
+		const captured = captureLog();
 
 		const { owner, runs, dispatches } = await openOwner(b);
 		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
@@ -378,6 +390,11 @@ describe("subagent crash approval — a real killed process", () => {
 		// model was never asked again.
 		await Bun.sleep(400);
 		expect(seen.length).toBe(base);
+		// The abandoned call produced no observed result: an error result,
+		// so the harness reports no broken tool.
+		captured.stop();
+		expect(harnessReports(captured.lines)).toEqual([]);
+		expect(captured.lines.some((l) => l.includes("subagent settle"))).toBe(true);
 		await owner.close();
 		runs.close();
 	}, 90_000);
@@ -498,12 +515,28 @@ describe("subagent crash approval — a real killed process", () => {
 
 			const base = seen.length;
 			replies.push(finishReply());
+			const captured = captureLog();
 			const { owner, runs, dispatches } = await openOwner(b);
 			await until(() => runs.get(1)?.status === "done", "run settled on the seeded result");
 			expect(markerLines(b.marker)).toEqual(["dispatched"]);
 			expect(dispatches()).toBe(0);
 			assertions(JSON.stringify(seen[base]?.messages));
 			expect(runs.get(1)?.result).toBe("recovered");
+			captured.stop();
+			// The stored row predates declarations being error results, so
+			// it replays with the same marking: a schema tool's stored
+			// success always carries its structured output, and a row
+			// without one can only replay as an error result.
+			expect(harnessReports(captured.lines)).toEqual([]);
+			expect(
+				captured.lines.some((l) =>
+					l.includes(
+						tag === "legacy"
+							? "legacy declared result normalized"
+							: "persisted result replayed as an error result",
+					),
+				),
+			).toBe(true);
 			await owner.close();
 			runs.close();
 		}, 90_000);

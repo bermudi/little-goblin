@@ -643,6 +643,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					text: `[crash resolution: ${decision.decidedBy === "goblin" ? "Goblin-decided" : "legacy decision; provenance not recorded"}; interrupted outcome: unverified]\nThis is a declared result, not observed tool output or proof of success. Independently check the effect before claiming success.\nDeclared result: ${decision.result}\nEvidence: ${decision.evidence ?? "not recorded (legacy decision)"}\nReasoning: ${decision.reasoning ?? "not recorded (legacy decision)"}${decision.note === undefined ? "" : `\nDecision note: ${decision.note}`}`,
 				},
 			],
+			// Answered as an error result, not a success: a successful
+			// call would have to return the tool's own schema-valid
+			// `structuredOutput`, and a declaration must never present
+			// itself as observed output. `isError` is the harness's own
+			// convention for a call that produced no observed result, and
+			// the model still reads the declaration text above.
+			isError: true,
 			diagnostics: [
 				{
 					severity: "warn" as const,
@@ -666,6 +673,23 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	function withApprovalGate<T extends ToolRegistration>(tool: T): T {
 		const inner = tool.execute;
 		const name = tool.name;
+		// A tool that declares a structured output schema can only have
+		// succeeded with that output; a persisted row without it — a
+		// declaration committed by a build from before declarations
+		// became error results — replays as an error result, exactly as
+		// a fresh declaration returns. A pure function of the stored row,
+		// so replay stays deterministic across restarts.
+		function replayed(result: ToolExecutionResult, api: ToolExecutionApi): ToolExecutionResult {
+			if (tool.structuredOutputSchema === undefined) return result;
+			if (result.isError === true || result.structuredOutput !== undefined) return result;
+			log.info("subagent crash lease: persisted result replayed as an error result", {
+				run: rowForConversation(String(api.conversationId))?.id,
+				piTaskId: String(api.taskId),
+				tool: name,
+				callId: api.callId,
+			});
+			return { ...result, isError: true };
+		}
 		return {
 			...tool,
 			replay: "safe",
@@ -687,7 +711,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						});
 						return result;
 					}
-					return lease.result as ToolExecutionResult;
+					return replayed(lease.result as ToolExecutionResult, api);
 				}
 				// Claim generations survive decisions — a retry that itself
 				// dies mid-flight re-asks with the raised count.
@@ -742,6 +766,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 								text: reason,
 							},
 						],
+						// The call never produced an observed result, so it is
+						// answered as an error result — the harness's own
+						// convention for an interrupted call (see
+						// declaredApprovalResult above).
+						isError: true,
 						control: { terminate: true },
 					} satisfies ToolExecutionResult;
 				}

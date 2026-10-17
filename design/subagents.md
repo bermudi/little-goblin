@@ -577,7 +577,23 @@ built once).
   run. The decision commits
   to the lease before acting — a crash mid-decision re-asks. A `done`
   lease replays its recorded result with zero dispatch: the
-  result-committed-but-unsettled window needs no verdict. A decided
+  result-committed-but-unsettled window needs no verdict. Answers the
+  harness cannot call a success are error results (`isError`), never
+  success-shaped: a declared crash resolution, an `abandon`, and a
+  refusal (an action not performed because a terminal outcome is
+  already recorded) each report an outcome no tool observed. `bash`
+  declares a structured output schema, so a success would have to
+  carry that output — the one thing a declaration must never present
+  as observed, and the thing a refusal never has. An error result is
+  the harness's own encoding for a call with no observed result; the
+  declaration or refusal text, its `crash_resolution_unverified`
+  warning and its structured details still reach the model in full.
+  Without the marking, every crash resolution logged pi-durable's
+  broken-tool report (`Tool bash returned no structuredOutput`) to the
+  host. A replayed `done` row follows the same rule: a schema tool's
+  stored success always carries its structured output, so a row
+  without one — every row committed before this ruling — replays as
+  an error result. A decided
   verdict may queue behind global capacity; the scheduler's admission
   releases it on BOTH paths — a live waiter or a stored decision —
   and attaches a settlement monitor either way unless one is already

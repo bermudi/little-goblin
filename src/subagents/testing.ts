@@ -12,10 +12,35 @@ import { Harness } from "@earendil-works/pi-durable";
 import type { SubagentsConfig } from "../config.ts";
 import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "../desktops.ts";
 import { DesktopError, DesktopLeaseError } from "../desktops.ts";
+import { setLogFile, setLogWriter } from "../log.ts";
 import { SandboxError, type Sandboxes } from "../sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { openSubagents, type Subagents } from "./mod.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";
+
+// ---------- process-log capture ----------
+
+// The harness's host-side report channel is wired to log.error("subagent
+// harness report"). A tool that declares a structured output schema
+// (bash) and answers without it lands there as a broken tool, so the
+// tests that pin a declared or refused answer capture the log and
+// assert the report is absent. stop() detaches in the test's cleanup.
+export function captureLog(): { lines: string[]; stop: () => void } {
+	const lines: string[] = [];
+	setLogFile("subagent-test.log");
+	setLogWriter((_path, line) => lines.push(line));
+	return {
+		lines,
+		stop() {
+			setLogFile(null);
+			setLogWriter(null);
+		},
+	};
+}
+
+export function harnessReports(lines: string[]): string[] {
+	return lines.filter((line) => line.includes("subagent harness report"));
+}
 
 // ---------- fake OpenAI-completions endpoint ----------
 

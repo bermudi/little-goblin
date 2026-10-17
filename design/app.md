@@ -8,6 +8,20 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 Ruling 2026-09-30, operator ask. Telegram stops being the only channel:
 goblin grows a second, disjoint one — the app.
 
+### Files
+
+`src/http/app-*.ts` — `app-channel.ts` is the door's dispatcher (auth
+call, the operator dual-mount, route dispatch, 404) and re-exports the
+pre-split names (`handleAppApi`, `resolveAppAuth`, `AppChannelDeps`);
+`app-auth.ts` resolves the boot mode and runs the per-request gate
+(bearer + trust mode's browser-origin line); `app-sse.ts` the SSE wire
+(writer, heartbeat, stream sink); `app-shared.ts` the
+deps contract and both-ends pieces (`NO_STORE`, `jsonBodyRefusal`,
+`configView`, `configPatchBody`); route families in
+`app-conversations.ts`, `app-projects.ts`, `app-notes.ts`,
+`app-config.ts`, `app-chat.ts`, `app-attachments.ts`. Tests colocated
+per module over the shared rig in `app-testing.ts`.
+
 **Why.** The operator's reading pains live in Telegram's client, not in
 goblin: long replies read as 4096-chunked fragments, topic lists desync
 between devices (a client cache bug goblin cannot fix), and Mini Apps

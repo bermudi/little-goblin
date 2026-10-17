@@ -36,6 +36,7 @@ import {
 	ensureHomeLayout,
 	goblinHome,
 	loadConfig,
+	missingAuthNames,
 	paths,
 	splitModelRef,
 	type ThinkingLevel,
@@ -137,6 +138,15 @@ async function boot() {
 	// A later save writes the file but not the live client, so it is hinted.
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();
+	// Auth resolves lazily at point of use — a configured feature naming an
+	// absent record is invisible until a real call fails. Name it at boot:
+	// existence check only, no values resolved (doctor's coverage probe is
+	// the deep version of this line).
+	for (const name of missingAuthNames(config, (n) => auth.has(n))) {
+		log.warn("config references a missing auth.jsonl record — the feature needing it fails at first use", {
+			auth: name,
+		});
+	}
 	const store = openStore(paths.db());
 	const cacheObservations = openCacheObservation(store.db);
 	// The crash journal shares the store's handle like the tg inbox.

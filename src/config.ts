@@ -1039,3 +1039,11 @@ export function authReferences(config: Config): Set<string> {
 	}
 	return refs;
 }
+
+// The configured auth refs that have no record in auth.jsonl — boot's
+// warn sweep (a missing record fails loudly at first use today; name it
+// at boot instead) and doctor's missing-keys line share this. Existence
+// only — nothing resolves a secret here.
+export function missingAuthNames(config: Config, has: (name: string) => boolean): string[] {
+	return [...authReferences(config)].filter((name) => !has(name)).sort();
+}

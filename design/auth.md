@@ -54,6 +54,15 @@ config already knows, so blank means "derive":
   record added to `auth.jsonl` mid-run appears after the approved
   restart. A name missing from the list warns inline and never blocks a
   save — config-before-key is legitimate order.
+- **Boot sweeps configured refs against record names (ruling
+  2026-10-17).** `missingAuthNames(config, has)` walks
+  `authReferences(config)` — every auth-bearing config field, the
+  doctor/installer's shared source — and warns once per absent record:
+  a configured-but-missing credential surfaces at boot, not at first
+  use of the feature. Existence only — secret values are never
+  resolved by the sweep — and warn-not-refuse: a missing record still
+  fails loud at first actual use, like a poisoned one. Sorted names,
+  one warn each.
 
 ### Proton Pass (2026-09-26)
 

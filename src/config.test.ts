@@ -19,6 +19,7 @@ import {
 	fetchEntrySchema,
 	fetchKinds,
 	loadConfig,
+	missingAuthNames,
 	parseConfig,
 	paths,
 	providerKinds,
@@ -966,6 +967,22 @@ describe("authReferences", () => {
 			tts: { kind: "edge", voice: "en-US-AriaNeural" },
 		});
 		expect([...authReferences(c)].sort()).toEqual(["telegram", "zai"]);
+	});
+
+	test("missingAuthNames names the absent records, sorted — boot's warn sweep", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [7],
+			allowedUsers: [7],
+			transcription: { kind: "mimo", auth: "mimo" },
+		});
+		// telegram + zai recorded, mimo not — the sweep reports just it.
+		const has = (n: string) => n === "telegram" || n === "zai";
+		expect(missingAuthNames(c, has)).toEqual(["mimo"]);
+		expect(missingAuthNames(c, () => true)).toEqual([]);
 	});
 });
 

@@ -342,7 +342,13 @@ export function observedModel(
 								} catch (storageError) {
 									try {
 										call.obs?.fail();
-									} catch {}
+									} catch (rollbackError) {
+										log.warn("model call rollback failed", {
+											...baseFields,
+											callId: call.callId,
+											...safeErrorFields(rollbackError),
+										});
+									}
 									settled = true;
 									controller.error(storageError);
 									return;

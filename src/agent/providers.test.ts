@@ -549,6 +549,52 @@ describe("observedModel — correlated call receipts", () => {
 		}
 	});
 
+	test("a failed finish write still rejects with the original error and the failed rollback is logged", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			db.run(`CREATE TEMP TRIGGER fail_completed
+				BEFORE UPDATE OF status ON model_cache_calls
+				WHEN NEW.status = 'completed'
+				BEGIN SELECT RAISE(ABORT, 'SENTINEL-FINISH-FAILURE'); END`);
+			db.run(`CREATE TEMP TRIGGER fail_failed
+				BEFORE UPDATE OF status ON model_cache_calls
+				WHEN NEW.status = 'failed'
+				BEGIN SELECT RAISE(ABORT, 'SENTINEL-ROLLBACK-FAILURE'); END`);
+			const scripted = scriptedModel([[{ type: "stream-start", warnings: [] }, finish(10, 3)]]);
+			const wrapped = observedModel(scripted.model, {
+				conversation: "conv-1",
+				observation: obs,
+				route: {
+					provider: "fake",
+					kind: "openai-compatible",
+					base: "https://x",
+					modelRef: "fake/fake-1",
+				},
+			}) as LanguageModelV4;
+			const result = await wrapped.doStream(userPrompt("hi"));
+			await expect(drain(result.stream)).rejects.toThrow("SENTINEL-FINISH-FAILURE");
+			const lines = logLines(logPath);
+			const start = lines.find((l) => l.msg === "model call")!;
+			const rollback = lines.filter((l) => l.msg === "model call rollback failed");
+			expect(rollback).toHaveLength(1);
+			expect(rollback[0]).toMatchObject({
+				callId: start.callId,
+				conversation: "conv-1",
+				model: "fake/fake-1",
+				errorName: "provider-error",
+			});
+			expect(lines.filter((l) => l.msg === "model call usage")).toHaveLength(0);
+			expect(JSON.stringify(lines)).not.toContain("SENTINEL-ROLLBACK-FAILURE");
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
 	test("a clean close without a finish part is not a success receipt", async () => {
 		const db = new Database(":memory:");
 		const obs = openCacheObservation(db);

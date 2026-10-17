@@ -517,6 +517,103 @@ describe("turn resume", () => {
 		store.close();
 	});
 
+	test("an unreadable recorded tool surface refuses resume — no model call, row stays interrupted", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+		store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ["{not json", "run-dead"]);
+		const out = ops.resume(conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("tool surface is unreadable");
+		}
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ['{"x":1}', "run-dead"]);
+		expect(ops.resume(conv.id, "run-dead")).toMatchObject({
+			kind: "refused",
+			code: "invalid",
+		});
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a corrupt settings snapshot or loop checkpoint refuses with a readable reason", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+		store.db.run("UPDATE turn_runs SET conv_snapshot = ? WHERE run_id = ?", ["!!{", "run-dead"]);
+		const out = ops.resume(conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("settings snapshot is unreadable");
+		}
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+
+		store.db.run("UPDATE turn_runs SET conv_snapshot = ? WHERE run_id = ?", [
+			JSON.stringify({ model: conv.model, thinking: conv.thinking }),
+			"run-dead",
+		]);
+		store.db.run("UPDATE turn_runs SET loop_state = ? WHERE run_id = ?", ["[bad", "run-dead"]);
+		const out2 = ops.resume(conv.id, "run-dead");
+		expect(out2).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out2.kind === "refused") {
+			expect(out2.reason).toContain("loop checkpoint is unreadable");
+		}
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		expect(edge.streamCalls).toHaveLength(0);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a resumed turn replays a huge-args call by full hash; the seeded prompt stays bounded", async () => {
+		const huge = { content: "x".repeat(1_000_000) };
+		const { store, conv, journal, ops, runtime, executed, sink, edge } = setup({
+			attempts: [
+				[toolCallPart("n1", "bigwrite", JSON.stringify(huge)), finishPart("tool-calls")],
+				textParts("ok"),
+			],
+			tools: {
+				bigwrite: tool({
+					inputSchema: z.object({ content: z.string() }),
+					execute: async (args: { content: string }) => {
+						executed.push({ name: "bigwrite", args });
+						return { ok: true };
+					},
+				}) as unknown as ReturnType<typeof tool>,
+			},
+		});
+		const anchorSeq = appendUser(store, conv, "write the file");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			toolNames: ["probe", "bigwrite"],
+		});
+		journal.noteToolInput("run-src", "c1", "bigwrite", huge);
+		journal.noteToolDispatch("run-src", "c1", "bigwrite", huge);
+		journal.noteToolResult("run-src", "c1", { out: "landed" });
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		await runtime.shutdown();
+
+		expect(executed).toEqual([]);
+		const promptJson = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(promptJson).toContain("[truncated]");
+		expect(promptJson.length).toBeLessThan(100_000);
+		const newRun = store.db
+			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
+			.get("run-src")!;
+		const replayed = journal.callsFor(newRun.run_id).find((c) => c.toolCallId === "n1")!;
+		expect(replayed.state).toBe("completed");
+		expect(replayed.replayed).toBe(true);
+		expect(replayed.result).toBe('{"out":"landed"}');
+		store.close();
+	});
+
 	test("abandon consumes the run; a later resume finds nothing", async () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		interruptedRun(store, journal, conv, "run-src");

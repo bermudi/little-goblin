@@ -66,7 +66,7 @@ export interface TurnRun {
 	steerMark: number | null;
 	// The admission-time settings snapshot (model, thinking) as JSON.
 	convSnapshot: unknown;
-	toolNames: string[];
+	toolNames: string[] | null;
 	startedMs: number;
 	finishedMs: number | null;
 	status: JournalStatus;
@@ -260,7 +260,15 @@ const callRowSchema = z.object({
 });
 
 const RESULT_BUDGET = 8000;
+const ARGS_BUDGET = 8000;
+const ARGS_TRUNCATED = "[truncated]";
 const ERROR_BUDGET = 1000;
+
+function boundedArgsText(canonical: string): string {
+	return canonical.length <= ARGS_BUDGET
+		? canonical
+		: `${canonical.slice(0, ARGS_BUDGET - ARGS_TRUNCATED.length)}${ARGS_TRUNCATED}`;
+}
 
 // Bounded JSON for the result column — full fidelity up to the cap,
 // String() rather than a throw on unserializable values. A truncated
@@ -315,12 +323,29 @@ export function recordedOutput(call: TurnToolCall): unknown {
 // `partial` is stored bounded — a cut document must not crash readers,
 // so an unparseable one comes back as its raw text (a resume reader
 // sees a string where messages were expected and knows it's unusable).
-function tryParseJson(text: string): unknown {
+function tryParseJson(text: string, ctx?: { run: string; field: string }): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
+		if (ctx !== undefined) {
+			log.warn("turn run row field unreadable", { run: ctx.run, field: ctx.field });
+		}
 		return text;
 	}
+}
+
+function decodeToolNames(text: string, runId: string): string[] | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		log.warn("turn run row field unreadable", { run: runId, field: "tool_names" });
+		return null;
+	}
+	const valid = z.array(z.string()).safeParse(parsed);
+	if (valid.success) return valid.data;
+	log.warn("turn run row field unreadable", { run: runId, field: "tool_names" });
+	return null;
 }
 
 function decodeRun(raw: unknown): TurnRun {
@@ -331,14 +356,17 @@ function decodeRun(raw: unknown): TurnRun {
 		epoch: r.epoch,
 		anchorSeq: r.anchor_seq,
 		steerMark: r.steer_mark,
-		convSnapshot: JSON.parse(r.conv_snapshot),
-		toolNames: z.array(z.string()).parse(JSON.parse(r.tool_names)),
+		convSnapshot: tryParseJson(r.conv_snapshot, { run: r.run_id, field: "conv_snapshot" }),
+		toolNames: decodeToolNames(r.tool_names, r.run_id),
 		startedMs: r.started_ms,
 		finishedMs: r.finished_ms,
 		status: r.status,
 		delivery: r.delivery,
 		partial: r.partial === null ? null : tryParseJson(r.partial),
-		loopState: r.loop_state === null ? null : (JSON.parse(r.loop_state) as unknown),
+		loopState:
+			r.loop_state === null
+				? null
+				: tryParseJson(r.loop_state, { run: r.run_id, field: "loop_state" }),
 		filterRetryUsed: r.filter_retry_used !== 0,
 		createdAt: r.created_at,
 		resumedFrom: r.resumed_from,
@@ -358,7 +386,7 @@ function decodeCall(raw: unknown): TurnToolCall {
 		runId: r.run_id,
 		toolCallId: r.tool_call_id,
 		name: r.name,
-		args: JSON.parse(r.args) as unknown,
+		args: tryParseJson(boundedArgsText(r.args)),
 		argsHash: r.args_hash,
 		state: r.state,
 		replayed: r.replayed !== 0,
@@ -587,11 +615,18 @@ export function openTurnJournal(db: Database): TurnJournal {
 		},
 		noteToolInput(runId, callId, name, args) {
 			const canonical = stableStringify(args);
-			qInput.run(runId, callId, name, canonical, sha256hex(canonical));
+			qInput.run(runId, callId, name, boundedArgsText(canonical), sha256hex(canonical));
 		},
 		noteToolDispatch(runId, callId, name, args) {
 			const canonical = stableStringify(args);
-			qDispatch.run(runId, callId, name, canonical, sha256hex(canonical), Date.now());
+			qDispatch.run(
+				runId,
+				callId,
+				name,
+				boundedArgsText(canonical),
+				sha256hex(canonical),
+				Date.now(),
+			);
 		},
 		noteToolResult(runId, callId, result, opts) {
 			qResult.run(

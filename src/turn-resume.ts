@@ -470,6 +470,9 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				);
 			}
 			const present = new Set(Object.keys(tools));
+			if (run.toolNames === null) {
+				return refused("invalid", "the recorded tool surface is unreadable — not resumed");
+			}
 			const missing = run.toolNames.filter((n) => !present.has(n));
 			if (missing.length > 0) {
 				return refused(

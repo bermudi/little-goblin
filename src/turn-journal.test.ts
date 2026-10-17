@@ -680,6 +680,114 @@ describe("turn journal", () => {
 		store.close();
 	});
 
+	test("call args store a bounded preview while the hash keeps the full canonical", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+
+		journal.noteToolInput(runId, "small", "probe", { q: 1 });
+		const small = journal.callsFor(runId).find((c) => c.toolCallId === "small")!;
+		expect(small.args).toEqual({ q: 1 });
+		expect(small.argsHash).toBe(
+			createHash("sha256")
+				.update(JSON.stringify({ q: 1 }))
+				.digest("hex"),
+		);
+
+		const huge = { content: "x".repeat(1_000_000) };
+		const hashOf = (v: unknown) => replayKey("probe", v).slice("probe:".length);
+		journal.noteToolInput(runId, "big-in", "probe", huge);
+		journal.noteToolDispatch(runId, "big-disp", "probe", huge);
+		for (const id of ["big-in", "big-disp"]) {
+			const raw = store.db
+				.query<{ args: string }, [string, string]>(
+					"SELECT args FROM turn_tool_calls WHERE run_id = ? AND tool_call_id = ?",
+				)
+				.get(runId, id)!;
+			expect(raw.args.length).toBeLessThanOrEqual(8_000);
+			expect(raw.args).toContain("[truncated]");
+			const call = journal.callsFor(runId).find((c) => c.toolCallId === id)!;
+			expect(typeof call.args).toBe("string");
+			expect(call.args as string).toContain("[truncated]");
+			expect(call.argsHash).toBe(hashOf(huge));
+		}
+
+		const a = { pad: "p".repeat(9_000), tail: "a" };
+		const b = { pad: "p".repeat(9_000), tail: "b" };
+		journal.noteToolInput(runId, "pa", "probe", a);
+		journal.noteToolInput(runId, "pb", "probe", b);
+		const pa = journal.callsFor(runId).find((c) => c.toolCallId === "pa")!;
+		const pb = journal.callsFor(runId).find((c) => c.toolCallId === "pb")!;
+		expect(pa.argsHash).not.toBe(pb.argsHash);
+		expect(pa.args).toEqual(pb.args);
+
+		journal.noteToolResult(runId, "big-in", { out: "landed" });
+		expect(journal.replayMap(runId).get(replayKey("probe", huge))).toEqual([{ out: "landed" }]);
+
+		const next = begunRun(journal, conv.id, "run-next");
+		journal.inheritCalls(runId, next);
+		const inh = journal.callsFor(next).find((c) => c.toolCallId === "big-in")!;
+		expect(inh.argsHash).toBe(hashOf(huge));
+		expect(inh.args as string).toContain("[truncated]");
+
+		store.db.run("UPDATE turn_tool_calls SET args = ? WHERE run_id = ? AND tool_call_id = ?", [
+			JSON.stringify(huge),
+			runId,
+			"big-disp",
+		]);
+		const legacy = journal.callsFor(runId).find((c) => c.toolCallId === "big-disp")!;
+		expect(typeof legacy.args).toBe("string");
+		expect((legacy.args as string).length).toBeLessThanOrEqual(8_000);
+		expect(legacy.args as string).toContain("[truncated]");
+		expect(legacy.argsHash).toBe(hashOf(huge));
+
+		store.db.run("UPDATE turn_tool_calls SET args = ? WHERE run_id = ? AND tool_call_id = ?", [
+			'{"unclosed',
+			runId,
+			"small",
+		]);
+		expect(journal.callsFor(runId).find((c) => c.toolCallId === "small")!.args).toBe('{"unclosed');
+		store.close();
+	});
+
+	test("a corrupt run row decodes tolerantly — reads survive it alongside healthy rows", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		begunRun(journal, conv.id, "run-bad");
+		begunRun(journal, conv.id, "run-shape");
+		begunRun(journal, conv.id, "run-good");
+		store.db.run("UPDATE turn_runs SET conv_snapshot = ? WHERE run_id = ?", ["{nope", "run-bad"]);
+		store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ["{nope", "run-bad"]);
+		store.db.run("UPDATE turn_runs SET loop_state = ? WHERE run_id = ?", ["[unclosed", "run-bad"]);
+		store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ['{"a":1}', "run-shape"]);
+
+		const bad = journal.get("run-bad")!;
+		expect(bad.toolNames).toBeNull();
+		expect(typeof bad.convSnapshot).toBe("string");
+		expect(typeof bad.loopState).toBe("string");
+		expect(journal.get("run-shape")!.toolNames).toBeNull();
+		expect(journal.get("run-good")!.toolNames).toEqual(["probe", "bash"]);
+		expect(journal.interrupted()).toEqual([]);
+		store.close();
+
+		const reopened = openStore(dbPath);
+		const j2 = openTurnJournal(reopened.db);
+		const ids = ["run-bad", "run-good", "run-shape"];
+		expect(
+			j2
+				.interrupted()
+				.map((r) => r.runId)
+				.sort(),
+		).toEqual(ids);
+		expect(j2.interruptedAtOpen.map((r) => r.runId).sort()).toEqual(ids);
+		expect(j2.get("run-bad")!.toolNames).toBeNull();
+		expect(j2.get("run-good")!.toolNames).toEqual(["probe", "bash"]);
+		reopened.close();
+	});
+
 	test("an existing database gains the resume columns at open", () => {
 		const dbPath = tmpDb("goblin-tj-");
 		const store = openStore(dbPath);

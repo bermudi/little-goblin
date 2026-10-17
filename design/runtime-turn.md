@@ -136,6 +136,24 @@ evidence journals with replay provenance (`replayed`); replay credits
 count executions only, so one execution keeps exactly one replay
 across any number of resumes.
 
+Stored `args` is a **preview**, never the identity: the column holds
+at most 8000 chars TOTAL of the canonical JSON — oversized text is
+cut so the `[truncated]` marker fits inside that bound, and readers
+bound legacy oversized rows the same way on decode. Values under the
+cap decode back to their parsed objects exactly as before; only a cut
+document comes back as its raw preview string, so the surfaces (model
+seeds, the app's decision list) can never leak an oversized body.
+`args_hash` — and therefore every `replayKey`/`skippedMap` lookup —
+still hashes the FULL canonical input; truncation never collides two
+calls or weakens a replay match. A `tool_names` column that fails to
+decode (bad JSON or wrong shape) reads as `null`, not `[]`: the row
+still lists everywhere, but resume refuses it as an unreadable tool
+surface rather than risk an empty default bypassing the surface
+contract. The same tolerance covers `conv_snapshot`/`loop_state` —
+decode keeps the raw text and logs one warning per run per field on
+each read; the resume-time schema checks then refuse with a readable
+reason.
+
 `src/turn-resume.ts` owns the operator half (`makeResumeOps`): list
 interrupted runs, take per-call decisions, abandon, resume. Both
 surfaces — Telegram `/resume` `/decide` `/abandon` and the app's

@@ -3552,6 +3552,67 @@ describe("app channel interrupted-run routes", () => {
 		}
 	});
 
+	test("huge recorded args ride the wire as bounded previews — list and resume-409", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-dead");
+			const huge = { content: "x".repeat(1_000_000) };
+			wired.journal.noteToolInput("run-dead", "c1", "probe", huge);
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", huge);
+			wired.journal.noteToolInput("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.noteToolDispatch("run-dead", "c2", "probe", { q: 2 });
+			store.db.run("UPDATE turn_tool_calls SET args = ? WHERE run_id = ? AND tool_call_id = ?", [
+				JSON.stringify(huge),
+				"run-dead",
+				"c2",
+			]);
+
+			const res = await call("/api/app/conversations/chat-01/interrupted");
+			expect(res.status).toBe(200);
+			const text = await res.text();
+			expect(text.length).toBeLessThan(100_000);
+			expect(text).toContain("[truncated]");
+
+			const blocked = await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
+				method: "POST",
+			});
+			expect(blocked.status).toBe(409);
+			const btext = await blocked.text();
+			expect(btext.length).toBeLessThan(100_000);
+			expect(btext).toContain("[truncated]");
+			const body = JSON.parse(btext) as AppResumeBlocked;
+			expect(body.calls).toHaveLength(2);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a corrupt run row still lists and refuses resume 422; healthy rows unaffected", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-bad");
+			interruptedRun(store, wired.journal, convId, "run-good");
+			store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ["{nope", "run-bad"]);
+
+			const res = await call("/api/app/conversations/chat-01/interrupted");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as AppInterruptedList;
+			expect(body.runs.map((r) => r.runId).sort()).toEqual(["run-bad", "run-good"]);
+
+			const resumed = await call("/api/app/conversations/chat-01/runs/run-bad/resume", {
+				method: "POST",
+			});
+			expect(resumed.status).toBe(422);
+			const refused = (await resumed.json()) as { error: string };
+			expect(refused.error).toContain("tool surface is unreadable");
+			expect(wired.journal.get("run-bad")!.status).toBe("interrupted");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("resume answers 409 with the undecided calls, then admits on the second ask", async () => {
 		const { http, call, store, runtime, wired } = setupWithResume();
 		try {

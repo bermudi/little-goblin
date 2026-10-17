@@ -198,11 +198,7 @@ describe("turn resume", () => {
 			expect(again.reason).toContain("resolved-skip");
 		}
 		const calls = journal.callsFor("run-dead");
-		expect(calls.map((c) => c.state)).toEqual([
-			"resolved-skip",
-			"resolved-retry",
-			"dispatched",
-		]);
+		expect(calls.map((c) => c.state)).toEqual(["resolved-skip", "resolved-retry", "dispatched"]);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -695,9 +691,7 @@ describe("turn resume", () => {
 		expect(edge.streamCalls).toHaveLength(1);
 		// The run row reads error, not completed — a completed run with
 		// dispatched calls is the lie this fix removes.
-		const row = store.db
-			.query<{ status: string }, []>("SELECT status FROM turn_runs")
-			.get();
+		const row = store.db.query<{ status: string }, []>("SELECT status FROM turn_runs").get();
 		expect(row?.status).toBe("error");
 		await runtime.shutdown();
 		store.close();

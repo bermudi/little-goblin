@@ -3,10 +3,7 @@ import { execSync } from "node:child_process";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-	APICallError,
-	type LanguageModelV4StreamPart,
-} from "@ai-sdk/provider";
+import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { type LanguageModel, tool, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import {
@@ -315,10 +312,7 @@ describe("provider-filter retry", () => {
 		});
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
-		const s = scripted([
-			{ cancelError: new Error("cancel failed"), parts: [blocked] },
-			answer(),
-		]);
+		const s = scripted([{ cancelError: new Error("cancel failed"), parts: [blocked] }, answer()]);
 		const r = rig({ model: s.model });
 		const sink = submit(r, "test");
 		await completed(r, sink);
@@ -757,7 +751,11 @@ describe("turn authority", () => {
 				finishPart("tool-calls"),
 			],
 			// Same id as step 1 — deliberate.
-			[{ type: "stream-start", warnings: [] }, ...textBit("Workspace is basically fresh"), finishPart("stop")],
+			[
+				{ type: "stream-start", warnings: [] },
+				...textBit("Workspace is basically fresh"),
+				finishPart("stop"),
+			],
 		]);
 		let executed = false;
 		const r = rig({
@@ -1256,7 +1254,9 @@ describe("cache stability", () => {
 	test("window gauge and cached split land in the log", async () => {
 		// One step, reporting a warm cache (700 of 900 input tokens cached)
 		// against a 1000-token window — 90% utilization must warn.
-		const edge = scriptedEdge([[...textParts("ok", 900).slice(0, -1), finishPart("stop", 900, 1, { read: 700 })]]);
+		const edge = scriptedEdge([
+			[...textParts("ok", 900).slice(0, -1), finishPart("stop", 900, 1, { read: 700 })],
+		]);
 		const r = rig({ model: edge.model, step: { contextWindow: 1000 } });
 		const lines = await capturedLog(async () => {
 			const sink = submit(r, "hi");
@@ -1285,7 +1285,11 @@ describe("cache stability", () => {
 		// fix, nothing was logged and the only witness was the model.
 		// read_file requires `path`; the model sent {}.
 		const edge = scriptedEdge([
-			[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "read_file"), finishPart("tool-calls")],
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart("c1", "read_file"),
+				finishPart("tool-calls"),
+			],
 			textParts("sorry"),
 		]);
 		const r = rig({
@@ -1310,7 +1314,11 @@ describe("cache stability", () => {
 
 	test("a throwing tool execute leaves a trace in the log", async () => {
 		const edge = scriptedEdge([
-			[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "boom"), finishPart("tool-calls")],
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart("c1", "boom"),
+				finishPart("tool-calls"),
+			],
 			textParts("ok"),
 		]);
 		const r = rig({
@@ -2299,8 +2307,7 @@ describe("loop landings", () => {
 					prompt: JSON.stringify(options.prompt ?? []),
 				});
 				const callTool =
-					options.toolChoice?.type !== "none" &&
-					(opts.calls === undefined || n <= opts.calls);
+					options.toolChoice?.type !== "none" && (opts.calls === undefined || n <= opts.calls);
 				return callTool
 					? [
 							{ type: "stream-start" as const, warnings: [] },
@@ -2687,10 +2694,9 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		operators: [7],
 		allowedUsers: [7],
 	});
-	const { model } = scripted(
-		[overflowError(), textParts("recovered"), textParts("next")],
-		{ extra: textParts("ok") },
-	);
+	const { model } = scripted([overflowError(), textParts("recovered"), textParts("next")], {
+		extra: textParts("ok"),
+	});
 	const selections: string[] = [];
 	const summarySelections: string[] = [];
 	const runtime = new Runtime({

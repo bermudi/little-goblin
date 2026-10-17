@@ -46,11 +46,7 @@ import {
 import { type MemoryContexts, memoryStatus } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
-import {
-	type SkillSourceRow,
-	skillLiveState,
-	skillNameSchema,
-} from "../skill-provenance.ts";
+import { type SkillSourceRow, skillLiveState, skillNameSchema } from "../skill-provenance.ts";
 import type { SkillDecideResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,

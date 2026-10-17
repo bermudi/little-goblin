@@ -167,10 +167,15 @@ export function NotesIndex({
 				<input
 					type="search"
 					placeholder="Search notes"
+					aria-label="Search notes"
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 				/>
-				<select value={filter} onChange={(e) => setFilter(e.target.value)}>
+				<select
+					value={filter}
+					onChange={(e) => setFilter(e.target.value)}
+					aria-label="Filter notes by project"
+				>
 					<option value="all">All</option>
 					<option value="loose">Loose</option>
 					{projects.map((p) => (
@@ -860,6 +865,7 @@ export function NoteView({
 					onKeyDown={(e) => {
 						if (e.key === "Enter") saveTitle();
 					}}
+					aria-label="Note title"
 					disabled={archived || rewriteBusy}
 				/>
 				{note.pinnedAt !== null && <span className="pill">pinned</span>}
@@ -869,6 +875,7 @@ export function NoteView({
 				<select
 					value={note.projectId ?? ""}
 					disabled={busy || rewriteBusy || chatBusy}
+					aria-label="Assign to project"
 					onChange={(e) =>
 						flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
 					}

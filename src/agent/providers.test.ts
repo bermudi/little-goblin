@@ -9,10 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import type {
-	LanguageModelV4,
-	LanguageModelV4StreamPart,
-} from "@ai-sdk/provider";
+import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { Config } from "../config.ts";
 import { openCacheObservation } from "../cache-observation.ts";
 import { setLogFile } from "../log.ts";
@@ -423,9 +420,7 @@ describe("observedModel — correlated call receipts", () => {
 	test("stream calls pass identical params through and close on the provider finish", async () => {
 		const db = new Database(":memory:");
 		const obs = openCacheObservation(db);
-		const scripted = scriptedModel([
-			[{ type: "stream-start", warnings: [] }, finish(10, 3, 5, 2)],
-		]);
+		const scripted = scriptedModel([[{ type: "stream-start", warnings: [] }, finish(10, 3, 5, 2)]]);
 		const dir = tmpDir();
 		const logPath = join(dir, "goblin.log");
 		setLogFile(logPath);
@@ -433,7 +428,12 @@ describe("observedModel — correlated call receipts", () => {
 			const wrapped = observedModel(scripted.model, {
 				conversation: "conv-1",
 				observation: obs,
-				route: { provider: "fake", kind: "openai-compatible", base: "https://x", modelRef: "fake/fake-1" },
+				route: {
+					provider: "fake",
+					kind: "openai-compatible",
+					base: "https://x",
+					modelRef: "fake/fake-1",
+				},
 			}) as LanguageModelV4;
 			const params = userPrompt("hi");
 			const result = await wrapped.doStream(params);
@@ -516,7 +516,10 @@ describe("observedModel — correlated call receipts", () => {
 			}) as LanguageModelV4;
 			await expect(wReject.doStream(userPrompt("a"))).rejects.toThrow("http 503");
 			const erring = scriptedModel([
-				[{ type: "text-delta", id: "t1", delta: "x" }, { type: "error", error: new Error("boom") }],
+				[
+					{ type: "text-delta", id: "t1", delta: "x" },
+					{ type: "error", error: new Error("boom") },
+				],
 			]);
 			const wErr = observedModel(erring.model, {
 				conversation: "conv-1",
@@ -755,7 +758,11 @@ describe("failure lines carry only safe categories", () => {
 				.map((l) => JSON.parse(l) as Record<string, unknown>);
 			const failed = lines.filter((l) => l.msg === "model call failed");
 			expect(failed).toHaveLength(1);
-			expect(failed[0]).toMatchObject({ stage: "invoke", errorName: "provider-error", httpStatus: 503 });
+			expect(failed[0]).toMatchObject({
+				stage: "invoke",
+				errorName: "provider-error",
+				httpStatus: 503,
+			});
 			expect(JSON.stringify(failed)).not.toContain(sentinel);
 			expect(JSON.stringify(failed)).not.toContain("api.example");
 		} finally {

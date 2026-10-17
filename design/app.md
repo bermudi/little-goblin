@@ -20,7 +20,9 @@ deps contract and both-ends pieces (`NO_STORE`, `jsonBodyRefusal`,
 `configView`, `configPatchBody`); route families in
 `app-conversations.ts`, `app-projects.ts`, `app-notes.ts`,
 `app-config.ts`, `app-chat.ts`, `app-attachments.ts`. Tests colocated
-per module over the shared rig in `app-testing.ts`.
+per module over the shared rig in `app-testing.ts` — the real-listener
+setup (model faked at the provider edge) and the create-and-chat
+helper the suites start from; test-only.
 
 **Why.** The operator's reading pains live in Telegram's client, not in
 goblin: long replies read as 4096-chunked fragments, topic lists desync

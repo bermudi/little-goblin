@@ -99,9 +99,9 @@ store):
   origin conversation fenced (`<event source="subagent">`, the delegation
   fence rule) — a subagent that read arbitrary screens gains no authority
   by arriving in goblin's voice.
-- **Only `src/subagents/` knows Pi Durable** (the herdr.ts rule). An API
-  change touches one directory; a gated live drift check
-  (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
+- **Only `src/subagents/` knows Pi Durable / pi-ai / chord** (the
+  herdr.ts rule). An API change touches one directory; a gated live
+  drift check (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
 
 **Run state is rows.** A `subagent_runs` table in goblin.sqlite: id,
 type, origin conversation, box (desktop name or the sandbox), Pi
@@ -623,9 +623,11 @@ built once).
   computer tools, request guard), `transfer.ts` (inbox import /
   outcome export), `models.ts` (model profiles and kind specs),
   `run-doc.ts` (the run document), `errors.ts`; tests beside them
-  (`mod.test.ts` + `testing.ts` rig, `env.test.ts`, `models.test.ts`,
-  `crash.test.ts` + `crash-child.ts`, `podman.test.ts` +
-  `kill.driver.ts`, `live.test.ts`). Non-directory pieces:
+  (`mod.test.ts`, `env.test.ts`, `models.test.ts`, `crash.test.ts` +
+  `crash-child.ts`, `podman.test.ts` + `kill.driver.ts`,
+  `live.test.ts`) over the shared rig in `testing.ts` — the fake
+  completions endpoint, sandbox/desktop doubles and owner driver the
+  suites build on; test-only. Non-directory pieces:
   `src/subagent-runs.ts` (rows), `src/box-files.ts`
   (import/export boundary), `src/agent/tools/subagent.ts` +
   `desktop.ts` (native tools), `wakeConversation` in `src/wake.ts`

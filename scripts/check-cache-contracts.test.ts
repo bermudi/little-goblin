@@ -29,7 +29,9 @@ function bodyFor(url: string): string {
 
 describe("checkCacheContractSources", () => {
 	test("every pinned fragment present → unchanged, logfare stays unknown and is never fetched", async () => {
-		const { impl, urls, inits } = fakeFetch(async (url) => new Response(bodyFor(url)));
+		const { impl, urls, inits } = fakeFetch(
+			async (url) => new Response(`${SENTINEL_BODY}\n\n${bodyFor(url)}\n\n${SENTINEL_BODY}`),
+		);
 		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
 		expect(ok).toBe(true);
 		const byId = new Map(report.sources.map((s) => [s.id, s]));

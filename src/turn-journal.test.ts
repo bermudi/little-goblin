@@ -119,6 +119,7 @@ describe("turn journal", () => {
 		const store = openStore(dbPath);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
+		expect(journal.interruptedAtOpen).toEqual([]);
 		const live = begunRun(journal, conv.id, "run-live");
 		const done = begunRun(journal, conv.id, "run-done");
 		const fenced = begunRun(journal, conv.id, "run-fenced");
@@ -146,7 +147,57 @@ describe("turn journal", () => {
 			failed: 0,
 			resolved: 0,
 		});
+
+		expect(journal2.interruptedAtOpen).toHaveLength(1);
+		const snap = journal2.interruptedAtOpen[0]!;
+		expect(snap.runId).toBe(live);
+		expect(snap.status).toBe("interrupted");
+		expect(snap.finishedMs).not.toBeNull();
+		expect(snap.calls).toEqual({
+			planned: 0,
+			dispatched: 1,
+			completed: 0,
+			failed: 0,
+			resolved: 0,
+		});
+
+		begunRun(journal2, conv.id, "run-late");
+		expect(journal2.interruptedAtOpen).toHaveLength(1);
+		journal2.finishRun("run-late", "completed", "delivered");
 		reopened.close();
+	});
+
+	test("the at-open snapshot fires once — later opens see only their own crashes", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		begunRun(journal, conv.id, "run-old");
+		store.close();
+
+		const reopened = openStore(dbPath);
+		const journal2 = openTurnJournal(reopened.db);
+		expect(journal2.interruptedAtOpen.map((r) => r.runId)).toEqual(["run-old"]);
+		reopened.close();
+
+		const third = openStore(dbPath);
+		const journal3 = openTurnJournal(third.db);
+		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(journal3.interrupted().map((r) => r.runId)).toEqual(["run-old"]);
+
+		begunRun(journal3, conv.id, "run-new");
+		third.close();
+
+		const fourth = openStore(dbPath);
+		const journal4 = openTurnJournal(fourth.db);
+		expect(journal4.interruptedAtOpen.map((r) => r.runId)).toEqual(["run-new"]);
+		expect(
+			journal4
+				.interrupted()
+				.map((r) => r.runId)
+				.sort(),
+		).toEqual(["run-new", "run-old"]);
+		fourth.close();
 	});
 
 	test("checkpoint patches the nullable progress columns", () => {

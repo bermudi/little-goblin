@@ -198,6 +198,7 @@ export interface TurnJournal {
 	// resume all read only the run's own rows.
 	inheritCalls(sourceRunId: string, intoRunId: string): void;
 	interrupted(): TurnRun[];
+	readonly interruptedAtOpen: readonly TurnRun[];
 	get(runId: string): TurnRun | null;
 	callsFor(runId: string): TurnToolCall[];
 }
@@ -439,15 +440,11 @@ export function openTurnJournal(db: Database): TurnJournal {
 	// at open means the process was killed mid-turn — SIGKILL, OOM, host
 	// power. Reclassify, log each, leave the rows for the boot notice.
 	const stale = db
-		.query<{ run_id: string; conversation_id: string; started_ms: number }, []>(
-			"SELECT run_id, conversation_id, started_ms FROM turn_runs WHERE status = 'running'",
+		.query<{ run_id: string; conversation_id: string; started_ms: number }, [number]>(
+			"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
 		)
-		.all();
+		.all(Date.now());
 	if (stale.length > 0) {
-		db.run(
-			"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running'",
-			[Date.now()],
-		);
 		for (const r of stale) {
 			log.warn("interrupted turn found", {
 				run: r.run_id,
@@ -527,6 +524,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 		`${RUN_SELECT} WHERE r.status = 'interrupted' ORDER BY r.started_ms, r.run_id`,
 	);
 	const qCalls = db.query("SELECT * FROM turn_tool_calls WHERE run_id = ? ORDER BY rowid");
+	const interruptedAtOpen = stale.map((r) => decodeRun(qGet.get(r.run_id)));
 	const qInherit = db.query(
 		`INSERT OR IGNORE INTO turn_tool_calls
 			(run_id, tool_call_id, name, args, args_hash, state, replayed, result, error,
@@ -692,6 +690,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 		interrupted() {
 			return qInterrupted.all().map(decodeRun);
 		},
+		interruptedAtOpen,
 		get(runId) {
 			const raw = qGet.get(runId);
 			return raw === null ? null : decodeRun(raw);

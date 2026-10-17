@@ -42,7 +42,6 @@ import {
 	type TtsConfig,
 } from "./config.ts";
 import {
-	APP_ID_PREFIX,
 	type Conversation,
 	captureConversationSettings,
 	channelOf,
@@ -96,6 +95,7 @@ import {
 	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
+import { sendInterruptedTurnNotices } from "./tg/turn-notice.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, type ResumeOps } from "./turn-resume.ts";
@@ -979,42 +979,12 @@ async function boot() {
 	// journal): rows reclassified 'interrupted' at open get one DM per
 	// operator — terse facts, never a replay. A failed send must not hold
 	// boot; the log line is the record.
-	for (const run of turnJournal.interrupted()) {
-		const conv = store.get(run.conversationId);
-		// The notice lands in the operator DM, but /resume resolves against
-		// the conversation the command arrives in — say where to send it.
-		// App lanes are unreachable from Telegram; only the app surfaces
-		// them (its /interrupted route).
-		const resumeHow = run.conversationId.startsWith(APP_ID_PREFIX)
-			? "open that conversation in the app to resume it — Telegram /resume can't reach app lanes."
-			: `resume explicitly with /resume ${run.runId.slice(0, 8)} sent in that conversation, not in this DM.`;
-		const text =
-			`interrupted turn ${run.runId.slice(0, 8)} — ` +
-			`${conv?.title ?? run.conversationId}, started ${new Date(run.startedMs).toISOString()}: ` +
-			`${run.calls.completed} completed, ${run.calls.dispatched} dispatched (ambiguous), ` +
-			`${run.calls.resolved} decided, ${run.calls.planned} planned tool call(s). ` +
-			`The turn was not replayed — ${resumeHow}`;
-		for (const chat of configRef.current.operators) {
-			try {
-				await withTimeout(
-					tg.bot.api.sendMessage(chat, text),
-					"sendMessage (interrupted turn notice)",
-				);
-			} catch (err) {
-				log.error("interrupted turn notice send failed", err, {
-					run: run.runId,
-					conversation: run.conversationId,
-					chat,
-				});
-			}
-		}
-		log.info("interrupted turn notice sent", {
-			run: run.runId,
-			conversation: run.conversationId,
-			started: new Date(run.startedMs).toISOString(),
-			calls: run.calls,
-		});
-	}
+	sendInterruptedTurnNotices(
+		tg.bot.api,
+		turnJournal.interruptedAtOpen,
+		configRef.current.operators,
+		(id) => store.get(id)?.title ?? undefined,
+	);
 
 	// Recover inbox rows before polling: the wirings above must exist before
 	// recovered turns run, and the offset must not advance past journaled input.

@@ -1,3 +1,5 @@
+import { makeSandboxEnv } from "./subagents/env.ts";
+import { subagentModelProfileSchema } from "./subagents/models.ts";
 // The subagent owner end to end against the REAL Pi Durable harness
 // and pi-ai adapter — the only fakes are the model endpoint (a
 // localhost server speaking OpenAI-completions SSE), Sandboxes (an
@@ -33,11 +35,9 @@ import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts
 import { SandboxError, type Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import {
-	makeSandboxEnv,
 	openSubagents,
 	type SubagentModelProfile,
 	type Subagents,
-	subagentModelProfileSchema,
 } from "./subagents.ts";
 import { type DeliveryApi, makeDeliverySink } from "./tg/delivery.ts";
 import { type WakeDeps, wakeConversation } from "./wake.ts";

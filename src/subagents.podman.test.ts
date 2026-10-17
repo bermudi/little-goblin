@@ -1,3 +1,4 @@
+import { makeSandboxEnv } from "./subagents/env.ts";
 // Local real-environment gate: a REAL Podman sandbox (cached alpine,
 // no pulls, no external network) + real Pi Durable harness against the
 // localhost fake model — the worker's read/write/edit/bash/file
@@ -24,7 +25,7 @@ import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "
 import type { Context } from "@earendil-works/chord";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
-import { makeSandboxEnv, openSubagents, type Subagents } from "./subagents.ts";
+import { openSubagents, type Subagents } from "./subagents.ts";
 
 const LIVE = process.env.GOBLIN_SUBAGENTS_PODMAN_LIVE === "1";
 const TOKEN = `${process.pid.toString(36)}${Math.random().toString(36).slice(2, 5)}`;

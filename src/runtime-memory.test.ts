@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import { textModel } from "./testkit/fake-model.ts";
-import { openStore } from "./conversation.ts";
-import { HindsightClient } from "./hindsight.ts";
 import { memoryConfigSchema } from "./config.ts";
+import { openStore } from "./conversation.ts";
+import { HindsightClient } from "./memory/hindsight.ts";
 import { Runtime, userMessage } from "./runtime.ts";
+import { textModel } from "./testkit/fake-model.ts";
 import { fakeModel, RecordingSink, tmpDb } from "./testkit.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];

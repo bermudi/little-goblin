@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { appendQuote, ChatView, mergeTranscript, MessageParts } from "./ChatView.tsx";
+import { appendQuote, ChatView, ContextGauge, mergeTranscript, MessageParts } from "./ChatView.tsx";
 
 // Static markup only — these guard the transcript's render contract
 // (links become anchors, tool runs fold), not React behavior.
@@ -474,6 +474,263 @@ describe("ChatView reload window (issue #79)", () => {
 			live.close();
 		});
 		expect(dom.container.querySelectorAll(".note-card-append")).toHaveLength(2);
+	});
+});
+
+// A send while a turn runs steers it (DESIGN.md → Turn; app-channel
+// admits the second POST onto the same lane). The client drops its
+// stream reader first so the new POST's join replay is the only writer
+// — the wire's start chunk carries the same assistant id, so the reply
+// is rebuilt in place, not forked.
+describe("ChatView mid-turn steer", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const userMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+
+	test("send while busy posts the message and the replay lands on the same reply", async () => {
+		const encoder = new TextEncoder();
+		// The first turn's stream stays open: busy until the steer stream
+		// replaces it (the abort is the handoff under test).
+		let live!: ReadableStreamDefaultController<Uint8Array>;
+		const liveStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				live = controller;
+				for (const chunk of [
+					{ type: "start", messageId: "a1" },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "working" },
+				])
+					live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+			},
+		});
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [userMsg("u1", "run the thing")] });
+				if (url.endsWith("/stream")) return new Response(liveStream, { headers: sseHeaders });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					// The steered submit's answer: the same turn's wire,
+					// replayed — the SAME assistant id, not a new message.
+					return new Response(
+						new ReadableStream<Uint8Array>({
+							start(c) {
+								for (const chunk of [
+									{ type: "start", messageId: "a1" },
+									{ type: "text-start", id: "t1" },
+									{ type: "text-delta", id: "t1", delta: "working" },
+									{ type: "text-delta", id: "t1", delta: " — steered" },
+									{ type: "text-end", id: "t1" },
+									{ type: "finish" },
+								])
+									c.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+								c.enqueue(encoder.encode("data: [DONE]\n\n"));
+								c.close();
+							},
+						}),
+						{ headers: sseHeaders },
+					);
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && !dom.container.textContent?.includes("working"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		// Busy: Stop and Send share the composer — Send waits for content.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		const sendBtn = dom.container.querySelector<HTMLButtonElement>(".send-btn");
+		expect(sendBtn).not.toBeNull();
+		expect(sendBtn?.disabled).toBe(true);
+		const ta = dom.container.querySelector("form.composer textarea")!;
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment (the App.test.tsx typeInto ruling).
+			(ta as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				"steer it",
+			);
+			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		expect(sendBtn?.disabled).toBe(false);
+		await act(async () => {
+			dom.container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new dom.win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.conversationId).toBe("app/chat-01");
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "steer it" }]);
+		// The replay wrote onto the same assistant message — one reply.
+		for (let i = 0; i < 100 && !dom.container.textContent?.includes("steered"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
+		expect(dom.container.textContent).toContain("working — steered");
+	});
+});
+
+// A failed context read has no numbers and the popover won't open —
+// the "failed" class is what lets the narrow-screen ring carry it
+// (the label is display:none there).
+describe("ContextGauge", () => {
+	const dom = mountDom();
+
+	test("a failed read marks the button", async () => {
+		globalThis.fetch = Object.assign(() => Promise.resolve(new Response(null, { status: 500 })), {
+			preconnect: dom.realFetch.preconnect,
+		});
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(<ContextGauge token={null} conversationId="app/chat-01" busy={false} />),
+		);
+		for (let i = 0; i < 100 && !dom.container.querySelector(".ctx-btn.failed"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const btn = dom.container.querySelector<HTMLButtonElement>(".ctx-btn.failed");
+		expect(btn).not.toBeNull();
+		expect(btn?.title).toContain("read failed");
+		expect(dom.container.querySelector(".ctx-label")?.textContent).toBe("ctx failed");
+	});
+});
+
+// The composer's note picker is a floating panel — same contract as the
+// context gauge's popover: an outside press or Escape puts it away, a
+// press on the panel or its opener does not (the opener's own click
+// does the toggling).
+describe("NotePicker dismissal", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+	test("an outside press closes it; the panel and its opener are exempt", async () => {
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith("/api/app/notes")) return jsonResponse({ notes: [], truncated: false });
+				if (url.endsWith("/messages")) return jsonResponse({ messages: [] });
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		const opener = () =>
+			dom.container.querySelector("button[aria-label='Attach a note']") as HTMLButtonElement | null;
+		for (let i = 0; i < 100 && opener() === null; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const pick = () => dom.container.querySelector(".note-pick");
+
+		await act(async () => {
+			opener()!.click();
+		});
+		expect(pick()).not.toBeNull();
+
+		// A press inside the panel is not outside.
+		act(() =>
+			pick()!
+				.querySelector("input")!
+				.dispatchEvent(new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event),
+		);
+		expect(pick()).not.toBeNull();
+
+		// The opener's own press is exempt — its click does the toggling.
+		act(() =>
+			opener()!.dispatchEvent(
+				new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event,
+			),
+		);
+		expect(pick()).not.toBeNull();
+
+		act(() =>
+			dom.win.document.body.dispatchEvent(new dom.win.Event("pointerdown", { bubbles: true })),
+		);
+		expect(pick()).toBeNull();
+
+		// Reopen, then Escape puts it away too.
+		await act(async () => {
+			opener()!.click();
+		});
+		expect(pick()).not.toBeNull();
+		act(() =>
+			dom.win.document.dispatchEvent(
+				new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+			),
+		);
+		expect(pick()).toBeNull();
 	});
 });
 

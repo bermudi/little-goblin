@@ -16,7 +16,7 @@ import { isAbsolute, join } from "node:path";
 import { ensureDir, goblinHome, paths } from "./config.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
-import type { MemoryQueue } from "./memory-queue.ts";
+import type { MemoryQueue } from "./memory/queue.ts";
 
 export interface Project {
 	id: string;

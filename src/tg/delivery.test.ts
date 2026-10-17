@@ -505,6 +505,39 @@ describe("delivery", () => {
 		expect(empties[0]).toMatchObject({ level: "warn", conversation: "dm:1", chat: 1 });
 	});
 
+	test("a completed plain turn logs its delivery with the send target", async () => {
+		// The log bar: a screenshot of the bubble plus the log file must
+		// name the chat and thread the reply landed in. A silent
+		// delivery leaves the operator guessing which topic got it.
+		const { api, msgs } = fakeApi({});
+		const topic: Conversation = { ...conv, id: "topic:1:7", threadId: 7 };
+		const captured: string[] = [];
+		setLogFile("delivery-plain-boundary-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
+			sink.onTextDelta("landed");
+			await sink.onDone({ kind: "completed" });
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(msgs).toEqual(["landed"]);
+		const delivered = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "delivered plain");
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toMatchObject({
+			level: "info",
+			conversation: "topic:1:7",
+			chat: 1,
+			thread: 7,
+			messages: 1,
+		});
+	});
+
 	test("a voice-mode turn that renders empty warns instead of going silent", async () => {
 		const { api, msgs, voices } = fakeApi({});
 		const synthesized: string[] = [];

@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { readFileTool, readTextFile, sniffImage } from "./read.ts";
+import { safeValidateTypes } from "@ai-sdk/provider-utils";
+import { readFileTool, readTextFile, sniffImage, MAX_FILE_BYTES } from "./read.ts";
 import { tmpDir } from "../../testkit.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
@@ -40,6 +41,32 @@ describe("read_file", () => {
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "big.log" }, opts)) as { error?: string };
 		expect(out.error).toContain("file too large");
+	});
+
+	test("a limit that cannot page is refused at the schema, not coerced", async () => {
+		const t = readFileTool(tmpDir("goblin-read-"));
+		// The SDK runs a tool call's input through safeValidateTypes with
+		// this same inputSchema before execute. Zero and negative limits
+		// must die at that boundary, never reach the window arithmetic.
+		for (const limit of [0, -1]) {
+			const res = await safeValidateTypes({ value: { path: "f.txt", limit }, schema: t.inputSchema });
+			expect(res.success).toBe(false);
+		}
+		const ok = await safeValidateTypes({ value: { path: "f.txt", limit: 1 }, schema: t.inputSchema });
+		expect(ok.success).toBe(true);
+	});
+
+	test("a file exactly at the size cap is read; one byte more is refused", async () => {
+		const dir = tmpDir("goblin-read-");
+		const t = readFileTool(dir);
+		// The gate is `>`: MAX_FILE_BYTES is the largest readable file,
+		// not the first refused one.
+		writeFileSync(join(dir, "at-cap.txt"), "a".repeat(MAX_FILE_BYTES));
+		const atCap = (await t.execute!({ path: "at-cap.txt" }, opts)) as { error?: string };
+		expect(atCap.error).toBeUndefined();
+		writeFileSync(join(dir, "over-cap.txt"), "a".repeat(MAX_FILE_BYTES + 1));
+		const over = (await t.execute!({ path: "over-cap.txt" }, opts)) as { error?: string };
+		expect(over.error).toContain("file too large");
 	});
 
 	test("byte-cap truncation emits complete lines plus a continuation notice", async () => {

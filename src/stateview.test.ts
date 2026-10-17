@@ -112,6 +112,13 @@ describe("listSkills", () => {
 		expect(res.proposed).toEqual([]);
 	});
 
+	test("a skills path that is not a directory fails loud, not as an empty catalog", () => {
+		// Only ENOENT means empty. ENOTDIR — a file squatting on the
+		// path — must not render as a skill-less home.
+		writeFileSync(join(home, "skills-file"), "x");
+		expect(() => listSkillDir(join(home, "skills-file"))).toThrow(/ENOTDIR/);
+	});
+
 	test("a skill dir without SKILL.md still lists, stamped by the directory", () => {
 		writeRel("skills/bare/notes.md", "x");
 		const res = listSkillDir(join(home, "skills"));

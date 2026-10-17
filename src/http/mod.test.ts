@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { hookTokenHash } from "../agent/tools/program.ts";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
-import { setLogFile } from "../log.ts";
-import { startHttp, type HttpDeps } from "./mod.ts";
-import type { MemoryStatusResponse } from "./operator-wire.ts";
-import { hookTokenHash } from "../agent/tools/program.ts";
-import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
+import { setLogFile } from "../log.ts";
+import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { tmpDir, useHome } from "../testkit.ts";
+import { type HttpDeps, startHttp } from "./mod.ts";
+import type { MemoryStatusResponse } from "./operator-wire.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -875,15 +875,15 @@ describe("program webhooks", () => {
 
 // ---------- memories browser ----------
 import {
-	HindsightError,
 	type HindsightClient,
+	HindsightError,
 	type MemoryDocPage,
 	type MemoryDocSummary,
 	type MemoryFact,
 	type StoredMemoryDocument,
-} from "../hindsight.ts";
-import type { MemoryContexts } from "../memory.ts";
-import type { MemoryQueue } from "../memory-queue.ts";
+} from "../memory/hindsight.ts";
+import type { MemoryContexts } from "../memory/mod.ts";
+import type { MemoryQueue } from "../memory/queue.ts";
 
 function stubClient(): HindsightClient {
 	return {

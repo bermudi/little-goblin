@@ -41,7 +41,7 @@ Seam rulings that bind the phases:
   passed in. Never splice `lane.pending` directly. (#96)
 - Phase 1's admission fix (ownership filter, anchor) is distinct from
   lane/controller pinning, which is runtime-owned, not admission's.
-- Phase 2's recall body lives in `memory.ts` — its whole surface is
+- Phase 2's recall body lives in `memory/mod.ts` — its whole surface is
   memory's (client, contexts, `noteRecall`); the runtime calls it
   between authority checks.
 - Phase 3's view is composed only of pure functions over its inputs —
@@ -241,10 +241,10 @@ colocated.
 
 Two turn-adjacent bodies live in existing modules, by surface:
 
-- `recallMemory` lives in `memory.ts` (client, contexts, `noteRecall`
+- `recallMemory` lives in `memory/mod.ts` (client, contexts, `noteRecall`
   are all memory's surface). The runtime calls it between authority
   checks.
-- `retentionSourceFrom` + `RetentionSource` live in `memory.ts`, per
+- `retentionSourceFrom` + `RetentionSource` live in `memory/mod.ts`, per
   the two-projections ruling below.
 
 Stays in `runtime.ts`: the `Lane` map and queue (`submit`/`admit`/
@@ -266,7 +266,7 @@ construction — phase modules carry their own colocated boundary tests.
 Known tension, ruled so a dedup sweep cannot unify it blindly:
 compaction's serialization (`agent/compaction.ts` `messageText`)
 embeds stored voice/video-note transcripts — durable operator speech,
-#84 — and memory's retention projection (`memory.ts` `messageText`)
+#84 — and memory's retention projection (`memory/mod.ts` `messageText`)
 embeds them too: `design/memory.md` → Retain rules a stored transcript
 is the text of the exchange, not attachment ingestion. The two jobs
 still differ in what else rides: compaction folds **model-context
@@ -279,8 +279,8 @@ The divergence lives as **two files, two design docs, one seam each.**
 Compaction's projection stays in `agent/compaction.ts` (cited by
 DESIGN.md → Compaction); the retention projection — `messageText`,
 `buildRetentionDocument`, and `retentionSourceFrom` — consolidates in
-`memory.ts` (cited by `design/memory.md` → Retain). `retentionSourceFrom`
-sits in `memory.ts`, not in `turn/view.ts` or `turn/finish.ts`:
+`memory/mod.ts` (cited by `design/memory.md` → Retain). `retentionSourceFrom`
+sits in `memory/mod.ts`, not in `turn/view.ts` or `turn/finish.ts`:
 co-locating it with the model-view builder is how the projections would
 silently fuse. The transcript mechanics may be shared between the two;
 the content divergence above stays decided per file, and "which

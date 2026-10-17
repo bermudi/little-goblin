@@ -20,6 +20,7 @@ import {
 	type UIMessage,
 } from "ai";
 import {
+	compactConversation,
 	getConfig,
 	getContext,
 	getConversationConfig,
@@ -651,10 +652,12 @@ function NotePicker({
 	token,
 	onPick,
 	onClose,
+	pickRef,
 }: {
 	token: string | null;
 	onPick: (n: AppNoteSummary) => void;
 	onClose: () => void;
+	pickRef: RefObject<HTMLDivElement | null>;
 }) {
 	const [query, setQuery] = useState("");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
@@ -682,7 +685,7 @@ function NotePicker({
 		return () => clearTimeout(t);
 	}, [query, token]);
 	return (
-		<div className="note-pick composer-pick">
+		<div className="note-pick composer-pick" ref={pickRef}>
 			<input
 				type="search"
 				placeholder="Search notes"
@@ -734,11 +737,18 @@ function NotePicker({
 
 // ---------- the context gauge ----------
 
-// Compact token counts — "340", "1.5k", "1.0M". One decimal only past
-// the thousand mark; below it the raw count.
+// Compact token counts — "340", "1.5k", "104.3k", "1M". One decimal
+// only past the thousand mark and only when it carries information —
+// whole thousands read as "200k", not "200.0k".
 export function contextCount(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+	if (n >= 1_000_000) {
+		const m = n / 1_000_000;
+		return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+	}
+	if (n >= 1000) {
+		const k = n / 1000;
+		return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+	}
 	return `${n}`;
 }
 
@@ -758,7 +768,7 @@ export function contextLabel(ctx: AppContextView | null): string {
 // against the conversation model's catalog limit, with cache-hit rates
 // in the popover. Reads stay cheap: one GET on mount and one per
 // settled turn (busy → idle), never mid-stream.
-function ContextGauge({
+export function ContextGauge({
 	token,
 	conversationId,
 	busy,
@@ -769,56 +779,163 @@ function ContextGauge({
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
+	// Why the last read failed — the tooltip's debugging hook; empty on
+	// success. Never rendered as UI text.
+	const [lastError, setLastError] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
+	const [compacting, setCompacting] = useState(false);
+	// The manual lever's own readout — the gauge numbers are the last
+	// turn's usage, so a fold doesn't move them until the next turn;
+	// the outcome line is the feedback that it happened.
+	const [compactNote, setCompactNote] = useState<string | null>(null);
 	const seq = useRef(0);
+	const gaugeRef = useRef<HTMLSpanElement | null>(null);
+	const btnRef = useRef<HTMLButtonElement | null>(null);
+	// A read belongs to the conversation that produced it — an id (or
+	// credential) switch makes it stale, and a still-in-flight read for
+	// the old identity must never land: bump seq here, since the fetch
+	// effect's early returns skip the bump. Kept out of that effect so
+	// its post-turn re-runs hold the last read until the new one lands.
+	// The popover belongs to the conversation too — a switch closes it,
+	// so the next conversation's read can't pop open over the composer.
 	useEffect(() => {
+		seq.current++;
+		setCtx(null);
+		setFailed(false);
+		setLastError(null);
+		setOpen(false);
+		setCompacting(false);
+		setCompactNote(null);
+	}, [token, conversationId]);
+	const read = () => {
 		if (conversationId === undefined || busy) return;
 		const n = ++seq.current;
 		setFailed(false);
+		setLastError(null);
 		void getContext(token, conversationId).then(
 			(c) => {
 				if (n === seq.current) setCtx(c);
 			},
-			() => {
-				if (n === seq.current) setFailed(true);
+			(err: unknown) => {
+				if (n === seq.current) {
+					setFailed(true);
+					setLastError(err instanceof Error ? err.message : "request failed");
+				}
 			},
 		);
+	};
+	useEffect(() => {
+		read();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [token, conversationId, busy]);
+	// Dismiss on any outside press or Escape — the gauge button's own
+	// toggle stays the open path. Escape hands focus back to the control
+	// that opened it.
+	useEffect(() => {
+		if (!open) return;
+		const onPointer = (e: Event) => {
+			if (gaugeRef.current?.contains(e.target as Node | null) === true) return;
+			setOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setOpen(false);
+			btnRef.current?.focus();
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [open]);
 	if (conversationId === undefined) return null;
 	const barPct =
 		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// 85% is the ring's red line — the button and the popover's bar wear
+	// the same state so every face of the gauge agrees.
+	const hot = barPct >= 85;
+	// A failed read has no numbers to show and the popover won't open —
+	// the label carries it on wide screens, the reddened ring on narrow.
+	// The click becomes the retry, with the reason on the tooltip.
+	const failedRead = failed && ctx === null;
 	return (
-		<span className="ctx-gauge">
+		<span className="ctx-gauge" ref={gaugeRef}>
 			<button
 				type="button"
-				className="ctx-btn"
-				aria-label="Context window usage"
-				title={
-					ctx === null
-						? "Context window usage"
-						: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+				ref={btnRef}
+				className={failedRead ? "ctx-btn failed" : hot ? "ctx-btn hot" : "ctx-btn"}
+				aria-label={
+					failedRead
+						? "Context window usage — read failed, activate to retry"
+						: ctx === null
+							? "Context window usage"
+							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
 				}
-				onClick={() => setOpen((v) => !v)}
+				aria-expanded={open && ctx !== null}
+				title={
+					failedRead
+						? `Context window usage — read failed: ${lastError ?? "unknown error"}`
+						: ctx === null
+							? "Context window usage"
+							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+				}
+				onClick={() => {
+					if (failedRead) {
+						read();
+						return;
+					}
+					setOpen((v) => !v);
+				}}
 			>
-				{failed && ctx === null ? "ctx ?" : contextLabel(ctx)}
+				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
+					{barPct > 0 && (
+						<circle
+							className={barPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
+							cx="8"
+							cy="8"
+							r="6.5"
+							strokeDasharray={`${(barPct / 100) * 40.84} 40.84`}
+							transform="rotate(-90 8 8)"
+						/>
+					)}
+				</svg>
+				<span className="ctx-label">{failedRead ? "ctx failed" : contextLabel(ctx)}</span>
 			</button>
 			{open && ctx !== null && (
-				<div className="note-pick composer-pick ctx-pop" role="status">
+				<div className="note-pick composer-pick ctx-pop">
 					<div className="ctx-head">
 						<span>Context window</span>
 						<span className="mono">
 							{ctx.input === null || ctx.limit === null
 								? "—"
-								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)} (${ctx.pct === null ? "?" : `${ctx.pct}%`})`}
+								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)}`}
 						</span>
 					</div>
-					<div className="ctx-bar" aria-hidden="true">
+					{/* The hero — utilization is the one number the popover
+						exists for; everything else on this panel whispers. */}
+					<div className="ctx-hero">
+						{ctx.limit === null
+							? ctx.input === null
+								? "—"
+								: `${contextCount(ctx.input)} tok`
+							: ctx.pct === null
+								? "?"
+								: `${ctx.pct}%`}
+					</div>
+					<div
+						className={ctx?.pct == null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
+						aria-hidden="true"
+					>
 						<span style={{ width: `${barPct}%` }} />
 					</div>
 					<dl className="ctx-rows">
 						<div>
 							<dt>Input</dt>
-							<dd className="mono">{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}</dd>
+							<dd className="mono">
+								{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}
+							</dd>
 						</div>
 						<div>
 							<dt>Cache hit</dt>
@@ -833,6 +950,43 @@ function ContextGauge({
 						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
 						{ctx.limit === null ? " · limit unknown" : ""}
 					</p>
+					<button
+						type="button"
+						className="ctx-act"
+						disabled={compacting}
+						onClick={() => {
+							if (conversationId === undefined) return;
+							const id = conversationId;
+							const n = seq.current;
+							setCompacting(true);
+							setCompactNote(null);
+							void compactConversation(token, id)
+								.then((outcome) => {
+									if (n !== seq.current) return;
+									setCompactNote(
+										outcome.compacted
+											? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
+											: `nothing to compact — ${outcome.reason}`,
+									);
+								})
+								.catch((err: unknown) => {
+									if (n === seq.current)
+										setCompactNote(
+											`compact failed: ${err instanceof Error ? err.message : String(err)}`,
+										);
+								})
+								.finally(() => {
+									if (n === seq.current) setCompacting(false);
+								});
+						}}
+					>
+						{compacting ? "Compacting…" : "Compact now"}
+					</button>
+					{compactNote !== null && (
+						<p className="ctx-outcome" role="status">
+							{compactNote}
+						</p>
+					)}
 				</div>
 			)}
 		</span>
@@ -886,6 +1040,30 @@ export function Composer({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
+	// Outside-press dismissal — the popover and its opener are both
+	// exempt, or pointerdown on the opener would close it before its
+	// own click could toggle.
+	const notePickRef = useRef<HTMLDivElement | null>(null);
+	const noteBtnRef = useRef<HTMLButtonElement | null>(null);
+	useEffect(() => {
+		if (!notePickerOpen) return;
+		const onPointer = (e: Event) => {
+			const t = e.target as Node | null;
+			if (notePickRef.current?.contains(t) === true || noteBtnRef.current?.contains(t) === true)
+				return;
+			setNotePickerOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setNotePickerOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [notePickerOpen]);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
 		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
@@ -1139,10 +1317,12 @@ export function Composer({
 	}, [pickFile]);
 
 	const send = () => {
-		// The button is disabled while busy; Enter and form submit are
-		// not — gate here so a mid-turn send can't fork a second request
-		// (or a second conversation from the empty state).
-		if (busy || configSaving || sendingRef.current) return;
+		// Enter, form submit, and the button all funnel here. A send
+		// while a turn runs steers it (DESIGN.md → Turn; onSend drops
+		// the stale reader first) — but without a stop path there is no
+		// steer lane, so a lazy create still refuses mid-flight: a second
+		// send must not fork a second conversation.
+		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
@@ -1322,8 +1502,10 @@ export function Composer({
 				</button>
 				<button
 					type="button"
+					ref={noteBtnRef}
 					className="icon-btn"
 					aria-label="Attach a note"
+					aria-expanded={notePickerOpen}
 					title="Attach a note"
 					onClick={() => setNotePickerOpen((v) => !v)}
 				>
@@ -1421,7 +1603,7 @@ export function Composer({
 					</>
 				)}
 				<ContextGauge token={token} conversationId={conversationId} busy={busy} />
-				{busy && onStop !== undefined ? (
+				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
 					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
@@ -1429,29 +1611,29 @@ export function Composer({
 							<rect x="7" y="7" width="10" height="10" rx="2" />
 						</svg>
 					</button>
-				) : (
-					<button
-						type="submit"
-						className="send-btn"
-						aria-label="Send"
-						disabled={
-							busy ||
-							configSaving ||
-							recording ||
-							(draft.trim() === "" &&
-								staged.every((e) => e.failed === true || e.uploading === true) &&
-								stagedNotes.length === 0)
-						}
-					>
-						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-							<path
-								fillRule="evenodd"
-								d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
-								clipRule="evenodd"
-							/>
-						</svg>
-					</button>
 				)}
+				<button
+					type="submit"
+					className="send-btn"
+					aria-label="Send"
+					title={busy && onStop !== undefined ? "Send — steers the running turn" : "Send"}
+					disabled={
+						(busy && onStop === undefined) ||
+						configSaving ||
+						recording ||
+						(draft.trim() === "" &&
+							staged.every((e) => e.failed === true || e.uploading === true) &&
+							stagedNotes.length === 0)
+					}
+				>
+					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+						<path
+							fillRule="evenodd"
+							d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
+							clipRule="evenodd"
+						/>
+					</svg>
+				</button>
 			</div>
 			{sendError !== null && (
 				<p className="error" role="alert">
@@ -1460,6 +1642,7 @@ export function Composer({
 			)}
 			{notePickerOpen && (
 				<NotePicker
+					pickRef={notePickRef}
 					token={token}
 					onPick={(n) =>
 						setStagedNotes((p) =>
@@ -1684,8 +1867,10 @@ function Chat({
 		// in-flight reply instead of showing a finished-looking chat whose
 		// next send would steer a ghost turn (#43).
 		resume: true,
-		onFinish: ({ message }) => {
-			notifyDone(title ?? "", messageText(message));
+		onFinish: ({ message, isAbort }) => {
+			// An aborted reader (stop, or the drop before a steer) is not a
+			// finished reply — the bell belongs to the real finish.
+			if (!isAbort) notifyDone(title ?? "", messageText(message));
 			onTurnDone();
 		},
 	});
@@ -1723,6 +1908,20 @@ function Chat({
 	// output only while the operator is already at the tail.
 	const pinned = useRef(true);
 	const busy = status === "submitted" || status === "streaming";
+
+	// A mid-turn send steers or queues (DESIGN.md → Turn — the app chat
+	// POST rides the Telegram lane). Drop this client's reader first:
+	// the new POST's stream replays the wire from sentence one onto the
+	// same assistant message id — a handoff, not a second writer. The
+	// await is load-bearing: the aborted reader's teardown flips status
+	// back to "ready" a tick after stop() returns control, and a send
+	// fired before it lands gets clobbered into a busy:false window —
+	// no stop button, and the next send forks a second writer.
+	const submit = async (message: Parameters<typeof sendMessage>[0]) => {
+		pinned.current = true;
+		if (busy) await stop();
+		await sendMessage(message);
+	};
 
 	useEffect(() => {
 		const el = scrollRef.current;
@@ -1782,10 +1981,7 @@ function Chat({
 									streaming={status === "streaming" && m.id === lastAssistantId}
 									messages={messages}
 									onOpenNote={onOpenNote}
-									onAction={(text) => {
-										pinned.current = true;
-										void sendMessage({ text });
-									}}
+									onAction={(text) => void submit({ text })}
 								/>
 								<ActionBar
 									message={m}
@@ -1827,9 +2023,8 @@ function Chat({
 				setStagedNotes={setStagedNotes}
 				quote={quote}
 				onSend={(parts) => {
-					pinned.current = true;
 					askNotifyPermission();
-					void sendMessage({ parts });
+					void submit({ parts });
 				}}
 				onStop={() => {
 					setStopError(null);

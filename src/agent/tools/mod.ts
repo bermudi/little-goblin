@@ -4,34 +4,34 @@
 // needs it.
 
 import type { ToolSet } from "ai";
-import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
-import { herdrTool, type HerdrToolDeps } from "./herdr.ts";
-import { programTool, type ProgramToolDeps } from "./program.ts";
+import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
+import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
+import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
-import { historySearchTool, type HistorySearchDeps } from "./history.ts";
-import { imageTool, type ImageToolDeps } from "./image.ts";
+import { type HerdrToolDeps, herdrTool } from "./herdr.ts";
+import { type HistorySearchDeps, historySearchTool } from "./history.ts";
+import { type ImageToolDeps, imageTool } from "./image.ts";
+import type { MailToolDeps } from "./mail.ts";
 import { mailTool } from "./mail.ts";
+import type { MemorySearchDeps } from "./memory.ts";
 import { memorySearchTool } from "./memory.ts";
-import { noteTool, type NoteToolDeps } from "./note.ts";
+import { memoryReflectTool } from "./memory-reflect.ts";
+import { type NoteToolDeps, noteTool } from "./note.ts";
+import { type ProgramToolDeps, programTool } from "./program.ts";
 import { readFileTool } from "./read.ts";
-import { sandboxTool, type SandboxToolDeps } from "./sandbox.ts";
-import { subagentTool, type SubagentToolDeps } from "./subagent.ts";
-import { desktopTool, type DesktopToolDeps } from "./desktop.ts";
+import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
+import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
-import { searchTool } from "./search.ts";
+import { type SubagentToolDeps, subagentTool } from "./subagent.ts";
 import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
-import { visionTool, type VisionToolDeps } from "./vision.ts";
-import { writeFileTool } from "./write.ts";
-import { memoryReflectTool } from "./memory-reflect.ts";
-import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
-import type { MemorySearchDeps } from "./memory.ts";
-import type { MailToolDeps } from "./mail.ts";
+import { type VisionToolDeps, visionTool } from "./vision.ts";
 import type { WebToolDeps } from "./web.ts";
+import { writeFileTool } from "./write.ts";
 
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
@@ -62,17 +62,18 @@ export interface TranscribeToolDeps {
 	transcribe(file: SpeechFile): Promise<string | null>;
 }
 
-export type { VisionToolDeps };
-export type { ImageToolDeps };
-
-export type { DelegateToolDeps };
-export type { HerdrToolDeps };
-export type { HistorySearchDeps };
-export type { MailToolDeps };
-export type { NoteToolDeps };
-export type { SandboxToolDeps };
-export type { SubagentToolDeps };
-export type { DesktopToolDeps };
+export type {
+	DelegateToolDeps,
+	DesktopToolDeps,
+	HerdrToolDeps,
+	HistorySearchDeps,
+	ImageToolDeps,
+	MailToolDeps,
+	NoteToolDeps,
+	SandboxToolDeps,
+	SubagentToolDeps,
+	VisionToolDeps,
+};
 
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.

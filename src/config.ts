@@ -20,9 +20,9 @@ import JSON5 from "json5";
 import { z } from "zod";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
 import { durableWriteFile } from "./durable.ts";
-import { hindsightConnectionSchema, minScoresSchema } from "./hindsight.ts";
 import { log } from "./log.ts";
-import { MEMORY_DEFAULTS } from "./memory-policy.ts";
+import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
+import { MEMORY_DEFAULTS } from "./memory/policy.ts";
 
 // ---------- paths ----------
 

@@ -10,6 +10,7 @@
 
 import type {
 	AppAttachmentResponse,
+	AppCompactResponse,
 	AppConfigPatch,
 	AppConfigView,
 	AppContextView,
@@ -48,6 +49,7 @@ import type {
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
+	SecretStoreResponse,
 	SkillFileResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
@@ -539,6 +541,16 @@ export async function resumeRun(
 	return parsed.data;
 }
 
+// The manual lever — the same lane compaction /compact runs in
+// Telegram. The POST awaits the job, so a running turn finishing first
+// shows up as a slow response.
+export function compactConversation(
+	token: string | null,
+	id: string,
+): Promise<AppCompactResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/compact`, { method: "POST" });
+}
+
 // Read-aloud — reply text in, base64 ogg chunks out.
 export function synthesize(token: string | null, text: string): Promise<AppTtsResponse> {
 	return request(token, "/api/app/tts", {
@@ -569,6 +581,19 @@ export function saveOperatorConfig(
 	return requestMeta(token, "/api/app/settings", {
 		method: "POST",
 		headers: { "content-type": "application/json", "if-match": ifMatch },
+		body: JSON.stringify(body),
+	});
+}
+
+/** POST /api/app/secrets — store a key as an auth.jsonl record. The
+ *  record resolves on the running process immediately (no restart). */
+export function storeSecret(
+	token: string | null,
+	body: { name: string; value: string },
+): Promise<SecretStoreResponse> {
+	return request(token, "/api/app/secrets", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
 }

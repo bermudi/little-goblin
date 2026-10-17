@@ -28,10 +28,11 @@ const CODE_BLOCK = /```(?:[^\n]*)\n?([\s\S]*?)```/g;
 
 // ---------- voice cast ----------
 
-// Language sniffing for the voice cast (en/es today): exclusive
-// diacritics and function words decide — cheap, deterministic, no model
-// call, and the bar is only "which configured voice matches". Short or
-// ambiguous text resolves to no language and the default voice speaks.
+// Language sniffing for the voice cast (en/es by design — the operator's
+// cast): exclusive diacritics and function words decide — cheap,
+// deterministic, no model call, and the bar is only "which configured
+// voice matches". Short or ambiguous text resolves to no language and
+// the default voice speaks.
 const ES_WORDS = new Set([
 	"el",
 	"la",
@@ -281,9 +282,11 @@ const EN_WORDS = new Set([
 
 export function detectLanguage(text: string): "en" | "es" | null {
 	const lower = text.toLowerCase();
-	// ¿ ¡ ñ and the accented vowels are Spanish-exclusive in practice —
-	// each occurrence outweighs a function word.
-	let es = 3 * (lower.match(/[¿¡ñáéíóúü]/g)?.length ?? 0);
+	// ¿ ¡ ñ are Spanish-exclusive in practice — each outweighs a function
+	// word. The plain accented vowels don't get that weight: they ride
+	// english loanwords and names (résumé, café, José), and one borrowed
+	// word must not cast a whole english sentence into the spanish voice.
+	let es = 3 * (lower.match(/[¿¡ñ]/g)?.length ?? 0) + (lower.match(/[áéíóúü]/g)?.length ?? 0);
 	let en = 0;
 	for (const word of lower.split(/[^a-záéíóúüñ]+/)) {
 		if (!word) continue;

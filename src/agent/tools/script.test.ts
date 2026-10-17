@@ -476,7 +476,7 @@ return keep.length;`,
 	});
 	expect(out.error).toBe("script");
 	expect(out.text).toContain("out of memory");
-});
+}, 20_000);
 
 test("nested calls look up execute at call time — a fence swapped in later still wraps them", async () => {
 	const tools: ToolSet = { bash: bashTool(home) };

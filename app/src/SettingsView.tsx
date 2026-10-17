@@ -1,7 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse } from "../../src/http/operator-wire.ts";
-import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
+import {
+	ApiError,
+	getOperatorConfig,
+	getThinkingLevels,
+	saveOperatorConfig,
+	storeSecret,
+} from "./api.ts";
 import { saveFailure, shouldAutosave } from "./settingsSave.ts";
 import {
 	bodyFromDraft,
@@ -21,7 +27,9 @@ import {
 	THINKING_ORDER,
 	type TranscriptionKind,
 	type TrDraft,
+	type TrKindStash,
 	type TtsDraft,
+	type TtsKindStash,
 	type TtsKind,
 	type VisDraft,
 	VOICE_SUGGESTIONS,
@@ -274,6 +282,95 @@ function ChipsEditor({
 	);
 }
 
+// The "+ key" affordance every secret-name field carries: a pasted key
+// lands in auth.jsonl under the field's effective name (the typed name,
+// else the kind's default record) and resolves on the running process —
+// no shell, no restart. Command records stay hand-managed; the server
+// refuses those names and the error lands here.
+function SecretEntry({
+	token,
+	name,
+	onStored,
+}: {
+	token: string | null;
+	/** The record name this store lands under — blank hides the affordance. */
+	name: string;
+	onStored: (name: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [value, setValue] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
+	const record = name.trim();
+	if (record === "") return null;
+	const submit = async () => {
+		setBusy(true);
+		setErr(null);
+		try {
+			const res = await storeSecret(token, { name: record, value });
+			setValue("");
+			setOpen(false);
+			onStored(res.name);
+		} catch (e) {
+			setErr(e instanceof ApiError ? e.message : "Couldn't reach goblin — check the tailnet.");
+		} finally {
+			setBusy(false);
+		}
+	};
+	if (!open) {
+		return (
+			<button type="button" className="keylink" onClick={() => setOpen(true)}>
+				+ store a key
+			</button>
+		);
+	}
+	return (
+		<div className="keyentry">
+			<div className="addrow">
+				<input
+					className="mono"
+					type="password"
+					value={value}
+					onChange={(e) => setValue(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							void submit();
+						}
+					}}
+					placeholder={`the key for "${record}"`}
+					autoComplete="off"
+					spellCheck={false}
+					autoCapitalize="off"
+					aria-label={`key for ${record}`}
+				/>
+				<button
+					className="addbtn"
+					type="button"
+					disabled={busy || value.trim() === ""}
+					onClick={() => void submit()}
+				>
+					Store
+				</button>
+				<button
+					className="addbtn"
+					type="button"
+					onClick={() => {
+						setOpen(false);
+						setErr(null);
+					}}
+				>
+					Cancel
+				</button>
+			</div>
+			<div className="cap">
+				Writes to auth.jsonl as "{record}" — resolvable right away, no restart.
+			</div>
+			{err !== null && <div className="cap err-inline">{err}</div>}
+		</div>
+	);
+}
+
 // The model picker: favorites, the current ref, and a custom
 // provider/model-id pair — the mini app's sheet, verbatim semantics.
 function ModelSheet({
@@ -375,6 +472,8 @@ function ChainEditor({
 	meta,
 	defaults,
 	authNames,
+	token,
+	onSecretStored,
 	onChange,
 }: {
 	entries: ChainEntry[];
@@ -384,7 +483,9 @@ function ChainEditor({
 	 *  one source with the server schema. */
 	defaults: AuthDefaults;
 	authNames: string[];
-	onChange: (next: ChainEntry[]) => void;
+	token: string | null;
+	onSecretStored: (name: string) => void;
+	onChange: (next: ChainEntry[] | ((current: ChainEntry[]) => ChainEntry[])) => void;
 }) {
 	const move = (i: number, d: number) => {
 		const j = i + d;
@@ -483,6 +584,16 @@ function ChainEditor({
 									<div className="cap">{m.note}</div>
 								)}
 								{hint !== undefined && <div className="cap">{hint}</div>}
+								<SecretEntry
+									key={`${e.kind}:${effective}`}
+									token={token}
+									name={effective}
+									onStored={(n) => {
+										onSecretStored(n);
+										// Only an unchanged, still-present entry owns this response.
+										onChange((current) => current.map((x) => (x === e ? { ...x, auth: n } : x)));
+									}}
+								/>
 							</>
 						)}
 					</div>
@@ -509,6 +620,8 @@ function ProviderCard({
 	referencedBy,
 	authDefaults,
 	authNames,
+	token,
+	onSecretStored,
 	onPatch,
 	onRename,
 	onRemove,
@@ -519,6 +632,8 @@ function ProviderCard({
 	referencedBy: string[];
 	authDefaults: AuthDefaults;
 	authNames: string[];
+	token: string | null;
+	onSecretStored: (name: string) => void;
 	onPatch: (patch: Partial<ProvDraft>) => void;
 	onRename: (v: string) => string | null;
 	onRemove: () => void;
@@ -528,6 +643,9 @@ function ProviderCard({
 	// refs while the operator is mid-word (the mini app's rule).
 	const [nameDraft, setNameDraft] = useState(prov.name);
 	const [nameErr, setNameErr] = useState<string | null>(null);
+	// Per-kind auth memory — a kind switch clears the field (it must
+	// never leak across kinds) and a switch back restores it.
+	const authStash = useRef<Record<string, string>>({});
 	useEffect(() => setNameDraft(prov.name), [prov.name]);
 	// The uncommitted name is departure hazard the serialized diff can't
 	// see: report divergence on every change, and clear on unmount —
@@ -592,7 +710,7 @@ function ProviderCard({
 					className="mono"
 					value={prov.kind}
 					aria-label="provider type"
-					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value))}
+					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value, authStash.current))}
 				>
 					{kinds.map((k) => (
 						<option key={k} value={k}>
@@ -635,6 +753,17 @@ function ProviderCard({
 				/>
 			</div>
 			{authMissing !== undefined && <div className="cap">{authMissing}</div>}
+			{!codex && (
+				<SecretEntry
+					key={`${prov.kind}:${prov.auth.trim() || authFallback}`}
+					token={token}
+					name={prov.auth.trim() || authFallback}
+					onStored={(n) => {
+						onSecretStored(n);
+						onPatch({ auth: n });
+					}}
+				/>
+			)}
 		</div>
 	);
 }
@@ -665,6 +794,15 @@ export function SettingsView({
 		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
+	// A stored key's record joins the picker list so the "not in
+	// auth.jsonl" hint clears without a reload; apply() points the
+	// owning field's name at it.
+	const rememberAuthName = (name: string) =>
+		setAuthNames((n) => (n.includes(name) ? n : [...n, name].sort()));
+	const keyStored = (apply: (name: string) => void) => (name: string) => {
+		rememberAuthName(name);
+		apply(name);
+	};
 	const [etag, setEtag] = useState("");
 	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
 	const [provs, setProvs] = useState<ProvDraft[]>([]);
@@ -690,6 +828,11 @@ export function SettingsView({
 		fetch: ChainEntry[] | null;
 		memory: MemDraft | null;
 	}>({ tts: null, transcription: null, vision: null, search: null, fetch: null, memory: null });
+	// Kind-switch memory — each engine's identity fields survive a
+	// round-trip through another kind (switch*Kind clears them on
+	// purpose; the stash restores what was entered for that kind).
+	const ttsStash = useRef<TtsKindStash>({});
+	const trStash = useRef<TrKindStash>({});
 	// values = the rungs the Seg control offers; unavailable = the
 	// capability lookup failed, so the full ladder is shown as a
 	// stand-in and the caption says so — the server clamps silently at
@@ -1254,7 +1397,14 @@ export function SettingsView({
 											setDraft((d) =>
 												d.tts === null
 													? d
-													: { ...d, tts: switchTtsKind(d.tts, e.target.value as TtsKind) },
+													: {
+															...d,
+															tts: switchTtsKind(
+																d.tts,
+																e.target.value as TtsKind,
+																ttsStash.current,
+															),
+														},
 											)
 										}
 									>
@@ -1290,6 +1440,14 @@ export function SettingsView({
 											}
 											mono
 											list={AUTH_DL}
+										/>
+										<SecretEntry
+											key={`${draft.tts.kind}:${draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")}`}
+											token={token}
+											name={
+												draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")
+											}
+											onStored={keyStored((n) => patchTts({ auth: n }))}
 										/>
 									</>
 								)}
@@ -1338,7 +1496,7 @@ export function SettingsView({
 											placeholder="add a voice"
 											ariaLabel="add alternate voice"
 											suggestions={VOICE_SUGGESTIONS}
-											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Only English and Spanish are recognized, matched on each name's language tag."
 										/>
 									</>
 								)}
@@ -1386,7 +1544,11 @@ export function SettingsView({
 													? d
 													: {
 															...d,
-															transcription: switchTranscriptionKind(d.transcription, next),
+															transcription: switchTranscriptionKind(
+																d.transcription,
+																next,
+																trStash.current,
+															),
 														},
 											);
 										}}
@@ -1430,6 +1592,15 @@ export function SettingsView({
 											}
 											mono
 											list={AUTH_DL}
+										/>
+										<SecretEntry
+											key={`${draft.transcription.kind}:${draft.transcription.auth.trim() || kinds.trDefaults[draft.transcription.kind].auth}`}
+											token={token}
+											name={
+												draft.transcription.auth.trim() ||
+												kinds.trDefaults[draft.transcription.kind].auth
+											}
+											onStored={keyStored((n) => patchTranscription({ auth: n }))}
 										/>
 									</>
 								)}
@@ -1488,7 +1659,15 @@ export function SettingsView({
 								meta={SEARCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
-								onChange={(search) => patchDraft({ search })}
+								token={token}
+								onSecretStored={rememberAuthName}
+								onChange={(next) =>
+									setDraft((d) => ({
+										...d,
+										search:
+											d.search === null ? null : typeof next === "function" ? next(d.search) : next,
+									}))
+								}
 							/>
 							<div className="cap ops-cap">
 								Tried top to bottom. A failure moves on to the next; an empty result is an answer
@@ -1523,7 +1702,15 @@ export function SettingsView({
 								meta={FETCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
-								onChange={(fetch) => patchDraft({ fetch })}
+								token={token}
+								onSecretStored={rememberAuthName}
+								onChange={(next) =>
+									setDraft((d) => ({
+										...d,
+										fetch:
+											d.fetch === null ? null : typeof next === "function" ? next(d.fetch) : next,
+									}))
+								}
 							/>
 							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
 						</>
@@ -1604,6 +1791,17 @@ export function SettingsView({
 									mono
 									list={AUTH_DL}
 								/>
+								<SecretEntry
+									key={draft.memory.auth}
+									token={token}
+									name={draft.memory.auth}
+									onStored={keyStored((n) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, auth: n },
+										})),
+									)}
+								/>
 								<Row label="Recall budget" col>
 									<Seg
 										options={["low", "mid", "high"]}
@@ -1671,6 +1869,8 @@ export function SettingsView({
 								referencedBy={p.name !== "" ? providerRefs(p.name) : []}
 								authDefaults={kinds.authDefaults}
 								authNames={authNames}
+								token={token}
+								onSecretStored={rememberAuthName}
 								onPatch={(patch) => patchProv(p.id, patch)}
 								onRename={(v) => renameProvider(p.id, v)}
 								onRemove={() => removeProvider(p)}

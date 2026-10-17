@@ -68,6 +68,15 @@ describe("resolveImport", () => {
 		expect("error" in out && out.error).toContain("outside the workspace");
 	});
 
+	test("an unresolvable source propagates — a symlink loop is not 'not found'", () => {
+		const { workspace } = ws();
+		// realpath fails ELOOP here. Only ENOENT may degrade into a
+		// result; anything else is the caller's failure to see.
+		symlinkSync(join(workspace, "loop-b"), join(workspace, "loop-a"));
+		symlinkSync(join(workspace, "loop-a"), join(workspace, "loop-b"));
+		expect(() => resolveImport(workspace, "loop-a")).toThrow(/ELOOP/);
+	});
+
 	test("missing, directories, and oversized files are refused", () => {
 		const { workspace } = ws();
 		expect("error" in resolveImport(workspace, "nope.txt")).toBe(true);

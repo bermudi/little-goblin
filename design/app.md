@@ -8,6 +8,22 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 Ruling 2026-09-30, operator ask. Telegram stops being the only channel:
 goblin grows a second, disjoint one — the app.
 
+### Files
+
+`src/http/app-*.ts` — `app-channel.ts` is the door's dispatcher (auth
+call, the operator dual-mount, route dispatch, 404) and re-exports the
+pre-split names (`handleAppApi`, `resolveAppAuth`, `AppChannelDeps`);
+`app-auth.ts` resolves the boot mode and runs the per-request gate
+(bearer + trust mode's browser-origin line); `app-sse.ts` the SSE wire
+(writer, heartbeat, stream sink); `app-shared.ts` the
+deps contract and both-ends pieces (`NO_STORE`, `jsonBodyRefusal`,
+`configView`, `configPatchBody`); route families in
+`app-conversations.ts`, `app-projects.ts`, `app-notes.ts`,
+`app-config.ts`, `app-chat.ts`, `app-attachments.ts`. Tests colocated
+per module over the shared rig in `app-testing.ts` — the real-listener
+setup (model faked at the provider edge) and the create-and-chat
+helper the suites start from; test-only.
+
 **Why.** The operator's reading pains live in Telegram's client, not in
 goblin: long replies read as 4096-chunked fragments, topic lists desync
 between devices (a client cache bug goblin cannot fix), and Mini Apps
@@ -36,6 +52,14 @@ format = wire format — no translation layer to design, drift, or test
 twice. `POST /api/app/conversations/<id>/stop` rides `runtime.stop` —
 the same epoch bump + abort the Telegram `/stop` command owns — so the
 client's Stop button ends the turn server-side, not just its stream.
+`POST /api/app/conversations/<id>/compact` rides `runtime.compact` the
+same way (ruling 2026-10-16): the manual lever lives in the context
+gauge's popover, not a composer command grammar — the app channel
+parses no slash commands, its controls are routes plus buttons. The
+request awaits the lane job, so a running turn completing first shows
+up as a slow response; the gauge numbers are the last turn's usage, so
+the popover reports the fold as its own line rather than pretending
+the readout moved.
 
 **Auth.** No Telegram `initData` exists outside Telegram. The app
 channel's lock is a bearer token on `/api/app/*` — optional since
@@ -293,6 +317,13 @@ finished-looking chat whose next send steered a ghost turn (#43).
   daily pattern; the server machinery is already in place. Until
   then this stays the deliberate descendant of the "live refresh out
   of scope" ruling in Spin-off.
+- **The composer steers (2026-10-16).** Send never locks mid-turn —
+  it posts beside Stop, and the lane steers or queues the message
+  exactly like Telegram. The client drops its reader first
+  (`stop()` locally, never the `/stop` endpoint), so the new POST's
+  join replay is the only writer and lands on the same assistant
+  message id — a handoff, not a forked transcript. An aborted reader
+  is not a finished reply: it doesn't ring the done bell.
 
 ## Model/thinking scope (ruling 2026-10-06)
 

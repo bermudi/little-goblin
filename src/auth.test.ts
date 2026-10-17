@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { invokesPassCliDirectly, loadAuth } from "./auth.ts";
+import { appendAuthRecord, invokesPassCliDirectly, loadAuth, loadAuthFile } from "./auth.ts";
 import { useHome } from "./testkit.ts";
 
 // auth.jsonl must be mode 0600 to load at all — write, then harden.
@@ -31,6 +31,29 @@ describe("auth.jsonl", () => {
 		const dir = useHome("goblin-auth-");
 		writeAuth(dir, '{"name":"a","value":"s3cret"}\n');
 		expect(await loadAuth().resolve("a")).toBe("s3cret");
+	});
+
+	for (const ending of ["", "\n", "\r\n"]) {
+		test(`append preserves records with ${JSON.stringify(ending)} ending`, async () => {
+			const dir = useHome("goblin-auth-");
+			const file = join(dir, "auth.jsonl");
+			writeAuth(dir, `{"name":"first","value":"fixture-first"}${ending}`);
+			appendAuthRecord(file, "second", "fixture-second");
+			const auth = loadAuthFile(file);
+			expect(auth.names()).toEqual(["first", "second"]);
+			expect(await auth.resolve("first")).toBe("fixture-first");
+			expect(await auth.resolve("second")).toBe("fixture-second");
+		});
+	}
+
+	test("append creates a missing file and accepts an empty file", async () => {
+		const dir = useHome("goblin-auth-");
+		const file = join(dir, "auth.jsonl");
+		appendAuthRecord(file, "first", "fixture-first");
+		expect(await loadAuthFile(file).resolve("first")).toBe("fixture-first");
+		writeAuth(dir, "");
+		appendAuthRecord(file, "second", "fixture-second");
+		expect(await loadAuthFile(file).resolve("second")).toBe("fixture-second");
 	});
 
 	test("!command resolves via stdout", async () => {

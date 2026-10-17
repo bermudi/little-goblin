@@ -97,9 +97,9 @@ store):
   origin conversation fenced (`<event source="subagent">`, the delegation
   fence rule) — a subagent that read arbitrary screens gains no authority
   by arriving in goblin's voice.
-- **Only `src/subagents.ts` knows Pi Durable** (the herdr.ts rule). An API
-  change is one module; a gated live drift check
-  (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
+- **Only `src/subagents/` knows Pi Durable / pi-ai / chord** (the
+  herdr.ts rule). An API change touches one directory; a gated live
+  drift check (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
 
 **Run state is rows.** A `subagent_runs` table in goblin.sqlite: id,
 type, origin conversation, box (desktop name or the sandbox), Pi
@@ -308,9 +308,50 @@ ruling) — never the host. Pi Durable's `ExecutionEnv` is its
 `FileSystem` (about twenty file operations) plus a `Shell`; goblin
 implements it over `sandboxes.ts` exec, so every command and file op
 inherits the sandbox's wall, reconcile, logging and network state. No
-container-backed env exists upstream: this is goblin code, verified in
-phase 3. File tools are replay-safe for reads only; `bash`, `write` and
-`edit` are not.
+container-backed env exists upstream: this is goblin code, gated by
+upstream's `registerEnvConformance` suite against the real container
+(`GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test
+src/subagents/podman.test.ts`), with the fake-guest unit suite pinning
+the same contract without podman. File tools are replay-safe for reads
+only; `bash`, `write` and `edit` are not.
+
+The env's mechanics:
+
+- **Readers.** `openBinaryReader` pins the opened file as a hidden
+  same-directory hardlink (podman execs share no fd; a rename would
+  otherwise steal the reader), falling back to path reads with a
+  warning when linking fails. Reads are positional (`dd
+  iflag=skip_bytes,count_bytes` — cost is the transferred bytes, not
+  the offset); `scanLines` streams 8 MiB chunks through upstream's
+  `LineScanner`. `openDirReader` snapshots names at open and stats per
+  page, skipping entries that vanish first.
+- **Watch.** No fd or event stream crosses `podman exec`, so `watch()`
+  polls (500 ms): `readlink -f` root plus `find`+`stat` records per
+  target, `MISSING` for an absent one, excludes filtered in goblin. A
+  failed snapshot reports one `overflow` and re-baselines. `mode:
+  "polling"` is the contract's own escape hatch — a change undone
+  within a poll interval can be missed.
+- **Exec.** stdout, stderr and the command's exit code land in
+  separate `/tmp` files; `ulimit -f` caps each stream file (SIGXFSZ →
+  exit 153 plus a notice sent after the chunks), and the wrapper's own
+  status is reserved for start failures (96 = cd failed, 97 = argv
+  program missing, after a `command -v` preflight) so a command
+  exiting 96/97 itself can never be misread. Only the rc file carries
+  the command's exit code.
+- **Tail window.** With `window`, both streams are measured (`wc -l
+  -c`) and only the tail is delivered, with skip counts (bytes,
+  newlines, trailing newline) measured on decoded text, not raw file
+  offsets: every replacement character counts as three UTF-8 bytes.
+  The omitted prefix is decoded in abort-aware, bounded 8 MiB reads,
+  preserving decoder state between reads; only the stream's initial
+  BOM is dropped. The cut is fenced onto a character boundary, and
+  the delivered chunk still exceeds the window, as `OutputBuffer.push`
+  requires. Without a window every chunk is delivered.
+- **Spill.** Past `afterBytes`/`afterLines` (counted over the combined
+  streams; a partial final line is not counted), the captured files
+  merge into the advertised spill path: stdout then stderr, because
+  arrival order across separate capture files is not recoverable. A
+  `spillPath` exists only when the merged file was readable back.
 
 **One sandbox, two users.** Serious work runs through the worker; goblin
 still checks and reaches in with its own `sandbox` tool (operator
@@ -601,10 +642,10 @@ built once).
   `lastObsId`, no `shotSeq` advance; the error names the capped or
   truncated readback.
 - **Pinned.** `@earendil-works/pi-durable`, `pi-ai`, `chord` at
-  exactly `1.0.2`, `typebox` at `1.3.27` — exact versions in
+  exactly `1.3.0`, `typebox` at `1.3.37` — exact versions in
   package.json; the catalog metadata (context windows, thinking
   levels) is read from the pinned package, not re-declared.
-- **Live check.** `src/subagents.live.test.ts`, gated
+- **Live check.** `src/subagents/live.test.ts`, gated
   `GOBLIN_SUBAGENTS_LIVE=1` + `GOBLIN_SUBAGENTS_AUTH_FILE=<auth.jsonl
   path>` — the credential resolves in-process through `loadAuthFile`/
   `AuthStore` (auth ref `zai`), so the only secret-adjacent value in
@@ -618,17 +659,18 @@ built once).
   exactly what it created, and preserves its log/screenshot evidence
   under `/tmp/goblin-subdrift-<token>/` with a REPORT.md. Not part of
   `bun test`.
-- **Local gates.** `src/subagents.podman.test.ts`
+- **Local gates.** `src/subagents/podman.test.ts`
   (`GOBLIN_SUBAGENTS_PODMAN_LIVE=1`) runs the real harness against a
   localhost fake model in a real cached-alpine sandbox — read, write,
   edit, bash, inbox import and export verified through `catFile`, no
   external network — and SIGKILLs a spawned runner
-  (`src/subagents-kill.driver.ts`) mid-bash inside that real
+  (`src/subagents/kill.driver.ts`) mid-bash inside that real
   container: reopening the same durable state reports the call
   interrupted and never re-dispatches it (a marker file proves the
-  command ran once). `src/subagents.crash.test.ts` does the same over
+  command ran once). `src/subagents/crash.test.ts` does the same over
   the in-memory env; it runs unconditionally, the podman gate needs
-  only the cached image. The in-process suite also proves the
+  only the cached image. The in-process suite (`src/subagents/mod.test.ts`,
+  with the shared rig in `src/subagents/testing.ts`) also proves the
   non-blocking contract end to end (origin + sibling turns answer
   while a worker's model request is in flight, its settle notice
   lands once through `wakeConversation`), Pi's compaction through our
@@ -637,8 +679,18 @@ built once).
   with distinct reasons. A `harnessSettings` dep exists only for
   those tests — shrinking Pi's compaction window or disabling retry
   backoff — production passes nothing and Pi's defaults hold.
-- **Files.** `src/subagents.ts` (owner, env adapter, tools, queue,
-  settle), `src/subagent-runs.ts` (rows), `src/box-files.ts`
+- **Files.** `src/subagents/` — `mod.ts` (owner: admission queue,
+  leases, close, settle → wake, boot resume), `env.ts` (the
+  `ExecutionEnv` over `sandboxes.ts`), `tools.ts` (harness, worker and
+  computer tools, request guard), `transfer.ts` (inbox import /
+  outcome export), `models.ts` (model profiles and kind specs),
+  `run-doc.ts` (the run document), `errors.ts`; tests beside them
+  (`mod.test.ts`, `env.test.ts`, `models.test.ts`, `crash.test.ts` +
+  `crash-child.ts`, `podman.test.ts` + `kill.driver.ts`,
+  `live.test.ts`) over the shared rig in `testing.ts` — the fake
+  completions endpoint, sandbox/desktop doubles and owner driver the
+  suites build on; test-only. Non-directory pieces:
+  `src/subagent-runs.ts` (rows), `src/box-files.ts`
   (import/export boundary), `src/agent/tools/subagent.ts` +
   `desktop.ts` (native tools), `wakeConversation` in `src/wake.ts`
   (exact-origin route), wiring in `src/index.ts`.
@@ -666,7 +718,7 @@ platform, Open Interface and LCU.
 1. This ruling.
 2. Desktop image, `desktops.ts` pool + podman create variant, the live
    wall check extended to a desktop; non-root Chromium probe.
-3. `subagents.ts` (Pi Durable owner, boot resume, run cap + queue), the
+3. `src/subagents/` (Pi Durable owner, boot resume, run cap + queue), the
    computer extension, the sandbox-backed worker env + sandbox run
    lease, the `subagent` and `desktop` tools, files in/out, settle →
    wake.

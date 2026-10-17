@@ -3,11 +3,20 @@
 // route, all through handleOperatorRoute against a fixture $GOBLIN_HOME.
 // The containment wall under these routes is tested in stateview.test.ts.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
+import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { parseConfig } from "../config.ts";
 
 const ACTOR: OperatorActor = { via: "app" };
@@ -245,5 +254,86 @@ describe("state viewer routes", () => {
 			);
 			expect(res?.status).toBe(405);
 		}
+	});
+});
+
+// The secrets tail writes literal auth.jsonl records over the wire —
+// the seam is the real store + append against the fixture home, so the
+// exercise is the whole path minus the door's auth.
+describe("secrets route", () => {
+	function secretsDeps(): OperatorDeps {
+		const file = join(home, "auth.jsonl");
+		const store = loadAuthFile(file);
+		return {
+			...deps(),
+			secrets: {
+				has: (n) => store.has(n),
+				isCommand: (n) => store.isCommand(n),
+				store: (n, v) => {
+					appendAuthRecord(file, n, v);
+					store.put(n, v);
+				},
+			},
+		};
+	}
+
+	function postSecret(body: unknown): Promise<Response | null> {
+		return handleOperatorRoute(
+			secretsDeps(),
+			ACTOR,
+			new Request("http://x/secrets", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}),
+			"secrets",
+			new URL("http://x/secrets"),
+		);
+	}
+
+	test("a key stores as a literal record and resolves live", async () => {
+		const res = await postSecret({ name: "groq", value: "gsk_test" });
+		expect(res?.status).toBe(200);
+		expect(await res?.json()).toEqual({ ok: true, name: "groq", replaced: false });
+		// The file gained the record at 0600, and a fresh load resolves it.
+		const file = join(home, "auth.jsonl");
+		expect(statSync(file).mode & 0o777).toBe(0o600);
+		expect(await loadAuthFile(file).resolve("groq")).toBe("gsk_test");
+	});
+
+	test("a !-led value is refused — command records stay hand-edited", async () => {
+		const res = await postSecret({ name: "evil", value: "!cat /etc/passwd" });
+		expect(res?.status).toBe(422);
+		expect(existsSync(join(home, "auth.jsonl"))).toBe(false);
+	});
+
+	test("a command record's name is refused, a literal's rotates", async () => {
+		writeFileSync(join(home, "auth.jsonl"), '{"name":"k","value":"!pass-keys get p k"}\n');
+		chmodSync(join(home, "auth.jsonl"), 0o600);
+		const refused = await postSecret({ name: "k", value: "x" });
+		expect(refused?.status).toBe(409);
+		const ok = await postSecret({ name: "lit", value: "v1" });
+		expect(ok?.status).toBe(200);
+		const rotated = await postSecret({ name: "lit", value: "v2" });
+		expect(await rotated?.json()).toEqual({ ok: true, name: "lit", replaced: true });
+		expect(await loadAuthFile(join(home, "auth.jsonl")).resolve("lit")).toBe("v2");
+	});
+
+	test("bad names and bodies get typed refusals; unwired seam 503s", async () => {
+		expect((await postSecret({ name: "bad name!", value: "x" }))?.status).toBe(422);
+		expect((await postSecret({ name: "k", value: "" }))?.status).toBe(422);
+		expect((await postSecret({ name: "k" }))?.status).toBe(422);
+		const noSeam = await handleOperatorRoute(
+			deps(),
+			ACTOR,
+			new Request("http://x/secrets", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			}),
+			"secrets",
+			new URL("http://x/secrets"),
+		);
+		expect(noSeam?.status).toBe(503);
 	});
 });

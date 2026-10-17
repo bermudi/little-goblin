@@ -1482,6 +1482,11 @@ a.hit-title {
 .stop-btn:hover {
 	background: var(--app-gray-600);
 }
+/* Mid-turn the pair shares the corner: stop takes the auto margin,
+   send hugs it — a second auto margin would split the free space. */
+.stop-btn + .send-btn {
+	margin-left: 0.35rem;
+}
 
 /* Model/thinking knobs — flat selects that read as labels until hovered. */
 .knob select {
@@ -1513,11 +1518,15 @@ a.hit-title {
 
 /* Context gauge — the composer's window-utilization readout. Reads as
    a knob until clicked; the popover floats above the bar like the
-   note picker. */
+   note picker. Deliberately NOT position:relative — the popover's
+   width/offsets must resolve against form.composer's box, not this
+   button-width span. */
 .ctx-gauge {
-	position: relative;
+	display: inline-flex;
 }
 .ctx-btn {
+	display: inline-flex;
+	align-items: center;
 	font-family: var(--font-mono);
 	font-size: 11px;
 	color: var(--app-fg-muted);
@@ -1531,6 +1540,50 @@ a.hit-title {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
+/* The red line crosses the whole gauge — label wears it like the ring
+   and the popover bar, so every face agrees (placed after :hover, hot
+   must survive a hover). */
+.ctx-btn.hot {
+	color: var(--app-danger);
+}
+/* The ring is the narrow-screen face of the gauge — the label's
+   numbers move into the tap popover so the bar stays one row. */
+.ctx-ring {
+	display: none;
+}
+.ctx-ring circle {
+	fill: none;
+	stroke-width: 2.5;
+}
+.ctx-ring-track {
+	stroke: var(--app-divider);
+}
+.ctx-ring-fill {
+	stroke: var(--app-fg-muted);
+	stroke-linecap: round;
+}
+.ctx-ring-fill.hot {
+	stroke: var(--app-danger);
+}
+/* A failed read shows no numbers and opens no popover — on narrow
+   screens the label is hidden, so the ring track itself goes red. */
+.ctx-btn.failed {
+	color: var(--app-danger);
+}
+.ctx-btn.failed .ctx-ring-track {
+	stroke: var(--app-danger);
+}
+@media (max-width: 720px) {
+	.ctx-btn .ctx-label {
+		display: none;
+	}
+	.ctx-btn .ctx-ring {
+		display: block;
+	}
+	.ctx-btn {
+		padding: 0.3rem 0.25rem;
+	}
+}
 .ctx-pop {
 	left: auto;
 	right: 0.5rem;
@@ -1542,8 +1595,12 @@ a.hit-title {
 	display: flex;
 	align-items: baseline;
 	justify-content: space-between;
-	font-size: 12.5px;
-	font-weight: 600;
+	/* space-between alone collapses to a zero gap when the popover is
+	   narrow — the pair must never touch. */
+	gap: 0.75rem;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--app-fg-muted);
 }
 .ctx-head .mono {
 	font-family: var(--font-mono);
@@ -1551,18 +1608,51 @@ a.hit-title {
 	font-weight: 400;
 	color: var(--app-fg-muted);
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+/* The hero — utilization is the one number the panel exists for;
+   everything else on it whispers. */
+.ctx-hero {
+	margin: -0.2rem 0 0;
+	font-size: 1.65rem;
+	line-height: 1.05;
+	font-weight: 600;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
 }
 .ctx-bar {
-	height: 0.4rem;
+	position: relative;
+	height: 0.45rem;
 	border-radius: 999px;
 	background: var(--app-hover);
-	overflow: hidden;
+}
+/* The red line, drawn before you cross it — the tick teaches where
+   "hot" starts; once hot, the bar itself is the warning. */
+.ctx-bar::after {
+	content: "";
+	position: absolute;
+	left: 85%;
+	top: -3px;
+	bottom: -3px;
+	width: 2px;
+	background: color-mix(in oklab, var(--app-danger) 85%, transparent);
+}
+.ctx-bar.hot::after {
+	display: none;
+}
+/* No known limit — no ratio, no red line to teach. */
+.ctx-bar.bare::after {
+	display: none;
 }
 .ctx-bar span {
 	display: block;
 	height: 100%;
 	border-radius: 999px;
-	background: color-mix(in oklab, #58a6ff 65%, var(--app-fg));
+	/* Same face as the chip's ring — calm is muted ink, hot is danger. */
+	background: var(--app-fg-muted);
+}
+.ctx-bar.hot span {
+	background: var(--app-danger);
 }
 .ctx-rows {
 	display: flex;
@@ -1573,11 +1663,23 @@ a.hit-title {
 .ctx-rows > div {
 	display: flex;
 	align-items: baseline;
-	justify-content: space-between;
+	gap: 0.4rem;
 	font-size: 12px;
 }
+/* Receipt leaders — the dots carry the eye from label to value
+	without a box or a divider for every row. */
 .ctx-rows dt {
+	flex: 1;
+	display: flex;
+	align-items: baseline;
+	gap: 0.4rem;
 	color: var(--app-fg-muted);
+}
+.ctx-rows dt::after {
+	content: "";
+	flex: 1;
+	border-bottom: 1px dotted var(--app-gray-700);
+	transform: translateY(-0.2em);
 }
 .ctx-rows dd {
 	margin: 0;
@@ -1588,6 +1690,30 @@ a.hit-title {
 .ctx-pop .empty {
 	padding: 0;
 	font-size: 11px;
+}
+/* The manual lever — a quiet footer action under a hairline, not a
+   form button floating in the panel. */
+.ctx-act {
+	width: 100%;
+	font-size: 12px;
+	text-align: left;
+	padding: 0.45rem 0.5rem;
+	margin-top: 0.1rem;
+	border-radius: 6px;
+	border: none;
+	border-top: 1px solid var(--app-divider);
+	color: var(--app-fg);
+}
+.ctx-act:hover:not(:disabled) {
+	background: var(--app-hover);
+}
+.ctx-act:disabled {
+	opacity: 0.55;
+}
+.ctx-outcome {
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	margin: 0;
 }
 
 /* Recording state replaces the textarea with a live pill. */
@@ -1800,6 +1926,7 @@ a.hit-title {
 .chain-card select,
 .prov input,
 .prov select,
+.keyentry input,
 .msheet-custom input,
 .msheet-custom select {
 	font: inherit;
@@ -1939,6 +2066,26 @@ a.hit-title {
 .ghost {
 	align-self: flex-start;
 	margin-top: 0.5rem;
+}
+
+.keylink {
+	align-self: flex-start;
+	border: none;
+	background: none;
+	padding: 0;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+	cursor: pointer;
+}
+.keylink:hover {
+	color: var(--app-fg);
+	text-decoration: underline;
+}
+.keyentry {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	margin-bottom: 0.35rem;
 }
 
 .tuning {

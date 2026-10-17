@@ -422,10 +422,13 @@ src/
   tg/               grammy: intake, buffer, delivery, commands, guest
                     mode (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
-  memory.ts         recall contexts, retention builders, status, worker timer
-                    (wire client in hindsight.ts, outbox in memory-queue.ts,
-                    outage episodes in memory-outage.ts, destinations in
-                    memory-destinations.ts, forget in memory-forget.ts)
+  memory/           the long-term memory family (design/memory.md):
+                    mod.ts (recall contexts, retention builders, status,
+                    worker timer), hindsight.ts (wire client), queue.ts
+                    (durable outbox), outage.ts (outage episodes),
+                    destinations.ts (destination history), forget.ts
+                    (the forget protocol), policy.ts (defaults and
+                    limits), screen.ts (screen-text check)
   projects.ts       projects — rows + goblin-owned home scoping an app
                     conversation's cwd, instructions and memory choice
                     (design/projects.md → Projects)
@@ -467,10 +470,12 @@ src/
   desktops.ts       the desktop pool: rows + lifecycle owner (allocate,
                     claim/renew/release leases, reserve, call-time
                     reap), over podman.ts (design/subagents.md)
-  subagents.ts      the Pi Durable harness owner (the only
-                    pi-durable-aware module): open, boot resume, run
-                    cap + queue, start/steer/stop runs, files in/out,
-                    settle → wake
+  subagents/        the Pi Durable harness owner (the only
+                    pi-durable-aware directory): mod.ts (open, boot
+                    resume, run cap + queue, start/steer/stop,
+                    settle → wake) with env.ts, tools.ts,
+                    transfer.ts, models.ts, run-doc.ts, errors.ts
+                    satellites
   subagent-runs.ts  the additive subagent_runs table in goblin.sqlite
                     (routing rows: status, Pi conversation/submission
                     ids, request ids, outcomes, notices)
@@ -549,7 +554,10 @@ src/
                     PWA are one client with two entries — plus the
                     initData operator tails (/api/*), POST /hook/<token>,
                     and loopback POST /api/check-injection (the wrapper's
-                    gate; value imports live in check.ts, never mod.ts)
+                    gate; value imports live in check.ts, never mod.ts);
+                    the app channel is its own family — app-channel.ts
+                    dispatcher + app-*.ts route modules
+                    (design/app.md → Files)
 ```
 
 Flat modules, one job each, tests colocated. The map names rule owners;

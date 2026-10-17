@@ -5,17 +5,17 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { type Config, splitModelRef, type ThinkingLevel, thinkingLevels } from "./config.ts";
 import { log } from "./log.ts";
-import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
-import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
-import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
-import { MemoryDestinations } from "./memory-destinations.ts";
-import { MemoryQueue } from "./memory-queue.ts";
-import { ensureProjectsSchema } from "./projects.ts";
+import { MemoryDestinations } from "./memory/destinations.ts";
+import type { MemoryDocument } from "./memory/hindsight.ts";
+import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
+import { MemoryQueue } from "./memory/queue.ts";
 import { ensureNotesSchema } from "./notes.ts";
-import { compactionSummaryId, corruptRowId } from "./tags.ts";
+import { ensureProjectsSchema } from "./projects.ts";
 import { retargetPruningMarker } from "./pruning-marker.ts";
-import type { MemoryDocument } from "./hindsight.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import { compactionSummaryId, corruptRowId } from "./tags.ts";
 
 // The channel address IS the conversation identity: routing picks the
 // door on this kind alone. The app member's zeros are fillers, not real

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { HindsightClient } from "../../hindsight.ts";
+import { HindsightClient } from "../../memory/hindsight.ts";
 import { memorySearchTool } from "./memory.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];

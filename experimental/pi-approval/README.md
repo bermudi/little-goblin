@@ -11,7 +11,7 @@ The authority rule: *"Boot never auto-retries a half-run turn — tool calls
 aren't idempotent… If recovery is ever wanted it is notify-don't-retry:
 surface the orphaned turn to the operator, don't replay it."*
 
-Pi Durable 1.0.2 (the exact version `src/subagents.ts` pins) resolves a
+Pi Durable 1.0.2 (the exact version `src/subagents/mod.ts` pins) resolves a
 crash-interrupted tool call on reopen **without any hook**
 (`dist/harness/tool.js`, `execute` phase): an unsafe tool settles as
 `interrupted and may have partially run` and the generation **continues on
@@ -60,11 +60,11 @@ bun test experimental/pi-approval/crash.test.ts
 
 ## Status — adopted
 
-This experiment landed in production: `src/subagents.ts` gates the
+This experiment landed in production: `src/subagents/mod.ts` gates the
 side-effecting worker/computer tools behind `withApprovalGate` +
 `approvalLeaseDoc`, parks the row `needs_input` with a `pendingApproval`
 mirror, and resolves through `Subagents.decide` (`subagent` tool's
 `decide` action) with a fourth decision, `record-result`, that supplies
 the call's result text without re-executing. See design/subagents.md →
-the crash-approval ruling and `src/subagents.crash.test.ts` for the
+the crash-approval ruling and `src/subagents/crash.test.ts` for the
 production evidence. This directory stays as the isolated prototype.

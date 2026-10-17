@@ -107,7 +107,8 @@ These are the ways text gets into a turn. Ordered by reach.
    `workspace/attachments/`; Telegram's `file_unique_id` is validated against
    `^[A-Za-z0-9_-]+$` before it is used as a path component
    (`src/tg/media.ts`).
-2. **The app channel** — `/api/app/*` (`src/http/app-channel.ts`), the
+2. **The app channel** — `/api/app/*` (`src/http/app-channel.ts`; the
+   gate is `app-auth.ts`), the
    second human door. A submitted message takes the same `runtime.submit`
    path a Telegram one does; the `app/`-prefixed conversation id pins the
    conversation to this pool (the chat route's schema rejects
@@ -245,7 +246,7 @@ Two different checks, deliberately:
 ### The app channel's auth
 
 Same server, different check — no Telegram `initData` exists outside
-Telegram. The mode resolves once at boot (`src/http/app-channel.ts`
+Telegram. The mode resolves once at boot (`src/http/app-auth.ts`
 `resolveAppAuth`), so a mid-run flip applies only after restart:
 
 - **`appToken` set** — every `/api/app/*` request needs

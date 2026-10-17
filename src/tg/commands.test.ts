@@ -1,17 +1,17 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import { memoryConfigSchema, type Config } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config.ts";
 import { openStore } from "../conversation.ts";
-import { HindsightClient } from "../hindsight.ts";
-import { startMemoryWorker } from "../memory.ts";
-import type { Runtime } from "../runtime.ts";
-import type { ResumeOps } from "../turn-resume.ts";
-import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
-import { handleCommand, type CommandDeps } from "./commands.ts";
-import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
+import { startMemoryWorker } from "../memory/mod.ts";
+import type { Runtime } from "../runtime.ts";
 import { tmpDb, waitUntil } from "../testkit.ts";
+import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
+import type { ResumeOps } from "../turn-resume.ts";
+import { type CommandDeps, handleCommand } from "./commands.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
 
 const config: Config = {
 	providers: {

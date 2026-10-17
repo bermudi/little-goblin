@@ -5,8 +5,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SubagentRun } from "../../subagent-runs.ts";
-import { SubagentError, type Subagents } from "../../subagents.ts";
-import { subagentInputSchema, subagentTool, type SubagentToolDeps } from "./subagent.ts";
+import { SubagentError, type Subagents } from "../../subagents/mod.ts";
+import { type SubagentToolDeps, subagentInputSchema, subagentTool } from "./subagent.ts";
 
 const CONV = "dm:test";
 const opts = { toolCallId: "call-1", messages: [], context: {} };

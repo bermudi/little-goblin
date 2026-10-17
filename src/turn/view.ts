@@ -11,11 +11,11 @@
 import { convertToModelMessages, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import {
 	INLINE_ITEM_MAX_BYTES,
-	materializeAttachments,
 	type MediaPosition,
+	materializeAttachments,
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
-import { messageText, withMemoryBlocks, type RecallContext } from "../memory.ts";
+import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 
 // The conversion context, fixed for the attempt: this turn's fenced

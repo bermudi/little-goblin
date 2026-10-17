@@ -1,0 +1,666 @@
+// Hindsight boundary: HTTP only. No model selection or automatic bank creation.
+// Wire contract: https://hindsight.vectorize.io/openapi.json (0.10).
+
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import { log } from "../log.ts";
+import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
+import { screenMemoryText } from "./screen.ts";
+
+// Bank/document identifier vocabulary — shared with the forget
+// protocol (forget.ts validates operator-supplied ids before
+// touching local state) and the mini-app routes.
+export const identifier = z
+	.string()
+	.min(1)
+	.max(256)
+	.refine((value) => value !== "." && value !== "..");
+// The outbox's destination identity: sha256 over the normalized
+// endpoint+bank pair. One-way on purpose — it names a destination
+// without carrying connection details — which is why destination
+// history (destinations.ts) exists to map it back.
+export const targetHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const baseUrlSchema = z.url().superRefine((value, ctx) => {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		ctx.addIssue({ code: "custom", message: "Invalid Hindsight URL" });
+		return;
+	}
+	const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+	if (
+		!(url.protocol === "https:" || (url.protocol === "http:" && loopback)) ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash
+	) {
+		ctx.addIssue({
+			code: "custom",
+			message:
+				"Hindsight URL must use HTTPS (or loopback HTTP), without credentials, query, or fragment",
+		});
+	}
+});
+
+export const hindsightConnectionSchema = z.object({
+	baseUrl: baseUrlSchema,
+	bankId: identifier,
+	timeoutMs: z.number().int().min(1).max(300_000).default(30_000),
+});
+
+export const memoryDocumentSchema = z.object({
+	id: identifier,
+	content: z.string().min(1).max(1_000_000),
+	timestamp: z.iso.datetime({ offset: true }),
+	conversationId: identifier,
+	sourceIds: z.array(identifier).min(1).max(10_000),
+});
+export type MemoryDocument = z.infer<typeof memoryDocumentSchema>;
+
+export const minScoresSchema = z.object({
+	semantic: z.number().finite().min(-1).max(1).optional(),
+	keyword: z.number().finite().nonnegative().optional(),
+	reranker: z.number().finite().min(0).max(1).optional(),
+	final: z.number().finite().nonnegative().optional(),
+});
+export type RecallMinScores = z.infer<typeof minScoresSchema>;
+const scoresSchema = z.object({
+	semantic: z.number().finite().nullish(),
+	keyword: z.number().finite().nullish(),
+	reranker: z.number().finite().nullish(),
+	final: z.number().finite(),
+});
+const factSchema = z.object({
+	id: identifier,
+	text: z.string().max(64_000),
+	type: z.string().max(128).nullish(),
+	document_id: identifier.nullish(),
+	context: z.string().max(16_000).nullish(),
+	occurred_start: z.string().max(128).nullish(),
+	occurred_end: z.string().max(128).nullish(),
+	mentioned_at: z.string().max(128).nullish(),
+	source_fact_ids: z.array(identifier).max(1_000).nullish(),
+	scores: scoresSchema.nullish(),
+});
+const recallSchema = z.object({
+	results: z.array(factSchema).max(1_000),
+});
+export type RecalledFact = z.infer<typeof factSchema>;
+
+const reflectionFactSchema = z.object({
+	id: identifier.nullish(),
+	text: z.string().max(64_000),
+	type: z.string().max(128).nullish(),
+	context: z.string().max(16_000).nullish(),
+	occurred_start: z.string().max(128).nullish(),
+	occurred_end: z.string().max(128).nullish(),
+});
+function totalStringCharacters(value: unknown): number {
+	if (typeof value === "string") return value.length;
+	if (Array.isArray(value))
+		return value.reduce<number>((sum, item: unknown) => sum + totalStringCharacters(item), 0);
+	if (typeof value === "object" && value !== null)
+		return Object.values(value).reduce<number>(
+			(sum, item: unknown) => sum + totalStringCharacters(item),
+			0,
+		);
+	return 0;
+}
+
+const reflectionSchema = z
+	.object({
+		text: z.string().max(64_000),
+		based_on: z.object({
+			memories: z.array(reflectionFactSchema).max(1_000).default([]),
+			mental_models: z
+				.array(
+					z.object({
+						id: identifier,
+						text: z.string().max(64_000),
+						context: z.string().max(16_000).nullish(),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+			directives: z
+				.array(
+					z.object({
+						id: identifier,
+						name: z.string().max(256),
+						content: z.string().max(16_000),
+					}),
+				)
+				.max(1_000)
+				.default([]),
+		}),
+		usage: z
+			.object({
+				input_tokens: z.number().int().nonnegative().default(0),
+				output_tokens: z.number().int().nonnegative().default(0),
+				total_tokens: z.number().int().nonnegative().default(0),
+				cached_tokens: z.number().int().nonnegative().default(0),
+				thoughts_tokens: z.number().int().nonnegative().default(0),
+			})
+			.nullish(),
+	})
+	.superRefine((value, ctx) => {
+		if (totalStringCharacters(value) > REFLECTION_LIMITS.totalCharacters)
+			ctx.addIssue({
+				code: "custom",
+				message: "Memory reflection exceeds the aggregate response limit",
+				params: { memoryResponseTooLarge: true },
+			});
+	});
+export type MemoryReflection = z.infer<typeof reflectionSchema>;
+
+const documentSchema = z.object({
+	id: identifier,
+	bank_id: identifier,
+	original_text: z.string().max(1_000_000).nullable(),
+	created_at: z.string().max(128),
+	updated_at: z.string().max(128),
+	memory_unit_count: z.number().int().nonnegative(),
+});
+export type StoredMemoryDocument = z.infer<typeof documentSchema>;
+
+// ---------- browse wire shapes (mini-app memories browser) ----------
+const documentSummarySchema = z.object({
+	id: identifier,
+	created_at: z.string().max(128).nullish(),
+	updated_at: z.string().max(128).nullish(),
+	text_length: z.number().int().nonnegative().nullish(),
+	memory_unit_count: z.number().int().nonnegative().nullish(),
+	// Goblin's own retain metadata — conversation_id is what the browser
+	// groups by. Optional: only id is required server-side.
+	document_metadata: z
+		.object({
+			conversation_id: z.string().max(256).nullish(),
+		})
+		.nullish(),
+});
+export type MemoryDocSummary = z.infer<typeof documentSummarySchema>;
+const factListItemSchema = z.object({
+	id: identifier,
+	text: z.string().max(64_000),
+	fact_type: z.string().max(128).nullish(),
+	document_id: identifier.nullish(),
+	context: z.string().max(16_000).nullish(),
+	date: z.string().max(128).nullish(),
+	mentioned_at: z.string().max(128).nullish(),
+	occurred_start: z.string().max(128).nullish(),
+	occurred_end: z.string().max(128).nullish(),
+	entities: z.string().max(4_000).nullish(),
+	// Curation state: 'valid' or 'invalidated' (Hindsight 0.10) — the
+	// browser dims invalidated facts; anything unexpected renders as valid
+	// rather than throwing.
+	state: z.string().max(32).nullish(),
+});
+export type MemoryFact = z.infer<typeof factListItemSchema>;
+const listEnvelope = <T>(item: z.ZodType<T>) =>
+	z.object({
+		items: z.array(item).max(200),
+		total: z.number().int().nonnegative(),
+		limit: z.number().int().nonnegative(),
+		offset: z.number().int().nonnegative(),
+	});
+const docListSchema = listEnvelope(documentSummarySchema);
+const memoryListSchema = listEnvelope(factListItemSchema);
+export interface MemoryDocPage<T> {
+	items: T[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+const retainSchema = z.object({
+	success: z.literal(true),
+	bank_id: identifier,
+	items_count: z.literal(1),
+	async: z.boolean(),
+	operation_id: z.uuid().nullish(),
+	operation_ids: z.array(z.uuid()).nullish(),
+});
+const operationSchema = z.object({
+	operation_id: z.uuid(),
+	status: z.enum(["pending", "processing", "completed", "failed", "cancelled", "not_found"]),
+});
+export type MemoryOperation = z.infer<typeof operationSchema>;
+
+type FailureKind =
+	| "http"
+	| "transport"
+	| "timeout"
+	| "cancelled"
+	| "protocol"
+	| "auth"
+	| "too_large";
+export class HindsightError extends Error {
+	constructor(
+		readonly kind: FailureKind,
+		readonly status?: number,
+	) {
+		// No server bodies, auth-command output, fetch errors, or URLs in errors.
+		super(`Hindsight ${kind} failure${status === undefined ? "" : ` (HTTP ${status})`}`);
+		this.name = "HindsightError";
+	}
+
+	get retryable(): boolean {
+		return (
+			this.kind === "transport" ||
+			this.kind === "timeout" ||
+			(this.kind === "http" &&
+				(this.status === 408 || this.status === 429 || (this.status ?? 0) >= 500))
+		);
+	}
+}
+
+const MAX_RESPONSE_BYTES = 1_048_576;
+
+async function readJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<unknown> {
+	if (!response.body) throw new HindsightError("protocol");
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		for (;;) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			size += chunk.value.byteLength;
+			if (size > maxBytes) {
+				await reader.cancel();
+				throw new HindsightError("too_large");
+			}
+			chunks.push(chunk.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	try {
+		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+	} catch {
+		throw new HindsightError("protocol");
+	}
+}
+
+// The destination identity every queue row and destination-history
+// record carries. Normalized exactly like the constructor's base URL so
+// a recorded destination and a live client always agree on the hash.
+export function hindsightTarget(baseUrl: string, bankId: string): string {
+	return createHash("sha256")
+		.update(JSON.stringify([new URL(baseUrl).href.replace(/\/+$/, ""), bankId]))
+		.digest("hex");
+}
+
+export class HindsightClient {
+	readonly target: string;
+	private readonly base: string;
+	private readonly bankId: string;
+	private readonly timeoutMs: number;
+	private readonly auth: (() => Promise<string>) | undefined;
+
+	constructor(options: {
+		baseUrl: string;
+		bankId: string;
+		timeoutMs?: number;
+		auth?: () => Promise<string>;
+	}) {
+		const parsed = hindsightConnectionSchema.safeParse(options);
+		// Validation errors must not echo credentials accidentally supplied in a URL.
+		if (!parsed.success) throw new Error("Invalid Hindsight connection configuration");
+		this.base = `${parsed.data.baseUrl.replace(/\/+$/, "")}/v1/default/banks/${encodeURIComponent(parsed.data.bankId)}`;
+		this.target = hindsightTarget(parsed.data.baseUrl, parsed.data.bankId);
+		this.bankId = parsed.data.bankId;
+		this.timeoutMs = parsed.data.timeoutMs;
+		this.auth = options.auth;
+	}
+
+	private async request<T>(
+		operation: string,
+		path: string,
+		method: "GET" | "POST" | "DELETE",
+		schema: z.ZodType<T>,
+		options: {
+			body?: unknown;
+			signal?: AbortSignal | undefined;
+			missing?: boolean;
+			document?: string;
+			timeoutMs?: number;
+			responseBytes?: number;
+		} = {},
+	): Promise<T | null> {
+		const started = Date.now();
+		const controller = new AbortController();
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+		}, options.timeoutMs ?? this.timeoutMs);
+		const cancel = () => controller.abort();
+		options.signal?.addEventListener("abort", cancel, { once: true });
+		if (options.signal?.aborted) controller.abort();
+		let abortListener: (() => void) | undefined;
+		const aborted = new Promise<never>((_, reject) => {
+			abortListener = () => reject(new HindsightError(timedOut ? "timeout" : "cancelled"));
+			controller.signal.addEventListener("abort", abortListener, { once: true });
+			if (controller.signal.aborted) abortListener();
+		});
+		const fields = { operation, bank: this.bankId, document: options.document };
+		log.info("memory request", fields);
+		try {
+			const work = async (): Promise<T | null> => {
+				controller.signal.throwIfAborted();
+				let token: string | undefined;
+				if (this.auth) {
+					try {
+						token = await this.auth();
+						if (!token.trim() || /[\r\n]/.test(token)) throw new Error("invalid auth");
+					} catch {
+						throw new HindsightError("auth");
+					}
+				}
+				controller.signal.throwIfAborted();
+				const response = await fetch(`${this.base}${path}`, {
+					method,
+					redirect: "error", // Never forward a credential to a redirected service.
+					signal: controller.signal,
+					headers: {
+						accept: "application/json",
+						...(options.body === undefined ? {} : { "content-type": "application/json" }),
+						...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+					},
+					...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+				});
+				if (!response.ok) {
+					await response.body?.cancel();
+					if (response.status === 404 && options.missing) return null;
+					throw new HindsightError("http", response.status);
+				}
+				const parsed = schema.safeParse(await readJson(response, options.responseBytes));
+				if (!parsed.success) {
+					const limited = parsed.error.issues.some(
+						(issue) => issue.code === "custom" && issue.params?.memoryResponseTooLarge === true,
+					);
+					throw new HindsightError(limited ? "too_large" : "protocol");
+				}
+				return parsed.data;
+			};
+			const result = await Promise.race([work(), aborted]);
+			log.info("memory request completed", {
+				...fields,
+				durationMs: Date.now() - started,
+				missing: result === null,
+			});
+			return result;
+		} catch (err) {
+			const failure = controller.signal.aborted
+				? new HindsightError(timedOut ? "timeout" : "cancelled")
+				: err instanceof HindsightError
+					? err
+					: new HindsightError("transport");
+			log.warn("memory request failed", {
+				...fields,
+				durationMs: Date.now() - started,
+				kind: failure.kind,
+				status: failure.status,
+				retryable: failure.retryable,
+			});
+			throw failure;
+		} finally {
+			clearTimeout(timeout);
+			options.signal?.removeEventListener("abort", cancel);
+			if (abortListener) controller.signal.removeEventListener("abort", abortListener);
+		}
+	}
+
+	async recall(
+		query: string,
+		options: {
+			signal?: AbortSignal;
+			maxTokens?: number;
+			budget?: "low" | "mid" | "high";
+			preferObservations?: boolean;
+			minScores?: RecallMinScores;
+			timeoutMs?: number;
+		} = {},
+	): Promise<RecalledFact[]> {
+		const input = z
+			.object({
+				query: z.string().min(1).max(8_000),
+				max_tokens: z.number().int().min(1).max(8_192),
+				budget: z.enum(["low", "mid", "high"]),
+				prefer_observations: z.boolean(),
+				min_scores: minScoresSchema.optional(),
+			})
+			.parse({
+				query: screenMemoryText(query, "recall-query"),
+				max_tokens: options.maxTokens ?? 2_048,
+				budget: options.budget ?? "low",
+				prefer_observations: options.preferObservations ?? true,
+				...(options.minScores && Object.keys(options.minScores).length > 0
+					? { min_scores: options.minScores }
+					: {}),
+			});
+		const timeoutMs = z
+			.number()
+			.int()
+			.min(1)
+			.max(300_000)
+			.parse(options.timeoutMs ?? this.timeoutMs);
+		const result = await this.request("recall", "/memories/recall", "POST", recallSchema, {
+			body: input,
+			signal: options.signal,
+			timeoutMs,
+		});
+		if (!result) throw new HindsightError("protocol");
+		const floors = (["semantic", "keyword", "reranker", "final"] as const).flatMap((stage) => {
+			const floor = input.min_scores?.[stage];
+			return typeof floor === "number" ? [[stage, floor] as const] : [];
+		});
+		const facts = result.results.filter((fact) =>
+			floors.every(([stage, floor]) => {
+				const score = fact.scores?.[stage];
+				return score !== undefined && score !== null && score >= floor;
+			}),
+		);
+		log.info("memory recalled", {
+			bank: this.bankId,
+			count: facts.length,
+			filtered: result.results.length - facts.length,
+		});
+		return facts;
+	}
+
+	async reflect(
+		query: string,
+		options: {
+			signal?: AbortSignal;
+			maxTokens?: number;
+			budget?: "low" | "mid" | "high";
+			timeoutMs?: number;
+		} = {},
+	): Promise<MemoryReflection> {
+		const input = z
+			.object({
+				query: z.string().min(1).max(8_000),
+				max_tokens: z.number().int().min(1).max(8_192),
+				budget: z.enum(["low", "mid", "high"]),
+			})
+			.parse({
+				query: screenMemoryText(query, "reflect-query"),
+				max_tokens: options.maxTokens ?? MEMORY_DEFAULTS.reflectMaxTokens,
+				budget: options.budget ?? MEMORY_DEFAULTS.reflectBudget,
+			});
+		const timeoutMs = z
+			.number()
+			.int()
+			.min(1)
+			.max(300_000)
+			.parse(options.timeoutMs ?? MEMORY_DEFAULTS.reflectTimeoutMs);
+		const result = await this.request("reflect", "/reflect", "POST", reflectionSchema, {
+			body: { ...input, include: { facts: {} } },
+			signal: options.signal,
+			timeoutMs,
+			responseBytes: REFLECTION_LIMITS.responseBytes,
+		});
+		if (!result) throw new HindsightError("protocol");
+		log.info("memory reflected", {
+			bank: this.bankId,
+			facts: result.based_on.memories.length,
+			mentalModels: result.based_on.mental_models.length,
+			directives: result.based_on.directives.length,
+			...(result.usage ? { usage: result.usage } : {}),
+		});
+		return result;
+	}
+
+	// Caller must persist this UUID before submission. A lost acknowledgement
+	// can then be retried with the same operation identity without duplicate work.
+	// Submission is NOT completion: poll operation() before marking a queue row done.
+	async submit(document: MemoryDocument, operationId: string, signal?: AbortSignal): Promise<void> {
+		const doc = memoryDocumentSchema.parse(document);
+		const id = z.uuid().parse(operationId);
+		const responseSchema = retainSchema.refine(
+			(r) =>
+				r.bank_id === this.bankId &&
+				r.async &&
+				r.operation_id === id &&
+				(!r.operation_ids || (r.operation_ids.length === 1 && r.operation_ids[0] === id)),
+		);
+		await this.request("retain", "/memories", "POST", responseSchema, {
+			signal,
+			document: doc.id,
+			body: {
+				async: true,
+				operation_id: id,
+				items: [
+					{
+						document_id: doc.id,
+						update_mode: "replace",
+						content: screenMemoryText(doc.content, "retain-submit"),
+						timestamp: doc.timestamp,
+						context:
+							"Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
+						metadata: {
+							source: "goblin",
+							conversation_id: doc.conversationId,
+							source_ids: JSON.stringify(doc.sourceIds),
+						},
+					},
+				],
+			},
+		});
+	}
+
+	async operation(operationId: string, signal?: AbortSignal): Promise<MemoryOperation | null> {
+		const id = z.uuid().parse(operationId);
+		const result = await this.request(
+			"operation",
+			`/operations/${encodeURIComponent(id)}`,
+			"GET",
+			operationSchema.refine((r) => r.operation_id === id),
+			{ signal, missing: true },
+		);
+		return result?.status === "not_found" ? null : result;
+	}
+
+	async getDocument(
+		documentId: string,
+		signal?: AbortSignal,
+	): Promise<StoredMemoryDocument | null> {
+		const id = identifier.parse(documentId);
+		return this.request(
+			"document",
+			`/documents/${encodeURIComponent(id)}`,
+			"GET",
+			documentSchema.refine((r) => r.id === id && r.bank_id === this.bankId),
+			{ signal, missing: true, document: id, responseBytes: 12 * 1024 * 1024 },
+		);
+	}
+
+	// Caller owns operator confirmation, suppression, and settling any in-flight
+	// retain operation first. HTTP success alone is not a complete forgetting policy.
+	async deleteDocument(documentId: string, signal?: AbortSignal): Promise<void> {
+		const id = identifier.parse(documentId);
+		await this.request(
+			"delete",
+			`/documents/${encodeURIComponent(id)}`,
+			"DELETE",
+			z.object({ success: z.literal(true), document_id: z.literal(id) }),
+			{ signal, missing: true, document: id },
+		);
+	}
+
+	// ---------- browse (mini-app memories browser, read-only) ----------
+
+	// Paginated list of the bank's documents — one per retained exchange.
+	// The wire returns more fields (content_hash, retain_params, …); the
+	// schema reads only what the browser renders and lets zod strip the
+	// rest. List-item fields beyond id are optional server-side (live
+	// responses carry them); the route falls back when absent.
+	async listDocuments(options: {
+		q?: string;
+		limit: number;
+		offset: number;
+		signal?: AbortSignal;
+	}): Promise<MemoryDocPage<MemoryDocSummary>> {
+		const input = z
+			.object({
+				q: z.string().min(1).max(256).optional(),
+				limit: z.number().int().min(1).max(100),
+				offset: z.number().int().min(0),
+			})
+			.parse(options);
+		const query = new URLSearchParams({
+			limit: String(input.limit),
+			offset: String(input.offset),
+			...(input.q !== undefined ? { q: input.q } : {}),
+		});
+		const result = await this.request("documents", `/documents?${query}`, "GET", docListSchema, {
+			signal: options.signal,
+		});
+		if (!result) throw new HindsightError("protocol");
+		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
+	}
+
+	// A document's extracted facts — what recall actually returns. Same
+	// pagination shape; `q` filters fact text server-side.
+	async listMemories(options: {
+		documentId?: string;
+		q?: string;
+		limit: number;
+		offset: number;
+		signal?: AbortSignal;
+	}): Promise<MemoryDocPage<MemoryFact>> {
+		const input = z
+			.object({
+				documentId: identifier.optional(),
+				q: z.string().min(1).max(256).optional(),
+				limit: z.number().int().min(1).max(200),
+				offset: z.number().int().min(0),
+			})
+			.parse(options);
+		const query = new URLSearchParams({
+			limit: String(input.limit),
+			offset: String(input.offset),
+			...(input.documentId !== undefined ? { document_id: input.documentId } : {}),
+			...(input.q !== undefined ? { q: input.q } : {}),
+		});
+		const result = await this.request(
+			"memories",
+			`/memories/list?${query}`,
+			"GET",
+			memoryListSchema,
+			{ signal: options.signal },
+		);
+		if (!result) throw new HindsightError("protocol");
+		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
+	}
+}

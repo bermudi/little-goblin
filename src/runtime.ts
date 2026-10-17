@@ -10,7 +10,6 @@ import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import { isTransientTurnFailure } from "./agent/provider-errors.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
-import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import {
 	type MemoryTurnDeps,
@@ -18,9 +17,10 @@ import {
 	messageText,
 	type RecallContext,
 	recallMemory,
-} from "./memory.ts";
+} from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
+import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
@@ -31,9 +31,9 @@ import {
 	type TurnRecovery,
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
+import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
-import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 

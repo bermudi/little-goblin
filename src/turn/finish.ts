@@ -12,18 +12,18 @@
 import { randomUUID } from "node:crypto";
 import type { FinishReason, LanguageModelUsage, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
-import type { MemoryDocument } from "../hindsight.ts";
 import { log } from "../log.ts";
+import type { MemoryDocument } from "../memory/hindsight.ts";
 import {
 	buildRetentionDocument,
-	MemoryRetentionTooLargeError,
 	type MemoryEligibility,
+	MemoryRetentionTooLargeError,
 	type MemoryTurnDeps,
 	memoryBoundEntries,
 	messageText,
 	type RetentionSource,
 	retentionSourceFrom,
-} from "../memory.ts";
+} from "../memory/mod.ts";
 import {
 	type CompletedTurn,
 	type PriorTurnContext,
@@ -31,7 +31,7 @@ import {
 	type ToolCallDigest,
 } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
-import { emitChunk, type DisplaySink, type LiveChunks, type WireMember } from "./stream.ts";
+import { type DisplaySink, emitChunk, type LiveChunks, type WireMember } from "./stream.ts";
 
 // A provider that defies toolChoice "none" on the forced step — still
 // emitting tool calls or no prose — gets this plain-language answer

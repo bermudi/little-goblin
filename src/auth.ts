@@ -9,7 +9,17 @@
 // Resolved values never enter the tool environment, the model context, or
 // logs. This module must never log a resolved value.
 
-import { readFileSync, statSync } from "node:fs";
+import {
+	closeSync,
+	fchmodSync,
+	fstatSync,
+	fsyncSync,
+	openSync,
+	readFileSync,
+	readSync,
+	statSync,
+	writeSync,
+} from "node:fs";
 import { basename } from "node:path";
 import { z } from "zod";
 import { paths } from "./config.ts";
@@ -115,14 +125,64 @@ export interface AuthStore {
 	names(): string[];
 }
 
-export function loadAuth(): AuthStore {
+// The write face only the composition root and the secrets route see —
+// consumers typed AuthStore can read but never mutate.
+export interface WritableAuthStore extends AuthStore {
+	// Install a literal record into the live store: same last-wins rule
+	// as a file append, and the resolve cache drops so a rotation takes
+	// effect on the next call. Callers write the file FIRST — a put
+	// without the append would vanish at restart.
+	put(name: string, value: string): void;
+	// Whether the record resolves through a `!command` — the secrets
+	// route refuses to shadow one (a pass-keys ref is hand-managed).
+	isCommand(name: string): boolean;
+}
+
+// One JSONL record appended — the file's append-only convention, and
+// "last wins" on load makes an appended same-name record a rotation.
+// A missing file is born 0600 regardless of umask; an existing one must
+// already satisfy the loader's permission rule — a group/world-readable
+// secrets file is refused here exactly like at boot.
+export function appendAuthRecord(file: string, name: string, value: string): void {
+	const line = `${JSON.stringify({ name, value })}\n`;
+	let fd = -1;
+	try {
+		try {
+			fd = openSync(file, "wx+", 0o600);
+			fchmodSync(fd, 0o600);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			fd = openSync(file, "a+");
+		}
+		const { mode: fileMode, size } = fstatSync(fd);
+		const mode = fileMode & 0o777;
+		if ((mode & 0o077) !== 0) {
+			throw new Error(
+				`${file}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
+			);
+		}
+		// A valid final JSONL record need not have a newline yet.
+		const last = Buffer.alloc(1);
+		if (size > 0 && readSync(fd, last, 0, 1, size - 1) !== 1) {
+			throw new Error(`${file}: could not read final byte before appending`);
+		}
+		const buf = Buffer.from(`${size > 0 && last[0] !== 0x0a ? "\n" : ""}${line}`, "utf8");
+		let off = 0;
+		while (off < buf.length) off += writeSync(fd, buf, off);
+		fsyncSync(fd);
+	} finally {
+		if (fd >= 0) closeSync(fd);
+	}
+}
+
+export function loadAuth(): WritableAuthStore {
 	return loadAuthFile(paths.auth());
 }
 
 // The same loader at an explicit path — the live drift check resolves
 // through this instead of reading a secret env var; the path is the
 // only thing its environment carries.
-export function loadAuthFile(file: string): AuthStore {
+export function loadAuthFile(file: string): WritableAuthStore {
 	const entries = new Map<string, string>();
 	let raw: string;
 	try {
@@ -171,7 +231,7 @@ export function loadAuthFile(file: string): AuthStore {
 	return makeStore(entries, poisoned);
 }
 
-function makeStore(entries: Map<string, string>, poisoned: Set<string>): AuthStore {
+function makeStore(entries: Map<string, string>, poisoned: Set<string>): WritableAuthStore {
 	// Promises are cached, not values: concurrent resolves share one
 	// `!command` execution, and a rejection evicts itself so a transient
 	// failure can be retried.
@@ -179,6 +239,14 @@ function makeStore(entries: Map<string, string>, poisoned: Set<string>): AuthSto
 	return {
 		has: (name) => entries.has(name),
 		names: () => [...entries.keys()],
+		put(name, value) {
+			entries.set(name, value);
+			cache.delete(name);
+			// A literal put can only un-poison — command records never
+			// enter through this path (the writer takes literals only).
+			poisoned.delete(name);
+		},
+		isCommand: (name) => entries.get(name)?.startsWith("!") ?? false,
 		resolve(name) {
 			const cached = cache.get(name);
 			if (cached !== undefined) return cached;

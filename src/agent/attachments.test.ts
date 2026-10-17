@@ -265,6 +265,56 @@ describe("materializeAttachments", () => {
 		expect((p as { text: string }).text).toContain("call me back");
 	});
 
+	test("a failed intake transcription names itself to the model, not just the log", async () => {
+		const dir = tmpDir("goblin-att-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		const m: UIMessage = {
+			id: "u14",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/ogg",
+					filename: "v.ogg",
+					size: 7,
+					speech: true,
+					transcriptionError: `auth.jsonl: no secret named "mimo"`,
+				}),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["text"]));
+		const p = out[0]!.parts[0]!;
+		expect(p.type).toBe("text");
+		const text = (p as { text: string }).text;
+		expect(text).toContain(`transcription failed: auth.jsonl: no secret named "mimo".`);
+		expect(text).toContain("Read it with read_file or bash tools.");
+	});
+
+	test("a transcript still wins over a recorded failure", async () => {
+		const dir = tmpDir("goblin-att-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		const m: UIMessage = {
+			id: "u15",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/ogg",
+					filename: "v.ogg",
+					size: 7,
+					transcript: "call me back",
+					transcriptionError: "a later segment threw",
+				}),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["text"]));
+		const text = (out[0]!.parts[0] as { text: string }).text;
+		expect(text).toContain("call me back");
+		expect(text).not.toContain("transcription failed");
+	});
+
 	test(`${ATTACHMENT_PART} round-trips through stored JSON shape`, async () => {
 		// The stored part is plain JSON — what comes back from SQLite must
 		// materialize the same way as the in-memory object.

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Api } from "grammy";
 import { type Config, memoryConfigSchema } from "../config.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
-import { tmpDb } from "../testkit.ts";
+import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
 import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
 import {
@@ -717,6 +719,35 @@ describe("handleMessage", () => {
 		expect((h.pushed[0]!.parts[0] as { text: string }).text).toContain(
 			"[attachment failed to download:",
 		);
+		h.store.close();
+	});
+
+	test("a voice note whose intake transcription throws keeps the attachment and names the failure", async () => {
+		const home = useHome("goblin-voice-");
+		const src = join(home, "voice-src.ogg");
+		writeFileSync(src, "oggdata");
+		const h = routerHarness();
+		h.env.api.getFile = async () => ({ file_path: src }) as never;
+		h.env.deps.transcribe = () =>
+			Promise.reject(new Error(`auth.jsonl: no secret named "mimo"`));
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 7,
+				chat: { id: 1, type: "private" },
+				voice: { file_id: "f", file_unique_id: "u", duration: 3 },
+			}),
+		);
+		await h.env.intake.get("dm:1");
+		expect(h.pushed).toHaveLength(1);
+		const part = h.pushed[0]!.parts[0]!;
+		expect(part.type).toBe("data-attachment");
+		const data = (part as { data: Record<string, unknown> }).data;
+		// The bounded provider error, not the raw throw — and never a
+		// transcript key the model could mistake for silence.
+		expect(data.transcriptionError).toBe(`auth.jsonl: no secret named "mimo"`);
+		expect(data.speech).toBe(true);
+		expect(data.transcript).toBeUndefined();
 		h.store.close();
 	});
 

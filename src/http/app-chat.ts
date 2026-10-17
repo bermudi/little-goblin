@@ -247,6 +247,15 @@ export async function handleChatRoute(
 						conversation: convId,
 						filename: ref.data.filename,
 					});
+					// The failure rides the part — a permanently-broken engine
+					// must name itself to the model, not just the log.
+					part.data = {
+						...ref.data,
+						transcriptionError: (err instanceof Error ? err.message : String(err)).slice(
+							0,
+							500,
+						),
+					};
 				}
 			}
 		}

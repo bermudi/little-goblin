@@ -639,6 +639,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 				const file = await withTimeout(env.api.getFile(media.fileId), "getFile");
 				const saved = await saveAttachment(media, file, env.apiRoot, env.token);
 				let transcript: string | undefined;
+				let transcriptionError: string | undefined;
 				if (media.transcribable) {
 					try {
 						transcript =
@@ -650,15 +651,21 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 					} catch (err) {
 						// Transcription is enrichment, not intake — a whisper
 						// outage leaves the attachment path-referenced, not eaten.
+						// The error rides the part: a permanently-broken engine
+						// must name itself to the model, not just the log.
 						log.warn("transcription failed — attachment kept", err, {
 							conversation: convId,
 							file: media.fileName,
 						});
+						transcriptionError = (err instanceof Error ? err.message : String(err)).slice(
+							0,
+							500,
+						);
 					}
 				}
 				// Path reference plus transcript — inline-or-not is decided
 				// at turn time against the model that actually runs.
-				parts.push(...mediaParts(media, saved, transcript));
+				parts.push(...mediaParts(media, saved, transcript, transcriptionError));
 			} catch (err) {
 				log.error("media intake failed", err, { conversation: convId });
 				parts.push({

@@ -141,6 +141,25 @@ describe("mediaParts", () => {
 			transcript: "call me back",
 		});
 	});
+
+	test("a transcription failure rides the part the same way — the model hears it", () => {
+		const parts = mediaParts(
+			{ ...media, transcribable: true },
+			{ path: "/a/u1-clip.mp4", size: 7 },
+			undefined,
+			`no secret named "mimo"`,
+		);
+		const p = parts[0]!;
+		if (p.type !== "data-attachment") throw new Error(`expected data-attachment, got ${p.type}`);
+		expect(p.data).toEqual({
+			path: "/a/u1-clip.mp4",
+			mediaType: "video/mp4",
+			filename: "clip.mp4",
+			size: 7,
+			speech: true,
+			transcriptionError: `no secret named "mimo"`,
+		});
+	});
 });
 
 describe("saveAttachment", () => {

@@ -237,12 +237,14 @@ export async function saveAttachment(
 }
 
 // Media → parts: one data-attachment part carrying the saved path (plus
-// the transcript when intake produced one). The runtime materializes it
-// against the current model at turn time.
+// the transcript when intake produced one — or the failure when it
+// didn't: a broken engine must not read as "an audio file exists").
+// The runtime materializes it against the current model at turn time.
 export function mediaParts(
 	media: IncomingMedia,
 	saved: SavedAttachment,
 	transcript?: string,
+	transcriptionError?: string,
 ): UIMessage["parts"] {
 	return [
 		attachmentPart({
@@ -251,6 +253,7 @@ export function mediaParts(
 			filename: media.fileName,
 			size: saved.size,
 			...(transcript !== undefined ? { transcript } : {}),
+			...(transcriptionError !== undefined ? { transcriptionError } : {}),
 			// The speech marker is what lets a voice note inline for a
 			// hearing model while an attached mp3 stays a path.
 			...(media.transcribable ? { speech: true } : {}),

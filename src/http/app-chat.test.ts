@@ -427,8 +427,14 @@ describe("app chat", () => {
 			expect(res.status).toBe(200);
 			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
 			const stored = store.history("app/chat-01")[0]!;
-			const part = stored.parts[0] as { data: { transcript?: string; path: string } };
+			const part = stored.parts[0] as {
+				data: { transcript?: string; transcriptionError?: string; path: string };
+			};
 			expect(part.data.transcript).toBeUndefined();
+			// The failure must ride the part — a model that can't consume
+			// the audio needs "transcription failed: stt down", not a bare
+			// path to guess at.
+			expect(part.data.transcriptionError).toBe("stt down");
 			expect(part.data.path).toBe(String(ref.path));
 		} finally {
 			http.stop();

@@ -15,6 +15,16 @@ once, eagerly; the transcript rides the data-attachment part; attached
 audio stays data and uses the `transcribe` tool (DESIGN.md → Model
 layer → Transcription, design/tools.md). This doc owns the engine layer.
 
+**A failed intake transcription is recorded, not silently dropped
+(ruling 2026-10-17).** The intake catch still keeps the attachment —
+transcription is enrichment, not intake — but the part now carries
+`transcriptionError` with the bounded provider message, and the
+no-audio-modality fallback text renders it (`[attachment: path —
+transcription failed: …]`). A silent path-only fallback asked the
+model to rediscover failure with tools; the recorded reason turns it
+into "your ASR config is broken". Both intake doors populate it (tg
+voice/video, app speech); a failure never mints a `transcript` field.
+
 ### Engine interface
 
 One interface, nine kinds. Every engine is a function from a prepared

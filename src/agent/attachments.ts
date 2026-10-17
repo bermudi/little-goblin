@@ -25,6 +25,10 @@ export const attachmentRefSchema = z.object({
 	size: z.number(),
 	// A stored transcript lets a non-audio model read speech instead of a path.
 	transcript: z.string().optional(),
+	// A failed intake transcription names itself to the model — otherwise a
+	// broken engine reads as "an audio file exists" and the model has to
+	// rediscover the failure by hand.
+	transcriptionError: z.string().optional(),
 	// Intake marks recorded voice/video notes so speech can inline; arbitrary
 	// audio stays a path instead of base64-ing music into every request.
 	speech: z.boolean().optional(),
@@ -145,16 +149,21 @@ export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string)
 }
 
 // Preserve an intake speech transcript when the model cannot consume the file.
+// A recorded transcription failure rides the same line — the model must be
+// able to tell "engine is broken/misconfigured" from "an audio file exists".
 function fallbackFor(ref: AttachmentRef): UIMessage["parts"][number] {
-	return ref.transcript !== undefined
-		? {
-				type: "text",
-				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. transcript: ${JSON.stringify(ref.transcript)}]`,
-			}
-		: {
-				type: "text",
-				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
-			};
+	if (ref.transcript !== undefined) {
+		return {
+			type: "text",
+			text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. transcript: ${JSON.stringify(ref.transcript)}]`,
+		};
+	}
+	const failure =
+		ref.transcriptionError !== undefined ? ` transcription failed: ${ref.transcriptionError}.` : "";
+	return {
+		type: "text",
+		text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes.${failure} Read it with read_file or bash tools.]`,
+	};
 }
 
 function malformedFallback(): UIMessage["parts"][number] {

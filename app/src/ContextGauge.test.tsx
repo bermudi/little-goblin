@@ -28,7 +28,8 @@ describe("context gauge labels", () => {
 		expect(contextCount(340)).toBe("340");
 		expect(contextCount(1500)).toBe("1.5k");
 		expect(contextCount(104321)).toBe("104.3k");
-		expect(contextCount(1000000)).toBe("1.0M");
+		expect(contextCount(1000000)).toBe("1M");
+		expect(contextCount(200000)).toBe("200k");
 	});
 
 	test("a fresh conversation names itself instead of showing zeros", () => {
@@ -38,7 +39,7 @@ describe("context gauge labels", () => {
 
 	test("the settled label carries input, limit, and percent", () => {
 		expect(contextLabel(view({ input: 104321, limit: 1000000, pct: 10.4, turns: 3 }))).toBe(
-			"104.3k/1.0M · 10.4%",
+			"104.3k/1M · 10.4%",
 		);
 	});
 
@@ -53,7 +54,7 @@ describe("context gauge labels", () => {
 
 // Mounted with happy-dom like Composer.test.tsx; the wire is faked at
 // globalThis.fetch, the only place the gauge's GET touches the network.
-describe("ContextGauge conversation switch", () => {
+describe("ContextGauge", () => {
 	let win: Window;
 	let container: HTMLElement;
 	let root: Root | null = null;
@@ -119,7 +120,7 @@ describe("ContextGauge conversation switch", () => {
 			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
 		});
 		const label = () => container.querySelector(".ctx-btn")?.textContent;
-		expect(label()).toBe("5.0k/10.0k · 50%");
+		expect(label()).toBe("5k/10k · 50%");
 
 		act(() => {
 			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={false} />);
@@ -133,7 +134,7 @@ describe("ContextGauge conversation switch", () => {
 		await act(async () => {
 			failB(new Error("boom"));
 		});
-		expect(label()).toBe("ctx ?");
+		expect(label()).toBe("ctx failed");
 	});
 
 	test("Compact now posts through the conversation's lane and reports the fold", async () => {
@@ -184,7 +185,7 @@ describe("ContextGauge conversation switch", () => {
 		);
 		// The numbers are the last turn's usage — a fold moves the next
 		// turn, not this readout.
-		expect(container.querySelector(".ctx-btn")?.textContent).toBe("5.0k/10.0k · 50%");
+		expect(container.querySelector(".ctx-btn")?.textContent).toBe("5k/10k · 50%");
 	});
 
 	test("a late read for the previous conversation is dropped on switch", async () => {
@@ -234,6 +235,145 @@ describe("ContextGauge conversation switch", () => {
 		await act(async () => {
 			resolveB(json(ctxB));
 		});
-		expect(label()).toBe("2.0k/10.0k · 20%");
+		expect(label()).toBe("2k/10k · 20%");
 	});
+
+	test("a conversation switch closes the popover — the next read never pops it open", async () => {
+		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
+		const ctxB = view({ input: 2000, limit: 10000, pct: 20, turns: 1 });
+		let resolveB!: (res: Response) => void;
+		const bFetch = new Promise<Response>((res) => {
+			resolveB = res;
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/aaa/context") return Promise.resolve(json(ctxA));
+			if (url === "/api/app/conversations/bbb/context") return bFetch;
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		act(() => {
+			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
+		});
+		expect(container.querySelector(".ctx-pop")).not.toBeNull();
+
+		act(() => {
+			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={false} />);
+		});
+		await act(async () => {
+			resolveB(json(ctxB));
+		});
+		expect(container.querySelector(".ctx-btn")?.textContent).toBe("2k/10k · 20%");
+		expect(container.querySelector(".ctx-pop")).toBeNull();
+	});
+
+	test("an outside press or Escape closes the popover; a press on the gauge keeps it", async () => {
+		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
+		globalThis.fetch = mockFetch(() => Promise.resolve(json(ctxA)));
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const btn = container.querySelector(".ctx-btn") as HTMLButtonElement;
+		const pop = () => container.querySelector(".ctx-pop");
+
+		act(() => btn.click());
+		expect(pop()).not.toBeNull();
+
+		// A press on the gauge itself is not an outside press.
+		act(() =>
+			btn.dispatchEvent(new win.Event("pointerdown", { bubbles: true }) as unknown as Event),
+		);
+		expect(pop()).not.toBeNull();
+
+		act(() =>
+			document.body.dispatchEvent(
+				new win.Event("pointerdown", { bubbles: true }) as unknown as Event,
+			),
+		);
+		expect(pop()).toBeNull();
+
+		act(() => btn.click());
+		expect(pop()).not.toBeNull();
+		act(() =>
+			document.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
+			),
+		);
+		expect(pop()).toBeNull();
+		// Escape hands focus back to the control that opened it.
+		const active = win.document.activeElement as unknown;
+		expect(active).toBe(btn);
+	});
+
+	test("a failed read retries on click; the server's reason rides the tooltip", async () => {
+		const ctxA = view({ input: 5000, limit: 10000, pct: 50, turns: 3 });
+		let calls = 0;
+		globalThis.fetch = mockFetch(() => {
+			calls++;
+			return Promise.resolve(
+				calls === 1
+					? new Response(JSON.stringify({ error: "store is busy" }), {
+							status: 500,
+							headers: { "content-type": "application/json" },
+						})
+					: json(ctxA),
+			);
+		});
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const btn = container.querySelector(".ctx-btn") as HTMLButtonElement;
+		expect(btn.textContent).toBe("ctx failed");
+		expect(btn.title).toContain("store is busy");
+		expect(btn.getAttribute("aria-label")).toContain("read failed");
+
+		// A failed gauge is a retry control, not a dead click.
+		await act(async () => {
+			btn.click();
+		});
+		expect(calls).toBe(2);
+		expect(btn.textContent).toBe("5k/10k · 50%");
+		expect(container.querySelector(".ctx-pop")).toBeNull();
+	});
+
+	test("the hot state at 85% colors the label, bar, and ring together", async () => {
+		globalThis.fetch = mockFetch(() =>
+			Promise.resolve(json(view({ input: 182400, limit: 200000, pct: 91.2, turns: 31 }))),
+		);
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const hot = (sel: string) => container.querySelector(sel)?.classList.contains("hot") === true;
+		expect(container.querySelector(".ctx-btn")?.textContent).toBe("182.4k/200k · 91.2%");
+		expect(hot(".ctx-btn")).toBe(true);
+		expect(hot(".ctx-ring-fill")).toBe(true);
+		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
+		expect(hot(".ctx-bar")).toBe(true);
+	});
+
+	// A fetch stand-in that satisfies DOM's typeof fetch (preconnect
+	// included), so the casts stay honest.
+	function mockFetch(impl: (input: RequestInfo | URL) => Promise<Response>): typeof fetch {
+		return Object.assign((input: RequestInfo | URL) => impl(input), {
+			preconnect: realFetch.preconnect,
+		});
+	}
+
+	// Shared JSON reply for the cases above.
+	function json(body: unknown): Response {
+		return new Response(JSON.stringify(body), {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+	}
 });

@@ -1540,6 +1540,12 @@ a.hit-title {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
+/* The red line crosses the whole gauge — label wears it like the ring
+   and the popover bar, so every face agrees (placed after :hover, hot
+   must survive a hover). */
+.ctx-btn.hot {
+	color: var(--app-danger);
+}
 /* The ring is the narrow-screen face of the gauge — the label's
    numbers move into the tap popover so the bar stays one row. */
 .ctx-ring {
@@ -1547,7 +1553,7 @@ a.hit-title {
 }
 .ctx-ring circle {
 	fill: none;
-	stroke-width: 2;
+	stroke-width: 2.5;
 }
 .ctx-ring-track {
 	stroke: var(--app-divider);
@@ -1592,8 +1598,9 @@ a.hit-title {
 	/* space-between alone collapses to a zero gap when the popover is
 	   narrow — the pair must never touch. */
 	gap: 0.75rem;
-	font-size: 12.5px;
-	font-weight: 600;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--app-fg-muted);
 }
 .ctx-head .mono {
 	font-family: var(--font-mono);
@@ -1603,17 +1610,49 @@ a.hit-title {
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
+/* The hero — utilization is the one number the panel exists for;
+   everything else on it whispers. */
+.ctx-hero {
+	margin: -0.2rem 0 0;
+	font-size: 1.65rem;
+	line-height: 1.05;
+	font-weight: 600;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
+}
 .ctx-bar {
-	height: 0.4rem;
+	position: relative;
+	height: 0.45rem;
 	border-radius: 999px;
 	background: var(--app-hover);
-	overflow: hidden;
+}
+/* The red line, drawn before you cross it — the tick teaches where
+   "hot" starts; once hot, the bar itself is the warning. */
+.ctx-bar::after {
+	content: "";
+	position: absolute;
+	left: 85%;
+	top: -3px;
+	bottom: -3px;
+	width: 2px;
+	background: color-mix(in oklab, var(--app-danger) 85%, transparent);
+}
+.ctx-bar.hot::after {
+	display: none;
+}
+/* No known limit — no ratio, no red line to teach. */
+.ctx-bar.bare::after {
+	display: none;
 }
 .ctx-bar span {
 	display: block;
 	height: 100%;
 	border-radius: 999px;
-	background: color-mix(in oklab, #58a6ff 65%, var(--app-fg));
+	/* Same face as the chip's ring — calm is muted ink, hot is danger. */
+	background: var(--app-fg-muted);
+}
+.ctx-bar.hot span {
+	background: var(--app-danger);
 }
 .ctx-rows {
 	display: flex;
@@ -1624,12 +1663,23 @@ a.hit-title {
 .ctx-rows > div {
 	display: flex;
 	align-items: baseline;
-	justify-content: space-between;
-	gap: 0.75rem;
+	gap: 0.4rem;
 	font-size: 12px;
 }
+/* Receipt leaders — the dots carry the eye from label to value
+	without a box or a divider for every row. */
 .ctx-rows dt {
+	flex: 1;
+	display: flex;
+	align-items: baseline;
+	gap: 0.4rem;
 	color: var(--app-fg-muted);
+}
+.ctx-rows dt::after {
+	content: "";
+	flex: 1;
+	border-bottom: 1px dotted var(--app-gray-700);
+	transform: translateY(-0.2em);
 }
 .ctx-rows dd {
 	margin: 0;
@@ -1641,14 +1691,17 @@ a.hit-title {
 	padding: 0;
 	font-size: 11px;
 }
-/* The manual lever — same flat-list affordance as the note picker's
-   rows. */
+/* The manual lever — a quiet footer action under a hairline, not a
+   form button floating in the panel. */
 .ctx-act {
+	width: 100%;
 	font-size: 12px;
 	text-align: left;
-	padding: 0.35rem 0.45rem;
+	padding: 0.45rem 0.5rem;
+	margin-top: 0.1rem;
 	border-radius: 6px;
-	border: 1px solid var(--app-border);
+	border: none;
+	border-top: 1px solid var(--app-divider);
 	color: var(--app-fg);
 }
 .ctx-act:hover:not(:disabled) {

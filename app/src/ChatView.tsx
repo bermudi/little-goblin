@@ -651,10 +651,12 @@ function NotePicker({
 	token,
 	onPick,
 	onClose,
+	pickRef,
 }: {
 	token: string | null;
 	onPick: (n: AppNoteSummary) => void;
 	onClose: () => void;
+	pickRef: RefObject<HTMLDivElement | null>;
 }) {
 	const [query, setQuery] = useState("");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
@@ -682,7 +684,7 @@ function NotePicker({
 		return () => clearTimeout(t);
 	}, [query, token]);
 	return (
-		<div className="note-pick composer-pick">
+		<div className="note-pick composer-pick" ref={pickRef}>
 			<input
 				type="search"
 				placeholder="Search notes"
@@ -734,11 +736,18 @@ function NotePicker({
 
 // ---------- the context gauge ----------
 
-// Compact token counts — "340", "1.5k", "1.0M". One decimal only past
-// the thousand mark; below it the raw count.
+// Compact token counts — "340", "1.5k", "104.3k", "1M". One decimal
+// only past the thousand mark and only when it carries information —
+// whole thousands read as "200k", not "200.0k".
 export function contextCount(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+	if (n >= 1_000_000) {
+		const m = n / 1_000_000;
+		return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+	}
+	if (n >= 1000) {
+		const k = n / 1000;
+		return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+	}
 	return `${n}`;
 }
 
@@ -769,6 +778,9 @@ export function ContextGauge({
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
+	// Why the last read failed — the tooltip's debugging hook; empty on
+	// success. Never rendered as UI text.
+	const [lastError, setLastError] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
 	const [compacting, setCompacting] = useState(false);
 	// The manual lever's own readout — the gauge numbers are the last
@@ -776,51 +788,104 @@ export function ContextGauge({
 	// the outcome line is the feedback that it happened.
 	const [compactNote, setCompactNote] = useState<string | null>(null);
 	const seq = useRef(0);
+	const gaugeRef = useRef<HTMLSpanElement | null>(null);
+	const btnRef = useRef<HTMLButtonElement | null>(null);
 	// A read belongs to the conversation that produced it — an id (or
 	// credential) switch makes it stale, and a still-in-flight read for
 	// the old identity must never land: bump seq here, since the fetch
 	// effect's early returns skip the bump. Kept out of that effect so
 	// its post-turn re-runs hold the last read until the new one lands.
+	// The popover belongs to the conversation too — a switch closes it,
+	// so the next conversation's read can't pop open over the composer.
 	useEffect(() => {
 		seq.current++;
 		setCtx(null);
 		setFailed(false);
+		setLastError(null);
+		setOpen(false);
 		setCompacting(false);
 		setCompactNote(null);
 	}, [token, conversationId]);
-	useEffect(() => {
+	const read = () => {
 		if (conversationId === undefined || busy) return;
 		const n = ++seq.current;
 		setFailed(false);
+		setLastError(null);
 		void getContext(token, conversationId).then(
 			(c) => {
 				if (n === seq.current) setCtx(c);
 			},
-			() => {
-				if (n === seq.current) setFailed(true);
+			(err: unknown) => {
+				if (n === seq.current) {
+					setFailed(true);
+					setLastError(err instanceof Error ? err.message : "request failed");
+				}
 			},
 		);
+	};
+	useEffect(() => {
+		read();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [token, conversationId, busy]);
+	// Dismiss on any outside press or Escape — the gauge button's own
+	// toggle stays the open path. Escape hands focus back to the control
+	// that opened it.
+	useEffect(() => {
+		if (!open) return;
+		const onPointer = (e: Event) => {
+			if (gaugeRef.current?.contains(e.target as Node | null) === true) return;
+			setOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setOpen(false);
+			btnRef.current?.focus();
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [open]);
 	if (conversationId === undefined) return null;
 	const barPct =
 		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// 85% is the ring's red line — the button and the popover's bar wear
+	// the same state so every face of the gauge agrees.
+	const hot = barPct >= 85;
 	// A failed read has no numbers to show and the popover won't open —
 	// the label carries it on wide screens, the reddened ring on narrow.
+	// The click becomes the retry, with the reason on the tooltip.
 	const failedRead = failed && ctx === null;
 	return (
-		<span className="ctx-gauge">
+		<span className="ctx-gauge" ref={gaugeRef}>
 			<button
 				type="button"
-				className={failedRead ? "ctx-btn failed" : "ctx-btn"}
-				aria-label="Context window usage"
-				title={
+				ref={btnRef}
+				className={failedRead ? "ctx-btn failed" : hot ? "ctx-btn hot" : "ctx-btn"}
+				aria-label={
 					failedRead
-						? "Context window usage — read failed"
+						? "Context window usage — read failed, activate to retry"
 						: ctx === null
 							? "Context window usage"
 							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
 				}
-				onClick={() => setOpen((v) => !v)}
+				aria-expanded={open && ctx !== null}
+				title={
+					failedRead
+						? `Context window usage — read failed: ${lastError ?? "unknown error"}`
+						: ctx === null
+							? "Context window usage"
+							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+				}
+				onClick={() => {
+					if (failedRead) {
+						read();
+						return;
+					}
+					setOpen((v) => !v);
+				}}
 			>
 				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
@@ -835,7 +900,7 @@ export function ContextGauge({
 						/>
 					)}
 				</svg>
-				<span className="ctx-label">{failedRead ? "ctx ?" : contextLabel(ctx)}</span>
+				<span className="ctx-label">{failedRead ? "ctx failed" : contextLabel(ctx)}</span>
 			</button>
 			{open && ctx !== null && (
 				<div className="note-pick composer-pick ctx-pop">
@@ -844,10 +909,24 @@ export function ContextGauge({
 						<span className="mono">
 							{ctx.input === null || ctx.limit === null
 								? "—"
-								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)} (${ctx.pct === null ? "?" : `${ctx.pct}%`})`}
+								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)}`}
 						</span>
 					</div>
-					<div className="ctx-bar" aria-hidden="true">
+					{/* The hero — utilization is the one number the popover
+						exists for; everything else on this panel whispers. */}
+					<div className="ctx-hero">
+						{ctx.limit === null
+							? ctx.input === null
+								? "—"
+								: `${contextCount(ctx.input)} tok`
+							: ctx.pct === null
+								? "?"
+								: `${ctx.pct}%`}
+					</div>
+					<div
+						className={ctx?.pct == null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
+						aria-hidden="true"
+					>
 						<span style={{ width: `${barPct}%` }} />
 					</div>
 					<dl className="ctx-rows">
@@ -960,6 +1039,30 @@ export function Composer({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
+	// Outside-press dismissal — the popover and its opener are both
+	// exempt, or pointerdown on the opener would close it before its
+	// own click could toggle.
+	const notePickRef = useRef<HTMLDivElement | null>(null);
+	const noteBtnRef = useRef<HTMLButtonElement | null>(null);
+	useEffect(() => {
+		if (!notePickerOpen) return;
+		const onPointer = (e: Event) => {
+			const t = e.target as Node | null;
+			if (notePickRef.current?.contains(t) === true || noteBtnRef.current?.contains(t) === true)
+				return;
+			setNotePickerOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setNotePickerOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [notePickerOpen]);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
 		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
@@ -1398,8 +1501,10 @@ export function Composer({
 				</button>
 				<button
 					type="button"
+					ref={noteBtnRef}
 					className="icon-btn"
 					aria-label="Attach a note"
+					aria-expanded={notePickerOpen}
 					title="Attach a note"
 					onClick={() => setNotePickerOpen((v) => !v)}
 				>
@@ -1536,6 +1641,7 @@ export function Composer({
 			)}
 			{notePickerOpen && (
 				<NotePicker
+					pickRef={notePickRef}
 					token={token}
 					onPick={(n) =>
 						setStagedNotes((p) =>

@@ -556,7 +556,94 @@ describe("ContextGauge", () => {
 		const btn = dom.container.querySelector<HTMLButtonElement>(".ctx-btn.failed");
 		expect(btn).not.toBeNull();
 		expect(btn?.title).toContain("read failed");
-		expect(dom.container.querySelector(".ctx-label")?.textContent).toBe("ctx ?");
+		expect(dom.container.querySelector(".ctx-label")?.textContent).toBe("ctx failed");
+	});
+});
+
+// The composer's note picker is a floating panel — same contract as the
+// context gauge's popover: an outside press or Escape puts it away, a
+// press on the panel or its opener does not (the opener's own click
+// does the toggling).
+describe("NotePicker dismissal", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+	test("an outside press closes it; the panel and its opener are exempt", async () => {
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith("/api/app/notes")) return jsonResponse({ notes: [], truncated: false });
+				if (url.endsWith("/messages")) return jsonResponse({ messages: [] });
+				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		const opener = () =>
+			dom.container.querySelector("button[aria-label='Attach a note']") as HTMLButtonElement | null;
+		for (let i = 0; i < 100 && opener() === null; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const pick = () => dom.container.querySelector(".note-pick");
+
+		await act(async () => {
+			opener()!.click();
+		});
+		expect(pick()).not.toBeNull();
+
+		// A press inside the panel is not outside.
+		act(() =>
+			pick()!
+				.querySelector("input")!
+				.dispatchEvent(new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event),
+		);
+		expect(pick()).not.toBeNull();
+
+		// The opener's own press is exempt — its click does the toggling.
+		act(() =>
+			opener()!.dispatchEvent(
+				new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event,
+			),
+		);
+		expect(pick()).not.toBeNull();
+
+		act(() =>
+			dom.win.document.body.dispatchEvent(new dom.win.Event("pointerdown", { bubbles: true })),
+		);
+		expect(pick()).toBeNull();
+
+		// Reopen, then Escape puts it away too.
+		await act(async () => {
+			opener()!.click();
+		});
+		expect(pick()).not.toBeNull();
+		act(() =>
+			dom.win.document.dispatchEvent(
+				new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+			),
+		);
+		expect(pick()).toBeNull();
 	});
 });
 

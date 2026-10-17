@@ -6,7 +6,7 @@
 // (needs network + a z.ai credential in the operator's auth file):
 //
 //     GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=/path/to/auth.jsonl \
-//       bun test src/subagents.live.test.ts
+//       bun test src/subagents/live.test.ts
 //
 // Auth resolves in-process through loadAuthFile + the `zai` record,
 // exactly like the running service — the only env var is the FILE
@@ -31,16 +31,16 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAuthFile, type AuthStore } from "./auth.ts";
-import { desktopsConfigSchema, subagentsConfigSchema } from "./config.ts";
-import { containerNameForDesktop, makeDesktops, openDesktops, type Desktops } from "./desktops.ts";
-import { setLogFile } from "./log.ts";
-import { makePodman, type Podman } from "./podman.ts";
-import { boundedRun, spawnProc } from "./proc.ts";
-import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "./sandboxes.ts";
-import { SUBAGENT_DRIFT_INPUTS } from "./subagent-prompts.ts";
-import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
-import { openSubagents, type Subagents } from "./subagents.ts";
+import { loadAuthFile, type AuthStore } from "../auth.ts";
+import { desktopsConfigSchema, subagentsConfigSchema } from "../config.ts";
+import { containerNameForDesktop, makeDesktops, openDesktops, type Desktops } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
+import { makePodman, type Podman } from "../podman.ts";
+import { boundedRun, spawnProc } from "../proc.ts";
+import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "../sandboxes.ts";
+import { SUBAGENT_DRIFT_INPUTS } from "../subagent-prompts.ts";
+import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
+import { openSubagents, type Subagents } from "./mod.ts";
 
 const LIVE = process.env.GOBLIN_SUBAGENTS_LIVE === "1";
 const AUTH_FILE = process.env.GOBLIN_SUBAGENTS_AUTH_FILE ?? "";

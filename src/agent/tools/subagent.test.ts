@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SubagentRun } from "../../subagent-runs.ts";
-import type { Subagents } from "../../subagents.ts";
+import type { Subagents } from "../../subagents/mod.ts";
 import { subagentInputSchema, subagentTool, type SubagentToolDeps } from "./subagent.ts";
 
 const CONV = "dm:test";

@@ -11,12 +11,12 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { subagentsConfigSchema } from "./config.ts";
-import type { Desktops, DesktopRow } from "./desktops.ts";
-import type { Sandboxes } from "./sandboxes.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents } from "./subagents.ts";
-import { setLogFile } from "./log.ts";
+import { subagentsConfigSchema } from "../config.ts";
+import type { Desktops, DesktopRow } from "../desktops.ts";
+import type { Sandboxes } from "../sandboxes.ts";
+import { openSubagentRuns } from "../subagent-runs.ts";
+import { openSubagents } from "./mod.ts";
+import { setLogFile } from "../log.ts";
 
 setLogFile(null);
 
@@ -107,7 +107,7 @@ const idleResult = {
 
 describe("subagent crash recovery — a real killed process", () => {
 	test("an interrupted unsafe tool is not dispatched again", async () => {
-		child = Bun.spawn(["bun", "run", "src/test-helpers/subagent-crash-child.ts"], {
+		child = Bun.spawn(["bun", "run", `${import.meta.dir}/subagent-crash-child.ts`], {
 			env: {
 				...process.env,
 				MODEL_URL: `http://127.0.0.1:${server.port}`,

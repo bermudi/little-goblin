@@ -16,7 +16,7 @@ import {
 	type SubagentRun,
 } from "../../subagent-runs.ts";
 import { subagentNotice, SUBAGENT_TOOL_DESCRIPTION } from "../../subagent-prompts.ts";
-import { SubagentError, type Subagents } from "../../subagents.ts";
+import { SubagentError, type Subagents } from "../../subagents/mod.ts";
 
 // The same rule desktops.ts enforces — the tool refuses a bad name
 // before it reaches the pool.

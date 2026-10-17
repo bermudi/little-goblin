@@ -1,7 +1,3 @@
-import { buildTools } from "./subagents/tools.ts";
-import { join } from "node:path";
-import { exportNamedBytes } from "./box-files.ts";
-import { buildTransfer } from "./subagents/transfer.ts";
 // The subagent runtime (design/subagents.md): two purpose-typed runs —
 // worker (coding tools over the origin conversation's sandbox) and
 // computer (the desktop pool's observation/input surface). This is the
@@ -21,7 +17,10 @@ import { buildTransfer } from "./subagents/transfer.ts";
 // replay-unsafe; only observation and the terminal writes are
 // replay:"safe".
 
-import { Buffer } from "node:buffer";
+import { buildTools } from "./tools.ts";
+import { join } from "node:path";
+import { exportNamedBytes } from "../box-files.ts";
+import { buildTransfer } from "./transfer.ts";
 import type { Context } from "@earendil-works/chord";
 import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -30,14 +29,12 @@ import {
 	createProvider,
 	envApiKeyAuth,
 	InMemoryCredentialStore,
-	Type,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
 	type ConversationId,
 	createRegistry,
 	defineExtension,
-	defineTool,
 	GenerationTask,
 	Harness,
 	type HookApi,
@@ -45,59 +42,43 @@ import {
 	type Submission,
 	type SubmissionId,
 	type ToolExecutionApi,
-	type ToolExecutionResult,
-	type ToolRegistration,
 	ToolTask,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import {
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
-} from "@earendil-works/pi-durable/tools";
 import { z } from "zod";
-import type { AuthStore } from "./auth.ts";
-import type { SubagentsConfig } from "./config.ts";
+import type { AuthStore } from "../auth.ts";
+import type { SubagentsConfig } from "../config.ts";
 import {
-	CUA_TOOLS,
-	type CuaTool,
 	DesktopError,
 	DesktopLeaseError,
 	type Desktops,
 	type LeaseHolder,
-} from "./desktops.ts";
-import { log } from "./log.ts";
-import { PodmanError } from "./podman.ts";
-import { SandboxError, type Sandboxes } from "./sandboxes.ts";
+} from "../desktops.ts";
+import { log } from "../log.ts";
+import { PodmanError } from "../podman.ts";
+import { SandboxError, type Sandboxes } from "../sandboxes.ts";
 import {
-	ASK_OPERATOR_TOOL_DESCRIPTION,
 	COMPUTER_PROMPT,
-	COMPUTER_TOOL_DESCRIPTIONS,
-	FINISH_TOOL_DESCRIPTION,
-	SUBAGENT_PARAMETER_DESCRIPTIONS,
 	subagentNotice,
 	subagentTaskInput,
-	WORKER_BASH_DESCRIPTION,
 	WORKER_PROMPT,
-} from "./subagent-prompts.ts";
+} from "../subagent-prompts.ts";
 import {
 	type InputMode,
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
-	MAX_RESULT_CHARS,
 	MAX_TASK_CHARS,
 	type SubagentKind,
 	type SubagentRun,
 	type SubagentRuns,
-} from "./subagent-runs.ts";
+} from "../subagent-runs.ts";
 
-import { SubagentError } from "./subagents/errors.ts";
-export { SubagentError } from "./subagents/errors.ts";
-import { SandboxEnv } from "./subagents/env.ts";
-import { kindSpec, type KindSpec, type SubagentModelProfile } from "./subagents/models.ts";
-export type { SubagentModelProfile } from "./subagents/models.ts";
-import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./subagents/run-doc.ts";
+import { SubagentError } from "./errors.ts";
+export { SubagentError } from "./errors.ts";
+import { SandboxEnv } from "./env.ts";
+import { kindSpec, type KindSpec, type SubagentModelProfile } from "./models.ts";
+export type { SubagentModelProfile } from "./models.ts";
+import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./run-doc.ts";
 
 const ctx: Context = BACKGROUND_CONTEXT;
 const SCAN_MS = 30_000;

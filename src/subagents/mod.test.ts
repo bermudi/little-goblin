@@ -1,5 +1,5 @@
-import { makeSandboxEnv } from "./subagents/env.ts";
-import { subagentModelProfileSchema } from "./subagents/models.ts";
+import { makeSandboxEnv } from "./env.ts";
+import { subagentModelProfileSchema } from "./models.ts";
 // The subagent owner end to end against the REAL Pi Durable harness
 // and pi-ai adapter — the only fakes are the model endpoint (a
 // localhost server speaking OpenAI-completions SSE), Sandboxes (an
@@ -26,21 +26,21 @@ import type { Context } from "@earendil-works/chord";
 import { OutputBuffer } from "@earendil-works/chord/output";
 import { CompactionTask, type ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { LanguageModel } from "ai";
-import type { Config, SubagentsConfig } from "./config.ts";
-import { openStore } from "./conversation.ts";
-import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "./desktops.ts";
-import { DesktopError, DesktopLeaseError } from "./desktops.ts";
-import { setLogFile } from "./log.ts";
-import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
-import { SandboxError, type Sandboxes } from "./sandboxes.ts";
-import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
+import type { Config, SubagentsConfig } from "../config.ts";
+import { openStore } from "../conversation.ts";
+import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "../desktops.ts";
+import { DesktopError, DesktopLeaseError } from "../desktops.ts";
+import { setLogFile } from "../log.ts";
+import { Runtime, type TurnDone, type TurnSink, userMessage } from "../runtime.ts";
+import { SandboxError, type Sandboxes } from "../sandboxes.ts";
+import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import {
 	openSubagents,
 	type SubagentModelProfile,
 	type Subagents,
-} from "./subagents.ts";
-import { type DeliveryApi, makeDeliverySink } from "./tg/delivery.ts";
-import { type WakeDeps, wakeConversation } from "./wake.ts";
+} from "./mod.ts";
+import { type DeliveryApi, makeDeliverySink } from "../tg/delivery.ts";
+import { type WakeDeps, wakeConversation } from "../wake.ts";
 
 setLogFile(null);
 

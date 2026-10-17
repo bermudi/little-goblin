@@ -16,6 +16,10 @@ import type {
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationPatch,
+	AppDecideRequest,
+	AppDecideResponse,
+	AppInterruptedList,
+	AppInterruptedRun,
 	AppMessageList,
 	AppNote,
 	AppNoteList,
@@ -25,6 +29,8 @@ import type {
 	AppNoteVersionList,
 	AppProject,
 	AppProjectList,
+	AppResumeResponse,
+	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
@@ -47,6 +53,7 @@ import type {
 	ThinkingLevelsResponse,
 	ThreadSkillsResponse,
 } from "../../src/http/operator-wire.ts";
+import { z } from "zod";
 
 // sessionStorage, not localStorage — /t/ and /app/ are one origin, so
 // nothing origin-scoped isolates this key from the mini app's scripts;
@@ -438,6 +445,98 @@ export function patchConversationConfig(
 // doesn't list the model), never zero.
 export function getContext(token: string | null, id: string): Promise<AppContextView> {
 	return request(token, `/api/app/conversations/${seg(id)}/context`);
+}
+
+const runCallSchema: z.ZodType<AppRunCall> = z.object({
+	toolCallId: z.string(),
+	name: z.string(),
+	args: z.unknown(),
+	state: z.enum([
+		"planned",
+		"dispatched",
+		"completed",
+		"failed",
+		"resolved-done",
+		"resolved-retry",
+		"resolved-skip",
+	]),
+	result: z.string().nullable(),
+	error: z.string().nullable(),
+	resolutionNote: z.string().nullable(),
+	resolvedMs: z.number().nullable(),
+});
+
+const interruptedRunSchema: z.ZodType<AppInterruptedRun> = z.object({
+	runId: z.string(),
+	resumedFrom: z.string().nullable(),
+	startedMs: z.number(),
+	finishedMs: z.number().nullable(),
+	calls: z.object({
+		planned: z.number(),
+		dispatched: z.number(),
+		completed: z.number(),
+		failed: z.number(),
+		resolved: z.number(),
+	}),
+	toolCalls: z.array(runCallSchema),
+});
+
+const interruptedListSchema: z.ZodType<AppInterruptedList> = z.object({
+	runs: z.array(interruptedRunSchema),
+});
+
+const decideResponseSchema: z.ZodType<AppDecideResponse> = z.object({
+	ok: z.literal(true),
+});
+
+const resumeResponseSchema: z.ZodType<AppResumeResponse> = z.object({
+	resumed: z.literal(true),
+	runId: z.string(),
+});
+
+export async function listInterruptedRuns(
+	token: string | null,
+	id: string,
+): Promise<AppInterruptedList> {
+	const res = await request<unknown>(token, `/api/app/conversations/${seg(id)}/interrupted`);
+	const parsed = interruptedListSchema.safeParse(res);
+	if (!parsed.success) throw new Error("invalid interrupted-turn list response");
+	return parsed.data;
+}
+
+export async function decideRunCall(
+	token: string | null,
+	id: string,
+	runId: string,
+	body: AppDecideRequest,
+): Promise<AppDecideResponse> {
+	const res = await request<unknown>(
+		token,
+		`/api/app/conversations/${seg(id)}/runs/${encodeURIComponent(runId)}/decide`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		},
+	);
+	const parsed = decideResponseSchema.safeParse(res);
+	if (!parsed.success) throw new Error("invalid decide response");
+	return parsed.data;
+}
+
+export async function resumeRun(
+	token: string | null,
+	id: string,
+	runId: string,
+): Promise<AppResumeResponse> {
+	const res = await request<unknown>(
+		token,
+		`/api/app/conversations/${seg(id)}/runs/${encodeURIComponent(runId)}/resume`,
+		{ method: "POST" },
+	);
+	const parsed = resumeResponseSchema.safeParse(res);
+	if (!parsed.success) throw new Error("invalid resume response");
+	return parsed.data;
 }
 
 // Read-aloud — reply text in, base64 ogg chunks out.

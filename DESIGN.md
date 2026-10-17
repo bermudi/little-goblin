@@ -414,10 +414,12 @@ src/
   desktops.ts       the desktop pool: rows + lifecycle owner (allocate,
                     claim/renew/release leases, reserve, call-time
                     reap), over podman.ts (design/subagents.md)
-  subagents.ts      the Pi Durable harness owner (the only
-                    pi-durable-aware module): open, boot resume, run
-                    cap + queue, start/steer/stop runs, files in/out,
-                    settle → wake
+  subagents/        the Pi Durable harness owner (the only
+                    pi-durable-aware directory): mod.ts (open, boot
+                    resume, run cap + queue, start/steer/stop,
+                    settle → wake) with env.ts, tools.ts,
+                    transfer.ts, models.ts, run-doc.ts, errors.ts
+                    satellites
   subagent-runs.ts  the additive subagent_runs table in goblin.sqlite
                     (routing rows: status, Pi conversation/submission
                     ids, request ids, outcomes, notices)

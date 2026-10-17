@@ -320,11 +320,11 @@ Three env-gated checks cover the subagent stack (design/subagents.md):
 ```sh
 # real harness + local fake model in a real cached-alpine sandbox —
 # local only, no external calls:
-GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents.podman.test.ts
+GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
 
 # real harness + real z.ai (worker glm-5.3, computer glm-5.3-flash):
 GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=<path-to-auth.jsonl> \
-  bun test src/subagents.live.test.ts
+  bun test src/subagents/live.test.ts
 ```
 
 The live check resolves the `zai` credential through the auth file —
@@ -333,7 +333,7 @@ key in the environment. Every probe container and network carries a
 per-run token, is preflighted before creation, and only resources it
 created are removed. Logs, screenshots and a REPORT.md are preserved
 under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
-`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents.crash.test.ts`
+`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents/crash.test.ts`
 needs no gate — it runs in `bun test` and proves the
 kill-mid-unsafe-dispatch recovery path.
 

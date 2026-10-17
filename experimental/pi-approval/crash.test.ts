@@ -2,7 +2,7 @@
 // child process over real Pi Durable SQLite storage, SIGKILLs it mid-tool
 // (the marker file proves the dispatch), then reopens the storage in this
 // process and resumes. Pattern and SSE fakes follow
-// src/subagents.crash.test.ts; no external calls.
+// src/subagents/crash.test.ts; no external calls.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

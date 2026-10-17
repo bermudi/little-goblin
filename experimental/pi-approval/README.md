@@ -11,7 +11,7 @@ The authority rule: *"Boot never auto-retries a half-run turn — tool calls
 aren't idempotent… If recovery is ever wanted it is notify-don't-retry:
 surface the orphaned turn to the operator, don't replay it."*
 
-Pi Durable 1.0.2 (the exact version `src/subagents.ts` pins) resolves a
+Pi Durable 1.0.2 (the exact version `src/subagents/mod.ts` pins) resolves a
 crash-interrupted tool call on reopen **without any hook**
 (`dist/harness/tool.js`, `execute` phase): an unsafe tool settles as
 `interrupted and may have partially run` and the generation **continues on
@@ -60,7 +60,7 @@ bun test experimental/pi-approval/crash.test.ts
 
 ## If adopted (design/subagents.md scope)
 
-`gateTool` composes into the existing tool-wrap chains in `src/subagents.ts`
+`gateTool` composes into the existing tool-wrap chains in `src/subagents/mod.ts`
 (`withRunGuards`/`withTerminalWrap`), gated for input tools, raw for
 observation tools — matching the recorded rule that observation is safe to
 repeat and input never is. The `ApprovalHost` rides the existing

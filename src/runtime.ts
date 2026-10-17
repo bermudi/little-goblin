@@ -1031,6 +1031,9 @@ export class Runtime {
 				reply: landed.reply,
 				toolCalls: outcome.toolCalls,
 				digestRing: outcome.digestRing,
+				// Same "only when configured" convention as the digest —
+				// the reviewer's already-covered check reads this set.
+				...(this.reviewer === undefined ? {} : { tools }),
 			});
 			// Keep the lane busy through auto-compaction so successors see a whole
 			// compacted view; failure writes no boundary and retries later.

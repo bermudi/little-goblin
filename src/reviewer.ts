@@ -83,6 +83,14 @@ export interface ToolCallDigest {
 	ok: boolean;
 }
 
+// One built-in tool as the review knows it — name plus the turn-time
+// description. The reviewer's "already covered" check (ruling
+// 2026-10-17): a procedure a built-in tool performs is not a skill.
+export interface ToolInventoryItem {
+	name: string;
+	description: string;
+}
+
 export interface CompletedTurn {
 	conversationId: string;
 	/** Monotonic completion counter — the queue's serialization order. */
@@ -93,6 +101,8 @@ export interface CompletedTurn {
 	toolNames: string[];
 	/** Last-N bounded digest — the review's evidence. */
 	toolDigest: ToolCallDigest[];
+	/** The tools the turn could call — empty when unrecorded. */
+	toolInventory: ToolInventoryItem[];
 }
 
 // The previous completed turn, attached when the gate fires on a
@@ -569,6 +579,8 @@ const REVIEW_SYSTEM =
 	"Decide, then act:\n" +
 	"- Create ONE skill when the turn taught a repeatable multi-step procedure no skill covers.\n" +
 	"- Edit ONE skill when an existing skill is wrong or incomplete about what the turn showed.\n" +
+	"- Never propose a wrapper for machinery that already exists: the turn's built-in tools are listed with it — " +
+	"a procedure one of them performs (or one config line would enable) is not a skill.\n" +
 	"- Otherwise do nothing: make no tool calls and say so briefly.\n" +
 	"SKILL.md frontmatter needs `name` (exactly its directory name) and `description`. " +
 	"Keep skills small and concrete — steps the future turn can follow, not essays.";
@@ -604,6 +616,12 @@ export function reviewPrompt(
 		"",
 		`tool calls in the turn (last ${turn.toolDigest.length}, arguments and results truncated):`,
 		...digestLines(turn.toolDigest),
+		"",
+		"Built-in tools the turn could call (a procedure one of these performs is not a skill):",
+		"",
+		...(turn.toolInventory.length === 0
+			? ["(none recorded)"]
+			: turn.toolInventory.map((t) => `- ${t.name}${t.description === "" ? "" : ` — ${t.description}`}`)),
 		...(prior !== undefined
 			? [
 					"",

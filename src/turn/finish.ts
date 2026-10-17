@@ -10,7 +10,7 @@
 // the post-delivery check owns the stop-during-flush window.
 
 import { randomUUID } from "node:crypto";
-import type { FinishReason, LanguageModelUsage, UIMessage } from "ai";
+import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { MemoryDocument } from "../memory/hindsight.ts";
@@ -299,6 +299,9 @@ export interface ReviewDeps {
 	reply: UIMessage | null;
 	toolCalls: string[];
 	digestRing: { id: string; entry: ToolCallDigest }[];
+	// The turn's live tool set — the reviewer's "already covered" check.
+	// Absent when unrecorded (the feature-off shape).
+	tools?: ToolSet;
 }
 
 // Every completed turn gates a possible background review —
@@ -325,6 +328,20 @@ export function submitTurnReview(deps: ReviewDeps): void {
 		replyText: deps.reply ? messageText(deps.reply) : "",
 		toolNames: deps.toolCalls,
 		toolDigest: deps.digestRing.map((p) => p.entry),
+		toolInventory: (() => {
+			const tools = deps.tools;
+			if (tools === undefined) return [];
+			return Object.keys(tools)
+				.sort()
+				.map((name) => {
+					// Tool["description"] may be a context callback in the SDK's
+					// type — goblin's are all string literals, and a review-time
+					// snapshot has no call context to invoke one with anyway.
+					const d = tools[name]!.description;
+					// Bounded like the digest: a description is a sentence, not the page.
+					return { name, description: (typeof d === "string" ? d : "").slice(0, 200) };
+				});
+		})(),
 	};
 	void reviewer.considerTurn(snapshot, deps.priorTurn()).catch((err: unknown) => {
 		log.error("reviewer failed", err, { conversation: deps.convId });

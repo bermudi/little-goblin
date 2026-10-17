@@ -197,6 +197,7 @@ const turn = (over: Partial<CompletedTurn> = {}): CompletedTurn => ({
 	replyText: "did the thing",
 	toolNames: ["bash"],
 	toolDigest: [digestEntry()],
+	toolInventory: [],
 	...over,
 });
 
@@ -1843,6 +1844,33 @@ describe("reviewer evidence payload", () => {
 		expect(prompt).toContain("- bash — FAILED");
 		expect(prompt).toContain("command failed: nope");
 		expect(prompt).toContain("Current skills catalog:");
+		h.store.close();
+	});
+
+	test("the turn's built-in tool inventory rides the review prompt", async () => {
+		const h = harness();
+		const prompts: string[] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.95, procedure: 0 },
+			prompts,
+			script: [{ text: "nothing worth saving" }],
+		});
+		await new Reviewer(deps).considerTurn(
+			turn({
+				toolInventory: [
+					{ name: "bash", description: "run a shell command" },
+					{ name: "transcribe", description: "transcribe an attached audio file" },
+				],
+			}),
+			prior(),
+		);
+		const prompt = promptText(prompts[0]!);
+		expect(prompt).toContain("Built-in tools the turn could call");
+		expect(prompt).toContain("- bash — run a shell command");
+		expect(prompt).toContain("- transcribe — transcribe an attached audio file");
+		// The no-wrapper rule is the point of the inventory — it rides
+		// the system prompt (promptText reads message contents only).
+		expect(prompts[0]).toContain("Never propose a wrapper for machinery that already exists");
 		h.store.close();
 	});
 

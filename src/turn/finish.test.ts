@@ -5,15 +5,21 @@
 // The cross-phase net — a fenced turn never gates, shutdown fencing a
 // held gate — stays e2e in runtime.test.ts.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type LanguageModel, readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
+import {
+	type LanguageModel,
+	readUIMessageStream,
+	type ToolSet,
+	type UIMessage,
+	type UIMessageChunk,
+} from "ai";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
-import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
+import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import { waitUntil } from "../testkit.ts";
@@ -646,5 +652,63 @@ describe("submitTurnReview", () => {
 		expect(cap.prompts).toHaveLength(1);
 		expect(cap.prompts[0]).toContain("The turn this correction refers back to:");
 		expect(cap.prompts[0]).toContain("done");
+	});
+
+	test("the live toolset lands in the snapshot sorted and bounded", async () => {
+		const reviewer = reviewerStub();
+		const seen: CompletedTurn[] = [];
+		spyOn(reviewer, "considerTurn").mockImplementation((snap) => {
+			seen.push(snap);
+			return Promise.resolve();
+		});
+		submitTurnReview({
+			convId: "dm:1",
+			reviewer,
+			memoryExcluded: () => false,
+			nextTurnSeq: () => 1,
+			priorTurn: () => undefined,
+			rememberTurn: () => {},
+			forgetTurn: () => {},
+			source: source({ userTexts: ["run it"] }),
+			reply: msg("a2", "assistant", text("done")),
+			toolCalls: [],
+			digestRing: [],
+			tools: {
+				zeta: { description: "z".repeat(400) },
+				bash: { description: "run a shell command" },
+				mute: {},
+			} as unknown as ToolSet,
+		});
+		await tick();
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.toolInventory).toEqual([
+			{ name: "bash", description: "run a shell command" },
+			{ name: "mute", description: "" },
+			{ name: "zeta", description: "z".repeat(200) },
+		]);
+	});
+
+	test("no toolset wired (the feature-off shape) records an empty inventory", async () => {
+		const reviewer = reviewerStub();
+		const seen: CompletedTurn[] = [];
+		spyOn(reviewer, "considerTurn").mockImplementation((snap) => {
+			seen.push(snap);
+			return Promise.resolve();
+		});
+		submitTurnReview({
+			convId: "dm:1",
+			reviewer,
+			memoryExcluded: () => false,
+			nextTurnSeq: () => 1,
+			priorTurn: () => undefined,
+			rememberTurn: () => {},
+			forgetTurn: () => {},
+			source: source({ userTexts: ["run it"] }),
+			reply: msg("a2", "assistant", text("done")),
+			toolCalls: [],
+			digestRing: [],
+		});
+		await tick();
+		expect(seen[0]!.toolInventory).toEqual([]);
 	});
 });

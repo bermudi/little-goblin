@@ -20,7 +20,7 @@ import { setLogFile } from "../log.ts";
 
 setLogFile(null);
 
-// Same localhost OpenAI-completions fake as subagents.test.ts.
+// Same localhost OpenAI-completions fake as mod.test.ts.
 function sse(events: object[]): Response {
 	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });

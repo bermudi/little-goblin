@@ -99,8 +99,8 @@ store):
   origin conversation fenced (`<event source="subagent">`, the delegation
   fence rule) — a subagent that read arbitrary screens gains no authority
   by arriving in goblin's voice.
-- **Only `src/subagents.ts` knows Pi Durable** (the herdr.ts rule). An API
-  change is one module; a gated live drift check
+- **Only `src/subagents/` knows Pi Durable / pi-ai / chord** (the herdr.ts rule). An API
+  change is confined to that directory; a gated live drift check
   (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
 
 **Run state is rows.** A `subagent_runs` table in goblin.sqlite: id,
@@ -307,7 +307,7 @@ inherits the sandbox's wall, reconcile, logging and network state. No
 container-backed env exists upstream: this is goblin code, gated by
 upstream's `registerEnvConformance` suite against the real container
 (`GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test
-src/subagents.podman.test.ts`), with the fake-guest unit suite pinning
+src/subagents/podman.test.ts`), with the fake-guest unit suite pinning
 the same contract without podman. File tools are replay-safe for reads
 only; `bash`, `write` and `edit` are not.
 
@@ -583,7 +583,7 @@ built once).
   exactly `1.3.0`, `typebox` at `1.3.37` — exact versions in
   package.json; the catalog metadata (context windows, thinking
   levels) is read from the pinned package, not re-declared.
-- **Live check.** `src/subagents.live.test.ts`, gated
+- **Live check.** `src/subagents/live.test.ts`, gated
   `GOBLIN_SUBAGENTS_LIVE=1` + `GOBLIN_SUBAGENTS_AUTH_FILE=<auth.jsonl
   path>` — the credential resolves in-process through `loadAuthFile`/
   `AuthStore` (auth ref `zai`), so the only secret-adjacent value in
@@ -597,15 +597,15 @@ built once).
   exactly what it created, and preserves its log/screenshot evidence
   under `/tmp/goblin-subdrift-<token>/` with a REPORT.md. Not part of
   `bun test`.
-- **Local gates.** `src/subagents.podman.test.ts`
+- **Local gates.** `src/subagents/podman.test.ts`
   (`GOBLIN_SUBAGENTS_PODMAN_LIVE=1`) runs the real harness against a
   localhost fake model in a real cached-alpine sandbox — read, write,
   edit, bash, inbox import and export verified through `catFile`, no
   external network — and SIGKILLs a spawned runner
-  (`src/subagents-kill.driver.ts`) mid-bash inside that real
+  (`src/subagents/subagents-kill.driver.ts`) mid-bash inside that real
   container: reopening the same durable state reports the call
   interrupted and never re-dispatches it (a marker file proves the
-  command ran once). `src/subagents.crash.test.ts` does the same over
+  command ran once). `src/subagents/crash.test.ts` does the same over
   the in-memory env; it runs unconditionally, the podman gate needs
   only the cached image. The in-process suite also proves the
   non-blocking contract end to end (origin + sibling turns answer
@@ -616,8 +616,11 @@ built once).
   with distinct reasons. A `harnessSettings` dep exists only for
   those tests — shrinking Pi's compaction window or disabling retry
   backoff — production passes nothing and Pi's defaults hold.
-- **Files.** `src/subagents.ts` (owner, env adapter, tools, queue,
-  settle), `src/subagent-runs.ts` (rows), `src/box-files.ts`
+- **Files.** `src/subagents/mod.ts` (owner, hooks, harness, queue, settle),
+  `env.ts` (sandbox adapter), `tools.ts` (tool definitions and wrappers),
+  `transfer.ts` (file transfer), `models.ts` (model recipes),
+  `run-doc.ts` (terminal outcome contract), `errors.ts` (typed refusal)
+  in that directory, `src/subagent-runs.ts` (rows), `src/box-files.ts`
   (import/export boundary), `src/agent/tools/subagent.ts` +
   `desktop.ts` (native tools), `wakeConversation` in `src/wake.ts`
   (exact-origin route), wiring in `src/index.ts`.
@@ -645,7 +648,7 @@ platform, Open Interface and LCU.
 1. This ruling.
 2. Desktop image, `desktops.ts` pool + podman create variant, the live
    wall check extended to a desktop; non-root Chromium probe.
-3. `subagents.ts` (Pi Durable owner, boot resume, run cap + queue), the
+3. `subagents/mod.ts` (Pi Durable owner, boot resume, run cap + queue), the
    computer extension, the sandbox-backed worker env + sandbox run
    lease, the `subagent` and `desktop` tools, files in/out, settle →
    wake.

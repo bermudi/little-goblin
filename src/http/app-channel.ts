@@ -7,62 +7,64 @@
 // line on top of reachability (#75): a mutation speaking a *browser*
 // origin must speak ours — a page riding the operator's device is not
 // the operator. Non-browser clients carry no browser headers and pass
-// untouched; see browserMutationRefusal below.
+// untouched; see the auth gate in app-auth.ts.
 //
 // Chat rides the shared runtime unchanged: a submitted message lands in
 // the same serial lane, the same steering and /stop fencing apply, and
 // the response stream is the runtime's own UIMessage stream — this
-// module's TurnSink serializes it to the SSE wire verbatim
+// SSE sink (app-sse.ts) serializes it to the wire verbatim
 // (`data: <chunk>\n\n`, terminated by `data: [DONE]\n\n`), exactly what
 // @ai-sdk/react's useChat consumes.
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
-import { UI_MESSAGE_STREAM_HEADERS, type UIMessage, type UIMessageChunk } from "ai";
+import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
-import { isLoopbackHost, readBodyBytesCapped } from "./check.ts";
-import {
-	appAddress,
-	appIdOf,
-	appIdSchema,
-	prepareAppSettingsForConfig,
-	type ConversationStore,
-	type ModelSettings,
-} from "../conversation.ts";
-import type { AuthStore } from "../auth.ts";
-import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
-import { thinkingLevelsFor } from "../agent/providers.ts";
-import { contextLimitCached } from "../agent/models-dev.ts";
-import type { SpeechFile } from "../agent/transcribe.ts";
 import {
 	ATTACHMENT_PART,
+	type AttachmentRef,
 	attachmentRefSchema,
 	isStoredAttachmentPath,
 	persistAttachment,
-	type AttachmentRef,
 } from "../agent/attachments.ts";
+import { contextLimitCached } from "../agent/models-dev.ts";
+import { thinkingLevelsFor } from "../agent/providers.ts";
+import type { SpeechFile } from "../agent/transcribe.ts";
+import type { AuthStore } from "../auth.ts";
 import {
+	type Config,
+	type ConfigRef,
+	ConfigValidationError,
 	loadConfig,
 	parseConfig,
-	ConfigValidationError,
 	paths,
 	splitModelRef,
 	thinkingLevels,
 	writeConfig,
-	type Config,
-	type ConfigRef,
 } from "../config.ts";
+import {
+	appAddress,
+	appIdOf,
+	appIdSchema,
+	type ConversationStore,
+	type ModelSettings,
+	prepareAppSettingsForConfig,
+} from "../conversation.ts";
 import { log } from "../log.ts";
 import {
+	NOTE_BODY_MAX,
 	NOTE_PART,
 	type Note,
-	NOTE_BODY_MAX,
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
 	type NoteStore,
 } from "../notes.ts";
 import { type Project, ProjectInputError, type ProjectStore } from "../projects.ts";
+import type { Runtime } from "../runtime.ts";
+import { appAuth } from "./app-auth.ts";
+import { jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
+import { appSseWriter, appStreamSink } from "./app-sse.ts";
 import type {
 	AppAttachmentResponse,
 	AppCompactResponse,
@@ -85,9 +87,10 @@ import type {
 	AppStopResponse,
 	AppTtsResponse,
 } from "./app-wire.ts";
+import { readBodyBytesCapped } from "./check.ts";
 import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
-const NO_STORE = { "cache-control": "no-store" };
+export { resolveAppAuth } from "./app-auth.ts";
 
 // App-side mount points for the operator surface (operator.ts owns the
 // handlers; /api/app/memory/* maps by prefix because document ids ride
@@ -152,153 +155,6 @@ export interface AppChannelDeps {
 	// deps object so the bundle carries only the extra seams. Absent =
 	// the operator routes refuse 503.
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
-}
-
-// ---------- auth ----------
-
-// Boot-time auth mode resolution, called once by the composition root —
-// never per request. The return is the auth.jsonl record name
-// handleAppApi checks bearer tokens against; undefined means trust
-// mode. Both lines are deliberate: the mode states the posture, and the
-// funnel warn is the guardrail — trust mode behind a public URL is a
-// misconfiguration this line exists to catch.
-export function resolveAppAuth(appToken: string | undefined): string | undefined {
-	if (appToken === undefined) {
-		log.warn("app channel auth: trust mode (no token; tailnet only)");
-		log.warn(
-			"app channel trust mode must never sit behind a public URL (funnel) — set appToken first",
-		);
-	} else {
-		log.info("app channel auth: token required", { record: appToken });
-	}
-	return appToken;
-}
-
-// Bearer equality without a timing oracle: fixed-length digests of both
-// sides, so a wrong token's length leaks nothing.
-function bearerMatches(presented: string, expected: string): boolean {
-	if (presented === "") return false;
-	const a = createHash("sha256").update(presented).digest();
-	const b = createHash("sha256").update(expected).digest();
-	return a.equals(b);
-}
-
-// Trust mode's CSRF line (#75): reachability proves the device, not
-// the page — any site the operator's browser visits can fire a no-cors
-// POST (text/plain body, no preflight, response never read) at these
-// routes and spend operator authority on attacker-chosen input.
-// Browsers stamp every mutation with Origin (always) and
-// Sec-Fetch-Site, so the gate refuses mutations that arrive speaking
-// any origin but ours. Non-browser clients send neither header and
-// pass untouched — reachability stays their whole check, exactly as
-// design/app.md documents. Bearer mode never runs this gate: the token
-// is the check there, and a token-holding client (a future APK's
-// webview) must not depend on browser headers.
-const OWN_FETCH_SITES = new Set(["same-origin", "none"]);
-
-// The origins a browser may legitimately speak for. The Host header is
-// attacker-controlled — a rebound DNS name can point it at our endpoint
-// while Origin names the same attacker host — so Host never mints its own
-// match except for literal loopback (check.ts's spelling, one source):
-// same-machine direct access, where there is no front to name. A
-// configured publicUrl is the only browser origin (tailscale serve
-// rewrites Host to the local upstream, so the public origin is the match
-// that survives the proxy — the rewrite is observed in docs/security.md).
-// Without publicUrl, tailnet-name browser origins refuse: set publicUrl.
-function allowedBrowserOrigins(req: Request, deps: AppChannelDeps): Set<string> {
-	const origins = new Set<string>();
-	const publicUrl = deps.configRef.current.publicUrl;
-	if (publicUrl !== undefined && URL.canParse(publicUrl)) {
-		origins.add(new URL(publicUrl).origin);
-		return origins;
-	}
-	if (isLoopbackHost(req)) {
-		const host = req.headers.get("host") ?? "";
-		origins.add(`http://${host}`);
-		origins.add(`https://${host}`);
-	}
-	return origins;
-}
-
-function browserMutationRefusal(
-	req: Request,
-	pathname: string,
-	deps: AppChannelDeps,
-): Response | null {
-	const method = req.method.toUpperCase();
-	// Reads are never gated: no mutation to spend, and CORS already
-	// keeps a page from reading the response.
-	if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
-	// same-site is refused too, not just cross-site: tailscale fronts
-	// share the ts.net suffix, so a sibling tailnet's page is site-same
-	// but still not ours.
-	const site = req.headers.get("sec-fetch-site");
-	if (site !== null && !OWN_FETCH_SITES.has(site)) {
-		log.warn("app mutation refused — cross-site browser request", {
-			path: pathname,
-			site,
-		});
-		return Response.json(
-			{ error: "cross-origin browser requests are refused" },
-			{ status: 403, headers: NO_STORE },
-		);
-	}
-	const origin = req.headers.get("origin");
-	// No Origin and no fetch-metadata: not a browser — reachability is
-	// the lock trust mode already is.
-	if (origin === null) return null;
-	if (!allowedBrowserOrigins(req, deps).has(origin)) {
-		log.warn("app mutation refused — foreign browser origin", { path: pathname, origin });
-		return Response.json(
-			{ error: "cross-origin browser requests are refused" },
-			{ status: 403, headers: NO_STORE },
-		);
-	}
-	return null;
-}
-
-// JSON-body mutations must say what they are (#75): application/json
-// is beyond a no-cors form or fetch (those carry text/plain,
-// urlencoded, or multipart), so the claim itself is a CSRF backstop
-// behind the origin gate. Applies in both auth modes — wire contract,
-// not trust. Multipart uploads and bodyless routes (stop, delete)
-// never read JSON and never see this check.
-function jsonBodyRefusal(req: Request): Response | null {
-	const mediaType = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
-	if (mediaType === "application/json") return null;
-	return Response.json({ error: "expected application/json" }, { status: 415, headers: NO_STORE });
-}
-
-// Every /api/app/* request passes here first. Returns null when the
-// request may proceed; the Response is the refusal. Trust mode (the
-// boot-resolved undefined) runs the browser-origin gate for mutations
-// — the tailnet stays the lock for everything that is not a page
-// riding the operator's browser.
-async function appAuth(
-	req: Request,
-	pathname: string,
-	deps: AppChannelDeps,
-	appToken: string | undefined,
-): Promise<Response | null> {
-	if (appToken === undefined) return browserMutationRefusal(req, pathname, deps);
-	let expected: string;
-	try {
-		expected = await deps.auth.resolve(appToken);
-	} catch (err) {
-		log.error("app token resolution failed — refusing", err, { path: pathname });
-		return Response.json(
-			{ error: "app channel is misconfigured" },
-			{ status: 503, headers: NO_STORE },
-		);
-	}
-	const header = req.headers.get("authorization") ?? "";
-	const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
-	if (!bearerMatches(presented, expected)) {
-		// `presented` is only whether a Bearer header arrived — never its value.
-		log.warn("app auth failed", { path: pathname, presented: presented !== "" });
-		return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
-	}
-	return null;
 }
 
 // ---------- request schemas ----------
@@ -497,151 +353,6 @@ const ttsBody = z.object({ text: z.string().min(1).max(40_000) });
 // photos/video clips; larger belongs to a real upload channel anyway.
 const UPLOAD_CAP = 32 * 1024 * 1024;
 
-// ---------- the app's TurnSink: UIMessage stream → SSE verbatim ----------
-
-// The app channel's SSE wire — one shape shared by the submit stream
-// (appStreamSink: chunks from the turn's member sink) and the attach
-// stream (GET .../stream: chunks from a live-turn subscription).
-//
-// Bun.serve closes connections that send no bytes for its idleTimeout
-// — 10s by default. Tool calls silence the UIMessage stream for tens
-// of seconds, so the wire needs a heartbeat: SSE comment lines, which
-// spec parsers and eventsource-
-// parser (the AI SDK client's) skip without emitting. Ruling recorded in
-// design/app.md.
-const SSE_HEARTBEAT_MS = 5_000;
-
-function appSseWriter(
-	convId: string,
-	heartbeatMs: number = SSE_HEARTBEAT_MS,
-): {
-	body: ReadableStream<Uint8Array>;
-	write(chunk: UIMessageChunk): void;
-	finish(done: TurnDone): void;
-	dispose(): void;
-} {
-	const enc = new TextEncoder();
-	let controller!: ReadableStreamDefaultController<Uint8Array>;
-	let closed = false;
-	let lastByte = Date.now();
-	let beat: ReturnType<typeof setInterval> | undefined;
-	const stopBeat = () => {
-		if (beat !== undefined) clearInterval(beat);
-		beat = undefined;
-	};
-	const push = (line: string) => {
-		if (closed) return;
-		try {
-			controller.enqueue(enc.encode(line));
-			lastByte = Date.now();
-		} catch (err) {
-			// Bun closes the controller when the wire dies (idle kill or
-			// client vanish). The turn keeps writing durable history — but
-			// the boundary owes the log a line so a lost reply is observable.
-			closed = true;
-			stopBeat();
-			log.warn("app stream wire died mid-turn — writes dropped, turn continues", err, {
-				conversation: convId,
-			});
-		}
-	};
-	const body = new ReadableStream<Uint8Array>({
-		start(c) {
-			controller = c;
-			// Beats only while the wire is silent — real chunks reset the clock.
-			// The tick samples 4x per heartbeat window: a tick period equal to
-			// the threshold phase-locks with real chunks landing just before
-			// each tick and never fires.
-			if (heartbeatMs > 0) {
-				beat = setInterval(
-					() => {
-						if (!closed && Date.now() - lastByte >= heartbeatMs) push(": ping\n\n");
-					},
-					Math.max(200, Math.floor(heartbeatMs / 4)),
-				);
-				// A leaked beat must never hold the process (or a test run) open.
-				(beat as unknown as { unref?: () => void }).unref?.();
-			}
-		},
-		// Client disconnected mid-turn — the turn keeps writing durable
-		// history; only the wire closes, and the loss must be observable.
-		cancel() {
-			closed = true;
-			stopBeat();
-			log.warn("app stream client gone — wire closed, turn continues", {
-				conversation: convId,
-			});
-		},
-	});
-	return {
-		body,
-		write(chunk) {
-			push(`data: ${JSON.stringify(chunk)}\n\n`);
-		},
-		finish(done) {
-			stopBeat();
-			// A turn that ended without a finish chunk (fenced by /stop,
-			// or crashed) still owes the client a terminal event.
-			if (done.kind !== "completed") {
-				push(
-					`data: ${JSON.stringify({
-						type: "error",
-						errorText: done.kind === "error" ? done.message : "turn stopped before finishing",
-					})}\n\n`,
-				);
-			}
-			push("data: [DONE]\n\n");
-			closed = true;
-			try {
-				controller.close();
-			} catch {
-				/* already closed */
-			}
-		},
-		// Orphan paths (204 attach, submit-threw 500s): the writer was
-		// constructed — the heartbeat is armed — but no wire will ever
-		// consume the body. Stop the beat and close quietly: no frames, no
-		// finish line: a leaked beat would enqueue into an unread stream
-		// forever.
-		dispose() {
-			stopBeat();
-			closed = true;
-			try {
-				controller.close();
-			} catch {
-				/* already closed */
-			}
-		},
-	};
-}
-
-function appStreamSink(convId: string): {
-	sink: TurnSink;
-	body: ReadableStream<Uint8Array>;
-	// Orphan-path cleanup (review M1): a submit that throws after this
-	// sink was built leaves the writer's heartbeat armed with no wire.
-	dispose(): void;
-} {
-	const writer = appSseWriter(convId);
-	return {
-		body: writer.body,
-		dispose: writer.dispose,
-		sink: {
-			// Delta-style delivery hooks are telegram's — the app stream is
-			// the raw chunk pass-through alone.
-			onTextDelta() {},
-			onReasoningDelta() {},
-			onToolCall() {},
-			onStreamChunk(chunk) {
-				writer.write(chunk);
-			},
-			onDone(done) {
-				writer.finish(done);
-				log.info("app stream finish", { conversation: convId, outcome: done.kind });
-			},
-		},
-	};
-}
 // ---------- routes ----------
 
 // The composer's readout: the live model ref and thinking rung, the

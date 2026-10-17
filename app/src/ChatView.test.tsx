@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { appendQuote, ChatView, mergeTranscript, MessageParts } from "./ChatView.tsx";
+import { appendQuote, ChatView, ContextGauge, mergeTranscript, MessageParts } from "./ChatView.tsx";
 
 // Static markup only — these guard the transcript's render contract
 // (links become anchors, tool runs fold), not React behavior.
@@ -498,10 +498,10 @@ describe("ChatView mid-turn steer", () => {
 			// Focus + keyup too — React's text-input fallback needs it in
 			// this environment (the App.test.tsx typeInto ruling).
 			(ta as HTMLElement).focus();
-			Object.getOwnPropertyDescriptor(
-				dom.win.HTMLTextAreaElement.prototype,
-				"value",
-			)!.set!.call(ta, "steer it");
+			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				"steer it",
+			);
 			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
 			ta.dispatchEvent(
 				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
@@ -531,6 +531,32 @@ describe("ChatView mid-turn steer", () => {
 		}
 		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
 		expect(dom.container.textContent).toContain("working — steered");
+	});
+});
+
+// A failed context read has no numbers and the popover won't open —
+// the "failed" class is what lets the narrow-screen ring carry it
+// (the label is display:none there).
+describe("ContextGauge", () => {
+	const dom = mountDom();
+
+	test("a failed read marks the button", async () => {
+		globalThis.fetch = Object.assign(() => Promise.resolve(new Response(null, { status: 500 })), {
+			preconnect: dom.realFetch.preconnect,
+		});
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(<ContextGauge token={null} conversationId="app/chat-01" busy={false} />),
+		);
+		for (let i = 0; i < 100 && !dom.container.querySelector(".ctx-btn.failed"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const btn = dom.container.querySelector<HTMLButtonElement>(".ctx-btn.failed");
+		expect(btn).not.toBeNull();
+		expect(btn?.title).toContain("read failed");
+		expect(dom.container.querySelector(".ctx-label")?.textContent).toBe("ctx ?");
 	});
 });
 

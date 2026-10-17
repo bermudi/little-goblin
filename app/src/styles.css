@@ -1557,6 +1557,14 @@ a.hit-title {
 .ctx-ring-fill.hot {
 	stroke: var(--app-danger);
 }
+/* A failed read shows no numbers and opens no popover — on narrow
+   screens the label is hidden, so the ring track itself goes red. */
+.ctx-btn.failed {
+	color: var(--app-danger);
+}
+.ctx-btn.failed .ctx-ring-track {
+	stroke: var(--app-danger);
+}
 @media (max-width: 720px) {
 	.ctx-btn .ctx-label {
 		display: none;

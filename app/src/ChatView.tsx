@@ -796,16 +796,21 @@ export function ContextGauge({
 	if (conversationId === undefined) return null;
 	const barPct =
 		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// A failed read has no numbers to show and the popover won't open —
+	// the label carries it on wide screens, the reddened ring on narrow.
+	const failedRead = failed && ctx === null;
 	return (
 		<span className="ctx-gauge">
 			<button
 				type="button"
-				className="ctx-btn"
+				className={failedRead ? "ctx-btn failed" : "ctx-btn"}
 				aria-label="Context window usage"
 				title={
-					ctx === null
-						? "Context window usage"
-						: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+					failedRead
+						? "Context window usage — read failed"
+						: ctx === null
+							? "Context window usage"
+							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
 				}
 				onClick={() => setOpen((v) => !v)}
 			>
@@ -822,9 +827,7 @@ export function ContextGauge({
 						/>
 					)}
 				</svg>
-				<span className="ctx-label">
-					{failed && ctx === null ? "ctx ?" : contextLabel(ctx)}
-				</span>
+				<span className="ctx-label">{failedRead ? "ctx ?" : contextLabel(ctx)}</span>
 			</button>
 			{open && ctx !== null && (
 				<div className="note-pick composer-pick ctx-pop" role="status">
@@ -1748,11 +1751,15 @@ function Chat({
 	// A mid-turn send steers or queues (DESIGN.md → Turn — the app chat
 	// POST rides the Telegram lane). Drop this client's reader first:
 	// the new POST's stream replays the wire from sentence one onto the
-	// same assistant message id — a handoff, not a second writer.
-	const submit = (message: Parameters<typeof sendMessage>[0]) => {
+	// same assistant message id — a handoff, not a second writer. The
+	// await is load-bearing: the aborted reader's teardown flips status
+	// back to "ready" a tick after stop() returns control, and a send
+	// fired before it lands gets clobbered into a busy:false window —
+	// no stop button, and the next send forks a second writer.
+	const submit = async (message: Parameters<typeof sendMessage>[0]) => {
 		pinned.current = true;
-		if (busy) void stop();
-		void sendMessage(message);
+		if (busy) await stop();
+		await sendMessage(message);
 	};
 
 	useEffect(() => {
@@ -1813,7 +1820,7 @@ function Chat({
 									streaming={status === "streaming" && m.id === lastAssistantId}
 									messages={messages}
 									onOpenNote={onOpenNote}
-									onAction={(text) => submit({ text })}
+									onAction={(text) => void submit({ text })}
 								/>
 								<ActionBar
 									message={m}
@@ -1846,7 +1853,7 @@ function Chat({
 				quote={quote}
 				onSend={(parts) => {
 					askNotifyPermission();
-					submit({ parts });
+					void submit({ parts });
 				}}
 				onStop={() => {
 					setStopError(null);

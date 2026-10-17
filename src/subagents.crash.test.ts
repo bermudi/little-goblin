@@ -122,10 +122,7 @@ function markerLines(path: string): string[] {
 	return readFileSync(path, "utf8").split("\n").filter(Boolean);
 }
 
-function spawnChild(
-	b: ReturnType<typeof bed>,
-	extra: Record<string, string> = {},
-): Subprocess {
+function spawnChild(b: ReturnType<typeof bed>, extra: Record<string, string> = {}): Subprocess {
 	const child = Bun.spawn(["bun", "run", "src/test-helpers/subagent-crash-child.ts"], {
 		env: {
 			...process.env,
@@ -292,7 +289,11 @@ describe("subagent crash approval — a real killed process", () => {
 		// authorize-retry: the gate commits the decision, then dispatches
 		// exactly once more — the model sees the fresh bash result.
 		replies.push(finishReply());
-		const resumed = await owner.decide(1, "crash:one", { kind: "authorize-retry" });
+		const resumed = await owner.decide(1, "crash:one", {
+			kind: "authorize-retry",
+			evidence: "the marker shows the dispatch began; its completion is unobserved",
+			reasoning: "the probe writes an append line — one more dispatch is observable and safe",
+		});
 		expect(resumed.status).toBe("queued");
 		expect(resumed.pendingApproval?.decision?.kind).toBe("authorize-retry");
 		await until(() => runs.get(1)?.status === "running", "decision admitted");
@@ -300,32 +301,58 @@ describe("subagent crash approval — a real killed process", () => {
 		expect(markerLines(b.marker)).toEqual(["dispatched", "REPLAYED"]);
 		expect(dispatches()).toBe(1);
 		expect(runs.get(1)?.result).toBe("recovered");
+		const history = runs.get(1)!.crashDecisions;
+		expect(history).toHaveLength(1);
+		expect(history[0]!.attempts).toBe(1);
+		expect(history[0]!.decision).toMatchObject({
+			kind: "authorize-retry",
+			decidedBy: "goblin",
+			outcome: "unverified",
+		});
 		await owner.close();
 		runs.close();
 	}, 90_000);
 
-	test("record-result feeds the operator's text to the model with zero re-dispatch", async () => {
+	test("record-result feeds a labeled Goblin declaration to the model with zero re-dispatch", async () => {
 		const b = bed("record");
 		await dispatchAndKill(b);
 		const base = seen.length;
 
-		const { owner, runs, dispatches } = await openOwner(b);
+		const { owner, runs, dispatches, wakes } = await openOwner(b);
 		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
 		replies.push(finishReply());
 		await owner.decide(1, "crash:one", {
 			kind: "record-result",
-			result: "operator-verified: the marker already landed",
+			result: "declared: the marker already landed",
+			evidence: "the marker file exists on the host",
+			reasoning: "the interrupted write is externally visible; re-dispatch would double it",
 		});
 		await until(() => runs.get(1)?.status === "done", "run settled on the recorded result");
-		// The recorded result, not a fresh dispatch, fed the next request.
+		// The declared result, not a fresh dispatch, fed the next request —
+		// wrapped as an unverified Goblin declaration, never operator
+		// testimony or observed tool output.
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);
 		const next = seen[base];
 		expect(next).not.toBeUndefined();
-		expect(JSON.stringify(next!.messages)).toContain(
-			"operator-verified: the marker already landed",
-		);
+		const wire = JSON.stringify(next!.messages);
+		expect(wire).toContain("declared: the marker already landed");
+		expect(wire).toContain("crash resolution: Goblin-decided");
+		expect(wire).toContain("interrupted outcome: unverified");
+		expect(wire).toContain("the marker file exists on the host");
+		expect(wire).toContain("re-dispatch would double it");
+		expect(wire).not.toContain("operator_recorded");
+		expect(wire).not.toContain("recorded by the operator");
 		expect(runs.get(1)?.result).toBe("recovered");
+		const settled = runs.get(1)!;
+		expect(settled.crashDecisions).toHaveLength(1);
+		expect(settled.crashDecisions[0]!.decision).toMatchObject({
+			kind: "record-result",
+			result: "declared: the marker already landed",
+			decidedBy: "goblin",
+			outcome: "unverified",
+		});
+		expect(wakes.some((w) => w.text.includes("Crash resolution warning"))).toBe(true);
 		await owner.close();
 		runs.close();
 	}, 90_000);
@@ -337,9 +364,14 @@ describe("subagent crash approval — a real killed process", () => {
 
 		const { owner, runs, dispatches } = await openOwner(b);
 		await until(() => runs.get(1)?.pendingApproval !== null, "run parked");
-		await owner.decide(1, "crash:one", { kind: "abandon", note: "too risky" });
+		await owner.decide(1, "crash:one", {
+			kind: "abandon",
+			note: "too risky",
+			evidence: "the interrupted write's effect could not be confirmed",
+			reasoning: "a retry could append a second marker — ending is safest",
+		});
 		await until(() => runs.get(1)?.status === "failed", "run failed on abandon");
-		expect(runs.get(1)?.error ?? "").toContain("abandoned");
+		expect(runs.get(1)?.error ?? "").toContain("Goblin abandoned this run");
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);
 		// Terminate settled the submission at the round boundary — the
@@ -359,17 +391,17 @@ describe("subagent crash approval — a real killed process", () => {
 		const c2 = spawnChild(b, { MODE: "resume", WAKE_PATH: wakeLog });
 		const probe = openSubagentRuns(b.dbPath);
 		try {
-			await until(
-				() => {
-					const row = probe.get(1);
-					return row?.status === "needs_input" && row.pendingApproval !== null;
-				},
-				"child re-parked the run",
-			);
+			await until(() => {
+				const row = probe.get(1);
+				return row?.status === "needs_input" && row.pendingApproval !== null;
+			}, "child re-parked the run");
 		} finally {
 			probe.close();
 		}
-		expect(readFileSync(wakeLog, "utf8")).toContain("interrupted");
+		await until(
+			() => existsSync(wakeLog) && readFileSync(wakeLog, "utf8").includes("interrupted"),
+			"child wake delivered",
+		);
 		c2.kill(9);
 		await c2.exited;
 
@@ -385,7 +417,9 @@ describe("subagent crash approval — a real killed process", () => {
 		replies.push(finishReply());
 		await owner.decide(1, "crash:one", {
 			kind: "record-result",
-			result: "operator-verified after two kills",
+			result: "verified after two kills",
+			evidence: "the marker file was read after the second park",
+			reasoning: "the observed effect needs no further dispatch",
 		});
 		await until(() => runs.get(1)?.status === "done", "settled after re-park");
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
@@ -395,51 +429,80 @@ describe("subagent crash approval — a real killed process", () => {
 		runs.close();
 	}, 90_000);
 
-	test("a pre-seeded done lease replays the recorded result with zero dispatch", async () => {
-		const b = bed("seeded");
-		await dispatchAndKill(b);
-
-		// The settle-only crash window: the tool's result committed to
-		// the lease but the call never settled. Seed `done` directly in
-		// pi-durable's own task-scoped storage through a bare harness —
-		// no scheduling, just the commit line.
-		const storage = await openNodeSqliteStorage(b.storagePath);
-		const bare = await Harness.open(
-			storage,
-			{
-				models: createModels({ credentials: new InMemoryCredentialStore() }),
-				registry: createRegistry(),
+	for (const [tag, seededResult, assertions] of [
+		[
+			"ordinary",
+			{ content: [{ type: "text", text: "seeded-result: the marker already landed" }] },
+			(wire: string) => {
+				expect(wire).toContain("seeded-result: the marker already landed");
+				expect(wire).not.toContain("crash resolution");
+				expect(wire).not.toContain("unverified");
 			},
-			BACKGROUND_CONTEXT,
-		);
-		try {
-			const live = await bare.inspect(BACKGROUND_CONTEXT);
-			const toolTask = live.tasks.find((t) => t.record.kind === "pi.tool");
-			expect(toolTask).not.toBeUndefined();
-			await bare.commit(async (tx) => {
-				const draft = await tx.doc(approvalLeaseDoc, toolTask!.record.id);
-				draft.state = "done";
-				draft.attempts = null;
-				draft.decision = null;
-				draft.result = {
-					content: [{ type: "text", text: "seeded-result: the marker already landed" }],
-				};
-			}, BACKGROUND_CONTEXT);
-		} finally {
-			await bare.close(BACKGROUND_CONTEXT);
-		}
+		],
+		[
+			"legacy",
+			{
+				content: [{ type: "text", text: "seeded-result: the marker already landed" }],
+				diagnostics: [
+					{
+						severity: "warn",
+						code: "operator_recorded",
+						message: "this result was recorded by the operator for an interrupted bash call",
+					},
+				],
+			},
+			(wire: string) => {
+				expect(wire).toContain("seeded-result: the marker already landed");
+				expect(wire).toContain("legacy decision; provenance not recorded");
+				expect(wire).toContain("interrupted outcome: unverified");
+				expect(wire).toContain("not recorded (legacy decision)");
+				expect(wire).not.toContain("operator_recorded");
+				expect(wire).not.toContain("recorded by the operator");
+			},
+		],
+	] as const) {
+		test(`a pre-seeded done lease replays its ${tag} result with zero dispatch`, async () => {
+			const b = bed(`seeded-${tag}`);
+			await dispatchAndKill(b);
 
-		const base = seen.length;
-		replies.push(finishReply());
-		const { owner, runs, dispatches } = await openOwner(b);
-		await until(() => runs.get(1)?.status === "done", "run settled on the seeded result");
-		expect(markerLines(b.marker)).toEqual(["dispatched"]);
-		expect(dispatches()).toBe(0);
-		expect(JSON.stringify(seen[base]?.messages)).toContain(
-			"seeded-result: the marker already landed",
-		);
-		expect(runs.get(1)?.result).toBe("recovered");
-		await owner.close();
-		runs.close();
-	}, 90_000);
+			// The settle-only crash window: the tool's result committed to
+			// the lease but the call never settled. Seed `done` directly in
+			// pi-durable's own task-scoped storage through a bare harness —
+			// no scheduling, just the commit line.
+			const storage = await openNodeSqliteStorage(b.storagePath);
+			const bare = await Harness.open(
+				storage,
+				{
+					models: createModels({ credentials: new InMemoryCredentialStore() }),
+					registry: createRegistry(),
+				},
+				BACKGROUND_CONTEXT,
+			);
+			try {
+				const live = await bare.inspect(BACKGROUND_CONTEXT);
+				const toolTask = live.tasks.find((t) => t.record.kind === "pi.tool");
+				expect(toolTask).not.toBeUndefined();
+				await bare.commit(async (tx) => {
+					const draft = await tx.doc(approvalLeaseDoc, toolTask!.record.id);
+					draft.state = "done";
+					draft.attempts = null;
+					draft.decision = null;
+					draft.result = seededResult as never;
+				}, BACKGROUND_CONTEXT);
+			} finally {
+				await bare.close(BACKGROUND_CONTEXT);
+			}
+
+			const base = seen.length;
+			replies.push(finishReply());
+			const { owner, runs, dispatches } = await openOwner(b);
+			await until(() => runs.get(1)?.status === "done", "run settled on the seeded result");
+			expect(markerLines(b.marker)).toEqual(["dispatched"]);
+			expect(dispatches()).toBe(0);
+			assertions(JSON.stringify(seen[base]?.messages));
+			expect(runs.get(1)?.result).toBe("recovered");
+			await owner.close();
+			runs.close();
+		}, 90_000);
+	}
 });

@@ -4655,7 +4655,13 @@ describe("subagents crash approval", () => {
 		// send is refused while a decision is pending.
 		await expect(o2.send(rowId, WS, "answer")).rejects.toThrow(/approval decision/);
 		// decide on a run that isn't parked refuses too.
-		await expect(o2.decide(999, WS, { kind: "abandon" })).rejects.toThrow(/no subagent run/);
+		await expect(
+			o2.decide(999, WS, {
+				kind: "abandon",
+				evidence: "no run carries this id",
+				reasoning: "refusal probe",
+			}),
+		).rejects.toThrow(/no subagent run/);
 		void o2;
 	}, 60_000);
 
@@ -4668,18 +4674,33 @@ describe("subagents crash approval", () => {
 		// Release the dispatch gate so the authorized retry can run.
 		sandboxes.execGate = null;
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "retried" } }] });
-		const resumed = await o2.decide(rowId, WS, { kind: "authorize-retry" });
+		const resumed = await o2.decide(rowId, WS, {
+			kind: "authorize-retry",
+			evidence: "whether the first dispatch landed is unobservable",
+			reasoning: "the probe command is idempotent — one more dispatch is safe",
+		});
 		// The verdict queues for a global slot — the scheduler's grant
 		// flips it running and releases the parked call.
 		expect(resumed.status).toBe("queued");
 		expect(resumed.pendingApproval?.decision?.kind).toBe("authorize-retry");
+		expect(resumed.pendingApproval?.decision?.decidedBy).toBe("goblin");
+		expect(resumed.pendingApproval?.decision?.outcome).toBe("unverified");
 		await until(() => r2.runs.get(rowId)?.status === "running", "decision admitted");
 		await until(() => r2.runs.get(rowId)?.status === "done", "settled after retry");
 		expect(sandboxes.dispatchCalls).toBe(2);
 		expect(r2.runs.get(rowId)?.result).toBe("retried");
+		const history = r2.runs.get(rowId)!.crashDecisions;
+		expect(history).toHaveLength(1);
+		expect(history[0]!.tool).toBe("bash");
+		expect(history[0]!.attempts).toBe(1);
+		expect(history[0]!.decision).toMatchObject({
+			kind: "authorize-retry",
+			decidedBy: "goblin",
+			outcome: "unverified",
+		});
 	}, 60_000);
 
-	test("decide record-result feeds the operator's text without dispatching", async () => {
+	test("decide record-result feeds a labeled declaration without dispatching", async () => {
 		const sandboxes = fakeSandboxes();
 		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
 		const r2 = reopenParked({ dbPath, storagePath, r1 });
@@ -4689,20 +4710,104 @@ describe("subagents crash approval", () => {
 		r2.runs.noteLifecycle(WS, NOTE);
 		const base = r2.model.seen.length;
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "done" } }] });
-		await o2.decide(rowId, WS, {
+		const decided = await o2.decide(rowId, WS, {
 			kind: "record-result",
-			result: "operator-saw: markit already ran",
-		});
+			result: "declared-verified: markit already ran",
+			evidence: "the marker file was observed on the host after the kill",
+			reasoning: "the effect is externally visible; re-dispatch would double it",
+			decidedBy: "operator",
+			outcome: "verified",
+		} as never);
+		expect(decided.pendingApproval?.decision?.decidedBy).toBe("goblin");
+		expect(decided.pendingApproval?.decision?.outcome).toBe("unverified");
 		await until(() => r2.runs.get(rowId)?.status === "done", "settled on recorded result");
-		// The recorded result — never a re-dispatch — fed the next request.
+		// The declared result — never a re-dispatch — fed the next request,
+		// labeled a Goblin declaration with the unverified outcome.
 		expect(sandboxes.dispatchCalls).toBe(1);
 		await until(() => r2.model.seen.length > base, "next model request");
 		const msgs = r2.model.seen[base]!.messages as { role: string; content: unknown }[];
 		const toolMsg = msgs.filter((m) => m.role === "tool").at(-1);
 		const serialized = JSON.stringify(toolMsg);
-		expect(serialized).toContain("operator-saw: markit already ran");
+		expect(serialized).toContain("declared-verified: markit already ran");
+		expect(serialized).toContain("crash resolution: Goblin-decided");
+		expect(serialized).toContain("interrupted outcome: unverified");
+		expect(serialized).toContain("the marker file was observed on the host after the kill");
+		expect(serialized).toContain("re-dispatch would double it");
+		expect(serialized).not.toContain("operator_recorded");
+		expect(serialized).not.toContain("recorded by the operator");
 		expect(serialized.split(NOTE).length - 1).toBe(1);
 		expect(r2.runs.get(rowId)?.result).toBe("done");
+		const settled = r2.runs.get(rowId)!;
+		expect(settled.crashDecisions).toHaveLength(1);
+		expect(settled.crashDecisions[0]!.decision).toMatchObject({
+			kind: "record-result",
+			result: "declared-verified: markit already ran",
+			decidedBy: "goblin",
+			outcome: "unverified",
+		});
+		const doneWake = r2.wakes.find((w) => w.text.includes("Crash resolution warning"));
+		expect(doneWake).not.toBeUndefined();
+		expect(doneWake!.text).toContain('"decidedBy":"goblin"');
+		await o2.close();
+		owners = owners.filter((x) => x !== o2);
+		const probe = openSubagentRuns(dbPath);
+		runStores.push(probe);
+		expect(probe.get(rowId)?.crashDecisions).toHaveLength(1);
+	}, 60_000);
+
+	test("an invalid decide refuses without queueing, dispatching or auditing", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		await expect(o2.decide(rowId, WS, { kind: "authorize-retry" } as never)).rejects.toThrow(
+			/invalid approval decision/,
+		);
+		await expect(
+			o2.decide(rowId, WS, {
+				kind: "record-result",
+				result: "x",
+				evidence: "   ",
+				reasoning: "whitespace is not evidence",
+			}),
+		).rejects.toThrow(/invalid approval decision/);
+		const row = r2.runs.get(rowId)!;
+		expect(row.status).toBe("needs_input");
+		expect(row.pendingApproval?.decision).toBeUndefined();
+		expect(row.crashDecisions).toEqual([]);
+		expect(sandboxes.dispatchCalls).toBe(1);
+	}, 60_000);
+
+	test("a legacy persisted verdict still resolves — labeled unverified, no invented provenance", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const pending = r2.runs.get(rowId)!.pendingApproval!;
+		r2.runs.update(rowId, {
+			status: "queued",
+			pendingApproval: {
+				...pending,
+				decision: { kind: "record-result", result: "legacy declared outcome" },
+			},
+		});
+		const base = r2.model.seen.length;
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] });
+		await o2.scan();
+		await until(() => r2.runs.get(rowId)?.status === "done", "settled on the legacy verdict");
+		expect(sandboxes.dispatchCalls).toBe(1);
+		await until(() => r2.model.seen.length > base, "next model request");
+		const msgs = r2.model.seen[base]!.messages as { role: string; content: unknown }[];
+		const toolMsg = msgs.filter((m) => m.role === "tool").at(-1);
+		const serialized = JSON.stringify(toolMsg);
+		expect(serialized).toContain("legacy declared outcome");
+		expect(serialized).toContain("legacy decision; provenance not recorded");
+		expect(serialized).toContain("interrupted outcome: unverified");
+		expect(serialized).toContain("not recorded (legacy decision)");
+		expect(serialized).not.toContain("operator_recorded");
+		expect(r2.runs.get(rowId)?.crashDecisions).toEqual([]);
 	}, 60_000);
 
 	test("decide abandon ends the run with no further model call", async () => {
@@ -4712,9 +4817,14 @@ describe("subagents crash approval", () => {
 		const o2 = await open(r2);
 		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
 		const base = r2.model.seen.length;
-		await o2.decide(rowId, WS, { kind: "abandon", note: "unverifiable" });
+		await o2.decide(rowId, WS, {
+			kind: "abandon",
+			note: "unverifiable",
+			evidence: "the interrupted effect could not be observed",
+			reasoning: "a retry could double the side effect — ending the run is safest",
+		});
 		await until(() => r2.runs.get(rowId)?.status === "failed", "failed on abandon");
-		expect(r2.runs.get(rowId)?.error ?? "").toContain("abandoned");
+		expect(r2.runs.get(rowId)?.error ?? "").toContain("Goblin abandoned this run");
 		expect(sandboxes.dispatchCalls).toBe(1);
 		await Bun.sleep(300);
 		expect(r2.model.seen.length).toBe(base);
@@ -4741,12 +4851,18 @@ describe("subagents crash approval", () => {
 		const decided = await o3.decide(rowId, WS, {
 			kind: "record-result",
 			result: "stored verdict",
+			evidence: "the marker file was observed before the verdict",
+			reasoning: "declaring avoids re-dispatching an idempotent probe",
 		});
 		expect(decided.status).toBe("queued");
 		await o3.resume();
 		await until(() => r3.runs.get(rowId)?.status === "done", "settled via stored decision");
 		expect(sandboxes.dispatchCalls).toBe(1);
 		expect(r3.runs.get(rowId)?.result).toBe("recorded");
+		const settledHistory = r3.runs.get(rowId)!.crashDecisions;
+		expect(settledHistory).toHaveLength(1);
+		expect(settledHistory[0]!.decision.decidedBy).toBe("goblin");
+		expect(settledHistory[0]!.decision.outcome).toBe("unverified");
 	}, 60_000);
 
 	test("a retry that dies mid-dispatch re-parks with the raised attempt count", async () => {
@@ -4759,7 +4875,11 @@ describe("subagents crash approval", () => {
 		// process dies again mid-dispatch.
 		sandboxes.sandboxDead = false;
 		sandboxes.execGate = new Promise<void>(() => {});
-		const deciding = o2.decide(rowId, WS, { kind: "authorize-retry" });
+		const deciding = o2.decide(rowId, WS, {
+			kind: "authorize-retry",
+			evidence: "the first dispatch's effect is unobservable",
+			reasoning: "the probe is safe to run once more",
+		});
 		await until(() => sandboxes.dispatchCalls >= 2, "retry dispatched");
 		sandboxes.sandboxDead = true;
 		await deciding; // decide returns once the verdict is queued
@@ -4773,9 +4893,25 @@ describe("subagents crash approval", () => {
 		// Exactly two dispatches ever ran — the killed retry did not
 		// re-dispatch on its own.
 		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		await o3.decide(rowId, WS, { kind: "record-result", result: "verified by hand" });
+		await o3.decide(rowId, WS, {
+			kind: "record-result",
+			result: "verified by hand",
+			evidence: "the marker file was inspected after the second kill",
+			reasoning: "no further dispatch is needed — the effect is confirmed",
+		});
 		await until(() => r3.runs.get(rowId)?.status === "done", "settled");
 		expect(sandboxes.dispatchCalls).toBe(2);
+		const history = r3.runs.get(rowId)!.crashDecisions;
+		expect(history).toHaveLength(2);
+		expect(history[0]!.decision.kind).toBe("authorize-retry");
+		expect(history[0]!.attempts).toBe(1);
+		expect(history[1]!.decision.kind).toBe("record-result");
+		expect(history[1]!.attempts).toBe(2);
+		for (const h of history) {
+			expect(h.tool).toBe("bash");
+			expect(h.decision.decidedBy).toBe("goblin");
+			expect(h.decision.outcome).toBe("unverified");
+		}
 	}, 60_000);
 
 	test("a second kill while parked re-parks and re-surfaces the ask", async () => {
@@ -4797,7 +4933,12 @@ describe("subagents crash approval", () => {
 		);
 		expect(r3.runs.get(rowId)?.pendingApproval).not.toBeNull();
 		r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recorded" } }] });
-		await o3.decide(rowId, WS, { kind: "record-result", result: "still recorded" });
+		await o3.decide(rowId, WS, {
+			kind: "record-result",
+			result: "still recorded",
+			evidence: "the marker file was read back after re-parking",
+			reasoning: "the observed effect needs no second dispatch",
+		});
 		await until(() => r3.runs.get(rowId)?.status === "done", "settled");
 		expect(sandboxes.dispatchCalls).toBe(1);
 	}, 60_000);
@@ -4943,6 +5084,8 @@ describe("subagents crash approval", () => {
 		const decided = await o2.decide(a.id, WS, {
 			kind: "record-result",
 			result: "verified by hand",
+			evidence: "the marker file was observed before deciding",
+			reasoning: "declaring avoids re-running the probe",
 		});
 		expect(decided.status).toBe("queued");
 		await Bun.sleep(400);
@@ -4989,6 +5132,8 @@ describe("subagents crash approval", () => {
 		const decided = await o2.decide(aId, WS, {
 			kind: "record-result",
 			result: "verified by hand",
+			evidence: "the marker file was observed before deciding",
+			reasoning: "declaring avoids re-running the probe",
 		});
 		expect(decided.status).toBe("queued");
 		// The restart: the queued verdict and the held sibling persist.
@@ -5017,6 +5162,13 @@ describe("subagents crash approval", () => {
 		// markit once, sibling-work once — the continuation replayed the
 		// recorded result and nothing re-dispatched.
 		expect(sandboxes.dispatchCalls).toBe(2);
+		const history = r3.runs.get(aId)!.crashDecisions;
+		expect(history).toHaveLength(1);
+		expect(history[0]!.decision).toMatchObject({
+			kind: "record-result",
+			decidedBy: "goblin",
+			outcome: "unverified",
+		});
 	}, 60_000);
 
 	test("a completed call replays the streamed output after a restart, not the bare return", async () => {
@@ -5027,7 +5179,10 @@ describe("subagents crash approval", () => {
 		const storagePath = join(dir, "subagents.sqlite");
 		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes });
 		const o1 = await open(r1);
-		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "echo lease-out" } }] });
+		r1.model.push({
+			kind: "tools",
+			calls: [{ name: "bash", args: { command: "echo lease-out" } }],
+		});
 		// Pi's bash streams stdout through api.output() and returns {}
 		// — the gate must fold the stream into the call's durable
 		// result or a post-settle restart replays "(no tool output)".

@@ -266,7 +266,9 @@ behavior.
     or a `documented-expiry` profile the contract registry can't
     support. `scripts/cache-report.ts` aggregates the receipts and
     `scripts/check-cache-contracts.ts` re-checks the public contract
-    sources (design/model.md → Cache contracts).
+    sources (design/model.md → Cache contracts). Cache-call evidence
+    has no automatic age-based deletion or prompt-hash stripping;
+    retention changes require a separate explicit decision.
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
   log: a model switch — or a catalog refresh that changes a model's

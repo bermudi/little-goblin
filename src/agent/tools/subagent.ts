@@ -10,9 +10,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import {
+	approvalDecisionInputSchema,
+	crashDecisionNotice,
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
-	MAX_RESULT_CHARS,
 	MAX_TASK_CHARS,
 	type SubagentRun,
 } from "../../subagent-runs.ts";
@@ -58,18 +59,14 @@ const stopSchema = z.object({
 	action: z.literal("stop"),
 	id: z.number().int().positive(),
 });
-// The operator verdict on a run parked by the crash-approval gate:
-// record-result supplies the call's result text (required — the model
-// sees it as the call's output), authorize-retry runs the interrupted
-// call once more, abandon ends the run.
+// The crash-resolution verdict on a run parked by the crash-approval
+// gate — the shared input schema requires evidence and reasoning on
+// every kind and the declared result text for record-result;
+// provenance and outcome are owner-stamped, never caller-supplied.
 const decideSchema = z.object({
 	action: z.literal("decide"),
 	id: z.number().int().positive(),
-	decision: z.object({
-		kind: z.enum(["record-result", "authorize-retry", "abandon"]),
-		note: z.string().min(1).max(MAX_MESSAGE_CHARS).optional(),
-		result: z.string().min(1).max(MAX_RESULT_CHARS).optional(),
-	}),
+	decision: approvalDecisionInputSchema,
 });
 
 const actionSchema = z.discriminatedUnion("action", [
@@ -98,18 +95,6 @@ export const subagentInputSchema = z
 			for (const issue of result.error.issues) {
 				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
 			}
-			return;
-		}
-		if (
-			result.data.action === "decide" &&
-			result.data.decision.kind === "record-result" &&
-			result.data.decision.result === undefined
-		) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["decision", "result"],
-				message: "record-result needs result text",
-			});
 		}
 	});
 
@@ -125,6 +110,18 @@ function runSummary(row: SubagentRun) {
 		inbox: row.inbox.length > 0 ? row.inbox : undefined,
 		final_screenshot: row.finalScreenshot ?? undefined,
 		awaiting_decision: row.pendingApproval !== null ? true : undefined,
+		crash_decisions:
+			row.crashDecisions.length === 0
+				? undefined
+				: row.crashDecisions.map((c) => ({
+						call_id: c.callId,
+						tool: c.tool,
+						attempts: c.attempts,
+						decided_by: c.decision.decidedBy ?? "legacy-unknown",
+						outcome: "unverified",
+						decided_at: new Date(c.decidedAt).toISOString(),
+						kind: c.decision.kind,
+					})),
 		created_at: new Date(row.createdAt).toISOString(),
 		finished_at: row.finishedAt === null ? undefined : new Date(row.finishedAt).toISOString(),
 	};
@@ -139,6 +136,8 @@ function runBody(row: SubagentRun): string {
 	if (row.exportedFiles.length > 0)
 		parts.push(`exported_files: ${JSON.stringify(row.exportedFiles)}`);
 	if (row.exportErrors.length > 0) parts.push(`export_errors: ${JSON.stringify(row.exportErrors)}`);
+	const crash = crashDecisionNotice(row.crashDecisions);
+	if (crash !== null) parts.push(crash);
 	return parts.join("\n");
 }
 
@@ -214,13 +213,7 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 						return { ...runSummary(row), notice: fenced(row) };
 					}
 					case "decide": {
-						const row = await deps.subagents.decide(input.id, deps.conversation, {
-							kind: input.decision.kind,
-							...(input.decision.note !== undefined ? { note: input.decision.note } : {}),
-							...(input.decision.result !== undefined
-								? { result: input.decision.result }
-								: {}),
-						});
+						const row = await deps.subagents.decide(input.id, deps.conversation, input.decision);
 						return { ...runSummary(row), notice: fenced(row) };
 					}
 				}

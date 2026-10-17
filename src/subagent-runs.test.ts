@@ -3,6 +3,7 @@
 // the lifecycle-note write the worker tools read back.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,6 +169,159 @@ describe("subagent_runs store", () => {
 		runs.update(w.id, { status: "done" });
 		runs.noteLifecycle("conv:a", "again");
 		expect(runs.get(w.id)?.lifecycleNote).toBe("sandbox was recreated");
+	});
+
+	test("crashDecisions outlives the cleared mirror, settlement and reopen", () => {
+		const { runs, dbPath } = open();
+		const row = runs.create({
+			kind: "worker",
+			conversationId: "conv:a",
+			workspace: "/ws",
+			task: "t",
+		});
+		const record = {
+			piTaskId: "11",
+			callId: "c1",
+			tool: "bash",
+			args: { command: "markit" },
+			attempts: 1,
+			decidedAt: 1700000000000,
+			decision: {
+				kind: "record-result" as const,
+				result: "the marker already landed",
+				note: "audit trail",
+				evidence: "marker.txt observed on the host",
+				reasoning: "the effect is externally visible; no re-dispatch needed",
+				decidedBy: "goblin" as const,
+				outcome: "unverified" as const,
+			},
+		};
+		const parked = runs.update(row.id, {
+			status: "needs_input",
+			pendingApproval: {
+				piTaskId: "11",
+				callId: "c1",
+				tool: "bash",
+				args: { command: "markit" },
+				attempts: 1,
+			},
+			crashDecisions: [record],
+		});
+		expect(parked.crashDecisions).toEqual([record]);
+		const done = runs.update(row.id, {
+			status: "done",
+			pendingApproval: null,
+			result: "finished",
+			finishedAt: 9999,
+		});
+		expect(done.pendingApproval).toBeNull();
+		expect(done.crashDecisions).toEqual([record]);
+		runs.close();
+		stores.pop();
+		const again = openSubagentRuns(dbPath);
+		stores.push(again);
+		expect(again.get(row.id)?.crashDecisions).toEqual([record]);
+	});
+
+	test("a pre-crash_decisions table upgrades additively to an empty history", () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-runs-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const raw = new Database(dbPath);
+		raw.exec(`CREATE TABLE subagent_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			workspace TEXT NOT NULL,
+			desktop TEXT,
+			pi_conversation_id TEXT,
+			pi_submission_id TEXT,
+			task TEXT NOT NULL,
+			files TEXT NOT NULL DEFAULT '[]',
+			inbox TEXT NOT NULL DEFAULT '[]',
+			request_id TEXT,
+			input_rev INTEGER NOT NULL DEFAULT 0,
+			input_intent TEXT,
+			input_mode TEXT,
+			status TEXT NOT NULL,
+			stop_requested INTEGER NOT NULL DEFAULT 0,
+			result TEXT,
+			question TEXT,
+			error TEXT,
+			exported_files TEXT NOT NULL DEFAULT '[]',
+			export_errors TEXT NOT NULL DEFAULT '[]',
+			export_progress TEXT NOT NULL DEFAULT '{}',
+			final_screenshot TEXT,
+			lifecycle_note TEXT,
+			pending_approval TEXT,
+			notice_pending INTEGER NOT NULL DEFAULT 0,
+			notice_rev INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			finished_at INTEGER
+		)`);
+		raw.exec(
+			`INSERT INTO subagent_runs
+				(kind, conversation_id, workspace, task, status, created_at, updated_at)
+			 VALUES ('worker', 'conv:a', '/ws', 't', 'queued', 1, 1)`,
+		);
+		raw.close();
+		const runs = openSubagentRuns(dbPath);
+		stores.push(runs);
+		expect(runs.get(1)?.crashDecisions).toEqual([]);
+	});
+
+	test("a legacy pending verdict without provenance or evidence still reads", () => {
+		const { runs } = open();
+		const row = runs.create({
+			kind: "worker",
+			conversationId: "conv:a",
+			workspace: "/ws",
+			task: "t",
+		});
+		const parked = runs.update(row.id, {
+			pendingApproval: {
+				piTaskId: "11",
+				callId: "c1",
+				tool: "bash",
+				args: {},
+				attempts: 1,
+				decision: { kind: "record-result", result: "it ran" },
+			},
+		});
+		const d = parked.pendingApproval?.decision;
+		expect(d?.kind).toBe("record-result");
+		expect(d?.result).toBe("it ran");
+		expect(d?.decidedBy).toBeUndefined();
+		expect(d?.evidence).toBeUndefined();
+		expect(runs.get(row.id)?.pendingApproval?.decision?.outcome).toBeUndefined();
+	});
+
+	test("corrupted crash history fails loudly on read; writes validate", () => {
+		const { runs, dbPath } = open();
+		const row = runs.create({
+			kind: "worker",
+			conversationId: "conv:a",
+			workspace: "/ws",
+			task: "t",
+		});
+		expect(() =>
+			runs.update(row.id, {
+				crashDecisions: [{ tool: "bash" }] as never,
+			}),
+		).toThrow();
+		expect(runs.get(row.id)?.crashDecisions).toEqual([]);
+		const raw = new Database(dbPath);
+		try {
+			raw.exec(`UPDATE subagent_runs SET crash_decisions = 'not json' WHERE id = ${row.id}`);
+			expect(() => runs.get(row.id)).toThrow();
+			raw.exec(
+				`UPDATE subagent_runs SET crash_decisions = '[{"decision":{"kind":"bogus"}}]' WHERE id = ${row.id}`,
+			);
+			expect(() => runs.get(row.id)).toThrow();
+		} finally {
+			raw.close();
+		}
 	});
 
 	test("byPiConversation and rows survive reopen", () => {

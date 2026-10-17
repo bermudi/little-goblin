@@ -106,7 +106,8 @@ type, origin conversation, box (desktop name or the sandbox), Pi
 conversation id, task, status
 (`queued|running|needs_input|done|failed|stopped`), created/finished,
 plus a `pending_approval` mirror while a crash-ambiguous call waits on
-a `decide` verdict. Pi
+a `decide` verdict and an append-only `crash_decisions` history that
+keeps every verdict after the mirror clears. Pi
 Durable's storage holds transcripts; goblin's row holds routing —
 `pending_approval` included: it drives notices, `send` refusal and the
 `awaiting_decision` summary flag, but the task-scoped Pi lease remains
@@ -446,8 +447,8 @@ built once).
   (idempotent, no external effects); every input action and every
   sandbox mutation also carries the mark — deliberately, NOT as an
   idempotency claim: re-entry is the only door recovery offers, and it
-  lands in the crash-approval gate, which parks the run for an operator
-  decision rather than replaying blind. Boot:
+  lands in the crash-approval gate, which parks the run for a Goblin
+  crash decision rather than replaying blind. Boot:
   `harness.resume()` after all deps are bound, rows queued/running
   re-monitor and re-check their desktop holder; persisted `stopped`
   wins over any late settlement.
@@ -490,24 +491,52 @@ built once).
   is safety-critical, never permission to release. And a `stop` that
   lands while cancellation confirmation awaits wins over the failure
   transition — the row settles `stopped`, not `failed`.
-- **A crash-ambiguous side effect is operator-owned.** Every
-  side-effecting tool (worker `write`/`edit`/`bash`, computer
+- **Goblin owns crash resolution, not outcome verification.** A
+  crash-ambiguous side effect parks for a Goblin decision through the
+  ordinary model-callable `subagent decide` action; a crash alone does
+  not require a human approval. Every new verdict requires concrete
+  evidence (or an explicit statement that evidence is unavailable) and
+  reasoning. The owner stamps `decidedBy: "goblin"` and
+  `outcome: "unverified"`; these are not caller-selectable. The run
+  retains an append-only `crashDecisions` history with the interrupted
+  task/call identity, arguments, attempt count, decision time and full
+  verdict, atomically persisted with the queued continuation. Clearing
+  the pending mirror or finishing the run never clears that history.
+  The history is carried inside status/list/settlement event fences,
+  independently of the child's final prose. `done` is lifecycle
+  completion, not verification of an interrupted effect.
+  `record-result` supplies a labeled Goblin declaration to the
+  interrupted call without re-executing. Its content, diagnostics,
+  structured details and durable replay retain the unverified outcome;
+  the declared text is never presented as observed tool output or
+  operator testimony. `authorize-retry` permits one further dispatch,
+  not a claim that the first attempt failed or succeeded. `abandon`
+  ends the run without claiming an outcome. Fresh observations or
+  checks are separate evidence, never a promotion caused merely by a
+  verdict. Goblin inspects available evidence and resolves within its
+  existing authority. Escalation is only for an actual operator
+  judgment or an action already requiring permission; a crash neither
+  grants permission nor creates a new approval requirement. Legacy
+  persisted decisions remain readable, with absent provenance/evidence
+  explicitly unrecorded rather than attributed to the operator.
+  Every side-effecting tool (worker `write`/`edit`/`bash`, computer
   `act`/`launch`) executes behind a crash-approval gate keyed by a
   task-scoped Pi lease (`absent` → `claimed` → `decided` → `done`):
   the gate commits `claimed` with an attempt count before dispatch and
   `done` with the full result after. A crash between them leaves
   `claimed` — recovery re-enters the wrapper, the gate parks the row
   `needs_input` with a `pendingApproval` mirror (the lease stays the
-  authority), wakes the origin with an approval ask naming the tool,
-  call and attempts, and waits — freeing the global slot, holding no
-  run lane. `send` refuses a parked run; only `subagent decide`
-  resolves it: `record-result` feeds operator-supplied text as the
-  call's output without re-executing, `authorize-retry` re-executes
-  once under a raised attempt (a second kill re-asks), `abandon`
-  records an aborted outcome and ends the run. The decision commits
+  authority), wakes the origin with a crash-resolution ask naming the
+  tool, call and attempts, and waits — freeing the global slot,
+  holding no run lane. `send` refuses a parked run; `subagent decide`
+  resolves it: `record-result` feeds Goblin's declared text as the
+  call's labeled, unverified output without re-executing,
+  `authorize-retry` re-executes once under a raised attempt (a second
+  kill re-asks), `abandon` records an aborted outcome and ends the
+  run. The decision commits
   to the lease before acting — a crash mid-decision re-asks. A `done`
   lease replays its recorded result with zero dispatch: the
-  result-committed-but-unsettled window needs no operator. A decided
+  result-committed-but-unsettled window needs no verdict. A decided
   verdict may queue behind global capacity; the scheduler's admission
   releases it on BOTH paths — a live waiter or a stored decision —
   and attaches a settlement monitor either way unless one is already

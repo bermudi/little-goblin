@@ -45,20 +45,10 @@ function SkillRow({
 			</span>
 			{skill.state === "proposed" && (
 				<span className="skill-decide">
-					<button
-						type="button"
-						className="pill"
-						disabled={busy}
-						onClick={() => decide("install")}
-					>
+					<button type="button" className="pill" disabled={busy} onClick={() => decide("install")}>
 						install
 					</button>
-					<button
-						type="button"
-						className="pill"
-						disabled={busy}
-						onClick={() => decide("discard")}
-					>
+					<button type="button" className="pill" disabled={busy} onClick={() => decide("discard")}>
 						discard
 					</button>
 				</span>
@@ -143,7 +133,7 @@ export function ThreadSourcesSheet({
 			<div className="msheet thread-sources" role="dialog" aria-label="From this conversation">
 				<div className="msheet-head">
 					<h3>From this thread{title !== null ? ` — ${title}` : ""}</h3>
-					<button type="button" aria-label="Close" onClick={onClose}>
+					<button type="button" aria-label="Close" title="Close" onClick={onClose}>
 						×
 					</button>
 				</div>

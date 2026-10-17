@@ -546,10 +546,7 @@ export async function resumeRun(
 // The manual lever — the same lane compaction /compact runs in
 // Telegram. The POST awaits the job, so a running turn finishing first
 // shows up as a slow response.
-export function compactConversation(
-	token: string | null,
-	id: string,
-): Promise<AppCompactResponse> {
+export function compactConversation(token: string | null, id: string): Promise<AppCompactResponse> {
 	return request(token, `/api/app/conversations/${seg(id)}/compact`, { method: "POST" });
 }
 

@@ -191,9 +191,7 @@ describe("ThreadSourcesSheet", () => {
 			});
 			if (url.pathname === "/api/app/skills/from") {
 				const items = decided
-					? SKILLS.items.map((s) =>
-							s.skill === "weather" ? { ...s, state: "gone" } : s,
-						)
+					? SKILLS.items.map((s) => (s.skill === "weather" ? { ...s, state: "gone" } : s))
 					: SKILLS.items;
 				return Promise.resolve(json({ items }));
 			}

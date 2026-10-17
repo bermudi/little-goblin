@@ -7,9 +7,9 @@
 import { type Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import type { AuthStore } from "./auth.ts";
-import type { MemoryConfig } from "./config.ts";
-import type { Conversation } from "./conversation.ts";
+import type { AuthStore } from "../auth.ts";
+import type { MemoryConfig } from "../config.ts";
+import type { Conversation } from "../conversation.ts";
 import {
 	HindsightClient,
 	HindsightError,
@@ -17,17 +17,17 @@ import {
 	type MemoryDocument,
 	type RecalledFact,
 } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { OutageTracker } from "./memory-outage.ts";
-import { screenMemoryText } from "./memory-screen.ts";
-import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "./tags.ts";
+import { log } from "../log.ts";
+import { OutageTracker } from "./outage.ts";
+import { screenMemoryText } from "./screen.ts";
+import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "../tags.ts";
 import {
 	MemoryQueueWorker,
 	type BlockedRetention,
 	type MemoryQueue,
 	type MemoryQueueCounts,
 	type WorkerOutcome,
-} from "./memory-queue.ts";
+} from "./queue.ts";
 
 // ---------- client ----------
 

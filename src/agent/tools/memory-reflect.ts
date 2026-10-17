@@ -1,9 +1,9 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { HindsightClient, HindsightError, type MemoryReflection } from "../../hindsight.ts";
+import { HindsightClient, HindsightError, type MemoryReflection } from "../../memory/hindsight.ts";
 import { log } from "../../log.ts";
-import { screenMemoryText } from "../../memory-screen.ts";
-import { BUDGET_ORDER } from "../../memory-policy.ts";
+import { screenMemoryText } from "../../memory/screen.ts";
+import { BUDGET_ORDER } from "../../memory/policy.ts";
 
 export interface MemoryReflectDeps {
 	client: HindsightClient;

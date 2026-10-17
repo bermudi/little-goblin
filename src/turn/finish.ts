@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { FinishReason, LanguageModelUsage, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
-import type { MemoryDocument } from "../hindsight.ts";
+import type { MemoryDocument } from "../memory/hindsight.ts";
 import { log } from "../log.ts";
 import {
 	buildRetentionDocument,
@@ -23,7 +23,7 @@ import {
 	messageText,
 	type RetentionSource,
 	retentionSourceFrom,
-} from "../memory.ts";
+} from "../memory/mod.ts";
 import {
 	type CompletedTurn,
 	type PriorTurnContext,

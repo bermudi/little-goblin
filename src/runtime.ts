@@ -18,7 +18,7 @@ import {
 	messageText,
 	type RecallContext,
 	recallMemory,
-} from "./memory.ts";
+} from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";

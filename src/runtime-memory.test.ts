@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import { textModel } from "./testkit/fake-model.ts";
 import { openStore } from "./conversation.ts";
-import { HindsightClient } from "./hindsight.ts";
+import { HindsightClient } from "./memory/hindsight.ts";
 import { memoryConfigSchema } from "./config.ts";
 import { Runtime, userMessage } from "./runtime.ts";
 import { fakeModel, RecordingSink, tmpDb } from "./testkit.ts";

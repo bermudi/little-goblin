@@ -15,7 +15,7 @@ import {
 	type MediaPosition,
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
-import { messageText, withMemoryBlocks, type RecallContext } from "../memory.ts";
+import { messageText, withMemoryBlocks, type RecallContext } from "../memory/mod.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 
 // The conversion context, fixed for the attempt: this turn's fenced

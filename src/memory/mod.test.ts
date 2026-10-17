@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
-import { memoryConfigSchema } from "./config.ts";
-import { summaryMessage } from "./conversation.ts";
+import { memoryConfigSchema } from "../config.ts";
+import { summaryMessage } from "../conversation.ts";
 import {
 	buildMemoryClient,
 	buildRecallQuery,
@@ -21,12 +21,12 @@ import {
 	withMemoryBlocks,
 	retentionSourceFrom,
 	type MemoryState,
-} from "./memory.ts";
-import { attachmentPart } from "./agent/attachments.ts";
+} from "./mod.ts";
+import { attachmentPart } from "../agent/attachments.ts";
 import { HindsightClient } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { MemoryQueue, type MemoryQueueCounts } from "./memory-queue.ts";
-import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
+import { log } from "../log.ts";
+import { MemoryQueue, type MemoryQueueCounts } from "./queue.ts";
+import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./outage.ts";
 
 const dirs: string[] = [];
 const dbs: Database[] = [];

@@ -67,8 +67,8 @@ import {
 	buildMemoryClient,
 	type MemoryWorker,
 	startMemoryWorker,
-} from "./memory.ts";
-import { OutageTracker } from "./memory-outage.ts";
+} from "./memory/mod.ts";
+import { OutageTracker } from "./memory/outage.ts";
 import { wakeConversation } from "./wake.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { SkillSources } from "./skill-provenance.ts";

@@ -28,7 +28,7 @@ import { uiTool } from "./ui.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
 import { memoryReflectTool } from "./memory-reflect.ts";
-import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
+import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { MemorySearchDeps } from "./memory.ts";
 import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";

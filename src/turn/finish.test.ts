@@ -13,7 +13,7 @@ import { type LanguageModel, readUIMessageStream, type UIMessage, type UIMessage
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
-import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory.ts";
+import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";

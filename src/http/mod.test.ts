@@ -881,9 +881,9 @@ import {
 	type MemoryDocSummary,
 	type MemoryFact,
 	type StoredMemoryDocument,
-} from "../hindsight.ts";
-import type { MemoryContexts } from "../memory.ts";
-import type { MemoryQueue } from "../memory-queue.ts";
+} from "../memory/hindsight.ts";
+import type { MemoryContexts } from "../memory/mod.ts";
+import type { MemoryQueue } from "../memory/queue.ts";
 
 function stubClient(): HindsightClient {
 	return {

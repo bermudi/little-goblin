@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { HindsightClient } from "../../hindsight.ts";
+import { HindsightClient } from "../../memory/hindsight.ts";
 import { memoryReflectTool, type MemoryReflectDeps } from "./memory-reflect.ts";
-import { REFLECTION_LIMITS } from "../../memory-policy.ts";
+import { REFLECTION_LIMITS } from "../../memory/policy.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {

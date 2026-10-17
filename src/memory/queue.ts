@@ -10,8 +10,8 @@ import {
 	targetHashSchema,
 	type MemoryDocument,
 } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { screenMemoryText } from "./memory-screen.ts";
+import { log } from "../log.ts";
+import { screenMemoryText } from "./screen.ts";
 
 // The destination-identity vocabulary lives in hindsight.ts; this local
 // alias keeps the queue's validation reads the same as before.

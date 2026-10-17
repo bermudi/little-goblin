@@ -8,13 +8,13 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
-import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
-import { MemoryDestinations } from "./memory-destinations.ts";
-import { MemoryQueue } from "./memory-queue.ts";
+import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
+import { MemoryDestinations } from "./memory/destinations.ts";
+import { MemoryQueue } from "./memory/queue.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
-import type { MemoryDocument } from "./hindsight.ts";
+import type { MemoryDocument } from "./memory/hindsight.ts";
 
 // The channel address IS the conversation identity: routing picks the
 // door on this kind alone. The app member's zeros are fillers, not real

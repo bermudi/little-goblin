@@ -2,9 +2,9 @@
 // Wire contract: https://hindsight.vectorize.io/openapi.json (0.10).
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { log } from "./log.ts";
-import { screenMemoryText } from "./memory-screen.ts";
-import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./memory-policy.ts";
+import { log } from "../log.ts";
+import { screenMemoryText } from "./screen.ts";
+import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
 
 // Bank/document identifier vocabulary — shared with the forget
 // protocol (memory-forget.ts validates operator-supplied ids before

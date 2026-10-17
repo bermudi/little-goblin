@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { attachmentPart } from "../agent/attachments.ts";
 import { summaryMessage } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
-import type { RecallContext } from "../memory.ts";
+import type { RecallContext } from "../memory/mod.ts";
 import {
 	buildModelView,
 	convertSteeredMessage,

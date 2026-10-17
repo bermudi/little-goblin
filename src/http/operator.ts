@@ -32,8 +32,8 @@ import {
 	type Config,
 } from "../config.ts";
 import { log } from "../log.ts";
-import { memoryStatus, type MemoryContexts } from "../memory.ts";
-import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory-queue.ts";
+import { memoryStatus, type MemoryContexts } from "../memory/mod.ts";
+import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import {
 	HindsightError,
 	identifier,
@@ -41,8 +41,8 @@ import {
 	type MemoryDocPage,
 	type MemoryDocSummary,
 	type MemoryFact,
-} from "../hindsight.ts";
-import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
+} from "../memory/hindsight.ts";
+import { forgetDocument, type ForgetSource } from "../memory/forget.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,

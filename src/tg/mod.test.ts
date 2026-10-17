@@ -10,7 +10,7 @@ import {
 } from "./mod.ts";
 import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
 import { COMMANDS, DM_COMMANDS, type CommandMemoryDeps } from "./commands.ts";
-import { HindsightClient } from "../hindsight.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb } from "../testkit.ts";
 
 const baseConfig: Config = {

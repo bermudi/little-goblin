@@ -1711,7 +1711,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 import { memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
 import { openPrograms } from "../programs.ts";
-import { HindsightClient } from "../hindsight.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import type { OperatorDeps } from "./operator.ts";
 
 function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {

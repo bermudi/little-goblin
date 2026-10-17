@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import { openStore, type ConversationStore } from "../conversation.ts";
 import { HindsightClient, type MemoryDocument } from "./hindsight.ts";
-import { MemoryQueueWorker } from "./memory-queue.ts";
+import { MemoryQueueWorker } from "./queue.ts";
 
 const dirs: string[] = [];
 const stores: ConversationStore[] = [];

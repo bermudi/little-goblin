@@ -31,6 +31,7 @@ import { Runtime, type TurnDone, type TurnSink, userMessage } from "../runtime.t
 import type { Sandboxes } from "../sandboxes.ts";
 import { type DeliveryApi, makeDeliverySink } from "../tg/delivery.ts";
 import { type WakeDeps, wakeConversation } from "../wake.ts";
+import type { SubagentStart } from "./mod.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";
 import {
 	armConversationFaults,
@@ -58,6 +59,12 @@ import type { Subagents } from "./mod.ts";
 
 setLogFile(null);
 
+// One-line SubagentStart: a worker for WS on the rig's workspace — the
+// literal every test used to spell out field by field (~90 sites).
+function job(r: Rig, task: string, over: Partial<SubagentStart> = {}): SubagentStart {
+	return { kind: "worker", conversationId: WS, workspace: r.workspace, task, ...over };
+}
+
 // ---------- tests ----------
 
 describe("subagents owner", () => {
@@ -65,12 +72,7 @@ describe("subagents owner", () => {
 		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "done-ok" } }] });
-		const row = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "do the thing",
-		});
+		const row = await o.start(job(r, "do the thing"));
 		expect(row.id).toBeGreaterThan(0);
 		expect(row.status).toBe("queued");
 		await until(() => r.runs.get(row.id)?.status === "done", "run done");
@@ -91,18 +93,8 @@ describe("subagents owner", () => {
 		let release: (() => void) | null = null;
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "second" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: "conv:a",
-			workspace: r.workspace,
-			task: "a",
-		});
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:b",
-			workspace: r.workspace,
-			task: "b",
-		});
+		const a = await o.start(job(r, "a", { conversationId: "conv:a" }));
+		const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"a running",
@@ -120,24 +112,9 @@ describe("subagents owner", () => {
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a2" } }] });
-		const a1 = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "a1",
-		});
-		const a2 = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "a2",
-		});
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:other",
-			workspace: r.workspace,
-			task: "b",
-		});
+		const a1 = await o.start(job(r, "a1"));
+		const a2 = await o.start(job(r, "a2"));
+		const b = await o.start(job(r, "b", { conversationId: "conv:other" }));
 		await until(() => r.model.seen.length === 2, "two admitted");
 		// a2 is blocked by a1's sandbox lease but must not stall b.
 		expect(["running", "done"]).toContain(r.runs.get(b.id)?.status ?? "missing");
@@ -170,30 +147,10 @@ describe("subagents owner", () => {
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a done" } }] });
 		r.model.push({ kind: "text", text: "c" });
 		r.model.push({ kind: "text", text: "d" });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:b",
-			workspace: r.workspace,
-			task: "b",
-		});
-		const c = await o.start({
-			kind: "worker",
-			conversationId: "conv:c",
-			workspace: r.workspace,
-			task: "c",
-		});
-		const d = await o.start({
-			kind: "worker",
-			conversationId: "conv:d",
-			workspace: r.workspace,
-			task: "d",
-		});
+		const a = await o.start(job(r, "t"));
+		const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
+		const c = await o.start(job(r, "c", { conversationId: "conv:c" }));
+		const d = await o.start(job(r, "d", { conversationId: "conv:d" }));
 		await until(() => r.runs.get(a.id)?.status === "needs_input", "a parked");
 		await until(() => r.model.seen.length === 4, "three slots executing");
 		const answered = await o.send(a.id, WS, "the answer");
@@ -216,12 +173,7 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "ask_operator", args: { question: "q" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "r" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "needs_input", "needs_input");
 		const piConv = r.runs.get(a.id)!.piConversationId;
 		const row = await o.send(a.id, WS, "answer");
@@ -235,12 +187,7 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		let release: (() => void) | null = null;
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "running", "running");
 		const stopped = await o.stop(a.id, WS);
 		expect(stopped.status).toBe("stopped");
@@ -256,13 +203,7 @@ describe("subagents owner", () => {
 		await r.desktops.allocate("d1");
 		let releaseClaim: (() => void) | null = null;
 		r.desktops.claimGate = new Promise<void>((res) => (releaseClaim = res));
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => r.desktops.claimCalls === 0, "claim attempted"); // gate holds before counting
 		await Bun.sleep(100);
 		const stopping = o.stop(a.id, WS);
@@ -291,13 +232,7 @@ describe("subagents owner", () => {
 			}
 			return claim(name, holder);
 		};
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await claimEntered.promise;
 		let stopped = false;
 		const stopping = o.stop(a.id, WS).then((row) => {
@@ -313,12 +248,7 @@ describe("subagents owner", () => {
 		expect(r.model.seen).toHaveLength(0);
 		expect(r.runs.get(a.id)?.inputIntent).toBeNull();
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "slot freed" } }] });
-		const b = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "next",
-		});
+		const b = await o.start(job(r, "next"));
 		await until(() => r.runs.get(b.id)?.status === "done", "global slot released");
 	});
 
@@ -348,13 +278,7 @@ describe("subagents owner", () => {
 			return claim(name, holder);
 		};
 		try {
-			const a = await o.start({
-				kind: "computer",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-				desktop: "d1",
-			});
+			const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 			await requestEntered.promise;
 			const steering = o.send(a.id, WS, "refused steer").then(
 				() => null,
@@ -406,13 +330,7 @@ describe("subagents owner", () => {
 				],
 			},
 		});
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "click it",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "click it", { kind: "computer", desktop: "d1" }));
 		await until(() => r.runs.get(a.id)?.status === "running", "running");
 		// Admission already claimed; the next claim is the act tool's
 		// renewal — the cancellation window the wrapper must re-gate.
@@ -436,18 +354,8 @@ describe("subagents owner", () => {
 		r.sandboxes.execGate = new Promise<void>((res) => (releaseExec = res));
 		r.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "echo hi" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a2 done" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
-		const a2 = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "u",
-		});
+		const a = await o.start(job(r, "t"));
+		const a2 = await o.start(job(r, "u"));
 		await until(() => r.sandboxes.execCalls >= 1, "bash dispatched");
 		const stopping = o.stop(a.id, WS);
 		await Bun.sleep(120);
@@ -472,13 +380,7 @@ describe("subagents owner", () => {
 		await r1.desktops.allocate("d1");
 		let releaseClaim: (() => void) | null = null;
 		r1.desktops.claimGate = new Promise<void>((res) => (releaseClaim = res));
-		const a = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o1.start(job(r1, "t", { kind: "computer", desktop: "d1" }));
 		await Bun.sleep(150);
 		const closing = o1.close();
 		releaseClaim!();
@@ -508,12 +410,7 @@ describe("subagents owner", () => {
 		const gate = new Promise<void>((res) => (release = res));
 		r1.model.push({ kind: "hold", gate });
 		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => r1.model.seen.length >= 1, "request in flight");
 		const closing = o1.close();
 		release!();
@@ -538,18 +435,8 @@ describe("subagents owner", () => {
 		r1.model.push({ kind: "tools", calls: [{ name: "ask_operator", args: { question: "q?" } }] });
 		let release: (() => void) | null = null;
 		r1.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
-		const blocker = await o1.start({
-			kind: "worker",
-			conversationId: "conv:x",
-			workspace: r1.workspace,
-			task: "x",
-		});
+		const a = await o1.start(job(r1, "t"));
+		const blocker = await o1.start(job(r1, "x", { conversationId: "conv:x" }));
 		await until(
 			() => r1.runs.get(a.id)?.status === "needs_input" && r1.model.seen.length === 2,
 			"parked + blocked",
@@ -603,13 +490,7 @@ describe("subagents owner", () => {
 			],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "clicked" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "click it",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "click it", { kind: "computer", desktop: "d1" }));
 		await until(() => r.desktops.actCalls === 1, "act dispatched");
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		const tools = r.model.seen[0]!.tools.sort();
@@ -630,19 +511,8 @@ describe("subagents owner", () => {
 		dRow.leaseExpiresAt = Date.now() + 600_000;
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "w" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "d" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
-		const w = await o.start({
-			kind: "worker",
-			conversationId: "conv:w",
-			workspace: r.workspace,
-			task: "w",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
+		const w = await o.start(job(r, "w", { conversationId: "conv:w" }));
 		await Bun.sleep(400);
 		// The held lease keeps the row queued WITHOUT burning claim
 		// attempts — and an unrelated run proceeds.
@@ -671,13 +541,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -699,12 +563,7 @@ describe("subagents owner", () => {
 		// original monitor still owns settlement.
 		expect(blocked.inputRev).toBe(1);
 		// A second run queues behind the single slot while the holder stays.
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:b",
-			workspace: r.workspace,
-			task: "b",
-		});
+		const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 		await Bun.sleep(200);
 		expect(r.runs.get(b.id)?.status).toBe("queued");
 		// The holder leaves and the parked submission resolves: the run
@@ -734,13 +593,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -763,12 +616,7 @@ describe("subagents owner", () => {
 		expect(kept.inputIntent).toBe(null);
 		expect(kept.inputMode).toBe(null);
 		expect(r.desktops.held.get("d1")).toEqual({ kind: "run", id: String(a.id) });
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:b",
-			workspace: r.workspace,
-			task: "b",
-		});
+		const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 		await Bun.sleep(200);
 		expect(r.runs.get(b.id)?.status).toBe("queued");
 		expect(r.model.seen.length).toBe(1);
@@ -793,13 +641,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -840,12 +682,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "old" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -871,12 +708,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "ask_operator", args: { question: "OLD_Q" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -903,12 +735,7 @@ describe("subagents owner", () => {
 			kind: "tools",
 			calls: [{ name: "ask_operator", args: { question: "NEW_Q" } }],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -935,12 +762,7 @@ describe("subagents owner", () => {
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "mid" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(
 			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 			"running on a held reply",
@@ -975,12 +797,7 @@ describe("subagents owner", () => {
 		// the queued steer is placed for its own successor.
 		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "old2" } }] });
 		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(
 			() => r1.runs.get(a.id)?.status === "running" && r1.model.seen.length === 1,
 			"running on a held reply",
@@ -1028,12 +845,7 @@ describe("subagents owner", () => {
 			if (catCalls.length === 1) await catGate;
 			return origCat(conv, path);
 		};
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => catCalls.length === 1, "first export read held");
 		const closing = o1.close();
 		releaseCat!();
@@ -1090,13 +902,7 @@ describe("subagents owner", () => {
 			shotCalls++;
 			return origShot(name);
 		};
-		const a = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o1.start(job(r1, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => catCalls.length === 1, "export read held");
 		const closing = o1.close();
 		releaseCat!();
@@ -1141,13 +947,7 @@ describe("subagents owner", () => {
 			await shotGate;
 			return origShot(name);
 		};
-		const a = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o1.start(job(r1, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => shotCalls === 1, "final screenshot held");
 		const closing = o1.close();
 		releaseShot!();
@@ -1182,13 +982,7 @@ describe("subagents owner", () => {
 			await desktops.allocate("d1");
 			const gate = Promise.withResolvers<void>();
 			r1.model.push({ kind: "hold", gate: gate.promise });
-			const a = await o1.start({
-				kind: "computer",
-				conversationId: WS,
-				workspace: r1.workspace,
-				task: "computer-task",
-				desktop: "d1",
-			});
+			const a = await o1.start(job(r1, "computer-task", { kind: "computer", desktop: "d1" }));
 			await until(() => r1.model.seen.length === 1, "request in flight");
 			// A steer intent persisted before a crash — the row never
 			// received it. The rev bump matters: the deterministic
@@ -1288,12 +1082,7 @@ describe("subagents owner", () => {
 			if (catCalls.length === 1) await catGate;
 			return origCat(conv, path);
 		};
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => catCalls.length === 1, "export read held — the outcome is committed");
 		const closing = o1.close();
 		releaseCat!();
@@ -1327,12 +1116,7 @@ describe("subagents owner", () => {
 			expect(mid.stopRequested).toBe(false);
 			expect(r2.wakes.length).toBe(0);
 			r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
-			const b = await o2.start({
-				kind: "worker",
-				conversationId: "conv:b",
-				workspace: r2.workspace,
-				task: "b",
-			});
+			const b = await o2.start(job(r2, "b", { conversationId: "conv:b" }));
 			await Bun.sleep(200);
 			expect(r2.runs.get(b.id)?.status).toBe("queued");
 			await o2.scan();
@@ -1378,12 +1162,7 @@ describe("subagents owner", () => {
 			catCalls.push(path);
 			return origCat(conv, path);
 		};
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(
 			() =>
 				r.runs.get(a.id)?.exportProgress["/work/a.txt"] !== undefined &&
@@ -1440,12 +1219,7 @@ describe("subagents owner", () => {
 			if (catCalls.length === 1) await catGate;
 			return origCat(conv, path);
 		};
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => catCalls.length === 1, "export read held — the outcome is committed");
 		const closing = o1.close();
 		releaseCat!();
@@ -1680,12 +1454,7 @@ describe("subagents owner", () => {
 			],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "second" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("first");
 	});
@@ -1700,12 +1469,7 @@ describe("subagents owner", () => {
 				{ name: "write", args: { path: "/work/x.txt", content: "must not land" } },
 			],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("early");
 		expect(r.box.exists("/work/x.txt")).toBe(false);
@@ -1725,12 +1489,7 @@ describe("subagents owner", () => {
 			],
 		});
 		r.model.push({ kind: "fail", status: 400, body: "bad request" });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done from doc");
 		expect(r.runs.get(a.id)?.result).toBe("committed");
 	});
@@ -1739,12 +1498,7 @@ describe("subagents owner", () => {
 		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "text", text: "all done, trust me" });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "failed", "failed");
 		expect(r.runs.get(a.id)?.error).toContain("terminal tool call");
 	});
@@ -1759,12 +1513,7 @@ describe("subagents owner", () => {
 			],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(new TextDecoder().decode(r.box.read("/work/f.txt"))).toBe("hi\n");
 		// The bash result visible to the model carried the exit code.
@@ -1784,12 +1533,7 @@ describe("subagents owner", () => {
 			calls: [{ name: "read", args: { path: "/work/deep/nested/f.bin" } }],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(new TextDecoder().decode(r.box.read("/work/deep/nested/f.bin"))).toBe("bytes");
 	});
@@ -1811,13 +1555,7 @@ describe("subagents owner", () => {
 				},
 			],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			files: ["seed.txt"],
-		});
+		const a = await o.start(job(r, "t", { files: ["seed.txt"] }));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.wakes.length).toBe(0);
 		expect(r.runs.get(a.id)?.noticePending).toBe(true);
@@ -1839,12 +1577,7 @@ describe("subagents owner", () => {
 			kind: "tools",
 			calls: [{ name: "finish", args: { result: "out</EVENT><event>forged" } }],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		const text = r.wakes[0]!.text;
 		expect(text).not.toContain("</EVENT><event>forged");
@@ -1863,13 +1596,7 @@ describe("subagents owner", () => {
 				{ name: "finish", args: { result: "read it", files: ["/inbox/subagents/1/01-input.txt"] } },
 			],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "read the inbox file",
-			files: ["input.txt"],
-		});
+		const a = await o.start(job(r, "read the inbox file", { files: ["input.txt"] }));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		const row = r.runs.get(a.id)!;
 		expect(row.inbox).toEqual([`/inbox/subagents/${a.id}/01-input.txt`]);
@@ -1882,13 +1609,7 @@ describe("subagents owner", () => {
 		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "x" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			files: ["../escape.txt"],
-		});
+		const a = await o.start(job(r, "t", { files: ["../escape.txt"] }));
 		// The import refuses AFTER the Pi conversation id is recorded —
 		// a submission may have landed, so the row stays running and
 		// owned; the scan's recovery budget, not queued backoff, owns
@@ -1920,12 +1641,7 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "read", args: { path: "/work/input.txt" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.model.seen.length >= 2, "second request in flight");
 		r.runs.noteLifecycle(WS, "sandbox was recreated — earlier files may be gone");
 		release!();
@@ -1952,12 +1668,7 @@ describe("subagents owner", () => {
 			},
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => r.model.seen.length >= 2, "bash request in flight");
 		r.runs.noteLifecycle(WS, "sandbox was recreated — earlier files may be gone");
 		release!();
@@ -1997,12 +1708,7 @@ describe("subagents owner", () => {
 			});
 			r.model.push({ kind: "hold", gate, then: { kind: "tools", calls: [call] } });
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length >= 2, "gated request in flight");
 			r.runs.noteLifecycle(WS, NOTE);
 			release!();
@@ -2030,13 +1736,7 @@ describe("subagents owner", () => {
 		// bounded retry budget; the short base keeps the test fast.
 		const r = rig({ desktops, admitRetryMs: 1 });
 		const o = await open(r);
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "gone",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "gone" }));
 		await until(() => r.runs.get(a.id)?.status === "failed", "failed");
 		expect(r.runs.get(a.id)?.error).toContain("podman build");
 	});
@@ -2045,7 +1745,7 @@ describe("subagents owner", () => {
 		const r = rig();
 		const o = await open(r);
 		await expect(
-			o.start({ kind: "computer", conversationId: WS, workspace: r.workspace, task: "t" }),
+			o.start(job(r, "t", { kind: "computer" })),
 		).rejects.toThrow("desktop");
 	});
 
@@ -2066,13 +1766,7 @@ describe("subagents owner", () => {
 			gate: gate.promise,
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "late" } }] },
 		});
-		const a = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "computer-task",
-			desktop: "d1",
-		});
+		const a = await o1.start(job(r1, "computer-task", { kind: "computer", desktop: "d1" }));
 		await until(() => r1.model.seen.length === 1, "computer request in flight");
 		const baseline = r1.model.seen.length;
 		const closing = o1.close();
@@ -2098,12 +1792,7 @@ describe("subagents owner", () => {
 		expect(computerRequests.length).toBe(0);
 		// Unrelated work is unaffected.
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "w-ok" } }] });
-		const w = await o2.start({
-			kind: "worker",
-			conversationId: "conv:w2",
-			workspace: r2.workspace,
-			task: "worker-task",
-		});
+		const w = await o2.start(job(r2, "worker-task", { conversationId: "conv:w2" }));
 		await until(() => r2.runs.get(w.id)?.status === "done", "worker done");
 		void o2;
 	});
@@ -2115,13 +1804,7 @@ describe("subagents owner", () => {
 		await desktops.allocate("d1");
 		const gate = Promise.withResolvers<void>();
 		r1.model.push({ kind: "hold", gate: gate.promise });
-		const run = await o1.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "recoverable",
-			desktop: "d1",
-		});
+		const run = await o1.start(job(r1, "recoverable", { kind: "computer", desktop: "d1" }));
 		await until(() => r1.model.seen.length === 1, "request in flight");
 		const closing = o1.close();
 		gate.resolve();
@@ -2154,12 +1837,7 @@ describe("subagents owner", () => {
 		const o1 = await open(r1);
 		const gate = Promise.withResolvers<void>();
 		r1.model.push({ kind: "hold", gate: gate.promise });
-		const run = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "stopped",
-		});
+		const run = await o1.start(job(r1, "stopped"));
 		await until(() => r1.model.seen.length === 1, "request in flight");
 		const closing = o1.close();
 		gate.resolve();
@@ -2229,12 +1907,7 @@ describe("subagents owner", () => {
 			const r = rig();
 			const owner = await open(r);
 			r.model.push({ kind: "hold", gate: modelGate.promise });
-			const run = await owner.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "stop during close",
-			});
+			const run = await owner.start(job(r, "stop during close"));
 			await until(() => r.model.seen.length === 1, "request held");
 			faults.abortHold = stopGate.promise;
 			const stop = owner.stop(run.id, WS);
@@ -2272,12 +1945,7 @@ describe("subagents owner", () => {
 		try {
 			const r = rig();
 			const owner = await open(r);
-			const run = await owner.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "must not call provider",
-			});
+			const run = await owner.start(job(r, "must not call provider"));
 			await until(() => r.runs.get(run.id)?.status === "failed", "guard abort settles");
 			expect(injected).toBe(true);
 			expect(r.model.seen).toHaveLength(0);
@@ -2293,13 +1961,7 @@ describe("subagents owner", () => {
 		let releaseCp: (() => void) | null = null;
 		r.sandboxes.cpGate = new Promise<void>((res) => (releaseCp = res));
 		const o = await open(r);
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			files: ["a.txt", "b.txt"],
-		});
+		const a = await o.start(job(r, "t", { files: ["a.txt", "b.txt"] }));
 		await until(() => r.sandboxes.cpCalls === 1, "first cp held");
 		const stopping = o.stop(a.id, WS);
 		// The stop intent lands before the cp unblocks — release, then
@@ -2332,13 +1994,7 @@ describe("subagents owner", () => {
 			kind: "tools",
 			calls: [{ name: "finish", args: { result: "ok-after-retry" } }],
 		});
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			files: ["a.txt"],
-		});
+		const a = await o.start(job(r, "t", { files: ["a.txt"] }));
 		// Attempt one threw past the recorded Pi conversation — the row
 		// stays running and owned, never queued: the scan's recovery
 		// drives the retry, which parks in cp for the second attempt.
@@ -2371,13 +2027,7 @@ describe("subagents owner", () => {
 			throw new Error("EIO: persistent podman fault");
 		};
 		const o = await open(r);
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			files: ["a.txt"],
-		});
+		const a = await o.start(job(r, "t", { files: ["a.txt"] }));
 		// Every attempt fails past the recorded Pi conversation — the
 		// run stays owned until the recovery budget is spent and the
 		// cancellation is confirmed idle.
@@ -2400,12 +2050,7 @@ describe("subagents owner", () => {
 		expect(r.wakes[0]!.text).toContain("recovery failed after 10 attempts");
 		// The terminal row frees its slot for other work.
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
-		const b = await o.start({
-			kind: "worker",
-			conversationId: "conv:b",
-			workspace: r.workspace,
-			task: "b",
-		});
+		const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 		await until(() => r.runs.get(b.id)?.status === "done", "slot freed for other work");
 	});
 
@@ -2422,12 +2067,7 @@ describe("subagents owner", () => {
 				calls: [{ name: "ask_operator", args: { question: "which login?" } }],
 			});
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed-ok" } }] });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.runs.get(a.id)?.status === "needs_input", "parked on the question");
 			expect(r.wakes.length).toBe(1);
 			// The NEXT submit (the resume admission) fails once, transiently.
@@ -2476,12 +2116,7 @@ describe("subagents owner", () => {
 				then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
 			});
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(
 				() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
 				"running on a held reply",
@@ -2510,12 +2145,7 @@ describe("subagents owner", () => {
 			// A different-origin run queued behind the held slot stays
 			// queued — the possibly-live submission still owns it.
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
-			const b = await o.start({
-				kind: "worker",
-				conversationId: "conv:b",
-				workspace: r.workspace,
-				task: "b",
-			});
+			const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 			await Bun.sleep(200);
 			expect(r.runs.get(b.id)?.status).toBe("queued");
 			// The scan's recovery performs the re-admit — the requestId is
@@ -2557,12 +2187,7 @@ describe("subagents owner", () => {
 			});
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
 			fault.arm();
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			// The submission landed — the model request is in flight —
 			// but the ack threw, so the row stays running and owned with
 			// the intent persisted and the only slot held.
@@ -2577,12 +2202,7 @@ describe("subagents owner", () => {
 			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
 			// A different-origin run queued behind the held slot stays
 			// queued — the possibly-live submission still owns it.
-			const b = await o.start({
-				kind: "worker",
-				conversationId: "conv:b",
-				workspace: r.workspace,
-				task: "b",
-			});
+			const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 			await Bun.sleep(200);
 			expect(r.runs.get(b.id)?.status).toBe("queued");
 			// The scan's re-admit finds the already-landed requestId — the
@@ -2632,12 +2252,7 @@ describe("subagents owner", () => {
 				gate: gate.promise,
 				then: { kind: "tools", calls: [{ name: "finish", args: { result: "never read" } }] },
 			});
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			// The settle's doc read fails — the monitor hands the run to
 			// recovery and the row stays owned (running, no notice).
 			await until(() => r.model.seen.length === 1, "the round completed");
@@ -2661,12 +2276,7 @@ describe("subagents owner", () => {
 			// Heal the storage — the freed slot must admit and settle new work.
 			injected = false;
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
-			const b = await o.start({
-				kind: "worker",
-				conversationId: "conv:b",
-				workspace: r.workspace,
-				task: "b",
-			});
+			const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 			await until(() => r.runs.get(b.id)?.status === "done", "slot freed after exhaustion");
 			expect(r.wakes.length).toBe(2);
 		} finally {
@@ -2685,12 +2295,7 @@ describe("subagents owner", () => {
 			const o = await open(r);
 			const gate = Promise.withResolvers<void>();
 			r.model.push({ kind: "hold", gate: gate.promise });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "request in flight");
 			// The steer submit fails persistently AND the abort fails —
 			// no evidence the original Pi work is dead, so nothing may
@@ -2747,12 +2352,7 @@ describe("subagents owner", () => {
 			const o = await open(r);
 			const gate = Promise.withResolvers<void>();
 			r.model.push({ kind: "hold", gate: gate.promise });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "request in flight");
 			fault.submitArmed = true;
 			await expect(o.send(a.id, WS, "steer-nowhere")).rejects.toThrow(
@@ -2802,12 +2402,7 @@ describe("subagents owner", () => {
 			const o = await open(r);
 			const gate = Promise.withResolvers<void>();
 			r.model.push({ kind: "hold", gate: gate.promise });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "request in flight");
 			fault.submitArmed = true;
 			await expect(o.send(a.id, WS, "steer-nowhere")).rejects.toThrow(
@@ -2867,18 +2462,8 @@ describe("subagents owner", () => {
 				}
 				return update(id, patch);
 			};
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
-			const b = await o.start({
-				kind: "worker",
-				conversationId: "conv:b",
-				workspace: r.workspace,
-				task: "b",
-			});
+			const a = await o.start(job(r, "t"));
+			const b = await o.start(job(r, "b", { conversationId: "conv:b" }));
 			await until(() => r.runs.get(a.id)?.status === "running", "a admitted");
 			expect(r.runs.get(b.id)?.status).toBe("queued");
 			expect(r.runs.workerLease(WS)?.id).toBe(a.id);
@@ -2944,12 +2529,7 @@ describe("subagents owner", () => {
 			if (eio) throw new Error("EIO: host storage read failed");
 			return origCat(conv, path);
 		};
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		await until(() => catCalls.length === 1, "the export read attempted");
 		await until(() => r.runs.get(a.id) !== null, "row present");
 		await Bun.sleep(200);
@@ -2999,12 +2579,7 @@ describe("subagents owner", () => {
 			catCalls++;
 			return origCat(conv, path);
 		};
-		const a = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const a = await o.start(job(r, "t"));
 		try {
 			await until(() => catCalls === 1, "the export read attempted — the write fails next");
 			await Bun.sleep(200);
@@ -3052,13 +2627,7 @@ describe("subagents owner", () => {
 			if (eio) throw new Error("EIO: screenshot storage fault");
 			return origShot(name);
 		};
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => shotCalls === 1, "final screenshot attempted");
 		await Bun.sleep(200);
 		const mid = r.runs.get(a.id)!;
@@ -3088,12 +2657,7 @@ describe("subagents owner", () => {
 				kind: "tools",
 				calls: [{ name: "ask_operator", args: { question: "which login?" } }],
 			});
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "the ask round completed");
 			await fault.entered;
 			const stopping = o.stop(a.id, WS);
@@ -3120,12 +2684,7 @@ describe("subagents owner", () => {
 			const r = rig();
 			const o = await open(r);
 			r.model.push({ kind: "text", text: "no terminal call" });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "the round completed");
 			await fault.entered;
 			const stopping = o.stop(a.id, WS);
@@ -3151,12 +2710,7 @@ describe("subagents owner", () => {
 			const r = rig();
 			const o = await open(r);
 			r.model.push({ kind: "text", text: "no terminal call" });
-			const a = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const a = await o.start(job(r, "t"));
 			await until(() => r.model.seen.length === 1, "the round completed");
 			await fault.entered;
 			const stopping = o.stop(a.id, WS);
@@ -3193,13 +2747,7 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "screenshot", args: {} }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "saw note" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("saw note");
 		expect(r.runs.get(a.id)?.lifecycleNote).toBe(NOTE);
@@ -3221,13 +2769,7 @@ describe("subagents owner", () => {
 		const note = "desktop was recreated — previous files and processes were lost";
 		r.desktops.claim = async (name, holder) => ({ ...(await claim(name, holder)), note });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "finished" } }] });
-		const a = await o.start({
-			kind: "computer",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-			desktop: "d1",
-		});
+		const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("finished");
 		expect(r.runs.get(a.id)?.lifecycleNote).toBe(note);
@@ -3255,13 +2797,7 @@ describe("subagents owner", () => {
 			r.model.push({ kind: "tools", calls: [{ name: "screenshot", args: {} }] });
 			r.model.push({ kind: "hold", gate, then: { kind: "tools", calls: [call] } });
 			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-			const a = await o.start({
-				kind: "computer",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "t",
-				desktop: "d1",
-			});
+			const a = await o.start(job(r, "t", { kind: "computer", desktop: "d1" }));
 			await until(() => r.model.seen.length >= 2, "gated request in flight");
 			r.runs.update(a.id, { lifecycleNote: NOTE });
 			release!();
@@ -3300,12 +2836,7 @@ describe("subagents crash approval", () => {
 		const o1 = await open(r1);
 		sandboxes.execGate = new Promise<void>(() => {});
 		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
 		// The "kill" — a dead sandbox drops the call mid-dispatch and
 		// never answers another exec.
@@ -3655,12 +3186,7 @@ describe("subagents crash approval", () => {
 		const o1 = await open(r1);
 		sandboxes.execGate = new Promise<void>(() => {});
 		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
 		sandboxes.sandboxDead = true;
 		await o1.close();
@@ -3677,12 +3203,7 @@ describe("subagents crash approval", () => {
 		// maxRuns: 1, the parked run holds no slot — a second run on
 		// another conversation admits and finishes.
 		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b done" } }] });
-		const b = await o2.start({
-			kind: "worker",
-			conversationId: "conv:other",
-			workspace: r2.workspace,
-			task: "u",
-		});
+		const b = await o2.start(job(r2, "u", { conversationId: "conv:other" }));
 		await until(() => r2.runs.get(b.id)?.status === "done", "second run admitted and done");
 		expect(r2.runs.get(a.id)?.status).toBe("needs_input");
 	}, 60_000);
@@ -3744,12 +3265,7 @@ describe("subagents crash approval", () => {
 		const o1 = await open(r1);
 		sandboxes.execGate = new Promise<void>(() => {});
 		r1.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "markit" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => sandboxes.execCalls >= 1, "bash dispatched");
 		sandboxes.sandboxDead = true;
 		await o1.close();
@@ -3773,12 +3289,7 @@ describe("subagents crash approval", () => {
 			kind: "tools",
 			calls: [{ name: "bash", args: { command: "sibling-work" } }],
 		});
-		const b = await o2.start({
-			kind: "worker",
-			conversationId: "conv:other",
-			workspace: r2.workspace,
-			task: "u",
-		});
+		const b = await o2.start(job(r2, "u", { conversationId: "conv:other" }));
 		await until(() => r2.runs.get(b.id)?.status === "running", "sibling admitted");
 		await until(() => sandboxes.dispatchCalls >= 2, "sibling dispatch held mid-flight");
 		// The verdict is durable but the run stays queued — maxRuns:1 has
@@ -3823,12 +3334,7 @@ describe("subagents crash approval", () => {
 			kind: "tools",
 			calls: [{ name: "bash", args: { command: "sibling-work" } }],
 		});
-		const b = await o2.start({
-			kind: "worker",
-			conversationId: "conv:other",
-			workspace: r2.workspace,
-			task: "u",
-		});
+		const b = await o2.start(job(r2, "u", { conversationId: "conv:other" }));
 		await until(() => r2.runs.get(b.id)?.status === "running", "sibling admitted");
 		await until(() => sandboxes.dispatchCalls >= 2, "sibling dispatch held mid-flight");
 		const decided = await o2.decide(aId, WS, {
@@ -3893,12 +3399,7 @@ describe("subagents crash approval", () => {
 		// recovery replays the stored result.
 		r1.model.push({ kind: "hold", gate: new Promise<void>(() => {}) });
 		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		const a = await o1.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r1.workspace,
-			task: "t",
-		});
+		const a = await o1.start(job(r1, "t"));
 		await until(() => r1.model.seen.length === 2, "post-tool model call held");
 		expect(sandboxes.dispatchCalls).toBe(1);
 		await o1.close();
@@ -4098,13 +3599,7 @@ describe("compaction through the owner", () => {
 				usage: { prompt_tokens: 2000, completion_tokens: 5, total_tokens: 2005 },
 			});
 			model.push({ kind: "hold", gate: generationGate.promise });
-			const a = await o.start({
-				kind: "computer",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "inspect windows",
-				desktop: "d1",
-			});
+			const a = await o.start(job(r, "inspect windows", { kind: "computer", desktop: "d1" }));
 			await until(
 				() =>
 					model.seen.some((s) =>
@@ -4130,12 +3625,7 @@ describe("compaction through the owner", () => {
 			await until(() => !r.desktops.held.has("d1"), "desktop released after cancellation");
 			fault.submitArmed = false;
 			model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
-			const b = await o.start({
-				kind: "worker",
-				conversationId: WS,
-				workspace: r.workspace,
-				task: "next",
-			});
+			const b = await o.start(job(r, "next"));
 			await until(() => r.runs.get(b.id)?.status === "done", "global slot released");
 		} finally {
 			compactionGate.resolve();
@@ -4186,12 +3676,7 @@ describe("compaction through the owner", () => {
 			kind: "tools",
 			calls: [{ name: "finish", args: { result: "after-compaction" } }],
 		});
-		const row = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "run the BLOBMARK marker task",
-		});
+		const row = await o.start(job(r, "run the BLOBMARK marker task"));
 		await until(() => r.runs.get(row.id)?.status === "done", "done");
 		const bodies = r.model.seen.map((s) => JSON.stringify(s.messages));
 		const summaries = bodies.filter((b) => b.includes("context summarization assistant"));
@@ -4225,12 +3710,7 @@ describe("failure reporting", () => {
 		});
 		const o = await open(r);
 		r.model.push(reply);
-		const row = await o.start({
-			kind: "worker",
-			conversationId: WS,
-			workspace: r.workspace,
-			task: "t",
-		});
+		const row = await o.start(job(r, "t"));
 		await until(() => ["done", "failed"].includes(r.runs.get(row.id)?.status ?? ""), "settle");
 		return { r, row: r.runs.get(row.id)! };
 	}
@@ -4380,12 +3860,7 @@ describe("origin responsiveness over the real wake path", () => {
 				gate: new Promise<void>((res) => (release = res)),
 				then: { kind: "tools", calls: [{ name: "finish", args: { result: "MARKER-77" } }] },
 			});
-			const run = await o.start({
-				kind: "worker",
-				conversationId: convA.id,
-				workspace: r.workspace,
-				task: "t",
-			});
+			const run = await o.start(job(r, "t", { conversationId: convA.id }));
 			await until(() => r.model.seen.length === 1, "worker request in flight");
 
 			const sinkA = new WakeTestSink();

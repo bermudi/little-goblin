@@ -15,6 +15,15 @@ import type { LanguageModel } from "ai";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// What a drive() attempt is handed: the call's wire options plus a
+// controller that swallows closed-stream throws (a cancelled stream's
+// enqueue throws — racing cancellation is the norm in these tests).
+export interface StreamDrive {
+	options: LanguageModelV4CallOptions;
+	enqueue(part: LanguageModelV4StreamPart): void;
+	close(): void;
+}
+
 export type StreamAttempt =
 	// enqueued verbatim, then the stream closes
 	| LanguageModelV4StreamPart[]
@@ -30,12 +39,21 @@ export type StreamAttempt =
 			parts: LanguageModelV4StreamPart[];
 			delayMs?: number;
 			pace?: ReadonlySet<LanguageModelV4StreamPart>;
+	  }
+	// free-form: the test drives the stream itself (gate promises, staged
+	// parts). The stream closes only if drive calls ctx.close(); the
+	// optional cancel hook rides the underlying-source cancel — a gate
+	// awaited there models a slow provider cleanup.
+	| {
+			drive(ctx: StreamDrive): void | Promise<void>;
+			cancel?(): void | Promise<void>;
 	  };
 
 export function finishPart(
 	unified: LanguageModelV4FinishReason["unified"],
 	inputTokens = 1,
 	outputTokens = 1,
+	cache?: { read?: number; write?: number },
 ): LanguageModelV4StreamPart {
 	return {
 		type: "finish",
@@ -44,8 +62,8 @@ export function finishPart(
 			inputTokens: {
 				total: inputTokens,
 				noCache: undefined,
-				cacheRead: undefined,
-				cacheWrite: undefined,
+				cacheRead: cache?.read,
+				cacheWrite: cache?.write,
 			},
 			outputTokens: { total: outputTokens, text: undefined, reasoning: undefined },
 		},
@@ -101,6 +119,13 @@ export function scriptedModel(
 	opts: {
 		// Calls past the script — default is a loud unexpected-call error.
 		extra?: StreamAttempt;
+		// Per-call dynamic attempt: consulted when no scripted entry covers
+		// the index — a model whose parts depend on the wire options
+		// (toolChoice probes, open-ended loops) or on the call count.
+		onStream?: (
+			options: LanguageModelV4CallOptions,
+			index: number,
+		) => StreamAttempt | Promise<StreamAttempt>;
 		modelId?: string;
 		onGenerate?: (
 			options: LanguageModelV4CallOptions,
@@ -122,7 +147,9 @@ export function scriptedModel(
 		},
 		async doStream(options: LanguageModelV4CallOptions) {
 			streamCalls.push(options);
-			const attempt = attempts[streamCalls.length - 1] ?? opts.extra;
+			const index = streamCalls.length - 1;
+			const attempt =
+				attempts[index] ?? (await opts.onStream?.(options, index)) ?? opts.extra;
 			if (attempt === undefined) throw new Error("unexpected extra model request");
 			if (attempt instanceof Error) throw attempt;
 			if (Array.isArray(attempt)) {
@@ -154,6 +181,33 @@ export function scriptedModel(
 						cancel() {
 							throw attempt.cancelError;
 						},
+					}),
+				};
+			}
+			if ("drive" in attempt) {
+				const { drive, cancel } = attempt;
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						async start(controller) {
+							await drive({
+								options,
+								enqueue(part) {
+									try {
+										controller.enqueue(part);
+									} catch {
+										/* closed by cancel */
+									}
+								},
+								close() {
+									try {
+										controller.close();
+									} catch {
+										/* already closed */
+									}
+								},
+							});
+						},
+						...(cancel ? { cancel: () => cancel() } : {}),
 					}),
 				};
 			}

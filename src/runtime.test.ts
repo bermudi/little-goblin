@@ -5,19 +5,16 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	APICallError,
-	type LanguageModelV4,
-	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
+import { type LanguageModel, tool, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import {
 	finishPart,
 	scriptedModel as scriptedEdge,
-	textModel,
+	type StreamAttempt,
 	textParts,
 	toolCallPart,
-	type StreamAttempt,
 } from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
@@ -27,7 +24,14 @@ import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
+import {
+	Runtime,
+	type ModelStep,
+	type RuntimeDeps,
+	type TurnDone,
+	type TurnSink,
+	userMessage,
+} from "./runtime.ts";
 import {
 	deferred,
 	fakeModel,
@@ -42,15 +46,94 @@ import {
 	tmpDir,
 } from "./testkit.ts";
 
-function setup(deltas: string[], delayMs = 15, model?: LanguageModel) {
-	const store = openStore(tmpDb("goblin-rt-"));
-	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+type Store = ReturnType<typeof openStore>;
+type Conv = ReturnType<Store["resolve"]>;
+
+interface Rig {
+	store: Store;
+	conv: Conv;
+	runtime: Runtime;
+}
+
+// The lane rig: a temp store, one resolved conversation, and a Runtime
+// whose buildStep serves opts.model (default: one fast "ok" reply) —
+// the ceremony every single-lane test used to spell out.
+function rig(
+	opts: {
+		model?: LanguageModel;
+		deltas?: string[];
+		delayMs?: number;
+		step?: Partial<Omit<ModelStep, "model">>;
+		buildStep?: RuntimeDeps["buildStep"];
+		tools?: ToolSet;
+		deps?: Partial<Pick<RuntimeDeps, "compaction" | "captureConversation" | "memory">>;
+		addr?: Parameters<Store["resolve"]>[0];
+		store?: Store;
+	} = {},
+): Rig {
+	const store = opts.store ?? openStore(tmpDb("goblin-rt-"));
+	const conv = store.resolve(opts.addr ?? { kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: model ?? fakeModel(deltas, delayMs), system: "test" }),
-		makeTools: () => ({}),
+		buildStep:
+			opts.buildStep ??
+			(() => ({
+				model: opts.model ?? fakeModel(opts.deltas ?? ["ok"], opts.delayMs ?? 5),
+				system: "test",
+				...opts.step,
+			})),
+		makeTools: () => opts.tools ?? {},
+		...opts.deps,
 	});
 	return { store, conv, runtime };
+}
+
+// A text submit into a fresh RecordingSink (or the caller's own sink).
+function submit(r: Rig, text: string): RecordingSink;
+function submit<S extends TurnSink>(r: Rig, text: string, sink: S): S;
+function submit(r: Rig, text: string, sink?: TurnSink): TurnSink {
+	const s = sink ?? new RecordingSink();
+	r.runtime.submit(r.conv, userMessage([{ type: "text", text }]), s);
+	return s;
+}
+
+const drain = (r: Rig) => waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
+const stop = (r: Rig) => r.runtime.stop(r.conv.id);
+
+// Scripted stream attempts plus the wire record every assertion wants:
+// prompts is each call's JSON.stringify'd prompt, requests the whole
+// options object.
+function scripted(attempts: StreamAttempt[], opts: { extra?: StreamAttempt } = {}) {
+	const edge = scriptedEdge(attempts, { ...(opts.extra ? { extra: opts.extra } : {}) });
+	return {
+		model: edge.model,
+		get prompts() {
+			return edge.streamCalls.map((c) => JSON.stringify(c.prompt));
+		},
+		get requests() {
+			return edge.streamCalls.map((c) => JSON.stringify(c));
+		},
+		calls: edge.streamCalls,
+	};
+}
+
+// Log capture: point the log at a temp file for fn's run, then return
+// the parsed JSONL lines.
+async function capturedLog(
+	fn: (logFile: string) => Promise<void>,
+): Promise<Record<string, unknown>[]> {
+	const logFile = join(tmpDir("goblin-rt-log-"), "goblin.log");
+	setLogFile(logFile);
+	try {
+		await fn(logFile);
+	} finally {
+		setLogFile(null);
+	}
+	return readFileSync(logFile, "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
 describe("provider-filter retry", () => {
@@ -58,85 +141,53 @@ describe("provider-filter retry", () => {
 	// model-edge failures exercise SDK recovery, not an assumed z.ai envelope.
 	const warning =
 		"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
-	const finish = (reason: "stop" | "tool-calls" | "content-filter"): LanguageModelV4StreamPart => ({
-		type: "finish",
-		finishReason: { unified: reason, raw: undefined },
-		usage: {
-			inputTokens: { total: 10, noCache: 2, cacheRead: 8, cacheWrite: undefined },
-			outputTokens: { total: 1, text: 1, reasoning: undefined },
-		},
-	});
 	const answer = (text = "Recovered answer"): LanguageModelV4StreamPart[] => [
 		{ type: "text-start", id: "text" },
 		{ type: "text-delta", id: "text", delta: text },
 		{ type: "text-end", id: "text" },
-		finish("stop"),
+		finishPart("stop", 10),
 	];
-	const call: LanguageModelV4StreamPart = {
-		type: "tool-call",
-		toolCallId: "call",
-		toolName: "probe",
-		input: "{}",
-	};
+	const call = toolCallPart("call", "probe");
 	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
-
-	function scripted(attempts: StreamAttempt[]) {
-		const requests: string[] = [];
-		const edge = scriptedEdge(attempts, { modelId: "filter-test" });
-		const inner = edge.model as unknown as LanguageModelV4;
-		const model: LanguageModelV4 = {
-			...inner,
-			doStream(options) {
-				requests.push(JSON.stringify(options));
-				return inner.doStream(options);
-			},
-		};
-		return { model, requests };
-	}
+	// A turn that should complete with just the recovered text.
+	const completed = async (r: Rig, sink: RecordingSink) => {
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await drain(r);
+		await r.runtime.shutdown();
+	};
 
 	for (const [name, failure] of [
 		["SSE error chunk", [blocked]],
 		["HTTP rejection", new Error(warning)],
 		["stream read rejection", { readError: new Error(warning) }],
-		["content-filter finish reason", [finish("content-filter")]],
-	] satisfies [string, LanguageModelV4StreamPart[] | Error | { readError: Error }][]) {
+		["content-filter finish reason", [finishPart("content-filter", 10)]],
+	] satisfies [string, StreamAttempt][]) {
 		test(`${name}: retries identical request, hides first error from both delivery hooks and history`, async () => {
-			const { model, requests } = scripted([failure, answer()]);
-			const store = openStore(tmpDb("goblin-rt-"));
-			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-			const runtime = new Runtime({
-				store,
-				buildStep: () => ({ model, system: "unchanged system" }),
-				makeTools: () => ({}),
-			});
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "Discuss German politics" }]), sink);
-			expect(await sink.done).toEqual({ kind: "completed" });
-			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-			await runtime.shutdown();
-			expect(requests).toHaveLength(2);
-			expect(requests[0]).toBe(requests[1]);
+			const s = scripted([failure, answer()]);
+			const r = rig({ model: s.model });
+			const sink = submit(r, "Discuss German politics");
+			await completed(r, sink);
+			expect(s.requests).toHaveLength(2);
+			expect(s.requests[0]).toBe(s.requests[1]);
 			expect(sink.text).toBe("Recovered answer");
 			expect(sink.chunkTypes).not.toContain("error");
-			expect(JSON.stringify(store.history(conv.id))).not.toContain(warning);
-			expect(store.history(conv.id)).toHaveLength(2);
-			store.close();
+			expect(JSON.stringify(r.store.history(r.conv.id))).not.toContain(warning);
+			expect(r.store.history(r.conv.id)).toHaveLength(2);
+			r.store.close();
 		});
 	}
 
 	test("preserves earlier tool results and never executes tools from the blocked attempt", async () => {
-		const { model, requests } = scripted([
-			[call, finish("tool-calls")],
-			[{ ...call, toolCallId: "blocked-call" }, blocked],
+		const s = scripted([
+			[call, finishPart("tool-calls", 10)],
+			[toolCallPart("blocked-call", "probe"), blocked],
 			answer(),
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("filter-retry"), "/w");
 		let executions = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({
+		const r = rig({
+			model: s.model,
+			addr: appAddress("filter-retry"),
+			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
 					execute: () => {
@@ -144,41 +195,35 @@ describe("provider-filter retry", () => {
 						return { result: "already completed" };
 					},
 				}),
-			}),
+			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "Do the action then answer" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
+		const sink = submit(r, "Do the action then answer");
+		await completed(r, sink);
 		expect(executions).toBe(1);
-		expect(requests).toHaveLength(3);
-		expect(requests[1]).toBe(requests[2]);
-		expect(requests[2]).toContain("already completed");
+		expect(s.requests).toHaveLength(3);
+		expect(s.requests[1]).toBe(s.requests[2]);
+		expect(s.requests[2]).toContain("already completed");
 		expect(sink.chunkTypes).not.toContain("error");
-		expect(JSON.stringify(store.history(conv.id))).not.toContain("blocked-call");
-		store.close();
+		expect(JSON.stringify(r.store.history(r.conv.id))).not.toContain("blocked-call");
+		r.store.close();
 	});
 
 	test("chunked tool input completes the turn instead of leaving the sink running forever", async () => {
-		const { model, requests } = scripted([
+		const s = scripted([
 			[
 				{ type: "tool-input-start", id: "call", toolName: "probe" },
 				{ type: "tool-input-delta", id: "call", delta: "{" },
 				{ type: "tool-input-delta", id: "call", delta: "}" },
 				{ type: "tool-input-end", id: "call" },
 				call,
-				finish("tool-calls"),
+				finishPart("tool-calls", 10),
 			],
 			answer(),
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executions = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({
+		const r = rig({
+			model: s.model,
+			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
 					execute: () => {
@@ -186,35 +231,28 @@ describe("provider-filter retry", () => {
 						return { ok: true };
 					},
 				}),
-			}),
+			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "Use the tool then answer" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
+		const sink = submit(r, "Use the tool then answer");
+		await completed(r, sink);
 		expect(executions).toBe(1);
-		expect(requests).toHaveLength(2);
+		expect(s.requests).toHaveLength(2);
 		expect(sink.text).toBe("Recovered answer");
-		expect(store.history(conv.id)).toHaveLength(2);
-		store.close();
+		expect(r.store.history(r.conv.id)).toHaveLength(2);
+		r.store.close();
 	}, 3_000);
 
 	test("a second filter later in the turn exhausts the retry budget and saves no failed reply", async () => {
-		const { model, requests } = scripted([
+		const s = scripted([
 			[blocked],
-			[call, finish("tool-calls")],
-			[finish("content-filter")],
+			[call, finishPart("tool-calls", 10)],
+			[finishPart("content-filter", 10)],
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({ probe: tool({ inputSchema: z.object({}), execute: () => "done" }) }),
+		const r = rig({
+			model: s.model,
+			tools: { probe: tool({ inputSchema: z.object({}), execute: () => "done" }) },
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		const sink = submit(r, "test");
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
@@ -224,31 +262,22 @@ describe("provider-filter retry", () => {
 			modelCalls: 1,
 			transient: false,
 		});
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(3);
+		await drain(r);
+		await r.runtime.shutdown();
+		expect(s.requests).toHaveLength(3);
 		expect(sink.chunkTypes.filter((type) => type === "error")).toHaveLength(1);
-		expect(store.history(conv.id)).toHaveLength(1);
-		store.close();
+		expect(r.store.history(r.conv.id)).toHaveLength(1);
+		r.store.close();
 	});
 
 	test("ordinary assistant refusal text is an answer, not a retry signal", async () => {
-		const { model, requests } = scripted([answer(warning)]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(1);
+		const s = scripted([answer(warning)]);
+		const r = rig({ model: s.model });
+		const sink = submit(r, "test");
+		await completed(r, sink);
+		expect(s.requests).toHaveLength(1);
 		expect(sink.text).toBe(warning);
-		store.close();
+		r.store.close();
 	});
 
 	for (const [name, error] of [
@@ -258,17 +287,14 @@ describe("provider-filter retry", () => {
 	] satisfies [string, unknown][])
 		test(`two blocked attempts (${name}) cannot expose their tool calls`, async () => {
 			const failure: LanguageModelV4StreamPart = { type: "error", error };
-			const { model, requests } = scripted([
+			const s = scripted([
 				[call, failure],
 				[call, failure],
 			]);
-			const store = openStore(tmpDb("goblin-rt-"));
-			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 			let executions = 0;
-			const runtime = new Runtime({
-				store,
-				buildStep: () => ({ model, system: "test" }),
-				makeTools: () => ({
+			const r = rig({
+				model: s.model,
+				tools: {
 					probe: tool({
 						inputSchema: z.object({}),
 						execute: () => {
@@ -276,44 +302,34 @@ describe("provider-filter retry", () => {
 							return "done";
 						},
 					}),
-				}),
+				},
 			});
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+			const sink = submit(r, "test");
 			expect((await sink.done).kind).toBe("error");
-			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-			await runtime.shutdown();
-			expect(requests).toHaveLength(2);
+			await drain(r);
+			await r.runtime.shutdown();
+			expect(s.requests).toHaveLength(2);
 			expect(executions).toBe(0);
 			expect(sink.chunkTypes).not.toContain("tool-input-available");
-			store.close();
+			r.store.close();
 		});
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
-		const { model, requests } = scripted([
+		const s = scripted([
 			{ cancelError: new Error("cancel failed"), parts: [blocked] },
 			answer(),
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(2);
+		const r = rig({ model: s.model });
+		const sink = submit(r, "test");
+		await completed(r, sink);
+		expect(s.requests).toHaveLength(2);
 		expect(sink.text).toBe("Recovered answer");
 		expect(sink.chunkTypes).not.toContain("error");
-		store.close();
+		r.store.close();
 	});
 
 	test("ordinary retryable HTTP failures retain the existing SDK retry policy", async () => {
-		const { model, requests } = scripted([
+		const s = scripted([
 			new APICallError({
 				message: "Service unavailable",
 				url: "https://provider.invalid/responses",
@@ -323,273 +339,196 @@ describe("provider-filter retry", () => {
 			}),
 			answer(),
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(2);
+		const r = rig({ model: s.model });
+		const sink = submit(r, "test");
+		await completed(r, sink);
+		expect(s.requests).toHaveLength(2);
 		expect(sink.chunkTypes).not.toContain("error");
-		store.close();
+		r.store.close();
 	});
 
 	test("stop during filter cleanup prevents a second model request", async () => {
-		let entered: () => void = () => {};
-		let release: () => void = () => {};
-		const cleaning = new Promise<void>((resolve) => {
-			entered = resolve;
-		});
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		let requests = 0;
-		const model: LanguageModelV4 = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "filter-test",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unused");
+		const cleaning = deferred<void>();
+		const gate = deferred<void>();
+		const edge = scriptedEdge([
+			{
+				drive: ({ enqueue }) => enqueue(blocked),
+				cancel: async () => {
+					cleaning.resolve();
+					await gate.promise;
+				},
 			},
-			async doStream() {
-				requests++;
-				return {
-					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							controller.enqueue(blocked);
-						},
-						async cancel() {
-							entered();
-							await gate;
-						},
-					}),
-				};
-			},
-		};
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("filter-cleanup"), "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		await cleaning;
-		runtime.stop(conv.id);
-		release();
+		]);
+		const r = rig({ model: edge.model, addr: appAddress("filter-cleanup") });
+		const sink = submit(r, "test");
+		await cleaning.promise;
+		r.runtime.stop(r.conv.id);
+		gate.resolve();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toBe(1);
+		await drain(r);
+		await r.runtime.shutdown();
+		expect(edge.streamCalls).toHaveLength(1);
 		expect(sink.chunkTypes).not.toContain("error");
-		expect(store.history(conv.id)).toHaveLength(1);
-		store.close();
+		expect(r.store.history(r.conv.id)).toHaveLength(1);
+		r.store.close();
 	});
 
 	test("a late filter preserves already-streamed text, without exposing the filter error", async () => {
-		const { model, requests } = scripted([
+		const s = scripted([
 			[
 				{ type: "text-start", id: "partial" },
 				{ type: "text-delta", id: "partial", delta: "Partial answer. " },
-				finish("content-filter"),
+				finishPart("content-filter", 10),
 			],
 			answer(),
 		]);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("late-filter"), "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(2);
-		expect(requests[0]).toBe(requests[1]);
+		const r = rig({ model: s.model, addr: appAddress("late-filter") });
+		const sink = submit(r, "test");
+		await completed(r, sink);
+		expect(s.requests).toHaveLength(2);
+		expect(s.requests[0]).toBe(s.requests[1]);
 		expect(sink.text.replace(/\s+/g, " ").trim()).toBe("Partial answer. Recovered answer");
 		expect(sink.chunkTypes).not.toContain("error");
 		// UI history is what the operator actually saw, including the partial.
-		expect(JSON.stringify(store.history(conv.id))).toContain("Partial answer.");
-		expect(JSON.stringify(store.history(conv.id))).not.toContain("Provider content filter");
-		store.close();
+		expect(JSON.stringify(r.store.history(r.conv.id))).toContain("Partial answer.");
+		expect(JSON.stringify(r.store.history(r.conv.id))).not.toContain("Provider content filter");
+		r.store.close();
 	});
 
 	test("stop while a rejected call is pending prevents its retry", async () => {
-		const { model, requests } = scripted([new Error(warning)]);
-		let entered: () => void = () => {};
-		let release: () => void = () => {};
-		const started = new Promise<void>((resolve) => {
-			entered = resolve;
-		});
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const slowModel: LanguageModelV4 = {
-			...model,
-			async doStream(options) {
-				entered();
-				await gate;
-				return model.doStream(options);
-			},
+		const started = deferred<void>();
+		const gate = deferred<void>();
+		const edge = scriptedEdge([new Error(warning)]);
+		const inner = edge.model as unknown as {
+			doStream(o: never): Promise<unknown>;
 		};
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: slowModel, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		await started;
-		runtime.stop(conv.id);
-		release();
+		const slowModel = {
+			...inner,
+			async doStream(o: never) {
+				started.resolve();
+				await gate.promise;
+				return inner.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		const r = rig({ model: slowModel });
+		const sink = submit(r, "test");
+		await started.promise;
+		r.runtime.stop(r.conv.id);
+		gate.resolve();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		expect(requests).toHaveLength(1);
+		await drain(r);
+		await r.runtime.shutdown();
+		expect(edge.streamCalls).toHaveLength(1);
 		expect(sink.text).toBe("");
-		expect(store.history(conv.id)).toHaveLength(1);
-		store.close();
+		expect(r.store.history(r.conv.id)).toHaveLength(1);
+		r.store.close();
 	});
 });
 
 describe("turn authority", () => {
 	test("clean turn completes and persists the assistant message", async () => {
-		const { store, conv, runtime } = setup(["hello", " world"], 5);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ deltas: ["hello", " world"], delayMs: 5 });
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(sink.text).toBe("hello world");
-		const roles = store.history(conv.id).map((m) => m.role);
-		expect(roles).toEqual(["user", "assistant"]);
-		store.close();
+		expect(roles(r)).toEqual(["user", "assistant"]);
+		r.store.close();
 	});
 
 	test("epoch advance mid-turn fences it — quietly, no assistant append", async () => {
 		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20, gated.model);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ model: gated.model });
+		const sink = submit(r, "hi");
 		await sink.firstDelta; // first delta observed — turn is mid-stream
 		await gated.entered; // the next delta is held inside the provider stream
-		store.bumpEpoch(conv.id); // settings change, e.g. /think
+		r.store.bumpEpoch(r.conv.id); // settings change, e.g. /think
 		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(sink.text.length).toBeGreaterThan(0);
 		expect(sink.text.length).toBeLessThan(5);
 		// the fenced turn must not write assistant output into history
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
-		store.close();
+		expect(roles(r)).toEqual(["user"]);
+		r.store.close();
 	});
 
 	test("a settings fence aborts the provider stream, not just the turn loop", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let seen: AbortSignal | undefined;
 		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
 		const base = gated.model as unknown as {
-			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }): {
-				stream: ReadableStream<LanguageModelV4StreamPart>;
-			};
+			doStream(o: { abortSignal?: AbortSignal }): unknown;
 		};
 		const model = {
 			...base,
-			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }) {
+			doStream(o: { abortSignal?: AbortSignal }) {
 				seen = o.abortSignal;
 				return base.doStream(o);
 			},
 		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ model });
+		const sink = submit(r, "hi");
 		await sink.firstDelta; // mid-stream
 		await gated.entered; // the next delta is held inside the provider stream
-		store.bumpEpoch(conv.id); // /voice or /memory toggle — no /stop, no abort
+		r.store.bumpEpoch(r.conv.id); // /voice or /memory toggle — no /stop, no abort
 		gated.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		// the fence must kill the model call itself: the provider stream
 		// cannot keep generating into a stream nobody reads
 		expect(seen?.aborted).toBe(true);
-		store.close();
+		r.store.close();
 	});
 
 	test("/stop aborts and drains the queue", async () => {
-		const { store, conv, runtime } = setup(["x", "y", "z", "w"], 30);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ deltas: ["x", "y", "z", "w"], delayMs: 30 });
+		const sink = submit(r, "hi");
 		await sink.firstDelta; // mid-stream
-		runtime.stop(conv.id);
-		const d = await sink.done;
-		expect(d.kind).toBe("fenced");
-		store.close();
+		stop(r);
+		expect((await sink.done).kind).toBe("fenced");
+		r.store.close();
 	});
 
 	test("post-commit cancellation requires the committed fence and does not advance it again", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 20);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ deltas: ["a", "b", "c", "d"], delayMs: 20 });
+		const sink = submit(r, "hi");
 		await sink.firstDelta;
-		expect(() => runtime.cancelFenced(conv.id, 0)).toThrow("committed epoch");
-		expect(() => runtime.cancelFenced(conv.id, 1)).toThrow("committed epoch");
-		const epoch = store.bumpEpoch(conv.id);
-		expect(runtime.cancelFenced(conv.id, epoch).stopped).toBe(true);
-		expect(store.get(conv.id)?.epoch).toBe(epoch);
+		expect(() => r.runtime.cancelFenced(r.conv.id, 0)).toThrow("committed epoch");
+		expect(() => r.runtime.cancelFenced(r.conv.id, 1)).toThrow("committed epoch");
+		const epoch = r.store.bumpEpoch(r.conv.id);
+		expect(r.runtime.cancelFenced(r.conv.id, epoch).stopped).toBe(true);
+		expect(r.store.get(r.conv.id)?.epoch).toBe(epoch);
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		await runtime.shutdown();
-		expect(store.history(conv.id).map((message) => message.role)).toEqual(["user"]);
-		store.close();
+		await r.runtime.shutdown();
+		expect(roles(r)).toEqual(["user"]);
+		r.store.close();
 	});
 
 	test("/stop notifies queued turns — every sink gets exactly one onDone", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		const r = rig({ deltas: ["a", "b", "c", "d"], delayMs: 30 });
+		const s1 = submit(r, "one");
 		await s1.firstDelta; // first turn is mid-stream
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2); // queued
-		const { stopped, settled } = runtime.stop(conv.id);
+		const s2 = submit(r, "two"); // queued
+		const { stopped, settled } = stop(r);
 		expect(stopped).toBe(true);
 		// the dropped turn's sink is still told, so it can release resources
 		expect(await s2.done).toEqual({ kind: "fenced" });
 		expect((await s1.done).kind).toBe("fenced");
 		await settled;
-		store.close();
+		r.store.close();
 	});
 
 	test("/stop reports nothing-running on an idle lane — epoch still bumps", async () => {
-		const { store, conv, runtime } = setup(["a"], 30);
-		const idle = runtime.stop(conv.id);
-		expect(idle.stopped).toBe(false);
+		const r = rig({ deltas: ["a"], delayMs: 30 });
+		expect(stop(r).stopped).toBe(false);
 		// The bump is harmless — and any turn admitted next captures it.
-		expect(store.get(conv.id)!.epoch).toBe(1);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(r.store.get(r.conv.id)!.epoch).toBe(1);
+		const sink = submit(r, "hi");
 		await sink.firstDelta; // admitted and mid-stream
-		const live = runtime.stop(conv.id);
-		expect(live.stopped).toBe(true);
-		store.close();
+		expect(stop(r).stopped).toBe(true);
+		r.store.close();
 	});
 
 	test("stop().settled resolves only after the dropped sinks' onDone settles", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
-		const running = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), running);
+		const r = rig({ deltas: ["a", "b", "c", "d"], delayMs: 30 });
+		const running = submit(r, "one");
 		await running.firstDelta; // first turn is mid-stream
 		// A queued sink whose onDone does a slow final flush.
 		let flushed = false;
@@ -599,16 +538,15 @@ describe("turn authority", () => {
 				r();
 			}, 40),
 		);
-		const queued: TurnSink = {
+		submit(r, "two", {
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
 			onDone: async () => {
 				await flush;
 			},
-		};
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), queued);
-		const { settled } = runtime.stop(conv.id);
+		});
+		const { settled } = stop(r);
 		let settledDone = false;
 		void settled.then(() => {
 			settledDone = true;
@@ -619,111 +557,65 @@ describe("turn authority", () => {
 		await settled;
 		expect(flushed).toBe(true);
 		expect(settledDone).toBe(true);
-		store.close();
+		r.store.close();
 	});
 
 	test("a finished lane does not report stoppable turns", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ deltas: ["a"], delayMs: 5 });
+		const sink = submit(r, "hi");
 		await sink.done;
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		expect(runtime.stop(conv.id).stopped).toBe(false);
-		store.close();
+		await drain(r);
+		expect(stop(r).stopped).toBe(false);
+		r.store.close();
 	});
 
 	test("shutdown fences every lane and resolves after the sinks' onDone", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
-		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
-		const s1 = new RecordingSink();
+		const r = rig({ deltas: ["a", "b", "c", "d", "e"], delayMs: 20 });
+		const conv2 = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const s1 = submit(r, "one");
 		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
+		r.runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
 		await Promise.all([s1.firstDelta, s2.firstDelta]); // both turns mid-stream
-		await runtime.shutdown();
+		await r.runtime.shutdown();
 		expect(await s1.done).toEqual({ kind: "fenced" });
 		expect(await s2.done).toEqual({ kind: "fenced" });
 		// fenced turns commit no assistant output
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
-		expect(store.history(conv2.id).map((m) => m.role)).toEqual(["user"]);
-		store.close();
+		expect(roles(r)).toEqual(["user"]);
+		expect(r.store.history(conv2.id).map((m) => m.role)).toEqual(["user"]);
+		r.store.close();
 	});
 
 	test("a submit after shutdown lands in history but never runs", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
-		await runtime.shutdown();
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const r = rig({ deltas: ["a"], delayMs: 5 });
+		await r.runtime.shutdown();
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		await sleep(50); // prove no turn ever starts
 		expect(sink.text).toBe("");
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
-		store.close();
+		expect(roles(r)).toEqual(["user"]);
+		r.store.close();
 	});
 
 	test("a tool call under stale authority never executes", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executed = false;
 		// The stream holds its tool-call part on a gate the test releases
 		// after the epoch bump — the call is emitted entirely under the
 		// stale epoch, by construction, not by clock.
 		const bumpLanded = deferred<void>();
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: {
-					specificationVersion: "v4",
-					provider: "fake",
-					modelId: "fake-1",
-					supportedUrls: {},
-					doGenerate() {
-						throw new Error("unimplemented");
-					},
-					doStream() {
-						const stream = new ReadableStream<LanguageModelV4StreamPart>({
-							async start(controller) {
-								const push = (p: LanguageModelV4StreamPart) => {
-									try {
-										controller.enqueue(p);
-									} catch {
-										/* closed */
-									}
-								};
-								push({ type: "stream-start", warnings: [] });
-								await bumpLanded.promise;
-								push({
-									type: "tool-call",
-									toolCallId: "c1",
-									toolName: "probe",
-									input: "{}",
-								});
-								push({
-									type: "finish",
-									finishReason: { unified: "tool-calls", raw: undefined },
-									usage: {
-										inputTokens: {
-											total: 1,
-											noCache: undefined,
-											cacheRead: undefined,
-											cacheWrite: undefined,
-										},
-										outputTokens: { total: 1, text: undefined, reasoning: undefined },
-									},
-								});
-								try {
-									controller.close();
-								} catch {
-									/* already closed */
-								}
-							},
-						});
-						return { stream };
-					},
-				} as unknown as LanguageModel,
-				system: "test",
-			}),
-			makeTools: () => ({
+		const edge = scriptedEdge([
+			{
+				drive: async ({ enqueue, close }) => {
+					enqueue({ type: "stream-start", warnings: [] });
+					await bumpLanded.promise;
+					enqueue(toolCallPart("c1", "probe"));
+					enqueue(finishPart("tool-calls"));
+					close();
+				},
+			},
+		]);
+		const r = rig({
+			model: edge.model,
+			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
 					execute: async () => {
@@ -731,46 +623,33 @@ describe("turn authority", () => {
 						return { ok: true };
 					},
 				}),
-			}),
+			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		await sink.admitted; // turn holds its epoch — bump cannot race admission
-		store.bumpEpoch(conv.id); // settings change mid-turn
+		r.store.bumpEpoch(r.conv.id); // settings change mid-turn
 		bumpLanded.resolve(); // only now may the stale-epoch tool call flow
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran
-		store.close();
+		r.store.close();
 	});
 
 	test("queued turns run serially", async () => {
-		const { store, conv, runtime } = setup(["r"], 10);
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		const r = rig({ deltas: ["r"], delayMs: 10 });
+		const s1 = submit(r, "one");
+		const s2 = submit(r, "two");
 		await Promise.all([s1.done, s2.done]);
-		const users = store.history(conv.id).filter((m) => m.role === "user");
-		expect(users).toHaveLength(2);
-		store.close();
+		expect(r.store.history(r.conv.id).filter((m) => m.role === "user")).toHaveLength(2);
+		r.store.close();
 	});
 
 	test("submits queued behind a running turn coalesce into ONE successor turn", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["answer"], 30);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		const s3 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "2+2?" }]), s1);
+		const r = rig({ model });
+		const s1 = submit(r, "2+2?");
 		await s1.firstDelta; // turn 1 mid-stream — its admission snapshot is taken
-		runtime.submit(conv, userMessage([{ type: "text", text: "2+5?" }]), s2);
-		runtime.submit(conv, userMessage([{ type: "text", text: "2+8?" }]), s3);
+		const s2 = submit(r, "2+5?");
+		const s3 = submit(r, "2+8?");
 		// Two queued submits, one successor turn — every sink still gets
 		// exactly one onDone.
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -793,7 +672,7 @@ describe("turn authority", () => {
 		expect(msgs[0]!.content.map((c) => c.text)).toEqual(["2+2?"]);
 		expect(msgs[1]!.content.map((c) => c.text)).toEqual(["answer"]);
 		expect(msgs[2]!.content.map((c) => c.text)).toEqual(["2+5?", "2+8?"]);
-		store.close();
+		r.store.close();
 	});
 
 	test("a history system event reaches the model as a bracketed user-role note", async () => {
@@ -802,24 +681,17 @@ describe("turn authority", () => {
 		// SDK's streamText rejects system messages in `messages`, so the
 		// runtime renders the event as a user-role note in position —
 		// the stored role is untouched.
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const event =
 			"proposed skill: talk-first — parked in skills-proposed/talk-first/, not installed; " +
 			"an operator approval means moving it into skills/, a discard means deleting the proposal";
-		store.append(conv.id, [
+		const { model, prompts } = recordingModel(["answer"], 5);
+		const r = rig({ model, step: { system: "test instructions" } });
+		r.store.append(r.conv.id, [
 			{ id: "u1", role: "user", parts: [{ type: "text", text: "earlier question" }] },
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "earlier answer" }] },
 			{ id: "sys1", role: "system", parts: [{ type: "text", text: event }] },
 		]);
-		const { model, prompts } = recordingModel(["answer"], 5);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test instructions" }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "what did you save?" }]), sink);
+		const sink = submit(r, "what did you save?");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(prompts).toHaveLength(1);
 		const wire = JSON.parse(prompts[0]!) as {
@@ -840,79 +712,31 @@ describe("turn authority", () => {
 		]);
 		// History on disk keeps the system role — the mapping is
 		// render-only, at the conversion boundary.
-		expect(store.history(conv.id).map((m) => m.role)).toEqual([
-			"user",
-			"assistant",
-			"system",
-			"user",
-			"assistant",
-		]);
-		store.close();
+		expect(roles(r)).toEqual(["user", "assistant", "system", "user", "assistant"]);
+		r.store.close();
 	});
 
 	test("distinct text parts stream with a seam — blocks must not fuse in the bubble", async () => {
 		// A multi-step turn (text, tool call, more text) emits several text
 		// parts. The chat bubble must show them as blocks, not one run-on —
 		// "yo 👋 what's up" + "Workspace…" streamed as "upWorkspace" once.
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: {
-					specificationVersion: "v4",
-					provider: "fake",
-					modelId: "two-part-1",
-					supportedUrls: {},
-					doGenerate() {
-						throw new Error("unimplemented");
-					},
-					doStream() {
-						const stream = new ReadableStream<LanguageModelV4StreamPart>({
-							start(controller) {
-								controller.enqueue({ type: "stream-start", warnings: [] });
-								controller.enqueue({ type: "text-start", id: "t1" });
-								controller.enqueue({
-									type: "text-delta",
-									id: "t1",
-									delta: "yo 👋 what's up",
-								});
-								controller.enqueue({ type: "text-end", id: "t1" });
-								controller.enqueue({ type: "text-start", id: "t2" });
-								controller.enqueue({
-									type: "text-delta",
-									id: "t2",
-									delta: "Workspace is basically fresh",
-								});
-								controller.enqueue({ type: "text-end", id: "t2" });
-								controller.enqueue({
-									type: "finish",
-									finishReason: { unified: "stop", raw: undefined },
-									usage: {
-										inputTokens: {
-											total: 1,
-											noCache: undefined,
-											cacheRead: undefined,
-											cacheWrite: undefined,
-										},
-										outputTokens: { total: 2, text: undefined, reasoning: undefined },
-									},
-								});
-								controller.close();
-							},
-						});
-						return { stream };
-					},
-				} as unknown as LanguageModel,
-				system: "test",
-			}),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const edge = scriptedEdge([
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "yo 👋 what's up" },
+				{ type: "text-end", id: "t1" },
+				{ type: "text-start", id: "t2" },
+				{ type: "text-delta", id: "t2", delta: "Workspace is basically fresh" },
+				{ type: "text-end", id: "t2" },
+				finishPart("stop", 1, 2),
+			],
+		]);
+		const r = rig({ model: edge.model });
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(sink.text).toBe("yo 👋 what's up\n\nWorkspace is basically fresh");
-		store.close();
+		r.store.close();
 	});
 
 	test("a two-step turn streams its blocks with seams — even when step 2 reuses step 1's part id", async () => {
@@ -920,73 +744,25 @@ describe("turn authority", () => {
 		// continues in step 2. Providers synthesizing part ids per request
 		// can hand step 2 the SAME id ("t1") — the seam must survive that,
 		// so the step boundary itself has to reset the tracker.
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const textBit = (delta: string): LanguageModelV4StreamPart[] => [
+			{ type: "text-start", id: "t1" },
+			{ type: "text-delta", id: "t1", delta },
+			{ type: "text-end", id: "t1" },
+		];
+		const edge = scriptedEdge([
+			[
+				{ type: "stream-start", warnings: [] },
+				...textBit("yo 👋 what's up"),
+				toolCallPart("c1", "probe"),
+				finishPart("tool-calls"),
+			],
+			// Same id as step 1 — deliberate.
+			[{ type: "stream-start", warnings: [] }, ...textBit("Workspace is basically fresh"), finishPart("stop")],
+		]);
 		let executed = false;
-		let call = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: {
-					specificationVersion: "v4",
-					provider: "fake",
-					modelId: "two-step-1",
-					supportedUrls: {},
-					doGenerate() {
-						throw new Error("unimplemented");
-					},
-					doStream() {
-						call++;
-						const stream = new ReadableStream<LanguageModelV4StreamPart>({
-							start(controller) {
-								const push = (p: LanguageModelV4StreamPart) => controller.enqueue(p);
-								push({ type: "stream-start", warnings: [] });
-								if (call === 1) {
-									push({ type: "text-start", id: "t1" });
-									push({ type: "text-delta", id: "t1", delta: "yo 👋 what's up" });
-									push({ type: "text-end", id: "t1" });
-									push({ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" });
-									push({
-										type: "finish",
-										finishReason: { unified: "tool-calls", raw: undefined },
-										usage: {
-											inputTokens: {
-												total: 1,
-												noCache: undefined,
-												cacheRead: undefined,
-												cacheWrite: undefined,
-											},
-											outputTokens: { total: 1, text: undefined, reasoning: undefined },
-										},
-									});
-								} else {
-									// Same id as step 1 — deliberate.
-									push({ type: "text-start", id: "t1" });
-									push({ type: "text-delta", id: "t1", delta: "Workspace is basically fresh" });
-									push({ type: "text-end", id: "t1" });
-									push({
-										type: "finish",
-										finishReason: { unified: "stop", raw: undefined },
-										usage: {
-											inputTokens: {
-												total: 1,
-												noCache: undefined,
-												cacheRead: undefined,
-												cacheWrite: undefined,
-											},
-											outputTokens: { total: 1, text: undefined, reasoning: undefined },
-										},
-									});
-								}
-								controller.close();
-							},
-						});
-						return { stream };
-					},
-				} as unknown as LanguageModel,
-				system: "test",
-			}),
-			makeTools: () => ({
+		const r = rig({
+			model: edge.model,
+			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
 					execute: async () => {
@@ -994,62 +770,39 @@ describe("turn authority", () => {
 						return { ok: true };
 					},
 				}),
-			}),
+			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(executed).toBe(true); // step 2 really ran — this is the real shape
 		expect(sink.text).toBe("yo 👋 what's up\n\nWorkspace is basically fresh");
-		store.close();
+		r.store.close();
 	});
 
 	test("a failed model stream reports error — no silent completion, no partial append", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: {
-					specificationVersion: "v4",
-					provider: "fake",
-					modelId: "err-1",
-					supportedUrls: {},
-					doGenerate() {
-						throw new Error("unimplemented");
-					},
-					doStream() {
-						const stream = new ReadableStream<LanguageModelV4StreamPart>({
-							start(controller) {
-								controller.enqueue({ type: "stream-start", warnings: [] });
-								controller.enqueue({ type: "text-start", id: "t1" });
-								controller.enqueue({ type: "text-delta", id: "t1", delta: "partial" });
-								controller.enqueue({ type: "error", error: new Error("provider blew up") });
-								controller.close();
-							},
-						});
-						return { stream };
-					},
-				} as unknown as LanguageModel,
-				system: "test",
-			}),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const edge = scriptedEdge([
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "partial" },
+				{ type: "error", error: new Error("provider blew up") },
+			],
+		]);
+		const r = rig({ model: edge.model });
+		const sink = submit(r, "hi");
 		const d = await sink.done;
 		expect(d.kind).toBe("error");
 		expect((d as { message: string }).message).toContain("provider blew up");
 		// the failed turn must not commit its partial assistant output
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
-		store.close();
+		expect(roles(r)).toEqual(["user"]);
+		r.store.close();
 	});
 
 	test("an attachment part the model can't consume degrades to its path reference", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const r = rig({ model }); // no inputModalities → text-only
 		// Stored intake record: path + metadata, no payload.
-		store.append(conv.id, [
+		r.store.append(r.conv.id, [
 			{
 				id: "u1",
 				role: "user",
@@ -1066,27 +819,20 @@ describe("turn authority", () => {
 				],
 			},
 		]);
-		const { model, prompts } = recordingModel(["ok"], 5);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }), // no inputModalities → text-only
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(prompts[0]).toContain("[attachment: /gone/x.png");
 		expect(prompts[0]).not.toContain("data:image/png");
-		store.close();
+		r.store.close();
 	});
 
 	test("an attachment part materializes inline for a capable model", async () => {
 		const dir = tmpDir("goblin-rt-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		store.append(conv.id, [
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const r = rig({ model, step: { inputModalities: new Set(["text", "image"]) } });
+		r.store.append(r.conv.id, [
 			{
 				id: "u1",
 				role: "user",
@@ -1098,28 +844,17 @@ describe("turn authority", () => {
 				],
 			},
 		]);
-		const { model, prompts } = recordingModel(["ok"], 5);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model,
-				system: "test",
-				inputModalities: new Set(["text", "image"]),
-			}),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(prompts[0]).toContain("image/png");
 		expect(prompts[0]).not.toContain("[attachment:");
-		store.close();
+		r.store.close();
 	});
 
 	test("a throwing sink still gets exactly one onDone", async () => {
-		const { store, conv, runtime } = setup(["a"], 5);
+		const r = rig({ deltas: ["a"], delayMs: 5 });
 		let calls = 0;
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), {
+		submit(r, "hi", {
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1129,9 +864,9 @@ describe("turn authority", () => {
 			},
 		});
 		await waitUntil(() => calls >= 1, "onDone called");
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		await drain(r);
 		expect(calls).toBe(1);
-		store.close();
+		r.store.close();
 	});
 });
 
@@ -1149,42 +884,8 @@ function overflowError(): APICallError {
 	});
 }
 
-function textReply(text: string): LanguageModelV4StreamPart[] {
-	return [
-		{ type: "stream-start", warnings: [] },
-		{ type: "text-start", id: "t1" },
-		{ type: "text-delta", id: "t1", delta: text },
-		{ type: "text-end", id: "t1" },
-		{
-			type: "finish",
-			finishReason: { unified: "stop", raw: undefined },
-			usage: {
-				inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-				outputTokens: { total: 1, text: undefined, reasoning: undefined },
-			},
-		},
-	];
-}
-
-// A model scripted per doStream call: a part list streams verbatim, an
-// Error throws out of doStream (a provider rejection — the SDK surfaces
-// it as an `error` chunk). Every wire prompt is captured.
-function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
-	const prompts: string[] = [];
-	const edge = scriptedEdge(scripts, { extra: textReply("ok") });
-	const inner = edge.model as unknown as LanguageModelV4;
-	const model = {
-		...inner,
-		doStream(o: LanguageModelV4CallOptions) {
-			prompts.push(JSON.stringify(o.prompt));
-			return inner.doStream(o);
-		},
-	} as unknown as LanguageModel;
-	return { model, prompts };
-}
-
 // Enough completed exchanges that chooseBoundary has a span to fold.
-function seedExchanges(store: ReturnType<typeof openStore>, convId: string): void {
+function seedExchanges(store: Store, convId: string): void {
 	const big = "x".repeat(600);
 	for (let i = 0; i < 3; i++) {
 		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
@@ -1198,76 +899,61 @@ function seedExchanges(store: ReturnType<typeof openStore>, convId: string): voi
 
 describe("context overflow recovery", () => {
 	test("an overflow on the first call compacts and resumes — one stored reply", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
-		const { model, prompts } = scriptedModel([overflowError(), textReply("the answer")]);
+		const s = scripted([overflowError(), textParts("the answer")], { extra: textParts("ok") });
 		const summaries: string[] = [];
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: async (_conv, _system, prompt) => {
-					summaries.push(prompt);
-					return "the folded era";
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: async (_conv, _system, prompt) => {
+						summaries.push(prompt);
+						return "the folded era";
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(sink.text).toBe("the answer");
 		// Exactly one compaction ran; the resumed call read the compacted
 		// view — summary carried first, the live question kept in the tail.
 		expect(summaries).toHaveLength(1);
-		expect(prompts).toHaveLength(2);
-		expect(prompts[1]).toContain("the folded era");
-		expect(prompts[1]).toContain("live question");
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("the folded era");
+		expect(s.prompts[1]).toContain("live question");
 		// The held error never reached the client stream.
 		expect(sink.chunkTypes).not.toContain("error");
 		// One stored assistant reply — the failed attempt left nothing.
-		const history = store.history(conv.id);
+		const history = r.store.history(r.conv.id);
 		expect(history.filter((m) => m.role === "assistant")).toHaveLength(4); // 3 seeded + this turn's
 		const last = history.at(-1)!;
 		expect(last.role).toBe("assistant");
 		const lastText = last.parts.find((p) => p.type === "text") as { text: string } | undefined;
 		expect(lastText?.text).toBe("the answer");
-		store.close();
+		r.store.close();
 	});
 
 	test("a mid-turn overflow resumes without re-running tools — one merged reply", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
-		const toolCallScript: LanguageModelV4StreamPart[] = [
-			{ type: "stream-start", warnings: [] },
-			{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" },
-			{
-				type: "finish",
-				finishReason: { unified: "tool-calls", raw: undefined },
-				usage: {
-					inputTokens: {
-						total: 1,
-						noCache: undefined,
-						cacheRead: undefined,
-						cacheWrite: undefined,
-					},
-					outputTokens: { total: 1, text: undefined, reasoning: undefined },
-				},
-			},
-		];
-		const { model, prompts } = scriptedModel([
-			toolCallScript,
-			overflowError(),
-			textReply("the final answer"),
-		]);
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe"),
+					finishPart("tool-calls"),
+				],
+				overflowError(),
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
 		let executions = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
 					execute: async () => {
@@ -1275,25 +961,25 @@ describe("context overflow recovery", () => {
 						return "probe-result-7f3a";
 					},
 				}),
-			}),
-			compaction: { modelRef: () => "m", summarize: async () => "folded past" },
+			},
+			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded past" } },
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "run the probe" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "run the probe");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		// The whole point of the continuation: the failed attempt's tool
 		// work is never re-run.
 		expect(executions).toBe(1);
-		expect(prompts).toHaveLength(3);
+		expect(s.prompts).toHaveLength(3);
 		// The resumed prompt carries the failed attempt's tool result —
 		// the model continues from where it died, not from scratch.
-		expect(prompts[2]).toContain("probe-result-7f3a");
+		expect(s.prompts[2]).toContain("probe-result-7f3a");
 		// The held error never reached the wire, and every `start` chunk —
 		// the failed attempt's and the resume's — names the ONE stored
 		// message id: the resume continues the partial, it doesn't start
 		// a sibling.
 		expect(sink.chunkTypes).not.toContain("error");
-		const stored = store.history(conv.id).at(-1)!;
+		const stored = r.store.history(r.conv.id).at(-1)!;
 		expect(stored.role).toBe("assistant");
 		const starts = sink.chunks.filter((c) => c.type === "start");
 		expect(starts.length).toBeGreaterThanOrEqual(2);
@@ -1306,29 +992,27 @@ describe("context overflow recovery", () => {
 		expect(types).toContain("text");
 		const text = stored.parts.find((p) => p.type === "text") as { text: string } | undefined;
 		expect(text?.text).toBe("the final answer");
-		expect(store.history(conv.id).filter((m) => m.role === "assistant")).toHaveLength(4);
-		store.close();
+		expect(r.store.history(r.conv.id).filter((m) => m.role === "assistant")).toHaveLength(4);
+		r.store.close();
 	});
 
 	test("an overflow with nothing left to compact ends with a plain message", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
+		const s = scripted([overflowError(), textParts("unreached")], { extra: textParts("ok") });
 		let summarizeCalls = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: async () => {
-					summarizeCalls++;
-					return "folded";
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: async () => {
+						summarizeCalls++;
+						return "folded";
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		const done = await sink.done;
 		expect(done.kind).toBe("error");
 		if (done.kind !== "error") return;
@@ -1336,34 +1020,30 @@ describe("context overflow recovery", () => {
 		expect(done.message.length).toBeLessThan(200);
 		// No boundary was written, and the turn never re-asked the model.
 		expect(summarizeCalls).toBe(0);
-		expect(prompts).toHaveLength(1);
-		store.close();
+		expect(s.prompts).toHaveLength(1);
+		r.store.close();
 	});
 
 	test("a second overflow on the resumed attempt ends the turn", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
-		const { model, prompts } = scriptedModel([
-			overflowError(),
-			overflowError(),
-			textReply("unreached"),
-		]);
+		const s = scripted([overflowError(), overflowError(), textParts("unreached")], {
+			extra: textParts("ok"),
+		});
 		let summarizeCalls = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: async () => {
-					summarizeCalls++;
-					return "folded past";
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: async () => {
+						summarizeCalls++;
+						return "folded past";
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
 		const done = await sink.done;
 		expect(done.kind).toBe("error");
 		if (done.kind !== "error") return;
@@ -1371,118 +1051,92 @@ describe("context overflow recovery", () => {
 		expect(done.message.length).toBeLessThan(200);
 		// One recovery per turn: one compaction, one resume call, no loop.
 		expect(summarizeCalls).toBe(1);
-		expect(prompts).toHaveLength(2);
-		store.close();
+		expect(s.prompts).toHaveLength(2);
+		r.store.close();
 	});
 
 	test("a non-overflow provider error does not compact or resume", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
 		const auth = new APICallError({
 			message: "Authentication Failed",
 			url: "https://api.openai.com/v1/chat/completions",
 			requestBodyValues: {},
 			statusCode: 401,
 		});
-		const { model, prompts } = scriptedModel([auth, textReply("unreached")]);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+		const s = scripted([auth, textParts("unreached")], { extra: textParts("ok") });
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Authentication Failed",
 			modelCalls: 0,
 			transient: false,
 		});
-		expect(prompts).toHaveLength(1);
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		expect(s.prompts).toHaveLength(1);
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("a mid-stream provider error leaves modelCalls at 0 — the retry ladder's precondition", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
 		// The error arrives as a stream part, not a doStream rejection —
 		// the 200-then-SSE-error shape (upstream 429s) the scheduler's
 		// zero-call retry ladder exists to re-fire.
-		const { model, prompts } = scriptedModel([
-			[{ type: "error", error: new Error("Rate limit reached for requests") }],
-		]);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const s = scripted([[{ type: "error", error: new Error("Rate limit reached for requests") }]]);
+		const r = rig({ model: s.model, step: { contextWindow: 1000 } });
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Rate limit reached for requests",
 			modelCalls: 0,
 			transient: true,
 		});
-		expect(prompts).toHaveLength(1);
-		store.close();
+		expect(s.prompts).toHaveLength(1);
+		r.store.close();
 	});
 
 	test("/stop during the overflow compaction fences the turn — no resume", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
-		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
+		const s = scripted([overflowError(), textParts("unreached")], { extra: textParts("ok") });
 		// Gate the summary call so the stop lands mid-compaction: the
 		// compact abort controller must end the attempt, never resume.
-		let summarizeStarted!: () => void;
-		const started = new Promise<void>((r) => {
-			summarizeStarted = r;
-		});
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: (_conv, _system, _prompt, signal) => {
-					summarizeStarted();
-					return signal.aborted
-						? Promise.reject(new Error("summarize aborted"))
-						: new Promise<string>(() => {});
+		const started = deferred<void>();
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: (_conv, _system, _prompt, signal) => {
+						started.resolve();
+						return signal.aborted
+							? Promise.reject(new Error("summarize aborted"))
+							: new Promise<string>(() => {});
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
-		await started;
-		runtime.stop(conv.id);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
+		await started.promise;
+		stop(r);
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		// The compaction died with the stop; no resume call ever ran —
 		// shutdown bounds every lane, so a resume would have had to run.
-		await runtime.shutdown();
-		expect(prompts).toHaveLength(1);
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		await r.runtime.shutdown();
+		expect(s.prompts).toHaveLength(1);
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("a store read failure after the resume claim settles the claimed joiner too (#114)", async () => {
+		const s = scripted([overflowError(), textParts("not reached")], { extra: textParts("ok") });
+		const started = deferred<void>();
+		const gate = deferred<void>();
 		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		seedExchanges(store, conv.id);
-		const { model } = scriptedModel([overflowError(), textReply("not reached")]);
-		let summarizeStarted!: () => void;
-		const started = new Promise<void>((r) => {
-			summarizeStarted = r;
-		});
-		let release!: () => void;
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
 		// The store boundary breaks exactly at the resumed admission's
 		// history read — after the resume claim already took the joiner.
 		let failRead = false;
@@ -1496,32 +1150,34 @@ describe("context overflow recovery", () => {
 				return Reflect.get(target, key);
 			},
 		});
-		const runtime = new Runtime({
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
 			store: wrappedStore,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "fixture",
-				summarize: async () => {
-					summarizeStarted();
-					await gate;
-					failRead = true;
-					return "folded fixture history";
+			deps: {
+				compaction: {
+					modelRef: () => "fixture",
+					summarize: async () => {
+						started.resolve();
+						await gate.promise;
+						failRead = true;
+						return "folded fixture history";
+					},
 				},
 			},
 		});
-		const head = new RecordingSink();
+		seedExchanges(r.store, r.conv.id);
+		const head = submit(r, "first");
 		const joiner = new RecordingSink();
 		let joinerSettled = false;
 		joiner.done.then(() => {
 			joinerSettled = true;
 		});
-		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
-		await started;
+		await started.promise;
 		// Queued while the overflow compaction holds the lane; the resumed
 		// admission claims it before reading history.
-		runtime.submit(conv, userMessage([{ type: "text", text: "joined during compact" }]), joiner);
-		release();
+		submit(r, "joined during compact", joiner);
+		gate.resolve();
 		expect((await head.done).kind).toBe("error");
 		// The claim must have put the joiner on a settlement surface: the
 		// crash may not strand a claimed-but-untracked submit — its stream
@@ -1531,9 +1187,9 @@ describe("context overflow recovery", () => {
 		// Unstamped: the crash died in admission, before the attempt's try —
 		// drain's last-ditch settlement cannot know modelCalls/transient.
 		expect(await joiner.done).toEqual({ kind: "error", message: "Synthetic SQLite read failure" });
-		await runtime.shutdown();
-		expect(runtime.busy(conv.id)).toBe(false);
-		store.close();
+		await r.runtime.shutdown();
+		expect(r.runtime.busy(r.conv.id)).toBe(false);
+		r.store.close();
 	});
 });
 
@@ -1551,25 +1207,15 @@ describe("cache stability", () => {
 	}
 
 	test("turn N+1's request is turn N's request with content appended", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["hello world"], 5);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		const s1 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), s1);
-		expect(await s1.done).toEqual({ kind: "completed" });
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "again" }]), s2);
-		expect(await s2.done).toEqual({ kind: "completed" });
+		const r = rig({ model });
+		expect(await submit(r, "hi").done).toEqual({ kind: "completed" });
+		expect(await submit(r, "again").done).toEqual({ kind: "completed" });
 		expect(prompts.length).toBe(2);
 		// The whole first request survives verbatim as the head of the
 		// second — provider prefix caches stay valid across turns.
 		expect(prefixOf(prompts[1]!, messageCount(prompts[0]!))).toBe(prompts[0]!);
-		store.close();
+		r.store.close();
 	});
 
 	test("inlined image bytes don't move when new media arrives later", async () => {
@@ -1578,31 +1224,25 @@ describe("cache stability", () => {
 		const b = join(dir, "b.png");
 		writeFileSync(a, "pngdata-a");
 		writeFileSync(b, "pngdata-b");
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["ok"], 5);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model,
-				system: "test",
-				inputModalities: new Set(["text", "image"]),
-			}),
-			makeTools: () => ({}),
-		});
+		const r = rig({ model, step: { inputModalities: new Set(["text", "image"]) } });
 		const att = (f: string, name: string, size: number): UIMessage["parts"][number] => ({
 			type: "data-attachment" as const,
 			data: { path: f, mediaType: "image/png", filename: name, size },
 		});
 		const s1 = new RecordingSink();
-		runtime.submit(
-			conv,
+		r.runtime.submit(
+			r.conv,
 			userMessage([att(a, "a.png", 9), { type: "text", text: "what is this" }]),
 			s1,
 		);
 		expect(await s1.done).toEqual({ kind: "completed" });
 		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([att(b, "b.png", 9), { type: "text", text: "and this" }]), s2);
+		r.runtime.submit(
+			r.conv,
+			userMessage([att(b, "b.png", 9), { type: "text", text: "and this" }]),
+			s2,
+		);
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(prompts.length).toBe(2);
 		// The first photo's inlined bytes ride the head of the second
@@ -1610,224 +1250,73 @@ describe("cache stability", () => {
 		expect(prefixOf(prompts[1]!, messageCount(prompts[0]!))).toBe(prompts[0]!);
 		expect(prompts[0]!).toContain("image/png");
 		expect(prompts[1]!).toContain("image/png");
-		store.close();
+		r.store.close();
 	});
 
 	test("window gauge and cached split land in the log", async () => {
-		const dir = tmpDir("goblin-rt-log-");
-		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// One step, reporting a warm cache (700 of 900 input tokens cached)
 		// against a 1000-token window — 90% utilization must warn.
-		const model = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-1",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unimplemented");
-			},
-			doStream() {
-				const stream = new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						controller.enqueue({ type: "stream-start", warnings: [] });
-						controller.enqueue({ type: "text-start", id: "t1" });
-						controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
-						controller.enqueue({ type: "text-end", id: "t1" });
-						controller.enqueue({
-							type: "finish",
-							finishReason: { unified: "stop", raw: undefined },
-							usage: {
-								inputTokens: {
-									total: 900,
-									noCache: undefined,
-									cacheRead: 700,
-									cacheWrite: undefined,
-								},
-								outputTokens: {
-									total: 1,
-									text: undefined,
-									reasoning: undefined,
-								},
-							},
-						});
-						controller.close();
-					},
-				});
-				return { stream };
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-		});
-		setLogFile(logFile);
-		try {
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const edge = scriptedEdge([[...textParts("ok", 900).slice(0, -1), finishPart("stop", 900, 1, { read: 700 })]]);
+		const r = rig({ model: edge.model, step: { contextWindow: 1000 } });
+		const lines = await capturedLog(async () => {
+			const sink = submit(r, "hi");
 			expect(await sink.done).toEqual({ kind: "completed" });
-			const lines = readFileSync(logFile, "utf8")
-				.trim()
-				.split("\n")
-				.map((l) => JSON.parse(l) as Record<string, unknown>);
-			const warn = lines.find(
-				(l) => l.msg === "context window ≥80% — history is approaching the limit",
-			);
-			expect(warn).toMatchObject({ input: 900, limit: 1000, pct: 90 });
-			const stepUsage = lines.find((l) => l.msg === "model step usage");
-			expect(stepUsage).toMatchObject({
-				inputTokens: 900,
-				cacheReadTokens: 700,
-				cacheWriteTokens: null,
-				outputTokens: 1,
-			});
-			const completed = lines.find((l) => l.msg === "turn completed");
-			expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
-			expect(completed?.usage).toEqual({ input: 900, cacheRead: 700, cacheWrite: null, output: 1 });
-		} finally {
-			setLogFile(null);
-			store.close();
-		}
+		});
+		const warn = lines.find(
+			(l) => l.msg === "context window ≥80% — history is approaching the limit",
+		);
+		expect(warn).toMatchObject({ input: 900, limit: 1000, pct: 90 });
+		const stepUsage = lines.find((l) => l.msg === "model step usage");
+		expect(stepUsage).toMatchObject({
+			inputTokens: 900,
+			cacheReadTokens: 700,
+			cacheWriteTokens: null,
+			outputTokens: 1,
+		});
+		const completed = lines.find((l) => l.msg === "turn completed");
+		expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
+		expect(completed?.usage).toEqual({ input: 900, cacheRead: 700, cacheWrite: null, output: 1 });
+		r.store.close();
 	});
 
 	test("a schema-rejected tool call leaves a trace in the log", async () => {
 		// The Sep 28 outage class: a provider that cannot fill a tool
 		// schema emits {} and the call dies in validation — before the
 		// fix, nothing was logged and the only witness was the model.
-		const dir = tmpDir("goblin-rt-log-");
-		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		let call = 0;
-		const model = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-1",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unimplemented");
-			},
-			doStream() {
-				call++;
-				const stream = new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						controller.enqueue({ type: "stream-start", warnings: [] });
-						if (call === 1) {
-							// read_file requires `path`; the model sent {}.
-							controller.enqueue({
-								type: "tool-call",
-								toolCallId: "c1",
-								toolName: "read_file",
-								input: "{}",
-							});
-						} else {
-							controller.enqueue({ type: "text-start", id: "t1" });
-							controller.enqueue({ type: "text-delta", id: "t1", delta: "sorry" });
-							controller.enqueue({ type: "text-end", id: "t1" });
-						}
-						controller.enqueue({
-							type: "finish",
-							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
-							usage: {
-								inputTokens: {
-									total: 1,
-									noCache: undefined,
-									cacheRead: undefined,
-									cacheWrite: undefined,
-								},
-								outputTokens: { total: 1, text: undefined, reasoning: undefined },
-							},
-						});
-						controller.close();
-					},
-				});
-				return { stream };
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+		// read_file requires `path`; the model sent {}.
+		const edge = scriptedEdge([
+			[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "read_file"), finishPart("tool-calls")],
+			textParts("sorry"),
+		]);
+		const r = rig({
+			model: edge.model,
+			step: { contextWindow: 1000 },
 			// The real read_file tool: its schema rejects {} at validation.
-			makeTools: () => ({ read_file: readFileTool("/tmp") }),
+			tools: { read_file: readFileTool("/tmp") },
 		});
-		setLogFile(logFile);
-		try {
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "read a file" }]), sink);
+		const lines = await capturedLog(async () => {
+			const sink = submit(r, "read a file");
 			expect(await sink.done).toEqual({ kind: "completed" });
-			const lines = readFileSync(logFile, "utf8")
-				.trim()
-				.split("\n")
-				.map((l) => JSON.parse(l) as Record<string, unknown>);
-			const rejected = lines.find((l) => l.msg === "tool call rejected");
-			expect(rejected).toMatchObject({ tool: "read_file", arg: "{}" });
-			// The validation error names the missing field — the whole
-			// diagnosis in one line.
-			expect(String(rejected?.error)).toContain("path");
-			// And the stop reason rides the completion line.
-			expect(lines.find((l) => l.msg === "turn completed")?.finish).toBe("stop");
-		} finally {
-			setLogFile(null);
-			store.close();
-		}
+		});
+		const rejected = lines.find((l) => l.msg === "tool call rejected");
+		expect(rejected).toMatchObject({ tool: "read_file", arg: "{}" });
+		// The validation error names the missing field — the whole
+		// diagnosis in one line.
+		expect(String(rejected?.error)).toContain("path");
+		// And the stop reason rides the completion line.
+		expect(lines.find((l) => l.msg === "turn completed")?.finish).toBe("stop");
+		r.store.close();
 	});
 
 	test("a throwing tool execute leaves a trace in the log", async () => {
-		const dir = tmpDir("goblin-rt-log-");
-		const logFile = join(dir, "goblin.log");
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		let call = 0;
-		const model = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-1",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unimplemented");
-			},
-			doStream() {
-				call++;
-				const stream = new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						controller.enqueue({ type: "stream-start", warnings: [] });
-						if (call === 1) {
-							controller.enqueue({
-								type: "tool-call",
-								toolCallId: "c1",
-								toolName: "boom",
-								input: "{}",
-							});
-						} else {
-							controller.enqueue({ type: "text-start", id: "t1" });
-							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
-							controller.enqueue({ type: "text-end", id: "t1" });
-						}
-						controller.enqueue({
-							type: "finish",
-							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
-							usage: {
-								inputTokens: {
-									total: 1,
-									noCache: undefined,
-									cacheRead: undefined,
-									cacheWrite: undefined,
-								},
-								outputTokens: { total: 1, text: undefined, reasoning: undefined },
-							},
-						});
-						controller.close();
-					},
-				});
-				return { stream };
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({
+		const edge = scriptedEdge([
+			[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "boom"), finishPart("tool-calls")],
+			textParts("ok"),
+		]);
+		const r = rig({
+			model: edge.model,
+			step: { contextWindow: 1000 },
+			tools: {
 				boom: tool({
 					description: "always throws",
 					inputSchema: z.object({}),
@@ -1835,105 +1324,48 @@ describe("cache stability", () => {
 						throw new Error("kapow");
 					},
 				}),
-			}),
+			},
 		});
-		setLogFile(logFile);
-		try {
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "boom" }]), sink);
+		const lines = await capturedLog(async () => {
+			const sink = submit(r, "boom");
 			expect(await sink.done).toEqual({ kind: "completed" });
-			const lines = readFileSync(logFile, "utf8")
-				.trim()
-				.split("\n")
-				.map((l) => JSON.parse(l) as Record<string, unknown>);
-			const failed = lines.find((l) => l.msg === "tool execute failed");
-			expect(failed).toMatchObject({ tool: "boom" });
-			expect(String(failed?.error)).toContain("kapow");
-		} finally {
-			setLogFile(null);
-			store.close();
-		}
+		});
+		const failed = lines.find((l) => l.msg === "tool execute failed");
+		expect(failed).toMatchObject({ tool: "boom" });
+		expect(String(failed?.error)).toContain("kapow");
+		r.store.close();
 	});
 
 	test("a completed turn at ≥75% of the window compacts; below it does not", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		// Seed three big exchanges + the turn's own: the compactor must fold
 		// the first three into a summary and keep the live one whole.
-		const big = "x".repeat(600);
-		for (let i = 0; i < 3; i++) {
-			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-			store.append(
-				conv.id,
-				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-				{ anchorSeq: store.lastUserSeq(conv.id) },
-			);
-		}
-		const model = (inputTokens: number) =>
-			({
-				specificationVersion: "v4",
-				provider: "fake",
-				modelId: "fake-1",
-				supportedUrls: {},
-				doGenerate() {
-					throw new Error("unimplemented");
-				},
-				doStream() {
-					const stream = new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							controller.enqueue({ type: "text-start", id: "t1" });
-							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
-							controller.enqueue({ type: "text-end", id: "t1" });
-							controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "stop", raw: undefined },
-								usage: {
-									inputTokens: {
-										total: inputTokens,
-										noCache: undefined,
-										cacheRead: undefined,
-										cacheWrite: undefined,
-									},
-									outputTokens: {
-										total: 1,
-										text: undefined,
-										reasoning: undefined,
-									},
-								},
-							});
-							controller.close();
-						},
-					});
-					return { stream };
-				},
-			}) as unknown as LanguageModel;
 		const summaries: string[] = [];
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: model(750), system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "zai/glm-5.3",
-				summarize: async (_conv, _system, prompt, _signal) => {
-					summaries.push(prompt);
-					return "the folded era";
+		const r = rig({
+			model: scriptedEdge([textParts("ok", 750)]).model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "zai/glm-5.3",
+					summarize: async (_conv, _system, prompt) => {
+						summaries.push(prompt);
+						return "the folded era";
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		// The compaction runs in-lane AFTER the sinks are notified — done
 		// resolving only means the reply landed. Poll for the pointer,
 		// bounded, instead of a fixed sleep.
-		await waitUntil(() => store.getCompaction(conv.id) !== null, "compaction pointer lands");
+		await waitUntil(() => r.store.getCompaction(r.conv.id) !== null, "compaction pointer lands");
 		// Exactly 75% is inclusive — the trigger fired.
 		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
 		// next queued turn's snapshot — here, before done resolves.
 		expect(summaries).toHaveLength(1);
 		expect(summaries[0]).toContain("q0");
-		const pointer = store.getCompaction(conv.id);
+		const pointer = r.store.getCompaction(r.conv.id);
 		// The budget keeps a chunky recent tail (whole exchanges only), so
 		// the cut lands at the end of the second exchange — seq 4 — with the
 		// live exchange (u7/a7) whole in the tail.
@@ -1943,8 +1375,8 @@ describe("cache stability", () => {
 			model: "zai/glm-5.3",
 		});
 		// The record stays whole; the model view is summary + kept tail.
-		expect(store.history(conv.id)).toHaveLength(8);
-		const view = store.modelEntries(conv.id);
+		expect(r.store.history(r.conv.id)).toHaveLength(8);
+		const view = r.store.modelEntries(r.conv.id);
 		expect(view).toHaveLength(5);
 		expect((view[0]!.message.parts[0] as { text: string }).text).toContain("the folded era");
 		const lastText = view
@@ -1953,427 +1385,267 @@ describe("cache stability", () => {
 			| { text: string }
 			| undefined;
 		expect(lastText?.text).toBe("ok");
-		store.close();
+		r.store.close();
 
 		// Just below the threshold (74%): no compaction, no pointer.
-		const store2 = openStore(tmpDb("goblin-rt-"));
-		const conv2 = store2.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime2 = new Runtime({
-			store: store2,
-			buildStep: () => ({ model: model(740), system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: async () => {
-					throw new Error("must not compact");
+		const r2 = rig({
+			model: scriptedEdge([textParts("ok", 740)]).model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: async () => {
+						throw new Error("must not compact");
+					},
 				},
 			},
 		});
-		const sink2 = new RecordingSink();
-		runtime2.submit(conv2, userMessage([{ type: "text", text: "hi" }]), sink2);
-		expect(await sink2.done).toEqual({ kind: "completed" });
-		expect(store2.getCompaction(conv2.id)).toBeNull();
-		store2.close();
+		expect(await submit(r2, "hi").done).toEqual({ kind: "completed" });
+		expect(r2.store.getCompaction(r2.conv.id)).toBeNull();
+		r2.store.close();
 	});
 
 	test("/compact serializes behind a running turn — no orphaned exchange", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const big = "x".repeat(600);
-		for (let i = 0; i < 3; i++) {
-			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-			store.append(
-				conv.id,
-				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-				{ anchorSeq: store.lastUserSeq(conv.id) },
-			);
-		}
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: fakeModel(["slow ", "reply"], 40),
-				system: "test",
-				contextWindow: 1000,
-			}),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: async () => "folded",
-			},
+		const r = rig({
+			deltas: ["slow ", "reply"],
+			delayMs: 40,
+			step: { contextWindow: 1000 },
+			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
 		// The manual compact queues while the turn still runs — it must not
 		// choose a cut until the turn's response is appended to history.
-		const compacted = runtime.compact(conv);
+		const compacted = r.runtime.compact(r.conv);
 		await sink.done;
 		const outcome = await compacted;
 		expect(outcome.kind).toBe("compacted");
-		const boundary = store.getCompaction(conv.id)!.boundarySeq;
+		const boundary = r.store.getCompaction(r.conv.id)!.boundarySeq;
 		// THE invariant (DESIGN.md, Compaction): the model view's tail is
 		// exactly the events whose causal position follows the boundary —
 		// nothing orphaned (an anchored reply without its question), and
 		// nothing silently swallowed (an event neither summarized nor shown).
-		const tail = store
-			.modelEntries(conv.id)
+		const tail = r.store
+			.modelEntries(r.conv.id)
 			.slice(1)
 			.map((e) => e.seq);
-		const expected = store
-			.historyDetail(conv.id)
+		const expected = r.store
+			.historyDetail(r.conv.id)
 			.filter((e) => (e.anchorSeq ?? e.seq) > boundary)
 			.map((e) => e.seq);
 		expect(tail).toEqual(expected);
-		store.close();
+		r.store.close();
 	});
 
 	test("/stop drops a queued /compact — it resolves as a noop", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: fakeModel(["slow ", "reply"], 40),
-				system: "test",
-				contextWindow: 1000,
-			}),
-			makeTools: () => ({}),
-			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+		const r = rig({
+			deltas: ["slow ", "reply"],
+			delayMs: 40,
+			step: { contextWindow: 1000 },
+			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		await sink.firstDelta; // mid-stream: the compact queues behind the turn
-		const compacted = runtime.compact(conv);
-		const { stopped } = runtime.stop(conv.id);
+		const compacted = r.runtime.compact(r.conv);
+		const { stopped } = stop(r);
 		expect(stopped).toBe(true);
 		// stop means stop — the queued job drops like a queued turn, but
 		// its promise still settles so the /compact reply fires.
 		expect(await compacted).toEqual({ kind: "noop", reason: "stopped" });
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("/stop during a pending buildStep aborts the compaction — no pointer written", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const big = "x".repeat(600);
-		for (let i = 0; i < 3; i++) {
-			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-			store.append(
-				conv.id,
-				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-				{ anchorSeq: store.lastUserSeq(conv.id) },
-			);
-		}
 		// buildStep hangs until the stop has landed: the abort controller
 		// must be registered BEFORE this await, or the stop aborts a null
 		// controller and the compaction runs on despite it.
-		let releaseBuild!: () => void;
-		const buildGate = new Promise<void>((r) => {
-			releaseBuild = r;
-		});
-		const runtime = new Runtime({
-			store,
+		const buildGate = deferred<void>();
+		const r = rig({
 			buildStep: () =>
-				buildGate.then(() => ({
+				buildGate.promise.then(() => ({
 					model: fakeModel(["reply"], 5),
 					system: "test",
 					contextWindow: 1000,
 				})),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				// Fails fast on an already-aborted signal, as a real model call
-				// does — the summary must never run past a stop.
-				summarize: (_conv, _system, _prompt, signal) =>
-					signal.aborted
-						? Promise.reject(new Error("summarize aborted"))
-						: Promise.resolve("must not summarize"),
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					// Fails fast on an already-aborted signal, as a real model call
+					// does — the summary must never run past a stop.
+					summarize: (_conv, _system, _prompt, signal) =>
+						signal.aborted
+							? Promise.reject(new Error("summarize aborted"))
+							: Promise.resolve("must not summarize"),
+				},
 			},
 		});
-		const compacted = runtime.compact(conv);
+		seedExchanges(r.store, r.conv.id);
+		const compacted = r.runtime.compact(r.conv);
 		// The compaction is now suspended inside buildStep with its
 		// controller registered — stop must see (and abort) it.
-		const { stopped } = runtime.stop(conv.id);
+		const { stopped } = stop(r);
 		expect(stopped).toBe(true);
-		releaseBuild();
+		buildGate.resolve();
 		// /stop carries two fences — the epoch bump and the abort — and the
 		// authority check lands first now: the compaction rejects as fenced
 		// before the (pre-aborted) summary call could even start.
 		await expect(compacted).rejects.toThrow("turn fenced");
 		// No history pointer was written despite the summary path being
 		// reachable — the crossing retries on the next threshold.
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const big = "x".repeat(600);
-		for (let i = 0; i < 3; i++) {
-			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-			store.append(
-				conv.id,
-				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-				{ anchorSeq: store.lastUserSeq(conv.id) },
-			);
-		}
-		// The frozen prompt snapshot the completed turn holds — the fenced
-		// compaction must not clear it: that refresh belongs to the
-		// compaction that actually lands.
-		store.savePromptSnapshot(conv.id, "frozen system prompt", ["seed"]);
 		// Gate the summary call so the settings change lands mid-compaction.
 		// /memory bumps the epoch without touching the abort signal — unlike
 		// /stop there is no abort to carry the fence, only the commit check.
-		let summarizeStarted!: () => void;
-		const started = new Promise<void>((r) => {
-			summarizeStarted = r;
-		});
-		let releaseSummary!: (summary: string) => void;
-		const gate = new Promise<string>((r) => {
-			releaseSummary = r;
-		});
+		const started = deferred<void>();
+		const gate = deferred<string>();
 		let summarizeCalls = 0;
-		const model = (inputTokens: number) =>
-			({
-				specificationVersion: "v4",
-				provider: "fake",
-				modelId: "fake-1",
-				supportedUrls: {},
-				doGenerate() {
-					throw new Error("unimplemented");
-				},
-				doStream() {
-					const stream = new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							controller.enqueue({ type: "text-start", id: "t1" });
-							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
-							controller.enqueue({ type: "text-end", id: "t1" });
-							controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "stop", raw: undefined },
-								usage: {
-									inputTokens: {
-										total: inputTokens,
-										noCache: undefined,
-										cacheRead: undefined,
-										cacheWrite: undefined,
-									},
-									outputTokens: {
-										total: 1,
-										text: undefined,
-										reasoning: undefined,
-									},
-								},
-							});
-							controller.close();
-						},
-					});
-					return { stream };
-				},
-			}) as unknown as LanguageModel;
 		// Turn one crosses the threshold (75%); the barrier turn below stays
 		// far under it so it triggers no second compaction.
-		let builds = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model: model(builds++ === 0 ? 750 : 50),
-				system: "test",
-				contextWindow: 1000,
-			}),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: (_conv, _system, _prompt, signal) => {
-					if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
-					summarizeCalls++;
-					summarizeStarted();
-					return gate;
+		const edge = scriptedEdge([textParts("ok", 750)], { extra: textParts("ok", 50) });
+		const r = rig({
+			model: edge.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: (_conv, _system, _prompt, signal) => {
+						if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
+						summarizeCalls++;
+						started.resolve();
+						return gate.promise;
+					},
 				},
 			},
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		seedExchanges(r.store, r.conv.id);
+		// The frozen prompt snapshot the completed turn holds — the fenced
+		// compaction must not clear it: that refresh belongs to the
+		// compaction that actually lands.
+		r.store.savePromptSnapshot(r.conv.id, "frozen system prompt", ["seed"]);
+		const sink = submit(r, "live question");
 		expect(await sink.done).toEqual({ kind: "completed" });
-		await started; // the threshold compaction's summary is now in flight
+		await started.promise; // the threshold compaction's summary is now in flight
 		// A queued successor settles only after the in-lane compaction —
 		// its done is the barrier proving the fenced commit attempt ran.
-		const barrier = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), barrier);
+		const barrier = submit(r, "follow-up");
 		// The epoch-changing mutation /memory uses — no /stop, no abort.
-		store.applySettings(conv.id, { memoryExcluded: true });
-		expect(store.get(conv.id)?.epoch).toBe(1);
-		releaseSummary("the folded era");
+		r.store.applySettings(r.conv.id, { memoryExcluded: true });
+		expect(r.store.get(r.conv.id)?.epoch).toBe(1);
+		gate.resolve("the folded era");
 		expect(await barrier.done).toEqual({ kind: "completed" });
 		// Settle the lane before closing the store — the barrier turn's
 		// post-done work must finish first.
-		await runtime.shutdown();
+		await r.runtime.shutdown();
 		// The summary resolved, but the pointer never landed and the frozen
 		// snapshot survived — the next threshold crossing retries under the
 		// new settings.
 		expect(summarizeCalls).toBe(1);
-		expect(store.getCompaction(conv.id)).toBeNull();
-		expect(store.promptSnapshot(conv.id)).toEqual({
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		expect(r.store.promptSnapshot(r.conv.id)).toEqual({
 			text: "frozen system prompt",
 			sources: ["seed"],
 		});
-		store.close();
+		r.store.close();
 	});
 
 	test("a settings epoch change fences a manual /compact mid-summary — it rejects, no pointer", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const big = "x".repeat(600);
-		for (let i = 0; i < 3; i++) {
-			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
-			store.append(
-				conv.id,
-				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
-				{ anchorSeq: store.lastUserSeq(conv.id) },
-			);
-		}
-		let summarizeStarted!: () => void;
-		const started = new Promise<void>((r) => {
-			summarizeStarted = r;
-		});
-		let releaseSummary!: (summary: string) => void;
-		const gate = new Promise<string>((r) => {
-			releaseSummary = r;
-		});
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: fakeModel(["reply"], 1), system: "test", contextWindow: 1000 }),
-			makeTools: () => ({}),
-			compaction: {
-				modelRef: () => "m",
-				summarize: (_conv, _system, _prompt, signal) => {
-					if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
-					summarizeStarted();
-					return gate;
+		const started = deferred<void>();
+		const gate = deferred<string>();
+		const r = rig({
+			deltas: ["reply"],
+			delayMs: 1,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					summarize: (_conv, _system, _prompt, signal) => {
+						if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
+						started.resolve();
+						return gate.promise;
+					},
 				},
 			},
 		});
-		const compacted = runtime.compact(conv);
-		await started; // the manual job's summary is now in flight
-		store.applySettings(conv.id, { memoryExcluded: true }); // epoch bump, no abort
-		releaseSummary("the folded era");
+		seedExchanges(r.store, r.conv.id);
+		const compacted = r.runtime.compact(r.conv);
+		await started.promise; // the manual job's summary is now in flight
+		r.store.applySettings(r.conv.id, { memoryExcluded: true }); // epoch bump, no abort
+		gate.resolve("the folded era");
 		// The job rejects with the fence — the /compact reply reports it and
 		// nothing was written.
 		await expect(compacted).rejects.toThrow("turn fenced");
-		await runtime.shutdown();
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		await r.runtime.shutdown();
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("/stop while completion delivery is pending prevents a new auto-compaction", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let builds = 0;
-		let release!: () => void;
-		const pendingDelivery = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const runtime = new Runtime({
-			store,
+		const pendingDelivery = deferred<void>();
+		const r = rig({
+			deltas: ["ok"],
+			delayMs: 1,
+			step: { contextWindow: 1 },
 			buildStep: () => {
 				builds++;
 				return { model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
 			},
-			makeTools: () => ({}),
-			compaction: { modelRef: () => "m", summarize: async () => "should not run" },
+			deps: { compaction: { modelRef: () => "m", summarize: async () => "should not run" } },
 		});
 		const sink = new RecordingSink();
 		const delivered = sink.onDone.bind(sink);
 		sink.onDone = async (done) => {
-			await pendingDelivery;
+			await pendingDelivery.promise;
 			delivered(done);
 		};
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta;
 		// Let the turn reach onDone, then revoke its authority while the
 		// delivery remains parked.
-		await waitUntil(() => store.history(conv.id).length >= 2, "assistant reply lands");
-		expect(store.history(conv.id)).toHaveLength(2);
-		runtime.stop(conv.id);
-		release();
+		await waitUntil(() => r.store.history(r.conv.id).length >= 2, "assistant reply lands");
+		stop(r);
+		pendingDelivery.resolve();
 		await sink.done;
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		await drain(r);
 		expect(builds).toBe(1);
-		expect(store.getCompaction(conv.id)).toBeNull();
-		store.close();
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
 	});
 
 	test("provider warnings are logged, not dropped", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const dir = tmpDir("goblin-rt-log-");
-		const logFile = join(dir, "goblin.log");
-		const model = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-1",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unimplemented");
-			},
-			doStream() {
-				const stream = new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						controller.enqueue({
-							type: "stream-start",
-							warnings: [{ type: "unsupported", feature: "temperature" }],
-						});
-						controller.enqueue({ type: "text-start", id: "t1" });
-						controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
-						controller.enqueue({ type: "text-end", id: "t1" });
-						controller.enqueue({
-							type: "finish",
-							finishReason: { unified: "stop", raw: undefined },
-							usage: {
-								inputTokens: {
-									total: 1,
-									noCache: undefined,
-									cacheRead: undefined,
-									cacheWrite: undefined,
-								},
-								outputTokens: { total: 1, text: undefined, reasoning: undefined },
-							},
-						});
-						controller.close();
-					},
-				});
-				return { stream };
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		setLogFile(logFile);
-		try {
-			const sink = new RecordingSink();
-			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const edge = scriptedEdge([
+			[
+				{
+					type: "stream-start",
+					warnings: [{ type: "unsupported", feature: "temperature" }],
+				},
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "ok" },
+				{ type: "text-end", id: "t1" },
+				finishPart("stop"),
+			],
+		]);
+		const r = rig({ model: edge.model });
+		// The warn rides the same turn's log trail — a warning that never
+		// lands was the fail-quiet seam this guards against.
+		const lines = await capturedLog(async (logFile) => {
+			const sink = submit(r, "hi");
 			expect(await sink.done).toEqual({ kind: "completed" });
-			// The warn rides the same turn's log trail — a warning that never
-			// lands was the fail-quiet seam this guards against.
 			await waitUntil(
 				() => readFileSync(logFile, "utf8").includes("model warnings"),
 				"warnings land in the log",
 			);
-			const lines = readFileSync(logFile, "utf8")
-				.trim()
-				.split("\n")
-				.map((l) => JSON.parse(l) as Record<string, unknown>);
-			const warn = lines.find((l) => l.msg === "model warnings");
-			expect(warn?.warnings).toEqual(["unsupported:temperature"]);
-		} finally {
-			setLogFile(null);
-			store.close();
-		}
+		});
+		expect(lines.find((l) => l.msg === "model warnings")?.warnings).toEqual([
+			"unsupported:temperature",
+		]);
+		r.store.close();
 	});
 
 	test("pruneBetweenTurns commits markers before the claimed batch's view is built", async () => {
@@ -2457,27 +1729,15 @@ describe("cache stability", () => {
 
 describe("skill reviewer hook", () => {
 	test("shutdown fences a held gate after its conversation lane has drained", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: fakeModel(["answer"], 1), system: "test" }),
-			makeTools: () => ({}),
-		});
-		let release!: () => void;
-		let entered!: () => void;
-		const held = new Promise<void>((r) => {
-			release = r;
-		});
-		const atGate = new Promise<void>((r) => {
-			entered = r;
-		});
-		runtime.setReviewer(
+		const r = rig({ deltas: ["answer"], delayMs: 1 });
+		const held = deferred<void>();
+		const atGate = deferred<void>();
+		r.runtime.setReviewer(
 			new Reviewer({
 				gate: {
 					decide: async () => {
-						entered();
-						await held;
+						atGate.resolve();
+						await held.promise;
 						return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
 					},
 				},
@@ -2487,22 +1747,20 @@ describe("skill reviewer hook", () => {
 				reviewModel: async () => {
 					throw new Error("shutdown let a review start");
 				},
-				store,
+				store: r.store,
 				skillsDir: "/none",
 				proposedDir: "/none",
 				workspaceDir: "/none",
 				notify: async () => {},
 			}),
 		);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "save this" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await atGate;
+		expect(await submit(r, "save this").done).toEqual({ kind: "completed" });
+		await atGate.promise;
 		// A settled drain removes the lane; shutdown must still find the gate.
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		await runtime.shutdown();
-		store.close();
-		release();
+		await drain(r);
+		await r.runtime.shutdown();
+		r.store.close();
+		held.resolve();
 		await sleep(20); // settle window: the released gate's continuation has no handle
 	});
 	// The finish-side behaviors (snapshot construction, exclusion,
@@ -2511,9 +1769,9 @@ describe("skill reviewer hook", () => {
 	// shutdown fencing a held gate, and authority (a fenced turn never
 	// reaches the finish path at all).
 	test("a fenced turn never gates", async () => {
-		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const r = rig({ deltas: ["a", "b", "c", "d", "e"], delayMs: 20 });
 		let gated = false;
-		runtime.setReviewer(
+		r.runtime.setReviewer(
 			new Reviewer({
 				gate: {
 					decide: async () => {
@@ -2527,21 +1785,20 @@ describe("skill reviewer hook", () => {
 				reviewModel: async () => {
 					throw new Error("must not resolve");
 				},
-				store,
+				store: r.store,
 				skillsDir: "/none",
 				proposedDir: "/none",
 				workspaceDir: "/none",
 				notify: async () => {},
 			}),
 		);
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const sink = submit(r, "hi");
 		await sink.firstDelta;
-		store.bumpEpoch(conv.id);
+		r.store.bumpEpoch(r.conv.id);
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		await sleep(50); // the fire-and-forget gate would have fired by now
 		expect(gated).toBe(false);
-		store.close();
+		r.store.close();
 	});
 });
 
@@ -2552,75 +1809,24 @@ describe("skill reviewer hook", () => {
 // the step boundary (prepareStep before call #2) opens exactly when the
 // test decides. Every wire prompt is captured JSON-stringified.
 function gatedToolModel(secondText: string) {
-	const prompts: string[] = [];
-	let calls = 0;
-	const finish = (reason: "tool-calls" | "stop"): LanguageModelV4StreamPart => ({
-		type: "finish",
-		finishReason: { unified: reason, raw: undefined },
-		usage: {
-			inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-			outputTokens: { total: 1, text: undefined, reasoning: undefined },
-		},
-	});
-	const base = {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream() {
-			const n = ++calls;
-			const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
-			if (n === 1) {
-				parts.push(
-					{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" },
-					finish("tool-calls"),
-				);
-			} else {
-				parts.push(
-					{ type: "text-start", id: "t2" },
-					{ type: "text-delta", id: "t2", delta: secondText },
-					{ type: "text-end", id: "t2" },
-					finish("stop"),
-				);
-			}
-			return {
-				stream: new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						for (const p of parts) controller.enqueue(p);
-						controller.close();
-					},
-				}),
-			};
-		},
-	};
-	const model = {
-		...base,
-		doStream(o: { prompt: unknown }) {
-			prompts.push(JSON.stringify(o.prompt));
-			return (
-				base as unknown as {
-					doStream(o: unknown): { stream: ReadableStream<LanguageModelV4StreamPart> };
-				}
-			).doStream(o);
-		},
-	} as unknown as LanguageModel;
-	return { model, prompts };
+	return scripted(
+		[
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart("c1", "probe"),
+				finishPart("tool-calls"),
+			],
+			textParts(secondText),
+		],
+		{ extra: textParts(secondText) },
+	);
 }
 
 function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: Set<string>) {
-	const store = openStore(tmpDb("goblin-rt-"));
-	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	const runtime = new Runtime({
-		store,
-		buildStep: () => ({
-			model,
-			system: "test",
-			...(modalities ? { inputModalities: modalities } : {}),
-		}),
-		makeTools: () => ({
+	return rig({
+		model,
+		step: modalities ? { inputModalities: modalities } : {},
+		tools: {
 			probe: tool({
 				inputSchema: z.object({}),
 				execute: async () => {
@@ -2628,27 +1834,21 @@ function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: 
 					return { ok: true };
 				},
 			}),
-		}),
+		},
 	});
-	return { store, conv, runtime };
 }
 
 describe("steering", () => {
 	test("a submit during a live turn joins the next model call", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate);
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
+		const s1 = submit(r, "start this");
 		// Turn 1 is mid-tool-call (step 1 done, tool gated). Submit —
 		// this is the steer.
 		await s1.firstToolCall;
-		runtime.submit(conv, userMessage([{ type: "text", text: "actually pivot" }]), s2);
-		releaseTool();
+		const s2 = submit(r, "actually pivot");
+		gate.resolve();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(s1.text).toBe("adjusted"); // call #1 streams no text — only the tool call
@@ -2660,8 +1860,8 @@ describe("steering", () => {
 		expect(s2.chunks.some((c) => c.type === "start")).toBe(true);
 		// One turn, two model calls; the second call's wire prompt
 		// carries the steered message as an appended user message.
-		expect(prompts).toHaveLength(2);
-		const wire = JSON.parse(prompts[1]!) as {
+		expect(s.prompts).toHaveLength(2);
+		const wire = JSON.parse(s.prompts[1]!) as {
 			role: string;
 			content: { type: string; text?: string }[];
 		}[];
@@ -2672,36 +1872,32 @@ describe("steering", () => {
 		// History: both user messages, then one assistant exchange. The
 		// reply anchors after the steered message — the burst it
 		// actually answered.
-		const detail = store.historyDetail(conv.id);
+		const detail = r.store.historyDetail(r.conv.id);
 		expect(detail.map((d) => d.message.role)).toEqual(["user", "user", "assistant"]);
-		const steeredSeq = detail[1]!.seq;
-		expect(detail[2]!.anchorSeq).toBe(steeredSeq);
-		store.close();
+		expect(detail[2]!.anchorSeq).toBe(detail[1]!.seq);
+		r.store.close();
 	});
 
 	describe("live chunk subscription (resumable streams)", () => {
 		test("a mid-turn subscriber gets replay + live tail + one end; idle lanes are null", async () => {
-			let releaseTool: () => void = () => {};
-			const gate = new Promise<void>((r) => {
-				releaseTool = r;
-			});
-			const { model } = gatedToolModel("tail text");
-			const { store, conv, runtime } = steeringSetup(model, gate);
+			const gate = deferred<void>();
+			const s = gatedToolModel("tail text");
+			const r = steeringSetup(s.model, gate.promise);
 			const s1 = new RecordingSink();
 			// No submit yet — no lane, nothing to attach to.
 			expect(
-				runtime.subscribeLiveChunks(
-					conv.id,
+				r.runtime.subscribeLiveChunks(
+					r.conv.id,
 					() => {},
 					() => {},
 				),
 			).toBeNull();
-			runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), s1);
+			submit(r, "go", s1);
 			await s1.firstToolCall; // step 1 (the tool call) is on the wire, tool gated
 			const seen: UIMessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
-			const replay = runtime.subscribeLiveChunks(
-				conv.id,
+			const replay = r.runtime.subscribeLiveChunks(
+				r.conv.id,
 				(c) => seen.push(c),
 				(d) => {
 					endedRef.done = d;
@@ -2712,45 +1908,36 @@ describe("steering", () => {
 			// late joiner missed is included, not resumed mid-sentence.
 			expect(replay!.some((c) => c.type === "start")).toBe(true);
 			expect(replay!.some((c) => c.type === "tool-input-available")).toBe(true);
-			releaseTool();
+			gate.resolve();
 			expect(await s1.done).toEqual({ kind: "completed" });
 			expect(endedRef.done?.kind).toBe("completed");
 			// The subscriber saw the same wire as the head, gapless.
 			expect(seen).toEqual(s1.chunks.slice(replay!.length));
 			// After the turn settles, there is nothing left to attach to.
 			expect(
-				runtime.subscribeLiveChunks(
-					conv.id,
+				r.runtime.subscribeLiveChunks(
+					r.conv.id,
 					() => {},
 					() => {},
 				),
 			).toBeNull();
-			store.close();
+			r.store.close();
 		});
 	});
 
 	test("a submit during the turn's startup steers into the first call", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const { model, prompts } = recordingModel(["done"], 5);
-		let releaseStep: () => void = () => {};
-		const stepGate = new Promise<void>((r) => {
-			releaseStep = r;
-		});
-		const runtime = new Runtime({
-			store,
-			// buildStep still pending when the second submit lands.
+		const stepGate = deferred<void>();
+		// buildStep still pending when the second submit lands.
+		const r = rig({
 			buildStep: async () => {
-				await stepGate;
+				await stepGate.promise;
 				return { model, system: "test" };
 			},
-			makeTools: () => ({}),
 		});
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
-		releaseStep();
+		const s1 = submit(r, "one");
+		const s2 = submit(r, "two");
+		stepGate.resolve();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(s2.text).toBe(""); // delta-style text stays the head's seam
@@ -2758,46 +1945,38 @@ describe("steering", () => {
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");
-		store.close();
+		r.store.close();
 	});
 
 	test("input after the final model call queues into a successor turn", async () => {
-		const { model, prompts } = gatedToolModel("second");
-		const { store, conv, runtime } = steeringSetup(model);
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		const s = gatedToolModel("second");
+		const r = steeringSetup(s.model);
+		const s1 = submit(r, "one");
 		await s1.done; // turn fully over — no boundary left
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		const s2 = submit(r, "two");
 		expect(await s2.done).toEqual({ kind: "completed" });
-		expect(prompts).toHaveLength(3); // turn 1's tool loop = 2 calls + successor
-		const roles = store.history(conv.id).map((m) => m.role);
-		expect(roles).toEqual(["user", "assistant", "user", "assistant"]);
-		store.close();
+		expect(s.prompts).toHaveLength(3); // turn 1's tool loop = 2 calls + successor
+		expect(roles(r)).toEqual(["user", "assistant", "user", "assistant"]);
+		r.store.close();
 	});
 
 	test("a fenced turn requeues the steer instead of consuming it", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("never seen");
-		const { store, conv, runtime } = steeringSetup(model, gate);
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		const gate = deferred<void>();
+		const s = gatedToolModel("never seen");
+		const r = steeringSetup(s.model, gate.promise);
+		const s1 = submit(r, "one");
 		await s1.firstToolCall; // mid-tool-call
-		store.bumpEpoch(conv.id); // fence, without stop()'s queue drop
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
-		releaseTool();
+		r.store.bumpEpoch(r.conv.id); // fence, without stop()'s queue drop
+		const s2 = submit(r, "two");
+		gate.resolve();
 		expect(await s1.done).toEqual({ kind: "fenced" });
 		// The steered submit was requeued at the fence, not consumed —
 		// the successor turn answers it.
 		expect(await s2.done).toEqual({ kind: "completed" });
-		expect(prompts).toHaveLength(3);
-		expect(prompts[2]).toContain("two");
-		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		store.close();
+		expect(s.prompts).toHaveLength(3);
+		expect(s.prompts[2]).toContain("two");
+		await drain(r);
+		r.store.close();
 	});
 
 	test("a submit landing mid-conversion stays above the ownership mark", async () => {
@@ -2808,18 +1987,14 @@ describe("steering", () => {
 		const dir = tmpDir("goblin-rt-fifo-");
 		const fifo = join(dir, "photo.png");
 		execSync(`mkfifo '${fifo}'`);
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
-		const s1 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise, new Set(["text", "image"]));
+		const s1 = submit(r, "start this");
 		await s1.firstToolCall; // parked mid-tool-call
 		const s2 = new RecordingSink();
-		runtime.submit(
-			conv,
+		r.runtime.submit(
+			r.conv,
 			{
 				id: "steer-photo",
 				role: "user",
@@ -2832,10 +2007,9 @@ describe("steering", () => {
 			} as UIMessage,
 			s2,
 		);
-		releaseTool(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
+		gate.resolve(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
 		await sleep(30); // park window: a blocked FIFO read has no event surface to await
-		const s3 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), s3);
+		const s3 = submit(r, "follow-up");
 		// Unpark the photo and let the turn finish.
 		await writeFile(fifo, "pngdata");
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2846,13 +2020,13 @@ describe("steering", () => {
 		writeFileSync(fifo, "pngdata");
 		// The follow-up was never injected — a successor turn answers it.
 		expect(await s3.done).toEqual({ kind: "completed" });
-		expect(prompts).toHaveLength(3);
+		expect(s.prompts).toHaveLength(3);
 		// Call #2 carried the photo, not the follow-up.
-		expect(prompts[1]).toContain("photo.png");
-		expect(prompts[1]).not.toContain("follow-up");
+		expect(s.prompts[1]).toContain("photo.png");
+		expect(s.prompts[1]).not.toContain("follow-up");
 		// Turn 1's reply anchors after the photo — never after input it
 		// didn't read. The successor's reply anchors after the follow-up.
-		const detail = store.historyDetail(conv.id);
+		const detail = r.store.historyDetail(r.conv.id);
 		const seqOf = (id: string) => detail.find((d) => d.message.id === id)!.seq;
 		const assistants = detail.filter((d) => d.message.role === "assistant");
 		expect(assistants).toHaveLength(2);
@@ -2863,24 +2037,20 @@ describe("steering", () => {
 			...detail.filter((d) => d.message.role === "user").map((d) => d.seq),
 		);
 		expect(assistants[1]!.anchorSeq).toBe(followUpSeq);
-		store.close();
+		r.store.close();
 	});
 
 	test("a steered message that cannot convert errors its own delivery, not the conversation", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate);
-		const s1 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
+		const s1 = submit(r, "start this");
 		await s1.firstToolCall; // parked mid-tool-call
 		// Poison: a file part with an invalid URL — materializeAttachments
 		// passes it through untouched, convertToModelMessages throws.
 		const s2 = new RecordingSink();
-		runtime.submit(
-			conv,
+		r.runtime.submit(
+			r.conv,
 			{
 				id: "poison",
 				role: "user",
@@ -2891,39 +2061,34 @@ describe("steering", () => {
 			} as UIMessage,
 			s2,
 		);
-		releaseTool();
+		gate.resolve();
 		// The poison's own delivery errors; turn 1 completes over the rest.
 		expect(await s1.done).toEqual({ kind: "completed" });
 		const poisoned = await s2.done;
 		expect(poisoned.kind).toBe("error");
 		// Call #2 never saw the poison; the reply anchors at the trigger,
 		// not at the message it couldn't carry.
-		expect(prompts[1]).not.toContain("read this");
-		const first = store.historyDetail(conv.id);
+		expect(s.prompts[1]).not.toContain("read this");
+		const first = r.store.historyDetail(r.conv.id);
 		const firstReply = first.filter((d) => d.message.role === "assistant")[0]!;
 		expect(firstReply.anchorSeq).toBe(first.find((d) => d.message.id === "poison")!.seq - 1);
 		// A successor turn must survive the poison sitting in history:
 		// admission degrades it to a placeholder and the turn completes.
-		const s3 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "still there?" }]), s3);
+		const s3 = submit(r, "still there?");
 		expect(await s3.done).toEqual({ kind: "completed" });
-		expect(prompts).toHaveLength(3);
-		expect(prompts[2]).toContain("could not be prepared for the model");
-		expect(prompts[2]).toContain("still there?");
-		store.close();
+		expect(s.prompts).toHaveLength(3);
+		expect(s.prompts[2]).toContain("could not be prepared for the model");
+		expect(s.prompts[2]).toContain("still there?");
+		r.store.close();
 	});
 
 	test("an epoch change during a successful steer conversion fences it before join or replay (#115)", async () => {
 		const dir = tmpDir("goblin-rt-fifo-");
 		const fifo = join(dir, "photo.png");
 		execSync(`mkfifo '${fifo}'`);
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("never reaches the client");
-		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
-		const head = new RecordingSink();
+		const gate = deferred<void>();
+		const s = gatedToolModel("never reaches the client");
+		const r = steeringSetup(s.model, gate.promise, new Set(["text", "image"]));
 		const joinerChunks: UIMessageChunk[] = [];
 		class JoiningSink extends RecordingSink {
 			override onStreamChunk(c: UIMessageChunk) {
@@ -2931,13 +2096,13 @@ describe("steering", () => {
 			}
 		}
 		const joiner = new JoiningSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
+		const head = submit(r, "first");
 		await head.firstToolCall; // parked mid-tool-call
 		// The steer's conversion parks reading the FIFO; the epoch dies
 		// while it waits, and the conversion then SUCCEEDS — the fence
 		// must still hold on the success path, before join/replay/fold.
-		runtime.submit(
-			conv,
+		r.runtime.submit(
+			r.conv,
 			{
 				id: "photo-steer",
 				role: "user",
@@ -2950,18 +2115,18 @@ describe("steering", () => {
 			} as UIMessage,
 			joiner,
 		);
-		releaseTool();
+		gate.resolve();
 		await sleep(40); // park window: conversion is blocked on the FIFO read (see above)
-		store.bumpEpoch(conv.id);
+		r.store.bumpEpoch(r.conv.id);
 		await writeFile(fifo, "pngdata");
 		expect(await head.done).toEqual({ kind: "fenced" });
 		expect(await joiner.done).toEqual({ kind: "fenced" });
 		// The joiner never joined: no wire replay reached it after the
 		// fence, and no model request ever carried its content.
 		expect(joinerChunks).toHaveLength(0);
-		expect(prompts.every((p) => !p.includes("photo.png"))).toBe(true);
+		expect(s.prompts.every((p) => !p.includes("photo.png"))).toBe(true);
 		await sleep(20); // settle window before close: successor work has no handle here
-		store.close();
+		r.store.close();
 	});
 });
 
@@ -2975,28 +2140,20 @@ describe("app channel", () => {
 	// SSE"); what stays here is the Runtime-level steering pin the HTTP
 	// surface cannot assert as directly.
 	test("steering into a running app turn works through the same queue", async () => {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("chat-01"), "/w");
 		const { model, prompts } = recordingModel(["done"], 0);
-		let releaseStep: () => void = () => {};
-		const stepGate = new Promise<void>((r) => {
-			releaseStep = r;
-		});
-		const runtime = new Runtime({
-			store,
-			// buildStep still pending when the second submit lands — the
-			// steer folds it into the first model call.
+		const stepGate = deferred<void>();
+		// buildStep still pending when the second submit lands — the
+		// steer folds it into the first model call.
+		const r = rig({
+			addr: appAddress("chat-01"),
 			buildStep: async () => {
-				await stepGate;
+				await stepGate.promise;
 				return { model, system: "test" };
 			},
-			makeTools: () => ({}),
 		});
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
-		releaseStep();
+		const s1 = submit(r, "one");
+		const s2 = submit(r, "two");
+		stepGate.resolve();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(s2.text).toBe(""); // delta-style text stays the head's seam
@@ -3004,9 +2161,9 @@ describe("app channel", () => {
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");
-		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "user", "assistant"]);
-		await runtime.shutdown();
-		store.close();
+		expect(roles(r)).toEqual(["user", "user", "assistant"]);
+		await r.runtime.shutdown();
+		r.store.close();
 	});
 });
 
@@ -3017,68 +2174,57 @@ describe("app channel", () => {
 // Spin-off).
 describe("streaming lane boundary", () => {
 	test("a headless turn never absorbs a streaming submit — it heads the next turn", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
 		const headless = new HeadlessSink();
-		const streaming = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), headless);
-		await waitUntil(() => prompts.length >= 1, "step 1 on the wire"); // tool gated
-		runtime.submit(conv, userMessage([{ type: "text", text: "watch me" }]), streaming);
-		releaseTool();
+		submit(r, "start this", headless);
+		await waitUntil(() => s.prompts.length >= 1, "step 1 on the wire"); // tool gated
+		const streaming = submit(r, "watch me");
+		gate.resolve();
 		expect(await headless.done).toEqual({ kind: "completed" });
 		// Not folded into the headless turn — a successor turn ran and
 		// the streaming sink got the raw chunks as its head.
 		expect(await streaming.done).toEqual({ kind: "completed" });
 		expect(streaming.chunkTypes).toContain("text-delta");
 		expect(streaming.text).toBe("adjusted");
-		expect(prompts[1]).not.toContain("watch me");
-		expect(prompts[2]).toContain("watch me");
-		store.close();
+		expect(s.prompts[1]).not.toContain("watch me");
+		expect(s.prompts[2]).toContain("watch me");
+		r.store.close();
 	});
 
 	test("a streaming head absorbs both sink kinds, as before", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate);
-		const streaming = new RecordingSink();
-		const headless = new HeadlessSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), streaming);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
+		const streaming = submit(r, "one");
 		await streaming.firstToolCall; // parked mid-tool-call
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), headless);
-		releaseTool();
+		const headless = new HeadlessSink();
+		submit(r, "two", headless);
+		gate.resolve();
 		expect(await streaming.done).toEqual({ kind: "completed" });
 		expect(await headless.done).toEqual({ kind: "completed" });
 		// One turn — the steered message rode call #2's prompt.
-		expect(prompts).toHaveLength(2);
-		expect(prompts[1]).toContain("two");
-		store.close();
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("two");
+		r.store.close();
 	});
 
 	test("a headless turn still steers headless followers into the live call", async () => {
-		let releaseTool: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			releaseTool = r;
-		});
-		const { model, prompts } = gatedToolModel("adjusted");
-		const { store, conv, runtime } = steeringSetup(model, gate);
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
 		const first = new HeadlessSink();
+		submit(r, "one", first);
+		await waitUntil(() => s.prompts.length >= 1, "step 1 on the wire"); // tool gated
 		const second = new HeadlessSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), first);
-		await waitUntil(() => prompts.length >= 1, "step 1 on the wire"); // tool gated
-		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), second);
-		releaseTool();
+		submit(r, "two", second);
+		gate.resolve();
 		expect(await first.done).toEqual({ kind: "completed" });
 		expect(await second.done).toEqual({ kind: "completed" });
-		expect(prompts).toHaveLength(2);
-		expect(prompts[1]).toContain("two");
-		store.close();
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("two");
+		r.store.close();
 	});
 
 	// #82: the lane boundary must hold at ADMISSION too. Drain's splice
@@ -3090,27 +2236,18 @@ describe("streaming lane boundary", () => {
 	// admission, not arrivals during the model loop.
 	test("admission never reads a queued streaming submit — the client keeps its own turn", async () => {
 		const { model, prompts } = recordingModel(["answer"], 5);
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({}),
-		});
-		let release: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
-		const parked = new ParkedDoneSink(gate);
+		const r = rig({ model });
+		const gate = deferred<void>();
+		const parked = new ParkedDoneSink(gate.promise);
 		const background = new HeadlessSink();
 		const client = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "first turn" }]), parked);
+		submit(r, "first turn", parked);
 		// The drain loop is parked in the first turn's delivery completion —
 		// the two submits below only queue (lane still running).
 		await parked.done;
-		runtime.submit(conv, userMessage([{ type: "text", text: "background beat" }]), background);
-		runtime.submit(conv, userMessage([{ type: "text", text: "client owns me" }]), client);
-		release();
+		submit(r, "background beat", background);
+		submit(r, "client owns me", client);
+		gate.resolve();
 		expect(await background.done).toEqual({ kind: "completed" });
 		expect(await client.done).toEqual({ kind: "completed" });
 		// Three turns ran: parked, background, the client's own. The
@@ -3125,7 +2262,7 @@ describe("streaming lane boundary", () => {
 		// BEFORE the client's input — it never anchors to a message this
 		// turn didn't read. The client's reply anchors to the client's
 		// message it actually answered.
-		const detail = store.historyDetail(conv.id);
+		const detail = r.store.historyDetail(r.conv.id);
 		expect(detail.map((d) => d.message.role)).toEqual([
 			"user",
 			"assistant", // first turn
@@ -3136,7 +2273,7 @@ describe("streaming lane boundary", () => {
 		]);
 		expect(detail[3]!.anchorSeq).toBe(detail[2]!.seq);
 		expect(detail[5]!.anchorSeq).toBe(detail[4]!.seq);
-		store.close();
+		r.store.close();
 	});
 });
 
@@ -3146,68 +2283,34 @@ describe("loop landings", () => {
 	// (10 identical call+result pairs warn, 20 cut), the system1 loop
 	// watchdog (two consecutive stuck verdicts cut), and the context
 	// landing (a step at ≥85% of the catalog window lands tools-off).
-	const finish = (reason: "stop" | "tool-calls", inputTokens = 10): LanguageModelV4StreamPart => ({
-		type: "finish",
-		finishReason: { unified: reason, raw: undefined },
-		usage: {
-			inputTokens: { total: inputTokens, noCache: 2, cacheRead: 8, cacheWrite: undefined },
-			outputTokens: { total: 1, text: 1, reasoning: undefined },
-		},
-	});
 	// Tool-greedy while tools exist (and under the call cap, if any),
 	// answering the moment toolChoice goes none — the compliant model
 	// every forced step relies on.
 	function loopModel(
 		opts: { calls?: number; input?: (n: number) => unknown; inputTokens?: number } = {},
-	): {
-		model: LanguageModel;
-		requests: { toolChoice: unknown; prompt: string }[];
-	} {
+	) {
 		const requests: { toolChoice: unknown; prompt: string }[] = [];
-		const model: LanguageModel = {
-			specificationVersion: "v4",
-			provider: "fake",
+		const edge = scriptedEdge([], {
 			modelId: "loop-test",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unused");
-			},
-			async doStream(options) {
-				const n = requests.length + 1;
+			onStream: (options, index) => {
+				const n = index + 1;
 				requests.push({
 					toolChoice: options.toolChoice?.type ?? null,
 					prompt: JSON.stringify(options.prompt ?? []),
 				});
-				const noTools = options.toolChoice?.type === "none";
-				const callTool = !noTools && (opts.calls === undefined || n <= opts.calls);
-				const parts: LanguageModelV4StreamPart[] = callTool
+				const callTool =
+					options.toolChoice?.type !== "none" &&
+					(opts.calls === undefined || n <= opts.calls);
+				return callTool
 					? [
-							{
-								type: "tool-call",
-								toolCallId: `c${n}`,
-								toolName: "probe",
-								input: JSON.stringify(opts.input?.(n) ?? {}),
-							},
-							finish("tool-calls", opts.inputTokens ?? 10),
+							{ type: "stream-start" as const, warnings: [] },
+							toolCallPart(`c${n}`, "probe", JSON.stringify(opts.input?.(n) ?? {})),
+							finishPart("tool-calls", opts.inputTokens ?? 10),
 						]
-					: [
-							{ type: "text-start", id: "t" },
-							{ type: "text-delta", id: "t", delta: "the wrapped answer" },
-							{ type: "text-end", id: "t" },
-							finish("stop", opts.inputTokens ?? 10),
-						];
-				return {
-					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							for (const p of parts) controller.enqueue(p);
-							controller.close();
-						},
-					}),
-				};
+					: textParts("the wrapped answer", opts.inputTokens ?? 10);
 			},
-		};
-		return { model, requests };
+		});
+		return { model: edge.model, requests };
 	}
 	function loopSetup(
 		model: LanguageModel,
@@ -3217,32 +2320,22 @@ describe("loop landings", () => {
 			contextWindow?: number;
 		} = {},
 	) {
-		const store = openStore(tmpDb("goblin-rt-"));
-		const conv = store.resolve(appAddress("loop"), "/w");
 		let executions = 0;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({
-				model,
-				system: "test",
-				...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
-			}),
-			makeTools: () => ({
+		const r = rig({
+			model,
+			addr: appAddress("loop"),
+			step: opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {},
+			tools: {
 				probe: tool({
 					inputSchema: z.looseObject({}),
-					execute: opts.executeAsync
-						? async () => {
-								executions++;
-								return opts.executeAsync!();
-							}
-						: () => {
-								executions++;
-								return opts.execute ? opts.execute() : "ok";
-							},
+					execute: async () => {
+						executions++;
+						return opts.executeAsync ? opts.executeAsync() : (opts.execute?.() ?? "ok");
+					},
 				}),
-			}),
+			},
 		});
-		return { store, conv, runtime, executions: () => executions };
+		return { ...r, executions: () => executions };
 	}
 	const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 	const WARN_BIT = "same tool call and gotten the same result 10 times";
@@ -3594,7 +2687,10 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		operators: [7],
 		allowedUsers: [7],
 	});
-	const { model } = scriptedModel([overflowError(), textReply("recovered"), textReply("next")]);
+	const { model } = scripted(
+		[overflowError(), textParts("recovered"), textParts("next")],
+		{ extra: textParts("ok") },
+	);
 	const selections: string[] = [];
 	const summarySelections: string[] = [];
 	const runtime = new Runtime({

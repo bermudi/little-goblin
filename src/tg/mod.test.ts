@@ -728,8 +728,7 @@ describe("handleMessage", () => {
 		writeFileSync(src, "oggdata");
 		const h = routerHarness();
 		h.env.api.getFile = async () => ({ file_path: src }) as never;
-		h.env.deps.transcribe = () =>
-			Promise.reject(new Error(`auth.jsonl: no secret named "mimo"`));
+		h.env.deps.transcribe = () => Promise.reject(new Error(`auth.jsonl: no secret named "mimo"`));
 		handleTestMessage(
 			h.env,
 			tgMsg({

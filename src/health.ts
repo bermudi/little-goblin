@@ -351,8 +351,7 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 	const parts: string[] = [];
 	const mapped = [...groups.values()]
 		.map(
-			(g) =>
-				`${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`,
+			(g) => `${g.contract.id} (${g.contract.mode}, ${g.contract.lifetime}): ${g.refs.join(", ")}`,
 		)
 		.join("; ");
 	if (mapped !== "") parts.push(mapped);

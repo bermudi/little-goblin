@@ -32,7 +32,10 @@ describe("checkCacheContractSources", () => {
 		const { impl, urls, inits } = fakeFetch(
 			async (url) => new Response(`${SENTINEL_BODY}\n\n${bodyFor(url)}\n\n${SENTINEL_BODY}`),
 		);
-		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report, ok } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(ok).toBe(true);
 		const byId = new Map(report.sources.map((s) => [s.id, s]));
 		for (const id of Object.keys(cacheContractSources)) expect(byId.has(id as never)).toBe(true);
@@ -59,14 +62,21 @@ describe("checkCacheContractSources", () => {
 			}
 			return new Response(bodyFor(url));
 		});
-		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report, ok } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(report.sources.find((s) => s.id === "zai")!.status).toBe("unchanged");
 		expect(ok).toBe(true);
 
-		const drifted = fakeFetch(async (url) =>
-			new Response(url === cacheContractSources.anthropic.url ? "new docs page" : bodyFor(url)),
+		const drifted = fakeFetch(
+			async (url) =>
+				new Response(url === cacheContractSources.anthropic.url ? "new docs page" : bodyFor(url)),
 		);
-		const out = await checkCacheContractSources({ fetchImpl: drifted.impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const out = await checkCacheContractSources({
+			fetchImpl: drifted.impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(out.report.sources.find((s) => s.id === "anthropic")!.status).toBe("changed");
 		expect(out.ok).toBe(false);
 	});
@@ -79,7 +89,10 @@ describe("checkCacheContractSources", () => {
 				return new Response("x".repeat(1_048_577), { status: 200 });
 			return new Response(bodyFor(url));
 		});
-		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report, ok } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(ok).toBe(false);
 		expect(report.sources.find((s) => s.id === "zai")!.status).toBe("unavailable");
 		expect(report.sources.find((s) => s.id === "openrouter")!.status).toBe("unavailable");
@@ -117,7 +130,10 @@ describe("redirect policy", () => {
 			}
 			return new Response(bodyFor(url));
 		});
-		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report, ok } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(ok).toBe(false);
 		expect(report.sources.find((s) => s.id === "zai")!.status).toBe("unavailable");
 		expect(report.sources.find((s) => s.id === "openrouter")!.status).toBe("unavailable");
@@ -130,7 +146,9 @@ describe("redirect policy", () => {
 			if (url === cacheContractSources.openrouter.url) {
 				return new Response(null, {
 					status: 308,
-					headers: { location: "https://openrouter.ai/docs/guides/best-practices/prompt-caching-final.md" },
+					headers: {
+						location: "https://openrouter.ai/docs/guides/best-practices/prompt-caching-final.md",
+					},
 				});
 			}
 			if (url === "https://openrouter.ai/docs/guides/best-practices/prompt-caching-final.md") {
@@ -138,10 +156,15 @@ describe("redirect policy", () => {
 			}
 			return new Response(bodyFor(url));
 		});
-		const { report, ok } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report, ok } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(ok).toBe(true);
 		expect(report.sources.find((s) => s.id === "openrouter")!.status).toBe("unchanged");
-		expect(urls).toContain("https://openrouter.ai/docs/guides/best-practices/prompt-caching-final.md");
+		expect(urls).toContain(
+			"https://openrouter.ai/docs/guides/best-practices/prompt-caching-final.md",
+		);
 	});
 
 	test("a redirect loop beyond five hops is unavailable", async () => {
@@ -154,7 +177,10 @@ describe("redirect policy", () => {
 			}
 			return new Response(bodyFor(url));
 		});
-		const { report } = await checkCacheContractSources({ fetchImpl: impl, now: Date.parse("2026-10-16T00:00:00.000Z") });
+		const { report } = await checkCacheContractSources({
+			fetchImpl: impl,
+			now: Date.parse("2026-10-16T00:00:00.000Z"),
+		});
 		expect(report.sources.find((s) => s.id === "zai")!.status).toBe("unavailable");
 	});
 });

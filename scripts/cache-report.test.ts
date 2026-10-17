@@ -7,10 +7,7 @@ const SCRIPT = join(import.meta.dir, "cache-report.ts");
 
 function run(lines: unknown[]): { report: Record<string, unknown>; stderr: string; code: number } {
 	const path = join(tmpDir(), "goblin.log");
-	writeFileSync(
-		path,
-		lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
-	);
+	writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
 	const proc = Bun.spawnSync([process.execPath, SCRIPT, path]);
 	return {
 		report: JSON.parse(proc.stdout.toString()),

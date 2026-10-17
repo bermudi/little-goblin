@@ -10,7 +10,10 @@ const receiptSchema = z.object({
 	ts: z.iso.datetime(),
 	msg: z.enum(["model call usage", "model step usage"]),
 	callId: z.string().optional(),
-	routeKey: z.string().regex(/^[a-f0-9]{16,64}$/).optional(),
+	routeKey: z
+		.string()
+		.regex(/^[a-f0-9]{16,64}$/)
+		.optional(),
 	inputTokens: z.number().int().nonnegative().nullable(),
 	cacheReadTokens: z.number().int().nonnegative().nullable(),
 	cacheWriteTokens: z.number().int().nonnegative().nullable(),
@@ -114,7 +117,10 @@ const available = correlated.length > 0 ? correlated : legacy;
 const rows = args[1] === undefined ? available : available.slice(-args[1]);
 const total = empty();
 const boundaries = [0, 60_000, 300_000, 600_000, 1_800_000, 3_600_000];
-const curves = new Map<string, { routeKey: string; lowerMs: number; upperMs: number | null; totals: Totals }>();
+const curves = new Map<
+	string,
+	{ routeKey: string; lowerMs: number; upperMs: number | null; totals: Totals }
+>();
 let eligibleCurveSteps = 0;
 for (const row of rows) {
 	add(total, row);

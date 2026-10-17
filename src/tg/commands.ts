@@ -120,8 +120,7 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 		len = 0;
 	};
 	for (const line of lines) {
-		const capped =
-			line.length > REPLY_CHUNK_LIMIT ? line.slice(0, REPLY_CHUNK_LIMIT) : line;
+		const capped = line.length > REPLY_CHUNK_LIMIT ? line.slice(0, REPLY_CHUNK_LIMIT) : line;
 		if (batch.length > 0 && len + capped.length + 1 > REPLY_CHUNK_LIMIT) flush();
 		batch.push(capped);
 		len += capped.length + 1;

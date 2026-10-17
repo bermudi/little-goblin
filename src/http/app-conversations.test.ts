@@ -681,7 +681,6 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 	}
 });
 
-
 // The crash-recovery routes — GET interrupted, POST decide, POST resume —
 // over the real listener with a real ResumeOps wired to the fixture's
 // runtime and journal (the same deps shape index.ts builds).

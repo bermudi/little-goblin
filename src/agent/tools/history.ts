@@ -176,8 +176,7 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 								error: `no tool result for that call at seq ${input.seq}`,
 							};
 						}
-						const payload =
-							typeof output === "string" ? output : JSON.stringify(output);
+						const payload = typeof output === "string" ? output : JSON.stringify(output);
 						const off = input.offset ?? 0;
 						const page = payload.slice(off, off + 8000);
 						log.info("history tool result", {

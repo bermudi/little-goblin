@@ -1774,9 +1774,7 @@ describe("subagents owner", () => {
 	test("computer start requires a desktop name", async () => {
 		const r = rig();
 		const o = await open(r);
-		await expect(
-			o.start(job(r, "t", { kind: "computer" })),
-		).rejects.toThrow("desktop");
+		await expect(o.start(job(r, "t", { kind: "computer" }))).rejects.toThrow("desktop");
 	});
 
 	test("reopen with an operator-held desktop fails the computer run; an unrelated worker runs", async () => {

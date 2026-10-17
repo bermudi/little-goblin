@@ -741,14 +741,12 @@ function NotePicker({
 // only past the thousand mark and only when it carries information —
 // whole thousands read as "200k", not "200.0k".
 export function contextCount(n: number): string {
-	if (n >= 1_000_000) {
-		const m = n / 1_000_000;
-		return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
-	}
-	if (n >= 1000) {
-		const k = n / 1000;
-		return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
-	}
+	const fmt = (v: number) => {
+		const r = Math.round(v * 10) / 10;
+		return Number.isInteger(r) ? `${r}` : r.toFixed(1);
+	};
+	if (n >= 999_950) return `${fmt(n / 1_000_000)}M`;
+	if (n >= 1000) return `${fmt(n / 1000)}k`;
 	return `${n}`;
 }
 

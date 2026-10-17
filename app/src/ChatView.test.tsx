@@ -4,7 +4,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { appendQuote, ChatView, ContextGauge, mergeTranscript, MessageParts } from "./ChatView.tsx";
+import {
+	appendQuote,
+	ChatView,
+	ContextGauge,
+	contextCount,
+	mergeTranscript,
+	MessageParts,
+} from "./ChatView.tsx";
 
 // Static markup only — these guard the transcript's render contract
 // (links become anchors, tool runs fold), not React behavior.
@@ -618,6 +625,30 @@ describe("ChatView mid-turn steer", () => {
 		}
 		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
 		expect(dom.container.textContent).toContain("working — steered");
+	});
+});
+
+describe("contextCount", () => {
+	test.each([
+		[0, "0"],
+		[340, "340"],
+		[999, "999"],
+		[1000, "1k"],
+		[1500, "1.5k"],
+		[104_300, "104.3k"],
+		[200_000, "200k"],
+		[200_040, "200k"],
+		[200_050, "200.1k"],
+		[999_949, "999.9k"],
+		[999_950, "1M"],
+		[999_999, "1M"],
+		[1_000_000, "1M"],
+		[1_040_000, "1M"],
+		[1_050_000, "1.1M"],
+		[1_500_000, "1.5M"],
+		[2_000_000, "2M"],
+	] as const)("formats %i as %s", (n, expected) => {
+		expect(contextCount(n)).toBe(expected);
 	});
 });
 

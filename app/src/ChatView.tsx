@@ -789,17 +789,24 @@ export function ContextGauge({
 	// the outcome line is the feedback that it happened.
 	const [compactNote, setCompactNote] = useState<string | null>(null);
 	const seq = useRef(0);
+	// seq also ticks per read — identity moves only on a credential or
+	// conversation switch, which is what actually orphans a pending
+	// compact POST.
+	const identity = useRef(0);
 	const gaugeRef = useRef<HTMLSpanElement | null>(null);
 	const btnRef = useRef<HTMLButtonElement | null>(null);
 	// A read belongs to the conversation that produced it — an id (or
 	// credential) switch makes it stale, and a still-in-flight read for
 	// the old identity must never land: bump seq here, since the fetch
-	// effect's early returns skip the bump. Kept out of that effect so
-	// its post-turn re-runs hold the last read until the new one lands.
+	// effect's early returns skip the bump. Identity bumps here too,
+	// orphaning any compact POST the switch leaves pending. Kept out of
+	// that effect so its post-turn re-runs hold the last read until the
+	// new one lands.
 	// The popover belongs to the conversation too — a switch closes it,
 	// so the next conversation's read can't pop open over the composer.
 	useEffect(() => {
 		seq.current++;
+		identity.current++;
 		setCtx(null);
 		setFailed(false);
 		setLastError(null);
@@ -957,12 +964,12 @@ export function ContextGauge({
 						onClick={() => {
 							if (conversationId === undefined) return;
 							const id = conversationId;
-							const n = seq.current;
+							const n = identity.current;
 							setCompacting(true);
 							setCompactNote(null);
 							void compactConversation(token, id)
 								.then((outcome) => {
-									if (n !== seq.current) return;
+									if (n !== identity.current) return;
 									setCompactNote(
 										outcome.compacted
 											? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
@@ -970,13 +977,13 @@ export function ContextGauge({
 									);
 								})
 								.catch((err: unknown) => {
-									if (n === seq.current)
+									if (n === identity.current)
 										setCompactNote(
 											`compact failed: ${err instanceof Error ? err.message : String(err)}`,
 										);
 								})
 								.finally(() => {
-									if (n === seq.current) setCompacting(false);
+									if (n === identity.current) setCompacting(false);
 								});
 						}}
 					>

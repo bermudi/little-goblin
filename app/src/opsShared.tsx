@@ -1,6 +1,6 @@
 // Bits shared across the operator views: error copy, time formatting,
-// the KV row, and the load-once hook. Pure presentation — api.ts owns
-// the server conversation.
+// the KV row, and the reloadable load hook. Pure presentation — api.ts
+// owns the server conversation.
 import { useEffect, useState } from "react";
 import { ApiError } from "./api.ts";
 
@@ -50,7 +50,11 @@ export function useLoad<T>(load: () => Promise<T>) {
 	useEffect(() => {
 		let live = true;
 		load().then(
-			(d) => live && setData(d),
+			(d) => {
+				if (!live) return;
+				setData(d);
+				setErr(null);
+			},
 			(e) => live && setErr(describe(e)),
 		);
 		return () => {

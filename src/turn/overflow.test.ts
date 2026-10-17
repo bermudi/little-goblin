@@ -178,7 +178,7 @@ describe("failureFromStream", () => {
 });
 
 describe("overflowHoldable — the one-recovery budget", () => {
-	test("only a first attempt with compaction wired may hold", () => {
+	test("a recovery the rail produced has spent the budget; an operator seed has not", () => {
 		expect(overflowHoldable(undefined, true)).toBe(true);
 		const recovery: TurnRecovery = {
 			conversation: conv(3),
@@ -191,8 +191,13 @@ describe("overflowHoldable — the one-recovery budget", () => {
 			startedAt: 1,
 			live: { chunks: [], subscribers: new Set(), ended: false },
 			filterRetryUsed: false,
+			overflowed: true,
 		};
 		expect(overflowHoldable(recovery, true)).toBe(false);
+		// An operator-resume seed is a recovery slot without a spent
+		// budget — the resumed admission still gets its one overflow.
+		const seed: TurnRecovery = { ...recovery, overflowed: undefined, resumedFrom: "src" };
+		expect(overflowHoldable(seed, true)).toBe(true);
 		expect(overflowHoldable(undefined, false)).toBe(false);
 	});
 });

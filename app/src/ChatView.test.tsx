@@ -266,6 +266,7 @@ describe("ChatView reload window (issue #79)", () => {
 				reconnects++;
 				return idle;
 			}
+			if (url.endsWith("/interrupted")) return Promise.resolve(jsonResponse({ runs: [] }));
 			// The Composer's conversation-config load and anything else.
 			return Promise.resolve(
 				jsonResponse({
@@ -316,6 +317,91 @@ describe("ChatView reload window (issue #79)", () => {
 		expect(historyFetches).toBe(2);
 		expect(reconnects).toBe(1);
 	});
+	test("an accepted resume re-attaches via /stream and a 204 merges the final reply", async () => {
+		let stored: UIMessage[] = [userMsg("u1", "run the thing")];
+		let streamGets = 0;
+		let resumePosts = 0;
+		const interruptedBody = {
+			runs: [
+				{
+					runId: "run-deadbeef",
+					resumedFrom: null,
+					startedMs: Date.parse("2026-10-17T01:00:00Z"),
+					finishedMs: Date.parse("2026-10-17T01:00:05Z"),
+					calls: { planned: 0, dispatched: 0, completed: 0, failed: 0, resolved: 1 },
+					toolCalls: [
+						{
+							toolCallId: "c1",
+							name: "probe",
+							args: { q: 1 },
+							state: "resolved-skip",
+							result: null,
+							error: null,
+							resolutionNote: null,
+							resolvedMs: null,
+						},
+					],
+				},
+			],
+		};
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/interrupted")) return Promise.resolve(jsonResponse(interruptedBody));
+			if (url.endsWith("/stream")) {
+				streamGets++;
+				return Promise.resolve(new Response(null, { status: 204 }));
+			}
+			if (url.endsWith("/resume") && method === "POST") {
+				resumePosts++;
+				stored = [...stored, assistantMsg("a1", "RESUMED ANSWER")];
+				return Promise.resolve(jsonResponse({ resumed: true, runId: "run-deadbeef" }));
+			}
+			return Promise.resolve(
+				jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await act(async () => {});
+		expect(streamGets).toBe(1);
+		expect(dom.container.textContent).toContain("Interrupted turn");
+		const resumeBtn = [...dom.container.querySelectorAll("button")].find(
+			(b) => b.textContent === "Resume turn",
+		)!;
+		expect(resumeBtn.disabled).toBe(false);
+		await act(async () => {
+			resumeBtn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+		await act(async () => {});
+		expect(resumePosts).toBe(1);
+		expect(streamGets).toBe(2);
+		expect(dom.container.textContent).toContain("RESUMED ANSWER");
+	});
+
 	test("resuming a live reply keeps historical unclosed note cards actionable", async () => {
 		const stored: UIMessage[] = [
 			userMsg("u1", "first note"),
@@ -339,6 +425,7 @@ describe("ChatView reload window (issue #79)", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (url.endsWith("/messages")) return jsonResponse({ messages: stored });
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
 				if (url.endsWith("/stream"))
 					return new Response(stream, {
 						headers: { "content-type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1" },

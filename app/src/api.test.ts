@@ -4,6 +4,9 @@ import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
 	clearToken,
+	decideRunCall,
+	listInterruptedRuns,
+	resumeRun,
 	fetchAttachment,
 	forgetMemoryDocument,
 	getConfig,
@@ -288,6 +291,77 @@ describe("operator surface", () => {
 		expect(res.ok).toBe(true);
 		expect(forgets[0]!.method).toBe("DELETE");
 		expect(new URL(forgets[0]!.url).pathname).toBe("/api/app/memory/documents/doc-1");
+	});
+});
+
+describe("interrupted turns recovery", () => {
+	const fakeFetch = (handler: (req: Request) => Response | Promise<Response>) => {
+		const requests: Request[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const req = new Request(new URL(String(input), "http://localhost"), init);
+				requests.push(req);
+				return handler(req);
+			},
+			{ preconnect: originalFetch.preconnect },
+		);
+		return requests;
+	};
+
+	test("list/decide/resume hit the run routes with bearer and JSON", async () => {
+		const requests = fakeFetch((req) => {
+			const path = new URL(req.url).pathname;
+			if (path.endsWith("/interrupted")) return Response.json({ runs: [] });
+			if (path.endsWith("/decide")) return Response.json({ ok: true });
+			return Response.json({ resumed: true, runId: "run-abc" });
+		});
+		const list = await listInterruptedRuns("tok", "app/chat-1");
+		expect(list.runs).toEqual([]);
+		const decided = await decideRunCall("tok", "app/chat-1", "run/abc", {
+			callId: "c1",
+			decision: "record-result",
+			note: "landed",
+		});
+		expect(decided.ok).toBe(true);
+		const resumed = await resumeRun("tok", "app/chat-1", "run/abc");
+		expect(resumed.resumed).toBe(true);
+		const paths = requests.map((r) => [new URL(r.url).pathname, r.method]);
+		expect(paths).toEqual([
+			["/api/app/conversations/chat-1/interrupted", "GET"],
+			["/api/app/conversations/chat-1/runs/run%2Fabc/decide", "POST"],
+			["/api/app/conversations/chat-1/runs/run%2Fabc/resume", "POST"],
+		]);
+		for (const req of requests) {
+			expect(req.headers.get("authorization")).toBe("Bearer tok");
+		}
+		expect(await requests[1]!.json()).toEqual({
+			callId: "c1",
+			decision: "record-result",
+			note: "landed",
+		});
+	});
+
+	test("malformed 200 bodies fail loud instead of masquerading as empty/ok", async () => {
+		fakeFetch(() => Response.json({ runs: "not-an-array" }));
+		await expect(listInterruptedRuns(null, "app/chat-1")).rejects.toThrow(
+			"invalid interrupted-turn list response",
+		);
+		fakeFetch(() => Response.json({ ok: false }));
+		await expect(
+			decideRunCall(null, "app/chat-1", "r1", { callId: "c", decision: "skip" }),
+		).rejects.toThrow("invalid decide response");
+		fakeFetch(() => Response.json({ resumed: "yes" }));
+		await expect(resumeRun(null, "app/chat-1", "r1")).rejects.toThrow(
+			"invalid resume response",
+		);
+	});
+
+	test("a refusal surfaces status and the server's reason verbatim", async () => {
+		fakeFetch(() => Response.json({ error: "undecided tool calls block resume" }, { status: 409 }));
+		const err = await resumeRun(null, "app/chat-1", "run-1").catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ApiError);
+		expect((err as ApiError).status).toBe(409);
+		expect((err as ApiError).message).toBe("undecided tool calls block resume");
 	});
 });
 

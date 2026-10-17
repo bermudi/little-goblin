@@ -23,6 +23,7 @@ import { appAddress, captureConversationSettings, openStore } from "./conversati
 import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
+import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import {
 	Runtime,
 	type ModelStep,
@@ -1646,6 +1647,84 @@ describe("cache stability", () => {
 		]);
 		r.store.close();
 	});
+
+	test("pruneBetweenTurns commits markers before the claimed batch's view is built", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [
+			userMessage([{ type: "text", text: "old question" }]),
+			{
+				id: "a-tool",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "t1",
+						state: "output-available",
+						input: { command: "seq" },
+						output: "ORIGINAL_TOOL_OUTPUT",
+					},
+				],
+			} as unknown as UIMessage,
+		]);
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const calls: string[] = [];
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+			pruneBetweenTurns: (convId) => {
+				calls.push(convId);
+				store.applyEventProjections(convId, [
+					{
+						seq: 2,
+						toolCallId: "t1",
+						replacement: "PRUNED_MARKER",
+						routeKey: "a".repeat(64),
+						settingsHash: "b".repeat(64),
+					},
+				]);
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "next" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(calls).toEqual([conv.id]);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("PRUNED_MARKER");
+		expect(prompts[0]).not.toContain("ORIGINAL_TOOL_OUTPUT");
+		// The events row keeps the original bytes.
+		const part = store.history(conv.id)[1]!.parts[0] as { output?: unknown };
+		expect(part.output).toBe("ORIGINAL_TOOL_OUTPUT");
+		store.close();
+	});
+
+	test("a throwing pruneBetweenTurns is logged and the turn still runs", async () => {
+		const dir = tmpDir("goblin-rt-log-");
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["ok"], 5), system: "test" }),
+			makeTools: () => ({}),
+			pruneBetweenTurns: () => {
+				throw new Error("projection store exploded");
+			},
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await runtime.shutdown();
+			expect(readFileSync(logFile, "utf8")).toContain("cache pruning pass failed");
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
+	});
 });
 
 describe("skill reviewer hook", () => {
@@ -2688,4 +2767,156 @@ test("invalid durable app settings report admission error exactly once without s
 	} finally {
 		store.close();
 	}
+});
+
+describe("turn journal", () => {
+	test("a completed tool loop leaves a completed run with settled call rows", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const edge = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => ({ ok: true, out: "done" }),
+				}),
+			}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			await runtime.shutdown();
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("completed");
+			expect(run.delivery).toBe("delivered");
+			expect(run.finishedMs).not.toBeNull();
+			expect(journal.interrupted()).toEqual([]);
+			const calls = journal.callsFor(run.runId);
+			expect(calls).toHaveLength(1);
+			expect(calls[0]!.toolCallId).toBe("call-1");
+			expect(calls[0]!.state).toBe("completed");
+			expect(calls[0]!.result).toBe('{"ok":true,"out":"done"}');
+		} finally {
+			store.close();
+		}
+	});
+
+	test("a fenced turn stamps 'fenced' — reopen must not read it as interrupted", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: gated.model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			await sink.firstDelta;
+			await gated.entered;
+			store.bumpEpoch(conv.id);
+			gated.release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("fenced");
+			expect(run.delivery).toBe("undelivered");
+			// 'fenced' is terminal: a boot reclassify must never claim it.
+			expect(journal.interrupted()).toEqual([]);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("a journal dispatch write that throws fails the turn — later calls never execute", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const real = openTurnJournal(store.db);
+		let dispatchNotes = 0;
+		const journal: TurnJournal = {
+			...real,
+			noteToolDispatch(runId, callId, name, args) {
+				dispatchNotes++;
+				if (dispatchNotes === 2) {
+					throw new Error("injected journal dispatch failure");
+				}
+				return real.noteToolDispatch(runId, callId, name, args);
+			},
+		};
+		const edge = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			[
+				toolCallPart("call-2", "probe", "{}"),
+				toolCallPart("call-3", "probe", "{}"),
+				finishPart("tool-calls"),
+			],
+			textParts("SENTINEL-SHOULD-NOT-STREAM"),
+		]);
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return { ok: true };
+					},
+				}),
+			}),
+		});
+		try {
+			const sink = new RecordingSink();
+			let dones = 0;
+			const onDone = sink.onDone.bind(sink);
+			sink.onDone = (d) => {
+				dones++;
+				onDone(d);
+			};
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			const done = await sink.done;
+			expect(done.kind).toBe("error");
+			if (done.kind === "error") {
+				expect(done.message).toContain("injected journal dispatch failure");
+			}
+			expect(dones).toBe(1);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			expect(dispatchNotes).toBe(2);
+			expect(dones).toBe(1);
+			expect(edge.streamCalls).toHaveLength(2);
+			expect(edge.streamCalls[1]?.abortSignal?.aborted).toBe(true);
+			expect(executions).toBe(1);
+			expect(store.history(conv.id).map((m) => m.role)).not.toContain("assistant");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("error");
+			expect(run.delivery).toBe("failed");
+			const calls = journal.callsFor(run.runId);
+			expect(calls.find((c) => c.toolCallId === "call-1")?.state).toBe("completed");
+			expect(calls.find((c) => c.toolCallId === "call-1")?.result).toBe('{"ok":true}');
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 });

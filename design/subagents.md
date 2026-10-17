@@ -36,10 +36,7 @@ computer subagent. Goblin's own turn stays for chat and short work.
 - **Not the AI SDK for the long loop.** The operator trusts it for chat,
   not for long agentic runs; pi is the polished, widely used harness. The
   `Why` section's exit from pi-ai is about goblin's *chat engine*; a
-  subagent runtime running on pi-ai underneath does not reverse it. The
-  same distinction answers design/projects.md's rejection of Pi Durable
-  as goblin's engine — that ruling stands for the turn loop and does not
-  bind subagents.
+  subagent runtime running on pi-ai underneath does not reverse it.
 
 ### Subagent runtime: Pi Durable, in-process
 
@@ -52,11 +49,12 @@ the newest release ≥7 days old; Bun 1.4.3):
   owns it (Pi Durable has no cross-process locking), and that process is
   goblin.
 - **Crash resume** (kill -9 mid-tool and mid-stream): a tool marked
-  `replay: "safe"` reruns transparently; an unmarked tool is not rerun —
-  the model receives `[error] Tool poke was interrupted and may have
-  partially run`; a cut-off model stream restarts cleanly. Boot calls
-  `harness.resume()`. A goblin restart pauses runs, it does not kill
-  them.
+  `replay: "safe"` is re-entered on recovery; a cut-off model stream
+  restarts cleanly. Boot calls `harness.resume()`. A goblin restart
+  pauses runs, it does not kill them. Re-entry is only the *wrapper* —
+  for a side-effecting tool the crash-approval gate (below) stands
+  behind the mark and decides from the durable lease whether the call
+  may run again.
 - Concurrent conversations in one harness and `whenBusy: "steer"` both
   verified.
 
@@ -106,8 +104,14 @@ store):
 **Run state is rows.** A `subagent_runs` table in goblin.sqlite: id,
 type, origin conversation, box (desktop name or the sandbox), Pi
 conversation id, task, status
-(`queued|running|needs_input|done|failed|stopped`), created/finished. Pi
-Durable's storage holds transcripts; goblin's row holds routing. Settled
+(`queued|running|needs_input|done|failed|stopped`), created/finished,
+plus a `pending_approval` mirror while a crash-ambiguous call waits on
+a `decide` verdict and an append-only `crash_decisions` history that
+keeps every verdict after the mirror clears. Pi
+Durable's storage holds transcripts; goblin's row holds routing —
+`pending_approval` included: it drives notices, `send` refusal and the
+`awaiting_decision` summary flag, but the task-scoped Pi lease remains
+the authority on what may execute. Settled
 runs wake the origin conversation through `wake.ts`, the delegation-notice
 path: `[subagent: #<id> <type> · <done|needs input|failed>]` plus the
 fenced result, the exported file paths, and (computer) the final
@@ -399,7 +403,8 @@ when the `subagents` block exists (worker also needs the `sandbox`
 block); flat schemas, per-action contracts inside `execute`:
 
 - `subagent`: `start` (type, task, files; computer: the desktop — claims
-  it), `list`, `status`, `send` (steer or answer), `stop`.
+  it), `list`, `status`, `send` (steer or answer), `stop`, `decide`
+  (the crash-approval verdict on a parked run).
 - `desktop`: `new`, `list`, `shot` (observe — the path goes to
   `send_file`), `claim`/`release`/`reserve`, `network`,
   `import`/`export`, `destroy`.
@@ -481,8 +486,10 @@ built once).
   (or no recorded witness) gets the plain-prose wording. Replay marks do the crash work:
   reads/observation/`finish`/`ask_operator` are `replay:"safe"`
   (idempotent, no external effects); every input action and every
-  sandbox mutation stays unsafe — an interrupted click is reported
-  `[error] … may have partially run`, never re-dispatched. Boot:
+  sandbox mutation also carries the mark — deliberately, NOT as an
+  idempotency claim: re-entry is the only door recovery offers, and it
+  lands in the crash-approval gate, which parks the run for a Goblin
+  crash decision rather than replaying blind. Boot:
   `harness.resume()` after all deps are bound, rows queued/running
   re-monitor and re-check their desktop holder; persisted `stopped`
   wins over any late settlement.
@@ -525,6 +532,61 @@ built once).
   is safety-critical, never permission to release. And a `stop` that
   lands while cancellation confirmation awaits wins over the failure
   transition — the row settles `stopped`, not `failed`.
+- **Goblin owns crash resolution, not outcome verification.** A
+  crash-ambiguous side effect parks for a Goblin decision through the
+  ordinary model-callable `subagent decide` action; a crash alone does
+  not require a human approval. Every new verdict requires concrete
+  evidence (or an explicit statement that evidence is unavailable) and
+  reasoning. The owner stamps `decidedBy: "goblin"` and
+  `outcome: "unverified"`; these are not caller-selectable. The run
+  retains an append-only `crashDecisions` history with the interrupted
+  task/call identity, arguments, attempt count, decision time and full
+  verdict, atomically persisted with the queued continuation. Clearing
+  the pending mirror or finishing the run never clears that history.
+  The history is carried inside status/list/settlement event fences,
+  independently of the child's final prose. `done` is lifecycle
+  completion, not verification of an interrupted effect.
+  `record-result` supplies a labeled Goblin declaration to the
+  interrupted call without re-executing. Its content, diagnostics,
+  structured details and durable replay retain the unverified outcome;
+  the declared text is never presented as observed tool output or
+  operator testimony. `authorize-retry` permits one further dispatch,
+  not a claim that the first attempt failed or succeeded. `abandon`
+  ends the run without claiming an outcome. Fresh observations or
+  checks are separate evidence, never a promotion caused merely by a
+  verdict. Goblin inspects available evidence and resolves within its
+  existing authority. Escalation is only for an actual operator
+  judgment or an action already requiring permission; a crash neither
+  grants permission nor creates a new approval requirement. Legacy
+  persisted decisions remain readable, with absent provenance/evidence
+  explicitly unrecorded rather than attributed to the operator.
+  Every side-effecting tool (worker `write`/`edit`/`bash`, computer
+  `act`/`launch`) executes behind a crash-approval gate keyed by a
+  task-scoped Pi lease (`absent` → `claimed` → `decided` → `done`):
+  the gate commits `claimed` with an attempt count before dispatch and
+  `done` with the full result after. A crash between them leaves
+  `claimed` — recovery re-enters the wrapper, the gate parks the row
+  `needs_input` with a `pendingApproval` mirror (the lease stays the
+  authority), wakes the origin with a crash-resolution ask naming the
+  tool, call and attempts, and waits — freeing the global slot,
+  holding no run lane. `send` refuses a parked run; `subagent decide`
+  resolves it: `record-result` feeds Goblin's declared text as the
+  call's labeled, unverified output without re-executing,
+  `authorize-retry` re-executes once under a raised attempt (a second
+  kill re-asks), `abandon` records an aborted outcome and ends the
+  run. The decision commits
+  to the lease before acting — a crash mid-decision re-asks. A `done`
+  lease replays its recorded result with zero dispatch: the
+  result-committed-but-unsettled window needs no verdict. A decided
+  verdict may queue behind global capacity; the scheduler's admission
+  releases it on BOTH paths — a live waiter or a stored decision —
+  and attaches a settlement monitor either way unless one is already
+  watching: a waiter registered by harness recovery (boot skips
+  queued rows) has no monitor of its own, and releasing it unwatched
+  would settle the Pi side unseen and leak the run's slot forever.
+  `finish`,
+  `ask_operator` and the observation tools stay ungated — the
+  result/question machinery must never gate itself.
 - **Only expected refusals become export errors.** Export and the
   final screenshot translate `DesktopError`, `SandboxError` and
   `PodmanError` — plus a box-files `{ error }` verdict — into

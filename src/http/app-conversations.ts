@@ -10,6 +10,8 @@ import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../con
 import { appAddress, appIdSchema } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { Project } from "../projects.ts";
+import type { TurnToolCall } from "../turn-journal.ts";
+import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
 import {
 	type AppChannelDeps,
 	configPatchBody,
@@ -24,7 +26,13 @@ import type {
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationPatch,
+	AppDecideResponse,
+	AppInterruptedList,
+	AppInterruptedRun,
 	AppMessageList,
+	AppResumeBlocked,
+	AppResumeResponse,
+	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
 } from "./app-wire.ts";
@@ -88,6 +96,57 @@ function conversationFromSegment(segment: string): { id: string } | Response {
 		return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 	}
 	return { id: `app/${parsed.data}` };
+}
+
+// The operator's verdict on one ambiguous journaled call — `note` is
+// the asserted result for 'record-result', free context for
+// 'authorize-retry'/'skip'.
+const decideBody = z.object({
+	callId: z.string().min(1).max(200),
+	decision: z.enum(["record-result", "authorize-retry", "skip"]),
+	note: z.string().max(4000).optional(),
+});
+
+// Journaled call → wire shape — the decision UI reads state, args,
+// and any recorded outcome.
+function appRunCall(c: TurnToolCall): AppRunCall {
+	return {
+		toolCallId: c.toolCallId,
+		name: c.name,
+		args: c.args,
+		state: c.state,
+		result: c.result,
+		error: c.error,
+		resolutionNote: c.resolutionNote,
+		resolvedMs: c.resolvedMs,
+	};
+}
+
+function appInterruptedRun(view: InterruptedRunView): AppInterruptedRun {
+	return {
+		runId: view.run.runId,
+		resumedFrom: view.run.resumedFrom,
+		startedMs: view.run.startedMs,
+		finishedMs: view.run.finishedMs,
+		calls: view.run.calls,
+		toolCalls: view.calls.map(appRunCall),
+	};
+}
+
+// turn-resume's refusal classes → HTTP: unknown row 404, a state fight
+// 409, a broken contract (drift, unreadable snapshot) 422, a closed
+// runtime 503.
+function refusalStatus(code: ResumeRefusalCode): number {
+	switch (code) {
+		case "not-found":
+			return 404;
+		case "conflict":
+			return 409;
+		case "invalid":
+			return 422;
+		case "unavailable":
+			return 503;
+	}
 }
 
 export async function handleConversationsRoute(
@@ -314,6 +373,134 @@ export async function handleConversationsRoute(
 			turns: body.turns,
 		});
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// GET /api/app/conversations/<id>/interrupted — the crash journal's
+	// resumable rows for this conversation: runs the process died on,
+	// each with every journaled call so the client can render the
+	// decision list. Validation and admission live in turn-resume.ts.
+	const interruptedMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/interrupted$/);
+	if (interruptedMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(interruptedMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const body: AppInterruptedList = {
+			runs: ops.interrupted(convId.id).map(appInterruptedRun),
+		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// POST /api/app/conversations/<id>/runs/<runId>/decide — the
+	// operator's verdict on one ambiguous call: done records the
+	// asserted outcome, retry authorizes re-execution, skip drops it.
+	const decideMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/decide$/);
+	if (decideMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(decideMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = decideBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const outcome = ops.decide(
+			convId.id,
+			decideMatch[2]!,
+			parsed.data.callId,
+			parsed.data.decision,
+			parsed.data.note,
+		);
+		if (outcome.kind === "ok") {
+			const body: AppDecideResponse = { ok: true };
+			return Response.json(body, { headers: NO_STORE });
+		}
+		log.info("app decide refused", {
+			conversation: convId.id,
+			run: decideMatch[2],
+			reason: outcome.reason,
+		});
+		return Response.json(
+			{ error: outcome.reason },
+			{ status: refusalStatus(outcome.code), headers: NO_STORE },
+		);
+	}
+
+	// POST /api/app/conversations/<id>/runs/<runId>/resume — the fresh
+	// admission for an interrupted run. 409 with the undecided calls
+	// when ambiguity remains; refusal codes map via refusalStatus.
+	const resumeMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/resume$/);
+	if (resumeMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(resumeMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const ops = deps.resumeOps?.();
+		if (ops === undefined) {
+			return Response.json(
+				{ error: "turn resume is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const outcome = ops.resume(convId.id, resumeMatch[2]!);
+		if (outcome.kind === "resumed") {
+			log.info("app resume admitted", { conversation: convId.id, run: outcome.runId });
+			const body: AppResumeResponse = { resumed: true, runId: outcome.runId };
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (outcome.kind === "needs-decisions") {
+			const body: AppResumeBlocked = {
+				error: "undecided tool calls block resume",
+				calls: outcome.calls.map(appRunCall),
+			};
+			return Response.json(body, { status: 409, headers: NO_STORE });
+		}
+		log.info("app resume refused", {
+			conversation: convId.id,
+			run: resumeMatch[2],
+			reason: outcome.reason,
+		});
+		return Response.json(
+			{ error: outcome.reason },
+			{ status: refusalStatus(outcome.code), headers: NO_STORE },
+		);
 	}
 
 	const convMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/messages$/);

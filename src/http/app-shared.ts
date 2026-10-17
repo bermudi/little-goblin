@@ -12,6 +12,7 @@ import { type ConversationStore, type ModelSettings } from "../conversation.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
+import type { ResumeOps } from "../turn-resume.ts";
 import type { AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
 import type { OperatorDeps } from "./operator.ts";
 
@@ -68,6 +69,11 @@ export interface AppChannelDeps {
 	// deps object so the bundle carries only the extra seams. Absent =
 	// the operator routes refuse 503.
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
+	// Crash-recovery verbs (turn-resume.ts) — the interrupted/decide/
+	// resume routes. Absent = they refuse 503.
+	// Resolved per request — the ops are built after the listener starts,
+	// so a route hit in the boot window reads undefined, not a TDZ throw.
+	resumeOps?: () => ResumeOps | undefined;
 }
 
 // The composer's two knobs. A patch with neither is a client bug —

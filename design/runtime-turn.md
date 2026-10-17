@@ -107,6 +107,70 @@ loops:
 - One logical turn, one loop history — unchanged (model.md →
   review-round rulings). The loop is where that sentence is visible.
 
+## The turn journal
+
+`src/turn-journal.ts` is the crash journal: two tables on the
+conversation store's handle (`turn_runs`, `turn_tool_calls`) that
+durably record what an admitted turn owned — epoch, anchor, settings
+snapshot, tool surface — and how far each tool call got
+(`planned → dispatched → completed|failed`). The run row lands before
+any tool side effect can execute; `dispatched` without a result is
+the ambiguous state — the side effect may or may not have happened.
+A graceful shutdown fences its live rows first, so a row still
+`running` at open means the process died mid-turn: open reclassifies
+it `interrupted` and boot sends each operator one terse notice per
+run (counts by state, never the partial itself). Nothing replays
+automatically — boot is notice-only, and an `interrupted` turn
+resumes ONLY by explicit operator decision, into a FRESH admission
+(new epoch, new run row linked by `resumed_from`). Each attempt gets
+its own run row, so an overflow resume leaves the failed attempt's
+record intact — and the continuation's row INHERITS the failed
+attempt's settled calls (as a fresh admission inherits its source's),
+so a crash of the continuation still resumes with every side effect
+the logical turn already recorded. Evidence handoff is one
+transaction: the successor row's creation, the inheritance of settled
+calls, and the source's consumption commit together — a crash between
+the writes can never leave two interrupted runs where the successor
+re-executes recorded effects. A call the fence answered from recorded
+evidence journals with replay provenance (`replayed`); replay credits
+count executions only, so one execution keeps exactly one replay
+across any number of resumes.
+
+Stored `args` is a **preview**, never the identity: the column holds
+at most 8000 chars TOTAL of the canonical JSON — oversized text is
+cut so the `[truncated]` marker fits inside that bound, and readers
+bound legacy oversized rows the same way on decode. Values under the
+cap decode back to their parsed objects exactly as before; only a cut
+document comes back as its raw preview string, so the surfaces (model
+seeds, the app's decision list) can never leak an oversized body.
+`args_hash` — and therefore every `replayKey`/`skippedMap` lookup —
+still hashes the FULL canonical input; truncation never collides two
+calls or weakens a replay match. A `tool_names` column that fails to
+decode (bad JSON or wrong shape) reads as `null`, not `[]`: the row
+still lists everywhere, but resume refuses it as an unreadable tool
+surface rather than risk an empty default bypassing the surface
+contract. The same tolerance covers `conv_snapshot`/`loop_state` —
+decode keeps the raw text and logs one warning per run per field on
+each read; the resume-time schema checks then refuse with a readable
+reason.
+
+`src/turn-resume.ts` owns the operator half (`makeResumeOps`): list
+interrupted runs, take per-call decisions, abandon, resume. Both
+surfaces — Telegram `/resume` `/decide` `/abandon` and the app's
+`/interrupted` `/decide` `/resume` routes — drive the same `ResumeOps`.
+The preconditions resume refuses on: undecided `dispatched` calls
+(each needs `record-result` | `authorize-retry` | `skip`), model or
+thinking drift against the run's recorded snapshot, any recorded tool
+missing from the rebuilt surface, a busy lane, and a source that is
+not `interrupted`. In the resumed attempt the fence replays recorded
+outputs for `completed`/`resolved-done` calls (the tool never runs),
+`resolved-retry` and `planned` calls execute normally, and
+`resolved-skip` calls carry a refusal map — a re-ask gets the
+operator's decline as the result, never the side effect. The model
+sees only what the journal says happened. The source row flips to
+`resumed` only inside the successor row's creation transaction; a
+headless resumed turn notifies operators on terminal `onDone`.
+
 ## What must not change
 
 These are the invariants a refactor can still break silently; they are

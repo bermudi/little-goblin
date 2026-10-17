@@ -37,6 +37,7 @@ import {
 } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
+import type { TurnJournal } from "../turn-journal.ts";
 import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
@@ -323,6 +324,13 @@ export interface StreamDeps<M extends WireMember> {
 	// stream is the one seam that sees both the conversation id and
 	// every completed tool call. Absent = provenance off.
 	skillWatch?: SkillWatch | undefined;
+	// The crash journal's stream half (src/turn-journal.ts): what the
+	// model planned rides the chunk seam — the fence in runtime.ts owns
+	// dispatch/result. Absent = journaling off (test rigs).
+	journal?: TurnJournal | undefined;
+	// The attempt's run row — minted by the runtime before this stream
+	// could reach a tool; meaningless without `journal`.
+	runId: string;
 	// The logical turn's clock — finish metadata durationMs.
 	turnStartMs: number;
 	// The abort handle — the runtime pins it on the lane; /stop pulls
@@ -379,6 +387,11 @@ export async function driveStream<M extends WireMember>(
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
+	// Generated messages accumulated across completed steps — the
+	// journal's `partial` column. The SDK's per-step response.messages
+	// is the richest durable assistant-partial the step boundary
+	// exposes; the calls table carries the other half.
+	const partialMessages: ModelMessage[] = [];
 	// The ownership high-water mark — seeded at admission, advanced by
 	// claimed steers below (by identity, never position).
 	let steerMark = deps.steerMarkSeed;
@@ -577,15 +590,21 @@ export async function driveStream<M extends WireMember>(
 			rawError = error;
 			log.error("model stream error", error, { conversation: convId });
 		},
-		onStepEnd: ({ usage, finishReason }) => {
-			if (filterRetryPending && finishReason !== "error") {
+		onStepEnd: (step) => {
+			if (filterRetryPending && step.finishReason !== "error") {
 				filterRetryPending = false;
 				log.info("provider content filter retry recovered", {
 					conversation: convId,
 					epoch,
 				});
 			}
-			lastStepInputTokens = usage.inputTokens ?? null;
+			lastStepInputTokens = step.usage.inputTokens ?? null;
+			partialMessages.push(...step.response.messages);
+			deps.journal?.checkpoint(deps.runId, {
+				loopState: state.snapshot(),
+				filterRetryUsed,
+				...(partialMessages.length > 0 ? { partial: partialMessages } : {}),
+			});
 			// The cached split is how cache health is read off the log:
 			// null means the provider didn't report it, 0 means
 			// reported-and-cold. inputTokens includes the cached ones.
@@ -594,10 +613,10 @@ export async function driveStream<M extends WireMember>(
 			// leave write null.
 			log.info("model step usage", {
 				conversation: convId,
-				inputTokens: usage.inputTokens ?? null,
-				cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? null,
-				cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? null,
-				outputTokens: usage.outputTokens ?? null,
+				inputTokens: step.usage.inputTokens ?? null,
+				cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? null,
+				cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
+				outputTokens: step.usage.outputTokens ?? null,
 			});
 		},
 	});
@@ -803,6 +822,7 @@ export async function driveStream<M extends WireMember>(
 				head.onToolCall(chunk.toolName, chunk.input);
 				toolCalls.push(chunk.toolName);
 				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
+				deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
 				if (evidence !== undefined) {
 					digestRing.push({
 						id: chunk.toolCallId,

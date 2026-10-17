@@ -6,9 +6,27 @@
 // and the mini app may offer.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Database } from "bun:sqlite";
+import type {
+	LanguageModelV4,
+	LanguageModelV4StreamPart,
+} from "@ai-sdk/provider";
 import type { Config } from "../config.ts";
+import { openCacheObservation } from "../cache-observation.ts";
+import { setLogFile } from "../log.ts";
+import { tmpDir } from "../testkit.ts";
+import { APICallError } from "ai";
+import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
 import { _primeOpenRouterCatalog } from "./models-dev.ts";
-import { carriesMedia, thinkingLevelsFor, thinkingOptions } from "./providers.ts";
+import {
+	cacheRouteFor,
+	carriesMedia,
+	observedModel,
+	thinkingLevelsFor,
+	thinkingOptions,
+} from "./providers.ts";
 
 const cfg: Config = {
 	providers: {
@@ -346,5 +364,403 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("mystery", "image/jpeg")).toBe(true);
 		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
+	});
+});
+
+describe("observedModel — correlated call receipts", () => {
+	const userPrompt = (text: string) => ({
+		prompt: [
+			{ role: "system" as const, content: "sys" },
+			{ role: "user" as const, content: [{ type: "text" as const, text }] },
+		],
+		tools: [
+			{
+				type: "function" as const,
+				name: "probe",
+				description: "probe",
+				inputSchema: { type: "object" },
+			},
+		],
+		temperature: 0.2,
+	});
+	const finish = (
+		input: number,
+		output: number,
+		cacheRead?: number,
+		cacheWrite?: number,
+	): LanguageModelV4StreamPart => ({
+		type: "finish",
+		finishReason: { unified: "stop", raw: undefined },
+		usage: {
+			inputTokens: {
+				total: input,
+				noCache: undefined,
+				cacheRead,
+				cacheWrite,
+			},
+			outputTokens: { total: output, text: undefined, reasoning: undefined },
+		},
+	});
+
+	function logLines(path: string): Record<string, unknown>[] {
+		return readFileSync(path, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+	}
+
+	async function drain(stream: ReadableStream<LanguageModelV4StreamPart>) {
+		const reader = stream.getReader();
+		const parts: LanguageModelV4StreamPart[] = [];
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			parts.push(value);
+		}
+		return parts;
+	}
+
+	test("stream calls pass identical params through and close on the provider finish", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const scripted = scriptedModel([
+			[{ type: "stream-start", warnings: [] }, finish(10, 3, 5, 2)],
+		]);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const wrapped = observedModel(scripted.model, {
+				conversation: "conv-1",
+				observation: obs,
+				route: { provider: "fake", kind: "openai-compatible", base: "https://x", modelRef: "fake/fake-1" },
+			}) as LanguageModelV4;
+			const params = userPrompt("hi");
+			const result = await wrapped.doStream(params);
+			expect(scripted.streamCalls[0]).toEqual(params);
+			expect(await drain(result.stream)).toEqual([
+				{ type: "stream-start", warnings: [] },
+				finish(10, 3, 5, 2),
+			]);
+			const lines = logLines(logPath);
+			const start = lines.find((l) => l.msg === "model call")!;
+			const usage = lines.find((l) => l.msg === "model call usage")!;
+			expect(start.callId).toBeString();
+			expect(usage.callId).toBe(start.callId);
+			expect(usage.routeKey).toBe(start.routeKey);
+			expect(usage).toMatchObject({
+				conversation: "conv-1",
+				inputTokens: 10,
+				cacheReadTokens: 5,
+				cacheWriteTokens: 2,
+				outputTokens: 3,
+				prefixRelation: "first",
+			});
+			const row = db
+				.query<{ status: string; cache_read: number; input_tokens: number }, [string]>(
+					"SELECT status, cache_read, input_tokens FROM model_cache_calls WHERE call_id = ?",
+				)
+				.get(start.callId as string)!;
+			expect(row).toEqual({ status: "completed", cache_read: 5, input_tokens: 10 });
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("concurrent calls on one conversation carry distinct callIds from start to usage", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const scripted = scriptedModel([], {
+			extra: { parts: [finish(1, 1)], delayMs: 5, pace: new Set([finish(1, 1)]) },
+		});
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const wrapped = observedModel(scripted.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			const params = userPrompt("hi");
+			const [a, b] = await Promise.all([wrapped.doStream(params), wrapped.doStream(params)]);
+			await Promise.all([drain(a.stream), drain(b.stream)]);
+			const lines = logLines(logPath);
+			const starts = lines.filter((l) => l.msg === "model call");
+			const usages = lines.filter((l) => l.msg === "model call usage");
+			expect(starts).toHaveLength(2);
+			expect(usages).toHaveLength(2);
+			const ids = new Set(starts.map((l) => l.callId));
+			expect(ids.size).toBe(2);
+			for (const u of usages) expect(ids.has(u.callId as string)).toBe(true);
+			expect(
+				db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM model_cache_calls").get()!.n,
+			).toBe(2);
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("a provider rejection, a mid-stream error and a cancel all settle failed — never completed", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const rejecting = scriptedModel([new Error("http 503")]);
+			const wReject = observedModel(rejecting.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			await expect(wReject.doStream(userPrompt("a"))).rejects.toThrow("http 503");
+			const erring = scriptedModel([
+				[{ type: "text-delta", id: "t1", delta: "x" }, { type: "error", error: new Error("boom") }],
+			]);
+			const wErr = observedModel(erring.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			const errResult = await wErr.doStream(userPrompt("b"));
+			const seen = await drain(errResult.stream);
+			expect(seen.map((p) => p.type)).toEqual(["text-delta", "error"]);
+			const open = scriptedModel([{ cancelError: new Error("cancel boom"), parts: [] }]);
+			const wCancel = observedModel(open.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			const cancelResult = await wCancel.doStream(userPrompt("c"));
+			await expect(cancelResult.stream.cancel()).rejects.toThrow("cancel boom");
+			const lines = logLines(logPath);
+			const failed = lines.filter((l) => l.msg === "model call failed");
+			expect(failed).toHaveLength(3);
+			const statuses = db
+				.query<{ status: string }, []>(
+					"SELECT status FROM model_cache_calls ORDER BY started_ms, rowid",
+				)
+				.all()
+				.map((r) => r.status);
+			expect(statuses).toEqual(["failed", "failed", "failed"]);
+			expect(lines.filter((l) => l.msg === "model call usage")).toHaveLength(0);
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("a failed finish write still rejects with the original error and the failed rollback is logged", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			db.run(`CREATE TEMP TRIGGER fail_completed
+				BEFORE UPDATE OF status ON model_cache_calls
+				WHEN NEW.status = 'completed'
+				BEGIN SELECT RAISE(ABORT, 'SENTINEL-FINISH-FAILURE'); END`);
+			db.run(`CREATE TEMP TRIGGER fail_failed
+				BEFORE UPDATE OF status ON model_cache_calls
+				WHEN NEW.status = 'failed'
+				BEGIN SELECT RAISE(ABORT, 'SENTINEL-ROLLBACK-FAILURE'); END`);
+			const scripted = scriptedModel([[{ type: "stream-start", warnings: [] }, finish(10, 3)]]);
+			const wrapped = observedModel(scripted.model, {
+				conversation: "conv-1",
+				observation: obs,
+				route: {
+					provider: "fake",
+					kind: "openai-compatible",
+					base: "https://x",
+					modelRef: "fake/fake-1",
+				},
+			}) as LanguageModelV4;
+			const result = await wrapped.doStream(userPrompt("hi"));
+			await expect(drain(result.stream)).rejects.toThrow("SENTINEL-FINISH-FAILURE");
+			const lines = logLines(logPath);
+			const start = lines.find((l) => l.msg === "model call")!;
+			const rollback = lines.filter((l) => l.msg === "model call rollback failed");
+			expect(rollback).toHaveLength(1);
+			expect(rollback[0]).toMatchObject({
+				callId: start.callId,
+				conversation: "conv-1",
+				model: "fake/fake-1",
+				errorName: "provider-error",
+			});
+			expect(lines.filter((l) => l.msg === "model call usage")).toHaveLength(0);
+			expect(JSON.stringify(lines)).not.toContain("SENTINEL-ROLLBACK-FAILURE");
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("a clean close without a finish part is not a success receipt", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const scripted = scriptedModel([[{ type: "text-delta", id: "t1", delta: "x" }]]);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const wrapped = observedModel(scripted.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			const result = await wrapped.doStream(userPrompt("hi"));
+			await drain(result.stream);
+			const lines = logLines(logPath);
+			expect(lines.filter((l) => l.msg === "model call usage")).toHaveLength(0);
+			expect(lines.filter((l) => l.msg === "model call failed")).toHaveLength(1);
+			expect(
+				db.query<{ status: string }, []>("SELECT status FROM model_cache_calls").get()!.status,
+			).toBe("failed");
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("generate calls record usage with the same correlation", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const generated = generateModel(() => ({
+				content: [{ type: "text" as const, text: "ok" }],
+				finishReason: { unified: "stop" as const, raw: undefined },
+				warnings: [],
+				usage: {
+					inputTokens: {
+						total: 4,
+						noCache: undefined,
+						cacheRead: 0,
+						cacheWrite: undefined,
+					},
+					outputTokens: { total: 1, text: undefined, reasoning: undefined },
+				},
+			}));
+			const wrapped = observedModel(generated.model, {
+				conversation: "conv-1",
+				purpose: "compaction",
+				observation: obs,
+			}) as LanguageModelV4;
+			const params = userPrompt("summarize");
+			const result = await wrapped.doGenerate(params);
+			expect(generated.generateCalls[0]).toEqual(params);
+			const lines = logLines(logPath);
+			const start = lines.find((l) => l.msg === "model call")!;
+			const usage = lines.find((l) => l.msg === "model call usage")!;
+			expect(usage.callId).toBe(start.callId);
+			expect(usage.cacheReadTokens).toBe(0);
+			expect(usage.cacheWriteTokens).toBeNull();
+			expect(usage.purpose).toBe("compaction");
+			expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
+	});
+
+	test("without an owner the receipts still correlate and nothing is persisted", async () => {
+		const scripted = scriptedModel([], { extra: { parts: [finish(2, 1)] } });
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const wrapped = observedModel(scripted.model, { purpose: "topic-title" }) as LanguageModelV4;
+			const result = await wrapped.doStream(userPrompt("t"));
+			await drain(result.stream);
+			const lines = logLines(logPath);
+			const usage = lines.find((l) => l.msg === "model call usage")!;
+			expect(usage.callId).toBe(lines.find((l) => l.msg === "model call")!.callId);
+			expect(usage.idleMs).toBeUndefined();
+		} finally {
+			setLogFile(null);
+		}
+	});
+});
+
+describe("cacheRouteFor — the hashed route identity", () => {
+	test("each kind pins a credential-free base", () => {
+		expect(cacheRouteFor(cfg, "zai/glm-5.3")).toEqual({
+			provider: "zai",
+			kind: "openai-compatible",
+			base: "https://api.z.ai/api/coding/paas/v4",
+			modelRef: "zai/glm-5.3",
+		});
+		expect(cacheRouteFor(cfg, "zai_responses/glm-5.3")?.base).toBe("https://api.z.ai/api/v1");
+		expect(cacheRouteFor(cfg, "openrouter/anthropic/claude")?.base).toBe(
+			"https://openrouter.ai/api/v1",
+		);
+		expect(cacheRouteFor(cfg, "codex/gpt-5.3")?.base).toBe(
+			"https://chatgpt.com/backend-api/codex/responses",
+		);
+		expect(cacheRouteFor(cfg, "missing/x")).toBeUndefined();
+	});
+
+	test("a credential/query/fragment-bearing baseUrl hashes only origin and path", () => {
+		const dirty: Config = {
+			...cfg,
+			providers: {
+				relay: {
+					kind: "openai-compatible",
+					baseUrl: "https://user:pass@relay.example/v1?key=abc#frag",
+					auth: "x",
+				},
+			},
+		};
+		expect(cacheRouteFor(dirty, "relay/m")?.base).toBe("https://relay.example/v1");
+	});
+});
+
+describe("failure lines carry only safe categories", () => {
+	test("an APICallError with a sentinel body/headers leaks nothing into telemetry lines", async () => {
+		const db = new Database(":memory:");
+		const obs = openCacheObservation(db);
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		const sentinel = "SENTINEL-BODY-https://key.example/secret-9x";
+		const apiError = new APICallError({
+			message: "ignored",
+			url: "https://api.example/v1/chat",
+			requestBodyValues: { prompt: sentinel },
+			statusCode: 503,
+			responseHeaders: { "x-auth": sentinel },
+			responseBody: sentinel,
+		});
+		try {
+			const failing = generateModel(() => {
+				throw apiError;
+			});
+			const wrapped = observedModel(failing.model, {
+				conversation: "conv-1",
+				observation: obs,
+			}) as LanguageModelV4;
+			let caught: unknown;
+			try {
+				await wrapped.doGenerate({
+					prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+				});
+			} catch (error) {
+				caught = error;
+			}
+			expect(caught).toBe(apiError);
+			const lines = readFileSync(logPath, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const failed = lines.filter((l) => l.msg === "model call failed");
+			expect(failed).toHaveLength(1);
+			expect(failed[0]).toMatchObject({ stage: "invoke", errorName: "provider-error", httpStatus: 503 });
+			expect(JSON.stringify(failed)).not.toContain(sentinel);
+			expect(JSON.stringify(failed)).not.toContain("api.example");
+		} finally {
+			setLogFile(null);
+			db.close();
+		}
 	});
 });

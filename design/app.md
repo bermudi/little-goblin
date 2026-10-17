@@ -476,6 +476,35 @@ fail-loud rule broken at exactly the moment it mattered.
   re-watches the in-flight turn. Only the wire is lost, and now it
   says so.
 
+## Interrupted turn recovery (ruling 2026-10-17)
+
+A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md
+→ The turn journal). The app surfaces those runs in the conversation they
+died in — `InterruptedTurns` renders at the transcript tail (scrolls with
+history, never eats composer height), fed by
+`GET /api/app/conversations/<id>/interrupted` on mount and again on the
+busy→idle transition.
+
+The contract mirrors the Telegram `/decide` / `/resume` surface:
+
+- **Decisions are explicit.** Each `dispatched` call shows its tool name,
+  a bounded args preview (journal text — long inputs are truncated), and
+  three buttons: Record result (asserts an outcome the operator already
+  knows — it becomes the replayable result), Authorize retry (re-executes;
+  effects may repeat), Skip (the call never runs; a re-ask reads back the
+  refusal). An optional note rides `record-result` as the asserted output
+  and `authorize-retry`/`skip` as free context. Settled calls render
+  read-only with their recorded result/error/decision note.
+- **Resume is gated server-side.** The button stays disabled while any
+  call is `dispatched`; `POST .../resume` 409s with the undecided calls
+  and the client refetches rather than trusting its local copy. A 200
+  admits a FRESH run; the client drops the acknowledged source locally
+  and calls `resumeStream()` — the attach endpoint's 204 path reconciles
+  durable history by message id, so fast completions appear and live
+  turns re-watch.
+- **No optimistic mutation.** Nothing is marked decided before the
+  server's ack; errors show the server's reason verbatim.
+
 ## Archiving (ruling 2026-10-09)
 
 Archive replaces delete as the rail's declutter action. An archived

@@ -140,8 +140,10 @@ Conversation ─────── (channel address) → durable event history
 
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
-(operator ruling, 2026-10-05). Neither command applies to group topics;
-there is no `/resume` command. Durable work moves to the app (Spin-off). In the group, a forum
+(operator ruling, 2026-10-05). Neither command applies to group topics.
+`/resume` is not a DM/topic navigation command: it resumes only interrupted
+turns from [the turn journal](design/runtime-turn.md#the-turn-journal).
+Durable work moves to the app (Spin-off). In the group, a forum
 topic is a conversation: create a topic to start one, post in an old topic to
 resume it. The bot may also create topics itself (`createForumTopic`). A chat
 without topics is one standing conversation. Conversation management is
@@ -179,10 +181,15 @@ stamps "⏹ superseded" on its already-visible partial reply (if any),
 without flushing unsent content — and drains the intake
 buffer into history, all under a bounded budget. A crash mid-turn leaves
 the same shape minus the flush: the user message is in history, the next
-turn answers it. Boot never auto-retries a half-run turn — tool calls
-aren't idempotent, and an unanswered tail can't be told apart from
-`/stop`. If recovery is ever wanted it is notify-don't-retry: surface
-the orphaned turn to the operator, don't replay it.
+turn answers it. The turn journal (design/runtime-turn.md → The turn
+journal) makes the distinction durable: a graceful shutdown stamps its
+runs `fenced`; a row still `running` at open means the process died, is
+reclassified `interrupted`, and is surfaced to the operator as a boot
+notice — counts and facts, never a replay. Boot never auto-retries a
+half-run turn — tool calls aren't idempotent, and an unanswered tail
+can't be told apart from `/stop`. Resuming an interrupted turn is a
+separate explicit decision riding the journaled rows, not a boot
+behavior.
 
 ## Cache stability
 
@@ -217,6 +224,51 @@ the orphaned turn to the operator, don't replay it.
     catalog context limit. History compaction is an explicit logged
     boundary that starts a fresh stable prefix — never silent eviction
     (see Compaction).
+  - Per-call telemetry lands in `model_cache_calls` (goblin.sqlite;
+    `src/cache-observation.ts` owns the table on the store's handle).
+    The `observedModel` middleware (agent/providers.ts) writes a
+    `started` row before invoking the provider — fresh call id,
+    conversation/purpose, route key (SHA-256 of the provider-config
+    identity: config name, kind, credential-free base, model ref;
+    Codex/OpenRouter pin their constant endpoints, and wrappers without
+    config get an inferred provider/modelId+purpose key labelled as
+    such), head/request/settings hashes and per-message prompt hashes —
+    then `completed` with the usage split only on a provider finish, or
+    `failed` on rejection, stream error or cancellation. The log carries
+    the same correlation: `model call` opens a callId, `model call
+    usage`/`model call failed` close it, with `idleMs` and
+    `prefixRelation` copied from the start observation. Prefix relations
+    (`first`/`same`/`append`/`rewrite` and `shared_messages`) are
+    structural facts about consecutive requests on one
+    conversation+route — never proof of cache warmth, expiry or a
+    provider bug. Pruning old textual tool results is opt-in through the
+    hand-edited `cachePruning` config block: each profile pins a route
+    key + settings hash pair — the hash of the SDK-normalized call
+    settings (`turnCallSettings`: the SDK resolves an omitted
+    `toolChoice` to `{type:"auto"}` before the middleware boundary, so
+    telemetry-copied profiles and the gate hash identical bytes) — and
+    a committed `event_projections` row is
+    a sanctioned rewrite of the model-facing view only — the `events`
+    row is never modified, and the marker replays byte-identically on
+    every later read and restart, even if the policy becomes ineligible.
+    The marker names the tool call and a `history_search` context
+    address (`toolCallId` + `offset`) that pages the original result.
+    New batches commit only between turns and only when the profile is
+    unexpired, the route's observed idle time is at least
+    `idleAfterMs`, the last input size clears `minimumInputTokens`, and
+    no drift contradicts the presumed expiry — the drift check inspects
+    every completed receipt recorded since the profile's `reviewedAt`
+    (a multi-call turn can bury an earlier zero-read call under a
+    later cache hit; receipts the review already saw stay
+    acknowledged). Three findings suspend new
+    batches — never committed rows: an unchanged-prefix call inside the
+    assumed window that reported zero cache reads, an expired profile,
+    or a `documented-expiry` profile the contract registry can't
+    support. `scripts/cache-report.ts` aggregates the receipts and
+    `scripts/check-cache-contracts.ts` re-checks the public contract
+    sources (design/model.md → Cache contracts). Cache-call evidence
+    has no automatic age-based deletion or prompt-hash stripping;
+    retention changes require a separate explicit decision.
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
   log: a model switch — or a catalog refresh that changes a model's
@@ -227,8 +279,9 @@ the orphaned turn to the operator, don't replay it.
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
   placeholder is a repair, not drift; a deploy that changes the read-time
   compaction marker's wording rewrites it once in every compacted
-  conversation. Everything else that moves the hash
-  is a bug.
+  conversation; a committed pruning marker replaces an old textual tool
+  result once, then replays verbatim forever. Everything else that moves
+  the hash is a bug.
 
 ## Design areas
 

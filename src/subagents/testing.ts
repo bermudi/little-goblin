@@ -332,7 +332,11 @@ export interface MemSandbox extends Sandboxes {
 	fs: MemFS;
 	/** A promise every execArgv awaits first — holds a gated bash call. */
 	execGate: Promise<void> | null;
+	/** The sandbox "died" — calls skip the gate entirely (SIGKILL model). */
+	sandboxDead: boolean;
 	execCalls: number;
+	/** Signal-bearing `env` dispatches — one per bash command run. */
+	dispatchCalls: number;
 	/** A promise every cpIn awaits first — holds a gated import. */
 	cpGate: Promise<void> | null;
 	cpCalls: number;
@@ -626,7 +630,9 @@ export function fakeSandboxes(): MemSandbox {
 	const fake: MemSandbox = {
 		fs,
 		execGate: null,
+		sandboxDead: false,
 		execCalls: 0,
+		dispatchCalls: 0,
 		cpGate: null,
 		cpCalls: 0,
 		exec: async (_conv, command, opts) => ({
@@ -634,6 +640,9 @@ export function fakeSandboxes(): MemSandbox {
 		}),
 		execArgv: async (_conv, argv, opts) => {
 			fake.execCalls++;
+			// env is the bash command dispatch; cat/wc are its spill
+			// machinery — dispatchCalls isolates the dispatch itself.
+			if (argv[0] === "env") fake.dispatchCalls++;
 			await gateOrAbort(opts.abortSignal);
 			return { result: dispatchArgv(argv) };
 		},
@@ -663,12 +672,14 @@ export function fakeSandboxes(): MemSandbox {
 	};
 
 	async function gateOrAbort(signal: AbortSignal | undefined): Promise<void> {
-		if (fake.execGate !== null) {
-			await Promise.race([
-				fake.execGate,
-				new Promise<void>((res) => signal?.addEventListener("abort", () => res())),
-			]);
-		}
+		// sandboxDead is the SIGKILL model: the gate held a dispatch at
+		// kill time and every later call — signal-less cleanup like
+		// guestRm — is bookkeeping the dead box would have dropped.
+		if (fake.execGate === null || fake.sandboxDead) return;
+		await Promise.race([
+			fake.execGate,
+			new Promise<void>((res) => signal?.addEventListener("abort", () => res())),
+		]);
 	}
 	function fail(msg: string, code = 1): ExecResult {
 		return {
@@ -1096,6 +1107,14 @@ afterEach(async () => {
 // it here so the afterEach above does not close it a second time.
 export function forgetOwner(o: Subagents): void {
 	owners = owners.filter((x) => x !== o);
+}
+
+// A second durable handle on a run store a test probes after its owner
+// closed — registered here so the afterEach above closes it too.
+export function openRunStore(dbPath: string): SubagentRuns {
+	const runs = openSubagentRuns(dbPath);
+	runStores.push(runs);
+	return runs;
 }
 
 function makeConfig(url: string, overrides?: Partial<SubagentsConfig>): SubagentsConfig {

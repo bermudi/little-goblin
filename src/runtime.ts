@@ -35,6 +35,7 @@ import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
+import { replayKey, type TurnJournal } from "./turn-journal.ts";
 
 const LOOP_CHECK_EVERY = 16;
 // Completed turns at or above this threshold compact in-lane. The lane stays
@@ -125,6 +126,15 @@ export interface RuntimeDeps {
 			signal: AbortSignal,
 		): Promise<string>;
 	};
+	// Between-turns persisted pruning (DESIGN.md → Cache stability): runs
+	// after the next batch is claimed and before runTurn builds its view,
+	// so committed markers are visible to the admission read. A throw is
+	// logged and the turn proceeds — the projection commit is atomic.
+	pruneBetweenTurns?: (convId: string) => void;
+	// The crash journal (design/runtime-turn.md → The turn journal):
+	// each admitted attempt opens a run row before any tool side effect
+	// can run. Optional — test rigs journal nothing.
+	turnJournal?: TurnJournal;
 }
 
 export class FencedError extends Error {
@@ -133,6 +143,12 @@ export class FencedError extends Error {
 		this.name = "FencedError";
 	}
 }
+
+// An operator-resume admission's seed (turn-resume.ts builds it): the
+// interrupted run's carry-over minus the dead attempt's live wire and
+// recall — both re-derive at the fresh admission. `resumedFrom` links
+// the new run row to the source and arms the fence's replay map.
+export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
 	// The message appended to history; a live predecessor may fold it into its
@@ -145,6 +161,10 @@ interface QueuedTurn {
 	// A throwing stream sink is detached without killing the turn; remaining
 	// sinks receive future chunks.
 	streamFailed?: boolean;
+	// Present only on a claim head — a seeded turn answers for the
+	// interrupted run it continues; claimed as a member its recovery
+	// would silently drop, so the claim boundary stops before it.
+	resumeSeed?: ResumeSeed | undefined;
 }
 
 // Compaction jobs run between turns so the preceding exchange is whole.
@@ -170,15 +190,22 @@ interface Lane {
 
 // Keep a streaming submit queued behind a headless turn so it can lead its own
 // attempt. A streaming head may claim all pending work; a headless head claims
-// only the leading non-streaming run.
-function claimableCount(pending: QueuedTurn[], headStreams: boolean): number {
-	if (headStreams) return pending.length;
-	const first = pending.findIndex((t) => t.sink.onStreamChunk !== undefined);
-	return first === -1 ? pending.length : first;
+// only the leading non-streaming run. A resume seed leads only its own claim —
+// joining another turn as a member would drop its recovery. `headLeads`
+// distinguishes the two claim contexts: the drain's claim promotes pending[0]
+// to head (its seed rides along), while wire/steer claims take members only —
+// a seed at index 0 must stop them too.
+function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
+	const start = headLeads ? 1 : 0;
+	const seeded = pending.findIndex((t, i) => i >= start && t.resumeSeed !== undefined);
+	const limit = seeded === -1 ? pending.length : seeded;
+	if (headStreams) return limit;
+	const first = pending.findIndex((t, i) => i >= start && t.sink.onStreamChunk !== undefined);
+	return first === -1 ? limit : Math.min(limit, first);
 }
 
-function claimPending(lane: Lane, headStreams: boolean): QueuedTurn[] {
-	return lane.pending.splice(0, claimableCount(lane.pending, headStreams));
+function claimPending(lane: Lane, headStreams: boolean, headLeads = true): QueuedTurn[] {
+	return lane.pending.splice(0, claimableCount(lane.pending, headStreams, headLeads));
 }
 
 // Terminal outcomes have settled their sinks; resumes carry recovery and
@@ -247,13 +274,26 @@ export class Runtime {
 		return this.admit(conv, message, sink);
 	}
 
-	private admit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
+	// Admission for an operator-resumed turn — turn-resume.ts owns the
+	// validation. The triggering message is already durable history, so
+	// nothing is re-appended; the seed restores what the interrupted
+	// attempt produced. Same lane and authority rules as submitPersisted.
+	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
+		return this.admit(conv, message, sink, seed);
+	}
+
+	private admit(
+		conv: Conversation,
+		message: UIMessage,
+		sink: TurnSink,
+		seed?: ResumeSeed,
+	): boolean {
 		if (this.closed) {
 			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false });
+		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -459,14 +499,124 @@ export class Runtime {
 
 	// Tools execute inside the SDK stream, so each tool needs its own authority
 	// check; tools are fresh per turn. A tool cannot rely on the outer chunk
-	// loop's check to fence its side effects.
-	private fenceTools(tools: ToolSet, convId: string, epoch: number): ToolSet {
-		for (const t of Object.values(tools)) {
+	// loop's check to fence its side effects. The same seam writes the crash
+	// journal's dispatch/result/error transitions — dispatch only after the
+	// authority check passes, so a fenced call never reads as entered.
+	//
+	// A journal write that throws is fatal to the turn, not a tool error:
+	// the row is the only record of what ran — letting the SDK surface an
+	// ordinary tool failure invites the model to repeat a side effect the
+	// journal can no longer describe. The first fault aborts the attempt
+	// and fences every later dispatch; the attempt's catch reports it as
+	// a turn error, never 'fenced'.
+	private fenceTools(
+		tools: ToolSet,
+		convId: string,
+		epoch: number,
+		runId?: string,
+		replay?: ReadonlyMap<string, unknown[]>,
+		skipped?: ReadonlyMap<string, string>,
+		journalFault?: { current: unknown },
+		onJournalFault?: () => void,
+	): ToolSet {
+		const journal = this.deps.turnJournal;
+		const note = (write: () => void): void => {
+			try {
+				write();
+			} catch (err) {
+				if (journalFault !== undefined && journalFault.current === undefined) {
+					journalFault.current = err;
+				}
+				onJournalFault?.();
+				throw err;
+			}
+		};
+		for (const [name, t] of Object.entries(tools)) {
 			const execute = t.execute?.bind(t);
 			if (execute === undefined) continue;
 			t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
 				this.checkAuthority(convId, epoch);
-				return execute(input as never, options);
+				if (journalFault?.current !== undefined) throw journalFault.current;
+				if (journal !== undefined && runId !== undefined) {
+					note(() => journal.noteToolDispatch(runId, options.toolCallId, name, input));
+				}
+				// An operator-resumed turn's recorded results answer here —
+				// the side effect already ran (or the operator asserted it
+				// did), so the call never reaches execute. The dispatch and
+				// result still journal under this run's own row, flagged as
+				// replayed: proof of what the model saw, never a second
+				// replay credit for the one execution behind it.
+				const recorded = replay?.get(replayKey(name, input));
+				if (recorded !== undefined && recorded.length > 0) {
+					const value = recorded.shift();
+					if (journal !== undefined && runId !== undefined) {
+						note(() =>
+							journal.noteToolResult(runId, options.toolCallId, value, {
+								replayed: true,
+							}),
+						);
+					}
+					log.info("replaying recorded tool result", {
+						conversation: convId,
+						tool: name,
+						toolCallId: options.toolCallId,
+					});
+					return value;
+				}
+				// A re-ask for a call the operator skipped gets the recorded
+				// refusal, not the side effect — 'skip' means never execute.
+				// Journaled with replay provenance for the same reason.
+				const refusal = skipped?.get(replayKey(name, input));
+				if (refusal !== undefined) {
+					const value = { error: refusal };
+					if (journal !== undefined && runId !== undefined) {
+						note(() =>
+							journal.noteToolResult(runId, options.toolCallId, value, {
+								replayed: true,
+							}),
+						);
+					}
+					log.info("declined tool call answered with the operator's skip", {
+						conversation: convId,
+						tool: name,
+						toolCallId: options.toolCallId,
+					});
+					return value;
+				}
+				let result: ReturnType<typeof execute>;
+				try {
+					result = execute(input as never, options);
+				} catch (err) {
+					if (journal !== undefined && runId !== undefined) {
+						note(() => journal.noteToolError(runId, options.toolCallId, err));
+					}
+					throw err;
+				}
+				if (
+					journal !== undefined &&
+					runId !== undefined &&
+					result !== null &&
+					typeof result === "object" &&
+					"then" in result &&
+					typeof (result as { then: unknown }).then === "function"
+				) {
+					// A settled promise is the earliest the result is known —
+					// the wrapper resolves only after the journal row lands.
+					return (result as PromiseLike<unknown>).then(
+						(value) => {
+							note(() => journal.noteToolResult(runId, options.toolCallId, value));
+							return value;
+						},
+						(err: unknown) => {
+							note(() => journal.noteToolError(runId, options.toolCallId, err));
+							throw err;
+						},
+					);
+				}
+				if (journal !== undefined && runId !== undefined) {
+					note(() => journal.noteToolResult(runId, options.toolCallId, result));
+				}
+				return result;
 			};
 		}
 		return tools;
@@ -480,7 +630,7 @@ export class Runtime {
 	): QueuedTurn[] {
 		return claimMembers(
 			convId,
-			() => claimPending(this.lane(convId), sink.onStreamChunk !== undefined),
+			() => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 			live,
 			members,
 		);
@@ -518,6 +668,13 @@ export class Runtime {
 						log.info("queued submits coalesced", {
 							conversation: convId,
 							count: turns.length,
+						});
+					}
+					try {
+						this.deps.pruneBetweenTurns?.(convId);
+					} catch (err) {
+						log.error("cache pruning pass failed — turn proceeds", err, {
+							conversation: convId,
 						});
 					}
 					try {
@@ -575,7 +732,12 @@ export class Runtime {
 	// while late subscribers retain one continuous stream.
 	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
 		const live = openLive();
-		let recovery: TurnRecovery | undefined;
+		// An operator-resume seed enters the same recovery slot an
+		// overflow decision fills — the attempt loop consumes it
+		// identically. The wire is always the fresh log: the dead turn's
+		// went away with the process.
+		const seed = turns[0]?.resumeSeed;
+		let recovery: TurnRecovery | undefined = seed === undefined ? undefined : { ...seed, live };
 		let members = turns;
 		for (;;) {
 			const outcome = await this.runAttempt(convId, members, recovery, live);
@@ -648,7 +810,34 @@ export class Runtime {
 
 		// Reuse recall on overflow resume; it belongs to the pre-compaction view.
 		// Reissuing it would spend memory quota twice for one logical turn.
-		let memory: TurnRecovery["memory"] = { prior: [], current: null };
+		let memory: { prior: RecallContext[]; current: RecallContext | null } = {
+			prior: [],
+			current: null,
+		};
+		// The crash journal's per-attempt state: a fresh runId per attempt
+		// (an overflow resume opens a second row — the failed attempt keeps
+		// its own record), stamped terminal exactly once. The finally guard
+		// is the invariant's backstop: a begun row never escapes this attempt
+		// still 'running', whatever the escape path.
+		const journal = this.deps.turnJournal;
+		// An operator-resume admission carries the interrupted run it
+		// continues — every attempt of this turn links its run row to it
+		// and replays its recorded results instead of re-executing.
+		const sourceRunId = recovery?.resumedFrom;
+		let runId: string | null = null;
+		// A thrown journal write anywhere in the fence lands here — the
+		// catch below aborts the turn instead of letting the SDK report a
+		// tool error the model could retry.
+		const journalFault: { current: unknown } = { current: undefined };
+		let runStamped = false;
+		const stampRun = (
+			status: "fenced" | "completed" | "error",
+			delivery: "delivered" | "undelivered" | "failed",
+		) => {
+			if (journal === undefined || runId === null || runStamped) return;
+			journal.finishRun(runId, status, delivery);
+			runStamped = true;
+		};
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the
@@ -691,10 +880,45 @@ export class Runtime {
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
+			// The run row lands before the SDK's loop can reach a tool:
+			// after this line every dispatch is journaled under runId.
+			// Creation, evidence inheritance (an operator-resume source
+			// and any overflow-failed predecessor), and the source's
+			// consumption are one journal transaction — a crash between
+			// them must never leave a successor that re-executes recorded
+			// side effects.
+			runId = randomUUID();
+			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts);
+			journal?.beginRun({
+				runId,
+				conversationId: convId,
+				epoch,
+				anchorSeq,
+				steerMark: snapshot.steerMarkSeed,
+				convSnapshot: { model: conv.model, thinking: conv.thinking },
+				toolNames: Object.keys(rawTools),
+				startedAt: new Date(turnStartMs).toISOString(),
+				resumedFrom: sourceRunId,
+				inheritFrom:
+					recovery?.predecessorRun === undefined
+						? undefined
+						: [recovery.predecessorRun],
+			});
+			// The fence's evidence reads the fresh row after inheritance:
+			// it already carries the source's decisions and every
+			// predecessor attempt's recorded results, so a replay answers
+			// from this run's own durable history.
+			const replay = journal === undefined ? undefined : journal.replayMap(runId);
+			const skipped = journal === undefined ? undefined : journal.skippedMap(runId);
 			const tools = this.fenceTools(
-				this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts),
+				rawTools,
 				convId,
 				epoch,
+				runId,
+				replay,
+				skipped,
+				journalFault,
+				() => controller.abort(),
 			);
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
@@ -727,13 +951,18 @@ export class Runtime {
 				members: turns,
 				live,
 				state,
-				assertAuthority: () => this.checkAuthority(convId, epoch),
+				journal,
+				runId,
+				assertAuthority: () => {
+					this.checkAuthority(convId, epoch);
+					if (journalFault.current !== undefined) throw journalFault.current;
+				},
 				holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
 				step,
 				messages: merged,
 				tools,
 				view: viewCtx,
-				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined),
+				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				modelEntries: () => store.modelEntries(convId),
@@ -754,6 +983,9 @@ export class Runtime {
 				filterRetryUsed = outcome.filterRetryUsed;
 				throw failureFromStream(outcome);
 			}
+			// A stream that reached its finish while a journal write
+			// faulted must not land a reply the journal can't describe.
+			if (journalFault.current !== undefined) throw journalFault.current;
 			// Land the durable reply, then keep the post-delivery authority check:
 			// a stop during sink flushing must fence follow-up work. Persistence and
 			// delivery are both on the same authority-checked finish path.
@@ -777,6 +1009,7 @@ export class Runtime {
 				memory: this.deps.memory,
 			});
 			await notifyAll(landed.done);
+			stampRun("completed", "delivered");
 			// A stop during terminal delivery must prevent follow-up work.
 			this.checkAuthority(convId, epoch);
 			// Clear the turn controller before retention/review/compaction so /stop
@@ -822,16 +1055,35 @@ export class Runtime {
 				}
 			}
 		} catch (err) {
-			if (err instanceof FencedError || controller.signal.aborted) {
+			if (journalFault.current !== undefined) {
+				// The crash journal is the only record of what the turn's
+				// tools did — when it cannot write, the turn dies as an
+				// error (never 'fenced', never completed) so no reported
+				// failure can invite a replay of an unjournaled effect.
+				controller.abort();
+				const fault = journalFault.current;
+				log.error("turn aborted — the turn journal cannot write", fault, {
+					conversation: convId,
+					epoch,
+				});
+				stampRun("error", "failed");
+				await notifyAll({
+					kind: "error",
+					message: terminalFailureMessage(fault, recovery !== undefined),
+					modelCalls: state.snapshot().modelCalls,
+				});
+			} else if (err instanceof FencedError || controller.signal.aborted) {
 				// Abort even an epoch-fenced provider call; otherwise it may keep
 				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
+				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
 				// Recover once: compact the failed attempt and resume with its partial
 				// so completed tools are not repeated. A second overflow follows the
-				// terminal error path.
+				// terminal error path. The failed attempt's run id rides the
+				// recovery: the continuation's row inherits its settled calls.
 				const outcome = await recoverFromOverflow({
 					convId,
 					epoch,
@@ -841,6 +1093,8 @@ export class Runtime {
 					startedAt: turnStartMs,
 					live,
 					filterRetryUsed,
+					resumedFrom: sourceRunId,
+					failedRunId: runId ?? undefined,
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),
@@ -848,8 +1102,17 @@ export class Runtime {
 					signal: controller.signal,
 				});
 				if (outcome.kind === "resume") {
+					// This attempt's row is done — the stream failed and its
+					// output was withheld for recovery; the resume opens a
+					// fresh row that inherits this row's settled calls, so a
+					// crash of the continuation still resumes with them.
+					stampRun("error", "undelivered");
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
+				stampRun(
+					outcome.kind === "fenced" ? "fenced" : "error",
+					outcome.kind === "fenced" ? "undelivered" : "failed",
+				);
 				await notifyAll(
 					outcome.kind === "fenced"
 						? { kind: "fenced" }
@@ -869,8 +1132,15 @@ export class Runtime {
 					modelCalls: state.snapshot().modelCalls,
 					transient: isTransientTurnFailure(err),
 				};
+				stampRun("error", "failed");
 				await notifyAll(done);
 			}
+		} finally {
+			// Whatever escaped the catch above — a throw inside recovery
+			// or notifyAll — must not leave a begun row 'running': rows
+			// left 'running' mean process death, and only the journal
+			// gets to say that.
+			stampRun("error", "failed");
 		}
 		return { kind: "done" };
 	}

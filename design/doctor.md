@@ -73,6 +73,7 @@ migration before boot has performed existing initialization.
 | Family | Evidence and limits |
 | --- | --- |
 | Config | Existing schema and local model/provider reference validation; no provider construction, catalog refresh or generation |
+| Cache contracts | `cache.contracts` maps each configured model (root, Telegram, favorites, optional title/reviewer) to its reviewed contract from `src/agent/cache-contracts.ts` — mode and lifetime class only. Unpublished or unknown durations warn; review metadata older than its 30-day window warns. Never claims warmth/expiry verified, never resolves auth or builds a provider; the manual bounded re-check is `scripts/check-cache-contracts.ts` (design/model.md → Cache contracts) |
 | Auth | Permissions, safe record parsing, effective last-wins references including configured optional features; strict prohibited-command lint scans all records |
 | Keys | Referenced recognized `pass-keys get` profiles (a single direct command — bare or literal path-prefixed executable): metadata-only status, required key-name presence, snapshot age; installed refresh unit state |
 | Workspace | Required readable files/directories, explicit optional or preflight skips |

@@ -11,7 +11,11 @@ import { defineDoc } from "@earendil-works/pi-durable";
 // clearing the doc can't be mis-settled by the old question's outcome.
 export type RunOutcomeBody =
 	| { kind: "done"; result: string; files: string[] }
-	| { kind: "ask"; question: string };
+	| { kind: "ask"; question: string }
+	// Written by the approval gate when a crash decision abandons a
+	// crash-ambiguous call — settlement reports the verdict, not a
+	// generic "no terminal tool" failure.
+	| { kind: "aborted"; reason: string };
 export type RunOutcome = RunOutcomeBody & { rev: number };
 type RunDocState = {
 	runId: number | null;

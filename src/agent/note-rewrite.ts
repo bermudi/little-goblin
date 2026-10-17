@@ -7,9 +7,10 @@
 
 import { generateText } from "ai";
 import type { AuthStore } from "../auth.ts";
+import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
-import { observedModel, resolveModel, thinkingOptions } from "./providers.ts";
+import { cacheRouteFor, observedModel, resolveModel, thinkingOptions } from "./providers.ts";
 
 export const NOTE_REWRITE_INSTRUCTIONS = [
 	"You rewrite a selected passage from the operator's Markdown note.",
@@ -31,6 +32,7 @@ export async function generateNoteRewrite(
 		configRef: ConfigRef;
 		auth: AuthStore;
 		resolve?: typeof resolveModel;
+		observation?: CacheObservation | undefined;
 	},
 	query: {
 		noteId: string;
@@ -54,6 +56,8 @@ export async function generateNoteRewrite(
 		// provider/auth failure lands in the same failure line.
 		const model = observedModel(await (deps.resolve ?? resolveModel)(cfg, deps.auth, cfg.model), {
 			purpose: "note-rewrite",
+			observation: deps.observation,
+			route: cacheRouteFor(cfg, cfg.model),
 		});
 		const providerOptions = thinkingOptions(cfg, cfg.model, cfg.thinking);
 		const result = await generateText({

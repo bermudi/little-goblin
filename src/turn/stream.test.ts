@@ -219,6 +219,7 @@ function rig(
 		filterRetryUsed: false,
 		overflowRecoverable: false,
 		evidence: undefined,
+		runId: "rig-run",
 		turnStartMs: 0,
 		signal: new AbortController().signal,
 		...over,

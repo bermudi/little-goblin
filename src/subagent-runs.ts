@@ -30,6 +30,83 @@ export type InputMode = "initial" | "resume" | "steer";
  *  restart reuses the artifact instead of recopying the box file. */
 export type ExportProgress = Record<string, { rel: string } | { error: string }>;
 
+/** A verdict on a crash-ambiguous call (design/subagents.md) — the
+ *  backward-compatible disk schema for pending mirrors and Pi decided
+ *  leases: rows written before evidence, reasoning and provenance were
+ *  recorded omit them, so those fields stay optional here. New writes
+ *  always carry them; decidedBy/outcome are owner-stamped constants,
+ *  never caller-supplied. `record-result` supplies the call's declared
+ *  result — the tool never re-executes and the model sees it labeled
+ *  unverified; `authorize-retry` re-executes the call exactly once
+ *  more; `abandon` terminates the call and the run. */
+export const approvalDecisionSchema = z.object({
+	kind: z.union([z.literal("record-result"), z.literal("authorize-retry"), z.literal("abandon")]),
+	note: z.string().max(MAX_MESSAGE_CHARS).optional(),
+	result: z.string().max(MAX_RESULT_CHARS).optional(),
+	evidence: z.string().max(MAX_MESSAGE_CHARS).optional(),
+	reasoning: z.string().max(MAX_MESSAGE_CHARS).optional(),
+	decidedBy: z.literal("goblin").optional(),
+	outcome: z.literal("unverified").optional(),
+});
+export type SubagentApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
+const boundedText = (max: number) => z.string().trim().min(1).max(max);
+
+export const approvalDecisionInputSchema = z
+	.object({
+		kind: z.union([z.literal("record-result"), z.literal("authorize-retry"), z.literal("abandon")]),
+		note: boundedText(MAX_MESSAGE_CHARS).optional(),
+		result: boundedText(MAX_RESULT_CHARS)
+			.optional()
+			.describe("Goblin-declared result, not independently verified tool output."),
+		evidence: boundedText(MAX_MESSAGE_CHARS).describe(
+			"Concrete observations or evidence references supporting this verdict; state explicitly when the interrupted effect is unknown.",
+		),
+		reasoning: boundedText(MAX_MESSAGE_CHARS).describe(
+			"Why this verdict is appropriate within existing authority, including uncertainty and retry risk.",
+		),
+	})
+	.refine((d) => d.kind !== "record-result" || d.result !== undefined, {
+		message: "record-result needs result text",
+		path: ["result"],
+	});
+export type SubagentApprovalInput = z.infer<typeof approvalDecisionInputSchema>;
+
+export const crashDecisionSchema = z.object({
+	piTaskId: z.string(),
+	callId: z.string(),
+	tool: z.string(),
+	args: z.unknown(),
+	attempts: z.number(),
+	decidedAt: z.number(),
+	decision: approvalDecisionSchema,
+});
+export type SubagentCrashDecision = z.infer<typeof crashDecisionSchema>;
+const crashDecisionList = z.array(crashDecisionSchema);
+
+export function crashDecisionNotice(records: readonly SubagentCrashDecision[]): string | null {
+	if (records.length === 0) return null;
+	return `Crash resolution warning: the following decisions are declarations, not verified outcomes. A done run does not verify these interrupted effects; independent checks are separate evidence.\nCrash decisions: ${JSON.stringify(records)}`;
+}
+
+const pendingApprovalSchema = z.object({
+	/** The durable Pi tool-task id — the lease key the gate re-parks on. */
+	piTaskId: z.string(),
+	callId: z.string(),
+	tool: z.string(),
+	args: z.unknown(),
+	attempts: z.number(),
+	/** The recorded verdict — decide() persists it on the row BEFORE the
+	 *  scheduler's grant consumes it, so a crash in between can't lose
+	 *  the decision. Absent = no verdict recorded yet. */
+	decision: approvalDecisionSchema.optional(),
+});
+/** The durable mirror of a parked crash-approval: which tool call the
+ *  run is parked on (design/subagents.md → crash approval). */
+export type PendingApproval = z.infer<typeof pendingApprovalSchema>;
+const parsePendingApproval = (s: string): PendingApproval =>
+	pendingApprovalSchema.parse(JSON.parse(s));
+
 export interface SubagentRun {
 	id: number;
 	kind: SubagentKind;
@@ -72,6 +149,11 @@ export interface SubagentRun {
 	/** Latest destructive sandbox lifecycle note the run hasn't seen —
 	 *  replaced, never cleared before a tool result carries it. */
 	lifecycleNote: string | null;
+	/** The parked crash-approval this run waits on — non-null only
+	 *  while `needs_input` was set by the gate, never by ask_operator.
+	 *  `send` refuses; only `decide` resolves it. */
+	pendingApproval: PendingApproval | null;
+	crashDecisions: SubagentCrashDecision[];
 	/** A settle/question notice still owes a wake (retry on scan). */
 	noticePending: boolean;
 	/** Bumped per notice so a stale ack can't clear a newer one. */
@@ -106,6 +188,8 @@ const runRowSchema = z.object({
 	export_progress: z.string(),
 	final_screenshot: z.string().nullable(),
 	lifecycle_note: z.string().nullable(),
+	pending_approval: z.string().nullable(),
+	crash_decisions: z.string(),
 	notice_pending: z.number(),
 	notice_rev: z.number(),
 	created_at: z.number(),
@@ -144,6 +228,8 @@ function toRun(row: unknown): SubagentRun {
 			.parse(JSON.parse(r.export_progress)),
 		finalScreenshot: r.final_screenshot,
 		lifecycleNote: r.lifecycle_note,
+		pendingApproval: r.pending_approval === null ? null : parsePendingApproval(r.pending_approval),
+		crashDecisions: crashDecisionList.parse(JSON.parse(r.crash_decisions)),
 		noticePending: r.notice_pending !== 0,
 		noticeRev: r.notice_rev,
 		createdAt: r.created_at,
@@ -169,6 +255,8 @@ export interface SubagentRunPatch {
 	exportProgress?: ExportProgress;
 	finalScreenshot?: string | null;
 	lifecycleNote?: string | null;
+	pendingApproval?: PendingApproval | null;
+	crashDecisions?: SubagentCrashDecision[];
 	noticePending?: boolean;
 	noticeRev?: number;
 	finishedAt?: number | null;
@@ -244,6 +332,8 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 		export_progress TEXT NOT NULL DEFAULT '{}',
 		final_screenshot TEXT,
 		lifecycle_note TEXT,
+		pending_approval TEXT,
+		crash_decisions TEXT NOT NULL DEFAULT '[]',
 		notice_pending INTEGER NOT NULL DEFAULT 0,
 		notice_rev INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
@@ -266,6 +356,11 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 			"ALTER TABLE subagent_runs ADD COLUMN export_progress TEXT NOT NULL DEFAULT '{}'",
 		],
 		["notice_rev", "ALTER TABLE subagent_runs ADD COLUMN notice_rev INTEGER NOT NULL DEFAULT 0"],
+		["pending_approval", "ALTER TABLE subagent_runs ADD COLUMN pending_approval TEXT"],
+		[
+			"crash_decisions",
+			"ALTER TABLE subagent_runs ADD COLUMN crash_decisions TEXT NOT NULL DEFAULT '[]'",
+		],
 	] as const) {
 		if (!cols.has(col)) db.exec(ddl);
 	}
@@ -277,15 +372,17 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 	);
 	const qList = db.query("SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY id");
 	// The lease holder is the row furthest along, not the oldest: a
-	// parked (needs_input) or resuming (queued with a persisted input
-	// intent) run beats an ordinary queued second worker, so a queued
-	// row never steals the lease the active run resumes onto.
+	// parked (needs_input), resuming (queued with a persisted input
+	// intent), or approval-queued (queued with a recorded decision) run
+	// beats an ordinary queued second worker, so a queued row never
+	// steals the lease the active run resumes onto.
 	const qLease = db.query(
 		`SELECT * FROM subagent_runs
 		 WHERE conversation_id = ? AND kind = 'worker'
 		   AND status IN ('queued','running','needs_input')
 		 ORDER BY
-		   CASE WHEN status != 'queued' OR input_intent IS NOT NULL THEN 0 ELSE 1 END,
+		   CASE WHEN status != 'queued' OR input_intent IS NOT NULL
+		         OR pending_approval IS NOT NULL THEN 0 ELSE 1 END,
 		   id`,
 	);
 	const qUnfinished = db.query(
@@ -350,6 +447,13 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 				put("export_progress", JSON.stringify(patch.exportProgress));
 			if (patch.finalScreenshot !== undefined) put("final_screenshot", patch.finalScreenshot);
 			if (patch.lifecycleNote !== undefined) put("lifecycle_note", patch.lifecycleNote);
+			if (patch.pendingApproval !== undefined)
+				put(
+					"pending_approval",
+					patch.pendingApproval === null ? null : JSON.stringify(patch.pendingApproval),
+				);
+			if (patch.crashDecisions !== undefined)
+				put("crash_decisions", JSON.stringify(crashDecisionList.parse(patch.crashDecisions)));
 			if (patch.noticePending !== undefined) put("notice_pending", patch.noticePending ? 1 : 0);
 			if (patch.noticeRev !== undefined) put("notice_rev", patch.noticeRev);
 			if (patch.finishedAt !== undefined) put("finished_at", patch.finishedAt);

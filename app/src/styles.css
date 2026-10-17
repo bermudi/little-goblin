@@ -3759,3 +3759,149 @@ button.link:hover {
 .logline.lv-debug .log-msg {
 	color: var(--app-fg-muted);
 }
+
+.interrupted {
+	margin: 0.5rem 0 1.25rem;
+	padding: 0.75rem 1rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	font-size: 13px;
+}
+.interrupted-title {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+.interrupted-warn {
+	color: var(--app-fg-muted);
+	margin: 0.35rem 0 0.75rem;
+}
+.interrupted .error {
+	padding: 0.4rem 0;
+}
+.interrupted-run {
+	border-top: 1px solid var(--app-divider);
+	padding-top: 0.6rem;
+	margin-top: 0.6rem;
+}
+.interrupted-run-head {
+	display: flex;
+	gap: 0.75rem;
+	align-items: baseline;
+	color: var(--app-fg-muted);
+}
+.interrupted-run-id {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--app-fg);
+}
+.interrupted-run-time {
+	font-size: 12px;
+}
+.interrupted-call {
+	margin: 0.6rem 0;
+	padding: 0.5rem 0.65rem;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+}
+.interrupted-call-head {
+	display: flex;
+	gap: 0.6rem;
+	align-items: baseline;
+}
+.interrupted-call-state {
+	color: var(--app-fg-muted);
+	font-size: 12px;
+}
+.interrupted-args {
+	margin-top: 0.4rem;
+}
+.interrupted-args summary {
+	cursor: pointer;
+	color: var(--app-fg-muted);
+	font-size: 12px;
+}
+.interrupted-args pre {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: var(--app-gray-50);
+	border-radius: 6px;
+	padding: 0.5rem;
+	margin: 0.3rem 0 0;
+	max-height: 16rem;
+	overflow-y: auto;
+}
+.interrupted-args-note {
+	color: var(--app-fg-subtle);
+	font-size: 11px;
+	margin: 0.3rem 0 0;
+}
+.interrupted-err {
+	color: var(--app-danger);
+	font-size: 12px;
+	margin-top: 0.3rem;
+}
+.interrupted-note {
+	color: var(--app-fg-muted);
+	font-size: 12px;
+	margin-top: 0.3rem;
+}
+.interrupted-decide {
+	margin-top: 0.5rem;
+}
+.interrupted-note-label {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.interrupted-note-label textarea {
+	font: inherit;
+	font-size: 12px;
+	background: transparent;
+	border: 1px solid var(--app-divider);
+	border-radius: 6px;
+	color: var(--app-fg);
+	padding: 0.4rem 0.55rem;
+	min-height: 2.4rem;
+	resize: vertical;
+	outline: none;
+}
+.interrupted-note-label textarea:focus {
+	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+}
+.interrupted-actions {
+	display: flex;
+	gap: 0.4rem;
+	margin-top: 0.45rem;
+	flex-wrap: wrap;
+}
+.interrupted-actions button,
+.interrupted-resume,
+.interrupted-retry {
+	border: 1px solid var(--app-divider);
+	border-radius: 7px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12px;
+	color: var(--app-fg);
+}
+.interrupted-actions button:hover:not(:disabled),
+.interrupted-resume:hover:not(:disabled),
+.interrupted-retry:hover:not(:disabled) {
+	background: var(--app-hover);
+}
+.interrupted-actions button:disabled,
+.interrupted-resume:disabled {
+	opacity: 0.45;
+}
+.interrupted-resume {
+	margin-top: 0.6rem;
+	font-weight: 500;
+}
+.interrupted-help {
+	color: var(--app-fg-subtle);
+	font-size: 12px;
+	margin: 0.45rem 0 0;
+}

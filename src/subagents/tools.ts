@@ -82,6 +82,10 @@ export interface HarnessDeps {
 	persistClaimNote(rowId: number, note: string | undefined): void;
 	/** Persist a recovery nudge at a fresh rev under the owner's lane. */
 	recoveryNudge(rowId: number, inputRev: number, context: Context): Promise<void>;
+	/** The crash-approval gate (owner-local: it parks the run row and
+	 *  waits on decide) — injected so the wrap chains can sit it outside
+	 *  the run guards without this module reaching back into the owner. */
+	withApprovalGate<T extends ToolRegistration>(tool: T): T;
 }
 
 export interface HarnessBundle {
@@ -105,6 +109,7 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		envFor,
 		persistClaimNote,
 		recoveryNudge,
+		withApprovalGate,
 	} = args;
 
 	// ---------- tool wrappers ----------
@@ -264,11 +269,17 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		withLifecycleNote(
 			withTerminalWrap(withRunGuards({ ...createReadTool(), replay: "safe" as const })),
 		),
-		withLifecycleNote(withTerminalWrap(withRunGuards(createWriteTool()))),
-		withLifecycleNote(withTerminalWrap(withRunGuards(createEditTool()))),
+		// Side-effecting tools (write/edit/bash) get the crash-approval gate
+		// outside the run guards; read stays observation-only and replay-safe,
+		// and the terminal tools are ungated — gating them would recurse the
+		// approval machinery into the very calls that record outcomes.
+		withLifecycleNote(withApprovalGate(withTerminalWrap(withRunGuards(createWriteTool())))),
+		withLifecycleNote(withApprovalGate(withTerminalWrap(withRunGuards(createEditTool())))),
 		withLifecycleNote(
-			withTerminalWrap(
-				withRunGuards({ ...createBashTool(), description: WORKER_BASH_DESCRIPTION }),
+			withApprovalGate(
+				withTerminalWrap(
+					withRunGuards({ ...createBashTool(), description: WORKER_BASH_DESCRIPTION }),
+				),
 			),
 		),
 		finishTool,
@@ -622,7 +633,15 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		tools: computerTools.map((t) => {
 			if (t.name === "finish" || t.name === "ask_operator") return t;
 			// Lifecycle-outermost like the worker wraps — a claim note
-			// persisted mid-execute still reaches this call's result.
+			// persisted mid-execute still reaches this call's result. The
+			// input tools (act/launch) are side-effecting and get the
+			// crash-approval gate outside the run guards; screenshot and
+			// inspect are observations — replay-safe, ungated.
+			if (t.name === "act" || t.name === "launch") {
+				return withLifecycleNote(
+					withApprovalGate(withRunGuards(withLeaseRenew(withTerminalWrap(t)))),
+				);
+			}
 			return withLifecycleNote(withRunGuards(withLeaseRenew(withTerminalWrap(t))));
 		}),
 		hooks: [toolLog, requestGuard],

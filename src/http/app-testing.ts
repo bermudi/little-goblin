@@ -11,6 +11,7 @@ import { openProjects, projectWorkdir } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
+import { openTurnJournal } from "../turn-journal.ts";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { startHttp } from "./mod.ts";
 
@@ -31,6 +32,7 @@ export function setup(
 		titleFor?: AppChannelDeps["titleFor"];
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
+		resumeOps?: AppChannelDeps["resumeOps"];
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -38,8 +40,10 @@ export function setup(
 	const store = openStore(join(home, "goblin.sqlite"));
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
+	const turnJournal = openTurnJournal(store.db);
 	const runtime = new Runtime({
 		store,
+		turnJournal,
 		buildStep: () => ({
 			model: textModel(opts.deltas ?? ["hello", " app"], {
 				...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
@@ -97,6 +101,7 @@ export function setup(
 		...(opts.titleFor !== undefined ? { titleFor: opts.titleFor } : {}),
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
+		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
 	};
 	const http = startHttp({
 		configRef,
@@ -116,7 +121,19 @@ export function setup(
 				...(bearer !== null ? { authorization: `Bearer ${bearer}` } : {}),
 			},
 		});
-	return { http, store, runtime, projects, notes, configRef, configWrites, call, home, appDeps };
+	return {
+		http,
+		store,
+		runtime,
+		projects,
+		notes,
+		configRef,
+		configWrites,
+		call,
+		home,
+		appDeps,
+		turnJournal,
+	};
 }
 
 // The minted conversation + one chat turn, drained — the shape every

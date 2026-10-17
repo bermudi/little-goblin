@@ -346,3 +346,6 @@ history — "what did we decide about X last month?".
   is exactly what recovery has to give back (Compaction, design/model.md).
   Each recovered event is fenced as historical data after projection and
   windowing, which may have removed a tool result's original untrusted fence.
+  `context` with `toolCallId` (and `offset`) switches to exact paging of
+  one stored tool result — 8000-char slices with a continuation footer —
+  the recovery path pruning markers print (DESIGN.md → Cache stability).

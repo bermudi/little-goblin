@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { tool } from "ai";
+import { z } from "zod";
 import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
-import { appAddress, openStore } from "../conversation.ts";
-import { sleep } from "../testkit.ts";
+import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
+import type { Runtime } from "../runtime.ts";
+import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
+import { openTurnJournal } from "../turn-journal.ts";
+import { makeResumeOps } from "../turn-resume.ts";
 import { handleAppApi } from "./app-channel.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
+import type { AppInterruptedList, AppResumeBlocked } from "./app-wire.ts";
 
 describe("app conversations", () => {
 	test("create, list, and history ride the app pool only", async () => {
@@ -673,4 +679,328 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 		http.stop();
 		store.close();
 	}
+});
+
+
+// The crash-recovery routes — GET interrupted, POST decide, POST resume —
+// over the real listener with a real ResumeOps wired to the fixture's
+// runtime and journal (the same deps shape index.ts builds).
+describe("app channel interrupted-run routes", () => {
+	// The handler reads deps.resumeOps per request, so the seam can land
+	// after setup — the deps object is the same one the closure holds.
+	function setupWithResume(opts: Parameters<typeof setup>[0] = {}) {
+		const fixture = setup(opts);
+		const wired = wireResume(fixture.store, fixture.runtime, fixture.turnJournal);
+		fixture.appDeps.resumeOps = () => wired.ops;
+		return { ...fixture, wired };
+	}
+
+	function wireResume(
+		store: ConversationStore,
+		runtime: Runtime,
+		journal: ReturnType<typeof openTurnJournal>,
+	) {
+		const notices: { convId: string; runId: string; done: string }[] = [];
+		const ops = makeResumeOps({
+			store,
+			journal,
+			runtime,
+			captureConversation: (c) => c,
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({ q: z.number() }),
+					execute: async () => ({ ok: true }),
+				}),
+			}),
+			sinkFor: () => new HeadlessSink(),
+			sinkHooks: () => ({ voice: false, recording: false, file: false }),
+			notifyDone: (c, runId, done) => notices.push({ convId: c.id, runId, done: done.kind }),
+		});
+		return { journal, ops, notices };
+	}
+
+	// What the boot notice reads: a run row + its calls, stamped
+	// 'interrupted' as the crash leaves it.
+	function interruptedRun(
+		store: ConversationStore,
+		journal: ReturnType<typeof openTurnJournal>,
+		convId: string,
+		runId: string,
+		opts: { anchorSeq?: number | null } = {},
+	) {
+		const conv = store.get(convId)!;
+		journal.beginRun({
+			runId,
+			conversationId: convId,
+			epoch: conv.epoch,
+			anchorSeq: opts.anchorSeq ?? null,
+			steerMark: null,
+			// The live settings snapshot — the resume contract compare
+			// refuses drift, so the fixture must record what the conv holds.
+			convSnapshot: { model: conv.model, thinking: conv.thinking },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:00:00.000Z",
+		});
+		store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
+	}
+
+	async function makeConv(call: ReturnType<typeof setup>["call"], id = "chat-01") {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id }),
+		});
+		return `app/${id}`;
+	}
+
+	test("GET interrupted lists the run and its calls; 404s unknown convs", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-dead");
+			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+
+			const res = await call("/api/app/conversations/chat-01/interrupted");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as AppInterruptedList;
+			expect(body.runs).toHaveLength(1);
+			expect(body.runs[0]!.runId).toBe("run-dead");
+			expect(body.runs[0]!.calls.dispatched).toBe(1);
+			expect(body.runs[0]!.toolCalls[0]!.state).toBe("dispatched");
+
+			expect((await call("/api/app/conversations/ghost/interrupted")).status).toBe(404);
+			// Not a GET — the route refuses the method.
+			expect(
+				(await call("/api/app/conversations/chat-01/interrupted", { method: "DELETE" })).status,
+			).toBe(405);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the routes refuse 503 when resume ops are not wired", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await makeConv(call);
+			expect((await call("/api/app/conversations/chat-01/interrupted")).status).toBe(503);
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/x/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "skip" }),
+					})
+				).status,
+			).toBe(503);
+			expect(
+				(await call("/api/app/conversations/chat-01/runs/x/resume", { method: "POST" })).status,
+			).toBe(503);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("decide validates the body, lands the verdict, and conflicts on a settled call", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-dead");
+			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+
+			// Malformed JSON → 400; schema violation → 422; wrong media type → 415.
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{not json",
+					})
+				).status,
+			).toBe(400);
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "maybe" }),
+					})
+				).status,
+			).toBe(422);
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+						method: "POST",
+						body: "callId=c1",
+					})
+				).status,
+			).toBe(415);
+
+			const ok = await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ callId: "c1", decision: "record-result", note: "landed" }),
+			});
+			expect(ok.status).toBe(200);
+			expect(await ok.json()).toEqual({ ok: true });
+			expect(wired.journal.callsFor("run-dead")[0]!.state).toBe("resolved-done");
+
+			// A settled call takes no second decision — the journal throws,
+			// the route maps it to a conflict.
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "skip" }),
+					})
+				).status,
+			).toBe(409);
+			// Unknown run → 404; unknown conv → 404.
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/nope/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "skip" }),
+					})
+				).status,
+			).toBe(404);
+			expect(
+				(
+					await call("/api/app/conversations/ghost/runs/run-dead/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "skip" }),
+					})
+				).status,
+			).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("huge recorded args ride the wire as bounded previews — list and resume-409", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-dead");
+			const huge = { content: "x".repeat(1_000_000) };
+			wired.journal.noteToolInput("run-dead", "c1", "probe", huge);
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", huge);
+			wired.journal.noteToolInput("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.noteToolDispatch("run-dead", "c2", "probe", { q: 2 });
+			store.db.run("UPDATE turn_tool_calls SET args = ? WHERE run_id = ? AND tool_call_id = ?", [
+				JSON.stringify(huge),
+				"run-dead",
+				"c2",
+			]);
+
+			const res = await call("/api/app/conversations/chat-01/interrupted");
+			expect(res.status).toBe(200);
+			const text = await res.text();
+			expect(text.length).toBeLessThan(100_000);
+			expect(text).toContain("[truncated]");
+
+			const blocked = await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
+				method: "POST",
+			});
+			expect(blocked.status).toBe(409);
+			const btext = await blocked.text();
+			expect(btext.length).toBeLessThan(100_000);
+			expect(btext).toContain("[truncated]");
+			const body = JSON.parse(btext) as AppResumeBlocked;
+			expect(body.calls).toHaveLength(2);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a corrupt run row still lists and refuses resume 422; healthy rows unaffected", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-bad");
+			interruptedRun(store, wired.journal, convId, "run-good");
+			store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", ["{nope", "run-bad"]);
+
+			const res = await call("/api/app/conversations/chat-01/interrupted");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as AppInterruptedList;
+			expect(body.runs.map((r) => r.runId).sort()).toEqual(["run-bad", "run-good"]);
+
+			const resumed = await call("/api/app/conversations/chat-01/runs/run-bad/resume", {
+				method: "POST",
+			});
+			expect(resumed.status).toBe(422);
+			const refused = (await resumed.json()) as { error: string };
+			expect(refused.error).toContain("tool surface is unreadable");
+			expect(wired.journal.get("run-bad")!.status).toBe("interrupted");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("resume answers 409 with the undecided calls, then admits on the second ask", async () => {
+		const { http, call, store, runtime, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			const seq = store.modelEntries(convId);
+			interruptedRun(store, wired.journal, convId, "run-dead", {
+				anchorSeq: seq.at(-1)?.seq ?? null,
+			});
+			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
+			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+
+			const blocked = await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
+				method: "POST",
+			});
+			expect(blocked.status).toBe(409);
+			const blockedBody = (await blocked.json()) as AppResumeBlocked;
+			expect(blockedBody.calls).toHaveLength(1);
+			expect(blockedBody.calls[0]!.toolCallId).toBe("c1");
+
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ callId: "c1", decision: "skip" }),
+					})
+				).status,
+			).toBe(200);
+
+			const resumed = await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
+				method: "POST",
+			});
+			expect(resumed.status).toBe(200);
+			expect(await resumed.json()).toEqual({ resumed: true, runId: "run-dead" });
+			// The resumed turn runs to its terminal state and the headless
+			// notice fires — the app lane's equivalent of the operator DM.
+			await waitUntil(() => wired.notices.length === 1, "done notice");
+			expect(wired.notices[0]!.runId).toBe("run-dead");
+			expect(wired.notices[0]!.done).toBe("completed");
+			expect(wired.journal.get("run-dead")!.status).toBe("resumed");
+
+			// Consumed — a second resume finds nothing.
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/run-dead/resume", {
+						method: "POST",
+					})
+				).status,
+			).toBe(404);
+			expect(
+				(
+					await call("/api/app/conversations/chat-01/runs/ghost-run/resume", {
+						method: "POST",
+					})
+				).status,
+			).toBe(404);
+			void runtime;
+		} finally {
+			http.stop();
+		}
+	});
 });

@@ -32,6 +32,7 @@ import {
 	synthesize,
 	uploadAttachment,
 } from "./api.ts";
+import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
 import { useCopy } from "./useCopy.ts";
@@ -1849,7 +1850,16 @@ function Chat({
 			},
 		};
 	}, [token, conversationId]);
-	const { messages, sendMessage, regenerate, status, error, stop, setMessages } = useChat({
+	const {
+		messages,
+		sendMessage,
+		regenerate,
+		status,
+		error,
+		stop,
+		setMessages,
+		resumeStream,
+	} = useChat({
 		id: conversationId,
 		messages: initial,
 		transport,
@@ -1986,6 +1996,16 @@ function Chat({
 					})}
 					{busy && <div className="msg assistant pending shimmer">…</div>}
 					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
+					<InterruptedTurns
+						key={conversationId}
+						token={token}
+						conversationId={conversationId}
+						busy={busy}
+						onResumed={async () => {
+							onTurnDone();
+							await resumeStream();
+						}}
+					/>
 				</div>
 			</div>
 			{stopError !== null && (

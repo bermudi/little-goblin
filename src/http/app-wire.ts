@@ -240,3 +240,68 @@ export interface AppContextView {
 	/** Stored turns carrying usage — the average's denominator. */
 	turns: number;
 }
+
+/** One journaled tool call on an interrupted run, as the decision UI
+ * needs it. `dispatched` is the only state still awaiting an operator
+ * decision; resolved-* rows carry what was chosen. */
+export interface AppRunCall {
+	toolCallId: string;
+	name: string;
+	args: unknown;
+	state:
+		| "planned"
+		| "dispatched"
+		| "completed"
+		| "failed"
+		| "resolved-done"
+		| "resolved-retry"
+		| "resolved-skip";
+	result: string | null;
+	error: string | null;
+	resolutionNote: string | null;
+	resolvedMs: number | null;
+}
+
+/** One interrupted run. GET /api/app/conversations/<id>/interrupted. */
+export interface AppInterruptedRun {
+	runId: string;
+	resumedFrom: string | null;
+	startedMs: number;
+	finishedMs: number | null;
+	calls: {
+		planned: number;
+		dispatched: number;
+		completed: number;
+		failed: number;
+		resolved: number;
+	};
+	toolCalls: AppRunCall[];
+}
+export interface AppInterruptedList {
+	runs: AppInterruptedRun[];
+}
+
+/** POST /api/app/conversations/<id>/runs/<runId>/decide — the operator's
+ * verdict on one ambiguous call. `callId` is the journaled toolCallId
+ * (a prefix resolves when unambiguous). `note` is the asserted result
+ * for done, a free note for retry/skip. */
+export interface AppDecideRequest {
+	callId: string;
+	decision: "record-result" | "authorize-retry" | "skip";
+	note?: string;
+}
+export interface AppDecideResponse {
+	ok: true;
+}
+
+/** POST /api/app/conversations/<id>/runs/<runId>/resume — admits the
+ * fresh turn. 200 carries AppResumeResponse; 409 with undecided calls
+ * carries AppResumeBlocked. */
+export interface AppResumeResponse {
+	resumed: true;
+	runId: string;
+}
+export interface AppResumeBlocked {
+	error: string;
+	calls: AppRunCall[];
+}

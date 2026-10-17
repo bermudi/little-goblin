@@ -13,6 +13,7 @@ import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mo
 import { MemoryQueue } from "./memory/queue.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
+import { retargetPruningMarker } from "./pruning-marker.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 
@@ -164,6 +165,13 @@ export function captureConversationSettings(
 	return { ...conv, ...settings };
 }
 
+// The address of one pruning projection: a seq/toolCallId pair encoded
+// without concatenation ambiguity — (2, "34") and (23, "4") are distinct
+// addresses, where a plain concat would collide and cross-replace.
+export function projectionKey(seq: number, toolCallId: string): string {
+	return JSON.stringify([seq, toolCallId]);
+}
+
 // Provider edits must not strand persisted app selections; a refusal
 // leaves disk untouched.
 export function prepareAppSettingsForConfig(
@@ -300,10 +308,28 @@ export interface ConversationStore {
 	historyEntries(id: string): { seq: number; message: UIMessage }[];
 	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
 	// What a turn sees: the causal view cut at the active boundary, the
-	// summary prepended. The cut is on causal position — (anchorSeq ??
+	// summary prepended, and committed event_projections overlaid on
+	// tool results. The cut is on causal position — (anchorSeq ??
 	// seq) > boundarySeq — so a late answer to a folded question rides
 	// into the summary instead of stranding in the tail.
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
+	// Committed pruning projections for one conversation — the overlay
+	// input for modelEntries and the pruning scan's dedupe set. Empty
+	// for a conversation that was never pruned.
+	eventProjections(id: string): { seq: number; toolCallId: string; replacement: string }[];
+	// Between-turns commit of pruning projections — INSERT OR IGNORE in
+	// one transaction, so a re-scan can never rewrite a committed row.
+	// Returns the number of rows actually inserted.
+	applyEventProjections(
+		id: string,
+		rows: {
+			seq: number;
+			toolCallId: string;
+			replacement: string;
+			routeKey: string;
+			settingsHash: string;
+		}[],
+	): number;
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
 	// Anchor of the newest assistant event — the durable reply identity
@@ -738,6 +764,24 @@ export function openStore(dbPath: string): ConversationStore {
 			sources TEXT NOT NULL,
 			built_at TEXT NOT NULL
 		)`);
+	// Committed tool-result projections (DESIGN.md → Cache stability):
+	// one row says "in the model-facing view, this event's tool result
+	// reads as this marker instead". events is never touched — the
+	// overlay replays byte-identically across turns and restarts, so
+	// this is a sanctioned rewrite that does not move the request bytes
+	// again after commit. route/settings stamps record the policy the
+	// row was committed under; reads never consult them.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS event_projections (
+			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			seq INTEGER NOT NULL,
+			tool_call_id TEXT NOT NULL,
+			replacement TEXT NOT NULL,
+			route_key TEXT NOT NULL,
+			settings_hash TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (conversation_id, seq, tool_call_id)
+		)`);
 	// The 👍/👎 tap record (design/telegram.md): reply metadata, never an
 	// event — nothing here feeds the model view, FTS, or memory.
 	// Append-only; a vote change is a new row, reads are latest-wins. No
@@ -945,6 +989,29 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qInsertContext = db.query(
 		"INSERT INTO memory_contexts (conversation_id, anchor_seq, content, source_ids, created_at) VALUES (?, ?, ?, ?, ?)",
+	);
+	// The overlay read and the fork's verbatim copy source.
+	const qProjections = db.query<
+		{ seq: number; tool_call_id: string; replacement: string },
+		[string]
+	>(
+		"SELECT seq, tool_call_id, replacement FROM event_projections WHERE conversation_id = ? ORDER BY seq",
+	);
+	const qAllProjections = db.query<
+		{
+			seq: number;
+			tool_call_id: string;
+			replacement: string;
+			route_key: string;
+			settings_hash: string;
+			created_at: string;
+		},
+		[string]
+	>(
+		"SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at FROM event_projections WHERE conversation_id = ? ORDER BY seq",
+	);
+	const qInsertProjection = db.query(
+		"INSERT OR IGNORE INTO event_projections (conversation_id, seq, tool_call_id, replacement, route_key, settings_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
@@ -1306,6 +1373,23 @@ export function openStore(dbPath: string): ConversationStore {
 				for (const c of qContextsFor.all(fromId)) {
 					qInsertContext.run(id, c.anchor_seq, c.content, c.source_ids, c.created_at);
 				}
+				// Committed projections ride along — the fork's model view
+				// replays the same markers, and the events they overlay came
+				// through the copy above untouched. One rewrite: the marker's
+				// recovery address names the source id, so point it at the
+				// fork or recovery would read another conversation's events
+				// (refused for an excluded fork) and die with the source.
+				for (const p of qAllProjections.all(fromId)) {
+					qInsertProjection.run(
+						id,
+						p.seq,
+						p.tool_call_id,
+						retargetPruningMarker(p.replacement, p.seq, p.tool_call_id, fromId, id),
+						p.route_key,
+						p.settings_hash,
+						p.created_at,
+					);
+				}
 				const created = qGet.get(id);
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);
@@ -1596,9 +1680,63 @@ export function openStore(dbPath: string): ConversationStore {
 			const entries = this.historyDetail(id)
 				.filter((e) => compaction === null || (e.anchorSeq ?? e.seq) > compaction.boundarySeq)
 				.map((e) => ({ seq: e.seq, message: e.message }));
+			// Committed pruning projections overlay the model-facing view
+			// only — parseEvent returns fresh objects, so mutating them
+			// here can never touch the stored row or the readers that must
+			// serve originals (history, context, search).
+			const projections = qProjections.all(id);
+			if (projections.length > 0) {
+				const byPart = new Map(
+					projections.map((p) => [projectionKey(p.seq, p.tool_call_id), p.replacement] as const),
+				);
+				for (const entry of entries) {
+					for (const part of entry.message.parts) {
+						const p = part as {
+							type: string;
+							toolCallId?: unknown;
+							state?: unknown;
+							output?: unknown;
+						};
+						if (
+							!(p.type.startsWith("tool-") || p.type === "dynamic-tool") ||
+							p.state !== "output-available" ||
+							typeof p.toolCallId !== "string" ||
+							typeof p.output !== "string"
+						)
+							continue;
+						const replacement = byPart.get(projectionKey(entry.seq, p.toolCallId));
+						if (replacement !== undefined) p.output = replacement;
+					}
+				}
+			}
 			return compaction === null
 				? entries
 				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction, id) }, ...entries];
+		},
+
+		eventProjections(id) {
+			return qProjections
+				.all(id)
+				.map((p) => ({ seq: p.seq, toolCallId: p.tool_call_id, replacement: p.replacement }));
+		},
+
+		applyEventProjections(id, rows) {
+			const createdAt = new Date().toISOString();
+			return db.transaction(() => {
+				let inserted = 0;
+				for (const r of rows) {
+					inserted += qInsertProjection.run(
+						id,
+						r.seq,
+						r.toolCallId,
+						r.replacement,
+						r.routeKey,
+						r.settingsHash,
+						createdAt,
+					).changes;
+				}
+				return inserted;
+			})();
 		},
 
 		close() {

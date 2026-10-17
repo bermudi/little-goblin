@@ -24,6 +24,8 @@ import { openSandboxes } from "./sandboxes.ts";
 import { openGuestStore } from "./tg/guest.ts";
 import { openTelegramInbox } from "./tg/inbox.ts";
 import { openPings } from "./tg/pings.ts";
+import { openCacheObservation } from "./cache-observation.ts";
+import { openTurnJournal } from "./turn-journal.ts";
 import {
 	checkAppAssets,
 	healthReportSchema,
@@ -593,9 +595,11 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 	function bootSchema(path: string): { close(): void } {
 		const store = openStore(path);
 		const extras = [openPrograms(path), openOutbox(path), openSandboxes(path)];
+		openCacheObservation(store.db);
 		openPings(store.db);
 		openTelegramInbox(store.db);
 		openGuestStore(store.db);
+		openTurnJournal(store.db);
 		return {
 			close() {
 				for (const extra of extras) extra.close();
@@ -949,4 +953,72 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				}
 			}
 		});
+});
+
+describe("cache contracts", () => {
+	test("configured models map to their contracts; unpublished/unknown durations warn", async () => {
+		const f = fixture();
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("codex");
+		expect(c.detail).toContain("model=fake/model");
+		expect(c.detail).toContain("not verified");
+		expect(c.next).toContain("check-cache-contracts");
+	});
+	test("a fully documented contract set passes without claiming warmth", async () => {
+		const f = fixture();
+		// The registry's review metadata is a fixed date — the assertion
+		// only holds inside its 30-day freshness window.
+		const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T00:00:00.000Z"));
+		restorers.push(() => clock.mockRestore());
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				providers: {
+					oai: { kind: "openai-compatible", baseUrl: "https://api.openai.com/v1", auth: "oai" },
+				},
+				model: "oai/gpt-5",
+				operators: [1],
+			}),
+		);
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("pass");
+		expect(c.detail).toContain("openai");
+		expect(c.detail).not.toContain("unpublished/unknown");
+	});
+	test("a malformed favorite warns as unmappable instead of sinking the report", async () => {
+		const f = fixture();
+		// favorites isn't model-ref validated — a bare entry used to
+		// throw out of the contract map and reject runHealth whole.
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				...f.config,
+				favorites: ["fake/model", "no-slash-ref"],
+			}),
+		);
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("favorites=no-slash-ref");
+		expect(c.detail).toContain("favorites=fake/model");
+	});
+	test("unparseable config skips the check instead of guessing", async () => {
+		const f = fixture();
+		writeFileSync(join(f.home, "goblin.json5"), "not { json5");
+		const report = await runHealth(f.options);
+		expect(finding(report, "config").status).toBe("fail");
+		expect(finding(report, "cache.contracts").status).toBe("skip");
+	});
+	test("overdue review metadata warns", async () => {
+		const f = fixture();
+		const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2027-06-01T00:00:00.000Z"));
+		restorers.push(() => clock.mockRestore());
+		const report = await runHealth(f.options);
+		const c = finding(report, "cache.contracts");
+		expect(c.status).toBe("warn");
+		expect(c.detail).toContain("overdue");
+	});
 });

@@ -2854,6 +2854,21 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
 					return { kind: "blocked", reason: "no persisted approval decision" };
 				}
+				let sub: Submission | undefined;
+				if (!monitored(row.id)) {
+					sub =
+						fresh.piSubmissionId === null
+							? undefined
+							: await harness.submission(asSub(fresh.piSubmissionId), ctx);
+					if (sub === undefined) {
+						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
+						return {
+							kind: "blocked",
+							reason: "parked call's submission could not be reacquired",
+						};
+					}
+				}
+				throwIfHalted(row.id);
 				const key = approvalKey(fresh.piConversationId, fresh.pendingApproval.piTaskId);
 				runs.update(row.id, { status: "running", pendingApproval: null });
 				const waiter = approvalWaiters.get(key);
@@ -2872,10 +2887,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				// watcher attaches before the waiter resolves or the
 				// scheduler runs, or the continuation settles unwatched
 				// and leaks its slot forever.
-				if (!monitored(row.id) && fresh.piSubmissionId !== null) {
-					const sub = await harness.submission(asSub(fresh.piSubmissionId), ctx);
-					if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
-				}
+				if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
 				if (waiter !== undefined) {
 					approvalWaiters.delete(key);
 					waiter(d);
@@ -3517,8 +3529,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					decidedBy: d.decidedBy,
 					outcome: d.outcome,
 					attempts: pending.attempts,
-					evidence: d.evidence,
-					reasoning: d.reasoning,
+					evidenceChars: d.evidence?.length ?? 0,
+					reasoningChars: d.reasoning?.length ?? 0,
 				});
 				scheduleDrain();
 				return updated;

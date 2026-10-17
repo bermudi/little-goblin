@@ -5212,6 +5212,130 @@ describe("subagents crash approval", () => {
 		expect(recovered).toContain("lease-out");
 		expect(recovered).not.toContain("(no tool output)");
 	}, 60_000);
+
+	test("the queued-admission log carries verdict sizes, not the verdict text", async () => {
+		const sandboxes = fakeSandboxes();
+		const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+		const r2 = reopenParked({ dbPath, storagePath, r1 });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+		const EVIDENCE = "EVIDENCE-SENTINEL-3f9a27";
+		const REASONING = "REASONING-SENTINEL-b81c4d";
+		const logPath = `${storagePath}.decisions.log`;
+		setLogFile(logPath);
+		try {
+			await o2.decide(rowId, WS, {
+				kind: "record-result",
+				result: "declared outcome",
+				evidence: EVIDENCE,
+				reasoning: REASONING,
+			});
+		} finally {
+			setLogFile(null);
+		}
+		const lines = readFileSync(logPath, "utf8").trim().split("\n");
+		const raw = lines.find(
+			(l) => l.includes("subagent approval decided") && l.includes(`"run":${rowId}`),
+		);
+		expect(raw).not.toBeUndefined();
+		expect(raw!).not.toContain(EVIDENCE);
+		expect(raw!).not.toContain(REASONING);
+		const rec = JSON.parse(raw!) as Record<string, unknown>;
+		expect(rec.evidenceChars).toBe(EVIDENCE.length);
+		expect(rec.reasoningChars).toBe(REASONING.length);
+		expect("evidence" in rec).toBe(false);
+		expect("reasoning" in rec).toBe(false);
+		const history = r2.runs.get(rowId)!.crashDecisions;
+		expect(history).toHaveLength(1);
+		expect(history[0]!.decision.evidence).toBe(EVIDENCE);
+		expect(history[0]!.decision.reasoning).toBe(REASONING);
+	}, 60_000);
+
+	test.each([
+		["an unreachable submission id", "999999999"],
+		["a null submission id", null],
+	] as const)(
+		"a queued verdict with %s stays queued — the parked call cannot admit unmonitored",
+		async (_tag, subId) => {
+			const sandboxes = fakeSandboxes();
+			const { rowId, r1, dbPath, storagePath } = await parkBashRun(sandboxes);
+			const r2 = reopenParked({ dbPath, storagePath, r1 });
+			const o2 = await open(r2);
+			await until(() => r2.runs.get(rowId)?.pendingApproval !== null, "parked");
+			const originalSub = r2.runs.get(rowId)!.piSubmissionId;
+			expect(originalSub).not.toBeNull();
+			await o2.close();
+			owners = owners.filter((x) => x !== o2);
+
+			let lookups = 0;
+			const origOpen = Harness.open;
+			if (subId !== null) {
+				Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+					const h = await origOpen(...args);
+					const origSub = h.submission.bind(h);
+					(h as unknown as { submission: unknown }).submission = async (
+						...sArgs: Parameters<Harness["submission"]>
+					) => {
+						lookups++;
+						return origSub(...sArgs);
+					};
+					return h;
+				}) as typeof Harness.open;
+			}
+			const r3 = reopenParked({ dbPath, storagePath, r1, resume: false });
+			let o3: Subagents;
+			try {
+				o3 = await open(r3);
+			} finally {
+				Harness.open = origOpen;
+			}
+			r3.runs.update(rowId, { piSubmissionId: subId });
+			r3.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed" } }] });
+			const decided = await o3.decide(rowId, WS, {
+				kind: "record-result",
+				result: "verified by hand",
+				evidence: "the marker file was observed before deciding",
+				reasoning: "declaring avoids re-running the probe",
+			});
+			expect(decided.status).toBe("queued");
+			const pending = structuredClone(r3.runs.get(rowId)!.pendingApproval);
+			const seenBase = r3.model.seen.length;
+			let flipped = false;
+			const origUpdate = r3.runs.update.bind(r3.runs);
+			r3.runs.update = (id, patch) => {
+				const out = origUpdate(id, patch);
+				if (id === rowId && patch.status === "running" && patch.pendingApproval === null) {
+					flipped = true;
+				}
+				return out;
+			};
+			await o3.resume();
+			if (subId !== null) {
+				await until(() => lookups >= 1 || flipped, "admission reacquisition attempt");
+			} else {
+				const deadline = Date.now() + 400;
+				while (Date.now() < deadline && !flipped) await Bun.sleep(20);
+			}
+			const stuck = r3.runs.get(rowId)!;
+			expect(stuck.status).toBe("queued");
+			expect(stuck.pendingApproval).toEqual(pending);
+			expect(stuck.crashDecisions).toHaveLength(1);
+			expect(sandboxes.dispatchCalls).toBe(1);
+			expect(r3.model.seen.length).toBe(seenBase);
+
+			r3.runs.update(rowId, { piSubmissionId: originalSub });
+			await Bun.sleep(5_100);
+			await o3.scan();
+			await until(() => r3.runs.get(rowId)?.status === "done", "settled once reacquirable");
+			const settled = r3.runs.get(rowId)!;
+			expect(settled.pendingApproval).toBeNull();
+			expect(settled.result).toBe("resumed");
+			expect(settled.crashDecisions).toHaveLength(1);
+			expect(sandboxes.dispatchCalls).toBe(1);
+			expect(r3.model.seen.length).toBe(seenBase + 1);
+		},
+		60_000,
+	);
 });
 
 // ---------- explicit model profile seam (phase 4 experiment) ----------

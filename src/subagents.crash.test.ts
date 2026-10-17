@@ -429,9 +429,9 @@ describe("subagent crash approval — a real killed process", () => {
 			await bare.close(BACKGROUND_CONTEXT);
 		}
 
-		const { owner, runs, dispatches } = await openOwner(b);
 		const base = seen.length;
 		replies.push(finishReply());
+		const { owner, runs, dispatches } = await openOwner(b);
 		await until(() => runs.get(1)?.status === "done", "run settled on the seeded result");
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);

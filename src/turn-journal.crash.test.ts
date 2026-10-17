@@ -187,13 +187,10 @@ describe("turn journal — a real killed process", () => {
 		// continuation opens its own row before stalling — wait for both.
 		const probe = new Database(dbPath);
 		try {
-			await until(
-				() => {
-					const statuses = probeRunStatuses(probe);
-					return statuses.includes("error") && statuses.includes("running");
-				},
-				"overflowed attempt terminal, continuation running",
-			);
+			await until(() => {
+				const statuses = probeRunStatuses(probe);
+				return statuses.includes("error") && statuses.includes("running");
+			}, "overflowed attempt terminal, continuation running");
 		} finally {
 			probe.close();
 		}
@@ -251,9 +248,7 @@ describe("turn journal — a real killed process", () => {
 			// The re-ask journaled on the successor with replay provenance
 			// — one execution, one replay credit, however many resumes.
 			const successor = store.db
-				.query<{ run_id: string }, [string]>(
-					"SELECT run_id FROM turn_runs WHERE resumed_from = ?",
-				)
+				.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 				.get(continuation.runId)!.run_id;
 			const successorCalls = journal.callsFor(successor);
 			const reask = successorCalls.find((c) => c.toolCallId === "call-reask")!;

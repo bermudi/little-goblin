@@ -899,10 +899,7 @@ export class Runtime {
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
 				resumedFrom: sourceRunId,
-				inheritFrom:
-					recovery?.predecessorRun === undefined
-						? undefined
-						: [recovery.predecessorRun],
+				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
 			// The fence's evidence reads the fresh row after inheritance:
 			// it already carries the source's decisions and every

@@ -621,7 +621,9 @@ export function reviewPrompt(
 		"",
 		...(turn.toolInventory.length === 0
 			? ["(none recorded)"]
-			: turn.toolInventory.map((t) => `- ${t.name}${t.description === "" ? "" : ` — ${t.description}`}`)),
+			: turn.toolInventory.map(
+					(t) => `- ${t.name}${t.description === "" ? "" : ` — ${t.description}`}`,
+				)),
 		...(prior !== undefined
 			? [
 					"",

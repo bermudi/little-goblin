@@ -7,10 +7,7 @@ export const CACHE_CONTRACT_REVIEWED_AT = "2026-10-15T00:00:00.000Z";
 export const cacheContractSources = {
 	zai: {
 		url: "https://docs.z.ai/help/faq",
-		fragments: [
-			"how long cached content is retained",
-			"has not yet been announced",
-		],
+		fragments: ["how long cached content is retained", "has not yet been announced"],
 	},
 	openrouter: {
 		url: "https://openrouter.ai/docs/guides/best-practices/prompt-caching.md",
@@ -29,10 +26,7 @@ export const cacheContractSources = {
 	},
 	openai: {
 		url: "https://developers.openai.com/api/docs/guides/prompt-caching",
-		fragments: [
-			"minimum cache lifetime",
-			"though OpenAI may retain it longer",
-		],
+		fragments: ["minimum cache lifetime", "though OpenAI may retain it longer"],
 	},
 	logfare: {
 		url: "https://logfare.ai/docs",
@@ -87,7 +81,8 @@ const contracts: Readonly<Record<CacheContractId, CacheContract>> = {
 		lifetime: "unknown",
 		idleExpiryMs: null,
 		requiresExplicitControls: false,
-		detail: "Caching depends on the serving model/provider. Routing-affinity expiry is not cache expiry.",
+		detail:
+			"Caching depends on the serving model/provider. Routing-affinity expiry is not cache expiry.",
 	},
 	openai: {
 		id: "openai",
@@ -96,7 +91,8 @@ const contracts: Readonly<Record<CacheContractId, CacheContract>> = {
 		lifetime: "model-dependent-minimum-or-range",
 		idleExpiryMs: null,
 		requiresExplicitControls: false,
-		detail: "Retention depends on model/settings; a documented minimum lifetime is not an expiry bound.",
+		detail:
+			"Retention depends on model/settings; a documented minimum lifetime is not an expiry bound.",
 	},
 	codex: {
 		id: "codex",
@@ -133,7 +129,9 @@ export function cacheContractFor(config: Config, modelRef: string): CacheContrac
 	if (entry === undefined) return contracts.unknown;
 	if (entry.kind === "codex") return contracts.codex;
 	if (entry.kind === "openrouter")
-		return modelId.startsWith("anthropic/") ? contracts["openrouter-anthropic"] : contracts.openrouter;
+		return modelId.startsWith("anthropic/")
+			? contracts["openrouter-anthropic"]
+			: contracts.openrouter;
 	const url = new URL(entry.baseUrl);
 	if (url.hostname === "api.z.ai") return contracts.zai;
 	if (url.hostname === "api.openai.com") return contracts.openai;

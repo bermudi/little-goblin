@@ -243,9 +243,7 @@ describe("history_search tool", () => {
 			seq: 2,
 			toolCallId: "call-9",
 		})) as string;
-		expect(page1).toContain(
-			`tool result — ${c.id} seq 2 call call-9 (chars 0–8000 of 17000)`,
-		);
+		expect(page1).toContain(`tool result — ${c.id} seq 2 call call-9 (chars 0–8000 of 17000)`);
 		expect(page1).toContain(payload.slice(0, 8000));
 		expect(page1).toContain("[truncated — continue with offset 8000]");
 		expect(page1).toContain("<history>");

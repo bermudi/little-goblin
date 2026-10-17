@@ -183,9 +183,7 @@ describe("transcribeAudio", () => {
 		};
 		// Unrepaired pts cut ~129 segments here; rebuilt pts see one 9 s
 		// file under the 28 s ceiling → a single segment, a single call.
-		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 28 })).toBe(
-			"nine seconds",
-		);
+		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 28 })).toBe("nine seconds");
 		expect(n).toBe(1);
 	});
 

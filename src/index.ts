@@ -144,9 +144,12 @@ async function boot() {
 	// existence check only, no values resolved (doctor's coverage probe is
 	// the deep version of this line).
 	for (const name of missingAuthNames(config, (n) => auth.has(n))) {
-		log.warn("config references a missing auth.jsonl record — the feature needing it fails at first use", {
-			auth: name,
-		});
+		log.warn(
+			"config references a missing auth.jsonl record — the feature needing it fails at first use",
+			{
+				auth: name,
+			},
+		);
 	}
 	const store = openStore(paths.db());
 	const cacheObservations = openCacheObservation(store.db);

@@ -89,12 +89,12 @@ describe("openCacheObservation", () => {
 	test("finish preserves null-vs-zero: unreported counters stay null, reported zero stays 0", () => {
 		const db = new Database(":memory:");
 		const obs = openCacheObservation(db, clock());
-		obs.begin(input({ callId: "missing" })).finish(
-			usage({ input: 10, cacheRead: undefined, cacheWrite: undefined, output: 2 }),
-		);
-		obs.begin(input({ callId: "zero" })).finish(
-			usage({ input: 10, cacheRead: 0, cacheWrite: 0, output: 2 }),
-		);
+		obs
+			.begin(input({ callId: "missing" }))
+			.finish(usage({ input: 10, cacheRead: undefined, cacheWrite: undefined, output: 2 }));
+		obs
+			.begin(input({ callId: "zero" }))
+			.finish(usage({ input: 10, cacheRead: 0, cacheWrite: 0, output: 2 }));
 		const missing = rows(db).find((r) => r.call_id === "missing")!;
 		expect(missing.status).toBe("completed");
 		expect(missing.input_tokens).toBe(10);
@@ -123,9 +123,7 @@ describe("openCacheObservation", () => {
 		const db = new Database(":memory:");
 		const obs = openCacheObservation(db, clock());
 		obs.begin(input({ callId: "a" })).finish(usage({ input: 10, output: 1 }));
-		const appended = obs.begin(
-			input({ callId: "b", promptHashes: ["p1", "p2", "p3"] }),
-		);
+		const appended = obs.begin(input({ callId: "b", promptHashes: ["p1", "p2", "p3"] }));
 		expect(appended.prefixRelation).toBe("append");
 		expect(appended.sharedMessages).toBe(2);
 		// Same append shape but a different settings surface is a rewrite.
@@ -215,13 +213,11 @@ describe("purpose partitioning", () => {
 		const db = new Database(":memory:");
 		const tick = clock(1_000);
 		const obs = openCacheObservation(db, tick);
-		obs.begin(input({ callId: "main-1", purpose: "turn" })).finish(
-			usage({ input: 10, output: 1 }),
-		);
+		obs.begin(input({ callId: "main-1", purpose: "turn" })).finish(usage({ input: 10, output: 1 }));
 		tick.set(2_000);
-		obs.begin(input({ callId: "comp-1", purpose: "compaction", promptHashes: ["q1"] })).finish(
-			usage({ input: 5, output: 1 }),
-		);
+		obs
+			.begin(input({ callId: "comp-1", purpose: "compaction", promptHashes: ["q1"] }))
+			.finish(usage({ input: 5, output: 1 }));
 		tick.set(9_000);
 		const next = obs.begin(
 			input({ callId: "main-2", purpose: "turn", promptHashes: ["p1", "p2", "p3"] }),

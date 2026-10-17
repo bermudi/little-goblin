@@ -68,7 +68,12 @@ function rel(file: string): string {
 describe("module boundaries", () => {
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
-			.filter((file) => !rel(file).split("/").some((part) => GRAMMY_EXEMPT_DIRS.has(part)))
+			.filter(
+				(file) =>
+					!rel(file)
+						.split("/")
+						.some((part) => GRAMMY_EXEMPT_DIRS.has(part)),
+			)
 			.filter((file) => !file.endsWith(".test.ts"))
 			.filter((file) => GRAMMY_IMPORT.test(readFileSync(file, "utf8")))
 			.map(rel);

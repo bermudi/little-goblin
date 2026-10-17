@@ -72,11 +72,7 @@ describe("decideSkillProposal", () => {
 	test("a symlinked proposal is refused — operator state, not a skill", () => {
 		const dirs = fixture();
 		mkdirSync(join(dirs.workspaceDir, "real"), { recursive: true });
-		symlinkSync(
-			join(dirs.workspaceDir, "real"),
-			join(dirs.proposedDir, "linked"),
-			"dir",
-		);
+		symlinkSync(join(dirs.workspaceDir, "real"), join(dirs.proposedDir, "linked"), "dir");
 		const d = decideSkillProposal(dirs, "linked", "discard");
 		expect(d).toEqual({ action: "discard", ok: false, reason: "proposal dir is a symlink" });
 		expect(existsSync(join(dirs.proposedDir, "linked"))).toBe(true);
@@ -127,11 +123,7 @@ describe("resolveSkillProposal", () => {
 	test("no provenance row — the decision still lands, nothing appended", () => {
 		const dirs = fixture();
 		const store = recordedStore();
-		const d = resolveSkillProposal(
-			{ ...dirs, forSkill: () => [], store },
-			"smoke-test",
-			"discard",
-		);
+		const d = resolveSkillProposal({ ...dirs, forSkill: () => [], store }, "smoke-test", "discard");
 		expect(d.ok).toBe(true);
 		expect(existsSync(join(dirs.proposedDir, "smoke-test"))).toBe(false);
 		expect(store.appended).toEqual([]);
@@ -151,20 +143,16 @@ describe("resolveSkillProposal", () => {
 
 	test("no store seam — decides and logs, history skipped", () => {
 		const dirs = fixture();
-		const d = resolveSkillProposal(
-			{ ...dirs, forSkill: () => [row()] },
-			"smoke-test",
-			"discard",
-		);
+		const d = resolveSkillProposal({ ...dirs, forSkill: () => [row()] }, "smoke-test", "discard");
 		expect(d.ok).toBe(true);
 	});
 });
 
 describe("skillResolutionText", () => {
 	test("install wording carries the replace note only when it happened", () => {
-		expect(
-			skillResolutionText({ action: "install", ok: true, replaced: false }, "x"),
-		).toBe("skill proposal resolved: x — installed");
+		expect(skillResolutionText({ action: "install", ok: true, replaced: false }, "x")).toBe(
+			"skill proposal resolved: x — installed",
+		);
 		expect(skillResolutionText({ action: "install", ok: true, replaced: true }, "x")).toBe(
 			"skill proposal resolved: x — installed (replaced live copy)",
 		);

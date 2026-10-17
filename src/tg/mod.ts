@@ -657,10 +657,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 							conversation: convId,
 							file: media.fileName,
 						});
-						transcriptionError = (err instanceof Error ? err.message : String(err)).slice(
-							0,
-							500,
-						);
+						transcriptionError = (err instanceof Error ? err.message : String(err)).slice(0, 500);
 					}
 				}
 				// Path reference plus transcript — inline-or-not is decided

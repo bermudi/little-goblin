@@ -11,11 +11,20 @@
 import { createHash } from "node:crypto";
 
 import { cacheContractFor, cacheContractFresh } from "./agent/cache-contracts.ts";
-import { cacheRouteFor, cacheRouteKey, hashCacheSettings, turnCallSettings } from "./agent/providers.ts";
+import {
+	cacheRouteFor,
+	cacheRouteKey,
+	hashCacheSettings,
+	turnCallSettings,
+} from "./agent/providers.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 import type { CacheObservation } from "./cache-observation.ts";
 import type { Config } from "./config.ts";
-import { captureConversationSettings, projectionKey, type ConversationStore } from "./conversation.ts";
+import {
+	captureConversationSettings,
+	projectionKey,
+	type ConversationStore,
+} from "./conversation.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
 import { pruningRecoveryAddress } from "./pruning-marker.ts";
@@ -195,8 +204,7 @@ export function openCachePruning(deps: CachePruningDeps): {
 			return { pruned: 0, reason: "drift-contradiction" };
 		}
 		if (idleMs < profile.idleAfterMs) return undefined;
-		if (prev.inputTokens === null || prev.inputTokens < policy.minimumInputTokens)
-			return undefined;
+		if (prev.inputTokens === null || prev.inputTokens < policy.minimumInputTokens) return undefined;
 
 		// Only entries older than the keepRecentExchanges-th-from-last
 		// user message are eligible — the live tail stays verbatim so the

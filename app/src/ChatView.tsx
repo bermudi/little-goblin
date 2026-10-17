@@ -1855,30 +1855,22 @@ function Chat({
 			},
 		};
 	}, [token, conversationId]);
-	const {
-		messages,
-		sendMessage,
-		regenerate,
-		status,
-		error,
-		stop,
-		setMessages,
-		resumeStream,
-	} = useChat({
-		id: conversationId,
-		messages: initial,
-		transport,
-		// Reconnect to a live turn on mount: a reload mid-turn resumes the
-		// in-flight reply instead of showing a finished-looking chat whose
-		// next send would steer a ghost turn (#43).
-		resume: true,
-		onFinish: ({ message, isAbort }) => {
-			// An aborted reader (stop, or the drop before a steer) is not a
-			// finished reply — the bell belongs to the real finish.
-			if (!isAbort) notifyDone(title ?? "", messageText(message));
-			onTurnDone();
-		},
-	});
+	const { messages, sendMessage, regenerate, status, error, stop, setMessages, resumeStream } =
+		useChat({
+			id: conversationId,
+			messages: initial,
+			transport,
+			// Reconnect to a live turn on mount: a reload mid-turn resumes the
+			// in-flight reply instead of showing a finished-looking chat whose
+			// next send would steer a ghost turn (#43).
+			resume: true,
+			onFinish: ({ message, isAbort }) => {
+				// An aborted reader (stop, or the drop before a steer) is not a
+				// finished reply — the bell belongs to the real finish.
+				if (!isAbort) notifyDone(title ?? "", messageText(message));
+				onTurnDone();
+			},
+		});
 	// A failed /stop means the client dropped its stream but the turn
 	// keeps running server-side and will write the reply the operator
 	// asked to stop — that has to be visible, not swallowed.

@@ -182,9 +182,7 @@ const SAFE_ERROR_NAMES = new Set(["AbortError", "Error", "TypeError"]);
 function safeErrorFields(error: unknown): Record<string, unknown> {
 	const fields: Record<string, unknown> = {
 		errorName:
-			error instanceof Error && SAFE_ERROR_NAMES.has(error.name)
-				? error.name
-				: "provider-error",
+			error instanceof Error && SAFE_ERROR_NAMES.has(error.name) ? error.name : "provider-error",
 	};
 	if (APICallError.isInstance(error)) {
 		const status = error.statusCode;
@@ -278,9 +276,7 @@ export function observedModel(
 			...baseFields,
 			callId: call.callId,
 			...usageFields(usage),
-			...(call.obs
-				? { idleMs: call.obs.idleMs, prefixRelation: call.obs.prefixRelation }
-				: {}),
+			...(call.obs ? { idleMs: call.obs.idleMs, prefixRelation: call.obs.prefixRelation } : {}),
 		});
 	};
 	const failCall = (

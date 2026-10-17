@@ -148,8 +148,7 @@ export function scriptedModel(
 		async doStream(options: LanguageModelV4CallOptions) {
 			streamCalls.push(options);
 			const index = streamCalls.length - 1;
-			const attempt =
-				attempts[index] ?? (await opts.onStream?.(options, index)) ?? opts.extra;
+			const attempt = attempts[index] ?? (await opts.onStream?.(options, index)) ?? opts.extra;
 			if (attempt === undefined) throw new Error("unexpected extra model request");
 			if (attempt instanceof Error) throw attempt;
 			if (Array.isArray(attempt)) {

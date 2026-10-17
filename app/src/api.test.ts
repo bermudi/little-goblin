@@ -351,9 +351,7 @@ describe("interrupted turns recovery", () => {
 			decideRunCall(null, "app/chat-1", "r1", { callId: "c", decision: "skip" }),
 		).rejects.toThrow("invalid decide response");
 		fakeFetch(() => Response.json({ resumed: "yes" }));
-		await expect(resumeRun(null, "app/chat-1", "r1")).rejects.toThrow(
-			"invalid resume response",
-		);
+		await expect(resumeRun(null, "app/chat-1", "r1")).rejects.toThrow("invalid resume response");
 	});
 
 	test("a refusal surfaces status and the server's reason verbatim", async () => {

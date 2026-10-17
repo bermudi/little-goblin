@@ -145,7 +145,10 @@ test("a proposed card's decide buttons post skills/decide and refetch the list",
 				return Response.json(listSkills(skills, proposed));
 			}
 			if (url.pathname === "/api/app/skills/decide" && init?.method === "POST") {
-				const body = JSON.parse(String(init.body)) as { name: string; action: "install" | "discard" };
+				const body = JSON.parse(String(init.body)) as {
+					name: string;
+					action: "install" | "discard";
+				};
 				posts.push(body);
 				return Response.json({
 					ok: true,

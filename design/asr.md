@@ -203,6 +203,13 @@ speech anywhere, throw = failure. The size-cap decision generalizes:
 - Chat-family inline-base64 engines cap bytes lower (gemini
   `inlineData` request budget ≈ 20 MB total): `maxBytes` 12 MiB with
   10-minute segments keeps the base64-inflated body safely under.
+- The segment pass rebuilds timestamps before the muxer sees them
+  (ruling 2026-10-17, bugs-2026-10 F6): `-af asetpts=N/SR/TB` derives
+  pts from decoded sample count, so MediaRecorder containers
+  (duration=N/A, per-packet cluster pts — PWA voice notes on every
+  browser) cut by real wall time instead of one ~60 ms segment per
+  packet. Container pts are never trusted; contiguous decoded frames
+  are the truth.
 
 ### Wire, UI, docs
 

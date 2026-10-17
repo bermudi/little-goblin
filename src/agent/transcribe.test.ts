@@ -48,6 +48,29 @@ function genAudio(dest: string, seconds: number): void {
 	if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
 }
 
+// MediaRecorder pathology: pts inflated 400x at encode makes a 9 s
+// note claim ~3 600 s of packet time — without the orchestrator's
+// sample-count pts rebuild the segment muxer cuts per packet (the
+// production 9 s webm produced 153 segments).
+function genBrokenAudio(dest: string, seconds: number): void {
+	const gen = Bun.spawnSync([
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		`sine=frequency=440:duration=${seconds}`,
+		"-af",
+		"asetpts=PTS*400",
+		"-c:a",
+		"libopus",
+		dest,
+	]);
+	if (gen.exitCode !== 0) throw new Error(`broken audio gen: ${gen.stderr.toString()}`);
+}
+
 // Codec name from the start of an Ogg stream: opus pages open with
 // "OpusHead", vorbis with "\u0001vorbis", FLAC-in-Ogg with "\u007fFLAC".
 function oggCodec(audio: Uint8Array): string {
@@ -141,6 +164,29 @@ describe("transcribeAudio", () => {
 			expect(p.endsWith(".wav")).toBe(true);
 			expect(wavShape(bytes)).toEqual({ channels: 1, sampleRate: 16_000 });
 		}
+	});
+
+	test("broken container timestamps still segment by wall time", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpDir("goblin-tr-");
+		const src = join(dir, "note.webm");
+		genBrokenAudio(src, 9);
+		let n = 0;
+		const engine: SpeechEngine = {
+			id: "whistle",
+			limits: { maxSeconds: 28 },
+			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
+			transcribe: async () => {
+				n += 1;
+				return { text: "nine seconds" };
+			},
+		};
+		// Unrepaired pts cut ~129 segments here; rebuilt pts see one 9 s
+		// file under the 28 s ceiling → a single segment, a single call.
+		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 28 })).toBe(
+			"nine seconds",
+		);
+		expect(n).toBe(1);
 	});
 
 	test("an over-cap outage with nothing transcribed fails loud, never reads as no-speech", async () => {

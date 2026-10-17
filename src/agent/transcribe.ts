@@ -279,6 +279,14 @@ async function segmentAudio(
 		"-i",
 		src,
 		"-vn",
+		// Browser MediaRecorder output (PWA voice notes: webm, ogg,
+		// mp4) carries duration=N/A headers and packet timestamps that
+		// don't map to wall time — the segment muxer then cuts one
+		// ~60 ms segment per packet (153 segments from a 9 s note).
+		// Rebuild pts from decoded sample count instead: contiguous
+		// frames are true wall time regardless of container lies.
+		"-af",
+		"asetpts=N/SR/TB",
 		...audio,
 		"-f",
 		"segment",

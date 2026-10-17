@@ -498,7 +498,12 @@ src/
                     PWA are one client with two entries — plus the
                     initData operator tails (/api/*), POST /hook/<token>,
                     and loopback POST /api/check-injection (the wrapper's
-                    gate; value imports live in check.ts, never mod.ts)
+                    gate; value imports live in check.ts, never mod.ts).
+                    app-channel.ts dispatches /api/app/*; app-auth.ts and
+                    app-sse.ts own auth and streaming; app-conversations.ts,
+                    app-projects.ts, app-notes.ts, app-chat.ts,
+                    app-attachments.ts and app-config.ts own route groups;
+                    app-shared.ts holds common response/path primitives
 ```
 
 Flat modules, one job each, tests colocated. The map names rule owners;

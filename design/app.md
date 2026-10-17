@@ -205,7 +205,7 @@ on both doors like the rest of the console — `/api/app/attachments` is
 dual-mounted method-aware (GET → viewer, POST → the composer's upload);
 the mini app does not get the pages (`TELEGRAM_PAGES` stays
 settings/memory). Mount points are pinned by door-level tests in
-`app-channel.test.ts`, because handler-level tests pass even when a
+`src/http/app-operator.test.ts`, because handler-level tests pass even when a
 tail is mounted nowhere. The settings editor lives in `app/src`
 (`settingsDraft.ts`, `SettingsView.tsx`) and is the only settings UI —
 the Telegram door renders this client's telegram mode
@@ -631,3 +631,36 @@ the guidance meanwhile.
 
 **Logging.** The tool call line carries block count and kinds; an
 `html` block logs its byte size.
+
+### Server module map
+
+`src/http/app-channel.ts` retains `AppChannelDeps`, `resolveAppAuth` and
+`handleAppApi`. It authenticates, delegates operator tails, then chains
+route handlers returning `Response | null` before the final 404. Operator
+delegation precedes attachment read-back: the exact `attachments/file`
+tail and the method-aware `attachments` listing keep their precedence,
+as does the `memory/` prefix mount.
+
+Sibling boundaries:
+
+- `app-auth.ts`: boot auth resolution, bearer checks, browser-origin and
+  JSON-body refusals.
+- `app-sse.ts`: shared SSE writer and runtime sink, independent of the
+  channel dependency bag.
+- `app-shared.ts`: no-store headers and conversation path decoding.
+- `app-conversations.ts`: collection/item routes, history, stop, stream
+  attach, context usage and search.
+- `app-projects.ts`: project routes, schemas and DTO.
+- `app-notes.ts`: notes, versions, restore, append and rewrite routes,
+  their schemas, DTOs and typed error responses.
+- `app-chat.ts`: chat intake, attachment transcription, note expansion,
+  title generation and TTS.
+- `app-attachments.ts`: capped uploads and confined read-back.
+- `app-config.ts`: global defaults and per-conversation settings.
+
+Routes and auth refer back to `AppChannelDeps` only through erased
+`import type` edges. `src/http/mod.ts` remains the listener boundary and
+never imports the app runtime/AI SDK implementation graph. Route suites
+exercise that real listener with shared setup in `app-test-util.ts`;
+`app-channel.test.ts` keeps dispatch/auth-mode coverage, while sibling
+`app-*.test.ts` files cover the corresponding route groups.

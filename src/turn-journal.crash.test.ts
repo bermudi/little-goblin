@@ -86,11 +86,14 @@ function probeRunStatuses(db: Database): string[] {
 function spawn(mode: string, name: string): { child: Subprocess; dbPath: string; marker: string } {
 	const dbPath = join(dir, `${name}.sqlite`);
 	const marker = join(dir, `${name}.marker`);
-	const child = Bun.spawn(["bun", "run", "src/test-helpers/turn-crash-child.ts"], {
-		env: { ...process.env, DB_PATH: dbPath, MARKER_PATH: marker, MODE: mode },
-		stdout: "ignore",
-		stderr: "inherit",
-	});
+	const child = Bun.spawn(
+		["bun", "run", join(import.meta.dir, "test-helpers/turn-crash-child.ts")],
+		{
+			env: { ...process.env, DB_PATH: dbPath, MARKER_PATH: marker, MODE: mode },
+			stdout: "ignore",
+			stderr: "inherit",
+		},
+	);
 	children.push(child);
 	return { child, dbPath, marker };
 }

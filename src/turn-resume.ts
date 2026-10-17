@@ -380,6 +380,12 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 						: `no interrupted run matching '${runRef}' in this conversation`,
 				);
 			}
+			if (claimed.has(found.run.runId)) {
+				return refused(
+					"conflict",
+					`run ${found.run.runId.slice(0, 8)} has a resume in flight — stop that turn first`,
+				);
+			}
 			try {
 				journal.markRun(found.run.runId, "abandoned");
 			} catch (err) {
@@ -507,30 +513,31 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				resumedFrom: run.runId,
 			};
 			const inner = deps.sinkFor(conv);
-			// A spread copies own fields but drops prototype methods — sink
-			// implementations may be classes. Clone through the prototype
-			// so every member keeps working, then override the terminal hook.
-			const sink: TurnSink = Object.assign(
-				Object.create(Object.getPrototypeOf(inner)) as TurnSink,
-				inner,
-				{
-					onDone: async (done: TurnDone) => {
-						try {
-							await inner.onDone(done);
-						} finally {
-							claimed.delete(run.runId);
-							try {
-								deps.notifyDone?.(conv, run.runId, done);
-							} catch (err) {
-								log.warn("resume completion notice failed", err, {
-									conversation: convId,
-									run: run.runId,
-								});
-							}
-						}
-					},
+			// A clone through the prototype still splits the receiver —
+			// own fields copy over, but getters and private state belong
+			// to the real instance. Forward to it instead; only onDone is overridden.
+			const onDone = async (done: TurnDone) => {
+				try {
+					await inner.onDone(done);
+				} finally {
+					claimed.delete(run.runId);
+					try {
+						deps.notifyDone?.(conv, run.runId, done);
+					} catch (err) {
+						log.warn("resume completion notice failed", err, {
+							conversation: convId,
+							run: run.runId,
+						});
+					}
+				}
+			};
+			const sink = new Proxy(inner, {
+				get(target, prop) {
+					if (prop === "onDone") return onDone;
+					const value: unknown = Reflect.get(target, prop, target);
+					return typeof value === "function" ? value.bind(target) : value;
 				},
-			);
+			});
 			claimed.add(run.runId);
 			if (!runtime.resume(conv, trigger.message, sink, seed)) {
 				claimed.delete(run.runId);

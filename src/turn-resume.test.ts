@@ -37,6 +37,7 @@ function setup(opts: {
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
 	// Tool-factory override — the early-failure test throws inside it.
 	makeTools?: RuntimeDeps["makeTools"];
+	sinkFactory?: () => RecordingSink;
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -71,7 +72,7 @@ function setup(opts: {
 		captureConversation: (c) => c,
 		makeTools,
 		sinkFor: () => {
-			sink = new RecordingSink();
+			sink = opts.sinkFactory?.() ?? new RecordingSink();
 			return sink;
 		},
 		sinkHooks: () => ({ voice: false, recording: false, file: false }),
@@ -421,7 +422,7 @@ describe("turn resume", () => {
 
 	test("a second resume while one is in flight refuses; a finished source never re-resumes", async () => {
 		const gated = pauseFakeModelAtDelta(["slow", "end"], 0);
-		const { store, conv, journal, ops, runtime, sink } = setup({ model: gated.model });
+		const { store, conv, journal, ops, runtime, notices, sink } = setup({ model: gated.model });
 		interruptedRun(store, journal, conv, "run-src", {
 			anchorSeq: appendUser(store, conv, "go"),
 		});
@@ -429,18 +430,89 @@ describe("turn resume", () => {
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		// The claim set — not the row state — blocks the in-flight window:
 		// the source still reads 'interrupted' until the attempt's markRun.
+		expect(journal.get("run-src")!.status).toBe("interrupted");
 		expect(ops.resume(conv.id, "run-src")).toMatchObject({
 			kind: "refused",
 			code: "conflict",
 		});
+		const blocked = ops.abandon(conv.id, "run-src");
+		expect(blocked).toMatchObject({ kind: "refused", code: "conflict" });
+		if (blocked.kind === "refused") {
+			expect(blocked.reason).toContain("resume in flight");
+		}
+		expect(journal.get("run-src")!.status).toBe("interrupted");
 		gated.release();
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		// Consumed for good: the source is 'resumed', no longer interrupted.
+		expect(journal.get("run-src")!.status).toBe("resumed");
+		expect(notices).toHaveLength(1);
 		expect(ops.resume(conv.id, "run-src")).toMatchObject({
 			kind: "refused",
 			code: "not-found",
 		});
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a class sink keeps its instance — deltas and the done flush land on it", async () => {
+		class PublicSink extends RecordingSink {
+			flushedText = "";
+			override onDone(done: TurnDone) {
+				this.flushedText = this.text;
+				super.onDone(done);
+			}
+		}
+		const publicSink = new PublicSink();
+		const { store, conv, journal, ops, runtime, notices } = setup({
+			attempts: [textParts(["first", " second"])],
+			sinkFactory: () => publicSink,
+		});
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		expect(publicSink.text).toBe("first second");
+		expect(publicSink.chunkTypes).toContain("text-delta");
+		expect(publicSink.flushedText).toBe("first second");
+		expect(await publicSink.done).toEqual({ kind: "completed" });
+		expect(notices).toHaveLength(1);
+		expect(journal.get("run-src")!.status).toBe("resumed");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a class sink with private state keeps it through the resume wrapper", async () => {
+		class PrivateSink extends RecordingSink {
+			#text = "";
+			flushedText = "";
+			override onTextDelta(delta: string) {
+				this.#text += delta;
+				super.onTextDelta(delta);
+			}
+			override onDone(done: TurnDone) {
+				this.flushedText = this.#text;
+				super.onDone(done);
+			}
+		}
+		const privateSink = new PrivateSink();
+		const { store, conv, journal, ops, runtime, notices } = setup({
+			attempts: [textParts(["first", " second"])],
+			sinkFactory: () => privateSink,
+		});
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		expect(privateSink.text).toBe("first second");
+		expect(privateSink.flushedText).toBe("first second");
+		expect(await privateSink.done).toEqual({ kind: "completed" });
+		expect(notices).toHaveLength(1);
+		expect(journal.get("run-src")!.status).toBe("resumed");
 		await runtime.shutdown();
 		store.close();
 	});
@@ -566,6 +638,33 @@ describe("turn resume", () => {
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		expect(journal.get("run-src")!.status).toBe("resumed");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a released claim lets abandon take a source its resume failed on", async () => {
+		let calls = 0;
+		const { store, conv, journal, ops, runtime, notices, sink } = setup({
+			makeTools: () => {
+				calls++;
+				if (calls === 2) throw new Error("tool factory exploded");
+				return {
+					probe: tool({
+						inputSchema: z.object({ q: z.number() }),
+						execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
+					}),
+				};
+			},
+		});
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect((await sink()!.done).kind).toBe("error");
+		await waitUntil(() => notices.length === 1, "done notice");
+		expect(journal.get("run-src")!.status).toBe("interrupted");
+		expect(ops.abandon(conv.id, "run-src")).toEqual({ kind: "ok" });
+		expect(journal.get("run-src")!.status).toBe("abandoned");
 		await runtime.shutdown();
 		store.close();
 	});

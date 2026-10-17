@@ -438,6 +438,10 @@ describe("goblin.json5", () => {
 	]);
 	throwRows("memory", P_ZAI, [
 		[
+			"recallTimeoutMs has a floor",
+			`,memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",recallTimeoutMs:99}`,
+		],
+		[
 			"searchTimeoutMs has a floor",
 			`,memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin",searchTimeoutMs:0}`,
 		],

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setLogFile } from "../log.ts";
 import { sleep, waitUntil } from "../testkit.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
@@ -223,6 +225,25 @@ describe("app chat", () => {
 		} finally {
 			http.stop();
 		}
+	});
+
+	test("a finished turn logs the stream finish — the boundary the log file must reconstruct", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			await createAndChat(call, "log this finish");
+		} finally {
+			http.stop();
+			setLogFile(null);
+		}
+		const lines = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as { msg: string; conversation?: string; outcome?: string });
+		const finish = lines.filter((l) => l.msg === "app stream finish");
+		expect(finish).toHaveLength(1);
+		expect(finish[0]).toMatchObject({ conversation: "app/chat-01", outcome: "completed" });
 	});
 
 	test("a preset title keeps titleFor out of the first turn", async () => {

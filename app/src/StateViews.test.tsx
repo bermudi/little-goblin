@@ -129,6 +129,53 @@ function skillHarness() {
 const cardButton = (card: Element, label: string) =>
 	[...card.querySelectorAll("button")].find((el) => el.textContent === label);
 
+test("a proposed card's decide buttons post skills/decide and refetch the list", async () => {
+	const skills = join(home, "skills");
+	const proposed = join(home, "proposed");
+	mkdirSync(join(proposed, "draft"), { recursive: true });
+	writeFileSync(join(proposed, "draft/SKILL.md"), "d");
+	mkdirSync(skills, { recursive: true });
+	const posts: { name: string; action: string }[] = [];
+	let lists = 0;
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/skills") {
+				lists++;
+				return Response.json(listSkills(skills, proposed));
+			}
+			if (url.pathname === "/api/app/skills/decide" && init?.method === "POST") {
+				const body = JSON.parse(String(init.body)) as { name: string; action: "install" | "discard" };
+				posts.push(body);
+				return Response.json({
+					ok: true,
+					skill: body.name,
+					action: body.action,
+					replaced: false,
+					state: body.action === "install" ? "installed" : "gone",
+				});
+			}
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<SkillsView token={null} />));
+	const card = [...container.querySelectorAll(".card")].find(
+		(el) => el.querySelector(".op-item-title")?.textContent === "draft",
+	);
+	expect(card).toBeDefined();
+	// Installed cards carry no decide affordance.
+	const install = cardButton(card!, "install");
+	const discard = cardButton(card!, "discard");
+	expect(install).toBeDefined();
+	expect(discard).toBeDefined();
+	await act(async () => install?.click());
+	expect(posts).toEqual([{ name: "draft", action: "install" }]);
+	// The decision resolved: the list refetched so state moves installed/gone.
+	expect(lists).toBeGreaterThanOrEqual(2);
+});
+
 test("a slow file response never overwrites a newer selection", async () => {
 	const pending = skillHarness();
 	root = createRoot(container);

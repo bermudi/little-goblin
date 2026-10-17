@@ -46,6 +46,7 @@ export function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
 export function useLoad<T>(load: () => Promise<T>) {
 	const [data, setData] = useState<T | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	const [nonce, setNonce] = useState(0);
 	useEffect(() => {
 		let live = true;
 		load().then(
@@ -55,8 +56,9 @@ export function useLoad<T>(load: () => Promise<T>) {
 		return () => {
 			live = false;
 		};
-		// Runs once per mount — token changes remount the view via App's
-		// page switch, so an empty dep list is correct here.
-	}, []);
-	return { data, err };
+		// Runs once per mount plus on explicit reload() (post-mutation
+		// refresh) — token changes still remount the view via App's page
+		// switch.
+	}, [nonce]);
+	return { data, err, reload: () => setNonce((n) => n + 1) };
 }

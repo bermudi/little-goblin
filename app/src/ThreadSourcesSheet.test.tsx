@@ -143,13 +143,20 @@ describe("ThreadSourcesSheet", () => {
 		mount();
 		await flush();
 
-		// Skills: read-only rows with state words — no buttons to flip.
+		// Skills: state words, and the proposed row carries the decide
+		// affordance — installed rows don't.
 		const skillRows = [...container.querySelectorAll(".skill-row")];
 		expect(skillRows.map((r) => r.textContent)).toEqual([
 			expect.stringContaining("open-source-check"),
 			expect.stringContaining("weather"),
 		]);
-		expect(container.querySelector(".skill-row button")).toBeNull();
+		const proposed = skillRows.find((r) => r.textContent?.includes("weather"))!;
+		const installed = skillRows.find((r) => r.textContent?.includes("open-source-check"))!;
+		expect(installed.querySelector("button")).toBeNull();
+		expect([...proposed.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+			"install",
+			"discard",
+		]);
 
 		// Exchanges: this conversation's documents.
 		const docRow = container.querySelector(".doc-row");
@@ -170,6 +177,53 @@ describe("ThreadSourcesSheet", () => {
 		// back empty.
 		expect(seen.some((s) => s.method === "DELETE")).toBe(true);
 		expect(container.textContent).toContain("Nothing retained.");
+	});
+
+	test("a proposed row's discard posts skills/decide and the list re-reads", async () => {
+		const seen: { method: string; path: string; body?: string }[] = [];
+		let decided = false;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			seen.push({
+				method: init?.method ?? "GET",
+				path: url.pathname + url.search,
+				...(typeof init?.body === "string" ? { body: init.body } : {}),
+			});
+			if (url.pathname === "/api/app/skills/from") {
+				const items = decided
+					? SKILLS.items.map((s) =>
+							s.skill === "weather" ? { ...s, state: "gone" } : s,
+						)
+					: SKILLS.items;
+				return Promise.resolve(json({ items }));
+			}
+			if (url.pathname === "/api/app/skills/decide") {
+				decided = true;
+				return Promise.resolve(
+					json({ ok: true, skill: "weather", action: "discard", replaced: false, state: "gone" }),
+				);
+			}
+			if (url.pathname === "/api/app/memory/documents")
+				return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		const proposed = [...container.querySelectorAll(".skill-row")].find((r) =>
+			r.textContent?.includes("weather"),
+		);
+		const discard = [...proposed!.querySelectorAll("button")].find(
+			(b) => b.textContent === "discard",
+		);
+		await click(discard);
+		await flush();
+		const post = seen.find((s) => s.path === "/api/app/skills/decide");
+		expect(post?.method).toBe("POST");
+		expect(JSON.parse(post!.body!)).toEqual({ name: "weather", action: "discard" });
+		// The row re-read — the state chip now says gone and the buttons left.
+		expect(proposed!.textContent).toContain("gone");
+		expect([...proposed!.querySelectorAll("button")]).toHaveLength(0);
 	});
 
 	test("both sections surface their own errors without hiding the other", async () => {

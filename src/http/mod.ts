@@ -85,6 +85,7 @@ const OPERATOR_TAILS: Record<string, string> = {
 	"/api/skills": "skills",
 	"/api/skills/from": "skills/from",
 	"/api/skills/file": "skills/file",
+	"/api/skills/decide": "skills/decide",
 	"/api/attachments": "attachments",
 	"/api/attachments/file": "attachments/file",
 	"/api/identity": "identity",

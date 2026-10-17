@@ -52,6 +52,7 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/skills": "skills",
 	"/api/app/skills/from": "skills/from",
 	"/api/app/skills/file": "skills/file",
+	"/api/app/skills/decide": "skills/decide",
 	// Exact key — it must win over the legacy /api/app/attachments/<name>
 	// read-back prefix below.
 	"/api/app/attachments/file": "attachments/file",
@@ -90,7 +91,10 @@ export async function handleAppApi(
 		}
 		// JSON-body mutations carry the same CSRF backstop as every other
 		// app mutation (wire contract, not trust).
-		if ((opTail === "config" || opTail === "secrets") && req.method === "POST") {
+		if (
+			(opTail === "config" || opTail === "secrets" || opTail === "skills/decide") &&
+			req.method === "POST"
+		) {
 			const refusedJson = jsonBodyRefusal(req);
 			if (refusedJson !== null) return refusedJson;
 		}

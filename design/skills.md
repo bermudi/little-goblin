@@ -197,6 +197,13 @@ don't duplicate it).
   current operator message (tail-first), the current answer
   (head-first), the prior wrong turn — anything older is dropped
   first. An off-the-record turn is never stored as prior context.
+  The completed turn also snapshots the built-in tool inventory —
+  sorted names plus each description capped at 200 chars, captured
+  only when the reviewer is configured (ruling 2026-10-17): the
+  review prompt lists it and rules that procedures built-in tools
+  already perform are not skills — a `transcribe`/`bash` recovery is
+  config or a tool call, never a new skill. Callback-typed SDK
+  descriptions contribute `""` (no context exists at review time).
 - **Reviewer: staging, validation, then an atomic proposal.** A background
   model call, off the conversation lane — fire-and-forget, never
   delays the next turn, and shutdown doesn't await it either (a missed
@@ -267,6 +274,12 @@ catalog: a validated skill parks in `skills-proposed/<name>/` and
   a symlink on either path refuses the swap), discard deletes the
   staged dir — and appends a resolution history event. Over the 64-byte
   callback cap the row degrades to the conversational notice below.
+  The decision mechanics — proposal-in / live-copy replacement /
+  symlink refusal / resolution event — live in `src/skill-decisions.ts`
+  (ruling 2026-10-17): one domain path the Telegram callback and the
+  operator `POST skills/decide` route both drive, so the PWA decides
+  identically to the ✅/🚫 row (gone → 404, conflict → 409, unwired →
+  503; the JSON-body/CSRF backstop guards the app door).
   It lands in history as a system event, so the next turn knows. Like
   the old "reply to undo", approve and discard stay conversational as
   the fallback: the history event tells the next turn that approve

@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { parseConfig } from "../config.ts";
+import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
+import type { UIMessage } from "ai";
 
 const ACTOR: OperatorActor = { via: "app" };
 
@@ -254,6 +256,139 @@ describe("state viewer routes", () => {
 			);
 			expect(res?.status).toBe(405);
 		}
+	});
+});
+
+// The operator doors' ✅/🚫 — POST skills/decide, tested at the route
+// with a scripted seam, then once end-to-end through the real
+// resolveSkillProposal so the button provably shares the tap's disk
+// move and history event.
+describe("skills/decide route", () => {
+	function postDecide(body: unknown, deps: OperatorDeps = decideDeps()): Promise<Response> {
+		return handleOperatorRoute(
+			deps,
+			ACTOR,
+			new Request("http://x/skills/decide", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: typeof body === "string" ? body : JSON.stringify(body),
+			}),
+			"skills/decide",
+			new URL("http://x/skills/decide"),
+		) as Promise<Response>;
+	}
+
+	function decideDeps(outcome?: SkillDecision): OperatorDeps {
+		return {
+			...deps(),
+			skillDecisions: {
+				decide: () => outcome ?? { action: "install", ok: true, replaced: false },
+			},
+		};
+	}
+
+	test("an install decision returns the applied outcome", async () => {
+		const res = await postDecide({ name: "smoke-test", action: "install" });
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			ok: true,
+			skill: "smoke-test",
+			action: "install",
+			replaced: false,
+			state: "installed",
+		});
+	});
+
+	test("a discard reports state gone; a replaced install says so", async () => {
+		const gone = await postDecide(
+			{ name: "smoke-test", action: "discard" },
+			decideDeps({ action: "discard", ok: true }),
+		);
+		expect(((await gone.json()) as { state: string }).state).toBe("gone");
+		const swapped = await postDecide(
+			{ name: "smoke-test", action: "install" },
+			decideDeps({ action: "install", ok: true, replaced: true }),
+		);
+		expect(((await swapped.json()) as { replaced: boolean }).replaced).toBe(true);
+	});
+
+	test("gone proposals 404; conflicts 409; the unwired seam 503s", async () => {
+		const gone = await postDecide(
+			{ name: "smoke-test", action: "install" },
+			decideDeps({ action: "install", ok: false, reason: "gone" }),
+		);
+		expect(gone.status).toBe(404);
+		const conflict = await postDecide(
+			{ name: "smoke-test", action: "install" },
+			decideDeps({ action: "install", ok: false, reason: "live skill is a symlink" }),
+		);
+		expect(conflict.status).toBe(409);
+		const unwired = await postDecide({ name: "smoke-test", action: "install" }, deps());
+		expect(unwired.status).toBe(503);
+	});
+
+	test("bad methods, bodies, names and actions get typed refusals", async () => {
+		const get = await handleOperatorRoute(
+			decideDeps(),
+			ACTOR,
+			new Request("http://x/skills/decide"),
+			"skills/decide",
+			new URL("http://x/skills/decide"),
+		);
+		expect(get?.status).toBe(405);
+		expect((await postDecide("not json{")).status).toBe(400);
+		expect((await postDecide({ name: "Bad_Name", action: "install" })).status).toBe(422);
+		expect((await postDecide({ name: "fine-name", action: "maybe" })).status).toBe(422);
+	});
+
+	test("the seam composes the real disk move plus the history event", async () => {
+		// The route's dep is resolveSkillProposal — decide through it end
+		// to end so the button provably does what a Telegram tap does.
+		mkdirSync(join(home, "workspace/skills-proposed/smoke-test"), { recursive: true });
+		writeFileSync(join(home, "workspace/skills-proposed/smoke-test/SKILL.md"), "# smoke");
+		const appended: { conversation: string; text: string }[] = [];
+		const d: OperatorDeps = {
+			...deps(),
+			skillDecisions: {
+				decide: (skill, action) =>
+					resolveSkillProposal(
+						{
+							workspaceDir: join(home, "workspace"),
+							skillsDir: join(home, "workspace/skills"),
+							proposedDir: join(home, "workspace/skills-proposed"),
+							forSkill: (s) => [
+								{
+									skill: s,
+									conversationId: "app/learned-here",
+									kind: "reviewer",
+									reviewId: null,
+									firstAt: "2026-10-17T00:00:00Z",
+									lastAt: "2026-10-17T00:00:00Z",
+								},
+							],
+							store: {
+								append: (id: string, messages: UIMessage[]) => {
+									appended.push({
+										conversation: id,
+										text: (messages[0]!.parts[0] as { text: string }).text,
+									});
+								},
+							},
+						},
+						skill,
+						action,
+					),
+			},
+		};
+		const res = await postDecide({ name: "smoke-test", action: "install" }, d);
+		expect(res.status).toBe(200);
+		expect(existsSync(join(home, "workspace/skills/smoke-test/SKILL.md"))).toBe(true);
+		expect(appended).toEqual([
+			{
+				conversation: "app/learned-here",
+				text: "skill proposal resolved: smoke-test — installed",
+			},
+		]);
 	});
 });
 

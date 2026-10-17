@@ -3641,6 +3641,17 @@ button.link:hover {
 	flex-wrap: wrap;
 	gap: 0.35rem;
 }
+/* The proposed-skill approve/discard affordance — the operator doors'
+   equivalent of the Telegram ✅/🚫 row, over POST skills/decide. */
+.skill-decide {
+	display: flex;
+	gap: 0.4rem;
+	margin-top: 0.45rem;
+}
+.skill-row .skill-decide {
+	margin-top: 0;
+	margin-left: auto;
+}
 .skill-file {
 	font-family: var(--font-mono);
 	font-size: 12px;

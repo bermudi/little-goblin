@@ -33,6 +33,7 @@ import {
 } from "../config.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
+import type { SkillAction, SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
 	type HindsightClient,
@@ -45,7 +46,12 @@ import {
 import { type MemoryContexts, memoryStatus } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
-import { type SkillSourceRow, skillLiveState } from "../skill-provenance.ts";
+import {
+	type SkillSourceRow,
+	skillLiveState,
+	skillNameSchema,
+} from "../skill-provenance.ts";
+import type { SkillDecideResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
@@ -151,6 +157,13 @@ export interface OperatorDeps {
 		forConversation(conversationId: string): SkillSourceRow[];
 		skillsDir: string;
 		proposedDir: string;
+	};
+	// Proposal decisions — the operator doors' approve/discard (the
+	// same mechanics the Telegram ✅/🚫 row runs, src/skill-decisions.ts).
+	// The seam owns the disk move and the resolution event in the
+	// learning conversation. Absent = the tail 503s.
+	skillDecisions?: {
+		decide(skill: string, action: SkillAction): SkillDecision;
 	};
 }
 
@@ -552,8 +565,8 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 // "config", "thinking-levels", "secrets", "memory/status",
 // "memory/documents", "memory/documents/<raw id>", "programs",
 // "delegations", "status", and the state viewer (ruling 2026-10-11):
-// "skills", "skills/from", "skills/file", "attachments",
-// "attachments/file", "identity", "log".
+// "skills", "skills/from", "skills/file", "skills/decide",
+// "attachments", "attachments/file", "identity", "log".
 // Returns null when the tail matches nothing — the caller 404s.
 export async function handleOperatorRoute(
 	deps: OperatorDeps,
@@ -954,8 +967,8 @@ export async function handleOperatorRoute(
 
 	// The thread panel's skills half (design/skills.md → Skill
 	// provenance): rows the conversation authored, liveness resolved
-	// from the catalog at read time. Read-only — approve/discard stays
-	// conversational.
+	// from the catalog at read time. Reads stay here; approve/discard
+	// goes through skills/decide below.
 	if (tail === "skills/from") {
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -1018,6 +1031,61 @@ export async function handleOperatorRoute(
 		if (file === null)
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 		return Response.json(file, { headers: NO_STORE });
+	}
+
+	// The operator doors' ✅/🚫 — the same mechanical disk decision the
+	// Telegram row runs (src/skill-decisions.ts): install swaps the
+	// proposal into skills/, discard deletes it, and a successful
+	// decision appends the resolution event to the conversation that
+	// learned the skill when provenance names one.
+	if (tail === "skills/decide") {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const decisions = deps.skillDecisions;
+		if (decisions === undefined)
+			return Response.json(
+				{ error: "skill decisions unavailable" },
+				{ status: 503, headers: NO_STORE },
+			);
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = z
+			.object({
+				name: skillNameSchema,
+				action: z.enum(["install", "discard"]),
+			})
+			.safeParse(raw);
+		if (!parsed.success)
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		const outcome = decisions.decide(parsed.data.name, parsed.data.action);
+		if (!outcome.ok) {
+			return Response.json(
+				{ error: outcome.reason === "gone" ? "proposal not found" : outcome.reason },
+				{ status: outcome.reason === "gone" ? 404 : 409, headers: NO_STORE },
+			);
+		}
+		log.info("skill proposal decided via operator door", {
+			...who,
+			via: actor.via,
+			skill: parsed.data.name,
+			action: outcome.action,
+			...(outcome.action === "install" ? { replaced: outcome.replaced } : {}),
+		});
+		const body: SkillDecideResponse = {
+			ok: true,
+			skill: parsed.data.name,
+			action: outcome.action,
+			replaced: outcome.action === "install" ? outcome.replaced : false,
+			state: outcome.action === "install" ? "installed" : "gone",
+		};
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	if (tail === "attachments") {

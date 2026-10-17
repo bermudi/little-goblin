@@ -80,6 +80,7 @@ import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
+import { resolveSkillProposal, type SkillAction } from "./skill-decisions.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
@@ -1127,6 +1128,23 @@ async function boot() {
 			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
 			skillsDir: paths.skills(),
 			proposedDir: paths.skillsProposed(),
+		},
+		// The operator doors' ✅/🚫 — same mechanics the Telegram row
+		// runs, plus the resolution event into the learning conversation
+		// (provenance's newest row) when there is one.
+		skillDecisions: {
+			decide: (skill: string, action: SkillAction) =>
+				resolveSkillProposal(
+					{
+						workspaceDir: paths.workspace(),
+						skillsDir: paths.skills(),
+						proposedDir: paths.skillsProposed(),
+						forSkill: (s: string) => skillSources.forSkill(s),
+						store,
+					},
+					skill,
+					action,
+				),
 		},
 	};
 	const http = startHttp({

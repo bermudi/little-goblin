@@ -119,6 +119,28 @@ export class SkillSources {
 		return rows.map(rowToItem);
 	}
 
+	// Rows for one skill, newest write first — the decide doors' lookup
+	// for the conversation that learned it (the resolution event lands
+	// there). Raw rows; liveness joins at the route.
+	forSkill(skill: string): SkillSourceRow[] {
+		const rows = this.db
+			.query<
+				{
+					skill: string;
+					conversation_id: string;
+					kind: string;
+					review_id: string | null;
+					first_at: string;
+					last_at: string;
+				},
+				[string]
+			>(
+				`SELECT ${rowColumns} FROM skill_sources WHERE skill = ? ORDER BY last_at DESC, conversation_id ASC`,
+			)
+			.all(skill);
+		return rows.map(rowToItem);
+	}
+
 	// Backfill semantics (goblin.log parse): the row stands as the log
 	// saw it ONLY when nothing newer exists — a rerun after live writes
 	// must not rewind kind/last_at to log time. Preserve the earliest

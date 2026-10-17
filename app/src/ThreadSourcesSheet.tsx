@@ -1,17 +1,40 @@
 // The chat header's thread-sources sheet (design/app.md → Thread
 // sources): everything this conversation produced — its retained
 // exchanges and the skills generated from it — on the thread itself,
-// not in a global tab. Skills are read-only (approve/discard stays
-// conversational); memories keep the shared forget affordance.
+// not in a global tab. Proposed skills decide right here (the same
+// skills/decide mechanics as the Telegram ✅/🚫 row and the Skills
+// page); memories keep the shared forget affordance.
 import { useEffect, useRef, useState } from "react";
 import type { MemoryDocListItem, ThreadSkillItem } from "../../src/http/operator-wire.ts";
-import { listMemoryDocuments, listThreadSkills } from "./api.ts";
+import { decideSkill, listMemoryDocuments, listThreadSkills } from "./api.ts";
 import { MemoryDocDetail, MemoryDocRow, relTime, useMemoryDocSheet } from "./memoryShared.tsx";
 import { describe } from "./opsShared.tsx";
 
 const PAGE = 20;
 
-function SkillRow({ skill }: { skill: ThreadSkillItem }) {
+function SkillRow({
+	skill,
+	token,
+	onDecided,
+}: {
+	skill: ThreadSkillItem;
+	token: string | null;
+	onDecided: () => void;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
+	const decide = (action: "install" | "discard") => {
+		if (busy) return;
+		setBusy(true);
+		setErr(null);
+		decideSkill(token, skill.skill, action).then(
+			() => onDecided(),
+			(e) => {
+				setBusy(false);
+				setErr(describe(e));
+			},
+		);
+	};
 	return (
 		<div className="skill-row">
 			<span className="skill-name mono">{skill.skill}</span>
@@ -20,6 +43,27 @@ function SkillRow({ skill }: { skill: ThreadSkillItem }) {
 				{" · "}
 				{skill.kind === "reviewer" ? "distilled" : "authored"} {relTime(skill.firstAt)}
 			</span>
+			{skill.state === "proposed" && (
+				<span className="skill-decide">
+					<button
+						type="button"
+						className="pill"
+						disabled={busy}
+						onClick={() => decide("install")}
+					>
+						install
+					</button>
+					<button
+						type="button"
+						className="pill"
+						disabled={busy}
+						onClick={() => decide("discard")}
+					>
+						discard
+					</button>
+				</span>
+			)}
+			{err !== null && <span className="error">{err}</span>}
 		</div>
 	);
 }
@@ -42,6 +86,22 @@ export function ThreadSourcesSheet({
 	const [listLoading, setListLoading] = useState(false);
 	const [listErr, setListErr] = useState<string | null>(null);
 	const listSeq = useRef(0);
+	const skillSeq = useRef(0);
+
+	const loadSkills = (seq = ++skillSeq.current) => {
+		if (seq !== skillSeq.current) return;
+		void listThreadSkills(token, conversationId).then(
+			(r) => {
+				if (seq !== skillSeq.current) return;
+				setSkills(r.items);
+				setSkillsErr(null);
+			},
+			(err) => {
+				if (seq !== skillSeq.current) return;
+				setSkillsErr(describe(err));
+			},
+		);
+	};
 
 	const loadDocs = (offset: number, append: boolean, seq = ++listSeq.current) => {
 		if (seq !== listSeq.current) return;
@@ -63,13 +123,9 @@ export function ThreadSourcesSheet({
 	};
 
 	useEffect(() => {
-		let live = true;
-		void listThreadSkills(token, conversationId).then(
-			(r) => live && (setSkills(r.items), setSkillsErr(null)),
-			(err) => live && setSkillsErr(describe(err)),
-		);
+		loadSkills();
 		return () => {
-			live = false;
+			++skillSeq.current;
 		};
 	}, [token, conversationId]);
 
@@ -117,7 +173,12 @@ export function ThreadSourcesSheet({
 							{skills !== null && skills.length > 0 && (
 								<div className="card">
 									{skills.map((s) => (
-										<SkillRow key={s.skill} skill={s} />
+										<SkillRow
+											key={s.skill}
+											skill={s}
+											token={token}
+											onDecided={() => loadSkills()}
+										/>
 									))}
 								</div>
 							)}

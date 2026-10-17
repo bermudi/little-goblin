@@ -248,6 +248,24 @@ export interface OperatorStatusResponse {
 	delegations: { total: number; active: number } | null;
 }
 
+/** POST skills/decide — approve or discard a parked proposal. The same
+ *  mechanical disk decision the Telegram ✅/🚫 row runs. */
+export interface SkillDecideBody {
+	name: string;
+	action: "install" | "discard";
+}
+
+/** POST skills/decide — the applied outcome. */
+export interface SkillDecideResponse {
+	ok: true;
+	skill: string;
+	action: "install" | "discard";
+	/** Install only: a live copy was swapped out under it. */
+	replaced: boolean;
+	/** Live state after the decision. */
+	state: "installed" | "gone";
+}
+
 // State viewer (ruling 2026-10-11): read-only views over $GOBLIN_HOME —
 // skills, attachments, identity files, log tail. The shapes are owned
 // and validated in stateview.ts next to the containment wall they

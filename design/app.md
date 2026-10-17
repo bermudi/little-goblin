@@ -572,9 +572,11 @@ detail/facts/forget affordances as the Memories tab, from components
 shared with it, not duplicated.
 - **Skills from this thread** — `GET /api/skills/from?conversation=`
   (provenance ruling in design/skills.md → Skill provenance),
-  read-only: name, state (installed / proposed / gone), when first
-  written here. Approve/discard stays conversational/Telegram; the
-  sheet never mutates skills.
+  name, state (installed / proposed / gone), when first written here.
+  Proposed rows carry install/discard buttons (ruling 2026-10-17 —
+  the sheet mutates now): they POST the shared `skills/decide` route
+  and refetch; installed/gone rows stay read-only. The same buttons
+  sit on the global Skills view's proposed cards.
 
 App conversations only, by the channel rule: Telegram threads keep
 the global Memories tab — per-thread views of them would be

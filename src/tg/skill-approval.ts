@@ -1,22 +1,20 @@
 // Skill proposal taps — the in-chat ✅/🚫 that mail approval proved
 // (design/skills.md, "It proposes, then tells"). The notice posts one
 // message per proposed skill with an Install/Discard row; taps decide
-// here, mechanically: install is the atomic proposal→skills/ swap
-// (replacing any live copy — the same semantics the conversational
-// approve hands to goblin), discard deletes the staged dir. Disk is the
-// state — no rows, nothing pending a restart; a tap on a gone proposal
-// answers "already handled". Each decision appends a system history
-// event to the learning conversation: the original "proposed skill"
-// event claims it's parked, and the resolution is the durable
-// correction.
+// here through the shared decision machinery (src/skill-decisions.ts —
+// the same disk semantics and resolution-event the operator doors'
+// POST skills/decide runs). This file keeps the Telegram-only parts:
+// callback parse, the message stamp, and the toast answer. A tap on a
+// gone proposal answers "already handled".
 
-import { lstatSync, mkdirSync, renameSync, rmSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import type { Api } from "grammy";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
-import { stagingRoot } from "../reviewer.ts";
+import {
+	appendSkillResolution,
+	decideSkillProposal,
+	skillResolutionText,
+} from "../skill-decisions.ts";
 import { withTimeout } from "./deadline.ts";
 
 export const SKILL_CALLBACK_RE = /^skill:(install|discard):(.+):([^:]+)$/;
@@ -72,87 +70,6 @@ export interface SkillApprovalDeps {
 
 export interface SkillApproval {
 	handleTap(query: SkillApprovalQuery): Promise<void>;
-}
-
-type InstallOutcome = { ok: true; replaced: boolean } | { ok: false; reason: string };
-
-// lstat, never stat: a symlink parked on either path is operator state —
-// never clobbered, never followed (same rule as the reviewer's swaps).
-function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome {
-	const proposed = join(deps.proposedDir, skill);
-	const target = join(deps.skillsDir, skill);
-	let proposedStats;
-	try {
-		proposedStats = lstatSync(proposed);
-	} catch (err) {
-		// Only absence is "gone" — permission or I/O failures are real
-		// filesystem state and must surface, not strip the buttons.
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		return { ok: false, reason: "gone" };
-	}
-	if (proposedStats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
-	let targetStats;
-	try {
-		targetStats = lstatSync(target);
-	} catch (err) {
-		// Live copy not there at all — plain move. Anything but ENOENT
-		// (an unreadable skills dir) is not "not there" — propagate.
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-	}
-	if (targetStats?.isSymbolicLink()) return { ok: false, reason: "live skill is a symlink" };
-	mkdirSync(deps.skillsDir, { recursive: true });
-	if (targetStats === undefined) {
-		renameSync(proposed, target);
-		return { ok: true, replaced: false };
-	}
-	const staging = stagingRoot(deps.workspaceDir);
-	mkdirSync(staging, { recursive: true });
-	const trash = join(
-		staging,
-		`.replaced-approve-${(deps.now?.() ?? new Date()).getTime()}-${skill}`,
-	);
-	rmSync(trash, { recursive: true, force: true });
-	renameSync(target, trash);
-	try {
-		renameSync(proposed, target);
-	} catch (err) {
-		// Rollback must not mask the original failure — a second throw
-		// strands the live copy in staging (cleanupStaging keeps
-		// .replaced-* entries precisely so this is recoverable).
-		try {
-			renameSync(trash, target);
-		} catch (rbErr) {
-			log.error("skill approve rollback failed — live copy stranded in staging", rbErr, {
-				skill,
-				trash,
-				target,
-			});
-		}
-		throw err;
-	}
-	try {
-		rmSync(trash, { recursive: true, force: true });
-	} catch (err) {
-		// The swap succeeded: cleanup is not a decision failure.
-		log.warn("skill approve replaced-copy cleanup failed", err, { skill, trash });
-	}
-	return { ok: true, replaced: true };
-}
-
-function discardProposal(deps: SkillApprovalDeps, skill: string): { ok: boolean; reason?: string } {
-	const proposed = join(deps.proposedDir, skill);
-	let stats;
-	try {
-		stats = lstatSync(proposed);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		return { ok: false, reason: "gone" };
-	}
-	if (stats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
-	// The ruling defines discard as deletion; a proposal is a
-	// regenerable reviewer artifact, never operator-authored work.
-	rmSync(proposed, { recursive: true, force: true });
-	return { ok: true };
 }
 
 export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
@@ -217,72 +134,28 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 				log.debug("skill proposal stamp failed", { skill, error: String(err) });
 			});
 		};
-		const appendHistory = (text: string) => {
-			try {
-				deps.store.append(conversationId, [
-					{ id: randomUUID(), role: "system", parts: [{ type: "text", text }] },
-				]);
-			} catch (err) {
-				// The decision already happened — the stamp and the log carry
-				// it; a history append failure never un-decides a tap.
-				log.warn("skill approval history append failed", err, {
-					conversation: conversationId,
-					skill,
-				});
-			}
-		};
 
-		if (op === "install") {
-			const outcome = installProposal(deps, skill);
-			if (!outcome.ok && outcome.reason === "gone") {
-				log.info("skill proposal tap on gone proposal", { skill, conversation: conversationId });
-				await stamp(
-					`⚠ skill ${skill} not installed — proposal no longer exists (handled elsewhere)`,
-				);
-				return "already handled — the proposal is gone, nothing applied";
-			}
-			if (!outcome.ok) {
-				log.warn("skill proposal install conflict", {
-					skill,
-					conversation: conversationId,
-					reason: outcome.reason,
-				});
-				await stamp(`⚠ skill ${skill} not installed — ${outcome.reason}; approve conversationally`);
-				return;
-			}
-			log.info("skill proposal installed", {
-				skill,
-				conversation: conversationId,
-				replaced: outcome.replaced,
-			});
-			await stamp(
-				outcome.replaced
-					? `✅ skill ${skill} installed — replaced the live copy.`
-					: `✅ skill ${skill} installed.`,
-			);
-			appendHistory(
-				`skill proposal resolved: ${skill} — installed${outcome.replaced ? " (replaced live copy)" : ""}`,
-			);
-			return;
-		}
-		const outcome = discardProposal(deps, skill);
+		const outcome = decideSkillProposal(deps, skill, op, { conversation: conversationId });
 		if (!outcome.ok && outcome.reason === "gone") {
-			log.info("skill proposal tap on gone proposal", { skill, conversation: conversationId });
-			await stamp(`⚠ skill ${skill} not discarded — proposal no longer exists (handled elsewhere)`);
+			await stamp(
+				`⚠ skill ${skill} not ${op === "install" ? "installed" : "discarded"} — proposal no longer exists (handled elsewhere)`,
+			);
 			return "already handled — the proposal is gone, nothing applied";
 		}
 		if (!outcome.ok) {
-			log.warn("skill proposal discard conflict", {
-				skill,
-				conversation: conversationId,
-				reason: outcome.reason,
-			});
-			await stamp(`⚠ skill ${skill} not discarded — ${outcome.reason}; discard conversationally`);
+			await stamp(
+				`⚠ skill ${skill} not ${op === "install" ? "installed" : "discarded"} — ${outcome.reason}; ${op === "install" ? "approve" : "discard"} conversationally`,
+			);
 			return;
 		}
-		log.info("skill proposal discarded", { skill, conversation: conversationId });
-		await stamp(`🚫 skill ${skill} discarded — proposal deleted.`);
-		appendHistory(`skill proposal resolved: ${skill} — discarded (deleted)`);
+		await stamp(
+			outcome.action === "install"
+				? outcome.replaced
+					? `✅ skill ${skill} installed — replaced the live copy.`
+					: `✅ skill ${skill} installed.`
+				: `🚫 skill ${skill} discarded — proposal deleted.`,
+		);
+		appendSkillResolution(deps.store, conversationId, skillResolutionText(outcome, skill));
 	};
 
 	return { handleTap };

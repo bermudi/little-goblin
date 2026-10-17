@@ -50,6 +50,8 @@ import type {
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
 	SecretStoreResponse,
+	SkillDecideBody,
+	SkillDecideResponse,
 	SkillFileResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
@@ -668,6 +670,20 @@ export function getServiceStatus(token: string | null): Promise<OperatorStatusRe
 
 export function listSkills(token: string | null): Promise<SkillsResponse> {
 	return request(token, "/api/app/skills");
+}
+
+/** POST skills/decide — install or discard a proposed skill. The same
+ *  mechanical decision the Telegram ✅/🚫 row runs. */
+export function decideSkill(
+	token: string | null,
+	name: string,
+	action: "install" | "discard",
+): Promise<SkillDecideResponse> {
+	return request(token, "/api/app/skills/decide", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ name, action } satisfies SkillDecideBody),
+	});
 }
 
 export function getSkillFile(

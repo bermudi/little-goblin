@@ -1,9 +1,18 @@
-// State viewer (ruling 2026-10-11): read-only views over prod state —
-// skills (installed + proposed) and workspace files (identity +
-// attachments). Everything here renders what the server already
-// validated; the containment wall lives in src/stateview.ts.
+// State viewer (ruling 2026-10-11): views over prod state — skills
+// (installed + proposed) and workspace files (identity + attachments).
+// Everything here renders what the server already validated; the
+// containment wall lives in src/stateview.ts. Proposed skills are the
+// one mutable row: install/discard ride the same skills/decide
+// mechanics as the Telegram ✅/🚫 row.
 import { useEffect, useRef, useState } from "react";
-import { fetchAttachment, getIdentity, getSkillFile, listAttachments, listSkills } from "./api.ts";
+import {
+	decideSkill,
+	fetchAttachment,
+	getIdentity,
+	getSkillFile,
+	listAttachments,
+	listSkills,
+} from "./api.ts";
 import { bytes, describe, KV, ts, useLoad } from "./opsShared.tsx";
 import type {
 	AttachmentsResponse,
@@ -33,14 +42,18 @@ function SkillCard({
 	skill,
 	origin,
 	token,
+	onDecided,
 }: {
 	skill: OperatorSkillItem;
 	origin: "skills" | "proposed";
 	token: string | null;
+	/** Called after a successful install/discard so the list refetches. */
+	onDecided?: (() => void) | undefined;
 }) {
 	const [file, setFile] = useState<string | null>(null);
 	const [content, setContent] = useState<string | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	const [deciding, setDeciding] = useState(false);
 	// Only the newest request may answer — an out-of-order response for
 	// a previous selection must not overwrite it. The counter also
 	// invalidates on unmount and on identity change (deps below), so a
@@ -73,6 +86,19 @@ function SkillCard({
 		);
 	};
 
+	const decide = (action: "install" | "discard") => {
+		if (deciding) return;
+		setDeciding(true);
+		setErr(null);
+		decideSkill(token, skill.name, action).then(
+			() => onDecided?.(),
+			(e) => {
+				setDeciding(false);
+				setErr(describe(e));
+			},
+		);
+	};
+
 	return (
 		<div className="card">
 			<div className="op-item-head">
@@ -96,6 +122,26 @@ function SkillCard({
 					</button>
 				))}
 			</div>
+			{origin === "proposed" && (
+				<div className="skill-decide">
+					<button
+						type="button"
+						className="pill"
+						disabled={deciding}
+						onClick={() => decide("install")}
+					>
+						install
+					</button>
+					<button
+						type="button"
+						className="pill"
+						disabled={deciding}
+						onClick={() => decide("discard")}
+					>
+						discard
+					</button>
+				</div>
+			)}
 			{err !== null && <p className="error">{err}</p>}
 			{content !== null && (
 				<div className="codeblock skill-source">
@@ -111,11 +157,13 @@ function SkillSection({
 	items,
 	origin,
 	token,
+	onDecided,
 }: {
 	title: string;
 	items: OperatorSkillItem[];
 	origin: "skills" | "proposed";
 	token: string | null;
+	onDecided?: (() => void) | undefined;
 }) {
 	return (
 		<>
@@ -124,21 +172,33 @@ function SkillSection({
 			</h2>
 			{items.length === 0 && <p className="empty">None.</p>}
 			{items.map((s) => (
-				<SkillCard key={`${origin}:${s.name}`} skill={s} origin={origin} token={token} />
+				<SkillCard
+					key={`${origin}:${s.name}`}
+					skill={s}
+					origin={origin}
+					token={token}
+					onDecided={onDecided}
+				/>
 			))}
 		</>
 	);
 }
 
 export function SkillsView({ token }: { token: string | null }) {
-	const { data, err } = useLoad(() => listSkills(token));
+	const { data, err, reload } = useLoad(() => listSkills(token));
 	if (err !== null) return <OpsError err={err} />;
 	if (data === null) return <OpsLoading />;
 	const d: SkillsResponse = data;
 	return (
 		<div className="ops">
 			<SkillSection title="Skills" items={d.skills} origin="skills" token={token} />
-			<SkillSection title="Proposed" items={d.proposed} origin="proposed" token={token} />
+			<SkillSection
+				title="Proposed"
+				items={d.proposed}
+				origin="proposed"
+				token={token}
+				onDecided={reload}
+			/>
 		</div>
 	);
 }

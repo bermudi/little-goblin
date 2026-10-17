@@ -293,6 +293,13 @@ finished-looking chat whose next send steered a ghost turn (#43).
   daily pattern; the server machinery is already in place. Until
   then this stays the deliberate descendant of the "live refresh out
   of scope" ruling in Spin-off.
+- **The composer steers (2026-10-16).** Send never locks mid-turn —
+  it posts beside Stop, and the lane steers or queues the message
+  exactly like Telegram. The client drops its reader first
+  (`stop()` locally, never the `/stop` endpoint), so the new POST's
+  join replay is the only writer and lands on the same assistant
+  message id — a handoff, not a forked transcript. An aborted reader
+  is not a finished reply: it doesn't ring the done bell.
 
 ## Model/thinking scope (ruling 2026-10-06)
 

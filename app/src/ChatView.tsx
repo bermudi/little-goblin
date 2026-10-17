@@ -809,7 +809,22 @@ export function ContextGauge({
 				}
 				onClick={() => setOpen((v) => !v)}
 			>
-				{failed && ctx === null ? "ctx ?" : contextLabel(ctx)}
+				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
+					{barPct > 0 && (
+						<circle
+							className={barPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
+							cx="8"
+							cy="8"
+							r="6.5"
+							strokeDasharray={`${(barPct / 100) * 40.84} 40.84`}
+							transform="rotate(-90 8 8)"
+						/>
+					)}
+				</svg>
+				<span className="ctx-label">
+					{failed && ctx === null ? "ctx ?" : contextLabel(ctx)}
+				</span>
 			</button>
 			{open && ctx !== null && (
 				<div className="note-pick composer-pick ctx-pop" role="status">
@@ -1150,10 +1165,12 @@ export function Composer({
 	}, [pickFile]);
 
 	const send = () => {
-		// The button is disabled while busy; Enter and form submit are
-		// not — gate here so a mid-turn send can't fork a second request
-		// (or a second conversation from the empty state).
-		if (busy || configSaving || sendingRef.current) return;
+		// Enter, form submit, and the button all funnel here. A send
+		// while a turn runs steers it (DESIGN.md → Turn; onSend drops
+		// the stale reader first) — but without a stop path there is no
+		// steer lane, so a lazy create still refuses mid-flight: a second
+		// send must not fork a second conversation.
+		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
@@ -1432,7 +1449,7 @@ export function Composer({
 					</>
 				)}
 				<ContextGauge token={token} conversationId={conversationId} busy={busy} />
-				{busy && onStop !== undefined ? (
+				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
 					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
@@ -1440,29 +1457,29 @@ export function Composer({
 							<rect x="7" y="7" width="10" height="10" rx="2" />
 						</svg>
 					</button>
-				) : (
-					<button
-						type="submit"
-						className="send-btn"
-						aria-label="Send"
-						disabled={
-							busy ||
-							configSaving ||
-							recording ||
-							(draft.trim() === "" &&
-								staged.every((e) => e.failed === true || e.uploading === true) &&
-								stagedNotes.length === 0)
-						}
-					>
-						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-							<path
-								fillRule="evenodd"
-								d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
-								clipRule="evenodd"
-							/>
-						</svg>
-					</button>
 				)}
+				<button
+					type="submit"
+					className="send-btn"
+					aria-label="Send"
+					title={busy && onStop !== undefined ? "Send — steers the running turn" : "Send"}
+					disabled={
+						(busy && onStop === undefined) ||
+						configSaving ||
+						recording ||
+						(draft.trim() === "" &&
+							staged.every((e) => e.failed === true || e.uploading === true) &&
+							stagedNotes.length === 0)
+					}
+				>
+					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+						<path
+							fillRule="evenodd"
+							d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
+							clipRule="evenodd"
+						/>
+					</svg>
+				</button>
 			</div>
 			{sendError !== null && (
 				<p className="error" role="alert">
@@ -1686,8 +1703,10 @@ function Chat({
 		// in-flight reply instead of showing a finished-looking chat whose
 		// next send would steer a ghost turn (#43).
 		resume: true,
-		onFinish: ({ message }) => {
-			notifyDone(title ?? "", messageText(message));
+		onFinish: ({ message, isAbort }) => {
+			// An aborted reader (stop, or the drop before a steer) is not a
+			// finished reply — the bell belongs to the real finish.
+			if (!isAbort) notifyDone(title ?? "", messageText(message));
 			onTurnDone();
 		},
 	});
@@ -1725,6 +1744,16 @@ function Chat({
 	// output only while the operator is already at the tail.
 	const pinned = useRef(true);
 	const busy = status === "submitted" || status === "streaming";
+
+	// A mid-turn send steers or queues (DESIGN.md → Turn — the app chat
+	// POST rides the Telegram lane). Drop this client's reader first:
+	// the new POST's stream replays the wire from sentence one onto the
+	// same assistant message id — a handoff, not a second writer.
+	const submit = (message: Parameters<typeof sendMessage>[0]) => {
+		pinned.current = true;
+		if (busy) void stop();
+		void sendMessage(message);
+	};
 
 	useEffect(() => {
 		const el = scrollRef.current;
@@ -1784,10 +1813,7 @@ function Chat({
 									streaming={status === "streaming" && m.id === lastAssistantId}
 									messages={messages}
 									onOpenNote={onOpenNote}
-									onAction={(text) => {
-										pinned.current = true;
-										void sendMessage({ text });
-									}}
+									onAction={(text) => submit({ text })}
 								/>
 								<ActionBar
 									message={m}
@@ -1819,9 +1845,8 @@ function Chat({
 				setStagedNotes={setStagedNotes}
 				quote={quote}
 				onSend={(parts) => {
-					pinned.current = true;
 					askNotifyPermission();
-					void sendMessage({ parts });
+					submit({ parts });
 				}}
 				onStop={() => {
 					setStopError(null);

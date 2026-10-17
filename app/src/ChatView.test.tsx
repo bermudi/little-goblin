@@ -390,6 +390,150 @@ describe("ChatView reload window (issue #79)", () => {
 	});
 });
 
+// A send while a turn runs steers it (DESIGN.md → Turn; app-channel
+// admits the second POST onto the same lane). The client drops its
+// stream reader first so the new POST's join replay is the only writer
+// — the wire's start chunk carries the same assistant id, so the reply
+// is rebuilt in place, not forked.
+describe("ChatView mid-turn steer", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const userMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+
+	test("send while busy posts the message and the replay lands on the same reply", async () => {
+		const encoder = new TextEncoder();
+		// The first turn's stream stays open: busy until the steer stream
+		// replaces it (the abort is the handoff under test).
+		let live!: ReadableStreamDefaultController<Uint8Array>;
+		const liveStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				live = controller;
+				for (const chunk of [
+					{ type: "start", messageId: "a1" },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "working" },
+				])
+					live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+			},
+		});
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [userMsg("u1", "run the thing")] });
+				if (url.endsWith("/stream")) return new Response(liveStream, { headers: sseHeaders });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					// The steered submit's answer: the same turn's wire,
+					// replayed — the SAME assistant id, not a new message.
+					return new Response(
+						new ReadableStream<Uint8Array>({
+							start(c) {
+								for (const chunk of [
+									{ type: "start", messageId: "a1" },
+									{ type: "text-start", id: "t1" },
+									{ type: "text-delta", id: "t1", delta: "working" },
+									{ type: "text-delta", id: "t1", delta: " — steered" },
+									{ type: "text-end", id: "t1" },
+									{ type: "finish" },
+								])
+									c.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+								c.enqueue(encoder.encode("data: [DONE]\n\n"));
+								c.close();
+							},
+						}),
+						{ headers: sseHeaders },
+					);
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && !dom.container.textContent?.includes("working"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		// Busy: Stop and Send share the composer — Send waits for content.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		const sendBtn = dom.container.querySelector<HTMLButtonElement>(".send-btn");
+		expect(sendBtn).not.toBeNull();
+		expect(sendBtn?.disabled).toBe(true);
+		const ta = dom.container.querySelector("form.composer textarea")!;
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment (the App.test.tsx typeInto ruling).
+			(ta as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(
+				dom.win.HTMLTextAreaElement.prototype,
+				"value",
+			)!.set!.call(ta, "steer it");
+			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		expect(sendBtn?.disabled).toBe(false);
+		await act(async () => {
+			dom.container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new dom.win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.conversationId).toBe("app/chat-01");
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "steer it" }]);
+		// The replay wrote onto the same assistant message — one reply.
+		for (let i = 0; i < 100 && !dom.container.textContent?.includes("steered"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
+		expect(dom.container.textContent).toContain("working — steered");
+	});
+});
+
 // The reconcile merge behind #79's fix — union by id, nothing dropped:
 // store arrivals land, a live local tail survives.
 describe("mergeTranscript", () => {

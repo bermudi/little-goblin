@@ -1482,6 +1482,11 @@ a.hit-title {
 .stop-btn:hover {
 	background: var(--app-gray-600);
 }
+/* Mid-turn the pair shares the corner: stop takes the auto margin,
+   send hugs it — a second auto margin would split the free space. */
+.stop-btn + .send-btn {
+	margin-left: 0.35rem;
+}
 
 /* Model/thinking knobs — flat selects that read as labels until hovered. */
 .knob select {
@@ -1518,6 +1523,8 @@ a.hit-title {
 	position: relative;
 }
 .ctx-btn {
+	display: inline-flex;
+	align-items: center;
 	font-family: var(--font-mono);
 	font-size: 11px;
 	color: var(--app-fg-muted);
@@ -1530,6 +1537,36 @@ a.hit-title {
 .ctx-btn:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
+}
+/* The ring is the narrow-screen face of the gauge — the label's
+   numbers move into the tap popover so the bar stays one row. */
+.ctx-ring {
+	display: none;
+}
+.ctx-ring circle {
+	fill: none;
+	stroke-width: 2;
+}
+.ctx-ring-track {
+	stroke: var(--app-divider);
+}
+.ctx-ring-fill {
+	stroke: var(--app-fg-muted);
+	stroke-linecap: round;
+}
+.ctx-ring-fill.hot {
+	stroke: var(--app-danger);
+}
+@media (max-width: 720px) {
+	.ctx-btn .ctx-label {
+		display: none;
+	}
+	.ctx-btn .ctx-ring {
+		display: block;
+	}
+	.ctx-btn {
+		padding: 0.3rem 0.25rem;
+	}
 }
 .ctx-pop {
 	left: auto;

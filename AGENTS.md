@@ -164,15 +164,6 @@ means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its
 design-doc ruling (delegation.md, mail.md, sandbox.md).
 
-## Comment policy (W6 ruling, 2026-10-08)
-
-Comments carry the **local why**: invariants, non-obvious trade-offs,
-sharp edges. They do not retell the design docs (at most one pointer
-where a coupling is genuinely subtle), carry incident dates (git and
-the hunt docs own history), or narrate what adjacent code obviously
-does. `scripts/comment-audit.ts` reports per-file comment ratio — a
-reported signal, not a gate; run it when you touch a file.
-
 ## Process
 
 `bun run doctor` is read-only diagnosis, not permission to repair or

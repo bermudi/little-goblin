@@ -3,15 +3,15 @@
 import { type Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { log } from "../log.ts";
 import {
 	HindsightClient,
 	HindsightError,
+	type MemoryDocument,
 	memoryDocumentSchema,
 	targetHashSchema,
-	type MemoryDocument,
 } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { screenMemoryText } from "./memory-screen.ts";
+import { screenMemoryText } from "./screen.ts";
 
 // The destination-identity vocabulary lives in hindsight.ts; this local
 // alias keeps the queue's validation reads the same as before.
@@ -510,7 +510,7 @@ function abbrevOperation(id: string): string {
 	return id.slice(0, 8);
 }
 
-// Outcome of one processed item, for the outage tracker (memory-outage.ts)
+// Outcome of one processed item, for the outage tracker (outage.ts)
 // and the blocked-notice latch: transport failures are outage signals;
 // blocked is a permanent per-document verdict with the service
 // reachable and advances nothing — it carries the document + error so

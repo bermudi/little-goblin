@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
-import { memoryConfigSchema, type Config } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
+import { tmpDb } from "../testkit.ts";
+import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
+import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
 import {
 	accessGate,
 	applyCommands,
@@ -8,10 +12,6 @@ import {
 	conversationAddress,
 	SHARED_CHAT_NOTE,
 } from "./mod.ts";
-import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
-import { COMMANDS, DM_COMMANDS, type CommandMemoryDeps } from "./commands.ts";
-import { HindsightClient } from "../hindsight.ts";
-import { tmpDb } from "../testkit.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -344,26 +344,26 @@ describe("applyMenuButton", () => {
 // inside createBot's closures: command-vs-media precedence, the failed
 // attachment sentinel, one-attempt titling, and the sink release.
 
-import type { Message } from "grammy/types";
 import type { UIMessage } from "ai";
-import { openStore, type ConversationStore } from "../conversation.ts";
-import type { Runtime, TurnSink } from "../runtime.ts";
+import type { Message } from "grammy/types";
 import type { AuthStore } from "../auth.ts";
+import { type ConversationStore, openStore } from "../conversation.ts";
+import { log } from "../log.ts";
+import type { Runtime, TurnSink } from "../runtime.ts";
 import { CoalescingBuffer } from "./buffer.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
+import { type InboxPayload, openTelegramInbox } from "./inbox.ts";
 import {
+	type BufferedItem,
 	flushConversation,
 	handleEditedMessage,
 	handleMessage,
 	handleMessageDurably,
-	replayInbox,
 	InboxRecordError,
-	type BufferedItem,
 	type IntakeEnv,
+	replayInbox,
 } from "./mod.ts";
-import { openTelegramInbox, type InboxPayload } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
-import { TelegramTimeoutError } from "./deadline.ts";
-import { log } from "../log.ts";
 
 function tgMsg(p: Record<string, unknown>): Message {
 	return { date: 0, ...p } as unknown as Message;

@@ -14,7 +14,7 @@
 // observed. The next failure starts a fresh episode; a weeks-old row
 // can never make a new outage notify instantly.
 import { type Database } from "bun:sqlite";
-import { log } from "./log.ts";
+import { log } from "../log.ts";
 
 // How long a continuous outage must last before the operator hears about
 // it. Retention is durable — an outage costs queue latency, never data —

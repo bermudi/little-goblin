@@ -1,6 +1,7 @@
 // Composition root — it wires, it never rules (DESIGN.md → Module map).
 
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { generateText } from "ai";
 import pkg from "../package.json";
 import type { MediaPosition } from "./agent/attachments.ts";
@@ -11,7 +12,6 @@ import {
 	inputModalitiesCached,
 } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
-import { join } from "node:path";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { carriesMedia, observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
@@ -47,6 +47,7 @@ import {
 	startDelegationLifecycle,
 } from "./delegation-lifecycle.ts";
 import { openDelegations } from "./delegations.ts";
+import { makeDesktops, openDesktops } from "./desktops.ts";
 import { makeHerdr, makeOperatorHerdr } from "./herdr.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
@@ -55,30 +56,28 @@ import { type MailPoller, type MailSender, makeSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
-import { makePodman } from "./podman.ts";
-import { openPrograms } from "./programs.ts";
-import { openNotes } from "./notes.ts";
-import { openProjects, projectWorkdir } from "./projects.ts";
-import { makeDesktops, openDesktops } from "./desktops.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents, type Subagents } from "./subagents/mod.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
 	type MemoryWorker,
 	startMemoryWorker,
-} from "./memory.ts";
-import { OutageTracker } from "./memory-outage.ts";
-import { wakeConversation } from "./wake.ts";
+} from "./memory/mod.ts";
+import { OutageTracker } from "./memory/outage.ts";
+import { openNotes } from "./notes.ts";
+import { makePodman } from "./podman.ts";
+import { openPrograms } from "./programs.ts";
+import { openProjects, projectWorkdir } from "./projects.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
-import { SkillSources } from "./skill-provenance.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
+import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
+import { openSubagentRuns } from "./subagent-runs.ts";
+import { openSubagents, type Subagents } from "./subagents/mod.ts";
 import { System1Client } from "./system1.ts";
-import { filterGuestTools } from "./tg/guest.ts";
 import { withTimeout } from "./tg/deadline.ts";
+import { filterGuestTools } from "./tg/guest.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
 import {
@@ -88,6 +87,7 @@ import {
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
+import { wakeConversation } from "./wake.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.

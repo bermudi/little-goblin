@@ -10,12 +10,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AuthStore } from "./auth.ts";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import type { AuthStore } from "../auth.ts";
+import { type ConversationStore, openStore } from "../conversation.ts";
+import { type ForgetSource, forgetDocument, type HindsightInstance } from "./forget.ts";
 import { HindsightClient, type MemoryDocument, type MemoryOperation } from "./hindsight.ts";
-import { buildDestinationClient } from "./memory.ts";
-import { forgetDocument, type ForgetSource, type HindsightInstance } from "./memory-forget.ts";
-import { MemoryQueueWorker } from "./memory-queue.ts";
+import { buildDestinationClient } from "./mod.ts";
+import { MemoryQueueWorker } from "./queue.ts";
 
 const documentId = "exchange/dm:1/1/a";
 const doc: MemoryDocument = {

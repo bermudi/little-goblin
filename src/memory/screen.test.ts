@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { screenMemoryText } from "./memory-screen.ts";
-import { setLogFile, setLogLevel, setLogWriter } from "./log.ts";
+import { setLogFile, setLogLevel, setLogWriter } from "../log.ts";
+import { screenMemoryText } from "./screen.ts";
 
 afterEach(() => {
 	setLogFile(null);

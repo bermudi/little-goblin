@@ -1,32 +1,32 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
-import { memoryConfigSchema } from "./config.ts";
-import { summaryMessage } from "./conversation.ts";
+import { attachmentPart } from "../agent/attachments.ts";
+import { memoryConfigSchema } from "../config.ts";
+import { summaryMessage } from "../conversation.ts";
+import { log } from "../log.ts";
+import { HindsightClient } from "./hindsight.ts";
 import {
 	buildMemoryClient,
 	buildRecallQuery,
 	buildRetentionDocument,
-	MemoryRetentionTooLargeError,
 	documentIdFor,
 	formatRecallBlock,
+	MemoryContexts,
+	MemoryRetentionTooLargeError,
+	type MemoryState,
 	memoryBoundEntries,
 	memoryStatus,
 	messageText,
-	MemoryContexts,
+	retentionSourceFrom,
 	startMemoryWorker,
 	withMemoryBlocks,
-	retentionSourceFrom,
-	type MemoryState,
-} from "./memory.ts";
-import { attachmentPart } from "./agent/attachments.ts";
-import { HindsightClient } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { MemoryQueue, type MemoryQueueCounts } from "./memory-queue.ts";
-import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
+} from "./mod.ts";
+import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./outage.ts";
+import { MemoryQueue, type MemoryQueueCounts } from "./queue.ts";
 
 const dirs: string[] = [];
 const dbs: Database[] = [];

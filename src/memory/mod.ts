@@ -1,33 +1,33 @@
 // Long-term memory turn integration (DESIGN.md, Slice 2 rulings).
 // Owns recall-context persistence, suppression, query/retention builders,
 // status, and the bounded worker timer. The Hindsight wire client lives
-// in hindsight.ts; the durable outbox in memory-queue.ts; history stays
+// in hindsight.ts; the durable outbox in queue.ts; history stays
 // pure in conversation.ts.
 
 import { type Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import type { AuthStore } from "./auth.ts";
-import type { MemoryConfig } from "./config.ts";
-import type { Conversation } from "./conversation.ts";
+import type { AuthStore } from "../auth.ts";
+import type { MemoryConfig } from "../config.ts";
+import type { Conversation } from "../conversation.ts";
+import { log } from "../log.ts";
+import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "../tags.ts";
 import {
 	HindsightClient,
 	HindsightError,
-	memoryDocumentSchema,
 	type MemoryDocument,
+	memoryDocumentSchema,
 	type RecalledFact,
 } from "./hindsight.ts";
-import { log } from "./log.ts";
-import { OutageTracker } from "./memory-outage.ts";
-import { screenMemoryText } from "./memory-screen.ts";
-import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "./tags.ts";
+import { OutageTracker } from "./outage.ts";
 import {
-	MemoryQueueWorker,
 	type BlockedRetention,
 	type MemoryQueue,
 	type MemoryQueueCounts,
+	MemoryQueueWorker,
 	type WorkerOutcome,
-} from "./memory-queue.ts";
+} from "./queue.ts";
+import { screenMemoryText } from "./screen.ts";
 
 // ---------- client ----------
 

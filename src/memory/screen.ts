@@ -1,4 +1,4 @@
-import { log } from "./log.ts";
+import { log } from "../log.ts";
 
 const MARKER = "[REDACTED:";
 const patterns: readonly { label: string; pattern: RegExp; prefix?: boolean }[] = [

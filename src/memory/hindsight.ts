@@ -1,13 +1,14 @@
 // Hindsight boundary: HTTP only. No model selection or automatic bank creation.
 // Wire contract: https://hindsight.vectorize.io/openapi.json (0.10).
-import { z } from "zod";
+
 import { createHash } from "node:crypto";
-import { log } from "./log.ts";
-import { screenMemoryText } from "./memory-screen.ts";
-import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./memory-policy.ts";
+import { z } from "zod";
+import { log } from "../log.ts";
+import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
+import { screenMemoryText } from "./screen.ts";
 
 // Bank/document identifier vocabulary — shared with the forget
-// protocol (memory-forget.ts validates operator-supplied ids before
+// protocol (forget.ts validates operator-supplied ids before
 // touching local state) and the mini-app routes.
 export const identifier = z
 	.string()
@@ -17,7 +18,7 @@ export const identifier = z
 // The outbox's destination identity: sha256 over the normalized
 // endpoint+bank pair. One-way on purpose — it names a destination
 // without carrying connection details — which is why destination
-// history (memory-destinations.ts) exists to map it back.
+// history (destinations.ts) exists to map it back.
 export const targetHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	let url: URL;

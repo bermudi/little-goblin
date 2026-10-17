@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	mkdirSync,
@@ -9,22 +10,21 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { Database } from "bun:sqlite";
 import type { LanguageModel } from "ai";
-import { textModel } from "../testkit/fake-model.ts";
 import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
-import { loadConfig, type Config, type ConfigRef } from "../config.ts";
-import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
-import { Runtime } from "../runtime.ts";
+import type { AuthStore } from "../auth.ts";
+import { type Config, type ConfigRef, loadConfig } from "../config.ts";
+import { appAddress, type ConversationStore, openStore } from "../conversation.ts";
+import { setLogFile, setLogLevel } from "../log.ts";
 import { NOTE_BODY_MAX, openNotes } from "../notes.ts";
 import { openProjects, projectWorkdir } from "../projects.ts";
-import type { AuthStore } from "../auth.ts";
-import { startHttp } from "./mod.ts";
-import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
-import { setLogFile, setLogLevel } from "../log.ts";
+import { Runtime } from "../runtime.ts";
 import { SkillSources } from "../skill-provenance.ts";
-import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
+import { textModel } from "../testkit/fake-model.ts";
 import { fakeModel, sleep, useHome, waitUntil } from "../testkit.ts";
+import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
+import { startHttp } from "./mod.ts";
+import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
 // provider edge (the suite's convention). The appApi closure mirrors
@@ -761,9 +761,9 @@ describe("app channel http", () => {
 				compacted: false,
 				reason: "nothing worth compacting",
 			});
-			expect(
-				(await call("/api/app/conversations/ghost/compact", { method: "POST" })).status,
-			).toBe(404);
+			expect((await call("/api/app/conversations/ghost/compact", { method: "POST" })).status).toBe(
+				404,
+			);
 			expect((await call("/api/app/conversations/chat-02/compact")).status).toBe(405);
 		} finally {
 			http.stop();
@@ -1767,8 +1767,8 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 // schema's min(1) on operators is the lockout guard).
 import { memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import { openPrograms } from "../programs.ts";
-import { HindsightClient } from "../hindsight.ts";
 import type { OperatorDeps } from "./operator.ts";
 
 function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {

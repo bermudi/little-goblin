@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OUTAGE_NOTICE_AFTER_MS, OUTAGE_STALE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
+import { OUTAGE_NOTICE_AFTER_MS, OUTAGE_STALE_AFTER_MS, OutageTracker } from "./outage.ts";
 
 const dirs: string[] = [];
 // A tracker over a fresh database with a mutable clock.

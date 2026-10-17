@@ -1,18 +1,18 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
-import { HindsightClient } from "../../hindsight.ts";
-import { MEMORY_DEFAULTS } from "../../memory-policy.ts";
-import type { ProgramsStore } from "../../programs.ts";
-import type { Config } from "../../config.ts";
-import type { AuthStore } from "../../auth.ts";
 import { z } from "zod";
+import type { AuthStore } from "../../auth.ts";
+import type { Config } from "../../config.ts";
+import { HindsightClient } from "../../memory/hindsight.ts";
+import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
+import type { ProgramsStore } from "../../programs.ts";
 import {
-	makeTools,
-	toolNames,
 	type DelegateToolDeps,
 	type HistorySearchDeps,
 	type ImageToolDeps,
 	type MailToolDeps,
+	makeTools,
+	toolNames,
 	type VisionToolDeps,
 } from "./mod.ts";
 

@@ -6,14 +6,14 @@
 // the failed-boundary burst merge) stays pinned e2e in runtime.test.ts.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
 import { attachmentPart } from "../agent/attachments.ts";
 import { summaryMessage } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
-import type { RecallContext } from "../memory.ts";
+import type { RecallContext } from "../memory/mod.ts";
 import {
 	buildModelView,
 	convertSteeredMessage,

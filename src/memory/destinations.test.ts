@@ -7,9 +7,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore } from "./conversation.ts";
+import { openStore } from "../conversation.ts";
 import { HindsightClient, hindsightTarget } from "./hindsight.ts";
-import { buildDestinationClient } from "./memory.ts";
+import { buildDestinationClient } from "./mod.ts";
 
 const dirs: string[] = [];
 const stores: ReturnType<typeof openStore>[] = [];

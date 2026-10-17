@@ -10,14 +10,14 @@ import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
 import { type ConfigRef } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
-import { HindsightClient, HindsightError } from "../hindsight.ts";
-import { memoryStatus, type MemoryContexts, type MemoryWorker } from "../memory.ts";
-import { forgetDocument } from "../memory-forget.ts";
-import type { MemoryQueue } from "../memory-queue.ts";
-import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
+import { forgetDocument } from "../memory/forget.ts";
+import { HindsightClient, HindsightError } from "../memory/hindsight.ts";
+import { type MemoryContexts, type MemoryWorker, memoryStatus } from "../memory/mod.ts";
+import type { MemoryQueue } from "../memory/queue.ts";
+import type { Runtime } from "../runtime.ts";
 import { withTimeout } from "./deadline.ts";
-import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget-listings.ts";
+import { type ForgetItem, ForgetListings, renderNumberedListing } from "./forget-listings.ts";
 
 export interface CommandMemoryDeps {
 	client: HindsightClient;
@@ -365,7 +365,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				// /forget <query>, saw this id, and typed delete. The protocol
 				// itself (quiesce the retention worker, settle in-flight
 				// retention, suppress, park outbox rows, delete, redact) lives in
-				// memory-forget.ts — shared with the mini app's forget button.
+				// memory/forget.ts — shared with the mini app's forget button.
 				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
 				void (async () => {
 					try {

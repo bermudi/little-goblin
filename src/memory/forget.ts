@@ -29,10 +29,10 @@
 // deleteByDocument can run again, and a failed delete leaves every
 // unconfirmed destination's rows parked for the retry.
 
+import { log } from "../log.ts";
 import { HindsightError, identifier, type MemoryOperation } from "./hindsight.ts";
-import { log } from "./log.ts";
-import type { MemoryContexts } from "./memory.ts";
-import type { MemoryQueue } from "./memory-queue.ts";
+import type { MemoryContexts } from "./mod.ts";
+import type { MemoryQueue } from "./queue.ts";
 
 // `not_found` is already mapped to null by HindsightClient.operation.
 const SETTLE_TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -73,7 +73,7 @@ async function settleInflightRetention(
 export interface ForgetSource {
 	client: HindsightInstance;
 	// Reconstruct the client owning a queue target — destination history
-	// (memory-destinations.ts) makes previous banks addressable. Without
+	// (destinations.ts) makes previous banks addressable. Without
 	// it, a foreign-target row refuses the forget (never a foreign poll).
 	clientForTarget?: (target: string) => HindsightInstance | null;
 	contexts: MemoryContexts;

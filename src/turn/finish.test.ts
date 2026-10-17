@@ -10,15 +10,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type LanguageModel, readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
-import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
-import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory.ts";
+import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
+import { scriptedModel, textResult } from "../testkit/fake-model.ts";
+import { waitUntil } from "../testkit.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
 import { endLive, type LiveChunks, openLive, type WireEnd, type WireMember } from "./stream.ts";
-import { waitUntil } from "../testkit.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {

@@ -4,10 +4,10 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { HindsightClient, HindsightError, type RecallMinScores } from "../../hindsight.ts";
-import { renderRecallEvidence } from "../../memory.ts";
 import { log } from "../../log.ts";
-import { BUDGET_ORDER, MEMORY_DEFAULTS } from "../../memory-policy.ts";
+import { HindsightClient, HindsightError, type RecallMinScores } from "../../memory/hindsight.ts";
+import { renderRecallEvidence } from "../../memory/mod.ts";
+import { BUDGET_ORDER, MEMORY_DEFAULTS } from "../../memory/policy.ts";
 
 export interface MemorySearchDeps {
 	client: HindsightClient;

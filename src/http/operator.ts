@@ -18,31 +18,34 @@ import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import {
 	authDefaults,
-	loadConfig,
-	parseConfig,
+	type Config,
 	ConfigValidationError,
 	fetchKinds,
+	loadConfig,
+	parseConfig,
+	paths,
 	providerKinds,
 	searchKinds,
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
 	writeConfig,
-	paths,
-	type Config,
 } from "../config.ts";
+import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
-import { memoryStatus, type MemoryContexts } from "../memory.ts";
-import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory-queue.ts";
+import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
+	type HindsightClient,
 	HindsightError,
 	identifier,
-	type HindsightClient,
 	type MemoryDocPage,
 	type MemoryDocSummary,
 	type MemoryFact,
-} from "../hindsight.ts";
-import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
+} from "../memory/hindsight.ts";
+import { type MemoryContexts, memoryStatus } from "../memory/mod.ts";
+import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
+import type { Program, ProgramsStore } from "../programs.ts";
+import { type SkillSourceRow, skillLiveState } from "../skill-provenance.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
@@ -52,17 +55,14 @@ import {
 	readSkillFile,
 	tailLog,
 } from "../stateview.ts";
-import type { Delegation, DelegationsStore } from "../delegations.ts";
-import type { Program, ProgramsStore } from "../programs.ts";
-import { skillLiveState, type SkillSourceRow } from "../skill-provenance.ts";
 import type {
 	ConfigPostBody,
 	ConfigResponse,
+	MemoriesListResponse,
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
 	MemoryFactItem,
 	MemoryForgetResponse,
-	MemoriesListResponse,
 	MemoryStatusResponse,
 	OperatorDelegationItem,
 	OperatorDelegationsResponse,

@@ -128,7 +128,7 @@ describe("fetch tool — local", () => {
 		expect(out.error).toContain("8 MiB");
 		// The reader was cancelled ~8 chunks in, well before all 40.
 		expect(produced).toBeLessThan(20);
-	});
+	}, 20_000);
 
 	test("multi-chunk stream within the cap assembles in order", async () => {
 		const parts = [

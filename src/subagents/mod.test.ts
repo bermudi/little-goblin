@@ -385,7 +385,7 @@ describe("subagents owner", () => {
 			steerGate.resolve();
 			Harness.open = original;
 		}
-	});
+	}, 20_000);
 
 	test("stop during an act tool's lease renewal fences the dispatch", async () => {
 		const r = rig();

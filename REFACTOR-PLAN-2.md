@@ -150,6 +150,33 @@ call-time getters.
 suite:product back under 1.0. Doc-pointer sweep on cold files via the
 existing `comment-audit.ts` signal.
 
+**Status (landed)**: every extracted unit now carries a colocated
+boundary test on a real run store — `row-access.test.ts` (the shared
+row vocabulary's refuse semantics), `approval-gate.test.ts` (the
+crash-lease CAS: claim→decided→done ordering, declared results are
+always error results, parked rows free their slot once),
+`admission.test.ts` (the admit verdict taxonomy + the durable
+requestId's idempotent resubmit + the bounded retry budget),
+`drain.test.ts` (slot caps over running+inflight, lease/backoff/stop
+eligibility, deferred-drain coalescing), `settle.test.ts` (the
+finalize outcome matrix, stop/newer-input preemption, completeStop's
+abort-confirm ordering, notice wake CAS), `recovery.test.ts`
+(death-proof ordering, bounded attempts, the unconfirmed-cancel
+ownership rule). `config-pins.test.ts` pins the reconcile unit on
+real `loadConfig` fixtures; `openSubagentsGuarded`, `warnIfStranded`,
+and `makeResumeSinks` carry boundary cases in their colocated files.
+The pi-durable `ToolExecutionApi` is the fakeable edge — every one
+of these drives the unit against real stores, never mocked module
+internals.
+
+**Remaining**: `mod.test.ts` (4,018) still holds the owner-level
+integration coverage — the thin owner's wiring is exercised through
+the real harness there, and thinning it means deciding which cases
+are boundary (stay) vs implementation-pinning (move to the unit
+files). suite:product is 1.16; getting under 1.0 needs that
+slimming, not more tests. The doc-pointer sweep landed: the only
+miss was `config writes` → corrected to `DESIGN.md → Config`.
+
 ## Acceptance (structural, not line-gates)
 
 - `openSubagents` returns an assembled object; each subsystem

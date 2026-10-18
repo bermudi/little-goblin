@@ -55,7 +55,7 @@ import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
-import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
@@ -172,21 +172,10 @@ async function boot() {
 		// worker on its next tool result — persisted until carried.
 		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
-	// Removing or emptying the block turns the tool off but never the
-	// containers — the idle sweep only rides sandbox calls, and a boot
-	// sweep would break the "restarts never kill experiments" ruling
-	// (design/sandbox.md). So a disable surfaces the stranded rows and
-	// the manual rm line; the operator decides what the containers are.
-	const warnStrandedSandboxes = () => {
-		const rows = sandboxStore.list();
-		if (rows.length === 0) return;
-		log.warn(
-			`sandbox disabled with ${rows.length} tracked container(s) still standing — ` +
-				`no sweep will fire while the block is absent. Remove them: ` +
-				`podman rm -f ${rows.map((r) => r.container).join(" ")}`,
-			{ containers: rows.map((r) => r.container) },
-		);
-	};
+	// A block absent at boot or removed by a write strands the tracked
+	// containers — warnIfStranded owns the report (design/sandbox.md:
+	// a boot sweep would kill experiments; the operator decides).
+	const warnStrandedSandboxes = () => warnIfStranded(sandboxStore);
 	if (!sandboxConfigured(config)) warnStrandedSandboxes();
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — mail.ts owns the gate; both are live-read getters.

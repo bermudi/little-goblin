@@ -126,6 +126,22 @@ export function openSandboxes(dbPath: string): SandboxStore {
 	};
 }
 
+// Removing or emptying the block turns the tool off but never the
+// containers — the idle sweep only rides sandbox calls, and a boot
+// sweep would break the "restarts never kill experiments" ruling
+// (design/sandbox.md). So a disable surfaces the stranded rows and
+// the manual rm line; the operator decides what the containers are.
+export function warnIfStranded(store: SandboxStore): void {
+	const rows = store.list();
+	if (rows.length === 0) return;
+	log.warn(
+		`sandbox disabled with ${rows.length} tracked container(s) still standing — ` +
+			`no sweep will fire while the block is absent. Remove them: ` +
+			`podman rm -f ${rows.map((r) => r.container).join(" ")}`,
+		{ containers: rows.map((r) => r.container) },
+	);
+}
+
 const DEFAULT_CONFIG = sandboxConfigSchema.parse({});
 
 export const EXPORT_MAX_BYTES = 100 * 1024 * 1024;

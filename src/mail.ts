@@ -9,6 +9,8 @@
 // or bodies.
 
 import type { AuthStore } from "./auth.ts";
+import type { ConfigRef } from "./config.ts";
+import { makeGwsReader } from "./mail-gws.ts";
 import { log } from "./log.ts";
 import { z } from "zod";
 import { fetchOk, ProviderError, readJson, str } from "./agent/tools/web.ts";
@@ -89,6 +91,32 @@ export function makeSender(deps: GmailSenderDeps): MailSender {
 	const inner = new Gmail(deps, deps.sendAuth);
 	return {
 		send: (draft) => inner.send(draft),
+	};
+}
+
+// ---------- boot wiring (index.ts binds, this module rules) ----------
+
+// Split mail authority (DESIGN.md → Mail): gws polling serves the
+// watcher, the send client only approval taps — gws owns its own auth,
+// no OAuth secret here. Both return getters gating on the live mail
+// block per call: a config write mounts or unmounts them next read.
+export function wireMailAuthority(deps: { configRef: ConfigRef; auth: AuthStore }): {
+	poller(): MailPoller | null;
+	sender(): MailSender | null;
+} {
+	const { configRef, auth } = deps;
+	return {
+		poller: () => (configRef.current.mail ? makeGwsReader() : null),
+		sender: () => {
+			const m = configRef.current.mail;
+			if (!m) return null;
+			return makeSender({
+				auth,
+				clientId: m.clientId,
+				clientSecretAuth: m.clientSecretAuth,
+				sendAuth: m.sendAuth,
+			});
+		},
 	};
 }
 

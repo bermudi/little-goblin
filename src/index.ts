@@ -61,8 +61,7 @@ import { makeDesktops, openDesktops } from "./desktops.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
-import { type MailPoller, type MailSender, makeSender } from "./mail.ts";
-import { makeGwsReader } from "./mail-gws.ts";
+import { wireMailAuthority } from "./mail.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import {
@@ -222,22 +221,8 @@ async function boot() {
 	};
 	if (!sandboxConfigured(config)) warnStrandedSandboxes();
 	// Split mail authority: gws polling serves the watcher, the send client
-	// only approval taps — gws owns its own auth, no OAuth secret here.
-	const mailPoller = (): MailPoller | null => {
-		const m = configRef.current.mail;
-		if (!m) return null;
-		return makeGwsReader();
-	};
-	const mailSender = (): MailSender | null => {
-		const m = configRef.current.mail;
-		if (!m) return null;
-		return makeSender({
-			auth,
-			clientId: m.clientId,
-			clientSecretAuth: m.clientSecretAuth,
-			sendAuth: m.sendAuth,
-		});
-	};
+	// only approval taps — mail.ts owns the gate; both are live-read getters.
+	const { poller: mailPoller, sender: mailSender } = wireMailAuthority({ configRef, auth });
 	// Delegation is boot-fixed like memory — the session is systemd's, not
 	// ours. The fixtures (store, herdr adapters, targets) and the per-turn
 	// dep gate live in delegation-lifecycle.ts; late()/launchPinDeps bind

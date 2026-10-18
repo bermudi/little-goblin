@@ -16,6 +16,7 @@ import {
 	isToolUIPart,
 	type ChatTransport,
 	type DynamicToolUIPart,
+	type ReasoningUIPart,
 	type ToolUIPart,
 	type UIMessage,
 } from "ai";
@@ -48,17 +49,46 @@ import type {
 
 // ---------- transcript rendering ----------
 
-// Tool activity collapses into one expandable fold per run — the answer
-// stays readable, the work stays inspectable. The fold opens itself
-// while a call is live (streaming rows show skeletons) and stays open
-// when a call failed; each row is its own fold inside, collapsed to
-// tool name + one-line outcome, expanding to the tool's component. The
-// collapsed summary carries the same one-liners — "search «q» · 5
-// results" — so the outcome is legible without expanding.
-function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
-	const running = parts.some(partRunning);
-	const failures = parts.filter(partFailed).length;
-	const lines = parts.map(partSummaryLine);
+// Tool calls and thoughts collapse into one expandable fold per
+// contiguous run — the answer stays readable, the work stays
+// inspectable, and a turn that alternates call → thought → call no
+// longer shreds into a column of one-line folds. Prose (or a ui part,
+// which renders inline as the interface itself) ends a run. The fold
+// opens itself while a call is live (streaming rows show skeletons)
+// and stays open when a call failed; each tool row is its own fold
+// inside, collapsed to tool name + one-line outcome, expanding to the
+// tool's component. The collapsed summary carries the same one-liners
+// — "search «q» · 5 results" — so the outcome is legible without
+// expanding.
+type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
+// A part that folds into an Activity run: a tool call (ui parts render
+// inline as the interface and never join) or thought text with
+// something in it.
+function isActivityPart(p: UIMessage["parts"][number]): boolean {
+	return (
+		(isToolUIPart(p) && getToolName(p) !== "ui") || (p.type === "reasoning" && p.text.trim() !== "")
+	);
+}
+function Activity({ parts }: { parts: ActivityPart[] }) {
+	const tools = parts.filter((p): p is ToolUIPart | DynamicToolUIPart => isToolUIPart(p));
+	const running = tools.some(partRunning);
+	const failures = tools.filter(partFailed).length;
+	const lines = tools.map(partSummaryLine);
+	// A thought-only run keeps the plain Thought fold — "Worked" over
+	// zero calls would read as a bug.
+	if (tools.length === 0) {
+		const thoughts = parts.filter((p): p is ReasoningUIPart => p.type === "reasoning");
+		return (
+			<details className="reasoning-fold">
+				<summary>Thought</summary>
+				{thoughts.map((p, i) => (
+					<div key={i} className="reasoning">
+						{p.text}
+					</div>
+				))}
+			</details>
+		);
+	}
 	return (
 		<details className="worked" open={running || failures > 0}>
 			<summary>
@@ -66,9 +96,18 @@ function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 				{failures > 0 && <span className="worked-fail">— {failures} failed</span>}
 			</summary>
 			<ul>
-				{parts.map((p, i) => (
-					<ToolRun key={p.toolCallId === "" ? i : p.toolCallId} part={p} />
-				))}
+				{parts.map((p, i) =>
+					isToolUIPart(p) ? (
+						<ToolRun key={p.toolCallId === "" ? i : p.toolCallId} part={p} />
+					) : (
+						<li key={`t${i}`}>
+							<details className="reasoning-fold">
+								<summary>Thought</summary>
+								<div className="reasoning">{p.text}</div>
+							</details>
+						</li>
+					),
+				)}
 			</ul>
 		</details>
 	);
@@ -271,35 +310,54 @@ export function MessageParts({
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i]!;
-		if (isToolUIPart(p)) {
+		if (isToolUIPart(p) && getToolName(p) === "ui") {
 			// ui parts render inline as the interface itself — they never
 			// join a Worked run (design/app.md → Intelligent UI).
-			if (getToolName(p) === "ui") {
-				out.push(
-					<UiPart
-						key={p.toolCallId === "" ? i : p.toolCallId}
-						part={p}
-						onAction={onAction}
-						busy={busy}
-						token={token}
-						noteProjectId={noteProjectId}
-						onOpenNote={onOpenNote}
-						messages={messages}
-						streaming={streaming}
-					/>,
-				);
-				continue;
-			}
-			// Collapse a run of consecutive tool parts into one Worked row.
-			const run: (ToolUIPart | DynamicToolUIPart)[] = [];
+			out.push(
+				<UiPart
+					key={p.toolCallId === "" ? i : p.toolCallId}
+					part={p}
+					onAction={onAction}
+					busy={busy}
+					token={token}
+					noteProjectId={noteProjectId}
+					onOpenNote={onOpenNote}
+					messages={messages}
+					streaming={streaming}
+				/>,
+			);
+			continue;
+		}
+		if (isActivityPart(p)) {
+			// Collapse a run of adjacent tool parts and thoughts into one
+			// Worked row — reasoning between calls stays inside the fold
+			// instead of splitting it.
+			const run: ActivityPart[] = [];
 			let j = i;
 			while (j < parts.length) {
 				const q = parts[j]!;
-				if (!isToolUIPart(q) || getToolName(q) === "ui") break;
-				run.push(q);
+				if (isToolUIPart(q)) {
+					// The ui interface renders inline and ends the run.
+					if (getToolName(q) === "ui") break;
+					run.push(q);
+				} else if (q.type === "reasoning") {
+					// Empty reasoning parts exist in history — providers that
+					// seal chain-of-thought (encrypted, or an unmapped
+					// dialect) still emit the part. They carry nothing and
+					// break nothing.
+					if (q.text.trim() !== "") run.push(q);
+				} else if (q.type === "text") {
+					// Prose ends the run.
+					if (q.text.trim() !== "") break;
+				} else if (q.type === "data-attachment" || q.type === "data-note" || q.type === "file") {
+					// Visible chips end it too.
+					break;
+				}
+				// step-start, sources, and any future plumbing render as
+				// nothing — they never split a run.
 				j++;
 			}
-			out.push(<Worked key={`w${i}`} parts={run} />);
+			out.push(<Activity key={`w${i}`} parts={run} />);
 			i = j - 1;
 			continue;
 		}
@@ -314,16 +372,6 @@ export function MessageParts({
 					streaming={streaming}
 					clipFences={clipFences}
 				/>,
-			);
-		// Empty reasoning parts exist in history — providers that seal
-		// chain-of-thought (encrypted, or an unmapped dialect) still emit the
-		// part. A fold with nothing inside reads as a bug; skip it.
-		else if (p.type === "reasoning" && p.text.trim() !== "")
-			out.push(
-				<details key={i} className="reasoning-fold">
-					<summary>Thought</summary>
-					<div className="reasoning">{p.text}</div>
-				</details>,
 			);
 		else if (p.type === "data-attachment")
 			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);

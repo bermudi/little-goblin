@@ -1076,6 +1076,11 @@ h6.md-h {
 .worked li {
 	padding: 0.05rem 0;
 }
+/* Thoughts inside the fold are rows like the tool runs — no paragraph
+   spacing between them. */
+.worked li .reasoning-fold {
+	margin: 0;
+}
 
 /* One fold per tool run: collapsed shows icon + name + a one-line
    outcome, expanded shows the tool's component. */

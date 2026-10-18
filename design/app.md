@@ -130,9 +130,10 @@ is the tree's only built artifact (React is the price of the SDK's chat
 pieces) — everything else ships as served. `src/http` serves `app/dist`
 under `/app/`, and the Telegram door mounts the same bundle under `/t/`
 (design/telegram.md → Mini Apps); a missing build is a fail-loud 500
-with a log line, never a silent empty page. Tool activity renders as an
-expandable "Worked" row (pattern lifted from openclaw's app — mechanism
-only, zero code adopted).
+with a log line, never a silent empty page. Tool calls and thoughts
+render as one expandable "Worked" row per contiguous run — folded by
+default, opening itself while a call is live (pattern lifted from
+openclaw's app — mechanism only, zero code adopted).
 
 **Packaging ladder.** PWA first, on the tailnet URL through the existing
 `tailscale serve` door — manifest + service worker make it installable

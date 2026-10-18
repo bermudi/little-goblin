@@ -913,6 +913,95 @@ describe("MessageParts note-fence affordance (happy-dom)", () => {
 	});
 });
 
+// Tool calls and thoughts fold into one Worked run per contiguous
+// stretch — a thought between two calls must not shred the transcript
+// into a column of one-line rows.
+describe("MessageParts activity folding (happy-dom)", () => {
+	const dom = mountDom();
+
+	const call = (id: string, command: string): UIMessage["parts"][number] =>
+		({
+			type: "tool-bash",
+			toolCallId: id,
+			state: "output-available",
+			input: { command },
+			output: { exit_code: 0, output: "" },
+		}) as unknown as UIMessage["parts"][number];
+	const thought = (text: string): UIMessage["parts"][number] =>
+		({ type: "reasoning", text }) as UIMessage["parts"][number];
+
+	test("a thought between calls stays inside the one Worked fold", async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<MessageParts parts={[call("b1", "ls"), thought("mulling it over"), call("b2", "pwd")]} />,
+			);
+		});
+		expect(dom.container.querySelectorAll(".worked").length).toBe(1);
+		expect(dom.container.querySelector(".worked .reasoning-fold")).not.toBeNull();
+		expect(dom.container.querySelector(".worked-sum")?.textContent).toContain("bash ls");
+		expect(dom.container.querySelector(".worked-sum")?.textContent).toContain("bash pwd");
+	});
+
+	test("prose closes a run — the next call gets its own fold", async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<MessageParts
+					parts={[call("b1", "ls"), { type: "text", text: "done" }, call("b2", "pwd")]}
+				/>,
+			);
+		});
+		expect(dom.container.querySelectorAll(".worked").length).toBe(2);
+	});
+
+	test("a thought-only stretch keeps the Thought fold", async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<MessageParts parts={[thought("just thinking"), thought("still thinking")]} />,
+			);
+		});
+		expect(dom.container.querySelectorAll(".worked").length).toBe(0);
+		const fold = dom.container.querySelector(".reasoning-fold");
+		expect(fold).not.toBeNull();
+		expect(fold?.textContent).toContain("just thinking");
+		expect(fold?.textContent).toContain("still thinking");
+	});
+
+	test("step-start plumbing never breaks a run", async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<MessageParts
+					parts={[
+						{ type: "step-start" } as UIMessage["parts"][number],
+						call("b1", "ls"),
+						{ type: "step-start" } as UIMessage["parts"][number],
+						thought("between steps"),
+						call("b2", "pwd"),
+					]}
+				/>,
+			);
+		});
+		expect(dom.container.querySelectorAll(".worked").length).toBe(1);
+		expect(dom.container.querySelector(".worked-sum")?.textContent).toContain("bash ls");
+		expect(dom.container.querySelector(".worked-sum")?.textContent).toContain("bash pwd");
+	});
+
+	test("an empty reasoning part breaks neither a run nor the fold", async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<MessageParts parts={[call("b1", "ls"), thought("   "), call("b2", "pwd")]} />,
+			);
+		});
+		expect(dom.container.querySelectorAll(".worked").length).toBe(1);
+		expect(dom.container.querySelector(".worked .reasoning-fold")).toBeNull();
+		expect(dom.container.querySelector(".worked-sum")?.textContent).toContain("bash pwd");
+	});
+});
+
 // Operator-sent fences over 20 lines clip to a preview with a
 // show-all tail — the user branch sets clipFences; model output
 // renders whole. The toggle itself lives in markdown.tsx's CodeBlock.

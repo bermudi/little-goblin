@@ -20,7 +20,7 @@ import {
 } from "./testkit/fake-model.ts";
 import { pauseFakeModelAtDelta, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { makeResumeOps } from "./turn-resume.ts";
+import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
 setLogFile(null);
 
@@ -757,6 +757,66 @@ describe("turn resume", () => {
 		expect(ops.abandon(conv.id, "run-src")).toEqual({ kind: "ok" });
 		expect(journal.get("run-src")!.status).toBe("abandoned");
 		await runtime.shutdown();
+		store.close();
+	});
+});
+
+// makeResumeSinks — the per-lane routing the composition root wires:
+// app lanes take the bell with no delivery hooks and no terminal DM
+// (the bell is already the notice); telegram lanes take the delivery
+// sink, full hooks, and one operator DM per resumed turn.
+describe("makeResumeSinks", () => {
+	function sinks() {
+		const sent: { chat: number; text: string }[] = [];
+		const bellSink = new RecordingSink();
+		const deliverySink = new RecordingSink();
+		const deps = makeResumeSinks({
+			wake: { bell: () => bellSink, delivery: () => deliverySink },
+			operators: () => [7, 9],
+			sendDm: async (chat, text) => {
+				sent.push({ chat, text });
+			},
+		});
+		return { sent, bellSink, deliverySink, deps };
+	}
+
+	test("a telegram lane takes the delivery sink, full hooks, and the DM", async () => {
+		const store = openStore(tmpDb("goblin-rs-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { sent, deliverySink, deps } = sinks();
+		expect(deps.sinkFor(conv)).toBe(deliverySink);
+		expect(deps.sinkHooks(conv)).toEqual({ voice: true, recording: true, file: true });
+		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "completed" });
+		await waitUntil(() => sent.length === 2, "operator DMs");
+		expect(sent.map((s) => s.chat)).toEqual([7, 9]);
+		expect(sent[0]!.text).toContain("resumed turn run-abcd");
+		expect(sent[0]!.text).toContain("completed");
+		store.close();
+	});
+
+	test("an app lane takes the bell, no hooks, and no DM — the bell is the notice", async () => {
+		const store = openStore(tmpDb("goblin-rs-"));
+		const conv = store.resolve({ kind: "app", appId: "chat-01", chatId: 0, threadId: 0 }, "/w");
+		const { sent, bellSink, deps } = sinks();
+		expect(deps.sinkFor(conv)).toBe(bellSink);
+		expect(deps.sinkHooks(conv)).toEqual({ voice: false, recording: false, file: false });
+		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "completed" });
+		await Bun.sleep(20);
+		expect(sent).toHaveLength(0);
+		store.close();
+	});
+
+	test("a failed operator DM degrades to a warn, never a throw", async () => {
+		const store = openStore(tmpDb("goblin-rs-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const deps = makeResumeSinks({
+			wake: { bell: () => new RecordingSink(), delivery: () => new RecordingSink() },
+			operators: () => [7],
+			sendDm: () => Promise.reject(new Error("telegram down")),
+		});
+		// Fire-and-forget by contract — the send's rejection rides its own catch.
+		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "error", message: "boom" });
+		await Bun.sleep(20);
 		store.close();
 	});
 });

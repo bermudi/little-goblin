@@ -29,29 +29,18 @@ import {
 	InMemoryCredentialStore,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import {
-	type ConversationId,
-	type Submission,
-	type SubmissionId,
-	type ToolExecutionApi,
-} from "@earendil-works/pi-durable";
+import { type Submission } from "@earendil-works/pi-durable";
 import type { AuthStore } from "../auth.ts";
 import { exportNamedBytes } from "../box-files.ts";
 import type { SubagentsConfig } from "../config.ts";
-import { DesktopError, DesktopLeaseError, type Desktops, type LeaseHolder } from "../desktops.ts";
+import { DesktopError, DesktopLeaseError, type Desktops } from "../desktops.ts";
 import { log } from "../log.ts";
 import { PodmanError } from "../podman.ts";
 import { SandboxError, type Sandboxes } from "../sandboxes.ts";
-import {
-	COMPUTER_PROMPT,
-	subagentNotice,
-	subagentTaskInput,
-	WORKER_PROMPT,
-} from "../subagent-prompts.ts";
+import { subagentNotice } from "../subagent-prompts.ts";
 import {
 	approvalDecisionInputSchema,
 	crashDecisionNotice,
-	type InputMode,
 	MAX_INPUT_FILES,
 	MAX_MESSAGE_CHARS,
 	MAX_TASK_CHARS,
@@ -64,12 +53,14 @@ import {
 	type SubagentRuns,
 } from "../subagent-runs.ts";
 
+import { makeAdmission } from "./admission.ts";
 import { makeApprovalGate } from "./approval-gate.ts";
 import { makeDrain } from "./drain.ts";
 import { SandboxEnv } from "./env.ts";
 import { SubagentError } from "./errors.ts";
 import { type KindSpec, kindSpec, type SubagentModelProfile } from "./models.ts";
-import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./run-doc.ts";
+import { makeRowAccess } from "./row-access.ts";
+import { RunDoc } from "./run-doc.ts";
 import { buildHarness } from "./tools.ts";
 import { buildTransfer } from "./transfer.ts";
 
@@ -77,11 +68,7 @@ export { SubagentError };
 
 const ctx: Context = BACKGROUND_CONTEXT;
 const SCAN_MS = 30_000;
-const LEASE_RETRY_MS = 5_000;
-// Transient admission failures re-queue the run with exponential
-// backoff off this base; only the attempt bound settles it terminal.
-const ADMIT_MAX_ATTEMPTS = 5;
-const ADMIT_RETRY_BASE_MS = 5_000;
+
 // Recovery (re-attaching a dead monitor) retries once per scan; past
 // this many consecutive failures the run settles failed — no lifecycle
 // path may hold its slot and lease forever.
@@ -164,7 +151,6 @@ export interface Subagents {
 export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	const config = deps.config;
 	const runs = deps.runs;
-	const holderFor = (runId: number): LeaseHolder => ({ kind: "run", id: String(runId) });
 
 	// ---------- providers (recipe: catalog model, per-kind provider,
 	// credential in-process through goblin's auth) ----------
@@ -224,11 +210,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// Consecutive transient admission failures per run — past the bound
 	// the run settles terminal instead of re-queueing again.
 	const admitAttempts = new Map<number, number>();
-	const admitRetryBaseMs = deps.admitRetryMs ?? ADMIT_RETRY_BASE_MS;
 
 	// ---------- queue admission ----------
 
-	// lane and admit are hoisted declarations below; the flag getters
+	// lane is a hoisted declaration below and admission binds after
+	// the harness, so admit rides a lazy arrow; the flag getters
 	// resolve lazily so the drain reads live closing/harnessClosed/
 	// resumed. Constructed early — the approval gate's deps take
 	// scheduleDrain by value.
@@ -237,7 +223,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		desktops: deps.desktops,
 		maxRuns: config.maxRuns,
 		lane,
-		admit,
+		admit: (row) => admission.admit(row),
 		retryAfter,
 		halted: () => closing || harnessClosed,
 		isResumed: () => resumed,
@@ -258,40 +244,22 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 
 	// ---------- the run row behind a Pi conversation ----------
 
-	function rowForConversation(piConversationId: string): SubagentRun | null {
-		// close() joins every lane/monitor before the run store goes
-		// away, so a storage failure here is real corruption — let it
-		// propagate rather than read as "unknown row".
-		return runs.byPiConversation(piConversationId);
-	}
-	function requireRow(api: ToolExecutionApi): SubagentRun {
-		const row = rowForConversation(String(api.conversationId));
-		if (row === null) throw new SubagentError("tool call on an unknown subagent conversation");
-		return row;
-	}
-	function requireLive(row: SubagentRun): void {
-		if (closing || harnessClosed) {
-			throw new SubagentError("the subagent harness is closed — this action cannot run");
-		}
-		if (row.stopRequested) {
-			throw new SubagentError(`run #${row.id} is stopping — this action cannot run`);
-		}
-		if (row.status !== "running") {
-			throw new SubagentError(`run #${row.id} is ${row.status} — not executing`);
-		}
-	}
-	// The terminal write is idempotent: a replayed safe tool re-commits
-	// the same outcome under its input revision; a second terminal call
-	// never replaces the first.
-	async function recordOutcome(api: ToolExecutionApi, outcome: RunOutcomeBody): Promise<void> {
-		await api.commit(async (tx) => {
-			const d = await tx.doc(RunDoc, api.conversationId);
-			if (d.outcome === null) d.outcome = { rev: d.inputRev, ...outcome } as RunOutcome;
-		}, ctx);
-	}
-	// Pi ids are branded numbers; goblin rows persist them as text.
-	const asConv = (id: string) => Number(id) as ConversationId;
-	const asSub = (id: string) => Number(id) as SubmissionId;
+	const access = makeRowAccess({
+		runs,
+		isClosing: () => closing,
+		isHarnessClosed: () => harnessClosed,
+	});
+	const {
+		rowForConversation,
+		requireRow,
+		requireLive,
+		recordOutcome,
+		asConv,
+		asSub,
+		holderFor,
+		persistClaimNote,
+		throwIfHalted,
+	} = access;
 
 	const envs = new Map<string, SandboxEnv>();
 	function envFor(origin: string): SandboxEnv {
@@ -301,18 +269,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			envs.set(origin, env);
 		}
 		return env;
-	}
-
-	// A claim that adopted/restarted/recreated the desktop returns a
-	// lifecycle note — persist it on the run so the next tool result
-	// carries it as a diagnostic. Worker notes arrive through the
-	// sandbox's onLifecycle hook; computer rows aren't worker lease
-	// holders, so this writes the row directly.
-	function persistClaimNote(rowId: number, note: string | undefined): void {
-		if (note === undefined || note === "") return;
-		const cur = runs.get(rowId);
-		if (cur === null || cur.stopRequested || cur.status === "stopped") return;
-		runs.update(rowId, { lifecycleNote: note });
 	}
 
 	// ---------- the crash-approval gate ----------
@@ -775,311 +731,30 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 
 	// ---------- admission ----------
 
-	function throwIfHalted(rowId: number): void {
-		if (closing) throw new SubagentError("owner closing");
-		const row = runs.get(rowId);
-		if (row === null) throw new SubagentError("run row vanished");
-		if (row.stopRequested || row.status === "stopped") throw new SubagentError("stopped");
-	}
-
-	// Admit's verdict distinguishes the non-admissions callers must
-	// answer differently: "halted" means stop/close owns the row,
-	// "blocked" is a lease conflict carrying the reason — a caller that
-	// persisted an intent must roll it back or keep it pending, since
-	// drain only retries queued rows — and "requeued" means a transient
-	// failure deferred THIS admission: the intent stays persisted and
-	// the retry path (drain backoff for a queued row, scan recovery for
-	// a live one) owns it, so callers must not roll back.
-	type AdmitOutcome =
-		| { kind: "admitted" }
-		| { kind: "halted" }
-		| { kind: "blocked"; reason: string }
-		| { kind: "requeued"; reason: string };
-
-	// One admission path for all three input modes: initial (task),
-	// resume (needs_input answer) and steer (live input). Every step
-	// re-checks the persisted row before the next external effect.
-	async function admit(row: SubagentRun, preserveRunning = false): Promise<AdmitOutcome> {
-		const t0 = Date.now();
-		try {
-			if (row.kind === "computer") {
-				if (row.desktop === null) throw new SubagentError("computer run without a desktop");
-				try {
-					const claimed = await deps.desktops.claim(row.desktop, holderFor(row.id));
-					persistClaimNote(row.id, claimed.note);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					if (preserveRunning) {
-						log.warn("subagent steer claim rejected — the live run keeps the desktop", err, {
-							run: row.id,
-							desktop: row.desktop,
-						});
-						return { kind: "blocked", reason: msg };
-					}
-					if (err instanceof DesktopLeaseError) {
-						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
-						return { kind: "blocked", reason: msg };
-					}
-					throw err;
-				}
-			}
-			throwIfHalted(row.id);
-			let piConv = row.piConversationId;
-			if (piConv === null) {
-				const spec = refFor(row.kind);
-				const conv = await harness.createConversation(
-					{
-						ownership: { kind: "ownerless" },
-						agent: {
-							model: { provider: spec.providerId, modelId: spec.modelId },
-							thinkingLevel: spec.thinking,
-							extensions: [row.kind === "worker" ? workerExtension : computerExtension],
-							instructions: row.kind === "worker" ? WORKER_PROMPT : COMPUTER_PROMPT,
-						},
-						init: async (tx, conversationId) => {
-							const d = await tx.doc(RunDoc, conversationId);
-							d.runId = row.id;
-						},
-					},
-					ctx,
-				);
-				piConv = String(conv.id);
-				runs.update(row.id, { piConversationId: piConv });
-			}
-			throwIfHalted(row.id);
-			let fresh = runs.get(row.id)!;
-			if (fresh.inbox.length === 0 && fresh.files.length > 0) {
-				const inbox = await importFiles(fresh);
-				runs.update(row.id, { inbox });
-				fresh = runs.get(row.id)!;
-			}
-			throwIfHalted(row.id);
-			if (fresh.pendingApproval !== null) {
-				// An approval continuation rides the parked tool task — no
-				// new input submits. Capacity and the resource gates above
-				// already passed, so the durable verdict can release the
-				// gate: the row flips running so the gate's requireLive
-				// sees it, then the parked waiter resolves or the verdict
-				// stores for the post-restart re-entry.
-				if (fresh.piConversationId === null) {
-					throw new SubagentError("queued approval run has no Pi conversation — corrupt park");
-				}
-				const d = fresh.pendingApproval.decision;
-				if (d === undefined) {
-					// decide() writes the verdict + audit and queues in one
-					// update — an empty one is a wedged row, not a slot to burn.
-					retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
-					return { kind: "blocked", reason: "no persisted approval decision" };
-				}
-				let sub: Submission | undefined;
-				if (!monitored(row.id)) {
-					sub =
-						fresh.piSubmissionId === null
-							? undefined
-							: await harness.submission(asSub(fresh.piSubmissionId), ctx);
-					if (sub === undefined) {
-						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
-						return {
-							kind: "blocked",
-							reason: "parked call's submission could not be reacquired",
-						};
-					}
-				}
-				throwIfHalted(row.id);
-				const key = gate.approvalKey(fresh.piConversationId, fresh.pendingApproval.piTaskId);
-				runs.update(row.id, { status: "running", pendingApproval: null });
-				const waiter = gate.takeWaiter(key);
-				if (waiter === undefined) {
-					// No invocation is waiting — the gate re-enters on
-					// harness.resume().
-					gate.storeDecision(key, d);
-				}
-				// The parked submission needs a settlement watcher on BOTH
-				// paths. A waiter registered by this process's parked
-				// invocation already has one (its monitor is mid-wait — a
-				// parked tool task cannot settle its submission); but a
-				// restart-registered waiter rode harness recovery, which
-				// attached no monitor — boot skips queued rows — and the
-				// no-waiter path re-enters the gate only after this. The
-				// watcher attaches before the waiter resolves or the
-				// scheduler runs, or the continuation settles unwatched
-				// and leaks its slot forever.
-				if (sub !== undefined) monitor(row.id, fresh.inputRev, sub);
-				if (waiter !== undefined) {
-					waiter(d);
-				} else if (resumed && !harnessClosed) {
-					harness.resume();
-				}
-				log.info("subagent approval decision admitted — the parked call continues", {
-					run: row.id,
-					piTaskId: fresh.pendingApproval.piTaskId,
-					tool: fresh.pendingApproval.tool,
-					kind: d.kind,
-					waiter: waiter !== undefined,
-				});
-				return { kind: "admitted" };
-			}
-			// Persist the input intent + revision BEFORE admit: a crash
-			// between submit and row write re-submits the same requestId
-			// and gets the already-admitted submission back.
-			const mode: InputMode =
-				fresh.inputIntent !== null ? (fresh.inputMode ?? "initial") : "initial";
-			const rev = fresh.inputIntent === null ? fresh.inputRev + 1 : fresh.inputRev;
-			const text = fresh.inputIntent ?? subagentTaskInput(fresh.task, fresh.inbox);
-			runs.update(row.id, {
-				inputRev: rev,
-				inputIntent: text,
-				inputMode: mode,
-				status: "running",
-			});
-			throwIfHalted(row.id);
-			const conv = await harness.conversation(asConv(piConv), ctx);
-			if (conv === undefined) throw new SubagentError("Pi conversation vanished");
-			// The doc is NOT touched here: inputRev means the input a
-			// request actually consumed, which only the transcript
-			// checkpoint can say — requestGuard binds it just before
-			// the provider call. A queued or blocked steer must never
-			// stamp its revision over the in-flight one.
-			throwIfHalted(row.id);
-			const requestId = `subagent:${row.id}:input:${rev}`;
-			const prior = await harness.commit(
-				(tx) => tx.submissionByRequest(asConv(piConv!), requestId),
-				ctx,
-			);
-			const submission =
-				prior !== undefined
-					? ((await harness.submission(prior.id, ctx)) ??
-						(await conv.submit(
-							{
-								type: "input",
-								content: text,
-								requestId,
-								...(mode === "steer" ? { whenBusy: "steer" as const } : {}),
-							},
-							ctx,
-						)))
-					: await conv.submit(
-							{
-								type: "input",
-								content: text,
-								requestId,
-								...(mode === "steer" ? { whenBusy: "steer" as const } : {}),
-							},
-							ctx,
-						);
-			runs.update(row.id, {
-				piSubmissionId: String(submission.id),
-				inputIntent: null,
-				inputMode: null,
-			});
-			log.info("subagent admitted", {
-				run: row.id,
-				kind: row.kind,
-				mode,
-				conversation: row.conversationId,
-				inputRev: rev,
-				ms: Date.now() - t0,
-			});
-			admitAttempts.delete(row.id);
-			retryAfter.delete(row.id);
-			monitor(row.id, rev, submission);
-			return { kind: "admitted" };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			if (msg === "stopped" || msg === "owner closing" || msg === "run row vanished") {
-				return { kind: "halted" };
-			}
-			if (closing || runs.get(row.id)?.stopRequested === true) return { kind: "halted" };
-			// A row that settled while this admission failed must never be
-			// resurrected queued — only a still-unsettled row retries.
-			const cur = runs.get(row.id);
-			if (
-				cur === null ||
-				cur.stopRequested ||
-				(cur.status !== "queued" && cur.status !== "running")
-			) {
-				return { kind: "halted" };
-			}
-			if (preserveRunning || cur.piConversationId !== null) {
-				// A recorded Pi conversation means a submission may have
-				// landed before the error — even a thrown submit can be a
-				// lost ack. The row stays running and owned: the persisted
-				// intent, the revision, the global slot and the retry
-				// budgets are retained, and the scan's bounded recovery
-				// drives the idempotent re-admit — only a confirmed
-				// cancellation there can settle the row terminal.
-				if (cur.status !== "running") {
-					runs.update(row.id, { status: "running" });
-				}
-				admitAttempts.delete(row.id);
-				retryAfter.delete(row.id);
-				recoveryPending.add(row.id);
-				log.warn(
-					"subagent admission failed past a recorded Pi conversation — the row stays owned; scan recovery retries",
-					err,
-					{ run: row.id },
-				);
-				return { kind: "requeued", reason: msg };
-			}
-			// No Pi conversation is recorded, so no submission can have
-			// landed — a queued retry with backoff is safe, and exhausting
-			// the bounded budget may settle terminally without confirming
-			// a cancellation. The drain microtask would fire before the
-			// backoff expires and find nothing eligible — a timer wakes it
-			// when the row is due instead of waiting out a scan interval.
-			const attempts = (admitAttempts.get(row.id) ?? 0) + 1;
-			if (attempts < ADMIT_MAX_ATTEMPTS) {
-				admitAttempts.set(row.id, attempts);
-				const delay = admitRetryBaseMs * 2 ** (attempts - 1);
-				retryAfter.set(row.id, Date.now() + delay);
-				runs.update(row.id, { status: "queued" });
-				log.warn("subagent admission failed — re-queued for retry", err, {
-					run: row.id,
-					attempt: attempts,
-					maxAttempts: ADMIT_MAX_ATTEMPTS,
-					retryInMs: delay,
-				});
-				setTimeout(scheduleDrain, delay).unref?.();
-				scheduleDrain();
-				return { kind: "requeued", reason: msg };
-			}
-			admitAttempts.delete(row.id);
-			retryAfter.delete(row.id);
-			log.error("subagent admission failed terminally", err, { run: row.id, attempts });
-			const failed = runs.update(row.id, {
-				status: "failed",
-				error: `admission failed after ${attempts} attempts: ${msg}`,
-				noticePending: true,
-				finishedAt: Date.now(),
-			});
-			releaseLeases(failed);
-			notify(failed);
-			return { kind: "halted" };
-		}
-	}
-
-	// A re-admit verdict for a live row never demotes it to queued —
-	// its persisted intent and running slot are retained because Pi
-	// work for the row may still be live; the scan's recovery path is
-	// the retry vehicle for both a refused lease and a failed re-admit.
-	// A "requeued" outcome is surfaced so the scan counts the attempt.
-	function readmitOutcome(row: SubagentRun, outcome: AdmitOutcome): void {
-		if (outcome.kind === "requeued") {
-			throw new SubagentError(`re-admission could not land: ${outcome.reason}`);
-		}
-		if (outcome.kind === "blocked") {
-			recoveryAttempts.set(row.id, {
-				count: recoveryAttempts.get(row.id)?.count ?? 0,
-				lastError: outcome.reason,
-			});
-			recoveryPending.add(row.id);
-			log.warn("subagent re-admit blocked by a held lease — the running row keeps its slot", {
-				run: row.id,
-				reason: outcome.reason,
-			});
-		}
-	}
-
+	// monitor/monitored are hoisted declarations above; the harness
+	// bundle resolves per admit — it binds only at buildHarness.
+	const admission = makeAdmission({
+		runs,
+		desktops: deps.desktops,
+		access,
+		harnessBundle: () => ({ harness, workerExtension, computerExtension }),
+		refFor,
+		importFiles,
+		monitor,
+		monitored,
+		gate,
+		releaseLeases,
+		notify,
+		scheduleDrain,
+		recoveryPending,
+		recoveryAttempts,
+		retryAfter,
+		admitAttempts,
+		admitRetryMs: deps.admitRetryMs,
+		isClosing: () => closing,
+		isResumed: () => resumed,
+		isHarnessClosed: () => harnessClosed,
+	});
 	async function recoverRun(boot: SubagentRun): Promise<void> {
 		const rev = await lane(boot.id, async (): Promise<number | undefined> => {
 			const live = (): SubagentRun | null => {
@@ -1121,7 +796,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				// A persisted answer/steer the row never received —
 				// re-admit through the idempotent path, preserving the
 				// running slot: the earlier submission may be live.
-				readmitOutcome(row, await admit(row, true));
+				admission.readmitOutcome(row, await admission.admit(row, true));
 				return undefined;
 			}
 			const doc = await harness.snapshot(RunDoc, asConv(piConv), ctx);
@@ -1145,7 +820,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			// No reacquirable submission — idempotent re-admission
 			// finds the admitted requestId or admits once, without
 			// ever demoting the live row to queued.
-			readmitOutcome(row, await admit(row, true));
+			admission.readmitOutcome(row, await admission.admit(row, true));
 			return undefined;
 		});
 		if (rev !== undefined) await finalize(boot.id, rev);
@@ -1359,7 +1034,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					inputIntent: message,
 					inputMode: "steer",
 				});
-				const outcome = await admit(runs.get(id)!, true);
+				const outcome = await admission.admit(runs.get(id)!, true);
 				if (outcome.kind === "halted") {
 					throw new SubagentError(`run #${id} was stopped mid-send`);
 				}

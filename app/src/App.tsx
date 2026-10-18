@@ -424,7 +424,15 @@ function ConversationRow({
 		.join(" ");
 	return (
 		<div className={rowClass}>
-			<button type="button" className="conv-main" onClick={() => onOpen(conv.id)}>
+			<a
+				className="conv-main"
+				href={`/app/c/${conv.id.slice("app/".length)}`}
+				onClick={(e) => {
+					if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+					e.preventDefault();
+					onOpen(conv.id);
+				}}
+			>
 				<span className="conv-head">
 					{pinned && <PinGlyph />}
 					<span className="conv-title">
@@ -433,7 +441,7 @@ function ConversationRow({
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
-			</button>
+			</a>
 			<span className="conv-actions">
 				{archived ? (
 					<>

@@ -850,6 +850,34 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.history.length).toBe(emptyLength);
 	});
 
+	test("the conversation row is a real link: plain clicks stay in-app, modified clicks fall through", async () => {
+		seedConversation();
+		await mount();
+		const main = container.querySelector(".conv-main");
+		// A declared href is what gives the browser its new-tab, middle-click,
+		// context-menu, and URL-preview affordances; no target, or a plain
+		// click would open a new tab too.
+		expect(main?.tagName).toBe("A");
+		expect(main?.getAttribute("href")).toBe("/app/c/fixture");
+		expect(main?.getAttribute("target")).toBeNull();
+
+		const plain = new win.MouseEvent("click", { bubbles: true, cancelable: true });
+		await act(async () => {
+			main?.dispatchEvent(plain as unknown as Event);
+		});
+		await settle();
+		expect(plain.defaultPrevented).toBe(true);
+		expect(win.location.pathname).toBe("/app/c/fixture");
+
+		// A modifier click must not be intercepted — the browser owns it.
+		const ctrl = new win.MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+		await act(async () => {
+			container.querySelector(".conv-main")?.dispatchEvent(ctrl as unknown as Event);
+		});
+		await settle();
+		expect(ctrl.defaultPrevented).toBe(false);
+	});
+
 	for (const action of ["Archive", "Delete"] as const) {
 		for (const label of [
 			"Settings",

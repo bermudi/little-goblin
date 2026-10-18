@@ -339,11 +339,15 @@ p code,
 .rail .conv.current {
 	background: var(--app-active);
 }
+/* The row hit area is an anchor so the browser owns modifier-click
+   behavior; it must not pick up the link color/underline. */
 .conv-main {
 	flex: 1;
 	min-width: 0;
 	text-align: left;
 	padding: 0.4rem 0.6rem;
+	color: inherit;
+	text-decoration: none;
 }
 /* The hover icons share the preview line, so the text itself fades out
    just before their zone — a mask on the text, not a backdrop on the

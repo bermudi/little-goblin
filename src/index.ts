@@ -2,26 +2,11 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { generateText } from "ai";
 import pkg from "../package.json";
-import type { MediaPosition } from "./agent/attachments.ts";
-import {
-	contextLimit,
-	ensureOpenRouterCatalog,
-	inputModalities,
-	inputModalitiesCached,
-} from "./agent/models-dev.ts";
+import { ensureOpenRouterCatalog } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
-import { systemPromptFor } from "./agent/prompt.ts";
-import {
-	cacheRouteFor,
-	carriesMedia,
-	observedModel,
-	resolveModel,
-	thinkingOptions,
-} from "./agent/providers.ts";
+import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
-import { toolNames } from "./agent/tools/mod.ts";
 import { makeTurnTools as makeTurnToolsFactory } from "./agent/tools/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import { makeTranscriber, probeFfmpeg } from "./agent/transcribe.ts";
@@ -39,8 +24,6 @@ import {
 	loadConfig,
 	missingAuthNames,
 	paths,
-	splitModelRef,
-	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
 import { type BootPins, bootPinnedDiffs } from "./config-pins.ts";
@@ -392,6 +375,15 @@ async function boot() {
 		filterGuests: filterGuestTools,
 	});
 
+	const stepBuilder = makeStepBuilder({
+		configRef,
+		auth,
+		store,
+		projects,
+		notes,
+		observation: cacheObservations,
+	});
+
 	const runtime = new Runtime({
 		store,
 		turnJournal,
@@ -399,76 +391,9 @@ async function boot() {
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
 		},
-		async buildStep(conv, tools) {
-			const cfg = configRef.current;
-			const modelRef = conv.model!;
-			const { provider, modelId } = splitModelRef(modelRef);
-			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
-			const [model, modalities, contextWindow] = await Promise.all([
-				resolveModel(cfg, auth, modelRef),
-				inputModalities(provider, modelId),
-				contextLimit(provider, modelId),
-			]);
-			// The pipe gate is what the provider's SDK converter can deliver — catalog
-			// truth alone once cost a thrown turn (openai-compatible < v3 rejected
-			// allowed file parts).
-			const kind = cfg.providers[provider]?.kind;
-			const carries = (mediaType: string, position: MediaPosition): boolean =>
-				carriesMedia(kind ?? "", mediaType, position);
-			const level = conv.thinking as ThinkingLevel;
-			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			const project = conv.projectId === null ? null : projects.get(conv.projectId);
-			const prompt = systemPromptFor(
-				store,
-				conv,
-				toolNames(tools),
-				project,
-				project === null ? undefined : notes.index(project.id),
-			);
-			log.info("model step", {
-				conversation: conv.id,
-				model: modelRef,
-				thinking: level,
-				prompt: prompt.sources.join("+"),
-			});
-			return {
-				// Observed at the model boundary — tool-loop continuations included.
-				model: observedModel(model, {
-					conversation: conv.id,
-					observation: cacheObservations,
-					route: cacheRouteFor(cfg, modelRef),
-				}),
-				system: prompt.text,
-				label: modelRef,
-				inputModalities: modalities,
-				carries,
-				...(contextWindow !== null ? { contextWindow } : {}),
-				...(providerOptions ? { providerOptions } : {}),
-			};
-		},
-		// Compaction: the conversation's own model, plain generate, no tools (DESIGN.md → Compaction).
-		compaction: {
-			modelRef: (conv) => conv.model!,
-			summarize: async (conv, system, prompt, signal) => {
-				const cfg = configRef.current;
-				const modelRef = conv.model!;
-				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
-					conversation: conv.id,
-					purpose: "compaction",
-					observation: cacheObservations,
-					route: cacheRouteFor(cfg, modelRef),
-				});
-				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
-				const { text } = await generateText({
-					model,
-					instructions: system,
-					prompt,
-					abortSignal: signal,
-					...(providerOptions ? { providerOptions } : {}),
-				});
-				return text;
-			},
-		},
+		// Per-turn model resolution + compaction live in agent/step.ts —
+		// boot binds configRef/auth/stores and the observation sink.
+		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memoryClient && memoryBootConfig
 			? {

@@ -92,8 +92,17 @@ closures move to their owning modules: mail poller/sender → `mail.ts`;
 delegation wiring (`delegateDeps`, targets, herdr) →
 `delegation-lifecycle.ts`; memory wiring + `noteRecall` → `memory/`;
 `transcribeFile`/`visionDepsFor`/`titleFor` → `agent/`. `completeBoot()`
-stays as the late-wire seam. Target: boot reads top-to-bottom as
-`const x = wireX(deps)`, ~250 lines.
+stays as the late-wire seam.
+
+**Target (revised 2026-10-17):** the structural criterion, not a line
+count — **zero business-rule closures; every line is a binding, an
+ordering comment, or a wire call.** The ~250 target was aspiration, not
+derivation: ~20 subsystems cross `boot()` with real ordering constraints,
+so pure assembly has a ~300–450 floor before bundling the spine itself
+becomes boot-in-a-trenchcoat. The composition root either earns the 300-
+line audit bound like `openSubagents` did or carries an explicit
+exemption in `AGENTS.md` — decided when the closures are out and the
+honest floor is visible.
 
 Status 2026-10-17 (in progress — `boot()` 1,114 → 994): landed —
 `transcribeFile`/`visionDepsFor`/`titleFor` → `makeTranscriber` /
@@ -117,7 +126,8 @@ existing `comment-audit.ts` signal.
 
 - `openSubagents` returns an assembled object; each subsystem
   unit-testable without constructing the owner.
-- `boot()` sequences construction only — no policy inside.
+- `boot()` sequences construction only — no business-rule closures; the
+  line target is the structural outcome (~300–450 expected), not 250.
 - Size audit reports zero src/ functions over bound; suite:product <
   1.0.
 - Full suite green every commit; herdr/gws/harness-trust/podman live

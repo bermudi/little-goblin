@@ -21,9 +21,9 @@ import {
 	thinkingOptions,
 } from "./agent/providers.ts";
 import { makeTitleFor } from "./agent/title.ts";
-import { makeTools, toolNames } from "./agent/tools/mod.ts";
+import { toolNames } from "./agent/tools/mod.ts";
+import { makeTurnTools as makeTurnToolsFactory } from "./agent/tools/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
-import { withScript } from "./agent/tools/script.ts";
 import { makeTranscriber, probeFfmpeg } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
@@ -77,7 +77,7 @@ import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
-import { openProjects, projectWorkdir } from "./projects.ts";
+import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
@@ -391,11 +391,6 @@ async function boot() {
 	// (design/projects.md). Submission needs the client; purging does not.
 	const projects = openProjects(store, { memoryQueue: store.memoryQueue });
 
-	// A bound conversation's working directory is its project's dir —
-	// the throw inside is a failed turn at admission, never a silent
-	// fall-back to the workspace (design/projects.md).
-	const workdirFor = (conv: Conversation): string => projectWorkdir(projects, conv);
-
 	// The notes surface (design/projects.md → Notes) — one store for
 	// the tool, the app routes, and the project prompt's index.
 	const notes = openNotes(store, { projects });
@@ -409,165 +404,37 @@ async function boot() {
 	// through it, and the resume contract check (turn-resume.ts)
 	// rebuilds the surface through the same closure so the drift
 	// comparison reads the set the resumed attempt would actually get.
-	const makeTurnTools: RuntimeDeps["makeTools"] = (
-		conv,
-		deliverVoice,
-		recording,
-		deliverFile,
-		accepts,
-	) => {
-		const tts = configRef.current.tts;
-		// Telegram-bound tools don't register on app turns — disjoint
-		// pools (DESIGN.md → App channel); delegate is the exception
-		// since the spin-off.
-		const telegram = channelOf(conv.id) === "telegram";
-		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
-		// relative-path anchor, and delegation's workspaceDir — a
-		// project conversation works in its dir end to end; a vanished
-		// dir throws here and the turn fails at admission.
-		const workdir = workdirFor(conv);
-		const tools = makeTools({
-			cwd: workdir,
-			voice:
-				tts && !configRef.ttsDown && deliverVoice
-					? {
-							// A per-call voice replaces the config voice outright — Edge
-							// derives the language from the voice name; the allowlist
-							// always carries the default. The cast is edge-only:
-							// openrouter voice ids carry no language to match on.
-							synthesize: (text, voice) =>
-								synthesizeSpeech(
-									text,
-									voice !== undefined && tts.kind === "edge" ? { ...tts, voice, voices: [] } : tts,
-									{ auth },
-								),
-							deliver: deliverVoice,
-							...(recording ? { recording } : {}),
-							...(tts.kind === "edge" && tts.voices?.length
-								? { voices: [...new Set([tts.voice, ...tts.voices])] }
-								: {}),
-						}
-					: undefined,
-			// sendPrivate keeps hook URLs out of model context — a DM per
-			// operator, never in history. publicUrl reads live.
-			program: telegram
-				? {
-						programs,
-						chatId: conv.chatId,
-						threadId: conv.threadId,
-						publicUrl: () => configRef.current.publicUrl,
-						sendPrivate: makePrivateSender(
-							// The one send composed outside tg/ — same deadline as
-							// every tg/ sender, or a wedged API stalls the
-							// program turn's tool call forever.
-							(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
-							() => configRef.current.operators,
-						),
-					}
-				: undefined,
-			file: deliverFile ? { deliver: deliverFile } : undefined,
-			memory:
-				memoryClient && memoryBootConfig
-					? {
-							client: memoryClient,
-							maxTokens: memoryBootConfig.searchMaxTokens,
-							budget: memoryBootConfig.searchBudget,
-							timeoutMs: memoryBootConfig.searchTimeoutMs,
-							minScores: memoryBootConfig.searchMinScores,
-							preferObservations: memoryBootConfig.preferObservations,
-							reflection: {
-								maxTokens: memoryBootConfig.reflectMaxTokens,
-								budget: memoryBootConfig.reflectBudget,
-								timeoutMs: memoryBootConfig.reflectTimeoutMs,
-							},
-							isExcluded: () => conv.memoryExcluded,
-							noteRecall,
-						}
-					: undefined,
-			// fetch is local (always on), search behind its config block —
-			// both read configRef live; the accepts ref rides for PDF rendering.
-			web: { configRef, auth, ...(accepts ? { accepts } : {}) },
-			transcribe:
-				configRef.current.transcription !== undefined ? { transcribe: transcribeFile } : undefined,
-			// Boot fixtures under a live gate (see delegateDeps above).
-			delegate: delegateDeps(conv, workdir),
-			// Unconditional — the operator's session isn't config-gated
-			// (guests are filtered below, script's allowlist excludes it).
-			herdr: { herdr: operatorHerdr },
-			// Only the approval gate's request closure — the send credential lives behind the taps.
-			mail:
-				telegram && configRef.current.mail !== undefined
-					? {
-							requestDraft: (input) =>
-								mailApproval.requestDraft(input, {
-									chatId: conv.chatId,
-									threadId: conv.threadId,
-								}),
-						}
-					: undefined,
-			history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
-			// Notes mount for every operator conversation — guests are
-			// excluded by the filter below, never by dep absence.
-			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
-			// Threads are process-global; a model change drops them on the next call.
-			vision: visionDepsFor(conv),
-			// Same live-read gate as vision — the image block mounts
-			// generate_image; Telegram channels deliver each image
-			// inline, other channels save + report paths.
-			image:
-				configRef.current.image !== undefined
-					? {
-							configRef,
-							auth,
-							conversation: conv.id,
-							...(deliverFile ? { deliver: deliverFile } : {}),
-						}
-					: undefined,
-			// Live-read like vision/search: the sandbox block mounts the
-			// tool for any channel (guest personas are filtered out below).
-			sandbox:
-				configRef.current.sandbox !== undefined
-					? {
-							conversation: conv.id,
-							workspace: workdir,
-							sandboxes,
-						}
-					: undefined,
-			// The subagents block is boot-frozen — a live config read
-			// can only hide the tools, never swap models mid-run.
-			subagent:
-				subagents !== null && configRef.current.subagents !== undefined
-					? {
-							conversation: conv.id,
-							workspace: workdir,
-							subagents,
-							workerEnabled:
-								subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
-							computerEnabled: subagentsBoot?.computer !== undefined,
-						}
-					: undefined,
-			desktop:
-				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
-					? { conversation: conv.id, workspace: workdir, desktops }
-					: undefined,
-			// The interface tool mounts on app turns only — Telegram
-			// and guests render plain text (design/app.md → Intelligent UI).
-			ui: channelOf(conv.id) === "app",
-		});
-		// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
-		const filtered = filterGuestTools(conv, tools);
-		// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
-		const scripting = configRef.current.scripting;
-		return scripting
-			? filterGuestTools(
-					conv,
-					withScript(filtered, {
-						conversation: conv.id,
-						maxCalls: scripting.maxCalls ?? 50,
-					}),
-				)
-			: filtered;
-	};
+	// The mount policy (which slots exist per channel/config/boot pin)
+	// lives in turn-tools.ts; boot binds the seams and the late-bound
+	// getters (subagents/mail/desktop bind past Runtime construction).
+	const makeTurnTools = makeTurnToolsFactory({
+		configRef,
+		auth,
+		store,
+		projects,
+		notes,
+		programs,
+		// The one send composed outside tg/ — same deadline as every tg/
+		// sender, or a wedged API stalls the program turn's tool call.
+		sendPrivate: makePrivateSender(
+			(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
+			() => configRef.current.operators,
+		),
+		memory:
+			memoryClient && memoryBootConfig
+				? { client: memoryClient, config: memoryBootConfig, noteRecall }
+				: null,
+		transcribe: transcribeFile,
+		delegateDeps,
+		operatorHerdr,
+		mail: () => mailApproval,
+		visionDepsFor,
+		sandboxes,
+		subagents: () => subagents,
+		desktops: () => desktops,
+		subagentsBoot: () => subagentsBoot,
+		filterGuests: filterGuestTools,
+	});
 
 	const runtime = new Runtime({
 		store,

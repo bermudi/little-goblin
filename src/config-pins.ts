@@ -1,4 +1,4 @@
-// Boot-pinned config keys (DESIGN.md → config writes): these blocks
+// Boot-pinned config keys (DESIGN.md → Config): these blocks
 // bind at boot — adapters, endpoints, auth refs and pool limits are
 // one snapshot — so a mid-run change is a warn + restart, never a
 // hot-apply. One comparison serves the config-write log warns and the

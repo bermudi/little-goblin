@@ -26,7 +26,11 @@ import {
 	paths,
 	type TtsConfig,
 } from "./config.ts";
-import { type BootPins, bootPinnedDiffs } from "./config-pins.ts";
+import {
+	type BootPins,
+	sandboxConfigured,
+	wireConfigWrite,
+} from "./config-pins.ts";
 import {
 	type Conversation,
 	captureConversationSettings,
@@ -95,14 +99,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Declared above boot(): the startup-failure cleanup below budgets a
 // wedged close with the same constant the shutdown drain uses.
 const SHUTDOWN_DRAIN_MS = 10_000;
-
-// Warn-line labels for bootPinnedDiffs keys (config-pins.ts) — the diff
-// returns bare keys; the log line names the block.
-const PIN_LABEL: Record<string, string> = {
-	memory: "memory config",
-	delegation: "delegation config",
-	subagents: "subagents config",
-};
 
 async function boot() {
 	ensureHomeLayout();
@@ -185,7 +181,6 @@ async function boot() {
 	// sweep would break the "restarts never kill experiments" ruling
 	// (design/sandbox.md). So a disable surfaces the stranded rows and
 	// the manual rm line; the operator decides what the containers are.
-	const sandboxConfigured = (c: Config) => typeof c.sandbox === "object";
 	const warnStrandedSandboxes = () => {
 		const rows = sandboxStore.list();
 		if (rows.length === 0) return;
@@ -632,11 +627,6 @@ async function boot() {
 	await tg.replayInbox();
 	tg.startPolling();
 
-	// Search/transcription flips redraw the registered tool set — a cache
-	// boundary (DESIGN.md → Web access) — so each flip gets its own log line.
-	let searchInSet = config.search !== undefined;
-	let transcribeInSet = config.transcription !== undefined;
-	let sandboxInSet = sandboxConfigured(config);
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
@@ -651,43 +641,17 @@ async function boot() {
 		subagents: subagentsBoot,
 	};
 	// One post-write path for every config door: hot-apply what's live,
-	// warn on what's boot-pinned.
-	const onConfigWritten = () => {
-		setLogLevel(configRef.current.logLevel);
-		// publicUrl is operator-editable — keep the menu button in sync without a restart.
-		applyMenuButton(tg.bot.api, configRef.current.publicUrl);
-		const searchNow = configRef.current.search !== undefined;
-		if (searchNow !== searchInSet) {
-			log.info(
-				searchNow
-					? "search tool enabled — joins the set next turn"
-					: "search tool disabled — leaves the set next turn",
-			);
-			searchInSet = searchNow;
-		}
-		const transcribeNow = configRef.current.transcription !== undefined;
-		if (transcribeNow !== transcribeInSet) {
-			log.info(
-				transcribeNow
-					? "transcribe tool enabled — joins the set next turn"
-					: "transcribe tool disabled — leaves the set next turn",
-			);
-			transcribeInSet = transcribeNow;
-		}
-		const sandboxNow = sandboxConfigured(configRef.current);
-		if (sandboxInSet && !sandboxNow) warnStrandedSandboxes();
-		sandboxInSet = sandboxNow;
-		// Memory is a boot-time snapshot (queue rows bind to the endpoint+bank
-		// hash); delegation and subagents are boot-frozen adapters and pool
-		// limits — all warned by the shared pin diff.
-		for (const key of bootPinnedDiffs(bootPins, configRef.current)) {
-			log.warn(`${PIN_LABEL[key] ?? key} changed — restart to apply`);
-		}
-	};
-	// The same boot-pin comparisons onConfigWritten logs — the operator
-	// surface's status card answers with them instead of waiting for the
-	// operator to notice a warn line.
-	const restartHints = (): string[] => bootPinnedDiffs(bootPins, configRef.current);
+	// flip-log what joins/leaves the tool set, warn on what's boot-pinned —
+	// config-pins.ts owns the reconcile.
+	const { onConfigWritten, restartHints } = wireConfigWrite({
+		configRef,
+		boot: config,
+		pins: bootPins,
+		// publicUrl is operator-editable — keep the menu button in sync
+		// without a restart.
+		syncMenuButton: () => applyMenuButton(tg.bot.api, configRef.current.publicUrl),
+		warnStrandedSandboxes,
+	});
 	// The operator surface (settings, memory, programs, delegations,
 	// status) is one bundle mounted at both doors — the mini app's
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).

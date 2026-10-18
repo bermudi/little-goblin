@@ -1,4 +1,6 @@
 # goblin v2
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bermudi/little-goblin)
+
 
 A personal AI assistant that lives in Telegram. One operator, one process,
 running on your own machine. Talk to it in a chat; it answers, runs shell

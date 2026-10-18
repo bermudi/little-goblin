@@ -13,7 +13,7 @@ import { makeTranscriber, probeFfmpeg } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { appendAuthRecord, loadAuth } from "./auth.ts";
+import { loadAuth } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import {
@@ -32,7 +32,6 @@ import {
 	captureConversationSettings,
 	channelOf,
 	openStore,
-	prepareAppSettingsForConfig,
 } from "./conversation.ts";
 import {
 	type DelegationLifecycle,
@@ -43,6 +42,7 @@ import {
 import { makeDesktops, openDesktops } from "./desktops.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
+import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { openOutbox } from "./mail-outbox.ts";
@@ -57,7 +57,6 @@ import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
-import { resolveSkillProposal, type SkillAction } from "./skill-decisions.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
@@ -692,66 +691,20 @@ async function boot() {
 	// The operator surface (settings, memory, programs, delegations,
 	// status) is one bundle mounted at both doors — the mini app's
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).
-	const operatorSeams = {
-		beforeConfigWritten: (previous: Config, next: Config) =>
-			prepareAppSettingsForConfig(store, previous, next),
-		// Same memory surfaces the /memory command reads, bound to the boot-time target.
-		...(memorySurfaces
-			? {
-					memory: {
-						...memorySurfaces,
-						...(memoryBootConfig
-							? {
-									target: {
-										baseUrl: memoryBootConfig.baseUrl,
-										bankId: memoryBootConfig.bankId,
-									},
-								}
-							: {}),
-						counts: () => store.memoryQueue.counts(memorySurfaces.client.target),
-						deletingAll: () => store.memoryQueue.deletingCount(),
-						blockedDetail: () => store.memoryQueue.blockedDetail(memorySurfaces.client.target),
-					},
-				}
-			: {}),
+	// http/operator.ts owns the assembly; boot binds configRef and
+	// onConfigWritten per door.
+	const operatorSeams = makeOperatorSeams({
+		store,
+		memory,
 		programs,
 		delegations,
-		service: { version: pkg.version, startedAt, restartHints },
-		authNames: () => auth.names(),
-		// Settings' "+ key" affordance — the record appends to auth.jsonl
-		// (durable, 0600) then lands in the live store, so a pasted key
-		// resolves without a restart.
-		secrets: {
-			has: (name: string) => auth.has(name),
-			isCommand: (name: string) => auth.isCommand(name),
-			store: (name: string, value: string) => {
-				appendAuthRecord(paths.auth(), name, value);
-				auth.put(name, value);
-			},
-		},
-		skillSources: {
-			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
-			skillsDir: paths.skills(),
-			proposedDir: paths.skillsProposed(),
-		},
-		// The operator doors' ✅/🚫 — same mechanics the Telegram row
-		// runs, plus the resolution event into the learning conversation
-		// (provenance's newest row) when there is one.
-		skillDecisions: {
-			decide: (skill: string, action: SkillAction) =>
-				resolveSkillProposal(
-					{
-						workspaceDir: paths.workspace(),
-						skillsDir: paths.skills(),
-						proposedDir: paths.skillsProposed(),
-						forSkill: (s: string) => skillSources.forSkill(s),
-						store,
-					},
-					skill,
-					action,
-				),
-		},
-	};
+		skillSources,
+		auth,
+		paths,
+		version: pkg.version,
+		startedAt,
+		restartHints,
+	});
 	const http = startHttp({
 		configRef,
 		...operatorSeams,

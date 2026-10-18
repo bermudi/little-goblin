@@ -31,9 +31,11 @@ import {
 	ttsCloudDefaults,
 	writeConfig,
 } from "../config.ts";
+import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
+import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
-import type { SkillAction, SkillDecision } from "../skill-decisions.ts";
+import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
 	type HindsightClient,
@@ -43,10 +45,15 @@ import {
 	type MemoryDocSummary,
 	type MemoryFact,
 } from "../memory/hindsight.ts";
-import { type MemoryContexts, memoryStatus } from "../memory/mod.ts";
+import { type MemoryContexts, memoryStatus, type MemoryWiring } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
-import { type SkillSourceRow, skillLiveState, skillNameSchema } from "../skill-provenance.ts";
+import {
+	type SkillSourceRow,
+	SkillSources,
+	skillLiveState,
+	skillNameSchema,
+} from "../skill-provenance.ts";
 import type { SkillDecideResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,
@@ -164,6 +171,94 @@ export interface OperatorDeps {
 }
 
 export type OperatorActor = { via: "mini-app"; userId: number } | { via: "app" };
+
+// ---------- boot wiring (index.ts binds, this module rules) ----------
+
+// The operator surface is one bundle mounted at both doors — the mini
+// app's /api/* (initData) and the app channel's /api/app/* (bearer/
+// trust). This factory assembles the seam set; index.ts supplies
+// configRef and onConfigWritten per door.
+export interface OperatorSeamsDeps {
+	store: ConversationStore;
+	memory: MemoryWiring;
+	programs: ProgramsStore;
+	delegations: DelegationsStore | null;
+	skillSources: SkillSources;
+	auth: WritableAuthStore;
+	paths: { auth(): string; skills(): string; skillsProposed(): string; workspace(): string };
+	version: string;
+	startedAt: string;
+	restartHints(): string[];
+}
+
+export function makeOperatorSeams(
+	deps: OperatorSeamsDeps,
+): Omit<OperatorDeps, "configRef" | "onConfigWritten"> {
+	const { store, memory, programs, delegations, skillSources, auth, paths } = deps;
+	const surfaces = memory.surfaces;
+	const bootConfig = memory.config;
+	return {
+		beforeConfigWritten: (previous: Config, next: Config) =>
+			prepareAppSettingsForConfig(store, previous, next),
+		// Same memory surfaces the /memory command reads, bound to the
+		// boot-time target.
+		...(surfaces
+			? {
+					memory: {
+						...surfaces,
+						...(bootConfig
+							? {
+									target: {
+										baseUrl: bootConfig.baseUrl,
+										bankId: bootConfig.bankId,
+									},
+								}
+							: {}),
+						counts: () => store.memoryQueue.counts(surfaces.client.target),
+						deletingAll: () => store.memoryQueue.deletingCount(),
+						blockedDetail: () => store.memoryQueue.blockedDetail(surfaces.client.target),
+					},
+				}
+			: {}),
+		programs,
+		delegations,
+		service: { version: deps.version, startedAt: deps.startedAt, restartHints: deps.restartHints },
+		authNames: () => auth.names(),
+		// Settings' "+ key" affordance — the record appends to auth.jsonl
+		// (durable, 0600) then lands in the live store, so a pasted key
+		// resolves without a restart.
+		secrets: {
+			has: (name: string) => auth.has(name),
+			isCommand: (name: string) => auth.isCommand(name),
+			store: (name: string, value: string) => {
+				appendAuthRecord(paths.auth(), name, value);
+				auth.put(name, value);
+			},
+		},
+		skillSources: {
+			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
+			skillsDir: paths.skills(),
+			proposedDir: paths.skillsProposed(),
+		},
+		// The operator doors' ✅/🚫 — same mechanics the Telegram row
+		// runs, plus the resolution event into the learning conversation
+		// (provenance's newest row) when there is one.
+		skillDecisions: {
+			decide: (skill: string, action: SkillAction) =>
+				resolveSkillProposal(
+					{
+						workspaceDir: paths.workspace(),
+						skillsDir: paths.skills(),
+						proposedDir: paths.skillsProposed(),
+						forSkill: (s: string) => skillSources.forSkill(s),
+						store,
+					},
+					skill,
+					action,
+				),
+		},
+	};
+}
 
 // The page posts a full form snapshot. Require the version of the
 // config it loaded, or a second tab/hand edit could be silently

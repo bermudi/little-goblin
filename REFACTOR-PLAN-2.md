@@ -104,17 +104,25 @@ line audit bound like `openSubagents` did or carries an explicit
 exemption in `AGENTS.md` — decided when the closures are out and the
 honest floor is visible.
 
-Status 2026-10-17 (in progress — `boot()` 1,114 → 994): landed —
+Status 2026-10-17 (in progress — `boot()` 1,114 → 820): landed —
 `transcribeFile`/`visionDepsFor`/`titleFor` → `makeTranscriber` /
 `makeVisionDepsFor` / `makeTitleFor` in their `agent/` modules
 (`ad930767`); the five boot-pinned block comparisons →
 `bootPinnedDiffs` in `config-pins.ts`, shared by `onConfigWritten`
 and `restartHints` (`42d8c6be`); reviewer/system1 gate construction,
 threshold merge and live review-model resolution → `wireReviewer` in
-`reviewer.ts` (`9ea1e1f3`). Remaining: `makeTurnTools` (~160, ~18
-deps — the tool-surface mount policy), delegation wiring
-(`delegateDeps` + targets, ~85), mail poller/sender (~35), operator
-surface bundle (~60).
+`reviewer.ts` (`9ea1e1f3`); per-turn tool mount policy (~160 lines,
+the biggest single closure) → `makeTurnTools` in
+`agent/tools/turn-tools.ts` with lazy getters for the four values
+that bind past Runtime construction (`3ffbd3f5`); delegation
+fixtures + per-turn dep gate → `wireDelegation` in
+`delegation-lifecycle.ts` (`7dbb70e2`); mail poller/sender live-read
+getters → `wireMailAuthority` in `mail.ts` (`2ede2a2d`).
+Remaining: `buildStep` model-resolution (~70), operator surface
+bundle (~60), memory surfaces + worker (~50), config-write feature
+flips (~30), shutdown assembly (~50), then the pure-construction
+spine. Pattern established: `wireX`/`makeX` factories in the owning
+module; late-bound values reach them as call-time getters.
 
 ## P4 — ratio and pointers (outcome, rides along)
 

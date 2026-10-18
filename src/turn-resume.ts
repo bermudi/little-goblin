@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import type { ToolSet, UIMessage } from "ai";
 import { z } from "zod";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import { channelOf, type Conversation, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
 	type ResumeSeed,
@@ -28,6 +28,7 @@ import {
 } from "./runtime.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
 import type { LoopTurnState } from "./turn/state.ts";
+import type { WakeDeps } from "./wake.ts";
 import {
 	type CallDecision,
 	recordedOutput,
@@ -97,6 +98,44 @@ export interface ResumeDeps {
 	// One terminal notice per resumed turn — it is headless, nobody is
 	// watching a stream. Fires even when the sink's own onDone throws.
 	notifyDone?(conv: Conversation, sourceRunId: string, done: TurnDone): void;
+}
+
+// Per-lane sink routing for the resume surface: an app lane's resumed
+// turn pings the operators through the bell; a telegram lane's delivers
+// into its own topic and DMs each operator the terminal outcome, since
+// a resumed turn is headless and nobody is watching a stream.
+export interface ResumeSinkDeps {
+	wake: Pick<WakeDeps, "bell" | "delivery">;
+	operators(): number[];
+	sendDm(chatId: number, text: string): Promise<unknown>;
+}
+
+export function makeResumeSinks(
+	deps: ResumeSinkDeps,
+): Pick<ResumeDeps, "sinkFor" | "sinkHooks" | "notifyDone"> {
+	return {
+		sinkFor: (conv) =>
+			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : deps.wake.delivery(conv),
+		sinkHooks: (conv) =>
+			channelOf(conv.id) === "app"
+				? { voice: false, recording: false, file: false }
+				: { voice: true, recording: true, file: true },
+		notifyDone: (conv, sourceRunId, done) => {
+			if (channelOf(conv.id) === "app") return; // the bell is already the notice
+			const text =
+				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
+				(done.kind === "error" ? ` — ${done.message}` : "");
+			for (const chat of deps.operators()) {
+				void deps.sendDm(chat, text).catch((err: unknown) => {
+					log.warn("resumed turn notice failed", {
+						conversation: conv.id,
+						chat,
+						error: String(err),
+					});
+				});
+			}
+		},
+	};
 }
 
 type RunRef = { kind: "found"; run: TurnRun } | { kind: "ambiguous" } | { kind: "missing" };

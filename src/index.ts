@@ -74,7 +74,7 @@ import { openPings } from "./tg/pings.ts";
 import { sendInterruptedTurnNotices } from "./tg/turn-notice.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import { makeResumeOps, type ResumeOps } from "./turn-resume.ts";
+import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
 
 // The file sink attaches before anything that can fail — boot errors
@@ -446,30 +446,14 @@ async function boot() {
 		runtime,
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		makeTools: makeTurnTools,
-		sinkFor: (conv) =>
-			channelOf(conv.id) === "app" ? wakeDeps.bell(conv) : wakeDeps.delivery(conv),
-		sinkHooks: (conv) =>
-			channelOf(conv.id) === "app"
-				? { voice: false, recording: false, file: false }
-				: { voice: true, recording: true, file: true },
-		notifyDone: (conv, sourceRunId, done) => {
-			if (channelOf(conv.id) === "app") return; // the bell is already the notice
-			const text =
-				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
-				(done.kind === "error" ? ` — ${done.message}` : "");
-			for (const chat of configRef.current.operators) {
-				void withTimeout(
-					tg.bot.api.sendMessage(chat, text),
-					"sendMessage (resumed turn notice)",
-				).catch((err: unknown) => {
-					log.warn("resumed turn notice failed", {
-						conversation: conv.id,
-						chat,
-						error: String(err),
-					});
-				});
-			}
-		},
+		// Per-lane sink routing + the operator DM notice live in
+		// turn-resume.ts; boot binds the wake sinks and the send seam.
+		...makeResumeSinks({
+			wake: wakeDeps,
+			operators: () => configRef.current.operators,
+			sendDm: (chat, text) =>
+				withTimeout(tg.bot.api.sendMessage(chat, text), "sendMessage (resumed turn notice)"),
+		}),
 	});
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,

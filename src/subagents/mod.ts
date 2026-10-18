@@ -20,7 +20,7 @@
 
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	type CredentialStore,
 	createModels,
@@ -59,6 +59,7 @@ import { makeDrain } from "./drain.ts";
 import { SandboxEnv } from "./env.ts";
 import { SubagentError } from "./errors.ts";
 import { type KindSpec, kindSpec, type SubagentModelProfile } from "./models.ts";
+import { makeRecovery } from "./recovery.ts";
 import { makeRowAccess } from "./row-access.ts";
 import { RunDoc } from "./run-doc.ts";
 import { buildHarness } from "./tools.ts";
@@ -68,11 +69,6 @@ export { SubagentError };
 
 const ctx: Context = BACKGROUND_CONTEXT;
 const SCAN_MS = 30_000;
-
-// Recovery (re-attaching a dead monitor) retries once per scan; past
-// this many consecutive failures the run settles failed — no lifecycle
-// path may hold its slot and lease forever.
-const RECOVERY_MAX_ATTEMPTS = 10;
 
 // ---------- the crash-approval lease ----------
 
@@ -299,42 +295,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		},
 	});
 
-	// Re-drive input after a transient claim failure aborted a request.
-	// It is goblin-voiced, not operator-voiced: the real input is already
-	// a transcript entry, so the nudge only asks the run to continue.
-	const RECOVERY_NUDGE =
-		"[goblin] The previous model request aborted on transient infrastructure — your input is already in the transcript; continue the task.";
-
-	// The request guard's transient desktop-claim path, owned here so the
-	// hook never reaches into owner state: persist the nudge intent at a
-	// fresh rev and mark the row recovery-pending. Cancellation may hold
-	// the lane while joining the hook — cancel only the waiter, not the
-	// lane operation; it must still serialize behind any provisional
-	// steer.
-	async function recoveryNudge(rowId: number, inputRev: number, context: Context): Promise<void> {
-		await awaitWithContext(
-			lane(rowId, async () => {
-				const cur = runs.get(rowId);
-				if (
-					context.abortSignal?.aborted ||
-					cur === null ||
-					cur.status !== "running" ||
-					cur.stopRequested
-				)
-					return;
-				if (cur.inputIntent === null && cur.inputRev === inputRev) {
-					runs.update(rowId, {
-						inputRev: cur.inputRev + 1,
-						inputIntent: RECOVERY_NUDGE,
-						inputMode: null,
-					});
-				}
-				recoveryPending.add(rowId);
-			}),
-			context,
-		);
-	}
-
 	// ---------- harness and tool assembly ----------
 
 	const { harness, workerExtension, computerExtension } = await buildHarness({
@@ -351,7 +311,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		recordOutcome,
 		envFor,
 		persistClaimNote,
-		recoveryNudge,
+		// recovery binds after the harness — the hook resolves lazily.
+		recoveryNudge: (rowId, inputRev, context) => recovery.nudge(rowId, inputRev, context),
 	});
 	// The Session's real close edge — only this pauses admission for a
 	// dead harness; durable rows still recover on the next boot.
@@ -478,29 +439,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			releaseLeases(stopped);
 			notify(stopped);
 		});
-	}
-
-	// Terminal settling past a recorded Pi conversation is only allowed
-	// once the conversation is proven dead — the failed step may already
-	// have landed a submission that is still executing. A missing
-	// conversation IS the proof; a failed lookup/abort/join is not, so
-	// callers get false and keep the row owned and recovery-pending
-	// rather than releasing a slot Pi may still be burning.
-	async function confirmPiIdle(rowId: number, piConversationId: string): Promise<boolean> {
-		if (harnessClosed) return false;
-		try {
-			const conv = await harness.conversation(asConv(piConversationId), ctx);
-			if (conv === undefined) return true;
-			await conv.abort(ctx, { background: true });
-			await conv.waitForIdle(ctx);
-			return true;
-		} catch (err) {
-			log.warn("Pi cancellation could not be confirmed — the run stays owned", err, {
-				run: rowId,
-				conversation: piConversationId,
-			});
-			return false;
-		}
 	}
 
 	// ---------- settle / monitor ----------
@@ -755,180 +693,28 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		isResumed: () => resumed,
 		isHarnessClosed: () => harnessClosed,
 	});
-	async function recoverRun(boot: SubagentRun): Promise<void> {
-		const rev = await lane(boot.id, async (): Promise<number | undefined> => {
-			const live = (): SubagentRun | null => {
-				if (closing || harnessClosed) return null;
-				const row = runs.get(boot.id);
-				return row !== null && row.status === "running" && !row.stopRequested ? row : null;
-			};
-			let row = live();
-			if (row === null) return undefined;
-			const piConv = row.piConversationId;
-			if (piConv === null) {
-				if (row.inputIntent !== null) {
-					// Admission died before the conversation id landed —
-					// re-admit from the persisted intent.
-					runs.update(row.id, { status: "queued" });
-				} else {
-					runs.update(row.id, {
-						status: "failed",
-						error: "no Pi conversation recorded",
-						noticePending: true,
-						finishedAt: Date.now(),
-					});
-				}
-				return undefined;
-			}
-			const conv = await harness.conversation(asConv(piConv), ctx);
-			row = live();
-			if (row === null) return undefined;
-			if (conv === undefined) {
-				runs.update(row.id, {
-					status: "failed",
-					error: "Pi conversation missing after restart",
-					noticePending: true,
-					finishedAt: Date.now(),
-				});
-				return undefined;
-			}
-			if (row.inputIntent !== null) {
-				// A persisted answer/steer the row never received —
-				// re-admit through the idempotent path, preserving the
-				// running slot: the earlier submission may be live.
-				admission.readmitOutcome(row, await admission.admit(row, true));
-				return undefined;
-			}
-			const doc = await harness.snapshot(RunDoc, asConv(piConv), ctx);
-			row = live();
-			if (row === null) return undefined;
-			const outcome = doc?.outcome ?? null;
-			if (outcome !== null && outcome.rev === row.inputRev) {
-				return row.inputRev;
-			}
-			// A stale outcome belongs to an older input — the
-			// latest submission still owns settlement.
-			if (row.piSubmissionId !== null) {
-				const sub = await harness.submission(asSub(row.piSubmissionId), ctx);
-				row = live();
-				if (row === null) return undefined;
-				if (sub !== undefined) {
-					monitor(row.id, row.inputRev, sub);
-					return undefined;
-				}
-			}
-			// No reacquirable submission — idempotent re-admission
-			// finds the admitted requestId or admits once, without
-			// ever demoting the live row to queued.
-			admission.readmitOutcome(row, await admission.admit(row, true));
-			return undefined;
-		});
-		if (rev !== undefined) await finalize(boot.id, rev);
-	}
 
-	// An approval-parked row's durable half is a still-live tool task:
-	// once scheduling resumes the gate re-enters it and the host
-	// re-parks — but the submission's monitor must already be attached,
-	// or a decided run settles with nobody watching and leaks its slot.
-	// The lane read keeps this honest against a decide() racing boot.
-	async function recoverParked(id: number): Promise<void> {
-		await lane(id, async () => {
-			const row = runs.get(id);
-			if (
-				row === null ||
-				row.stopRequested ||
-				(row.status !== "needs_input" && row.status !== "queued") ||
-				row.pendingApproval === null
-			) {
-				return;
-			}
-			if (row.piSubmissionId === null) {
-				throw new SubagentError("parked run has no Pi submission — corrupt park");
-			}
-			const sub = await harness.submission(asSub(row.piSubmissionId), ctx);
-			if (sub === undefined) {
-				throw new SubagentError("the parked call's Pi submission could not be reacquired");
-			}
-			monitor(row.id, row.inputRev, sub);
-		});
-	}
+	// ---------- recovery ----------
 
-	// The ordinary retry budget is spent — but settling terminal is
-	// only allowed once Pi's side is confirmed dead: a recovered step
-	// may have landed a submission that is still executing. Cancelling
-	// is ownership proof, not permission to release — an unconfirmed
-	// cancel keeps the row running, owned and pending. The whole
-	// confirm-and-fail runs in the per-run lane: a send or finalize
-	// holding it must complete (or see the terminal row) rather than
-	// interleave a new submission between the abort and the update.
-	async function exhaustRecovery(
-		id: number,
-		attempts: number,
-		msg: string,
-		err: unknown,
-	): Promise<void> {
-		const settled = await lane(id, async (): Promise<boolean> => {
-			if (closing || harnessClosed) return false;
-			const live = runs.get(id);
-			const parked =
-				live !== null &&
-				(live.status === "needs_input" || live.status === "queued") &&
-				live.pendingApproval !== null;
-			if (live === null || live.stopRequested || (live.status !== "running" && !parked)) {
-				return true;
-			}
-			if (live.piConversationId !== null && !(await confirmPiIdle(id, live.piConversationId))) {
-				recoveryPending.add(id);
-				log.error(
-					"subagent recovery exhausted but Pi cancellation is unconfirmed — the run stays owned",
-					err,
-					{ run: id, attempts },
-				);
-				return false;
-			}
-			// A close landing during the confirmed cancel keeps the row
-			// owned — the next boot's scan owns the terminal decision,
-			// not a wedged process.
-			if (closing || harnessClosed) {
-				recoveryPending.add(id);
-				return false;
-			}
-			const afterCancel = runs.get(id);
-			const stillParked =
-				afterCancel !== null &&
-				(afterCancel.status === "needs_input" || afterCancel.status === "queued") &&
-				afterCancel.pendingApproval !== null;
-			if (
-				afterCancel === null ||
-				afterCancel.stopRequested ||
-				(afterCancel.status !== "running" && !stillParked)
-			) {
-				// A stop landing during the cancel owns the transition.
-				return true;
-			}
-			log.error("subagent recovery exhausted — settling the run failed", err, {
-				run: id,
-				attempts,
-			});
-			const failed = runs.update(id, {
-				status: "failed",
-				error: `recovery failed after ${attempts} attempts: ${msg}`,
-				noticePending: true,
-				finishedAt: Date.now(),
-				pendingApproval: null,
-			});
-			if (afterCancel.piConversationId !== null)
-				gate.dropForConversation(afterCancel.piConversationId);
-			releaseLeases(failed);
-			notify(failed);
-			return true;
-		}).catch((error: unknown) => {
-			// No monitor remains to retry a failed terminal write.
-			recoveryPending.add(id);
-			throw error;
-		});
-		if (settled) recoveryAttempts.delete(id);
-	}
+	// monitor/finalize are hoisted declarations above; admission is
+	// the unit just constructed — recovery drives its re-admit path.
+	const recovery = makeRecovery({
+		runs,
+		lane,
+		harness,
+		access,
+		admission,
+		monitor,
+		finalize,
+		gate,
+		releaseLeases,
+		notify,
+		scheduleDrain,
+		recoveryPending,
+		recoveryAttempts,
+		isClosing: () => closing,
+		isHarnessClosed: () => harnessClosed,
+	});
 
 	// ---------- the owner ----------
 
@@ -1154,80 +940,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			for (const row of runs.pendingNotices()) {
 				notify(row);
 			}
-			for (const id of [...recoveryPending]) {
-				if (closing || harnessClosed) break;
-				let attempts = 0;
-				let lastError = "";
-				let exhausted = false;
-				try {
-					recoveryPending.delete(id);
-					const row = runs.get(id);
-					// needs_input waits on a verdict; queued carries a
-					// recorded verdict and waits on a slot — both still
-					// own their parked call, so recovery watches them.
-					const parked =
-						row !== null &&
-						(row.status === "needs_input" || row.status === "queued") &&
-						row.pendingApproval !== null;
-					if (row === null || row.stopRequested || (row.status !== "running" && !parked)) {
-						recoveryAttempts.delete(id);
-						continue;
-					}
-					// Every pickup spends one bounded attempt. A recoverRun
-					// that returns is only provisional — it may have merely
-					// attached a replacement monitor or re-parked a blocked
-					// readmit — so the count clears on observed settlement
-					// (a monitor completing, or the row leaving running),
-					// never on the attempt's return alone.
-					const rec = recoveryAttempts.get(id);
-					attempts = (rec?.count ?? 0) + 1;
-					lastError = rec?.lastError ?? "";
-					recoveryAttempts.set(id, { count: attempts, lastError });
-					if (attempts > RECOVERY_MAX_ATTEMPTS) {
-						exhausted = true;
-					} else if (parked) {
-						await recoverParked(id);
-						scheduleDrain();
-						const after = runs.get(id);
-						if (
-							after === null ||
-							after.stopRequested ||
-							(after.status !== "needs_input" && after.status !== "queued") ||
-							after.pendingApproval === null
-						) {
-							recoveryAttempts.delete(id);
-						}
-					} else {
-						await recoverRun(row);
-						const after = runs.get(id);
-						if (after === null || after.status !== "running" || after.stopRequested) {
-							recoveryAttempts.delete(id);
-						}
-					}
-				} catch (err) {
-					// One lost cycle — counted once whether the failure
-					// landed before or after this scan's own increment.
-					if (attempts === 0) {
-						attempts = (recoveryAttempts.get(id)?.count ?? 0) + 1;
-					}
-					const msg = err instanceof Error ? err.message : String(err);
-					recoveryAttempts.set(id, { count: attempts, lastError: msg });
-					if (attempts < RECOVERY_MAX_ATTEMPTS) {
-						recoveryPending.add(id);
-						log.error("subagent recovery retry failed — stays pending", err, {
-							run: id,
-							attempt: attempts,
-							maxAttempts: RECOVERY_MAX_ATTEMPTS,
-						});
-						continue;
-					}
-					await exhaustRecovery(id, attempts, msg, err);
-					continue;
-				}
-				if (exhausted) {
-					await exhaustRecovery(id, attempts, lastError, undefined);
-				}
-			}
+			await recovery.drive();
 			await drain();
 		},
 		async resume() {
@@ -1340,7 +1053,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						// gate under harness.resume() — attach the monitor
 						// first so a decided run's settle is observed.
 						try {
-							await recoverParked(row.id);
+							await recovery.recoverParked(row.id);
 						} catch (err) {
 							log.error(
 								"subagent parked-approval reattach failed — the row stays owned for a scan retry",
@@ -1357,7 +1070,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				}
 				// running
 				try {
-					await recoverRun(row);
+					await recovery.recoverRun(row);
 				} catch (err) {
 					log.error("subagent recovery failed — the row stays owned for a scan retry", err, {
 						run: row.id,

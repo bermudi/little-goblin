@@ -217,6 +217,7 @@ function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: st
 					value={draft}
 					onChange={(e) => setDraft(e.target.value)}
 					placeholder="app token"
+					aria-label="App token"
 					autoFocus
 					autoComplete="off"
 				/>
@@ -1328,6 +1329,7 @@ function AppShell() {
 						type="button"
 						className="nav-toggle"
 						aria-label="Conversations"
+						title="Conversations"
 						onClick={() => setNavOpen((v) => !v)}
 					>
 						<svg

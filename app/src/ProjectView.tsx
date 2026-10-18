@@ -82,7 +82,7 @@ export function NewProjectDialog({
 			>
 				<header className="msheet-head">
 					<h3>New project</h3>
-					<button type="button" aria-label="Close" onClick={dismiss}>
+					<button type="button" aria-label="Close" title="Close" onClick={dismiss}>
 						×
 					</button>
 				</header>
@@ -95,13 +95,19 @@ export function NewProjectDialog({
 				>
 					<label className="frow">
 						<span className="flabel">Name</span>
-						<input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+						<input
+							value={name}
+							aria-label="Name"
+							onChange={(e) => setName(e.target.value)}
+							autoFocus
+						/>
 					</label>
 					<label className="frow">
 						<span className="flabel">Instructions</span>
 						<textarea
 							rows={4}
 							value={instructions}
+							aria-label="Instructions"
 							onChange={(e) => setInstructions(e.target.value)}
 							placeholder="What should goblin know or do in this project?"
 						/>
@@ -135,6 +141,7 @@ export function NewProjectDialog({
 							<input
 								className="mono"
 								value={dir}
+								aria-label="Directory path"
 								onChange={(e) => setDir(e.target.value)}
 								placeholder="/absolute/path or ~/path"
 							/>
@@ -144,6 +151,7 @@ export function NewProjectDialog({
 						<span className="flabel">Memory</span>
 						<select
 							value={memory}
+							aria-label="Memory mode"
 							onChange={(e) => setMemory(e.target.value === "off" ? "off" : "shared")}
 						>
 							<option value="shared">
@@ -485,6 +493,7 @@ export function ProjectView({
 				<textarea
 					rows={5}
 					value={instructions}
+					aria-label="Instructions"
 					onChange={(e) => setInstructions(e.target.value)}
 					placeholder="What should goblin know or do in this project?"
 				/>
@@ -508,6 +517,7 @@ export function ProjectView({
 				<select
 					value={project.memory}
 					disabled={busy}
+					aria-label="Memory mode"
 					onChange={(e) => changeMemory(e.target.value === "off" ? "off" : "shared")}
 				>
 					<option value="shared">

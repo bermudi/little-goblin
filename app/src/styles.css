@@ -69,6 +69,8 @@
 	/* Links and filenames-in-prose only. */
 	--app-accent: #a78bfa;
 	--app-danger: #f87171;
+	--app-success: #4ade80;
+	--app-warning: #facc15;
 
 	/* Diff-count chips — Computer's add/remove hues, mixed off the bg so
 	   light mode keeps contrast (lands near #1e3a24 / #5c2020 in dark). */
@@ -84,7 +86,11 @@
 @media (prefers-color-scheme: light) {
 	:root {
 		--app-bg: #ffffff;
-		--app-fg: #525252;
+		--app-fg: #1f1f23;
+		--app-accent: #6d28d9;
+		--app-danger: #dc2626;
+		--app-success: #15803d;
+		--app-warning: #b45309;
 		color-scheme: light;
 	}
 }
@@ -180,8 +186,16 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
-summary:focus-visible {
-	outline: 2px solid var(--app-fg-subtle);
+select:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+.conv:focus-visible,
+.idx:focus-visible,
+.snav:focus-visible,
+.rail-op:focus-visible,
+.rail-section:focus-visible,
+.rail-archived:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--app-fg) 50%, transparent);
 	outline-offset: 1px;
 	border-radius: 6px;
 }
@@ -2438,11 +2452,11 @@ a.hit-title {
 	font-size: 13px;
 }
 .mem-healthy {
-	color: #4ade80;
+	color: var(--app-success);
 }
 .mem-degraded,
 .mem-pending {
-	color: #facc15;
+	color: var(--app-warning);
 }
 .mem-disabled {
 	color: var(--app-fg-muted);
@@ -2485,7 +2499,7 @@ a.hit-title {
 	letter-spacing: 0.05em;
 }
 .skill-state.skill-installed {
-	color: #4ade80;
+	color: var(--app-success);
 }
 .skill-state.skill-proposed {
 	color: var(--app-accent);
@@ -2610,13 +2624,13 @@ a.hit-title {
 }
 .pill.on,
 .pill.st-running {
-	color: #4ade80;
-	border-color: color-mix(in oklab, #4ade80 40%, transparent);
+	color: var(--app-success);
+	border-color: color-mix(in oklab, var(--app-success) 40%, transparent);
 }
 .pill.st-starting,
 .pill.st-needs_input {
-	color: #facc15;
-	border-color: color-mix(in oklab, #facc15 40%, transparent);
+	color: var(--app-warning);
+	border-color: color-mix(in oklab, var(--app-warning) 40%, transparent);
 }
 .pill.st-failed,
 .pill.st-stopped {
@@ -3040,6 +3054,38 @@ select.ui-input option {
 	.composer {
 		width: calc(100% - 1rem);
 		margin-bottom: 0.5rem;
+	}
+}
+
+@media (pointer: coarse), (max-width: 720px) {
+	.icon-btn,
+	.nav-toggle,
+	.header-action {
+		min-width: 2.25rem;
+		min-height: 2.25rem;
+	}
+	.conv-actions button {
+		min-width: 1.85rem;
+		min-height: 1.85rem;
+	}
+	.rail .new,
+	.rail-op,
+	.rail-archived,
+	.rail-section,
+	.rail .proj {
+		min-height: 2.25rem;
+		display: flex;
+		align-items: center;
+	}
+	.ghost,
+	.addbtn,
+	.savebar-save,
+	.rm,
+	.skill-file {
+		min-height: 2.25rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 	}
 }
 

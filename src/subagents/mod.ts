@@ -427,6 +427,54 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	return owner;
 }
 
+// A poisoned auth record or a resume refusal (e.g. a lowered
+// maxRuns) must not crash-loop the service — poison the feature,
+// never refuse boot (auth.ts). The pool stays constructed but
+// every subagent/desktop tool is gated on the owner, so a failed
+// open unmounts both for the run.
+export async function openSubagentsGuarded(
+	deps: SubagentsDeps,
+	closeBudgetMs: number,
+): Promise<Subagents | null> {
+	let subagents: Subagents | null = null;
+	try {
+		subagents = await openSubagents(deps);
+		// Recovery is explicit and ordered: persisted stops land,
+		// desktop leases re-verify and monitors reattach BEFORE the
+		// harness resumes scheduling — and before any inbound
+		// message can reach the tools.
+		await subagents.resume();
+	} catch (err) {
+		log.error("subagents startup failed — closing the owner before disabling", err);
+		if (subagents !== null) {
+			// close() on a half-open owner can itself throw, or wedge
+			// on a lane/monitor promise that never settles — either
+			// would turn the fail-open catch into the boot failure it
+			// exists to prevent. Same best-effort budget as the
+			// shutdown drain: join it if it lands, disable anyway.
+			const closed = subagents
+				.close()
+				.then(() => true)
+				.catch((closeErr: unknown) => {
+					log.warn("subagents close after failed startup threw — disabling anyway", closeErr);
+					return false;
+				});
+			const joined = await Promise.race([
+				closed,
+				new Promise<false>((r) => setTimeout(() => r(false), closeBudgetMs)),
+			]);
+			if (!joined) {
+				log.warn("subagents close after failed startup wedged — disabling anyway", {
+					budgetMs: closeBudgetMs,
+				});
+			}
+		}
+		subagents = null;
+		log.error("subagents disabled — owner failed to open; fix the block and restart", err);
+	}
+	return subagents;
+}
+
 // ---------- owner methods ----------
 
 // The Subagents interface bodies — module functions over the

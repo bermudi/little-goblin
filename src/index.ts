@@ -26,11 +26,7 @@ import {
 	paths,
 	type TtsConfig,
 } from "./config.ts";
-import {
-	type BootPins,
-	sandboxConfigured,
-	wireConfigWrite,
-} from "./config-pins.ts";
+import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import {
 	type Conversation,
 	captureConversationSettings,
@@ -64,7 +60,7 @@ import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./sch
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents, type Subagents } from "./subagents/mod.ts";
+import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 
 import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
@@ -561,15 +557,14 @@ async function boot() {
 					config: () => subagentsBoot?.desktops,
 				})
 			: null;
-	// A poisoned auth record or a resume refusal (e.g. a lowered
-	// maxRuns) must not crash-loop the service — poison the feature,
-	// never refuse boot (auth.ts). The pool stays constructed but
-	// every subagent/desktop tool is gated on the owner, so a failed
-	// open unmounts both for the run.
+	// The owner open is fail-open — a poisoned auth record or a resume
+	// refusal disables the feature rather than crash-looping the
+	// service (openSubagentsGuarded owns that policy; the close join
+	// rides the same budget as the shutdown drain).
 	let subagents: Subagents | null = null;
 	if (subagentsBoot !== undefined && desktops !== null) {
-		try {
-			subagents = await openSubagents({
+		subagents = await openSubagentsGuarded(
+			{
 				config: subagentsBoot,
 				runs: subagentRuns,
 				auth,
@@ -578,37 +573,9 @@ async function boot() {
 				storagePath: join(paths.state(), "subagents.sqlite"),
 				transferRoot: join(paths.state(), "subagent-transfer"),
 				wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
-			});
-			// Recovery is explicit and ordered: persisted stops land,
-			// desktop leases re-verify and monitors reattach BEFORE the
-			// harness resumes scheduling — and before any inbound
-			// message can reach the tools.
-			await subagents.resume();
-		} catch (err) {
-			log.error("subagents startup failed — closing the owner before disabling", err);
-			if (subagents !== null) {
-				// close() on a half-open owner can itself throw, or wedge
-				// on a lane/monitor promise that never settles — either
-				// would turn the fail-open catch into the boot failure it
-				// exists to prevent. Same best-effort budget as the
-				// shutdown drain: join it if it lands, disable anyway.
-				const closed = subagents
-					.close()
-					.then(() => true)
-					.catch((closeErr: unknown) => {
-						log.warn("subagents close after failed startup threw — disabling anyway", closeErr);
-						return false;
-					});
-				const joined = await Promise.race([closed, sleep(SHUTDOWN_DRAIN_MS).then(() => false)]);
-				if (!joined) {
-					log.warn("subagents close after failed startup wedged — disabling anyway", {
-						budgetMs: SHUTDOWN_DRAIN_MS,
-					});
-				}
-			}
-			subagents = null;
-			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
-		}
+			},
+			SHUTDOWN_DRAIN_MS,
+		);
 	}
 
 	// The crash journal's boot notice (design/runtime-turn.md → The turn

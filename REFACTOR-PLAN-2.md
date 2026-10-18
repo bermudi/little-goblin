@@ -95,6 +95,18 @@ delegation wiring (`delegateDeps`, targets, herdr) →
 stays as the late-wire seam. Target: boot reads top-to-bottom as
 `const x = wireX(deps)`, ~250 lines.
 
+Status 2026-10-17 (in progress — `boot()` 1,114 → 994): landed —
+`transcribeFile`/`visionDepsFor`/`titleFor` → `makeTranscriber` /
+`makeVisionDepsFor` / `makeTitleFor` in their `agent/` modules
+(`ad930767`); the five boot-pinned block comparisons →
+`bootPinnedDiffs` in `config-pins.ts`, shared by `onConfigWritten`
+and `restartHints` (`42d8c6be`); reviewer/system1 gate construction,
+threshold merge and live review-model resolution → `wireReviewer` in
+`reviewer.ts` (`9ea1e1f3`). Remaining: `makeTurnTools` (~160, ~18
+deps — the tool-surface mount policy), delegation wiring
+(`delegateDeps` + targets, ~85), mail poller/sender (~35), operator
+surface bundle (~60).
+
 ## P4 — ratio and pointers (outcome, rides along)
 
 `mod.test.ts` 3,939 → ~1,500 as units earn colocated tests;

@@ -11,27 +11,27 @@
 // surface through the same function so the drift comparison reads the
 // set the resumed attempt would actually get.
 
-import type { RuntimeDeps } from "../../runtime.ts";
-import type { Config, ConfigRef } from "../../config.ts";
-import { channelOf, type Conversation, type ConversationStore } from "../../conversation.ts";
-import type { AuthStore } from "../../auth.ts";
-import type { NoteStore } from "../../notes.ts";
-import { projectWorkdir, type ProjectStore } from "../../projects.ts";
-import type { ProgramsStore } from "../../programs.ts";
-import type { Sandboxes } from "../../sandboxes.ts";
-import type { Desktops } from "../../desktops.ts";
-import type { Subagents } from "../../subagents/mod.ts";
-import type { MailApproval } from "../../tg/mail-approval.ts";
-import { synthesizeSpeech } from "../tts.ts";
-import type { HindsightClient } from "../../memory/hindsight.ts";
+import type { RuntimeDeps } from "../runtime.ts";
+import type { Config, ConfigRef } from "../config.ts";
+import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { AuthStore } from "../auth.ts";
+import type { NoteStore } from "../notes.ts";
+import { projectWorkdir, type ProjectStore } from "../projects.ts";
+import type { ProgramsStore } from "../programs.ts";
+import type { Sandboxes } from "../sandboxes.ts";
+import type { Desktops } from "../desktops.ts";
+import type { Subagents } from "../subagents/mod.ts";
+import type { MailApproval } from "../tg/mail-approval.ts";
+import { synthesizeSpeech } from "./tts.ts";
+import type { HindsightClient } from "../memory/hindsight.ts";
 import {
 	type DelegateToolDeps,
 	makeTools,
 	type TranscribeToolDeps,
 	type VisionToolDeps,
-} from "./mod.ts";
-import { withScript } from "./script.ts";
-import type { OperatorHerdr } from "../../herdr.ts";
+} from "./tools/mod.ts";
+import { withScript } from "./tools/script.ts";
+import type { OperatorHerdr } from "../herdr.ts";
 
 // Boot-frozen or boot-bound values the per-turn function closes over.
 // Anything that decides "does this tool slot exist" is a dep here; the

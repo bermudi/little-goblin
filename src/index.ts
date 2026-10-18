@@ -7,7 +7,7 @@ import { ensureOpenRouterCatalog } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
-import { makeTurnTools as makeTurnToolsFactory } from "./agent/tools/turn-tools.ts";
+import { makeTurnTools as makeTurnToolsFactory } from "./agent/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";

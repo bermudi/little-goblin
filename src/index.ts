@@ -11,7 +11,7 @@ import { makeTurnTools as makeTurnToolsFactory } from "./agent/tools/turn-tools.
 import { makePrivateSender } from "./agent/tools/program.ts";
 import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
-import { synthesizeSpeech } from "./agent/tts.ts";
+import { makeSpeaker, synthesizeSpeech } from "./agent/tts.ts";
 import { loadAuth } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
@@ -274,6 +274,7 @@ async function boot() {
 	// live in the agent modules; boot only binds configRef/auth.
 	const transcribeFile = makeTranscriber({ configRef, auth });
 	const visionDepsFor = makeVisionDepsFor({ configRef, auth, observation: cacheObservations });
+	const speak = makeSpeaker({ configRef, auth });
 
 	// The one tool factory — the runtime builds the live set per turn
 	// through it, and the resume contract check (turn-resume.ts)
@@ -606,12 +607,8 @@ async function boot() {
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
-				// rather than failing mid-synthesis.
-				speak: async (text) => {
-					const tts = configRef.current.tts;
-					if (!tts || configRef.ttsDown) return null;
-					return synthesizeSpeech(text, tts, { auth });
-				},
+				// rather than failing mid-synthesis (tts.ts owns the gate).
+				speak,
 				titleFor,
 				// Selection rewrite — the configured root model/thinking;
 				// generation only, the accepted proposal returns via PATCH.

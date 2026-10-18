@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import type { AuthStore } from "../auth.ts";
-import type { TtsConfig } from "../config.ts";
+import type { ConfigRef, TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
 import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
@@ -698,4 +698,18 @@ export async function synthesizeSpeech(
 		bytes: audio.reduce((sum, chunk) => sum + chunk.byteLength, 0),
 	});
 	return audio;
+}
+
+// The app door's read-aloud — the live tts block gated on the boot
+// ffmpeg probe (ttsDown): null answers 503 rather than failing
+// mid-synthesis. boot() binds configRef/auth once.
+export function makeSpeaker(deps: {
+	configRef: ConfigRef;
+	auth: AuthStore;
+}): (text: string) => Promise<Uint8Array[] | null> {
+	return async (text) => {
+		const tts = deps.configRef.current.tts;
+		if (!tts || deps.configRef.ttsDown) return null;
+		return synthesizeSpeech(text, tts, { auth: deps.auth });
+	};
 }

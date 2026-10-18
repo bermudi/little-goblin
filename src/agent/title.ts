@@ -5,7 +5,11 @@
 
 import { generateText, type LanguageModel } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import type { AuthStore } from "../auth.ts";
+import type { CacheObservation } from "../cache-observation.ts";
+import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
+import { cacheRouteFor, observedModel, resolveModel, thinkingOptions } from "./providers.ts";
 
 // Bot API topic-name cap.
 const MAX_TITLE_CHARS = 128;
@@ -56,4 +60,28 @@ export function sanitizeTitle(raw: string): string | null {
 		.replace(/\s+/g, " ");
 	if (title === "") return null;
 	return [...title].slice(0, MAX_TITLE_CHARS).join("");
+}
+
+// The per-title seam — one generateText call through the configured
+// titleModel under the cache observation; absent model answers null.
+// boot() builds it once for the spin-off pin deps.
+export function makeTitleFor(deps: {
+	configRef: ConfigRef;
+	auth: AuthStore;
+	observation: CacheObservation;
+}): (text: string) => Promise<string | null> {
+	return async (text) => {
+		const cfg = deps.configRef.current;
+		if (!cfg.titleModel) return null;
+		const model = await resolveModel(cfg, deps.auth, cfg.titleModel);
+		return generateTopicTitle(
+			observedModel(model, {
+				purpose: "topic-title",
+				observation: deps.observation,
+				route: cacheRouteFor(cfg, cfg.titleModel),
+			}),
+			text,
+			thinkingOptions(cfg, cfg.titleModel, "off"),
+		);
+	};
 }

@@ -17,7 +17,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
-import type { TranscriptionConfig } from "../config.ts";
+import type { ConfigRef, TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import {
@@ -329,4 +329,18 @@ async function transcribeOne(engine: SpeechEngine, file: SpeechFile): Promise<st
 		...(result.language ? { language: result.language } : {}),
 	});
 	return text === "" ? null : text;
+}
+
+// The intake/tool call seam — reads the live config per call so a
+// mini-app save applies to the next voice note; absent block answers
+// null. boot() builds it once and hands the closure to makeTools.
+export function makeTranscriber(deps: {
+	configRef: ConfigRef;
+	auth: AuthStore;
+}): (file: SpeechFile) => Promise<string | null> {
+	return (file) => {
+		const cfg = deps.configRef.current.transcription;
+		if (!cfg) return Promise.resolve(null);
+		return transcribeAudio(speechEngine(cfg, deps.auth), file);
+	};
 }

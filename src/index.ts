@@ -20,11 +20,12 @@ import {
 	resolveModel,
 	thinkingOptions,
 } from "./agent/providers.ts";
-import { generateTopicTitle } from "./agent/title.ts";
-import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
+import { makeTitleFor } from "./agent/title.ts";
+import { makeTools, toolNames } from "./agent/tools/mod.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import { withScript } from "./agent/tools/script.ts";
-import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
+import { makeTranscriber, probeFfmpeg } from "./agent/transcribe.ts";
+import { makeVisionDepsFor } from "./agent/vision.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
@@ -390,30 +391,10 @@ async function boot() {
 	// the tool, the app routes, and the project prompt's index.
 	const notes = openNotes(store, { projects });
 
-	// Read per call — a mini-app save applies to the next voice note.
-	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
-		const cfg = configRef.current.transcription;
-		if (!cfg) return null;
-		return transcribeAudio(speechEngine(cfg, auth), file);
-	};
-
-	// The vision tool's per-turn gate (design/tools.md → Vision): "auto"
-	// registers it only while the chat model can't consume images (catalog
-	// AND pipe gates — cold counts as blind); "always" keeps it — a file
-	// on disk is invisible regardless.
-	const visionDepsFor = (conv: Conversation): VisionToolDeps | undefined => {
-		const cfg = configRef.current;
-		if (!cfg.vision) return undefined;
-		if (cfg.vision.mode !== "always") {
-			const { provider, modelId } = splitModelRef(conv.model!);
-			const mods = inputModalitiesCached(provider, modelId);
-			const kind = cfg.providers[provider]?.kind ?? "";
-			if (mods !== null && mods.has("image") && carriesMedia(kind, "image/jpeg", "user")) {
-				return undefined;
-			}
-		}
-		return { configRef, auth, conversation: conv.id, observation: cacheObservations };
-	};
+	// Per-call seams for voice notes and the vision gate — the policies
+	// live in the agent modules; boot only binds configRef/auth.
+	const transcribeFile = makeTranscriber({ configRef, auth });
+	const visionDepsFor = makeVisionDepsFor({ configRef, auth, observation: cacheObservations });
 
 	// The one tool factory — the runtime builds the live set per turn
 	// through it, and the resume contract check (turn-resume.ts)
@@ -670,20 +651,7 @@ async function boot() {
 	});
 
 	// One titler for both channels — implicit topics and app first-turn naming.
-	const titleFor = async (text: string): Promise<string | null> => {
-		const cfg = configRef.current;
-		if (!cfg.titleModel) return null;
-		const model = await resolveModel(cfg, auth, cfg.titleModel);
-		return generateTopicTitle(
-			observedModel(model, {
-				purpose: "topic-title",
-				observation: cacheObservations,
-				route: cacheRouteFor(cfg, cfg.titleModel),
-			}),
-			text,
-			thinkingOptions(cfg, cfg.titleModel, "off"),
-		);
-	};
+	const titleFor = makeTitleFor({ configRef, auth, observation: cacheObservations });
 	const launchPinDeps: SpinOffDeps = {
 		store,
 		titleFor,

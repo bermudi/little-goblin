@@ -16,9 +16,18 @@
 import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import { type Config, type ConfigRef, splitModelRef } from "../config.ts";
+import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
-import { cacheRouteFor, observedModel, resolveModel, thinkingOptions } from "./providers.ts";
+import { inputModalitiesCached } from "./models-dev.ts";
+import {
+	cacheRouteFor,
+	carriesMedia,
+	observedModel,
+	resolveModel,
+	thinkingOptions,
+} from "./providers.ts";
+import type { VisionToolDeps } from "./tools/vision.ts";
 
 // One side model call must settle — a wedged vision request would pin
 // the turn's serial lane (transcribe's 60s rule, doubled: image calls
@@ -265,4 +274,30 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	});
 
 	return { answer, model: label, followUps: history.length };
+}
+
+// The tool's per-turn gate (design/tools.md → Vision): "auto"
+// registers only while the chat model can't consume images (catalog
+// AND pipe gates — cold counts as blind); "always" keeps it — a file
+// on disk is invisible regardless. boot() builds it once and hands
+// the closure to makeTools.
+export function makeVisionDepsFor(deps: {
+	configRef: ConfigRef;
+	auth: AuthStore;
+	observation: CacheObservation;
+}): (conv: Conversation) => VisionToolDeps | undefined {
+	const { configRef, auth, observation } = deps;
+	return (conv) => {
+		const cfg = configRef.current;
+		if (!cfg.vision) return undefined;
+		if (cfg.vision.mode !== "always") {
+			const { provider, modelId } = splitModelRef(conv.model!);
+			const mods = inputModalitiesCached(provider, modelId);
+			const kind = cfg.providers[provider]?.kind ?? "";
+			if (mods !== null && mods.has("image") && carriesMedia(kind, "image/jpeg", "user")) {
+				return undefined;
+			}
+		}
+		return { configRef, auth, conversation: conv.id, observation };
+	};
 }

@@ -9,9 +9,8 @@ import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
 import { makeTurnTools as makeTurnToolsFactory } from "./agent/tools/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
-import { makeTranscriber, probeFfmpeg } from "./agent/transcribe.ts";
+import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
-import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { loadAuth } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
@@ -235,44 +234,10 @@ async function boot() {
 		return lateBoot.current;
 	};
 
-	// Probe ffmpeg at boot: TTS is default-on with ffmpeg as its only
-	// dependency — a missing binary takes TTS down for the run instead of
-	// failing per message; transcription needs it only over the upload cap
-	// (for the wav-profile kinds, always — whistle's ogg→wav decode,
-	// mimo's wav-only input contract).
-	if (config.transcription || config.tts) {
-		const wavKind =
-			config.transcription?.kind === "whistle" || config.transcription?.kind === "mimo"
-				? config.transcription.kind
-				: undefined;
-		const feature = config.tts
-			? "tts"
-			: wavKind !== undefined
-				? `transcription (${wavKind})`
-				: "transcription";
-		// Edge's remux is a stream copy; the cloud kinds' mp3 must
-		// re-encode to opus, so a binary without libopus would die per
-		// chunk.
-		const ok = await probeFfmpeg(
-			feature,
-			config.tts !== false && config.tts !== undefined && config.tts.kind !== "edge"
-				? "libopus"
-				: undefined,
-		);
-		if (!ok && config.tts) {
-			configRef.ttsDown = true;
-			log.warn(
-				"tts disabled — ffmpeg not found on PATH; install ffmpeg and restart to enable voice replies",
-			);
-		}
-	}
-	if (config.transcription) {
-		const tr = config.transcription;
-		log.info("transcription enabled", {
-			kind: tr.kind,
-			...(tr.kind === "whistle" ? whistleArtifactPresence(tr) : { model: tr.model, auth: tr.auth }),
-		});
-	}
+	// Voice replies and transcription die at runtime without ffmpeg —
+	// the probe, the wav-kind gate, and the ttsDown flag live in
+	// transcribe.ts (checkBootMedia).
+	await checkBootMedia(config, configRef);
 
 	// Warm the openrouter catalog so thinking options and the mini app
 	// see real levels, not the cold-start fallback.

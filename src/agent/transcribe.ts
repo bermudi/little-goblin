@@ -17,7 +17,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
-import type { ConfigRef, TranscriptionConfig } from "../config.ts";
+import type { Config, ConfigRef, TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import {
@@ -30,7 +30,7 @@ import {
 	openaiEngine,
 	openrouterEngine,
 } from "./transcribe-cloud.ts";
-import { whistleEngine } from "./transcribe-whistle.ts";
+import { whistleArtifactPresence, whistleEngine } from "./transcribe-whistle.ts";
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
@@ -343,4 +343,46 @@ export function makeTranscriber(deps: {
 		if (!cfg) return Promise.resolve(null);
 		return transcribeAudio(speechEngine(cfg, deps.auth), file);
 	};
+}
+
+// Boot-time media readiness: voice replies and transcription die at
+// runtime without ffmpeg — probing costs ~30ms and saves a tool
+// failing per message; transcription needs it only over the upload cap
+// (for the wav-profile kinds, always — whistle's ogg→wav decode,
+// mimo's wav-only input contract). Writes configRef.ttsDown when the
+// probe fails on a configured tts block.
+export async function checkBootMedia(config: Config, configRef: ConfigRef): Promise<void> {
+	if (config.transcription || config.tts) {
+		const wavKind =
+			config.transcription?.kind === "whistle" || config.transcription?.kind === "mimo"
+				? config.transcription.kind
+				: undefined;
+		const feature = config.tts
+			? "tts"
+			: wavKind !== undefined
+				? `transcription (${wavKind})`
+				: "transcription";
+		// Edge's remux is a stream copy; the cloud kinds' mp3 must
+		// re-encode to opus, so a binary without libopus would die per
+		// chunk.
+		const ok = await probeFfmpeg(
+			feature,
+			config.tts !== false && config.tts !== undefined && config.tts.kind !== "edge"
+				? "libopus"
+				: undefined,
+		);
+		if (!ok && config.tts) {
+			configRef.ttsDown = true;
+			log.warn(
+				"tts disabled — ffmpeg not found on PATH; install ffmpeg and restart to enable voice replies",
+			);
+		}
+	}
+	if (config.transcription) {
+		const tr = config.transcription;
+		log.info("transcription enabled", {
+			kind: tr.kind,
+			...(tr.kind === "whistle" ? whistleArtifactPresence(tr) : { model: tr.model, auth: tr.auth }),
+		});
+	}
 }

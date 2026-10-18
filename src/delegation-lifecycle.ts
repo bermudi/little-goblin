@@ -31,14 +31,21 @@ import {
 	type Delegation,
 	type DelegationStatus,
 	type DelegationsStore,
+	openDelegations,
 } from "./delegations.ts";
 import {
 	attachHintFor,
 	HerdrError,
 	WorkspaceCreateError,
+	makeHerdr,
+	makeOperatorHerdr,
 	type AgentInfo,
 	type Herdr,
+	type OperatorHerdr,
 } from "./herdr.ts";
+import type { ConfigRef, DelegationConfig } from "./config.ts";
+import type { Conversation } from "./conversation.ts";
+import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
@@ -164,6 +171,73 @@ const DEEP_LINES = 300;
 // screen output is only the fallback.
 const REPORT_NOTE =
 	"\n\nWhen you are completely finished, write your final report (what you did, what's left, anything you need from the operator) as Markdown to ";
+
+// ---------- boot wiring (index.ts binds, this module rules) ----------
+
+// The delegation fixtures are boot-frozen (design/delegation.md): the
+// delegations store, the local "goblin" herdr adapter and every
+// configured target's adapter are one snapshot — a live config read can
+// only hide the delegate tool next turn, never retarget a launch into
+// the old adapter's session (spinoff.ts owns the pin).
+export interface DelegationWiringDeps {
+	config: DelegationConfig | undefined;
+	configRef: ConfigRef;
+	dbPath(): string;
+	/** Late-bound — the lifecycle is built after the runtime; delegate
+	 *  tool deps resolve it per call, never at wire time. */
+	lifecycle(): DelegationLifecycle;
+	pin(conv: Conversation, name: string): DelegationPin;
+}
+
+export interface DelegationWiring {
+	delegations: DelegationsStore | null;
+	herdr: Herdr | null;
+	operatorHerdr: OperatorHerdr;
+	targets: Map<string, DelegationTargetDeps>;
+	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
+}
+
+export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
+	const { config: delegationBoot, configRef, pin } = deps;
+	const delegations = delegationBoot ? openDelegations(deps.dbPath()) : null;
+	// "goblin" is the local unit's --session — the default target, never a config knob.
+	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
+	// The operator's own `default` session needs no delegation config —
+	// the herdr tool mounts for every personal conversation (guest
+	// surfaces lose it in filterGuestTools).
+	const operatorHerdr = makeOperatorHerdr();
+	const targets = new Map<string, DelegationTargetDeps>();
+	if (delegationBoot && herdr !== null) {
+		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
+			targets.set(label, {
+				...(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
+				...(t.root !== undefined ? { root: t.root } : {}),
+				herdr: makeHerdr(
+					t.machine !== undefined ? { machine: t.machine } : { session: t.session! },
+				),
+			});
+		}
+	}
+	const delegateDeps = (conv: Conversation, workdir: string): DelegateToolDeps | undefined => {
+		if (
+			delegationBoot === undefined ||
+			configRef.current.delegation === undefined ||
+			delegations === null ||
+			herdr === null
+		) {
+			return undefined;
+		}
+		return {
+			lifecycle: deps.lifecycle(),
+			config: delegationBoot,
+			// Relative cwd in delegation harness args anchors at the turn's
+			// working directory — under a project that's the project's dir.
+			workspaceDir: workdir,
+			pin: (name: string) => pin(conv, name),
+		};
+	};
+	return { delegations, herdr, operatorHerdr, targets, delegateDeps };
+}
 
 export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {
 	return {

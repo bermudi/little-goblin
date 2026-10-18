@@ -53,13 +53,11 @@ import {
 } from "./conversation.ts";
 import {
 	type DelegationLifecycle,
-	type DelegationTargetDeps,
 	delegationWake,
 	startDelegationLifecycle,
+	wireDelegation,
 } from "./delegation-lifecycle.ts";
-import { openDelegations } from "./delegations.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
-import { makeHerdr, makeOperatorHerdr } from "./herdr.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -241,27 +239,23 @@ async function boot() {
 		});
 	};
 	// Delegation is boot-fixed like memory — the session is systemd's, not
-	// ours.
+	// ours. The fixtures (store, herdr adapters, targets) and the per-turn
+	// dep gate live in delegation-lifecycle.ts; late()/launchPinDeps bind
+	// after this point, so both reach it as call-time getters.
 	const delegationBoot = config.delegation;
-	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// "goblin" is the local unit's --session — the default target, never a config knob.
-	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
-	// The operator's own `default` session needs no delegation config —
-	// the herdr tool mounts for every personal conversation (guest
-	// surfaces lose it in filterGuestTools).
-	const operatorHerdr = makeOperatorHerdr();
-	const delegationTargets = new Map<string, DelegationTargetDeps>();
-	if (delegationBoot && herdr !== null) {
-		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
-			delegationTargets.set(label, {
-				...(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
-				...(t.root !== undefined ? { root: t.root } : {}),
-				herdr: makeHerdr(
-					t.machine !== undefined ? { machine: t.machine } : { session: t.session! },
-				),
-			});
-		}
-	}
+	const {
+		delegations,
+		herdr,
+		operatorHerdr,
+		targets: delegationTargets,
+		delegateDeps,
+	} = wireDelegation({
+		config: delegationBoot,
+		configRef,
+		dbPath: paths.db,
+		lifecycle: () => late().delegationLifecycle(),
+		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
+	});
 
 	// ---------- the wire step ----------
 	//
@@ -297,29 +291,6 @@ async function boot() {
 	const late = (): LateBoot => {
 		if (lateBoot.current === null) throw new Error("late boot not completed — wiring bug");
 		return lateBoot.current;
-	};
-
-	// The delegate tool's per-turn deps: a live config read hides the tool
-	// next turn while the lifecycle keeps tracking owned rows; config stays
-	// the boot snapshot — a live definition could send a new launch's paths
-	// into the old adapter's session (spinoff.ts owns the pin).
-	const delegateDeps = (conv: Conversation, workdir: string) => {
-		if (
-			delegationBoot === undefined ||
-			configRef.current.delegation === undefined ||
-			delegations === null ||
-			herdr === null
-		) {
-			return undefined;
-		}
-		return {
-			lifecycle: late().delegationLifecycle(),
-			config: delegationBoot,
-			// Relative cwd in delegation harness args anchors at the turn's
-			// working directory — under a project that's the project's dir.
-			workspaceDir: workdir,
-			pin: (name: string) => launchPin(launchPinDeps, conv, name),
-		};
 	};
 
 	// Probe ffmpeg at boot: TTS is default-on with ffmpeg as its only

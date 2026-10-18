@@ -10,7 +10,8 @@ import { describe, expect, test } from "bun:test";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
 import { makePodman, type Podman, type PodmanExecOpts } from "./podman.ts";
 import { boundedRun, spawnProc, type BoundedProc, type BoundedProcBytes } from "./proc.ts";
-import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
+import { containerNameFor, makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { tmpDb } from "./testkit.ts";
 
 const PREFIX = "test-sbx-";
@@ -1435,4 +1436,59 @@ describe("all exec variants share recovery and cancellation fences", () => {
 			expect(engine.execCalls).toEqual([]);
 		});
 	}
+});
+
+// warnIfStranded — the disable report's contract: silent on an empty
+// store; with rows, one warn naming every container in the podman rm
+// line (a removed block can't reap them — the operator does).
+describe("warnIfStranded", () => {
+	function capture(): { lines: string[]; stop: () => void } {
+		const lines: string[] = [];
+		setLogFile("sandboxes-test.log");
+		setLogWriter((_path, line) => lines.push(line));
+		return {
+			lines,
+			stop: () => {
+				setLogFile(null);
+				setLogWriter(null);
+			},
+		};
+	}
+
+	const row = (conv: string, container: string) => ({
+		conversationId: conv,
+		container,
+		image: IMAGE,
+		network: true,
+		createdAt: 1,
+		lastUsedAt: 1,
+	});
+
+	test("an empty store warns nothing", () => {
+		const cap = capture();
+		try {
+			const store = openSandboxes(tmpDb("goblin-sbx-"));
+			warnIfStranded(store);
+			expect(cap.lines).toHaveLength(0);
+			store.close();
+		} finally {
+			cap.stop();
+		}
+	});
+
+	test("tracked rows warn once with every container in the rm line", () => {
+		const cap = capture();
+		try {
+			const store = openSandboxes(tmpDb("goblin-sbx-"));
+			store.put(row("dm:1", "goblin-sbx-aaa"));
+			store.put(row("dm:2", "goblin-sbx-bbb"));
+			warnIfStranded(store);
+			expect(cap.lines).toHaveLength(1);
+			expect(cap.lines[0]).toContain("2 tracked container(s)");
+			expect(cap.lines[0]).toContain("podman rm -f goblin-sbx-aaa goblin-sbx-bbb");
+			store.close();
+		} finally {
+			cap.stop();
+		}
+	});
 });

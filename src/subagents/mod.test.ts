@@ -31,7 +31,7 @@ import { Runtime, type TurnDone, type TurnSink, userMessage } from "../runtime.t
 import type { Sandboxes } from "../sandboxes.ts";
 import { type DeliveryApi, makeDeliverySink } from "../tg/delivery.ts";
 import { type WakeDeps, wakeConversation } from "../wake.ts";
-import type { SubagentStart } from "./mod.ts";
+import { openSubagentsGuarded, type SubagentStart, type SubagentsDeps } from "./mod.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";
 import {
 	armConversationFaults,
@@ -50,6 +50,7 @@ import {
 	type MemSandbox,
 	open,
 	openRunStore,
+	owners,
 	rig,
 	type Rig,
 	servers,
@@ -3935,5 +3936,83 @@ describe("origin responsiveness over the real wake path", () => {
 			await runtime.shutdown();
 			store.close();
 		}
+	});
+});
+
+// openSubagentsGuarded — the boot entry's fail-open contract (the
+// extraction that moved the disable-don't-crash policy into mod.ts):
+// a poisoned auth ref or a resume refusal must never crash-loop the
+// service. null means "feature disabled"; the log lines carry why.
+describe("openSubagentsGuarded", () => {
+	function deps(dir: string, auth: { resolve(): Promise<string> }): SubagentsDeps {
+		const model = startFakeModel();
+		servers.push(model);
+		return {
+			config: {
+				maxRuns: 1,
+				worker: {
+					model: {
+						auth: "test",
+						id: "glm-5.3",
+						baseUrl: model.url,
+						api: "openai-completions",
+						thinking: "low",
+					},
+				},
+				desktops: {
+					image: "localhost/goblin-desktop:1",
+					max: 1,
+					idleHours: 0,
+					memory: "1g",
+					cpus: 1,
+					pids: 16,
+				},
+			},
+			runs: openRunStore(join(dir, "goblin.sqlite")),
+			auth,
+			sandboxes: fakeSandboxes(),
+			desktops: fakeDesktops(),
+			storagePath: join(dir, "subagents.sqlite"),
+			transferRoot: join(dir, "transfer"),
+			wake: () => true,
+		};
+	}
+
+	test("a poisoned auth record disables the feature instead of throwing", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-guard-"));
+		dirs.push(dir);
+		const cap = captureLog();
+		try {
+			const owner = await openSubagentsGuarded(
+				deps(dir, { resolve: () => Promise.reject(new Error("poisoned record")) }),
+				200,
+			);
+			expect(owner).toBeNull();
+			expect(cap.lines.some((l) => l.includes("subagents disabled"))).toBe(true);
+		} finally {
+			cap.stop();
+		}
+	});
+
+	test("a healthy open returns a resumed owner — a worker settles done", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-guard-"));
+		dirs.push(dir);
+		const workspace = join(dir, "ws");
+		mkdirSync(workspace, { recursive: true });
+		const owner = await openSubagentsGuarded(
+			deps(dir, { resolve: () => Promise.resolve("fake-key") }),
+			200,
+		);
+		expect(owner).not.toBeNull();
+		owners.push(owner!);
+		const model = servers[servers.length - 1]!;
+		model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
+		const row = await owner!.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace,
+			task: "do the thing",
+		});
+		await until(() => owner!.status(row.id, WS)?.status === "done", "guarded run done");
 	});
 });

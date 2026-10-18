@@ -46,7 +46,11 @@ you're touching before any structural work.
   subsystem returns an interface assembled from those units, never one
   scope of closures. ~300 lines is the smell line —
   `bun scripts/function-size-audit.ts` lists what crosses it (signal,
-  not a gate; run it when touching a file).
+  not a gate; run it when touching a file). One named exemption:
+  `boot()` in `src/index.ts` is the process composition root — its
+  bound is structural, not numeric: every line a binding, an ordering
+  comment, or a wire call, with zero business-rule closures. Splitting
+  the spine into bigger `wireX` bundles just hides the wiring.
 - **Only `src/tg/` knows grammy.** Domain modules never see a Telegram
   context object.
 

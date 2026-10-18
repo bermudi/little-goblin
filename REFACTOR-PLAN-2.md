@@ -104,7 +104,9 @@ line audit bound like `openSubagents` did or carries an explicit
 exemption in `AGENTS.md` — decided when the closures are out and the
 honest floor is visible.
 
-Status 2026-10-17 (in progress — `boot()` 1,114 → 731): landed —
+Status 2026-10-18 (**done — `boot()` 1,114 → 560**, structural
+criterion met: zero business-rule closures; every line is a binding,
+an ordering comment, or a wire call): landed —
 `transcribeFile`/`visionDepsFor`/`titleFor` → `makeTranscriber` /
 `makeVisionDepsFor` / `makeTitleFor` in their `agent/` modules
 (`ad930767`); the five boot-pinned block comparisons →
@@ -120,12 +122,27 @@ fixtures + per-turn dep gate → `wireDelegation` in
 getters → `wireMailAuthority` in `mail.ts` (`2ede2a2d`); model-step +
 compaction policy → `makeStepBuilder` in `agent/step.ts`
 (`5a59e510`); memory client/telemetry/surfaces consolidation →
-`wireMemory` in `memory/mod.ts` (`d53ca1d1`).
-Remaining: operator surface bundle (~60), config-write feature
-flips (~30), shutdown assembly (~50) — then the pure-construction
-spine (~590; the honest floor is trending higher than first
-estimated). Pattern established: `wireX`/`makeX` factories in the
-owning module; late-bound values reach them as call-time getters.
+`wireMemory` in `memory/mod.ts` (`d53ca1d1`); operator seam bundle →
+`makeOperatorSeams` in `http/operator.ts` (`ea21e173`); the whole
+post-write reconcile (flips, stranded sandbox, pin warns,
+restartHints) → `wireConfigWrite` in `config-pins.ts` (`32aa8cac`);
+the fail-open owner open + wedged-close join → `openSubagentsGuarded`
+in `subagents/mod.ts` (`86297b98`); stranded-container report →
+`warnIfStranded` in `sandboxes.ts` (`d56a73d5`); ffmpeg probe + wav
+gate + ttsDown → `checkBootMedia` in `agent/transcribe.ts`
+(`b19290a5`); resume sink routing + operator DM → `makeResumeSinks`
+in `turn-resume.ts` (`a57b457b`); read-aloud gate → `makeSpeaker` in
+`agent/tts.ts` (`01ec350b`).
+
+**Bound decision**: at 560 lines the remaining spine is pure
+assembly — 300 would require bundling the spine into bigger `wireX`
+calls, which just hides the wiring. `boot()` carries the named
+composition-root exemption in `AGENTS.md` (structural bound: no
+business-rule closures, not a line count). The shutdown tail and
+`completeBoot`/`late` machinery are already module-level / boot-order
+primitives, not policy. Pattern established: `wireX`/`makeX`
+factories in the owning module; late-bound values reach them as
+call-time getters.
 
 ## P4 — ratio and pointers (outcome, rides along)
 

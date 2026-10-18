@@ -78,7 +78,7 @@ import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
 import { openProjects, projectWorkdir } from "./projects.ts";
-import { cleanupStaging, Reviewer } from "./reviewer.ts";
+import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
@@ -87,7 +87,7 @@ import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { openSubagents, type Subagents } from "./subagents/mod.ts";
-import { System1Client } from "./system1.ts";
+
 import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
@@ -742,88 +742,27 @@ async function boot() {
 		: null;
 
 	// The skill reviewer runs after the bot (save notes deliver through
-	// bot.api); the hand-edited block boot-captures auth and threshold, the
-	// review model resolves live.
-	const reviewerBlock = configRef.current.reviewer;
-	// System One is its own switch (design/system1.md → Config): the shared
-	// client exists whenever a `system1` block is set, and `reviewer` still
-	// implies it — reviewer configs behave identically; a system1-only
-	// config gains the client it already named.
-	const system1Block = configRef.current.system1;
-	const system1Gate =
-		system1Block || reviewerBlock
-			? new System1Client({
-					auth: () => {
-						// Auth resolves live per call; system1.auth wins,
-						// reviewer.auth is the fallback for reviewer-only configs.
-						const name = configRef.current.system1?.auth ?? reviewerBlock?.auth;
-						if (name === undefined) throw new Error("system1 gate without auth");
-						return auth.resolve(name);
-					},
-					...(system1Block?.model !== undefined ? { model: system1Block.model } : {}),
-					...(system1Block?.baseUrl !== undefined ? { baseUrl: system1Block.baseUrl } : {}),
-				})
-			: null;
+	// bot.api); reviewer.ts owns the gate construction, threshold merge and
+	// live review-model resolution — boot binds the seams it can't own.
+	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
+		configRef,
+		auth,
+		store,
+		observation: cacheObservations,
+		paths,
+		notify: (conversationId, skills) => sendSkillProposedNotice(tg.bot.api, conversationId, skills),
+		recordSources: (conversationId, reviewId, skills) => {
+			for (const skill of skills)
+				skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
+		},
+	});
 	if (system1Gate !== null) {
 		// The loop watchdog rides the same System1Client (design/model.md → "No step
 		// budget"): every 16 completed calls system1 scores the digest ring — warn
 		// once, cut on the second stuck verdict.
 		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
-		if (reviewerBlock === undefined)
-			log.info("system1 enabled", {
-				model: system1Block?.model,
-				baseUrl: system1Block?.baseUrl,
-			});
 	}
-	if (reviewerBlock !== undefined && system1Gate !== null) {
-		// reviewer implies the gate by construction — system1Gate is never null here.
-		const block = reviewerBlock;
-		const thresholds = {
-			correction: block.thresholds?.correction ?? block.threshold,
-			procedure: block.thresholds?.procedure ?? block.threshold,
-		};
-		log.info("reviewer enabled", {
-			thresholds,
-			queueCap: block.queueCap,
-			evidence: block.evidence,
-			system1: system1Block !== undefined,
-		});
-		// Staging from a killed run is garbage — clear before any review proposes.
-		cleanupStaging(paths.workspace());
-		runtime.setReviewer(
-			new Reviewer({
-				gate: system1Gate,
-				thresholds,
-				queueCap: block.queueCap,
-				evidence: block.evidence,
-				reviewModel: async (conversationId) => {
-					const cfg = configRef.current;
-					const conv = store.get(conversationId);
-					if (!conv) throw new Error(`conversation ${conversationId} not found`);
-					const ref = cfg.reviewer?.model ?? captureConversationSettings(store, conv, cfg).model;
-					return {
-						ref,
-						model: observedModel(await resolveModel(cfg, auth, ref), {
-							conversation: conversationId,
-							purpose: "review",
-							observation: cacheObservations,
-							route: cacheRouteFor(cfg, ref),
-						}),
-					};
-				},
-				store,
-				skillsDir: paths.skills(),
-				proposedDir: paths.skillsProposed(),
-				workspaceDir: paths.workspace(),
-				notify: (conversationId, skills) =>
-					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
-				recordSources: (conversationId, reviewId, skills) => {
-					for (const skill of skills)
-						skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
-				},
-			}),
-		);
-	}
+	if (skillReviewer !== null) runtime.setReviewer(skillReviewer);
 
 	// The shared wake path — program fires and delegation notices submit
 	// through it; wake.ts owns the routing. Intake opens its own pings handle

@@ -65,6 +65,7 @@ import {
 } from "../subagent-runs.ts";
 
 import { makeApprovalGate } from "./approval-gate.ts";
+import { makeDrain } from "./drain.ts";
 import { SandboxEnv } from "./env.ts";
 import { SubagentError } from "./errors.ts";
 import { type KindSpec, kindSpec, type SubagentModelProfile } from "./models.ts";
@@ -216,7 +217,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		return run;
 	}
 	// Rows mid-admission or mid-abort — they hold a global slot.
-	const inflight = new Set<number>();
+	// (The inflight set lives in drain.ts, the cluster's only consumer.)
 	// Lease-conflicted rows retry no sooner than this — a blocked
 	// desktop never spins the drain loop.
 	const retryAfter = new Map<number, number>();
@@ -224,6 +225,23 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// the run settles terminal instead of re-queueing again.
 	const admitAttempts = new Map<number, number>();
 	const admitRetryBaseMs = deps.admitRetryMs ?? ADMIT_RETRY_BASE_MS;
+
+	// ---------- queue admission ----------
+
+	// lane and admit are hoisted declarations below; the flag getters
+	// resolve lazily so the drain reads live closing/harnessClosed/
+	// resumed. Constructed early — the approval gate's deps take
+	// scheduleDrain by value.
+	const { scheduleDrain, drain } = makeDrain({
+		runs,
+		desktops: deps.desktops,
+		maxRuns: config.maxRuns,
+		lane,
+		admit,
+		retryAfter,
+		halted: () => closing || harnessClosed,
+		isResumed: () => resumed,
+	});
 	// In-flight monitors and admissions — close joins them so a paused
 	// run is left durable, never mutated after close. runMonitors tracks
 	// WHICH runs still have a watcher: admission's approval-continuation
@@ -1235,92 +1253,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			throw error;
 		});
 		if (settled) recoveryAttempts.delete(id);
-	}
-
-	// ---------- queue admission ----------
-
-	// Slots = the union of rows actually executing and rows mid-flight
-	// (admitting or aborting) — never double-counted, never a slot for
-	// needs_input or a queued row.
-	function runningIds(): Set<number> {
-		const ids = new Set<number>(inflight);
-		for (const r of runs.unfinished()) {
-			if (r.status === "running") ids.add(r.id);
-		}
-		return ids;
-	}
-
-	function eligible(row: SubagentRun, now: number): boolean {
-		if (row.stopRequested) return false;
-		if ((retryAfter.get(row.id) ?? 0) > now) return false;
-		if (row.kind === "worker") {
-			const lease = runs.workerLease(row.conversationId);
-			// The lease's holder may be this very row (a resume) — a
-			// queued second worker on the same sandbox never jumps ahead
-			// because the lease query ranks active/resuming rows first.
-			if (lease !== null && lease.id !== row.id) return false;
-			return true;
-		}
-		// computer: the desktop's live holder and sibling runs decide.
-		for (const other of runs.unfinished()) {
-			if (
-				other.id !== row.id &&
-				other.kind === "computer" &&
-				other.desktop === row.desktop &&
-				(other.status === "running" || inflight.has(other.id))
-			) {
-				return false;
-			}
-		}
-		const d = deps.desktops.get(row.desktop!);
-		if (d === null) return true; // admission fails once, loudly
-		const held =
-			d.leaseExpiresAt !== null &&
-			d.leaseExpiresAt > now &&
-			!(d.leaseKind === "run" && d.leaseId === String(row.id));
-		return !held;
-	}
-
-	let draining = false;
-	let wantDrain = false;
-
-	async function drain(): Promise<void> {
-		if (draining || closing || harnessClosed) {
-			wantDrain = true;
-			return;
-		}
-		draining = true;
-		try {
-			for (;;) {
-				wantDrain = false;
-				const free = config.maxRuns - runningIds().size;
-				if (free <= 0) break;
-				const now = Date.now();
-				const candidates = runs
-					.unfinished()
-					.filter((r) => r.status === "queued" && !inflight.has(r.id) && eligible(r, now));
-				const row = candidates[0];
-				if (row === undefined) break;
-				inflight.add(row.id);
-				void lane(row.id, () => admit(row)).finally(() => {
-					inflight.delete(row.id);
-					scheduleDrain();
-				});
-			}
-		} finally {
-			draining = false;
-		}
-		if (wantDrain) scheduleDrain();
-	}
-
-	let drainScheduled = false;
-	function scheduleDrain(): void {
-		if (drainScheduled || closing || harnessClosed || !resumed) return;
-		drainScheduled = true;
-		queueMicrotask(() => {
-			drainScheduled = false;
-			void drain().catch((err) => log.error("subagent drain failed", err));
-		});
 	}
 
 	// ---------- the owner ----------

@@ -42,6 +42,11 @@ you're touching before any structural work.
 - **One module, one job.** Flat modules, colocated tests (`foo.ts` /
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
+- **No god-functions.** State clusters by lifetime into units; a
+  subsystem returns an interface assembled from those units, never one
+  scope of closures. ~300 lines is the smell line —
+  `bun scripts/function-size-audit.ts` lists what crosses it (signal,
+  not a gate; run it when touching a file).
 - **Only `src/tg/` knows grammy.** Domain modules never see a Telegram
   context object.
 

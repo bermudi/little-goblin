@@ -567,6 +567,12 @@ process boundaries (`proc.ts`), harness first-run trust
 detectors, tag markers, link helpers — covered by its owner's row or the
 area doc that rules it.
 
+The same discipline holds inside a module: state clusters by lifetime
+(harness-scoped, run-scoped, scan-scoped) live in their own units, and a
+subsystem returns an interface assembled from them — never one scope of
+closures. ~300 lines is the smell line; `scripts/function-size-audit.ts`
+lists what crosses it.
+
 ## Non-goals (v1 — return only on demand)
 
 The list below is a record, not a law. The law, applied to any capability:

@@ -40,6 +40,7 @@
 	"devDependencies": {
 		"@ai-sdk/provider": "4.0.28",
 		"@ai-sdk/react": "4.0.146",
+		"@babel/parser": "7.29.9",
 		"@biomejs/biome": "^2.5.15",
 		"@milkdown/kit": "7.22.3",
 		"@types/bun": "latest",

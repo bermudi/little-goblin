@@ -43,6 +43,7 @@ import {
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
+import { type BootPins, bootPinnedDiffs } from "./config-pins.ts";
 import {
 	type Conversation,
 	captureConversationSettings,
@@ -120,6 +121,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Declared above boot(): the startup-failure cleanup below budgets a
 // wedged close with the same constant the shutdown drain uses.
 const SHUTDOWN_DRAIN_MS = 10_000;
+
+// Warn-line labels for bootPinnedDiffs keys (config-pins.ts) — the diff
+// returns bare keys; the log line names the block.
+const PIN_LABEL: Record<string, string> = {
+	memory: "memory config",
+	delegation: "delegation config",
+	subagents: "subagents config",
+};
 
 async function boot() {
 	ensureHomeLayout();
@@ -981,6 +990,16 @@ async function boot() {
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
+	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
+	// delegation/subagents freeze adapters and pool limits at boot — a
+	// mid-run change is a warn + restart (config-pins.ts owns the diff).
+	const bootPins: BootPins = {
+		memory: memoryBootConfig,
+		appToken: appTokenName,
+		apiRoot: apiRootBoot,
+		delegation: delegationBoot,
+		subagents: subagentsBoot,
+	};
 	// One post-write path for every config door: hot-apply what's live,
 	// warn on what's boot-pinned.
 	const onConfigWritten = () => {
@@ -1008,53 +1027,17 @@ async function boot() {
 		const sandboxNow = sandboxConfigured(configRef.current);
 		if (sandboxInSet && !sandboxNow) warnStrandedSandboxes();
 		sandboxInSet = sandboxNow;
-		// Memory is a boot-time snapshot (queue rows bind to the endpoint+bank hash).
-		if (
-			JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)
-		) {
-			log.warn("memory config changed — restart to apply");
-		}
-		if (configRef.current.appToken !== appTokenName) {
-			log.warn("appToken changed — restart to apply");
-		}
-		if (configRef.current.telegram.apiRoot !== apiRootBoot) {
-			log.warn("telegram.apiRoot changed — restart to apply");
-		}
-		// The delegation block is boot-frozen (adapters + definitions are
-		// one snapshot) — changes need a restart.
-		if (
-			JSON.stringify(configRef.current.delegation ?? null) !==
-			JSON.stringify(delegationBoot ?? null)
-		) {
-			log.warn("delegation config changed — restart to apply");
-		}
-		// Same boot-freeze as delegation: models, pool limits and auth
-		// refs are one snapshot the owner built at boot.
-		if (
-			JSON.stringify(configRef.current.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)
-		) {
-			log.warn("subagents config changed — restart to apply");
+		// Memory is a boot-time snapshot (queue rows bind to the endpoint+bank
+		// hash); delegation and subagents are boot-frozen adapters and pool
+		// limits — all warned by the shared pin diff.
+		for (const key of bootPinnedDiffs(bootPins, configRef.current)) {
+			log.warn(`${PIN_LABEL[key] ?? key} changed — restart to apply`);
 		}
 	};
 	// The same boot-pin comparisons onConfigWritten logs — the operator
 	// surface's status card answers with them instead of waiting for the
 	// operator to notice a warn line.
-	const restartHints = (): string[] => {
-		const cur = configRef.current;
-		const hints: string[] = [];
-		if (JSON.stringify(cur.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
-			hints.push("memory");
-		}
-		if (cur.appToken !== appTokenName) hints.push("appToken");
-		if (cur.telegram.apiRoot !== apiRootBoot) hints.push("telegram.apiRoot");
-		if (JSON.stringify(cur.delegation ?? null) !== JSON.stringify(delegationBoot ?? null)) {
-			hints.push("delegation");
-		}
-		if (JSON.stringify(cur.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)) {
-			hints.push("subagents");
-		}
-		return hints;
-	};
+	const restartHints = (): string[] => bootPinnedDiffs(bootPins, configRef.current);
 	// The operator surface (settings, memory, programs, delegations,
 	// status) is one bundle mounted at both doors — the mini app's
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).

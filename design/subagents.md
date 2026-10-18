@@ -744,3 +744,83 @@ platform, Open Interface and LCU.
    what the subagent claims; frame/token measurements settle the context
    policy.
 5. Live view + login handoff; krun revisited.
+
+## Owner decomposition (ruling 2026-10-17)
+
+`openSubagents` reached 2,019 lines in five days — the `openX`/`makeX`
+closure-factory idiom at its largest (function-size-audit flags 22
+instances; this is the biggest). The `// ----------` banner sections
+inside it already mark the intended units; this ruling fixes them into
+modules. REFACTOR-PLAN-2.md → P2 owns the schedule.
+
+### State ownership, by lifetime
+
+- **Harness-scoped** (dies with the owner): credentials, models, specs,
+  envs, `closing`/`resumed`/`harnessClosed`. Owned by the owner; handed
+  to units as narrow deps.
+- **Run-scoped maps**: each unit owns its own as factory locals —
+  approval waiters/decisions (gate), inflight/retryAfter/admitAttempts
+  (admission), recoveryPending/recoveryAttempts (recovery),
+  runMonitors/monitorTasks (settle). No unit reaches into another's.
+- **Shared primitives**: `lane` — the per-run serializer — is one
+  instance the owner creates and units receive; serialization stays
+  single (a settle must never overlap a send on the same run).
+  `scheduleDrain` is owned by drain; other units receive it as a
+  callback, exactly the `buildTransfer` precedent.
+- **Scan-scoped**: draining/wantDrain/drainScheduled/ticker are drain's
+  own locals.
+
+### Module map
+
+- `row-access.ts` — the shared vocabulary over the runs store:
+  `rowForConversation`, `requireRow`, `requireLive`, `recordOutcome`,
+  `persistClaimNote`, `holderFor`, the `asConv`/`asSub` casts. Pure
+  helpers, no state.
+- `approval-gate.ts` — the crash-approval gate plus the lease helpers
+  already at mod.ts top level: waiters/decisions maps,
+  `approvalQuestion`, `approvalHost`, `declaredApprovalResult`,
+  `withApprovalGate`, `dropApprovalState`, `approvalLeaseDoc` and
+  friends. Receives notify/releaseLeases/scheduleDrain/lane as deps.
+- `notices.ts` — `noticeBody`, `noticeResult`, `notify`. Formatting and
+  wake delivery only; no lease or store mutation.
+- `settle.ts` — terminal-transition machinery: `finalize`, `monitor`,
+  `monitored`, `throwIfHalted`, `completeStop`, `confirmPiIdle`,
+  `lastAssistantStopReason`, `releaseLeases`. Owns runMonitors +
+  monitorTasks; calls notices.notify.
+- `admission.ts` — `admit`, `readmitOutcome` +
+  inflight/retryAfter/admitAttempts. Calls settle.monitor on success,
+  notify/releaseLeases on failure.
+- `recovery.ts` — `recoveryNudge`, `recoverRun`, `recoverParked`,
+  `exhaustRecovery` + its maps. Calls admission, settle, and the gate's
+  dropApprovalState. DAG points down: recovery → admission → settle.
+- `drain.ts` — `runningIds`, `eligible`, `drain`, `scheduleDrain`,
+  ticker. Calls `admit` through a lazy dep — drain ticks only post-
+  construction, which breaks the admission↔drain construction cycle
+  without mutable slots.
+- `mod.ts` — keeps the providers block, the shared primitives (flags,
+  lane, envs), the `buildHarness`/`buildTransfer` wiring, and the thin
+  owner: public methods validate args and delegate.
+
+### What must not change
+
+- The `Subagents` interface — tg commands, agent tools, and http
+  operator call it unchanged.
+- `resume()` ordering: persisted stops finish → desktops reacquire →
+  monitors attach → pending intents re-admit, all before drain.
+- `lane()` serializes every per-run mutation path — send, stop, decide,
+  finalize, recover, exhaust, drain-admit. The existing call sites pin
+  this; extraction must not drop one.
+- The approval lease CAS (`approvalLeaseGeneration` /
+  `commitApprovalLease`) and provenance stamps are a correctness
+  boundary — the gate decides whether a replayed side-effecting call
+  may run again. Not plumbing; moves verbatim.
+- Crash-resume: `harness.subscribeClose` → `harnessClosed`; rows
+  persist, nothing aborts on shutdown.
+
+### The pattern this operationalizes
+
+`makeX(deps, ...narrowCallbacks)` returning `{ methods }` —
+`buildTransfer`/`buildHarness` already prove the shape in this same
+directory. Cross-unit calls are injected functions; a unit never
+reaches back into the owner scope. AGENTS.md → No god-functions owns
+the bound; `scripts/function-size-audit.ts` is the standing signal.

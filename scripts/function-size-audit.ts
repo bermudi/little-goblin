@@ -37,8 +37,7 @@ function propName(key: unknown): string | undefined {
 	const k = key as Node | undefined;
 	if (k === undefined) return undefined;
 	if (k.type === "Identifier") return k.name as string;
-	if (k.type === "StringLiteral" || k.type === "NumericLiteral")
-		return String(k.value);
+	if (k.type === "StringLiteral" || k.type === "NumericLiteral") return String(k.value);
 	if (k.type === "PrivateName") return `#${propName(k.id)}`;
 	return undefined;
 }
@@ -115,13 +114,10 @@ const flags: Flag[] = [];
 const failures: string[] = [];
 for (const file of files) {
 	const source = readFileSync(file, "utf8");
-	const plugins: ParserPlugin[] = /\.[jt]sx$/.test(file)
-		? ["typescript", "jsx"]
-		: ["typescript"];
+	const plugins: ParserPlugin[] = /\.[jt]sx$/.test(file) ? ["typescript", "jsx"] : ["typescript"];
 	try {
 		const ast = parse(source, { sourceType: "module", plugins });
-		for (const stmt of ast.program.body)
-			walk(stmt as unknown as Node, undefined, file, flags);
+		for (const stmt of ast.program.body) walk(stmt as unknown as Node, undefined, file, flags);
 	} catch (err) {
 		failures.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
 	}
@@ -138,6 +134,5 @@ if (flags.length === 0) {
 	console.log(`no functions over ${BOUND} lines in ${files.length} files`);
 } else {
 	console.log(`${flags.length} function(s) over ${BOUND} lines:`);
-	for (const f of flags)
-		console.log(`  ${f.file}:${f.line} ${f.name} — ${f.span} lines`);
+	for (const f of flags) console.log(`  ${f.file}:${f.line} ${f.name} — ${f.span} lines`);
 }

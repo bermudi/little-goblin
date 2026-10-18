@@ -47,12 +47,7 @@ import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
-import {
-	buildDestinationClient,
-	buildMemoryClient,
-	type MemoryWorker,
-	startMemoryWorker,
-} from "./memory/mod.ts";
+import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
@@ -306,23 +301,20 @@ async function boot() {
 
 	// Long-term memory is a boot-time snapshot — queue rows bind to the
 	// endpoint+bank hash, so mini-app edits apply on restart, never mid-run.
-	const memoryBootConfig = config.memory;
-	const memoryClient = buildMemoryClient(memoryBootConfig ?? undefined, auth);
-	const memoryState = { lastRecallOk: null as boolean | null, lastRecallAt: null as string | null };
-	// Recall telemetry for /memory status — one closure serves both recall paths.
-	const noteRecall = (ok: boolean): void => {
-		memoryState.lastRecallOk = ok;
-		memoryState.lastRecallAt = new Date().toISOString();
-	};
-	if (memoryClient && memoryBootConfig) {
-		// Destination history (#87): each boot's destination is recorded so
-		// /forget reconstructs the owning client after a change.
-		store.memoryDestinations.record(memoryBootConfig);
-		log.info("memory enabled", {
-			baseUrl: memoryBootConfig.baseUrl,
-			bank: memoryBootConfig.bankId,
-		});
-	}
+	// memory/mod.ts owns the client, recall telemetry and door surfaces;
+	// the retention pause seam is late-bound past the bot.
+	const memory = wireMemory({
+		config: config.memory,
+		auth,
+		store,
+		retention: () => late().retention,
+	});
+	const {
+		client: memoryClient,
+		config: memoryBootConfig,
+		noteRecall,
+		surfaces: memorySurfaces,
+	} = memory;
 
 	// The project domain — the retention outbox rides along whether or
 	// not a memory client exists: pending rows can survive a disable,
@@ -395,16 +387,7 @@ async function boot() {
 		// boot binds configRef/auth/stores and the observation sink.
 		...stepBuilder,
 		makeTools: makeTurnTools,
-		...(memoryClient && memoryBootConfig
-			? {
-					memory: {
-						client: memoryClient,
-						config: memoryBootConfig,
-						contexts: store.memoryContexts,
-						noteRecall,
-					},
-				}
-			: {}),
+		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
 	});
 
 	// One titler for both channels — implicit topics and app first-turn naming.
@@ -415,25 +398,6 @@ async function boot() {
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		appDefaults: () => configRef.current,
 	};
-
-	// The memory surfaces every door answers from (bot commands, mini app
-	// status + browser); the worker seam reads through the wire step — built
-	// after the bot.
-	const memorySurfaces =
-		memoryClient === null
-			? null
-			: {
-					client: memoryClient,
-					clientForTarget: (target: string) => {
-						const destination = store.memoryDestinations.get(target);
-						return destination === null ? null : buildDestinationClient(destination, auth);
-					},
-					contexts: store.memoryContexts,
-					queue: store.memoryQueue,
-					lastRecallOk: () => memoryState.lastRecallOk,
-					lastRecallAt: () => memoryState.lastRecallAt,
-					withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => late().retention(fn),
-				};
 
 	// Turn-write attribution is independent of the reviewer — a manual
 	// skill authored mid-thread is provenance even when reviews are off.

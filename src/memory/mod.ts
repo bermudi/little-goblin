@@ -9,7 +9,7 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { MemoryConfig } from "../config.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "../tags.ts";
 import {
@@ -939,4 +939,80 @@ export function startMemoryWorker(
 			}
 		},
 	};
+}
+
+// ---------- boot wiring (index.ts binds, this module rules) ----------
+
+// The memory stack is a boot-time snapshot: queue rows bind to the
+// endpoint+bank hash, so mini-app edits apply on restart, never
+// mid-run. One factory builds the client, recall telemetry, the
+// turn/tool dep bags and the door surfaces — the drift warn on config
+// write compares this config snapshot.
+export interface MemoryWiringDeps {
+	config: MemoryConfig | undefined;
+	auth: AuthStore;
+	store: Pick<ConversationStore, "memoryDestinations" | "memoryContexts" | "memoryQueue">;
+	/** The retention worker's pause seam — the worker builds after the
+	 *  bot, so surfaces resolve it per call, never at wire time. */
+	retention(): MemoryWorker["withWorkerPaused"];
+}
+
+// The surfaces every door answers from (bot commands, mini app status
+// + browser).
+export interface MemorySurfaces {
+	client: HindsightClient;
+	// Destination history (#87): past boot destinations resolve to their
+	// owning client so /forget still works after an endpoint change.
+	clientForTarget(target: string): HindsightClient | null;
+	contexts: MemoryContexts;
+	queue: MemoryQueue;
+	lastRecallOk(): boolean | null;
+	lastRecallAt(): string | null;
+	withWorkerPaused: MemoryWorker["withWorkerPaused"];
+}
+
+export interface MemoryWiring {
+	client: HindsightClient | null;
+	config: MemoryConfig | undefined;
+	noteRecall(ok: boolean): void;
+	turnDeps: MemoryTurnDeps | undefined;
+	surfaces: MemorySurfaces | null;
+}
+
+export function wireMemory(deps: MemoryWiringDeps): MemoryWiring {
+	const { config, auth, store } = deps;
+	const client = buildMemoryClient(config, auth);
+	const state = { lastRecallOk: null as boolean | null, lastRecallAt: null as string | null };
+	// Recall telemetry for /memory status — one closure serves both recall paths.
+	const noteRecall = (ok: boolean): void => {
+		state.lastRecallOk = ok;
+		state.lastRecallAt = new Date().toISOString();
+	};
+	if (client && config) {
+		// Destination history (#87): each boot's destination is recorded so
+		// /forget reconstructs the owning client after a change.
+		store.memoryDestinations.record(config);
+		log.info("memory enabled", {
+			baseUrl: config.baseUrl,
+			bank: config.bankId,
+		});
+	}
+	const turnDeps =
+		client && config ? { client, config, contexts: store.memoryContexts, noteRecall } : undefined;
+	const surfaces =
+		client === null
+			? null
+			: {
+					client,
+					clientForTarget: (target: string) => {
+						const destination = store.memoryDestinations.get(target);
+						return destination === null ? null : buildDestinationClient(destination, auth);
+					},
+					contexts: store.memoryContexts,
+					queue: store.memoryQueue,
+					lastRecallOk: () => state.lastRecallOk,
+					lastRecallAt: () => state.lastRecallAt,
+					withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => deps.retention()(fn),
+				};
+	return { client, config, noteRecall, turnDeps, surfaces };
 }

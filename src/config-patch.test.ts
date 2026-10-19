@@ -59,6 +59,24 @@ describe("patchConfigText", () => {
 }`);
 	});
 
+	test("a cleared key that survives as own-undefined deletes too", () => {
+		// parseConfig can leave a cleared block as an own `undefined`
+		// value; that must delete like an absent key, not serialize
+		// `undefined` (which crashes the stringifier).
+		const text = `{
+  model: "a/b",
+  // speech to text
+  transcription: { kind: "groq" },
+  operators: [7],
+}`;
+		const out = patch(text, { model: "a/b", transcription: undefined, operators: [7] });
+		expect(out).toBe(`{
+  model: "a/b",
+  // speech to text
+  operators: [7],
+}`);
+	});
+
 	test("the last entry without a trailing comma takes the previous comma with it", () => {
 		const text = `{
   model: "a/b",

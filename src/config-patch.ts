@@ -198,7 +198,13 @@ export function patchConfigText<T extends object>(
 	normalize: (raw: unknown) => T,
 	knownKeys: ReadonlySet<string>,
 ): string | null {
-	const m = merged as Record<string, unknown>;
+	// A cleared ("") block can survive the schema parse as an own
+	// `undefined` value; treat such keys as absent — the same meaning
+	// JSON5.stringify gives them on the canonical path — so clearing
+	// deletes the key instead of serializing `undefined`.
+	const m = Object.fromEntries(
+		Object.entries(merged as Record<string, unknown>).filter(([, v]) => v !== undefined),
+	);
 	let raw: unknown;
 	try {
 		raw = JSON5.parse(text);
@@ -294,7 +300,7 @@ export function patchConfigText<T extends object>(
 	// Never write a patch that doesn't re-parse to the merged config.
 	try {
 		const reparsed = normalize(JSON5.parse(out));
-		if (!deepEqual(reparsed, merged)) {
+		if (!deepEqual(reparsed, m)) {
 			log.warn("config patch verify failed — writing canonical form");
 			return null;
 		}

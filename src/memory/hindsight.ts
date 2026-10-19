@@ -51,12 +51,14 @@ export const memoryDocumentSchema = z.object({
 });
 export type MemoryDocument = z.infer<typeof memoryDocumentSchema>;
 
-export const minScoresSchema = z.object({
-	semantic: z.number().finite().min(-1).max(1).optional(),
-	keyword: z.number().finite().nonnegative().optional(),
-	reranker: z.number().finite().min(0).max(1).optional(),
-	final: z.number().finite().nonnegative().optional(),
-});
+export const minScoresSchema = z
+	.object({
+		semantic: z.number().finite().min(-1).max(1).optional(),
+		keyword: z.number().finite().nonnegative().optional(),
+		reranker: z.number().finite().min(0).max(1).optional(),
+		final: z.number().finite().nonnegative().optional(),
+	})
+	.strict();
 export type RecallMinScores = z.infer<typeof minScoresSchema>;
 const scoresSchema = z.object({
 	semantic: z.number().finite().nullish(),

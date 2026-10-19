@@ -24,7 +24,7 @@ import {
 	cacheContractFresh,
 	type CacheContract,
 } from "./agent/cache-contracts.ts";
-import { authReferences, parseConfig, type Config } from "./config.ts";
+import { authReferences, parseConfigValue, type Config } from "./config.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
 
@@ -286,7 +286,10 @@ function configCheck(home: string): { finding: HealthResult; config?: Config } {
 		}
 		let config: Config;
 		try {
-			config = parseConfig(parsed);
+			// Same disk-load semantics as the runtime: retired delegation
+			// keys are the named compatibility exception, stripped before
+			// strict validation (silently here — the doctor has no log sink).
+			config = parseConfigValue(parsed);
 		} catch {
 			throw new ProbeError("invalid-config-schema-or-model-reference");
 		}

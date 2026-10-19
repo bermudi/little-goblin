@@ -40,8 +40,8 @@ speech); a failure never mints a `transcript` field.
   link gets the full orchestration — cap check, segmentation — so a
   wav-profile fallback (whistle, mimo) still transcodes first. The
   settings form edits the chain like the search/fetch chains — per-entry
-  kind/model/auth/language plus order controls — and a save patches
-  `goblin.json5` in place rather than rewriting it (2026-10-19).
+  kind/model/auth/language plus order controls — and a save rewrites
+  `goblin.json5` as the canonical parsed object (2026-10-19).
 - `openrouter` is the metaprovider: its STT catalog (verified 2026-10-09)
   is one `model:` string away. The dedicated kinds (elevenlabs, gemini,
   mistral, openai) exist for direct billing/privacy control — same data,

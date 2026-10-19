@@ -241,6 +241,14 @@ agent-lane snapshots) — see [Auth](design/auth.md#proton-pass-2026-09-26).
 capability off; each block's policy lives in its area doc). No secrets —
 `auth.jsonl` holds those.
 
+**One canonical object.** A save parses settings through the schema and
+rewrites the file whole (tmp+fsync+rename, existing mode preserved) — text is
+never patched in place. Comments and key order are not configuration and are
+dropped by a save; unknown keys are rejected at load, not stripped, so a typo
+fails loud. Malformed JSON5 or a schema-invalid incumbent also fails loud — a
+save never resets it silently. Save freshness rides the mini app's `If-Match`
+version, so competing saves cannot silently overwrite each other.
+
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself,
 and the operator changes settings from Telegram. Editing the file by hand

@@ -10,6 +10,13 @@ You can edit `goblin.json5` by hand or from the Telegram Settings mini app —
 both write the same file. The mini app refuses to save a config that drops
 your own user id (that would lock you out), and it merges over what's
 currently on disk so a hand-edit you made doesn't get silently discarded.
+A save validates the incoming settings, then rewrites the file whole, as
+one canonical JSON5 object with every default materialized. Comments and
+key order are not configuration and do not survive a save; unknown keys
+anywhere in the file are refused at load rather than silently stripped, so
+a typo fails loud. Save freshness is guarded: the mini app sends the
+version it loaded (`If-Match`), and a save from a stale page is refused
+instead of overwriting a newer one.
 
 ## `goblin.json5`
 

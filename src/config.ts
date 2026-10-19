@@ -19,7 +19,6 @@ import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
-import { patchConfigText } from "./config-patch.ts";
 import { durableWriteFile } from "./durable.ts";
 import { log } from "./log.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
@@ -292,28 +291,36 @@ export const authDefaults = {
 // can't offer it; array-only kind → the UI offers what the config rejects.
 export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
 export const providerSchema = z.discriminatedUnion("kind", [
-	z.object({
-		kind: z.literal("openai-compatible"),
-		baseUrl: z.url(),
-		auth: z.string().min(1),
-	}),
+	z
+		.object({
+			kind: z.literal("openai-compatible"),
+			baseUrl: z.url(),
+			auth: z.string().min(1),
+		})
+		.strict(),
 	// OpenAI Responses protocol — the one chat-family protocol whose tool
 	// outputs carry documents (function_call_output content arrays).
-	z.object({
-		kind: z.literal("responses"),
-		baseUrl: z.url(),
-		auth: z.string().min(1),
-	}),
-	z.object({
-		kind: z.literal("openrouter"),
-		auth: z.string().min(1).default(authDefaults.openrouter),
-	}),
-	z.object({
-		kind: z.literal("codex"),
-		// Codex CLI OAuth file (~/.codex/auth.json when unset) — read and
-		// refreshed in-process; it is not an auth.jsonl record.
-		authFile: z.string().min(1).optional(),
-	}),
+	z
+		.object({
+			kind: z.literal("responses"),
+			baseUrl: z.url(),
+			auth: z.string().min(1),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("openrouter"),
+			auth: z.string().min(1).default(authDefaults.openrouter),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("codex"),
+			// Codex CLI OAuth file (~/.codex/auth.json when unset) — read and
+			// refreshed in-process; it is not an auth.jsonl record.
+			authFile: z.string().min(1).optional(),
+		})
+		.strict(),
 ]);
 
 export const thinkingLevels = ["off", "low", "medium", "high", "xhigh", "max"] as const;
@@ -321,38 +328,47 @@ export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 // Optional long-term memory. auth names an auth.jsonl record (loopback
 // needs none); recall bounds are tight — turns must not wait on memory.
-export const memoryConfigSchema = z.object({
-	baseUrl: hindsightConnectionSchema.shape.baseUrl,
-	bankId: hindsightConnectionSchema.shape.bankId,
-	auth: z.string().min(1).optional(),
-	recallTimeoutMs: z.number().int().min(100).max(10_000).default(MEMORY_DEFAULTS.recallTimeoutMs),
-	maxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.maxTokens),
-	budget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.budget),
-	preferObservations: z.boolean().default(MEMORY_DEFAULTS.preferObservations),
-	minScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.minScores })),
-	searchMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.searchMaxTokens),
-	searchBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.searchBudget),
-	searchTimeoutMs: z.number().int().min(100).max(120_000).default(MEMORY_DEFAULTS.searchTimeoutMs),
-	searchMinScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.searchMinScores })),
-	reflectMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.reflectMaxTokens),
-	reflectBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.reflectBudget),
-	reflectTimeoutMs: z
-		.number()
-		.int()
-		.min(100)
-		.max(300_000)
-		.default(MEMORY_DEFAULTS.reflectTimeoutMs),
-});
+export const memoryConfigSchema = z
+	.object({
+		baseUrl: hindsightConnectionSchema.shape.baseUrl,
+		bankId: hindsightConnectionSchema.shape.bankId,
+		auth: z.string().min(1).optional(),
+		recallTimeoutMs: z.number().int().min(100).max(10_000).default(MEMORY_DEFAULTS.recallTimeoutMs),
+		maxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.maxTokens),
+		budget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.budget),
+		preferObservations: z.boolean().default(MEMORY_DEFAULTS.preferObservations),
+		minScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.minScores })),
+		searchMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.searchMaxTokens),
+		searchBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.searchBudget),
+		searchTimeoutMs: z
+			.number()
+			.int()
+			.min(100)
+			.max(120_000)
+			.default(MEMORY_DEFAULTS.searchTimeoutMs),
+		searchMinScores: minScoresSchema.default(() => ({ ...MEMORY_DEFAULTS.searchMinScores })),
+		reflectMaxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.reflectMaxTokens),
+		reflectBudget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.reflectBudget),
+		reflectTimeoutMs: z
+			.number()
+			.int()
+			.min(100)
+			.max(300_000)
+			.default(MEMORY_DEFAULTS.reflectTimeoutMs),
+	})
+	.strict();
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
 // Image Q&A behind the vision tool — absent = off. mode "auto" adds the
 // tool only while the chat model can't consume images; a file on disk is
 // invisible either way (tool results carry no image bytes).
-export const visionConfigSchema = z.object({
-	model: z.string().min(1),
-	maxTokens: z.number().int().min(1).max(32_768).default(2000),
-	mode: z.enum(["auto", "always"]).default("auto"),
-});
+export const visionConfigSchema = z
+	.object({
+		model: z.string().min(1),
+		maxTokens: z.number().int().min(1).max(32_768).default(2000),
+		mode: z.enum(["auto", "always"]).default("auto"),
+	})
+	.strict();
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
 // "WxH" like "1024x1024" — one validator for the image config block
@@ -366,18 +382,22 @@ export const imageSizeSchema = z
 // baseUrl (openai-compatible/responses): the call is the OpenAI images
 // shape, POST {baseUrl}/images/generations. size is a default for the
 // tool's calls ("WxH" — logfare maps it to width/height upstream).
-export const imageConfigSchema = z.object({
-	model: z.string().min(1),
-	size: imageSizeSchema.optional(),
-});
+export const imageConfigSchema = z
+	.object({
+		model: z.string().min(1),
+		size: imageSizeSchema.optional(),
+	})
+	.strict();
 export type ImageConfig = z.infer<typeof imageConfigSchema>;
 
 // In-process tool composition behind the script tool — absent = off.
 // maxCalls bounds nested tool calls per script; absent falls back to
 // the default at the wiring site.
-export const scriptingConfigSchema = z.object({
-	maxCalls: z.number().int().min(1).max(500).optional(),
-});
+export const scriptingConfigSchema = z
+	.object({
+		maxCalls: z.number().int().min(1).max(500).optional(),
+	})
+	.strict();
 export type ScriptingConfig = z.infer<typeof scriptingConfigSchema>;
 
 // Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
@@ -400,10 +420,12 @@ const harnessNameSchema = z.string().regex(harnessNameRe);
 export const harnessMapSchema = z
 	.record(
 		harnessNameSchema,
-		z.object({
-			kind: z.string().min(1),
-			args: z.array(z.string()).optional(),
-		}),
+		z
+			.object({
+				kind: z.string().min(1),
+				args: z.array(z.string()).optional(),
+			})
+			.strict(),
 	)
 	.refine((h) => Object.keys(h).length > 0, {
 		message: "delegation.harnesses must name at least one harness",
@@ -439,17 +461,20 @@ export const delegationTargetSchema = z
 			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
+	.strict()
 	.refine((t) => (t.machine !== undefined) !== (t.session !== undefined), {
 		message:
 			"a delegation target needs exactly one of machine (saved-machine label) or session (another local session)",
 	});
 export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
 
-export const delegationConfigSchema = z.object({
-	// No cap by design — volume is goblin's judgment, not a knob.
-	machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
-	harnesses: harnessMapSchema,
-});
+export const delegationConfigSchema = z
+	.object({
+		// No cap by design — volume is goblin's judgment, not a knob.
+		machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
+		harnesses: harnessMapSchema,
+	})
+	.strict();
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
 // A container image ref: no leading '-' and a conservative charset —
@@ -462,85 +487,102 @@ export const imageRefSchema = z
 
 // Sandboxed execution — absent or "" = no sandbox tool. Goblin never
 // pulls: `image` must already be in the local store.
-export const sandboxConfigSchema = z.object({
-	image: imageRefSchema.default("docker.io/library/alpine:latest"),
-	// Hours of idleness before a sandbox is reaped on the next sandbox
-	// call; 0 = never reap.
-	idleHours: z.number().int().min(0).default(24),
-	memory: z.string().min(1).default("2g"),
-	cpus: z.number().positive().default(2),
-	pids: z.number().int().min(16).default(512),
-});
+export const sandboxConfigSchema = z
+	.object({
+		image: imageRefSchema.default("docker.io/library/alpine:latest"),
+		// Hours of idleness before a sandbox is reaped on the next sandbox
+		// call; 0 = never reap.
+		idleHours: z.number().int().min(0).default(24),
+		memory: z.string().min(1).default("2g"),
+		cpus: z.number().positive().default(2),
+		pids: z.number().int().min(16).default(512),
+	})
+	.strict();
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
 // Subagents & computer use — absent block = no tools, no harness opened;
 // an absent type = that type is off. Models are configured per type,
 // never guessed; api is the one transport pi-ai speaks to z.ai's
 // Coding Plan endpoint.
-const subagentModelSchema = z.object({
-	auth: z.string().min(1),
-	id: z.string().min(1),
-	baseUrl: z.url(),
-	api: z.literal("openai-completions"),
-	thinking: z.enum(thinkingLevels),
-});
+const subagentModelSchema = z
+	.object({
+		auth: z.string().min(1),
+		id: z.string().min(1),
+		baseUrl: z.url(),
+		api: z.literal("openai-completions"),
+		thinking: z.enum(thinkingLevels),
+	})
+	.strict();
 
 // The managed desktop pool: idleHours 0 = never reap (like sandboxes).
-export const desktopsConfigSchema = z.object({
-	image: imageRefSchema.default("localhost/goblin-desktop:1"),
-	max: z.number().int().min(1).default(3),
-	idleHours: z.number().int().min(0).default(24),
-	memory: z.string().min(1).default("3g"),
-	cpus: z.number().positive().default(2),
-	pids: z.number().int().min(16).default(1024),
-});
+export const desktopsConfigSchema = z
+	.object({
+		image: imageRefSchema.default("localhost/goblin-desktop:1"),
+		max: z.number().int().min(1).default(3),
+		idleHours: z.number().int().min(0).default(24),
+		memory: z.string().min(1).default("3g"),
+		cpus: z.number().positive().default(2),
+		pids: z.number().int().min(16).default(1024),
+	})
+	.strict();
 export type DesktopsConfig = z.infer<typeof desktopsConfigSchema>;
 
-export const subagentsConfigSchema = z.object({
-	maxRuns: z.number().int().min(1).default(3),
-	worker: z.object({ model: subagentModelSchema }).optional(),
-	computer: z.object({ model: subagentModelSchema }).optional(),
-	desktops: desktopsConfigSchema.prefault({}),
-});
+export const subagentsConfigSchema = z
+	.object({
+		maxRuns: z.number().int().min(1).default(3),
+		worker: z.object({ model: subagentModelSchema }).strict().optional(),
+		computer: z.object({ model: subagentModelSchema }).strict().optional(),
+		desktops: desktopsConfigSchema.prefault({}),
+	})
+	.strict();
 export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
 
 // Gmail — absent = no mail tool or watcher. clientId is a public
 // identifier, not a secret; the client secret and SEND token live in
 // auth.jsonl; reads ride gws's auth — the send credential never reaches the model.
-export const mailConfigSchema = z.object({
-	clientId: z.string().min(1),
-	clientSecretAuth: z.string().min(1),
-	sendAuth: z.string().min(1),
-});
+export const mailConfigSchema = z
+	.object({
+		clientId: z.string().min(1),
+		clientSecretAuth: z.string().min(1),
+		sendAuth: z.string().min(1),
+	})
+	.strict();
 export type MailConfig = z.infer<typeof mailConfigSchema>;
 
 // Guest answering in third-party chats — absent = intake off entirely; hand-edited only.
-export const guestConfigSchema = z.object({
-	// One message per reply: the final edit truncates past this, pointing at the bot DM.
-	outputChars: z.number().int().min(500).max(4000).default(3500),
-});
+export const guestConfigSchema = z
+	.object({
+		// One message per reply: the final edit truncates past this, pointing at the bot DM.
+		outputChars: z.number().int().min(500).max(4000).default(3500),
+	})
+	.strict();
 export type GuestConfig = z.infer<typeof guestConfigSchema>;
 
 // Automatic skill saving — absent = off. auth names the auth.jsonl
 // record holding the OpenRouter key behind the System One gate.
-export const reviewerEvidenceSchema = z.object({
-	calls: z.number().int().min(1).max(32).default(8),
-	argChars: z.number().int().min(50).max(4000).default(300),
-	outChars: z.number().int().min(50).max(4000).default(300),
-});
-export const reviewerConfigSchema = z.object({
-	threshold: z.number().min(0).max(1).default(0.8),
-	thresholds: z
-		.object({
-			correction: z.number().min(0).max(1).optional(),
-			procedure: z.number().min(0).max(1).optional(),
-		})
-		.optional(),
-	queueCap: z.number().int().min(1).max(10).default(3),
-	evidence: reviewerEvidenceSchema.prefault({}),
-	model: z.string().min(1).optional(),
-	auth: z.string().min(1),
-});
+export const reviewerEvidenceSchema = z
+	.object({
+		calls: z.number().int().min(1).max(32).default(8),
+		argChars: z.number().int().min(50).max(4000).default(300),
+		outChars: z.number().int().min(50).max(4000).default(300),
+	})
+	.strict();
+export const reviewerConfigSchema = z
+	.object({
+		threshold: z.number().min(0).max(1).default(0.8),
+		thresholds: z
+			.object({
+				correction: z.number().min(0).max(1).optional(),
+				procedure: z.number().min(0).max(1).optional(),
+			})
+			.strict()
+			.optional(),
+		queueCap: z.number().int().min(1).max(10).default(3),
+		evidence: reviewerEvidenceSchema.prefault({}),
+		model: z.string().min(1).optional(),
+		auth: z.string().min(1),
+	})
+	.strict();
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
 // System One decisions — the switch and tuning for the shared client
@@ -551,36 +593,42 @@ export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 // reviewer.auth/DEFAULT_MODEL; model is a bare decision-model id, NOT a
 // "<provider>/<model-id>" chat ref — outside superRefine's provider
 // validation.
-export const system1ConfigSchema = z.object({
-	auth: z.string().min(1),
-	model: z.string().min(1).optional(),
-	// z.url(), not a bare string: a typo must fail at load, not surface
-	// later as a mislabeled transport failure riding the injection
-	// checker's fail-open.
-	baseUrl: z.url().optional(),
-});
+export const system1ConfigSchema = z
+	.object({
+		auth: z.string().min(1),
+		model: z.string().min(1).optional(),
+		// z.url(), not a bare string: a typo must fail at load, not surface
+		// later as a mislabeled transport failure riding the injection
+		// checker's fail-open.
+		baseUrl: z.url().optional(),
+	})
+	.strict();
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
 const cloudTtsSchema = (kind: keyof typeof ttsCloudDefaults) =>
-	z.object({
-		kind: z.literal(kind),
-		model: z.string().min(1).default(ttsCloudDefaults[kind].model),
-		auth: z.string().min(1).default(ttsCloudDefaults[kind].auth),
-		voice: z.string().trim().min(1).optional(),
-	});
+	z
+		.object({
+			kind: z.literal(kind),
+			model: z.string().min(1).default(ttsCloudDefaults[kind].model),
+			auth: z.string().min(1).default(ttsCloudDefaults[kind].auth),
+			voice: z.string().trim().min(1).optional(),
+		})
+		.strict();
 
 export const ttsConfigSchema = z.discriminatedUnion("kind", [
-	z.object({
-		kind: z.literal("edge"),
-		voice: z.string().min(1),
-		rate: z
-			.string()
-			.regex(/^[+-]\d+%$/)
-			.optional(),
-		// Language-cast voices: /voice and the 🔊 button pick by each
-		// reply's language, falling back to `voice`.
-		voices: z.array(z.string().min(1)).optional(),
-	}),
+	z
+		.object({
+			kind: z.literal("edge"),
+			voice: z.string().min(1),
+			rate: z
+				.string()
+				.regex(/^[+-]\d+%$/)
+				.optional(),
+			// Language-cast voices: /voice and the 🔊 button pick by each
+			// reply's language, falling back to `voice`.
+			voices: z.array(z.string().min(1)).optional(),
+		})
+		.strict(),
 	// Cloud speech endpoints — one POST shape (OpenAI's /audio/speech:
 	// model, input, voice?, response_format); the model field picks the
 	// upstream. voice is the upstream's voice id (Fish: a voice-library
@@ -633,22 +681,26 @@ const transcriptionLanguage = z
 const cloudTranscriptionSchema = (
 	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "logfare",
 ) =>
-	z.object({
-		kind: z.literal(kind),
-		model: z.string().min(1).default(transcriptionDefaults[kind].model),
-		auth: z.string().min(1).default(transcriptionDefaults[kind].auth),
-		language: transcriptionLanguage.optional(),
-	});
+	z
+		.object({
+			kind: z.literal(kind),
+			model: z.string().min(1).default(transcriptionDefaults[kind].model),
+			auth: z.string().min(1).default(transcriptionDefaults[kind].auth),
+			language: transcriptionLanguage.optional(),
+		})
+		.strict();
 
 // One chain link — a fallback entry carries no fallbacks of its own,
 // so the chain is depth-one by construction.
-const whistleEntry = z.object({
-	kind: z.literal("whistle"),
-	engine: z.string().min(1).optional(),
-	weights: z.string().min(1).optional(),
-	keywords: z.array(z.string().min(1)).max(100).optional(),
-	language: z.enum(["en", "de", "fr", "es", "it", "nl", "pl"]).optional(),
-});
+const whistleEntry = z
+	.object({
+		kind: z.literal("whistle"),
+		engine: z.string().min(1).optional(),
+		weights: z.string().min(1).optional(),
+		keywords: z.array(z.string().min(1)).max(100).optional(),
+		language: z.enum(["en", "de", "fr", "es", "it", "nl", "pl"]).optional(),
+	})
+	.strict();
 const groqEntry = cloudTranscriptionSchema("groq");
 const openaiEntry = cloudTranscriptionSchema("openai");
 const openrouterEntry = cloudTranscriptionSchema("openrouter");
@@ -657,12 +709,14 @@ const elevenlabsEntry = cloudTranscriptionSchema("elevenlabs");
 const geminiEntry = cloudTranscriptionSchema("gemini");
 // MiMo first-party (api.xiaomimimo.com) — its asr_options.language
 // vocabulary is closed, so it gets the enum, not the ISO free string.
-const mimoEntry = z.object({
-	kind: z.literal("mimo"),
-	model: z.string().min(1).default(transcriptionDefaults.mimo.model),
-	auth: z.string().min(1).default(transcriptionDefaults.mimo.auth),
-	language: z.enum(["auto", "zh", "en"]).optional(),
-});
+const mimoEntry = z
+	.object({
+		kind: z.literal("mimo"),
+		model: z.string().min(1).default(transcriptionDefaults.mimo.model),
+		auth: z.string().min(1).default(transcriptionDefaults.mimo.auth),
+		language: z.enum(["auto", "zh", "en"]).optional(),
+	})
+	.strict();
 const logfareEntry = cloudTranscriptionSchema("logfare");
 
 const transcriptionEntrySchema = z.union([
@@ -713,34 +767,48 @@ export const searchKinds = [
 ] as const;
 
 export const searchEntrySchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("brave"), auth: z.string().min(1).default(authDefaults.brave) }),
-	z.object({ kind: z.literal("exa"), auth: z.string().min(1).default(authDefaults.exa) }),
-	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
-	z.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) }),
-	z.object({
-		kind: z.literal("firecrawl"),
-		auth: z.string().min(1).default(authDefaults.firecrawl),
-	}),
-	z.object({
-		kind: z.literal("parallel"),
-		auth: z.string().min(1).default(authDefaults.parallel),
-	}),
-	z.object({ kind: z.literal("ddg") }),
+	z
+		.object({ kind: z.literal("brave"), auth: z.string().min(1).default(authDefaults.brave) })
+		.strict(),
+	z.object({ kind: z.literal("exa"), auth: z.string().min(1).default(authDefaults.exa) }).strict(),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }).strict(),
+	z
+		.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) })
+		.strict(),
+	z
+		.object({
+			kind: z.literal("firecrawl"),
+			auth: z.string().min(1).default(authDefaults.firecrawl),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("parallel"),
+			auth: z.string().min(1).default(authDefaults.parallel),
+		})
+		.strict(),
+	z.object({ kind: z.literal("ddg") }).strict(),
 ]);
 export const fetchKinds = ["local", "jina", "tavily", "firecrawl", "parallel"] as const;
 
 export const fetchEntrySchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("local") }),
-	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
-	z.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) }),
-	z.object({
-		kind: z.literal("firecrawl"),
-		auth: z.string().min(1).default(authDefaults.firecrawl),
-	}),
-	z.object({
-		kind: z.literal("parallel"),
-		auth: z.string().min(1).default(authDefaults.parallel),
-	}),
+	z.object({ kind: z.literal("local") }).strict(),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }).strict(),
+	z
+		.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) })
+		.strict(),
+	z
+		.object({
+			kind: z.literal("firecrawl"),
+			auth: z.string().min(1).default(authDefaults.firecrawl),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("parallel"),
+			auth: z.string().min(1).default(authDefaults.parallel),
+		})
+		.strict(),
 ]);
 
 const configSchema = z
@@ -825,6 +893,7 @@ const configSchema = z
 				// guests never see it regardless.
 				showReasoning: z.boolean().default(false),
 			})
+			.strict()
 			.default({ dmGapMinutes: 45, richReplies: true, showReasoning: false }),
 		// External HTTPS door for mini apps — nothing in-process assumes
 		// a public IP. "" = unset (the form can't express undefined).
@@ -842,6 +911,7 @@ const configSchema = z
 			.optional(),
 		http: z
 			.object({ port: z.number().int().min(0).max(65535).default(8787) })
+			.strict()
 			.default({ port: 8787 }),
 		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 		memory: z
@@ -878,6 +948,7 @@ const configSchema = z
 		// tailnet is the only lock. Boot-pinned; a flip needs a restart.
 		appToken: z.string().min(1).optional(),
 	})
+	.strict()
 	.transform((cfg) => {
 		// Normalize before merging/writing: changing app defaults must not
 		// silently change Telegram on a legacy config's first save.
@@ -959,6 +1030,60 @@ function configSyntaxError(err: unknown): Error {
 	return new Error(`${paths.config()}${location}: invalid JSON5`);
 }
 
+// Retired delegation keys are the one compatibility exception to the
+// unknown-field rule: named here, stripped with a warning on disk load,
+// and gone from the next canonical save. Anything else unknown is a
+// validation error.
+const RETIRED_DELEGATION_KEYS = {
+	machine: "delegation.machines.<label>.machine (and root for remote paths)",
+	session: "delegation.machines.<label>.session; the own local session is fixed by the service",
+	maxRunning: "no replacement — delegation concurrency is not capped by config",
+} as const;
+
+function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+	const delegation = (raw as Record<string, unknown>).delegation;
+	if (typeof delegation !== "object" || delegation === null || Array.isArray(delegation)) {
+		return raw;
+	}
+	let stripped: Record<string, unknown> | null = null;
+	for (const [key, replacement] of Object.entries(RETIRED_DELEGATION_KEYS)) {
+		if (!Object.hasOwn(delegation, key)) continue;
+		if (warn) {
+			log.warn("retired delegation config key ignored", {
+				path: paths.config(),
+				key: `delegation.${key}`,
+				replacement,
+			});
+		}
+		stripped ??= { ...(delegation as Record<string, unknown>) };
+		delete stripped[key];
+	}
+	if (stripped === null) return raw;
+	return { ...(raw as Record<string, unknown>), delegation: stripped };
+}
+
+function parseConfigText(raw: string): unknown {
+	try {
+		return JSON5.parse(raw);
+	} catch (err) {
+		throw configSyntaxError(err);
+	}
+}
+
+// Disk-facing parses for the one compatibility exception (retired
+// delegation keys): stripped before strict validation. parseConfigFile
+// takes JSON5 text; parseConfigValue takes an already-parsed object for
+// callers that separate syntax errors from schema errors (the doctor
+// probe reports JSON5 location per its own category contract).
+export function parseConfigFile(raw: string, warnRetired = false): Config {
+	return parseConfigValue(parseConfigText(raw), warnRetired);
+}
+
+export function parseConfigValue(raw: unknown, warnRetired = false): Config {
+	return parseConfig(stripRetiredDelegationKeys(raw, warnRetired));
+}
+
 // ENOENT → null; every other failure propagates with the path attached.
 export function loadConfig(): Config | null {
 	let raw: string;
@@ -968,36 +1093,14 @@ export function loadConfig(): Config | null {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
-	let parsed: unknown;
 	try {
-		parsed = JSON5.parse(raw);
-	} catch (err) {
-		throw configSyntaxError(err);
-	}
-	let config: Config;
-	try {
-		config = parseConfig(parsed);
+		return parseConfigFile(raw, true);
 	} catch (error) {
+		// Load failures are broken server state, not caller input: HTTP
+		// callers map ConfigValidationError to 422, so rethrow it plainly.
 		if (error instanceof ConfigValidationError) throw new Error(error.message);
 		throw error;
 	}
-	const retired = z
-		.object({ delegation: z.record(z.string(), z.unknown()).optional() })
-		.parse(parsed);
-	for (const [key, replacement] of Object.entries({
-		machine: "delegation.machines.<label>.machine (and root for remote paths)",
-		session: "delegation.machines.<label>.session; the own local session is fixed by the service",
-		maxRunning: "no replacement — delegation concurrency is not capped by config",
-	})) {
-		if (retired.delegation !== undefined && Object.hasOwn(retired.delegation, key)) {
-			log.warn("retired delegation config key ignored", {
-				path: paths.config(),
-				key: `delegation.${key}`,
-				replacement,
-			});
-		}
-	}
-	return config;
 }
 
 // HTTP callers must distinguish invalid edits (422) from I/O failures (500)
@@ -1009,7 +1112,8 @@ export class ConfigValidationError extends Error {
 	}
 }
 
-// Retired delegation keys strip here; only disk loads warn.
+// Unknown keys anywhere in the object are rejected, not stripped: a typo
+// must fail loudly at load rather than disappear on the next save.
 export function parseConfig(raw: unknown): Config {
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {
@@ -1026,37 +1130,31 @@ export function parseConfig(raw: unknown): Config {
 	return result.data;
 }
 
-// The schema's declared top-level keys — the patcher deletes a key
-// from the file only when the schema owns it (a ""-cleared block);
-// anything else in the text is the operator's and survives verbatim.
-const CONFIG_TOP_KEYS = new Set(Object.keys(configSchema.in.shape));
-
-// A hardened mode on the existing file survives the rewrite.
+// A save replaces the whole file with the parsed object in canonical form.
+// An existing file is read first and must validate: malformed JSON5 or a
+// schema-invalid config is never silently reset to the incoming values.
 export function writeConfig(config: Config): void {
 	const merged = parseConfig(config);
-	let text: string | null = null;
+	const path = paths.config();
+	let current: string | null = null;
 	try {
-		text = readFileSync(paths.config(), "utf8");
+		current = readFileSync(path, "utf8");
 	} catch (err) {
 		// Only a missing file permits initialization. Permission/I/O
 		// failures must reach the caller without replacing existing bytes.
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
-	// Patch the file in place: only the top-level keys whose parsed
-	// value changed get re-serialized — comments, ordering, formatting
-	// and non-schema keys survive a settings save verbatim. A file the
-	// patcher can't reason about still gets the canonical rewrite —
-	// degrading beats corrupting.
-	let patched: string | null;
-	try {
-		patched = text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
-	} catch (err) {
-		// A syntax failure (source or generated patch) aborts the save.
-		// Match loadConfig's safe error boundary; never retain quoted input.
-		if (err instanceof SyntaxError) throw configSyntaxError(err);
-		throw err;
+	if (current !== null) {
+		try {
+			parseConfigFile(current);
+		} catch (error) {
+			// The save path reports an unreadable incumbent as an I/O/state
+			// failure (500), not as an invalid incoming edit (422).
+			if (error instanceof ConfigValidationError) throw new Error(error.message);
+			throw error;
+		}
 	}
-	durableWriteFile(paths.config(), patched ?? `${JSON5.stringify(merged, null, 2)}\n`);
+	durableWriteFile(path, `${JSON5.stringify(merged, null, 2)}\n`);
 }
 
 // Split "<provider>/<model-id>" — model IDs themselves contain slashes

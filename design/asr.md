@@ -210,6 +210,20 @@ speech anywhere, throw = failure. The size-cap decision generalizes:
   browser) cut by real wall time instead of one ~60 ms segment per
   packet. Container pts are never trusted; contiguous decoded frames
   are the truth.
+- The stored artifact gets the same rebuild at upload
+  (`src/agent/recording.ts`, run inside the composer upload's
+  `writeTemp` so it lands before the durable rename): Chromium also
+  stamps packets on the recording device's monotonic clock — a 14 s
+  note sat at pts ≈ uptime and played as ~10 h with dead seeking.
+  The gate is content-probed, never the declared part type (Bun's
+  formData re-types by extension — webm voice notes arrive claiming
+  `video/webm`): audio-only stream, no declared duration, and a
+  matroska/ogg/mp4 container → re-stamp + libopus, and the ref records
+  the honest `audio/*` type. Real video keeps its bytes (the probed
+  video stream vetoes), mp3/wav keep theirs (no Duration element to
+  miss), an unparseable or unfixable upload stores verbatim — a broken
+  note still transcribes and plays, and the upload never fails over a
+  normalization nicety.
 
 ### Wire, UI, docs
 

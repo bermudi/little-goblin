@@ -8,6 +8,7 @@ import {
 	isStoredAttachmentPath,
 	persistAttachment,
 } from "../agent/attachments.ts";
+import { normalizeRecordedAudio } from "../agent/recording.ts";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
@@ -61,18 +62,33 @@ export async function handleAttachmentsRoute(
 			return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
 		}
 		// Same durable pipeline as telegram media — the saved path is what
-		// history's data-attachment part will reference.
+		// history's data-attachment part will reference. The declared
+		// part type is extension-sniffed (voice-note.webm lands as
+		// video/webm); normalization may hand back the honest type.
+		let mediaType = file.type || "application/octet-stream";
 		const saved = await persistAttachment(
 			`app-${randomUUID()}`,
 			file.name || "upload",
 			"app",
 			async (temp) => {
 				await Bun.write(temp, file);
+				// MediaRecorder output is an unbounded stream — no
+				// Duration, and packet pts on the device's clock.
+				// Normalize before the durable rename; a failed fix
+				// keeps the verbatim bytes rather than failing the post.
+				try {
+					mediaType = (await normalizeRecordedAudio(temp, mediaType)).mediaType;
+				} catch (err) {
+					log.warn("app audio normalize failed — upload kept verbatim", err, {
+						filename: file.name,
+						mediaType: file.type,
+					});
+				}
 			},
 		);
 		const ref: AttachmentRef = {
 			path: saved.path,
-			mediaType: file.type || "application/octet-stream",
+			mediaType,
 			filename: file.name || "upload",
 			size: saved.size,
 		};

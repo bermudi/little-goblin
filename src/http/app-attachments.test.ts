@@ -3,6 +3,45 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
+// A recorder-broken webm, MediaRecorder's signature: muxed to a
+// non-seekable pipe so the segment header carries no Duration.
+function genUnboundedWebm(seconds: number): Uint8Array {
+	const gen = Bun.spawnSync([
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		`sine=frequency=440:duration=${seconds}`,
+		"-af",
+		"asetpts=PTS*400",
+		"-c:a",
+		"libopus",
+		"-f",
+		"webm",
+		"pipe:1",
+	]);
+	if (gen.exitCode !== 0) throw new Error(`webm gen: ${gen.stderr.toString()}`);
+	return gen.stdout;
+}
+
+function declaredDuration(path: string): number | null {
+	const r = Bun.spawnSync([
+		"ffprobe",
+		"-v",
+		"error",
+		"-show_entries",
+		"format=duration",
+		"-of",
+		"default=noprint_wrappers=1:nokey=1",
+		path,
+	]);
+	const d = Number.parseFloat(r.stdout.toString().trim());
+	return Number.isFinite(d) ? d : null;
+}
+
 describe("app attachments", () => {
 	test("multipart upload lands durably in workspace/attachments", async () => {
 		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
@@ -53,6 +92,55 @@ describe("app attachments", () => {
 			expect((await call("/api/app/attachments/nope.png")).status).toBe(404);
 			// Bearer-less in token mode is refused like every other route.
 			expect((await call(`/api/app/attachments/${name}`, {}, null)).status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a recorder-broken audio upload is normalized to a seekable file", async () => {
+		if (Bun.which("ffmpeg") === null || Bun.which("ffprobe") === null) return;
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const form = new FormData();
+			form.append(
+				"file",
+				new Blob([genUnboundedWebm(2)], { type: "audio/webm;codecs=opus" }),
+				"voice-note.webm",
+			);
+			const res = await call("/api/app/attachments", { method: "POST", body: form });
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as {
+				ref: { path: string; size: number; mediaType: string };
+			};
+			// The stored artifact declares a real duration, not the
+			// unbounded stream's N/A — players and segmenters see truth.
+			const d = declaredDuration(body.ref.path);
+			expect(d).not.toBeNull();
+			expect(d!).toBeLessThan(10);
+			// Bun's formData sniffs .webm to video/webm; the rewrite
+			// records the honest audio type.
+			expect(body.ref.mediaType).toBe("audio/webm");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an unparseable audio upload keeps its verbatim bytes", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const bytes = new Uint8Array([9, 9, 9, 9, 9]);
+			const form = new FormData();
+			form.append(
+				"file",
+				new Blob([bytes], { type: "audio/webm" }),
+				"voice-note.webm",
+			);
+			const res = await call("/api/app/attachments", { method: "POST", body: form });
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as { ref: { path: string } };
+			// Normalization failure never fails the post — what arrived
+			// is what's stored.
+			expect(readFileSync(body.ref.path)).toEqual(Buffer.from(bytes));
 		} finally {
 			http.stop();
 		}

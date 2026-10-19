@@ -21,6 +21,7 @@ import {
 	HerdrRefusal,
 	makeOperatorHerdr,
 	type HerdrRunResult,
+	type HerdrRunner,
 	type OperatorAgent,
 } from "./herdr.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
@@ -28,6 +29,7 @@ import { Database } from "bun:sqlite";
 import { tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { feedForProject } from "./responsibility-feed.ts";
 import { openWakeStore } from "./wake-store.ts";
+import { responsibilityTool } from "./agent/tools/responsibility.ts";
 
 setLogFile(null);
 
@@ -971,4 +973,86 @@ describe("atomic dispatch claim", () => {
 		db2.close();
 		r.store.close();
 	});
+});
+
+describe("managed prompt authority after Herdr preflight", () => {
+	test.each(["cancel", "revise"] as const)(
+		"%s during delayed agent get prevents prompt submission",
+		async (change) => {
+			const r = rig();
+			const resp = r.svc.accept({
+				projectId: r.projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: "delayed-send",
+				understanding: understanding(),
+				attachments: [{ target: target(), baseline: {} }],
+			}).responsibility;
+			const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+			const calls: string[] = [];
+			const signals: (AbortSignal | undefined)[] = [];
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const record = {
+				agent: "pi",
+				agent_status: "working",
+				pane_id: att.target.paneId,
+				workspace_id: "w1",
+				tab_id: "w1:t1",
+				terminal_id: att.target.terminalId,
+				agent_session: { value: att.target.agentSession },
+			};
+			const wire = (body: unknown): HerdrRunResult => ({
+				code: 0,
+				stdout: JSON.stringify(body),
+				stderr: "",
+			});
+			const run: HerdrRunner = async (args, opts) => {
+				const verb = args.slice(2, 4).join(" ");
+				calls.push(verb);
+				signals.push(opts?.signal);
+				if (verb === "workspace list") return wire({ result: { workspaces: [] } });
+				if (verb === "agent get") {
+					// Deliberately ignore abort here: a successful preflight
+					// must still not grant a fenced turn permission to send.
+					await gate;
+					return wire({ result: { agent: record } });
+				}
+				if (verb === "agent prompt") return wire({ result: { agent: record } });
+				throw new Error(`unexpected Herdr verb: ${verb}`);
+			};
+			const tool = responsibilityTool({
+				resps: r.resps,
+				service: r.svc,
+				projectId: r.projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: "delayed-send",
+				listFor: async () => [],
+				guardedSend: makeManagedSendEdge(makeOperatorHerdr(run)),
+			});
+			if (tool.execute === undefined) throw new Error("missing execute");
+			const abort = new AbortController();
+			const pending = tool.execute(
+				{
+					action: "send",
+					responsibility: resp.responsibilityId,
+					attachment: att.attachmentId,
+					brief: "new brief",
+				},
+				{ toolCallId: "delayed-send", messages: [], context: {}, abortSignal: abort.signal },
+			);
+			await waitUntil(() => calls.includes("agent get"), "Herdr preflight entered");
+			if (change === "cancel") abort.abort();
+			else r.resps.revise(resp.responsibilityId, understanding());
+			release();
+			await pending;
+			expect(calls).toEqual(["workspace list", "agent get"]);
+			expect(signals).toEqual([abort.signal, abort.signal]);
+			const op = r.resps.operationsFor(resp.responsibilityId)[0]!;
+			expect(op.state).toBe(change === "cancel" ? "uncertain" : "refused");
+			if (change === "revise") expect(op.refusal).toBe("stale-revision");
+			r.store.close();
+		},
+	);
 });

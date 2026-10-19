@@ -55,6 +55,7 @@ export type ManagedSend = (
 	brief: string,
 	target: AttachmentTarget,
 	beforeSend?: () => void,
+	signal?: AbortSignal,
 ) => Promise<unknown>;
 
 export interface ResponsibilityService {
@@ -93,7 +94,8 @@ function followupCharter(resp: Responsibility): string {
 // which is honest — the bytes may have crossed to a replacement and an
 // automatic resend would only double the exposure.
 export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): ManagedSend {
-	return async (brief, target, beforeSend) => {
+	return async (brief, target, beforeSend, signal) => {
+		signal?.throwIfAborted();
 		// The adapter is the operator session on the local server — a
 		// target outside that scope would misroute, so it refuses.
 		if (target.server !== "local" || target.session !== OPERATOR_SESSION) {
@@ -115,10 +117,15 @@ export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): Manag
 			target.paneId ?? target.agentName,
 			target.kind,
 			brief,
-			undefined,
+			signal,
 			{
 				identity: { terminalId: target.terminalId, agentSession: target.agentSession },
-				...(beforeSend !== undefined ? { beforeSend } : {}),
+				beforeSend: () => {
+					// Preflight awaits Herdr; a stopped turn must not regain
+					// authority just because that read eventually succeeded.
+					signal?.throwIfAborted();
+					beforeSend?.();
+				},
 			},
 		);
 		if (

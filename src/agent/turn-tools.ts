@@ -7,7 +7,7 @@
 // through this same function so the drift comparison reads the set the
 // resumed attempt would actually get.
 
-import type { RuntimeDeps } from "../runtime.ts";
+import { FencedError, type RuntimeDeps } from "../runtime.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
@@ -96,6 +96,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		filterGuests,
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, accepts, context) => {
+		const epoch = conv.epoch;
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
 		const subagents = deps.subagents();
@@ -247,6 +248,9 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							projectId: conv.projectId,
 							coordinationConversationId: conv.id,
 							journalRunId: context?.runId,
+							assertAuthority: () => {
+								if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
+							},
 							handoverKey: () => {
 								if (context === undefined) {
 									throw new Error("responsibility accept needs a turn run context");

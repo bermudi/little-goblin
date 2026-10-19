@@ -218,3 +218,116 @@ describe("turn-tools managed send linkage", () => {
 		store.close();
 	});
 });
+
+describe("responsibility epoch authority", () => {
+	test.each(["accept", "send"] as const)(
+		"epoch revocation during %s preflight wins without aborting the tool signal",
+		async (action) => {
+			const home = useHome(`goblin-tt-epoch-${tmpDir().slice(-6)}-`);
+			mkdirSync(join(home, "state"), { recursive: true });
+			const store = openStore(join(home, "state", "goblin.sqlite"));
+			const projects = openProjects(store);
+			const project = projects.create({ name: "epoch" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			store.bindProject(conv.id, project.id);
+			const resps = openResponsibilities(store.db);
+			const programs = openPrograms(join(home, "state", "programs.sqlite"));
+			const service = makeResponsibilityService({
+				db: store.db,
+				resps,
+				wakes: openWakeStore(store.db),
+				programs,
+				pump: () => {},
+			});
+			let entered = false;
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let sends = 0;
+			let signal: AbortSignal | undefined;
+			const herdr: OperatorHerdr = {
+				list: async () => [AGENT],
+				read: async () => "",
+				prompt: async (_pane, _kind, _brief, abortSignal, guard) => {
+					signal = abortSignal;
+					entered = true;
+					await gate;
+					expect(abortSignal?.aborted).toBe(false);
+					guard?.beforeSend?.();
+					sends += 1;
+					return { ...AGENT, agent_status: "working" };
+				},
+			};
+			const toolsFor = makeTurnTools({
+				configRef: { current: {} as Config, ttsDown: false },
+				auth: {} as unknown as AuthStore,
+				store,
+				projects,
+				notes: {} as unknown as NoteStore,
+				programs,
+				sendPrivate: async () => {},
+				memory: null,
+				transcribe: async () => null,
+				delegateDeps: () => undefined,
+				operatorHerdr: herdr,
+				mail: () => ({}) as Pick<MailApproval, "requestDraft">,
+				visionDepsFor: () => undefined,
+				sandboxes: {} as unknown as Sandboxes,
+				subagents: () => null,
+				desktops: () => null,
+				subagentsBoot: () => undefined,
+				responsibility: () => ({
+					resps,
+					service,
+					listFor: async () => {
+						if (action === "accept") {
+							entered = true;
+							await gate;
+						}
+						return [AGENT];
+					},
+				}),
+				filterGuests: (_conv, tools) => tools,
+			});
+			const edge = scriptedModel([
+				[toolCallPart("accept", "responsibility", ACCEPT), finishPart("tool-calls")],
+				[...textParts("taken"), finishPart("stop", 10)],
+				[
+					toolCallPart(
+						"send",
+						"responsibility",
+						JSON.stringify({ action: "send", attachment: 1, brief: "follow up" }),
+					),
+					finishPart("tool-calls"),
+				],
+				[...textParts("sent"), finishPart("stop", 10)],
+			]);
+			const runtime = new Runtime({
+				store,
+				buildStep: () => ({ model: edge.model, system: "test" }),
+				makeTools: toolsFor,
+			});
+			if (action === "send") {
+				const first = new HeadlessSink();
+				runtime.submit(conv, userMessage([{ type: "text", text: "take over" }]), first);
+				expect(await first.done).toEqual({ kind: "completed" });
+			}
+			const sink = new HeadlessSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: action }]), sink);
+			await waitUntil(() => entered, "preflight entered");
+			store.bumpEpoch(conv.id);
+			expect(signal?.aborted ?? false).toBe(false);
+			release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			expect(sends).toBe(0);
+			expect(resps.forProject(project.id)).toHaveLength(action === "accept" ? 0 : 1);
+			await waitUntil(() => !runtime.busy(conv.id), "fenced lane drains");
+			programs.close();
+			store.close();
+		},
+	);
+});

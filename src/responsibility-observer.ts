@@ -2,29 +2,34 @@
 // bounded snapshot per Herdr target per tick reconciles every live
 // attachment: cursor, work event, and pending wake commit in ONE
 // transaction, then the dispatcher pumps. Source keys are namespaced
-// by attachment generation so sequence semantics survive reattachment;
-// a repeated poll dedupes to nothing and spends no model call. An
+// by attachment generation and durable reset epoch so reused sequences
+// survive both reattachment and server resets. A repeated poll
+// dedupes to nothing and spends no model call. An
 // unreachable Herdr target is a skipped group — never evidence that
 // its agents vanished. A same-pane replacement is a different
 // attachment: agent_session changes mark identity_changed and the
 // observer leaves the occupant alone until a deliberate reattach.
 
 import type { Database } from "bun:sqlite";
+import { z } from "zod";
 import { log } from "./log.ts";
-import type { OperatorAgent } from "./herdr.ts";
+import { HerdrError, type OperatorAgent } from "./herdr.ts";
 import type { Attachment, ResponsibilityStore } from "./responsibilities.ts";
 import type { WakeStore } from "./wake-store.ts";
 
-export interface ObservedCursor {
+const observedCursorSchema = z.object({
 	/** Last observed state_change_seq — the poll sequence key. */
-	seq: number | null;
-	completionSeq: number | null;
-	status: string;
-	agentSession: string | null;
-	terminalId: string | null;
-	name: string | null;
-	missing: boolean;
-}
+	seq: z.number().int().nonnegative().nullable(),
+	completionSeq: z.number().int().nonnegative().nullable(),
+	status: z.string(),
+	agentSession: z.string().nullable(),
+	terminalId: z.string().nullable(),
+	name: z.string().nullable(),
+	missing: z.boolean(),
+	/** Durable reset namespace; old cursors begin at epoch zero. */
+	epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+});
+export type ObservedCursor = z.infer<typeof observedCursorSchema>;
 
 export interface ObserverDeps {
 	db: Database;
@@ -55,6 +60,7 @@ function matchOf(att: Attachment, agents: OperatorAgent[]): OperatorAgent | null
 function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): ObservedCursor {
 	if (a === null) {
 		return {
+			epoch: prev?.epoch ?? 0,
 			seq: prev?.seq ?? null,
 			completionSeq: prev?.completionSeq ?? null,
 			status: "missing",
@@ -65,6 +71,7 @@ function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): Obser
 		};
 	}
 	return {
+		epoch: prev?.epoch ?? 0,
 		seq: a.state_change_seq,
 		completionSeq: a.completion_seq,
 		status: a.agent_status,
@@ -76,6 +83,7 @@ function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): Obser
 }
 
 const SIGHTED: ReadonlySet<string> = new Set(["attached", "missing"]);
+const WATCHED: ReadonlySet<string> = new Set(["active", "waiting_for_operator", "blocked"]);
 
 export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityObserver {
 	const { db, resps, wakes, pump, list } = deps;
@@ -92,33 +100,60 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		health: "attached" | "missing" | "identity_changed" | null,
 		dev: { sourceKey: string; kind: string; text: string; facts: unknown } | null,
 	): void {
+		// Joins reconcile's transaction, including its lifecycle checks.
+		resps.updateCursor(att.attachmentId, cursor);
+		if (health !== null) resps.setHealth(att.attachmentId, health);
+		if (dev !== null) {
+			wakes.record({
+				sourceKey: dev.sourceKey,
+				conversationId,
+				kind: dev.kind,
+				text: dev.text,
+				facts: dev.facts,
+				origin: "observer",
+				responsibilityId: att.responsibilityId,
+			});
+		}
+	}
+
+	function reconcile(snapshot: Attachment, agents: OperatorAgent[]): void {
 		db.transaction(() => {
-			resps.updateCursor(att.attachmentId, cursor);
-			if (health !== null) resps.setHealth(att.attachmentId, health);
-			if (dev !== null) {
-				wakes.record({
-					sourceKey: dev.sourceKey,
-					conversationId,
-					kind: dev.kind,
-					text: dev.text,
-					facts: dev.facts,
-					origin: "observer",
-					responsibilityId: att.responsibilityId,
+			// list awaited external work. Re-read authority AND cursor in
+			// the same transaction as every write: detach/reattach, pause
+			// and closure must win over that older observation.
+			const att = resps.getAttachment(snapshot.attachmentId);
+			const resp = resps.get(snapshot.responsibilityId);
+			if (
+				att === null ||
+				att.generation !== snapshot.generation ||
+				!SIGHTED.has(att.health) ||
+				resp === null ||
+				!WATCHED.has(resp.status)
+			) {
+				log.info("responsibility observation superseded", {
+					attachment: snapshot.attachmentId,
+					observedGeneration: snapshot.generation,
+					generation: att?.generation,
+					health: att?.health,
+					responsibility: snapshot.responsibilityId,
+					status: resp?.status,
 				});
+				return;
 			}
+			reconcileCurrent(att, resp.coordinationConversationId, agents);
 		})();
 	}
 
-	function reconcile(
+	function reconcileCurrent(
 		att: Attachment,
 		conversationId: string,
 		agents: OperatorAgent[],
 	): void {
-		if (!SIGHTED.has(att.health)) return; // detached/identity_changed: hands off
 		const g = att.generation;
+		const prev = att.cursor === null ? null : observedCursorSchema.parse(att.cursor);
+		let epoch = prev?.epoch ?? 0;
 		const key = (kind: string, seq: string | number) =>
-			`obs:${att.attachmentId}:g${g}:${kind}:${seq}`;
-		const prev = (att.cursor as ObservedCursor | null) ?? null;
+			`obs:${att.attachmentId}:g${g}:e${epoch}:${kind}:${seq}`;
 		const found = matchOf(att, agents);
 
 		if (found === null) {
@@ -136,13 +171,19 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		}
 
 		const cur = cursorFrom(found, prev);
+		const reset = prev !== null && prev.seq !== null && cur.seq !== null && cur.seq < prev.seq;
+		if (reset) {
+			epoch += 1;
+			if (!Number.isSafeInteger(epoch))
+				throw new Error(`attachment ${att.attachmentId}: cursor epoch exhausted`);
+			cur.epoch = epoch;
+		}
 		// Identity first: the same terminal/pane hosting a different
 		// harness session is a replacement — mark it and stop watching.
 		if (
-			prev !== null &&
-			prev.agentSession !== null &&
+			att.target.agentSession !== null &&
 			cur.agentSession !== null &&
-			cur.agentSession !== prev.agentSession
+			cur.agentSession !== att.target.agentSession
 		) {
 			commit(att, conversationId, cur, "identity_changed", {
 				sourceKey: key("identity", cur.agentSession),
@@ -151,7 +192,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				facts: {
 					attachmentId: att.attachmentId,
 					generation: g,
-					from: prev.agentSession,
+					from: att.target.agentSession,
 					to: cur.agentSession,
 				},
 			});
@@ -167,11 +208,12 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			});
 			return;
 		}
-		// Cursor regression — the server reset its sequence. Reconcile
-		// the baseline; never treat an old completion as fresh.
-		if (prev !== null && prev.seq !== null && cur.seq !== null && cur.seq < prev.seq) {
+		// Cursor regression — baseline only for this poll. The persisted
+		// epoch makes a later reused completion number fresh, not a
+		// collision with a development from before the reset.
+		if (reset) {
 			commit(att, conversationId, cur, null, {
-				sourceKey: key("cursor-reset", cur.seq),
+				sourceKey: key("cursor-reset", cur.seq ?? "na"),
 				kind: "cursor-reset",
 				text: `observation sequence for ${att.target.agentName} regressed (${prev.seq} → ${cur.seq})`,
 				facts: { attachmentId: att.attachmentId, generation: g, from: prev.seq, to: cur.seq },
@@ -227,16 +269,18 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// Group live attachments per Herdr target — one list call serves
 		// every attachment on that server/session.
 		{
-			const groups = new Map<
-				string,
-				{ server: string; session: string; atts: { att: Attachment; conv: string }[] }
-			>();
+			const groups = new Map<string, { server: string; session: string; atts: Attachment[] }>();
 			for (const resp of resps.open()) {
+				if (!WATCHED.has(resp.status)) continue;
 				for (const att of resps.attachmentsFor(resp.responsibilityId)) {
 					if (!SIGHTED.has(att.health)) continue;
 					const k = `${att.target.server}${att.target.session}`;
-					const group = groups.get(k) ?? { server: att.target.server, session: att.target.session, atts: [] };
-					group.atts.push({ att, conv: resp.coordinationConversationId });
+					const group = groups.get(k) ?? {
+						server: att.target.server,
+						session: att.target.session,
+						atts: [],
+					};
+					group.atts.push(att);
 					groups.set(k, group);
 				}
 			}
@@ -245,24 +289,19 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				try {
 					agents = await list(group.server, group.session);
 				} catch (err) {
-					// An unavailable target is not a disappearance.
+					// Only a CLI/target failure is an unavailable snapshot.
+					// Malformed output and unexpected errors propagate; they
+					// must not masquerade as normal target unavailability.
+					if (!(err instanceof HerdrError)) throw err;
 					log.warn("responsibility observation unreachable", {
 						server: group.server,
 						session: group.session,
-						attachments: group.atts.map((a) => a.att.attachmentId),
-						error: err instanceof Error ? err.message : String(err),
+						attachments: group.atts.map((a) => a.attachmentId),
+						error: err.message,
 					});
 					continue;
 				}
-				for (const { att, conv } of group.atts) {
-					try {
-						reconcile(att, conv, agents);
-					} catch (err) {
-						log.error("responsibility reconcile failed", err, {
-							attachment: att.attachmentId,
-						});
-					}
-				}
+				for (const att of group.atts) reconcile(att, agents);
 			}
 			// After every transaction has committed — never inside one.
 			pump();

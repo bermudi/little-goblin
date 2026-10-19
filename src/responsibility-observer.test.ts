@@ -6,12 +6,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import type { OperatorAgent } from "./herdr.ts";
+import { HerdrError, type OperatorAgent } from "./herdr.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { tmpDir, useHome } from "./testkit.ts";
+import { deferred, tmpDir, useHome } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 
 setLogFile(null);
@@ -50,13 +50,16 @@ const agent = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
 	...over,
 });
 
-function rig(): Rig {
+function rig(list?: () => Promise<OperatorAgent[]>): Rig {
 	const home = useHome(`goblin-obs-${tmpDir().slice(-6)}-`);
 	mkdirSync(join(home, "state"), { recursive: true });
 	const store = openStore(join(home, "state", "goblin.sqlite"));
 	const projects = openProjects(store);
 	const project = projects.create({ name: "rig" });
-	const conv = store.resolve({ kind: "app", appId: project.slug, chatId: 0, threadId: 0 }, project.dir);
+	const conv = store.resolve(
+		{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+		project.dir,
+	);
 	store.bindProject(conv.id, project.id);
 	const resps = openResponsibilities(store.db);
 	const wakes = openWakeStore(store.db);
@@ -115,7 +118,8 @@ function rig(): Rig {
 				},
 				list: async () => {
 					r.listCalls += 1;
-					if (r.failing) throw new Error("herdr unreachable");
+					if (list) return list();
+					if (r.failing) throw new HerdrError("agent list", "unreachable", "herdr unreachable");
 					return r.agents;
 				},
 			});
@@ -126,7 +130,12 @@ function rig(): Rig {
 				.query(
 					"SELECT source_key AS sourceKey, kind, text, responsibility_id AS responsibilityId FROM work_events ORDER BY event_id",
 				)
-				.all() as { sourceKey: string; kind: string; text: string; responsibilityId: string | null }[];
+				.all() as {
+				sourceKey: string;
+				kind: string;
+				text: string;
+				responsibilityId: string | null;
+			}[];
 		},
 	};
 	return r;
@@ -220,6 +229,146 @@ describe("responsibility observer", () => {
 		r.agents = [agent({ agent_status: "blocked", state_change_seq: 4 })];
 		await r.observe();
 		expect(r.eventsFor()).toHaveLength(1);
+		r.store.close();
+	});
+
+	for (const change of [
+		"detach",
+		"reattach",
+		"identity_changed",
+		"paused",
+		"cancelled",
+		"completed",
+	] as const) {
+		test(`in-flight observation cannot overwrite ${change}`, async () => {
+			const gate = deferred<OperatorAgent[]>();
+			const r = rig(() => gate.promise);
+			const observing = r.observe();
+			expect(r.listCalls).toBe(1); // Awaiting the external list, not a timer.
+			if (change === "detach") r.resps.detach(r.attId);
+			else if (change === "reattach") {
+				const att = r.resps.getAttachment(r.attId)!;
+				r.resps.reattach(r.attId, { ...att.target, agentSession: "deliberate-new" }, {});
+			} else if (change === "identity_changed") r.resps.setHealth(r.attId, change);
+			else r.resps.setStatus(r.respId, change);
+			const expected = r.resps.getAttachment(r.attId);
+			gate.resolve([]); // Would otherwise mark missing and queue a wake.
+			await observing;
+			expect(r.resps.getAttachment(r.attId)).toEqual(expected);
+			expect(r.eventsFor()).toHaveLength(0);
+			expect(r.store.db.query("SELECT * FROM wake_deliveries").all()).toHaveLength(0);
+			r.store.close();
+		});
+	}
+
+	for (const baseline of ["reattach", "null-observation"] as const) {
+		test(`replacement is compared with the durable binding after ${baseline}`, async () => {
+			const r = rig();
+			if (baseline === "reattach") {
+				const att = r.resps.getAttachment(r.attId)!;
+				r.resps.reattach(r.attId, att.target, {});
+				expect(r.resps.getAttachment(r.attId)!.cursor).toBeNull();
+			} else {
+				r.agents = [agent({ agent_session: null, state_change_seq: 2 })];
+				await r.observe();
+			}
+			r.agents = [agent({ agent_session: "replacement", completion_seq: 1, state_change_seq: 3 })];
+			await r.observe();
+			expect(r.resps.getAttachment(r.attId)!.health).toBe("identity_changed");
+			expect(r.eventsFor().map((e) => e.kind)).toEqual(["identity-changed"]);
+			expect(r.resps.getAttachment(r.attId)!.target.agentSession).toBe("sess-abc");
+			r.store.close();
+		});
+	}
+
+	test("paused responsibilities neither poll nor develop; resume can observe completion", async () => {
+		const r = rig();
+		const att = r.resps.getAttachment(r.attId);
+		r.resps.setStatus(r.respId, "paused");
+		for (const agents of [
+			[],
+			[agent({ agent_status: "blocked" })],
+			[agent({ completion_seq: 1, state_change_seq: 3 })],
+		]) {
+			r.agents = agents;
+			await r.observe();
+		}
+		expect(r.listCalls).toBe(0);
+		expect(r.resps.getAttachment(r.attId)).toEqual(att);
+		expect(r.eventsFor()).toHaveLength(0);
+		expect(r.store.db.query("SELECT * FROM wake_deliveries").all()).toHaveLength(0);
+		r.resps.setStatus(r.respId, "active");
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["done-candidate"]);
+		r.store.close();
+	});
+
+	test("reset epochs durably distinguish reused completion and reset numbers", async () => {
+		const r = rig();
+		r.agents = [agent({ state_change_seq: 10, completion_seq: 1 })];
+		await r.observe();
+		for (let epoch = 1; epoch <= 2; epoch++) {
+			r.agents = [agent({ state_change_seq: 0, completion_seq: 0 })];
+			await r.observe();
+			expect(r.resps.getAttachment(r.attId)!.cursor).toMatchObject({ epoch });
+			// rig recreates the observer each poll: identity must live on disk.
+			r.agents = [agent({ state_change_seq: 1, completion_seq: 1 })];
+			await r.observe();
+			await r.observe(); // stable duplicate within this epoch
+		}
+		const events = r.eventsFor();
+		expect(events.filter((e) => e.kind === "done-candidate")).toHaveLength(3);
+		expect(events.filter((e) => e.kind === "cursor-reset")).toHaveLength(2);
+		expect(new Set(events.map((e) => e.sourceKey)).size).toBe(5);
+		r.store.close();
+	});
+
+	test("mutation failure rejects observation and rolls back cursor, health, event and wake", async () => {
+		const r = rig();
+		const before = r.resps.getAttachment(r.attId);
+		r.store.db.exec(`CREATE TRIGGER reject_observer_wake BEFORE INSERT ON wake_events
+			BEGIN SELECT RAISE(ABORT, 'observer wake storage failed'); END`);
+		r.agents = [];
+		await expect(r.observe()).rejects.toThrow("observer wake storage failed");
+		expect(r.resps.getAttachment(r.attId)).toEqual(before);
+		expect(r.eventsFor()).toHaveLength(0);
+		expect(r.store.db.query("SELECT * FROM wake_deliveries").all()).toHaveLength(0);
+		expect(r.pumps).toBe(0);
+		r.store.close();
+	});
+
+	test("JSON corrupted during list is re-read at commit and rejects instead of being overwritten", async () => {
+		const gate = deferred<OperatorAgent[]>();
+		const r = rig(() => gate.promise);
+		const observing = r.observe();
+		r.store.db
+			.query("UPDATE attachments SET cursor_json = ? WHERE attachment_id = ?")
+			.run("{broken", r.attId);
+		gate.resolve([agent({ completion_seq: 1 })]);
+		await expect(observing).rejects.toBeInstanceOf(SyntaxError);
+		expect(r.eventsFor()).toHaveLength(0);
+		expect(r.pumps).toBe(0);
+		r.store.close();
+	});
+
+	test("invalid cursor JSON shape fails validation, never defaults to a fresh baseline", async () => {
+		const r = rig();
+		r.resps.updateCursor(r.attId, {});
+		await expect(r.observe()).rejects.toThrow();
+		expect(r.eventsFor()).toHaveLength(0);
+		expect(r.pumps).toBe(0);
+		r.store.close();
+	});
+
+	test("malformed adapter output propagates rather than looking unreachable", async () => {
+		const error = new Error("herdr agent list: stdout is not JSON");
+		const r = rig(async () => {
+			throw error;
+		});
+		const before = r.resps.getAttachment(r.attId);
+		await expect(r.observe()).rejects.toBe(error);
+		expect(r.resps.getAttachment(r.attId)).toEqual(before);
+		expect(r.pumps).toBe(0);
 		r.store.close();
 	});
 });

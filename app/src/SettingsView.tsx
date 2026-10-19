@@ -688,9 +688,7 @@ function TrFallbackEditor({
 							onChange={(ev) => {
 								const kind = kinds.find((k) => k === ev.target.value);
 								if (kind === undefined) return;
-								onChange(
-									entries.map((x, j) => (j === i ? switchTranscriptionKind(x, kind) : x)),
-								);
+								onChange(entries.map((x, j) => (j === i ? switchTranscriptionKind(x, kind) : x)));
 							}}
 						>
 							{kinds.map((k) => (
@@ -731,9 +729,8 @@ function TrFallbackEditor({
 									name={effective}
 									onStored={(n) => {
 										onSecretStored(n);
-										onChange((current) =>
-											current.map((x, j) => (j === i ? { ...x, auth: n } : x)),
-										);
+										// Only an unchanged, still-present entry owns this response.
+										onChange((current) => current.map((x) => (x === e ? { ...x, auth: n } : x)));
 									}}
 								/>
 							</>
@@ -1813,9 +1810,7 @@ export function SettingsView({
 														transcription: {
 															...d.transcription,
 															fallbacks:
-																typeof next === "function"
-																	? next(d.transcription.fallbacks)
-																	: next,
+																typeof next === "function" ? next(d.transcription.fallbacks) : next,
 														},
 													},
 										)

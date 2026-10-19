@@ -258,6 +258,55 @@ describe("main branch regressions", () => {
 		}
 	}
 
+	for (const edit of ["reorder", "remove target", "edit target"] as const) {
+		test(`transcription: delayed Store preserves ${edit} and the saved fallbacks`, async () => {
+			settings = parseConfig({
+				...SETTINGS,
+				transcription: {
+					kind: "whistle",
+					fallbacks: [{ kind: "groq" }, { kind: "openai", auth: "openai" }],
+				},
+			});
+			await mount();
+			await click(
+				[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Voice")),
+			);
+			const cards = () => [...container.querySelectorAll(".chain-card")];
+			const authInput = (card: Element) =>
+				card.querySelector<HTMLInputElement>('input[aria-label$="secret name"]')!;
+			await typeInto(authInput(cards()[0]!), "");
+			await startStore(cards()[0]!);
+			let expected = [
+				{ kind: "groq" as const, auth: "groq", model: transcriptionDefaults.groq.model },
+				{ kind: "openai" as const, auth: "openai", model: transcriptionDefaults.openai.model },
+			];
+			if (edit === "reorder") {
+				await click(cards()[0]!.querySelector('[aria-label="move fallback 1 down"]'));
+				expected.reverse();
+			} else if (edit === "remove target") {
+				await click(cards()[0]!.querySelector('[aria-label="remove fallback 1"]'));
+				expected = expected.slice(1);
+			} else {
+				await typeInto(authInput(cards()[0]!), "edited");
+				expected[0]!.auth = "edited";
+			}
+			await act(async () => secretGate.resolve());
+			await settle();
+			expect(
+				cards().map((card) => ({
+					kind: card.querySelector("select")!.value,
+					auth: authInput(card).value,
+				})),
+			).toEqual(expected.map(({ kind, auth }) => ({ kind, auth })));
+			await waitFor(
+				() => savedBodies.length > 0 && lastDirty() === false,
+				"updated transcription save",
+			);
+			const transcription = savedBodies.at(-1)?.transcription;
+			expect(transcription && transcription.fallbacks).toEqual(expected);
+		});
+	}
+
 	test("changing a chain provider clears the pending password before Store", async () => {
 		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
 		await openWeb();

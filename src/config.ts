@@ -950,6 +950,15 @@ export type FetchConfig = NonNullable<Config["fetch"]>;
 
 // ---------- load / write ----------
 
+function configSyntaxError(err: unknown): Error {
+	// JSON5 messages quote input. Only its numeric location is safe to retain.
+	const line =
+		typeof err === "object" && err !== null && "lineNumber" in err ? err.lineNumber : undefined;
+	const location =
+		typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
+	return new Error(`${paths.config()}${location}: invalid JSON5`);
+}
+
 // ENOENT → null; every other failure propagates with the path attached.
 export function loadConfig(): Config | null {
 	let raw: string;
@@ -963,12 +972,7 @@ export function loadConfig(): Config | null {
 	try {
 		parsed = JSON5.parse(raw);
 	} catch (err) {
-		// JSON5 messages quote input. Only its numeric location is safe to retain.
-		const line =
-			typeof err === "object" && err !== null && "lineNumber" in err ? err.lineNumber : undefined;
-		const location =
-			typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
-		throw new Error(`${paths.config()}${location}: invalid JSON5`);
+		throw configSyntaxError(err);
 	}
 	let config: Config;
 	try {
@@ -1033,16 +1037,25 @@ export function writeConfig(config: Config): void {
 	let text: string | null = null;
 	try {
 		text = readFileSync(paths.config(), "utf8");
-	} catch {
-		// No readable file — the first write is canonical.
+	} catch (err) {
+		// Only a missing file permits initialization. Permission/I/O
+		// failures must reach the caller without replacing existing bytes.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	// Patch the file in place: only the top-level keys whose parsed
 	// value changed get re-serialized — comments, ordering, formatting
 	// and non-schema keys survive a settings save verbatim. A file the
 	// patcher can't reason about still gets the canonical rewrite —
 	// degrading beats corrupting.
-	const patched =
-		text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
+	let patched: string | null;
+	try {
+		patched = text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
+	} catch (err) {
+		// A syntax failure (source or generated patch) aborts the save.
+		// Match loadConfig's safe error boundary; never retain quoted input.
+		if (err instanceof SyntaxError) throw configSyntaxError(err);
+		throw err;
+	}
 	durableWriteFile(paths.config(), patched ?? `${JSON5.stringify(merged, null, 2)}\n`);
 }
 

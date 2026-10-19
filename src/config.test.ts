@@ -32,7 +32,7 @@ import {
 	transcriptionSchema,
 	writeConfig,
 } from "./config.ts";
-import { setLogFile } from "./log.ts";
+import { log, setLogFile } from "./log.ts";
 import { useHome } from "./testkit.ts";
 
 // ----- parseConfig (object input): value/throw tables -----
@@ -610,10 +610,99 @@ describe("goblin.json5", () => {
 		const out = readFileSync(p, "utf8");
 		expect(out).toContain("// never lose this");
 		expect(out).toContain("experimental: { notInSchema: true }, // the operator's own field");
-		expect(out).toContain('thinking: \'high\'');
+		expect(out).toContain("thinking: 'high'");
 		expect(out).toContain('model: "zai/glm-4.6",'); // untouched line verbatim
 		expect(loadConfig()!.thinking).toBe("high");
 	});
+
+	for (const configured of [false, true]) {
+		test(`writeConfig clears optional integrations without losing comments (configured=${configured})`, () => {
+			useHome("goblin-cfg-");
+			const original = parseConfig({
+				...valid,
+				...(configured
+					? {
+							transcription: { kind: "groq" },
+							search: [{ kind: "brave" }],
+							fetch: [{ kind: "jina" }],
+						}
+					: {}),
+			});
+			const { transcription, search, fetch, ...rest } = original;
+			const text = `// keep this comment\n${JSON.stringify(
+				{
+					...rest,
+					experimental: { keep: true },
+					...(configured ? { transcription, search, fetch } : {}),
+				},
+				null,
+				2,
+			)}\n`;
+			writeFileSync(paths.config(), text);
+			const cleared = parseConfig({ ...original, transcription: "", search: "", fetch: "" });
+			expect(Object.hasOwn(cleared, "transcription")).toBe(true);
+			expect(cleared.transcription).toBeUndefined();
+
+			writeConfig(cleared);
+
+			const out = readFileSync(paths.config(), "utf8");
+			expect(out).toContain("// keep this comment");
+			expect(out).toContain('"experimental": {\n    "keep": true\n  }');
+			const loaded = loadConfig()!;
+			for (const key of ["transcription", "search", "fetch"] as const) {
+				expect(loaded[key]).toBeUndefined();
+				expect(out).not.toContain(`"${key}":`);
+			}
+			if (!configured) expect(out).toBe(text);
+		});
+	}
+
+	test("writeConfig initializes a missing file", () => {
+		useHome("goblin-cfg-");
+		writeConfig(valid);
+		expect(loadConfig()).toEqual(parseConfig(valid));
+	});
+
+	test("writeConfig can enable an integration after a comma-less tail comment", () => {
+		useHome("goblin-cfg-");
+		const original = parseConfig(valid);
+		const text = JSON.stringify({ ...original, experimental: true }, null, 2).replace(
+			/\n}$/,
+			" // tail note\n}",
+		);
+		writeFileSync(paths.config(), text);
+		writeConfig({ ...original, transcription: { kind: "whistle" } });
+		expect(loadConfig()!.transcription).toEqual({ kind: "whistle" });
+		expect(readFileSync(paths.config(), "utf8")).toContain('"experimental": true, // tail note');
+	});
+
+	test("writeConfig leaves malformed JSON5 intact", () => {
+		useHome("goblin-cfg-");
+		const text = '// keep this comment\n{model: "unterminated}';
+		writeFileSync(paths.config(), text);
+		expect(() => writeConfig(valid)).toThrow(`${paths.config()}:2: invalid JSON5`);
+		expect(readFileSync(paths.config(), "utf8")).toBe(text);
+	});
+
+	test.skipIf(process.getuid?.() === 0)(
+		"writeConfig propagates EACCES and leaves the file intact",
+		() => {
+			useHome("goblin-cfg-");
+			const p = paths.config();
+			const text = `// keep this comment\n${JSON.stringify({ ...valid, experimental: true })}\n`;
+			writeFileSync(p, text);
+			chmodSync(p, 0o000);
+			try {
+				expect(() => readFileSync(p, "utf8")).toThrow(expect.objectContaining({ code: "EACCES" }));
+				expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow(
+					expect.objectContaining({ code: "EACCES" }),
+				);
+			} finally {
+				chmodSync(p, 0o600);
+			}
+			expect(readFileSync(p, "utf8")).toBe(text);
+		},
+	);
 
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome("goblin-cfg-");
@@ -1211,5 +1300,22 @@ describe("config parser safety", () => {
 		expect(safeFailure(() => loadConfig()).message).toBe(
 			`${join(dir, "goblin.json5")}:2: invalid JSON5`,
 		);
+	});
+
+	test("write errors and their logs omit malformed file input without replacing it", () => {
+		const dir = useHome("goblin-cfg-");
+		const text = `{\nmodel: ${sentinel}\n}`;
+		writeFileSync(paths.config(), text);
+		const err = safeFailure(() => writeConfig(valid));
+		expect(err.message).toBe(`${paths.config()}:2: invalid JSON5`);
+		const logPath = join(dir, "config.log");
+		setLogFile(logPath);
+		try {
+			log.error("fixture config write failed", err);
+		} finally {
+			setLogFile(null);
+		}
+		expect(readFileSync(logPath, "utf8")).not.toContain(sentinel);
+		expect(readFileSync(paths.config(), "utf8")).toBe(text);
 	});
 });

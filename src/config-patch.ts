@@ -7,7 +7,8 @@
 // config dropped is deleted, new keys append before the closing
 // brace. Anything the scanner can't safely read — a non-object root,
 // a duplicate key — returns null and the caller writes the canonical
-// stringify instead: a save degrades, it never corrupts.
+// stringify instead. Invalid JSON5 and normalization errors propagate:
+// an unreadable config must not be replaced.
 
 import JSON5 from "json5";
 import { log } from "./log.ts";
@@ -31,7 +32,8 @@ interface Entry {
 function skipBlank(text: string, i: number): number {
 	const n = text.length;
 	for (;;) {
-		while (i < n && (text[i] === " " || text[i] === "\t" || text[i] === "\n" || text[i] === "\r")) i++;
+		while (i < n && (text[i] === " " || text[i] === "\t" || text[i] === "\n" || text[i] === "\r"))
+			i++;
 		if (text.startsWith("//", i)) {
 			const nl = text.indexOf("\n", i);
 			i = nl === -1 ? n : nl + 1;
@@ -82,13 +84,9 @@ function scanEntries(text: string): { entries: Entry[]; rootEnd: number } | null
 		let key: string;
 		if (text[i] === '"' || text[i] === "'") {
 			const kEnd = stringEnd(text, i);
-			try {
-				const parsed: unknown = JSON5.parse(text.slice(i, kEnd));
-				if (typeof parsed !== "string") return null;
-				key = parsed;
-			} catch {
-				return null;
-			}
+			const parsed: unknown = JSON5.parse(text.slice(i, kEnd));
+			if (typeof parsed !== "string") return null;
+			key = parsed;
 			i = kEnd;
 		} else {
 			const m = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(text.slice(i));
@@ -101,15 +99,17 @@ function scanEntries(text: string): { entries: Entry[]; rootEnd: number } | null
 		i = skipBlank(text, i + 1);
 		const valueStart = i;
 		// Scan the value until a depth-0 "," or the closing "}". Strings
-		// and comments inside it are skipped whole; a comment sitting in
-		// the gap between value and terminator is part of the span (a
-		// changed value takes its attached note with it).
+		// and comments inside it are skipped whole. Track the last value
+		// token separately from trailing comments: a new comma belongs
+		// before a tail "// note", never inside it.
 		let depth = 0;
 		let term = -1;
+		let valueEnd = valueStart;
 		while (i < n) {
 			const c = text[i]!;
 			if (c === '"' || c === "'") {
 				i = stringEnd(text, i);
+				valueEnd = i;
 				continue;
 			}
 			if (text.startsWith("//", i)) {
@@ -126,6 +126,7 @@ function scanEntries(text: string): { entries: Entry[]; rootEnd: number } | null
 			if (c === "{" || c === "[" || c === "(") {
 				depth++;
 				i++;
+				valueEnd = i;
 				continue;
 			}
 			if (c === "}" || c === "]" || c === ")") {
@@ -137,6 +138,7 @@ function scanEntries(text: string): { entries: Entry[]; rootEnd: number } | null
 				}
 				depth--;
 				i++;
+				valueEnd = i;
 				continue;
 			}
 			if (c === "," && depth === 0) {
@@ -144,13 +146,9 @@ function scanEntries(text: string): { entries: Entry[]; rootEnd: number } | null
 				break;
 			}
 			i++;
+			if (!" \t\n\r".includes(c)) valueEnd = i;
 		}
 		if (term === -1) return null;
-		// The value token's end — trailing whitespace before the
-		// terminator is the entry's, not the value's, so a rewrite never
-		// makes "}" hug and a deletion leaves the file's line rhythm.
-		let valueEnd = term;
-		while (valueEnd > valueStart && " \t\n\r".includes(text[valueEnd - 1]!)) valueEnd--;
 		const commaStart = text[term] === "," ? term : -1;
 		entries.push({
 			key,
@@ -175,15 +173,23 @@ function serializeAt(value: unknown, indent: string): string {
 function deepEqual(a: unknown, b: unknown): boolean {
 	if (Object.is(a, b)) return true;
 	if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-	if (Array.isArray(a) !== Array.isArray(b)) return false;
-	const ak = Object.keys(a);
-	const bk = Object.keys(b);
+	if (Array.isArray(a) || Array.isArray(b)) {
+		return (
+			Array.isArray(a) &&
+			Array.isArray(b) &&
+			a.length === b.length &&
+			a.every((value: unknown, i: number) => deepEqual(value, b[i]))
+		);
+	}
+	// Optional own-properties holding undefined serialize as absent.
+	// Verification must use that same meaning or a clear forces a
+	// canonical rewrite, discarding comments and unknown keys.
+	const ar = a as Record<string, unknown>;
+	const br = b as Record<string, unknown>;
+	const ak = Object.keys(ar).filter((k) => ar[k] !== undefined);
+	const bk = Object.keys(br).filter((k) => br[k] !== undefined);
 	if (ak.length !== bk.length) return false;
-	return ak.every(
-		(k) =>
-			Object.hasOwn(b, k) &&
-			deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
-	);
+	return ak.every((k) => Object.hasOwn(br, k) && deepEqual(ar[k], br[k]));
 }
 
 // The one public verb. merged is the fully-parsed Config about to be
@@ -199,12 +205,7 @@ export function patchConfigText<T extends object>(
 	knownKeys: ReadonlySet<string>,
 ): string | null {
 	const m = merged as Record<string, unknown>;
-	let raw: unknown;
-	try {
-		raw = JSON5.parse(text);
-	} catch {
-		return null;
-	}
+	const raw: unknown = JSON5.parse(text);
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
 	const rawCfg = raw as Record<string, unknown>;
 	const scanned = scanEntries(text);
@@ -215,20 +216,19 @@ export function patchConfigText<T extends object>(
 
 	// Replacements and deletions, applied right-to-left over the text.
 	const edits: { start: number; end: number; text: string }[] = [];
-	for (const [idx, e] of entries.entries()) {
+	const retained: Entry[] = [];
+	for (const e of entries) {
 		// Zod's output keeps cleared optionals as own-properties holding
 		// undefined — to the file that's "absent" (a ""-cleared block the
 		// schema owns deletes; an unknown one keeps its bytes).
 		const mergedHas = Object.hasOwn(m, e.key) && m[e.key] !== undefined;
 		if (!mergedHas) {
-			if (!knownKeys.has(e.key)) continue; // schema never heard of it — verbatim
-			if (e.commaStart === -1 && idx > 0) {
-				// Last entry without a trailing comma: the comma to eat
-				// lives on the previous entry's tail — the span covers the
-				// newline + indent before this key by itself.
-				edits.push({ start: entries[idx - 1]!.end - 1, end: e.valueEnd, text: "" });
+			if (!knownKeys.has(e.key)) {
+				retained.push(e); // schema never heard of it — verbatim
 				continue;
 			}
+			// JSON5 permits a trailing comma. Leave the preceding entry's
+			// comma alone so adjacent tail deletions never overlap.
 			// Whole-line removal when the key leads its line; the trailing
 			// comma and the line's own newline go with it so no blank
 			// line survives.
@@ -242,6 +242,7 @@ export function patchConfigText<T extends object>(
 			edits.push({ start, end, text: "" });
 			continue;
 		}
+		retained.push(e);
 		// The raw on-disk value vs the merged value: a key whose bytes
 		// only differ in formatting compares equal and stays verbatim;
 		// a semantically different block (defaults to materialize, a
@@ -272,7 +273,7 @@ export function patchConfigText<T extends object>(
 		inserts.push(`${indent}${k}: ${serializeAt(m[k], indent)},\n`);
 	}
 	if (inserts.length > 0) {
-		const last = entries[entries.length - 1];
+		const last = retained.at(-1);
 		// The previous tail needs its comma before new entries land. When
 		// its value hugs "}" (last.valueEnd === rootEnd) the comma and the
 		// insert run splice at the same offset — fold them into one edit,
@@ -295,14 +296,9 @@ export function patchConfigText<T extends object>(
 	}
 
 	// Never write a patch that doesn't re-parse to the merged config.
-	try {
-		const reparsed = normalize(JSON5.parse(out));
-		if (!deepEqual(reparsed, merged)) {
-			log.warn("config patch verify failed — writing canonical form");
-			return null;
-		}
-	} catch (err) {
-		log.warn("config patch verify failed — writing canonical form", err);
+	const reparsed = normalize(JSON5.parse(out));
+	if (!deepEqual(reparsed, merged)) {
+		log.warn("config patch verify failed — writing canonical form");
 		return null;
 	}
 	return out;

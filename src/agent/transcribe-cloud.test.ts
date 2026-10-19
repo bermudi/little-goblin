@@ -29,9 +29,8 @@ interface SeenRequest {
 	body: FormData;
 }
 
-// A fetch fake that records the request and answers with a canned
-// response — the pinned bodies below are the verbatim shapes recorded
-// in design/asr.md → Verbatim contracts (probed live 2026-10-09).
+// Records the request, answers a canned response — the pinned bodies
+// below are the verbatim shapes probed live 2026-10-09.
 const fakeFetch = (status: number, body: string) => {
 	const seen: SeenRequest[] = [];
 	const fn = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -60,8 +59,7 @@ describe("groqEngine", () => {
 	test("posts multipart with the resolved key and returns the text", async () => {
 		const { fn, last } = fakeFetch(
 			200,
-			// Groq without response_format=verbose_json answers the
-			// minimal OpenAI-compatible shape.
+			// Groq without verbose_json answers the minimal shape.
 			JSON.stringify({ text: " Hey Goblin, please turn off the kitchen lights." }),
 		);
 		const engine = groqEngine(
@@ -171,8 +169,7 @@ describe("groqEngine", () => {
 	});
 });
 
-// Pinned live bodies for the other kinds (design/asr.md → Verbatim
-// contracts; openrouter-ogg and mimo probed live during implementation).
+// Pinned live bodies; openrouter-ogg and mimo probed during implementation.
 describe("openaiEngine", () => {
 	test("success returns the text; 401 renders the pinned shape", async () => {
 		const ok = fakeFetch(200, JSON.stringify({ text: "call me back" }));
@@ -238,10 +235,8 @@ describe("mistralEngine", () => {
 	});
 });
 
-// Logfare documents the OpenAI transcriptions wire
-// (https://logfare.ai/docs) — pinned here from the docs; the fixture is
-// unverified live until an operator provisions a logfare auth record
-// (same caveat as gemini on landing).
+// Logfare's documented wire (logfare.ai/docs) — unverified live until
+// an operator provisions a logfare auth record.
 describe("logfareEngine", () => {
 	test("posts multipart with the resolved key and returns the text", async () => {
 		const { fn, last } = fakeFetch(200, JSON.stringify({ text: "call me back" }));
@@ -350,8 +345,8 @@ describe("openrouterEngine", () => {
 			const body = JSON.parse(String(last().body)) as { input_audio: { format: string } };
 			expect(body.input_audio.format).toBe(format);
 		}
-		// A video note's .mp4: ffmpeg extracts the audio track and the
-		// extracted bytes ride input_audio as ogg.
+		// .mp4: ffmpeg extracts the audio track; the bytes ride
+		// input_audio as ogg.
 		const dir = tmpDir("goblin-cloud-");
 		const mp4 = join(dir, "video-note-u1.mp4");
 		const gen = Bun.spawnSync([
@@ -382,7 +377,7 @@ describe("openrouterEngine", () => {
 			input_audio: { data: string; format: string };
 		};
 		expect(body.input_audio.format).toBe("ogg");
-		// OggS magic — the upload is container audio, not the mp4.
+		// OggS magic — the upload is container audio, not mp4.
 		expect(Buffer.from(body.input_audio.data, "base64").subarray(0, 4).toString()).toBe("OggS");
 	});
 
@@ -401,7 +396,7 @@ describe("openrouterEngine", () => {
 		await expect(
 			engine.transcribe({ path: f, mediaType: "video/mp4", filename: "junk.mp4" }),
 		).rejects.toThrow('openrouter: audio extraction failed for "junk.mp4"');
-		// No request went out — the failure is before the wire.
+		// The failure is before the wire — no request went out.
 		expect(seen.length).toBe(0);
 	});
 });
@@ -513,9 +508,7 @@ describe("geminiEngine", () => {
 	});
 });
 
-// The mimo first-party wire (api.xiaomimimo.com/v1/chat/completions,
-// api-key header, dedicated ASR model, wav-only input through the
-// orchestrator's wav profile) — pinned from the published API docs,
+// The mimo first-party wire is pinned from published API docs —
 // unverified live until an operator provisions a mimo auth record.
 describe("mimoEngine", () => {
 	function wavFile(): { path: string; mediaType: string; filename: string } {

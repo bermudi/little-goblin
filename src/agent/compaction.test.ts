@@ -25,8 +25,8 @@ function ev(
 	};
 }
 
-// Three complete exchanges: u/a pairs with the assistant anchored to its
-// user event, plus a trailing user whose turn hasn't answered yet.
+// Three complete exchanges: u/a pairs with the assistant anchored to
+// its user event.
 function sample(): CompactionEvent[] {
 	return [
 		ev(1, "user", "hello".repeat(200)),
@@ -95,7 +95,7 @@ describe("chooseBoundary", () => {
 		);
 		const text = serializeSpan([event]);
 		expect(text).toContain("the garage code changed to 4471");
-		// The path stays too — continuity of the file reference is kept.
+		// The path stays too — continuity of the file reference.
 		expect(text).toContain("/workspace/attachments/mp4-u2.mp4");
 	});
 
@@ -113,10 +113,8 @@ describe("chooseBoundary", () => {
 		expect(serializeSpan([event])).not.toContain("transcript");
 	});
 	test("the cut lands at a completed exchange — no anchored response is orphaned", () => {
-		// Tiny budget: keep only the last exchange. The boundary must be the
-		// seq of the assistant response that closes the second exchange —
-		// cutting one earlier would strand u3 from its anchored a3... rather,
-		// strand a2 from u2 in the compacted span while u3/a3 stay whole.
+		// Boundary = the assistant closing the second exchange; one earlier
+		// would strand a2 from u2 while u3/a3 stay whole.
 		const boundary = chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: null });
 		expect(boundary).toBe(4);
 	});
@@ -138,9 +136,8 @@ describe("chooseBoundary", () => {
 	});
 
 	test("an interleaved burst is atomic — the cut coarsens, never splits", () => {
-		// u_b arrived while u_a's turn ran; a_a anchors to u_a. No seq
-		// between them is a valid cut, so with a tiny budget the whole
-		// burst is kept and there is nothing to compact.
+		// u_b arrived mid-turn; a_a anchors to u_a — no seq between them is
+		// a valid cut, so the whole burst is kept.
 		const burst = [
 			ev(1, "user", "first question".repeat(200)),
 			ev(2, "user", "queued follow-up".repeat(200)),
@@ -155,10 +152,9 @@ describe("chooseBoundary", () => {
 	});
 
 	test("the minimum-span floor gates the delta, not total history", () => {
-		// Previous boundary at seq 2 folded the two huge early events; the
-		// delta since (seqs 3-4) is tiny. The floor must measure what would
-		// actually be summarized — counting from index 0 would let
-		// already-folded bulk pass a tiny delta through.
+		// The floor must measure what would actually be summarized —
+		// counting from index 0 would let already-folded bulk pass a tiny
+		// delta through.
 		const detail = [
 			ev(1, "user", "old bulk".repeat(400)),
 			ev(2, "assistant", "older bulk".repeat(400), 1),
@@ -216,9 +212,8 @@ describe("runCompaction", () => {
 	});
 
 	test("spoken instructions survive into the summarizer prompt — the loss precedes any model judgment", async () => {
-		// The same span chooseBoundary folds: an early voice-note exchange
-		// whose words are durable history. If serialization drops the
-		// transcript, no summarizer — however good — can preserve them.
+		// If serialization drops the transcript, no summarizer can
+		// preserve it.
 		const detail = [
 			ev(1, "user", "here is a voice note".repeat(50)),
 			ev(2, "assistant", "got it".repeat(200), 1),
@@ -290,8 +285,8 @@ describe("runCompaction", () => {
 	});
 
 	test("a settings fence mid-summary cannot publish a pointer", async () => {
-		// The abort signal never fires — only the epoch moves, exactly like
-		// /memory while a summary call is in flight.
+		// The abort never fires — only the epoch moves, like /memory
+		// mid-summary.
 		const { store, writes } = fakeStore(sample());
 		let revoked = false;
 		await expect(
@@ -358,11 +353,8 @@ describe("runCompaction", () => {
 	});
 
 	test("re-compaction serializes only the delta, never the folded past", async () => {
-		// The previous boundary stands at seq 4; exchanges 5-6 (seqs 7-10)
-		// are new. The newest exchange always stays in the tail, so the fold
-		// covers the delta 5..8 — and must NOT re-serialize events 1-4
-		// already folded, or the call grows with TOTAL history and
-		// eventually can't fit the window it exists to bound.
+		// The fold must cover only the delta — re-serializing already-folded
+		// events would grow the call with total history.
 		const detail = [
 			...sample(),
 			ev(7, "user", "later question".repeat(200)),
@@ -395,9 +387,8 @@ describe("runCompaction", () => {
 	});
 
 	test("an oversized span folds through sequential calls inside the input budget", async () => {
-		// Ten exchanges of ~200-token events; the tail keeps the last
-		// exchange, so the span is 18 events — several chunks' worth at
-		// the tiny input budget below.
+		// 10 exchanges; the tail keeps the last → an 18-event span,
+		// several chunks at this budget.
 		const detail: CompactionEvent[] = [];
 		for (let i = 0; i < 10; i++) {
 			const u = 2 * i + 1;
@@ -421,13 +412,12 @@ describe("runCompaction", () => {
 		expect(outcome.kind).toBe("compacted");
 		// One call could never hold the span — the fold must be sequential.
 		expect(prompts.length).toBeGreaterThan(1);
-		// Every call honors the input budget by the same estimate the
-		// chunker uses.
+		// Each call honors the budget by the chunker's own estimate.
 		for (const prompt of prompts) {
 			expect(estimateTokens(prompt)).toBeLessThanOrEqual(inputTokenBudget);
 		}
-		// Each later call carries the previous call's output forward —
-		// the running summary is the only memory between calls.
+		// Each call carries the previous call's output forward — the
+		// running summary is the only memory between calls.
 		for (let i = 1; i < prompts.length; i++) {
 			expect(prompts[i]).toContain(`fold ${i}`);
 			expect(prompts[i]).toContain("running summary of the earlier part of this span");
@@ -458,9 +448,9 @@ describe("runCompaction", () => {
 		);
 		const all = prompts.join("\n");
 		expect(all).toContain("chars truncated for summarization");
-		// The truncated event still shows up — its head, not nothing.
+		// The truncated event still shows its head.
 		expect(all).toContain("zzz");
-		// And its tail beyond the kept window did not leak into a prompt.
+		// Its tail beyond the kept window must not leak into a prompt.
 		expect(all).not.toContain("z".repeat(5_000));
 	});
 
@@ -471,8 +461,8 @@ describe("runCompaction", () => {
 				"dm:1",
 				store,
 				"m",
-				// Ignores its abort signal entirely — the race, not the
-				// model's good behavior, is what bounds the call.
+				// Ignores its abort — the race, not the model's good
+				// behavior, bounds the call.
 				() => new Promise<string>(() => {}),
 				{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
 				signal(),
@@ -482,11 +472,9 @@ describe("runCompaction", () => {
 	});
 });
 
-// Tool-call atomicity across the cut: a call and its result are parts
-// of one assistant event, and the boundary is always an event edge —
-// the two facts together are why compaction cannot orphan a tool
-// result. The history helper mirrors the persisted shape stream.ts
-// writes: text plus any number of completed tool parts per event.
+// A call and its result are parts of one event and the boundary is
+// always an event edge — compaction cannot orphan a tool result.
+// toolEvent mirrors the persisted shape stream.ts writes.
 function toolEvent(
 	seq: number,
 	anchorSeq: number,
@@ -536,9 +524,7 @@ describe("tool-call atomicity across the cut", () => {
 	});
 
 	test("the summarized span keeps every tool call next to its result", async () => {
-		// Budget 1 cuts at the last exchange-complete event (seq 4), so
-		// both tool events fold into the span. Each call's input AND
-		// output must reach the summarizer prompt together — a call
+		// Input AND output must reach the prompt together — a call
 		// stripped of its result would let the summary invent an outcome.
 		const { store } = fakeStore(toolHistory());
 		const prompts: string[] = [];

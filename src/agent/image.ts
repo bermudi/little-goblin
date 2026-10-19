@@ -1,13 +1,10 @@
-// Image generation — the OpenAI images wire behind the generate_image
-// tool (design/tools.md → Image generation): POST
+// The OpenAI images wire behind generate_image: POST
 // {baseUrl}/images/generations with {model, prompt, n, size?,
-// response_format: "b64_json"}, image bytes home in one response — no
-// second fetch on an expiring URL. Any provider kind carrying a baseUrl
-// (openai-compatible/responses) can serve it; the config block's
-// superRefine keeps the ref on one. Hand-rolled like the speech
-// engines — no SDK. The logfare fixture pins the documented shape and
-// is unverified live until a key is provisioned. Resolved keys never
-// enter logs.
+// response_format: "b64_json"} — image bytes home in one response; a
+// URL would expire before a second fetch. Any provider kind carrying a
+// baseUrl can serve it; the config block's superRefine keeps the ref on
+// one. The logfare fixture pins the documented shape, unverified live
+// until a key is provisioned. Resolved keys never enter logs.
 
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
@@ -18,8 +15,8 @@ import { sniffImageBytes } from "./sniff.ts";
 import { readBytesCapped, readTextCapped } from "./tools/web.ts";
 import { renderError } from "./transcribe-cloud.ts";
 
-// Flux-scale renders take tens of seconds — the vision budget doubled,
-// since a wedged request pins the turn's serial lane.
+// Flux-scale renders take tens of seconds; a wedged request pins the
+// turn's serial lane — the vision budget doubled.
 export const IMAGE_TIMEOUT_MS = 240_000;
 // b64 inflates ~33%; four 4MP pngs still fit a 64 MiB envelope. The cap
 // only guards a misbehaving gateway.
@@ -27,23 +24,22 @@ const RESPONSE_CAP = 64 * 1024 * 1024;
 const ERROR_BODY_CAP = 64 * 1024;
 export const IMAGE_MAX_N = 4;
 
-// The OpenAI shape: only b64_json rides the wire (we ask for it and
-// providers ignore unknown request fields), but an item carrying only
-// `url` is still a valid response we decline — image bytes must arrive
-// in-body, not via a second fetch we never budgeted.
+// Only b64_json rides the wire (providers ignore unknown request
+// fields) — but a url-only item is still a valid response we decline:
+// image bytes must arrive in-body, not via a second fetch we never
+// budgeted.
 const imagesResponse = z.object({
 	data: z.array(z.object({ b64_json: z.string().min(1).optional() })).min(1),
 });
 
-// Error previews bound before scrubbing: a whitespace-collapse over a
-// garbage body up to RESPONSE_CAP would build a full-size string for
-// 300 kept chars.
+// Bound before scrubbing — a whitespace-collapse over a garbage body
+// up to RESPONSE_CAP would build a full-size string for 300 kept chars.
 const bodyPreview = (s: string): string =>
 	s.slice(0, 2048).replace(/\s+/g, " ").trim().slice(0, 300);
 
 export interface ImageInput {
 	prompt: string;
-	/** "WxH" — overrides the image block's default size when present. */
+	/** "WxH" — overrides the image block's default size. */
 	size?: string | undefined;
 	n?: number | undefined;
 }
@@ -60,8 +56,7 @@ export interface ImageCallDeps {
 	auth: AuthStore;
 	conversation: string;
 	/** The turn's abort signal (/stop, a superseded turn) — raced with
-	 *  the timeout so a killed turn cancels the billed call, same seam
-	 *  as vision. */
+	 *  the timeout so a killed turn cancels the billed call. */
 	signal?: AbortSignal | undefined;
 	/** Test door over the provider edge (production: fetch). */
 	fetchFn?: typeof fetch | undefined;
@@ -69,10 +64,9 @@ export interface ImageCallDeps {
 	timeoutMs?: number | undefined;
 }
 
-/** Config → engine. Resolves the image block's provider ref to a
- *  baseUrl + auth record; both lookups throw named errors (the
- *  superRefine already refused them at parse, so a throw here means a
- *  hand edit raced a running config). */
+/** Both lookups throw named errors — the config's superRefine already
+ *  refused them at parse, so a throw here means a hand edit raced a
+ *  running config. */
 function imageEndpoint(deps: ImageCallDeps): { url: string; modelId: string; authRef: string } {
 	const cfg = deps.configRef.current.image;
 	if (!cfg) throw new Error("image block absent — the tool should not be registered");
@@ -152,7 +146,7 @@ export async function generateImages(
 		const bytes = Buffer.from(item.b64_json, "base64");
 		if (bytes.byteLength === 0) throw new Error("image: empty image payload");
 		// Magic bytes pick the extension — a provider that re-encodes
-		// silently must not name a jpeg ".png" in the operator's downloads.
+		// must not name a jpeg ".png" in the operator's downloads.
 		const sniff = sniffImageBytes(bytes);
 		if (sniff === null) {
 			throw new Error(

@@ -1,18 +1,8 @@
-// Cloud speech engines — hand-rolled HTTP like TTS (tts.ts), no
-// provider SDK. Two adapter families (design/asr.md):
-//
-//   OpenAI-compatible multipart — groq, openai, mistral, logfare: one
-//     implementation, four URLs, {"text": …} back.
-//   Bespoke — elevenlabs (multipart, xi-api-key), openrouter (JSON
-//     base64 STT), gemini (chat-with-audio by instruction), mimo
-//     (first-party chat-completions ASR — a dedicated model, no prompt).
-//
-// Response and error shapes are pinned verbatim in transcribe-cloud
-// .test.ts (probed live 2026-10-09/10 — design/asr.md → Verbatim
-// contracts; openrouter-ogg verified live during implementation, the
-// mimo first-party wire is doc-pinned, unverified live until an
-// operator provisions a mimo auth record). Resolved keys never enter
-// logs.
+// Cloud speech engines — hand-rolled HTTP, no provider SDK. Response
+// and error shapes are pinned verbatim in transcribe-cloud.test.ts
+// (probed live 2026-10-09/10, except mimo — doc-pinned, unverified live
+// until an operator provisions a mimo auth record). Resolved keys never
+// enter logs.
 
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,8 +15,6 @@ import { boundedRun, spawnProc } from "../proc.ts";
 import { readTextCapped } from "./tools/web.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine, SpeechFile } from "./transcribe.ts";
 
-// Every cloud arm of the transcription union — one shape (kind, model,
-// auth, language?), eight kinds.
 export type CloudCfg = Extract<
 	TranscriptionConfig,
 	{
@@ -42,8 +30,7 @@ export type CloudCfg = Extract<
 	}
 >;
 
-// Groq's multipart cap is 25 MiB — over that, segment instead of
-// guessing at a request that 413s anyway.
+// Groq's multipart cap is 25 MiB — over it the request 413s anyway.
 const MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
 // 15 minutes of 48k mono opus ≈ 5.5 MiB — comfortably under the cap no
 // matter the source bitrate.
@@ -59,18 +46,16 @@ const CHAT_TIMEOUT_MS = 120_000;
 const ELEVENLABS_TIMEOUT_MS = 120_000;
 // OpenRouter warns of ~60 s upstream processing per STT request.
 const OPENROUTER_TIMEOUT_MS = 120_000;
-// A transcript scales with input length; a misbehaving gateway must not
-// stream gigabytes into memory.
+// A misbehaving gateway must not stream gigabytes into memory.
 const RESPONSE_CAP = 8 * 1024 * 1024;
 const ERROR_HEAD = 300;
 const CHAT_OUTPUT_TOKEN_CAP = 8192;
 const TRANSCRIBE_PROMPT =
 	"Transcribe the audio verbatim. Output only the transcript, no commentary. If there is no speech, output nothing.";
 
-// {"text": …} — the minimal shape every OpenAI-compatible endpoint
-// returns without response_format=verbose_json. Language/duration only
-// exist in verbose responses (groq's is full words, not codes) —
-// present means logged, never interpreted.
+// The minimal shape OpenAI-compatible endpoints return without
+// response_format=verbose_json — language/duration exist only in verbose
+// responses (groq's is full words, not codes); logged, never interpreted.
 const multipartResponse = z.object({
 	text: z.string(),
 	language: z.string().optional(),
@@ -143,16 +128,15 @@ export function mistralEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps =
 }
 
 // Logfare advertises the OpenAI audio/transcriptions wire
-// (https://logfare.ai/docs) — same multipart file+model(+language),
-// {"text": …} back. Unverified against the live API (no key provisioned
-// yet); the fixture pins the documented shape.
+// (https://logfare.ai/docs). Unverified live — no key provisioned; the
+// fixture pins the documented shape.
 export function logfareEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
 	return openAiCompatible("logfare", cfg, auth, "https://logfare.ai/v1/audio/transcriptions", deps);
 }
 
 // groq/openai/mistral/logfare share one wire: multipart
-// file+model(+language), Bearer auth, {"text": …} back. Differences are
-// the URL and the error body flavor, both handled in renderError.
+// file+model(+language), Bearer auth, {"text": …} back. Only the URL
+// and error-body flavor differ (see renderError).
 function openAiCompatible(
 	kind: string,
 	cfg: CloudCfg,
@@ -255,10 +239,9 @@ interface PreparedAudio {
 	cleanup: () => Promise<void>;
 }
 
-// The bytes ready for input_audio: the original file when its extension
-// maps, else an ffmpeg audio-track extraction to mono 48k opus (the keep
-// profile's segment codec in transcribe.ts). Transcode failures throw
-// with the provider's name — callers run cleanup in a finally.
+// The original file when its extension maps, else ffmpeg extraction to
+// mono 48k opus (the keep profile's segment codec). Callers run cleanup
+// in a finally.
 async function preparedInputAudio(kind: string, file: SpeechFile): Promise<PreparedAudio> {
 	const direct = supportedFormat(file.filename);
 	if (direct !== undefined) return { path: file.path, format: direct, cleanup: async () => {} };
@@ -340,8 +323,8 @@ export function openrouterEngine(
 		prep: { container: "keep" },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const key = await auth.resolve(cfg.auth);
-			// Resolve the extension first so a transcode failure is a
-			// context-carrying error, not cleanup noise.
+			// Resolve the extension first so a transcode failure isn't
+			// reported as cleanup noise.
 			const prepared = await preparedInputAudio("openrouter", file);
 			try {
 				const res = await httpPost(
@@ -422,7 +405,7 @@ export function geminiEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = 
 				.join("")
 				.trim();
 			if (transcript === "" && cand.finishReason !== undefined && cand.finishReason !== "STOP") {
-				// A refusal or safety block must not read as silence (#101).
+				// A refusal or safety block must not read as silence.
 				throw new Error(`gemini: no transcript — finishReason ${cand.finishReason}`);
 			}
 			if (cand.finishReason === "MAX_TOKENS") {
@@ -440,9 +423,8 @@ export function geminiEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = 
 
 // MiMo's dedicated ASR model answers chat completions whose only
 // content part is the audio — no transcription prompt, no text part.
-// Input accepts wav/mp3 only, ≤10 MB base64, so the engine rides the
-// wav prep profile: the orchestrator hands it 16 kHz mono segments,
-// and MIMO_SEGMENT_SECONDS keeps every request's data field under
+// Input accepts wav/mp3 only, ≤10 MB base64 — hence the wav prep
+// profile; MIMO_SEGMENT_SECONDS keeps every request's data field under
 // the cap (180 s × 32 kB/s × 4/3 ≈ 7.7 MB).
 const MIMO_URL = "https://api.xiaomimimo.com/v1/chat/completions";
 const MIMO_SEGMENT_SECONDS = 180;
@@ -500,9 +482,8 @@ export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}
 
 // ---------- shared ----------
 
-// Shared POST for every cloud kind: timeout, network-error naming, and
-// status passthrough (callers render the error body). The URL never
-// contains credentials — keys ride headers, never query strings.
+// Callers render the error body. Keys ride headers, never query
+// strings — the URL must never carry credentials.
 async function httpPost(
 	kind: string,
 	url: string,
@@ -527,8 +508,8 @@ async function httpPost(
 }
 
 // groq/openai answer {"error":{"message":…}}; mistral is FastAPI-shaped
-// with {"detail": …} (string or validation array). Anything else falls
-// back to a body head.
+// ({"detail":…}, string or validation array); else fall back to a body
+// head.
 export function renderError(kind: string, status: number, body: string): Error {
 	let message = "";
 	try {

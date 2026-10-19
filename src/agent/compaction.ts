@@ -1,16 +1,11 @@
-// Compaction (DESIGN.md): history is unbounded on disk, bounded in the
-// window by pointer relocation. This module owns the two decisions —
-// where to cut, and what to ask the summarizer — plus the orchestration
-// that turns them into a compactions-table row. The model call is
-// injected; the store is a narrow interface so tests fake the edges,
-// not the module.
+// Compaction: history is unbounded on disk, bounded in the window by
+// pointer relocation.
 
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 
-// Rough chars-per-token for mixed chat text — enough to pick a cut, and
-// the real number lands in the log line when the next turn reports
-// utilization.
+// Rough chars-per-token for mixed chat text — enough to pick a cut; the
+// real number lands in the next turn's utilization log line.
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
@@ -37,13 +32,10 @@ export interface CompactionStore {
 }
 
 // A cut after detail[i] is exchange-complete when nothing later anchors
-// at or before it — the causal-view rule, so no response is ever
-// orphaned from its user message in the tail. The comparison is against
-// the boundary's arrival seq, and the model view cuts on the same key —
-// `(anchorSeq ?? seq) > boundarySeq` — so an event whose causal position
-// precedes the cut folds into the summarized span rather than stranding
-// in the tail. One ruled consequence: an interleaved burst — operator
-// messages arriving mid-turn — is atomic; the cut coarsens to whole
+// at or before it — no response is orphaned from its user message. The
+// model view cuts on the same key, `(anchorSeq ?? seq) > boundarySeq` —
+// keep them in sync. Consequence: an interleaved burst (operator
+// messages arriving mid-turn) is atomic; the cut coarsens to whole
 // bursts rather than splitting them.
 function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boolean {
 	const boundary = detail[boundaryIndex]!.seq;
@@ -54,20 +46,19 @@ function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boo
 	return true;
 }
 
-// Where to cut: keep a suffix (tail) whose estimated tokens stay within
-// the budget, extending backward exchange-by-exchange. Returns the
-// boundary seq (the last compacted event's seq) or null when there is
-// nothing worth compacting — a span must exist beyond the previous
-// boundary and carry at least `minSpanTokens` (compacting three
-// messages into a summary buys nothing).
+// Keep a tail whose estimated tokens fit the budget, extending backward
+// exchange-by-exchange. Returns the boundary seq (the last compacted
+// event's seq) or null when nothing is worth compacting — a span must
+// exist beyond the previous boundary and carry ≥ minSpanTokens
+// (compacting a few messages into a summary buys nothing).
 export function chooseBoundary(
 	detail: CompactionEvent[],
 	opts: { tailTokenBudget: number; previousBoundary: number | null; minSpanTokens?: number },
 ): number | null {
 	if (detail.length < 2) return null;
-	// Grow the tail from the newest event while it fits the budget; every
-	// step re-checks exchange completeness, so an anchored response pulls
-	// its user message into the tail rather than being stranded.
+	// Grow the tail backward while it fits; each step re-checks exchange
+	// completeness, so an anchored response pulls its user message into
+	// the tail rather than being stranded.
 	let i = detail.length - 1;
 	let tailTokens = estimateTokens(JSON.stringify(detail[i]!.message));
 	while (i > 0) {
@@ -87,12 +78,10 @@ export function chooseBoundary(
 	if (boundaryIndex < 0) return null;
 	const boundary = detail[boundaryIndex]!.seq;
 	if (opts.previousBoundary !== null && boundary <= opts.previousBoundary) return null;
-	// The floor gates the delta — the same slice runCompaction will
-	// summarize (events after the previous boundary), not everything ever
-	// stored. Counting from index 0 would fold already-compacted bulk into
-	// the floor and let a tiny delta through on old conversations. An
-	// unfound previous boundary falls back to 0, matching runCompaction's
-	// spanStart.
+	// The floor gates the delta since the previous boundary — counting
+	// from index 0 would fold already-compacted bulk into it and let a
+	// tiny delta through on old conversations. An unfound previous
+	// boundary falls back to 0, matching runCompaction's spanStart.
 	const spanStart =
 		opts.previousBoundary === null
 			? 0
@@ -115,9 +104,8 @@ export const SUMMARY_SYSTEM = `You are summarizing your own conversation history
 - File paths, attachment names, and identifiers that matter for continuity
 Omit small talk and process chatter. Plain text with short labeled bullets. Never invent anything not present in the span.`;
 
-// The event renderer history_search's context action shares — reading
-// back a folded span must return the tool evidence the fold took
-// (design/model.md → Compaction, "Recovery is named").
+// Shared with history_search's context action — reading back a folded
+// span must return the tool evidence the fold took.
 export function renderEventText(message: UIMessage): string {
 	const parts: string[] = [];
 	const brief = (value: unknown): string => {
@@ -148,18 +136,17 @@ export function renderEventText(message: UIMessage): string {
 					: typeof ref?.filename === "string"
 						? ref.filename
 						: "unnamed";
-			// A stored transcript is durable operator speech (issue #84):
-			// the words were already paid for at intake, so the fold keeps
-			// them next to the path reference. Media bytes never ride —
-			// text only.
+			// A stored transcript is durable operator speech — already
+			// paid for at intake — so the fold keeps it next to the path.
+			// Media bytes never ride — text only.
 			parts.push(
 				typeof ref?.transcript === "string"
 					? `[attachment: ${path} — transcript: ${JSON.stringify(ref.transcript)}]`
 					: `[attachment: ${path}]`,
 			);
 		} else if (part.type.startsWith("tool-")) {
-			// Keep bounded evidence of what the tool actually did. Merely
-			// naming the tool loses the command and result after the cut.
+			// Bounded evidence of what the tool did — naming it alone
+			// loses the command and result after the cut.
 			parts.push(
 				`[${part.type}]\ninput: ${brief(part.input)}\n` +
 					`result: ${brief(part.output ?? part.errorText)}`,
@@ -190,18 +177,16 @@ export type CompactionOutcome =
 	  }
 	| { kind: "noop"; reason: string };
 
-// Per summary call. Three minutes is long enough for a large chunk on a
-// slow endpoint — and a wedged request must settle anyway so it can't
-// hold the conversation's lane forever (issue #13).
+// Per summary call — long enough for a large chunk on a slow endpoint;
+// a wedged request must settle so it can't hold the conversation's lane
+// forever.
 export const SUMMARY_CALL_TIMEOUT_MS = 180_000;
 
-// The full compaction: choose the cut, summarize the span with the
-// conversation's own model, persist the pointer. The span folds into
-// the summary through sequential calls bounded by inputTokenBudget —
-// each call carries the running summary forward, so the last call's
-// output is the stored summary and no call ever sees the whole past.
-// A summarizer failure propagates — the caller warns and leaves the
-// view untouched; the next threshold crossing retries.
+// The span folds through sequential calls bounded by inputTokenBudget —
+// each carries the running summary forward, so the last call's output
+// is the stored summary and no call sees the whole past. A summarizer
+// failure propagates: the caller warns, the view stays untouched, and
+// the next threshold crossing retries.
 export async function runCompaction(
 	id: string,
 	store: CompactionStore,
@@ -212,11 +197,11 @@ export async function runCompaction(
 		inputTokenBudget: number;
 		callTimeoutMs?: number;
 		reason?: "threshold" | "manual" | "overflow";
-		// The authority fence (DESIGN.md → The authority rule, wired from
-		// runtime.ts checkAuthority): throws when the conversation's epoch
-		// advanced since the compaction captured it. Checked before each
-		// summary chunk and immediately before the pointer commits — a
-		// settings fence must land exactly like the abort signal does.
+		// The authority fence (wired from runtime.ts checkAuthority):
+		// throws when the conversation's epoch advanced since this
+		// compaction captured it. Checked before each chunk and right
+		// before the pointer commits — a settings fence must land
+		// exactly like the abort signal.
 		assertAuthority?: () => void;
 	},
 	signal: AbortSignal,
@@ -239,10 +224,10 @@ export async function runCompaction(
 		});
 		return { kind: "noop", reason: "boundary vanished — history changed mid-compaction" };
 	}
-	// The span is the DELTA since the previous boundary (DESIGN.md,
-	// Compaction) — already-folded events never re-enter the prompt, so
-	// the summary calls stay bounded by one compaction interval, not by
-	// total history. The previous summary rides the first call instead.
+	// The span is the delta since the previous boundary — folded events
+	// never re-enter the prompt, so calls stay bounded by one compaction
+	// interval, not total history. The previous summary rides the first
+	// call instead.
 	const spanStart = (previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
 	const span = detail.slice(spanStart, boundaryIndex + 1);
 	const tokensBefore = span.reduce((sum, e) => sum + estimateTokens(JSON.stringify(e.message)), 0);
@@ -262,8 +247,8 @@ export async function runCompaction(
 	let summary: string | null = null;
 	let chunks = 0;
 	for (let i = 0; i < span.length; ) {
-		// Authority before spend: a fenced compaction must not keep paying
-		// the summarizer for a pointer it may no longer write.
+		// Authority before spend — a fenced compaction must not keep
+		// paying the summarizer for a pointer it may no longer write.
 		opts.assertAuthority?.();
 		chunks++;
 		// The allowance shrinks as the running summary grows; the floor
@@ -281,9 +266,9 @@ export async function runCompaction(
 			const e = span[i]!;
 			let text = serializeEvent(e);
 			if (events === 0) {
-				// Always take at least one event — a single message bigger
-				// than the allowance is cut down rather than stalling the
-				// whole compaction on it.
+				// Always take ≥1 event — a message bigger than the
+				// allowance is cut down rather than stalling the
+				// compaction on it.
 				if (estimateTokens(text) > allowance) {
 					const keptChars = allowance * 4;
 					log.warn("compaction event truncated for summarizer", {
@@ -306,9 +291,8 @@ export async function runCompaction(
 			(carried !== null && carriedHeader !== null
 				? `${carriedHeader}\n${carried}\n\n---\n\n`
 				: "") + texts.join("\n\n");
-		// The timeout rides a combined signal AND races the await: a
-		// summarizer that ignores its abort still settles, so a wedged
-		// request can't hold the lane forever.
+		// Combined signal AND raced await — a summarizer that ignores its
+		// abort still settles.
 		const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
 		let abortRace: (err: unknown) => void = () => {};
 		const aborted = new Promise<never>((_, reject) => {
@@ -328,12 +312,12 @@ export async function runCompaction(
 		} finally {
 			callSignal.removeEventListener("abort", onAbort);
 		}
-		// Providers may resolve successfully even after an abort. The
+		// Providers may resolve successfully even after an abort — the
 		// pointer must never commit a summary minted under revoked
 		// authority.
 		signal.throwIfAborted();
-		// The same guarantee for settings fences: the epoch must still be
-		// the one this compaction captured, or the pointer stays unwritten.
+		// Same for settings fences: the epoch must still be the captured
+		// one, or the pointer stays unwritten.
 		opts.assertAuthority?.();
 		const out = raw.trim();
 		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
@@ -349,13 +333,12 @@ export async function runCompaction(
 		summary = out;
 	}
 	if (summary === null) {
-		// Unreachable — chooseBoundary only returns a boundary that has a
-		// non-empty span before it. Fail loud, never write a blank pointer.
+		// Unreachable — chooseBoundary only returns a boundary with a
+		// non-empty span; fail loud, never write a blank pointer.
 		throw new Error("compaction produced no summary");
 	}
-	// A verbose summarizer can emit a summary comparable to the span —
-	// compaction would buy nothing and re-fire every turn. Warn, don't
-	// fail: the pointer still moves, the log explains the churn.
+	// A summary comparable to the span buys nothing and re-fires every
+	// turn — warn, don't fail; the pointer still moves, the log explains.
 	const summaryTokens = estimateTokens(summary);
 	if (summaryTokens > Math.max(2_000, tokensBefore / 2)) {
 		log.warn("compaction summary unusually large — utilization may not drop", {

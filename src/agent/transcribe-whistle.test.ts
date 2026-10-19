@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { whistleEngine, type WhistleDeps } from "./transcribe-whistle.ts";
 import { tmpDir } from "../testkit.ts";
 
-// A stub engine binary — a bun script speaking the pinned CLI contract
-// (one JSON line on stdout; exit 1 + one-line stderr on failure). Mode
-// echoes the keywords file contents and the forced language into the
-// transcript so the argv wiring is asserted end to end.
+// A stub engine binary speaking the pinned CLI contract (one JSON line
+// on stdout; exit 1 + one-line stderr on failure). The "ok" mode echoes
+// the keywords file and forced language into the transcript so the argv
+// wiring is asserted end to end.
 type StubMode = "ok" | "silence" | "fail" | "garbage";
 function stubEngine(dir: string, mode: StubMode): string {
 	const path = join(dir, `stub-${mode}.mjs`);
@@ -41,8 +41,7 @@ function weightsStub(dir: string): string {
 	return path;
 }
 
-// Deps that never touch the network or the real cache: overrides for
-// both artifacts and a fetch that must not be called.
+// Both artifacts overridden and a fetch that must not be called.
 const offlineDeps = (engine: string, weights: string): WhistleDeps => ({
 	fetchFn: (() => {
 		throw new Error("fetch must not be called when both artifacts are overridden");
@@ -144,15 +143,15 @@ describe("whistleEngine", () => {
 });
 
 describe("whistle artifact auto-fetch", () => {
-	// Fake digests so fixtures can serve a few bytes instead of the
-	// real 18 MB artifacts.
+	// Fake digests let fixtures serve a few bytes instead of the real
+	// 18 MB artifacts.
 	const fakeDigest = (data: string): string => Bun.CryptoHasher.hash("sha256", data, "hex");
 
 	test("fetches each artifact once into the cache, then reuses", async () => {
 		const dir = tmpDir("goblin-whistle-");
 		const cache = join(dir, "cache");
 		// The "downloaded" engine is the stub script itself — shebang'd,
-		// so executing the fetched file runs the pinned contract.
+		// so executing the fetch lands the pinned contract.
 		const stubBytes = readFileSync(stubEngine(dir, "ok"), "utf8");
 		const fetches: string[] = [];
 		const deps: WhistleDeps = {
@@ -167,7 +166,7 @@ describe("whistle artifact auto-fetch", () => {
 			}) as unknown as typeof fetch,
 		};
 		const f = audioFile(dir);
-		// Second engine on the same cache: memoized artifacts, no fetch.
+		// Second engine on the same cache: memoized, no fetch.
 		const r1 = await whistleEngine({}, deps).transcribe(f);
 		const r2 = await whistleEngine({}, deps).transcribe(f);
 		expect(r1.text).toBe("hola goblin");
@@ -186,7 +185,7 @@ describe("whistle artifact auto-fetch", () => {
 			arch: "x64",
 			platform: "linux",
 			// Declared digests describe the pinned files; the server
-			// answers something else — supply-chain drift.
+			// answers something else.
 			digests: { engine: fakeDigest("engine-bytes"), weights: fakeDigest("weights-bytes") },
 			fetchFn: (async (url: string | URL | Request) =>
 				new Response(String(url).endsWith("/needle") ? "tampered-engine" : "tampered-weights", {
@@ -218,8 +217,8 @@ describe("whistle artifact auto-fetch", () => {
 
 	test("overrides bypass the platform gate on an unmapped platform", async () => {
 		const dir = tmpDir("goblin-whistle-");
-		// Both artifacts overridden: the fetcher must never resolve
-		// URLs (which throw off linux-x64), let alone call fetch.
+		// Both overridden: the fetcher must never resolve URLs (they
+		// throw off linux-x64), let alone call fetch.
 		const engine = whistleEngine(
 			{ engine: stubEngine(dir, "ok"), weights: weightsStub(dir) },
 			{
@@ -247,7 +246,7 @@ describe("whistle artifact auto-fetch", () => {
 				}) as unknown as typeof fetch,
 			},
 		);
-		// The weights half has no override — its URL resolution throws.
+		// Weights has no override — its URL resolution throws.
 		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow(
 			"no verified prebuilt engine for darwin-arm64",
 		);

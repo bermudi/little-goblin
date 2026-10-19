@@ -1,9 +1,7 @@
-// Skill catalog — scan workspace/skills/*/SKILL.md, validate frontmatter
-// per the Agent Skills spec, and render the "## skills" prompt section.
-// Catalog scan + frontmatter validation → ## skills section of the
-// system prompt. Scanned at snapshot build (conversation start), not
-// per turn — see prompt.ts. A malformed entry warns and skips; it never kills a turn.
-// See DESIGN.md "Skills" for the rulings.
+// Skill catalog — scan <root>/*/SKILL.md, validate frontmatter per the
+// Agent Skills spec, render the "## skills" prompt section. Scanned at
+// snapshot build, not per turn. A malformed entry warns and skips; it
+// never kills a turn.
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -180,14 +178,12 @@ export function loadCatalog(root: string): SkillCatalog {
 	return { entries, skipped, root: leaf };
 }
 
-// The prompt section. Renders even when empty — it's also the notice
-// that the capability exists. Proposals (the reviewer's validated
-// drafts in skills-proposed/, never installed without the operator's
-// yes — design/skills.md, "It proposes, then tells") are listed when
-// present so any conversation can act on an approve request. linkBase
-// resolves each entry's workspace-relative path to absolute — project
-// conversations cwd outside the workspace, where `skills/…` would
-// resolve inside the project (design/projects.md).
+// The prompt section renders even when empty — it's also the notice
+// that the capability exists. Proposals (reviewer drafts, never
+// installed without the operator's yes) are listed so any conversation
+// can act on an approve request. linkBase resolves workspace-relative
+// paths to absolute — project conversations cwd outside the workspace,
+// where `skills/…` would resolve inside the project.
 export function formatSkillsSection(
 	catalog: SkillCatalog,
 	proposals?: SkillCatalog,

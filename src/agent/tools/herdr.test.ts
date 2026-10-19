@@ -1,8 +1,8 @@
-// The herdr tool's contract (design/delegation.md): a flat strict
-// input schema, pane IDs only, the kind check before any send, fenced
-// untrusted output (screens, metadata, error text alike), and logging
-// that carries identity without prompt text. Tests drive the real
-// operator adapter over a fake runner — only the CLI edge is faked.
+// The herdr tool's contract: a flat strict input schema, pane IDs
+// only, the kind check before any send, fenced untrusted output
+// (screens, metadata, error text alike), and logging that carries
+// identity without prompt text. Tests drive the real operator adapter
+// over a fake runner — only the CLI edge is faked.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { z } from "zod";

@@ -28,6 +28,9 @@ export interface DevelopmentInput {
 	/** Opaque JSON — observed facts and evidence references. */
 	facts: unknown;
 	origin: string;
+	/** The project responsibility this development belongs to, when it
+	 *  carries one — the feed joins on it, delivery doesn't care. */
+	responsibilityId?: string;
 }
 
 export interface WakeRecord {
@@ -144,6 +147,15 @@ export function openWakeStore(db: Database): WakeStore {
 			origin TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`);
+	// Same migrate-on-open pattern as turn-journal: CREATE covers a
+	// fresh database, ALTER fills an existing one. responsibility_id is
+	// a feed/observer join key — delivery never reads it.
+	const eventCols = new Set(
+		(db.query("PRAGMA table_info(work_events)").all() as { name: string }[]).map((c) => c.name),
+	);
+	if (!eventCols.has("responsibility_id")) {
+		db.exec("ALTER TABLE work_events ADD COLUMN responsibility_id TEXT");
+	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS wake_deliveries (
 			wake_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,7 +187,7 @@ export function openWakeStore(db: Database): WakeStore {
 		"SELECT event_id, conversation_id, kind, text FROM work_events WHERE source_key = ?",
 	);
 	const qInsertEvent = db.prepare(
-		"INSERT INTO work_events (source_key, conversation_id, kind, text, facts_json, origin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO work_events (source_key, conversation_id, kind, text, facts_json, origin, responsibility_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qWakeForEvent = db.query<{ wake_id: number }, [number]>(
 		"SELECT wake_id FROM wake_events WHERE event_id = ?",
@@ -278,6 +290,7 @@ export function openWakeStore(db: Database): WakeStore {
 					input.text,
 					JSON.stringify(input.facts ?? null),
 					input.origin,
+					input.responsibilityId ?? null,
 					now,
 				);
 				const eventId = Number(inserted.lastInsertRowid);

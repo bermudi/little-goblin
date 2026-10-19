@@ -76,6 +76,9 @@ import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
+import { makeOperatorHerdr } from "./herdr.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
 import { openWakeStore } from "./wake-store.ts";
 
@@ -486,6 +489,28 @@ async function boot() {
 	wakeDispatcher.pump();
 	const stopWakeTicker = wakeDispatcher.startTicker();
 
+	// Project-owned responsibilities — the store the handover service
+	// writes, and the deterministic observer that turns attachment
+	// snapshots into deduped durable developments. The observer's list
+	// seam is the local operator session; (server, session) on each
+	// attachment is the grouping key for when a second target exists.
+	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
+	const responsibilityObserver = makeResponsibilityObserver({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		pump: () => wakeDispatcher!.pump(),
+		list: () => makeOperatorHerdr().list(),
+	});
+	const OBSERVE_MS = 60_000;
+	const observerTicker = setInterval(() => {
+		responsibilityObserver.observe().catch((err) =>
+			log.error("responsibility observe tick failed", err),
+		);
+	}, OBSERVE_MS);
+	observerTicker.unref();
+	const stopObserverTicker = () => clearInterval(observerTicker);
+
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
@@ -675,6 +700,9 @@ async function boot() {
 		runtime,
 		wakeDispatcher,
 		stopWakeTicker,
+		responsibilities,
+		responsibilityObserver,
+		stopObserverTicker,
 		tg,
 		http,
 		scheduler,
@@ -703,6 +731,7 @@ const {
 	runtime,
 	wakeDispatcher,
 	stopWakeTicker,
+	stopObserverTicker,
 	tg,
 	http,
 	scheduler,
@@ -727,6 +756,7 @@ async function shutdown(signal: string): Promise<void> {
 	scheduler.stop();
 	// Wake retries stop too — open wakes ride to the next boot's pump.
 	stopWakeTicker();
+	stopObserverTicker();
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();

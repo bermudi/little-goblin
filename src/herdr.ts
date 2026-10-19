@@ -443,6 +443,15 @@ const operatorAgentSchema = z.object({
 	terminal_title: z.string().optional(),
 	state_change_seq: z.number().int().optional(),
 	cwd: z.string().optional(),
+	// Take-over identity/observation fields — pinned live (see
+	// herdr.live.test.ts → dispatch identity): terminal_id survives a
+	// same-kind replacement in the pane; agent_session does not.
+	// Optional because older servers omit them — absence is explicit
+	// policy input for attachments, not a silent pane+kind fallback.
+	terminal_id: z.string().optional(),
+	agent_session: z.object({ value: z.string() }).optional(),
+	completion_seq: z.number().int().optional(),
+	revision: z.number().int().optional(),
 });
 type OperatorAgentWire = z.infer<typeof operatorAgentSchema>;
 
@@ -477,6 +486,15 @@ export interface OperatorAgent {
 	terminal_title: string | null;
 	workspace_label: string | null;
 	tab_label: string | null;
+	/** Stable terminal identity — survives a same-kind swap in the pane;
+	 *  null when the server doesn't report it. */
+	terminal_id: string | null;
+	/** Harness session reference — changes on replacement; null when
+	 *  the server doesn't report it. */
+	agent_session: string | null;
+	state_change_seq: number | null;
+	completion_seq: number | null;
+	revision: number | null;
 }
 
 interface OperatorTopology {
@@ -551,6 +569,11 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 			terminal_title: agent.terminal_title ?? null,
 			workspace_label: topo.workspaces.get(agent.workspace_id) ?? null,
 			tab_label: topo.tabs.get(agent.tab_id) ?? null,
+			terminal_id: agent.terminal_id ?? null,
+			agent_session: agent.agent_session?.value ?? null,
+			state_change_seq: agent.state_change_seq ?? null,
+			completion_seq: agent.completion_seq ?? null,
+			revision: agent.revision ?? null,
 		};
 	}
 

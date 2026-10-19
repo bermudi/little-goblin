@@ -11,6 +11,7 @@
 // never a resend.
 
 import type { Database } from "bun:sqlite";
+import { HerdrRefusal } from "./herdr.ts";
 import { log } from "./log.ts";
 import type {
 	Attachment,
@@ -149,8 +150,18 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				resps.transitionOperation(operationId, "acknowledged", { outcome });
 				return { sent: true };
 			} catch (err) {
-				// The send may have landed — uncertain delivery is evidence
-				// to reconcile, never permission to send again.
+				// A refusal is a pre-send verdict — nothing left this host.
+				if (err instanceof HerdrRefusal) {
+					resps.transitionOperation(operationId, "refused", { refusal: err.code });
+					log.info("managed send refused by the edge", {
+						operation: operationId,
+						refusal: err.code,
+					});
+					return { refused: "already-terminal" };
+				}
+				// Any other post-dispatch error: the send may have landed —
+				// uncertain delivery is evidence to reconcile, never
+				// permission to send again.
 				resps.transitionOperation(operationId, "uncertain", {
 					outcome: { error: err instanceof Error ? err.message : String(err) },
 				});

@@ -31,7 +31,9 @@ import {
 	type VisionToolDeps,
 } from "./tools/mod.ts";
 import { withScript } from "./tools/script.ts";
-import type { OperatorHerdr } from "../herdr.ts";
+import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
+import type { ResponsibilityStore } from "../responsibilities.ts";
+import type { ResponsibilityService } from "../responsibility-service.ts";
 
 // Boot-frozen or boot-bound values the per-turn function closes over.
 // Anything that decides "does this tool slot exist" is a dep here; the
@@ -69,6 +71,13 @@ export interface TurnToolsDeps {
 	subagents(): Subagents | null;
 	desktops(): Desktops | null;
 	subagentsBoot(): Config["subagents"];
+	// Late-bound like subagents — the responsibility service is built
+	// after Runtime's construction. null = the tool never mounts.
+	responsibility(): {
+		resps: ResponsibilityStore;
+		service: ResponsibilityService;
+		listFor(): Promise<OperatorAgent[]>;
+	} | null;
 	// Channel/persona exclusion — tg/guest.ts owns the policy, injected
 	// so tools never imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
@@ -98,6 +107,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const subagents = deps.subagents();
 		const desktops = deps.desktops();
 		const subagentsBoot = deps.subagentsBoot();
+		const responsibilitySvc = deps.responsibility();
 		const tts = configRef.current.tts;
 		// Telegram-bound tools don't register on app turns — disjoint
 		// pools (DESIGN.md → App channel); delegate is the exception
@@ -223,6 +233,20 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			desktop:
 				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
 					? { conversation: conv.id, workspace: workdir, desktops }
+					: undefined,
+			// Project-bound turns only: the coordination surface the
+			// handover loop lives on. The handover key is the project
+			// conversation — one acceptance per coordination conversation.
+			responsibility:
+				conv.projectId !== null && responsibilitySvc !== null
+					? {
+							resps: responsibilitySvc.resps,
+							service: responsibilitySvc.service,
+							projectId: conv.projectId,
+							coordinationConversationId: conv.id,
+							handoverKey: `handover:${conv.id}`,
+							listFor: responsibilitySvc.listFor,
+						}
 					: undefined,
 			// The interface tool mounts on app turns only — Telegram
 			// and guests render plain text (design/app.md → Intelligent UI).

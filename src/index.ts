@@ -79,6 +79,7 @@ import { wakeConversation } from "./wake.ts";
 import { makeOperatorHerdr } from "./herdr.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
+import { makeResponsibilityService } from "./responsibility-service.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
 import { openWakeStore } from "./wake-store.ts";
 
@@ -144,6 +145,14 @@ async function boot() {
 	// service's developments ride.
 	const wakeStore = openWakeStore(store.db);
 	let wakeDispatcher: WakeDispatcher | undefined;
+	// Late-bound like the dispatcher — the responsibility service is
+	// built once the store and observer exist (after makeTurnTools is
+	// assembled). The getter below reads this slot per turn.
+	let responsibilitySvc: {
+		resps: ReturnType<typeof openResponsibilities>;
+		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
+		listFor: () => ReturnType<typeof operatorHerdr.list>;
+	} | null = null;
 	// Between-turns pruning of old textual tool outputs — inert without a
 	// hand-edited cachePruning block (DESIGN.md → Cache stability).
 	const cachePruning = openCachePruning({
@@ -321,6 +330,7 @@ async function boot() {
 		subagents: () => subagents,
 		desktops: () => desktops,
 		subagentsBoot: () => subagentsBoot,
+		responsibility: () => responsibilitySvc,
 		filterGuests: filterGuestTools,
 	});
 
@@ -495,6 +505,17 @@ async function boot() {
 	// seam is the local operator session; (server, session) on each
 	// attachment is the grouping key for when a second target exists.
 	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
+	const responsibilityService = makeResponsibilityService({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		pump: () => wakeDispatcher!.pump(),
+	});
+	responsibilitySvc = {
+		resps: responsibilities,
+		service: responsibilityService,
+		listFor: () => operatorHerdr.list(),
+	};
 	const responsibilityObserver = makeResponsibilityObserver({
 		db: store.db,
 		resps: responsibilities,

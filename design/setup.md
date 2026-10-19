@@ -1,9 +1,9 @@
 # Setup
 
-Fresh-installation ruling. Detection, diagnosis output, safe errors and
-exit semantics belong to `design/doctor.md`; this doc owns the installer's
+Fresh-installation ruling. `design/doctor.md` owns detection, diagnosis
+output, safe errors and exit semantics; this doc owns the installer's
 product shape, action order, phase expectations, startup acceptance and
-the opt-in capability boundary.
+opt-in capability boundary.
 
 ## Product shape
 
@@ -16,13 +16,13 @@ the opt-in capability boundary.
 - **Two hand-edited inputs** — `goblin.json5` and `auth.jsonl` — plus a
   non-interactive installer. No wizard: a general wizard needs an explicit
   Product boundary ruling. (The memory installer's explicit model/cost
-  prompts are a separately designed exception, not a precedent.)
+  prompts are a designed exception, not a precedent.)
 - **Fresh targets only.** The installer refuses an existing installed
   Goblin target — especially production — before mutating units or
   publishing assets. Updates go through the approved `scripts/deploy.sh`;
-  reinstall/repair is a separate explicit operator action. There is no
-  general repair switch, and "idempotent" implies no permission. Fresh
-  setup never stops or overwrites a healthy existing service.
+  reinstall/repair is a separate explicit operator action; no general
+  repair switch — "idempotent" implies no permission. Fresh setup never
+  stops or overwrites a healthy existing service.
 - **Completion target is the full two-channel install**: Telegram plus the
   built client (`bun run app:build` — the PWA at `/app/` and the Telegram
   mini app at `/t/` are one build; design/telegram.md → Mini Apps).
@@ -39,9 +39,8 @@ Required sequence:
    before any dependency, asset or service mutation.
 2. `bun install --frozen-lockfile`. Dependency-using validation runs only
    after this — never through incidental Bun cache/auto-install.
-3. Confirm operator provisioning is already complete: the installer
-   creates no credentials, performs no logins, and warms or unlocks
-   nothing.
+3. Confirm operator provisioning is complete: the installer creates no
+   credentials, performs no logins, and warms or unlocks nothing.
 4. `doctor --phase preflight` from the checkout, with the target home and
    the **service** PATH.
 5. `bun run app:build`, then the shared asset check via
@@ -59,10 +58,10 @@ a bank's embedding model, removes units, or rolls back by deleting
 operator state.
 
 Cancellation reclaims owned process groups on every completion: TERM, a
-two-second grace for worker cleanup, then KILL, and later phases do not
-run. Nested startup probes share the acceptance worker group; accepted
-systemd jobs/services and already-written files are not rolled back.
-Recovery is a separately authorized action, not another installer run.
+two-second grace for worker cleanup, then KILL; later phases do not run.
+Nested startup probes share the acceptance worker group; accepted systemd
+jobs/services and already-written files are not rolled back. Recovery is a
+separately authorized action, not another installer run.
 
 ## Phases
 
@@ -70,11 +69,11 @@ The contract is `doctor [--json] [--strict] [--phase preflight|installed]`,
 default `installed` — one selector, no second setup CLI or persisted phase
 state. `preflight` is start-ready inspection **after** frozen dependencies
 and explicit provisioning: it skips expected boot-created layout/database,
-not-yet-installed units and not-yet-built assets, and it is not a healthy
+not-yet-installed units and not-yet-built assets, and is not a healthy
 verdict for an untouched checkout. The installer supplies `GOBLIN_HOME`,
 runs from an explicit checkout cwd, and consumes exit status or the typed
-JSON report — it never scrapes human output. Detection observes facts and
-the caller supplies phase; that split and the phase contract itself are
+JSON report — never scraping human output. Detection observes facts and
+the caller supplies phase; that split and the phase contract are
 `design/doctor.md`'s.
 
 ## Phase-dependent expectations
@@ -97,16 +96,16 @@ states; expected absence must never masquerade as a health pass.
 | Whistle cache absent | Expected deferred first-use download on supported platform; configured override missing is a failure | Cache absence alone is not corruption; report cold/unverified until exercised, no diagnostic download |
 | Storage/inspection permission or I/O error | Preserve operation/errno; never relabel as absence | Same; capacity does not prove future durable writes will succeed |
 
-There is no channel-disable knob: full two-channel assets are the default
-install acceptance. Network-dependent features have separate readiness
-results; a configured local reference does not prove its provider works.
+No channel-disable knob: full two-channel assets are the default install
+acceptance. Network-dependent features have separate readiness results; a
+configured local reference does not prove its provider works.
 
 ## Startup acceptance
 
 A bounded, invocation-specific action sequence owned by the installer —
-not another Doctor phase and not a service repair loop:
+not another Doctor phase, not a service repair loop:
 
-1. Before the approved start, record the attempted-start boundary and the
+1. Before the approved start, record the attempted-start boundary and
    baseline invocation identity: invocation ID, start timestamp, restart
    count. Reject ambiguous target identity.
 2. Within one overall deadline, require both `goblin up` **and**
@@ -143,26 +142,27 @@ or provider access — the operator handshake does.
 
 ## Installer rules
 
-- The frozen dependency sync precedes every dependency-using validation;
-  the direct-`pass-cli` lint policy stays conservative unless explicitly
+- Frozen dependency sync precedes every dependency-using validation; the
+  direct-`pass-cli` lint policy stays conservative unless explicitly
   changed.
 - Warm has no ordering barrier before Goblin — intentional.
 - Linger enable failure is a warn, not fatal; linger is not wallet unlock.
 - The chosen Bun binary must work in the service PATH: an `ExecStart`
-  absolute path does not put `bun` where auth/MCP commands look. Unsupported
-  paths are rejected, not promised.
+  absolute path does not put `bun` where auth/MCP commands look.
+  Unsupported paths are rejected, not promised.
 - `ensureHomeLayout` runs before config validation — layout writes can
   precede a failed boot, accepted. Boot seeds missing files without
   overwriting operator/agent edits (skills, `mcporter.json`, home shims);
   real-file collisions are reported, not overwritten. Optional caches and
   wrapper state appear on first use, not all at boot.
 - Final service status is never the acceptance signal.
-- `http/app-dist.ts` reports missing dist as fail-loud 500 + log; a present
-  directory missing index/assets yields 404, and its broad stat catch
-  masks non-ENOENT errors — a known defect shared checks must not copy.
+- `http/app-dist.ts` reports missing dist as fail-loud 500 + log; a
+  present directory missing index/assets yields 404, and its broad stat
+  catch masks non-ENOENT errors — a known defect shared checks must not
+  copy.
 - Service PATH, not interactive PATH, is what every prerequisite check
-  means. Snapshot metadata inspection is non-interactive: it never
-  unlocks, warms, or reads a key value.
+  means. Snapshot metadata inspection is non-interactive: never unlocks,
+  warms, or reads a key value.
 - Auth command recognition is exactly one form: a `!` record whose first
   word is `pass-keys` (bare or literal path-prefixed, identified by
   basename) running `get <profile> <KEY>`. Wrappers, env prefixes,

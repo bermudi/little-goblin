@@ -135,6 +135,30 @@ export interface RuntimeDeps {
 	// each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
+	// Durable wake ownership (wake-dispatcher.ts): the composition's
+	// window into which journal run processes which submitted message.
+	// `begin` fires after the run row exists and before the stream can
+	// reach a tool — the admitted members' message ids plus the run
+	// rows this attempt continues (explicit resume) or inherits
+	// (overflow). `members` fires when a steered submit joins the
+	// membership mid-run. `end` fires at the run's terminal journal
+	// stamp. Only meaningful when turnJournal exists; hooks must not
+	// throw (they observe the turn, they never gate it).
+	runOwnership?: {
+		begin(event: {
+			runId: string;
+			conversationId: string;
+			memberMessageIds: string[];
+			resumedFrom?: string;
+			inheritFrom?: string[];
+		}): void;
+		members(runId: string, messageIds: string[]): void;
+		end(
+			runId: string,
+			status: "fenced" | "completed" | "error",
+			delivery: "delivered" | "undelivered" | "failed",
+		): void;
+	};
 }
 
 export class FencedError extends Error {
@@ -837,6 +861,10 @@ export class Runtime {
 			if (journal === undefined || runId === null || runStamped) return;
 			journal.finishRun(runId, status, delivery);
 			runStamped = true;
+			// The terminal stamp IS the durable acknowledgement a wake
+			// waits on — the hook fires after the row lands so the
+			// dispatcher's settle read never sees a live run by mistake.
+			this.deps.runOwnership?.end(runId, status, delivery);
 		};
 		try {
 			this.checkAuthority(convId, epoch);
@@ -901,6 +929,22 @@ export class Runtime {
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
+			// Every member claimed into this attempt — the drain's initial
+			// claim and a resume admission's queue claim are both already
+			// on `turns` — becomes this run's owned input here, before the
+			// stream can reach a tool. A wake linked to a predecessor the
+			// row continues or inherits moves with it.
+			if (journal !== undefined) {
+				this.deps.runOwnership?.begin({
+					runId,
+					conversationId: convId,
+					memberMessageIds: turns.map((t) => t.message.id),
+					...(sourceRunId !== undefined ? { resumedFrom: sourceRunId } : {}),
+					...(recovery?.predecessorRun !== undefined
+						? { inheritFrom: [recovery.predecessorRun] }
+						: {}),
+				});
+			}
 			// The fence's evidence reads the fresh row after inheritance:
 			// it already carries the source's decisions and every
 			// predecessor attempt's recorded results, so a replay answers
@@ -950,6 +994,12 @@ export class Runtime {
 				state,
 				journal,
 				runId,
+				// A steer that joins mid-run is processed by this run — the
+				// wake hook hears only the joined ids (converts that failed
+				// were settled, never joined). Journaled turns only.
+				...(journal === undefined
+					? {}
+					: { noteRunMembers: (ids: string[]) => this.deps.runOwnership?.members(runId!, ids) }),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
 					if (journalFault.current !== undefined) throw journalFault.current;

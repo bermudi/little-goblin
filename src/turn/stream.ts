@@ -304,6 +304,11 @@ export interface StreamDeps<M extends WireMember> {
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
 	settle(m: M, done: MemberSettlement): void;
+	// The durable-wake seam: after a steer fold, the message ids that
+	// actually joined the membership (converted + replayed, not merely
+	// claimed). The runtime wires it to the wake dispatcher's run link;
+	// absent = no wake tracking.
+	noteRunMembers?(messageIds: string[]): void;
 	modelEntries(): { seq: number; message: UIMessage }[];
 	steerMarkSeed: number;
 	// Recovery-carried inputs (the doc's whitelist): a resume continues
@@ -523,6 +528,10 @@ export async function driveStream<M extends WireMember>(
 					});
 				}
 			}
+			// Joined members are this run's input now — the wake link
+			// lands before the request does, so a completion can't settle
+			// a delivery it never owned.
+			if (claimedIds.size > 0) deps.noteRunMembers?.([...claimedIds]);
 			// A claimed steer whose every conversion failed (the poison-pill
 			// path) must not eat the forced landing: forcedKind is already
 			// set and this is the landing's only shot (review 2026-10-07, m1).

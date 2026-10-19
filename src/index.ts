@@ -76,6 +76,8 @@ import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
+import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
+import { openWakeStore } from "./wake-store.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -132,6 +134,13 @@ async function boot() {
 	// Its open reclassifies rows left 'running' — a graceful shutdown
 	// fences first, so 'running' at open means the process died mid-turn.
 	const turnJournal = openTurnJournal(store.db);
+	// Durable wakes share the store handle — the trigger append, its
+	// history reference, and the delivery state commit together. The
+	// dispatcher binds after the runtime exists (the ownership hooks
+	// late-bind through this slot); it is what the responsibility
+	// service's developments ride.
+	const wakeStore = openWakeStore(store.db);
+	let wakeDispatcher: WakeDispatcher | undefined;
 	// Between-turns pruning of old textual tool outputs — inert without a
 	// hand-edited cachePruning block (DESIGN.md → Cache stability).
 	const cachePruning = openCachePruning({
@@ -324,6 +333,11 @@ async function boot() {
 	const runtime = new Runtime({
 		store,
 		turnJournal,
+		runOwnership: {
+			begin: (e) => wakeDispatcher?.hooks.begin(e),
+			members: (runId, ids) => wakeDispatcher?.hooks.members(runId, ids),
+			end: (runId, status, delivery) => wakeDispatcher?.hooks.end(runId, status, delivery),
+		},
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
@@ -456,6 +470,22 @@ async function boot() {
 				withTimeout(tg.bot.api.sendMessage(chat, text), "sendMessage (resumed turn notice)"),
 		}),
 	});
+	// Durable wake delivery — the dispatcher owns record→commit→submit
+	// and the journal-run ownership the runtime announces through the
+	// hooks bound above. Built after wakeDeps (the sinks it uses) and
+	// before replayInbox: recovered wakes enter their lanes ahead of
+	// inbound traffic. The boot pump replays the last crash boundary.
+	wakeDispatcher = makeWakeDispatcher({
+		store,
+		wakes: wakeStore,
+		journal: turnJournal,
+		runtime,
+		sinkFor: (conv) =>
+			channelOf(conv.id) === "app" ? wakeDeps.bell(conv) : wakeDeps.delivery(conv),
+	});
+	wakeDispatcher.pump();
+	const stopWakeTicker = wakeDispatcher.startTicker();
+
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
@@ -643,6 +673,8 @@ async function boot() {
 		outbox,
 		delegations,
 		runtime,
+		wakeDispatcher,
+		stopWakeTicker,
 		tg,
 		http,
 		scheduler,
@@ -669,6 +701,8 @@ const {
 	outbox,
 	delegations,
 	runtime,
+	wakeDispatcher,
+	stopWakeTicker,
 	tg,
 	http,
 	scheduler,
@@ -691,6 +725,8 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
+	// Wake retries stop too — open wakes ride to the next boot's pump.
+	stopWakeTicker();
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();

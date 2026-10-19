@@ -244,7 +244,8 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 			writeFileSync(object, "not a compressed Git object\n");
 		}
 		if (mode === "marker-dir") chmodSync(markerDir, 0o555);
-		if (mode === "dirty") writeFileSync(join(repo, "untracked"), "dirty\n");
+		if (mode === "dirty") writeFileSync(join(repo, "package.json"), "deps-A-dirty\n");
+		if (mode === "untracked") writeFileSync(join(repo, "scratch-note.md"), "local scratch\n");
 		if (mode === "detached") git(repo, "checkout", "--detach", "-q");
 		const alias = join(dir, "checkout-alias");
 		symlinkSync(repo, alias);
@@ -347,7 +348,7 @@ describe("local deployment preflight", () => {
 		["blank", "no absolute WorkingDirectory"],
 		["missing-root", "cannot resolve goblin.service WorkingDirectory"],
 		["unit", "cannot read goblin.service WorkingDirectory"],
-		["dirty", "working tree dirty"],
+		["dirty", "tracked files modified"],
 		["detached", "detached HEAD"],
 		["diff", "cannot compare deployment revisions"],
 		["status", "cannot read working tree status"],
@@ -377,6 +378,14 @@ describe("local deployment preflight", () => {
 
 	test("canonical service path accepts a symlink to this checkout", () => {
 		expect(runDeploy([], { mode: "alias" }).status).toBe(0);
+	});
+
+	test("untracked files are surfaced but do not block deploying HEAD", () => {
+		const result = runDeploy([], { mode: "untracked" });
+		expect(result.status).toBe(0);
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).toContain("untracked files present — not in HEAD, so not deployed:");
+		expect(result.stdout).toContain("scratch-note.md");
 	});
 
 	test("corrupt marker history fails before deployment even when Git reports missing with exit zero", () => {

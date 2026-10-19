@@ -119,9 +119,25 @@ if [ -e "$incomplete" ] || [ -L "$incomplete" ]; then
 fi
 
 # --- 1. What gets deployed is a commit, on a branch ----------------------
+# The server is TypeScript run in place, so a modified tracked file means
+# the process would run something other than HEAD and the deployment
+# marker (and its rollback) would lie. Untracked files are in no commit:
+# they are surfaced, never fatal.
 tree_status="$(git status --porcelain)" || fail "cannot read working tree status"
-[ -z "$tree_status" ] ||
-	fail "working tree dirty — commit or stash first; deploys are commits"
+untracked_files=""
+while IFS= read -r line; do
+	case "$line" in
+		"") ;;
+		"?? "*) untracked_files+="${line#\?\? }"$'\n' ;;
+		*) fail "tracked files modified — commit or stash first; deploys are commits" ;;
+	esac
+done <<<"$tree_status"
+if [ -n "$untracked_files" ]; then
+	step "untracked files present — not in HEAD, so not deployed:"
+	while IFS= read -r file; do
+		[ -n "$file" ] && step "  $file"
+	done <<<"$untracked_files"
+fi
 branch="$(git symbolic-ref -q --short HEAD)" ||
 	fail "detached HEAD — check out the branch to deploy"
 new_rev="$(git rev-parse --verify HEAD^{commit})" || fail "cannot resolve deployment commit"
@@ -230,9 +246,10 @@ fi
 # too.
 [ "$(git rev-parse --verify "HEAD^{commit}")" = "$new_rev" ] ||
 	fail "HEAD moved during the gate — commit it and redeploy"
-tree_status="$(git status --porcelain)" || fail "cannot re-read working tree status"
+tree_status="$(git status --porcelain --untracked-files=no)" ||
+	fail "cannot re-read working tree status"
 [ -z "$tree_status" ] ||
-	fail "working tree dirtied during the gate — inspect and redeploy"
+	fail "tracked files changed during the gate — inspect and redeploy"
 restart_epoch="$(date +%s)"
 # The watcher's floor: the invocation this restart must replace, read
 # BEFORE the restart — a crash/restart that lands ahead of the watch can

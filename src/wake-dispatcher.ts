@@ -125,6 +125,13 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			return;
 		}
 		if (!runtime.accepting()) return; // shutdown — the next boot owns it
+		if (runtime.isAdmitted(conv.id, rec.messageId)) {
+			log.debug("wake submit skipped — already admitted", {
+				wake: rec.wakeId,
+				conversation: rec.conversationId,
+			});
+			return;
+		}
 		const admitted = runtime.submitPersisted(conv, triggerOf(rec), deps.sinkFor(conv));
 		if (!admitted) {
 			log.warn("wake submit refused — runtime closed", {

@@ -187,6 +187,7 @@ interface QueuedTurn {
 	// interrupted run it continues; claimed as a member its recovery
 	// would silently drop, so the claim boundary stops before it.
 	resumeSeed?: ResumeSeed | undefined;
+	release?: (() => void) | undefined;
 }
 
 // Compaction jobs run between turns so the preceding exchange is whole.
@@ -208,6 +209,7 @@ interface Lane {
 	// Shutdown awaits the drain so terminal sink flushes finish.
 	draining: Promise<void> | null;
 	live: LiveChunks | null;
+	admitted: Map<string, QueuedTurn[]>;
 }
 
 // A streaming submit stays queued behind a headless turn so it can lead its
@@ -303,6 +305,13 @@ export class Runtime {
 		return this.admit(conv, message, sink, seed);
 	}
 
+	isAdmitted(conversationId: string, messageId: string): boolean {
+		return (
+			this.lanes.get(conversationId)?.admitted.get(messageId)?.some((t) => !t.doneSent) ??
+			false
+		);
+	}
+
 	private admit(
 		conv: Conversation,
 		message: UIMessage,
@@ -314,7 +323,18 @@ export class Runtime {
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
+		const turn: QueuedTurn = { message, sink, doneSent: false, resumeSeed: seed };
+		turn.release = () => {
+			const holders = lane.admitted.get(message.id);
+			if (holders === undefined) return;
+			const index = holders.indexOf(turn);
+			if (index !== -1) holders.splice(index, 1);
+			if (holders.length === 0) lane.admitted.delete(message.id);
+		};
+		lane.pending.push(turn);
+		const holders = lane.admitted.get(message.id);
+		if (holders === undefined) lane.admitted.set(message.id, [turn]);
+		else holders.push(turn);
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -493,6 +513,7 @@ export class Runtime {
 				compactController: null,
 				draining: null,
 				live: null,
+				admitted: new Map(),
 			};
 			this.lanes.set(convId, l);
 		}
@@ -508,6 +529,8 @@ export class Runtime {
 			await turn.sink.onDone(done);
 		} catch (err) {
 			log.warn("sink onDone failed", err);
+		} finally {
+			turn.release?.();
 		}
 	}
 

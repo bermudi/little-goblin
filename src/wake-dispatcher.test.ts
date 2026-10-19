@@ -239,6 +239,80 @@ describe("wake dispatcher", () => {
 		r.store.close();
 	});
 
+	test("pump resubmits of a queued wake deduplicate — the trigger is processed once", async () => {
+		const gate = deferred<void>();
+		const edge = scriptedModel(
+			[
+				[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "probe"), finishPart("tool-calls")],
+				textParts("adjusted"),
+			],
+			{ extra: textParts("adjusted") },
+		);
+		const r = rig({
+			model: edge.model,
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						await gate.promise;
+						return { ok: true };
+					},
+				}),
+			},
+		});
+		const s1 = new RecordingSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "start" }]), s1);
+		await s1.firstToolCall;
+		const rec = dev(r, "poll:1", "dedupe marker");
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		gate.resolve();
+		expect(await s1.done).toEqual({ kind: "completed" });
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "wake settled");
+		const done = wake(r, rec.wakeId);
+		expect(done.runId).not.toBeNull();
+		expect(r.journal.get(done.runId!)?.status).toBe("completed");
+		const prompts = edge.streamCalls.map((c) => JSON.stringify(c.prompt));
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]!.split("dedupe marker").length - 1).toBe(1);
+		expect(texts(r).filter((m) => m.id === done.messageId)).toHaveLength(1);
+		r.store.close();
+	});
+
+	test("a resubmit during async admission startup deduplicates before the run row exists", async () => {
+		const edge = scriptedModel([textParts("ok")]);
+		const r = rig({ model: edge.model });
+		const rec = dev(r, "poll:1", "startup marker");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "wake settled");
+		const done = wake(r, rec.wakeId);
+		expect(done.runId).not.toBeNull();
+		expect(r.journal.get(done.runId!)?.status).toBe("completed");
+		expect(edge.streamCalls).toHaveLength(1);
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("startup marker").length - 1).toBe(1);
+		expect(texts(r).filter((m) => m.id === done.messageId)).toHaveLength(1);
+		r.store.close();
+	});
+
+	test("a fresh runtime admits a claimed-but-unlinked wake — the registry is process-local", async () => {
+		const dbPath = tmpDb("goblin-wd-");
+		const r1 = rig({ store: openStore(dbPath) });
+		const claimed = claimedOnly(r1, "poll:1");
+		r1.store.close();
+		const r2 = rig({ store: openStore(dbPath) });
+		r2.dispatcher.pump();
+		await waitUntil(() => r2.wakes.get(claimed.wakeId)?.state === "settled", "wake settled");
+		const rec = r2.wakes.get(claimed.wakeId)!;
+		expect(rec.runId).not.toBeNull();
+		expect(r2.journal.get(rec.runId!)?.status).toBe("completed");
+		expect(r2.store.historyEntries(r2.conv.id)).toHaveLength(2);
+		r2.store.close();
+	});
+
 	test("a resume retargets the wake to the successor run; settle follows the chain", async () => {
 		const r = rig();
 		const claimed = claimedOnly(r, "poll:1");
@@ -322,6 +396,7 @@ describe("wake dispatcher", () => {
 		let calls = 0;
 		const failThenOk = {
 			accepting: () => true,
+			isAdmitted: () => false,
 			submitPersisted: () => {
 				calls += 1;
 				if (calls === 1) throw new Error("submit boom");

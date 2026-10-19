@@ -1,11 +1,9 @@
 # goblin v2
 
-Telegram-native personal AI agent for one operator. Rewrite of
-the original v1 (long gone) on the Vercel AI SDK; **this tree is the
-one true tree** — `goblin.service` runs from it, and every session
-works here. Read `DESIGN.md` plus the `design/` file for the area 
-you're touching before any structural work.
-`docs/` is operator documentation, not spec.
+Telegram-native personal AI agent for one operator on the Vercel AI SDK;
+`goblin.service` runs from this tree, and every session works here. Read
+`DESIGN.md` plus the `design/` file for the area you're touching before 
+any structural work. `docs/` is operator documentation, not spec.
 
 ## Guardrails
 
@@ -14,16 +12,14 @@ you're touching before any structural work.
   disk state).
 - **The app client is the one client, two doors.** `app/` is Vite + React
   + strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream
-  endpoints (DESIGN.md → App channel), type-checked (its tsconfig
-  program joins `bun run typecheck`) with wire types imported from
-  server sources, so config schema changes break typecheck, not the
-  page. It gets the tree's only build step; `src/http` serves `app/dist`
-  under `/app/` (the PWA) and `/t/` (the Telegram mini app's
-  settings/memories mode — design/telegram.md → Mini Apps, ruling
-  2026-10-10, which retired the former plain-JS `src/http/app.js` and
-  `tsconfig.client.json`), fail-loud 500 + log line when the build is
-  missing. Don't add a second client or unchecked client `.js`, and
-  keep `telegram-webapp.d.ts` out of the server program — its `Window`
+  endpoints (DESIGN.md → App channel), its tsconfig program joining
+  `bun run typecheck` with wire types imported from server sources, so
+  config schema changes break typecheck, not the page. It gets the
+  tree's only build step; `src/http` serves `app/dist` under `/app/`
+  (the PWA) and `/t/` (the Telegram mini app — design/telegram.md →
+  Mini Apps), fail-loud 500 + log line when the build is missing. Don't
+  add a second client or unchecked client `.js`, and keep
+  `telegram-webapp.d.ts` out of the server program — its `Window`
   declaration changes how linkedom's `parseHTML` resolves in
   `agent/tools/fetch.ts`.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
@@ -64,45 +60,26 @@ gets designed into the design docs first.
 ## Design inspiration
 
 When designing workspace layout, identity/memory files, prompt assembly, or
-scheduled work: two mature agents live locally and already paid for these
-lessons — `~/build/testing/openclaw/` (TypeScript, multi-channel) and
-`~/build/testing/hermes-agent/` (Python, Nous Research). Borrow their
-*mechanisms*, never their scope: both carry 10x goblin's feature list, most
-of it on our non-goals list. Consult their AGENTS.md, docs/ and templates 
-before designing; cite what you took in the design docs.
-
-For agent harness inspiration there's nothing better than `~/build/pi-mono/`.
-It is an open source harness cloned by Cloudflare, OpenRouter and others and
-it can be gold-mine of prover patterns. Compaction, tool calling, etc.
+scheduled work, borrow *mechanisms* — never scope — from two mature local
+agents: `~/build/testing/openclaw/` (TS, multi-channel) and
+`~/build/testing/hermes-agent/` (Python, Nous). For harness patterns
+(compaction, tool calling): `~/build/pi-mono/`. All three carry feature
+lists on our non-goals list. Cite what you took in the design docs.
 
 ## Live services
 
-- `goblin.service` runs from this working tree — code changes go live
-  only on `systemctl --user restart goblin`, which needs bermudi's OK.
 - **Prod is g7 — this tree.** `goblin.service` runs from this working
   copy; code changes go live only on `systemctl --user restart goblin`,
-  which needs bermudi's OK. lithium ran prod until 2026-10-09 — its
-  goblin stack is torn down, its conversations were merged into this
-  box's state, and the archives (snapshots, DB bundle, memory dump)
-  live in `~/goblin-migration-20261008/`. The only sanctioned prod
-  update is `scripts/deploy.sh`: gate (typecheck) →
-  conditional `bun install`/`app:build` (markers
-  `.git/GOBLIN_DEPLOYED_REV` + `.git/GOBLIN_DEPLOY_INCOMPLETE` — a
-  leftover attempt marker forces the refresh) → restart → verify.
-  Deployment never
-  pushes, fetches, or pulls — `origin/main` moves only when main is
-  published, so local `main` can run ahead of it. Publishing main is separate
-  and needs bermudi's OK. Deployment restarts prod and also needs
-  bermudi's OK each time, which running the script IS.
-  The memory stack is never auto-deployed; `deploy/memory/`
-  changes print the manual runbook (see docs/operations.md →
-  Deploying).
-- Quadlet `HealthCmd` one-liners (`python -c "…"`) break on podman
-  5.4: the trailing escaped quote is dropped in CMD-SHELL re-quoting,
-  every probe dies `Unterminated quoted string`, and the watch
-  restart-loops a healthy API (lithium, 2026-10-08; podman 6.1.3 on
-  g7 masks it). Healthcheck commands are mounted scripts with zero
-  shell metacharacters — keep them that way.
+  which needs bermudi's OK each time. The only sanctioned update is
+  `scripts/deploy.sh` (gate → conditional install/build → restart →
+  verify; markers and mechanics in docs/operations.md → Deploying) —
+  running it IS the restart OK. It never pushes, fetches, or pulls;
+  publishing main is separate and also needs bermudi's OK. The memory
+  stack is never auto-deployed — `deploy/memory/` changes print the
+  manual runbook. Lithium cutover archives: `~/goblin-migration-20261008/`.
+- Quadlet `HealthCmd` takes no shell metacharacters — podman's
+  CMD-SHELL re-quoting mangles one-liners into restart-loops (lithium,
+  podman 5.4). Healthchecks are mounted scripts; keep them that way.
 - **Exception: the built client is live per request.** `app/dist` is
   read from disk per request by the running service, and serves both
   doors — `/app/` (the PWA) and `/t/` (the Telegram mini app). Do not
@@ -175,11 +152,9 @@ design-doc ruling (delegation.md, mail.md, sandbox.md).
 
 ## Process
 
-`bun run doctor` is read-only diagnosis, not permission to repair or
-restart. It emits one text/JSON report on stdout; diagnostic operational
-messages belong on stderr, never mixed into JSON. Shared checks must not
-bootstrap state or resolve arbitrary auth refs. Safe config-validation
-errors retain their typed HTTP 422 contract; I/O errors remain 500.
+`bun run doctor` is read-only diagnosis — no repair, no restart
+authority. Its contract (stdout/stderr split, shared-check rules,
+422/500 boundaries) lives in `design/doctor.md`.
 
 No specs tree, no decision records. Small commits, often, on main or 
 short-lived branches. If a design tension is real enough to argue about,

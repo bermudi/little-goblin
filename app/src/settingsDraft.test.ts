@@ -432,7 +432,8 @@ describe("transcription block", () => {
 		};
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(validateDraft(d, providers)).toBeNull();
-		// The form can't render the chain, but a save must not destroy it.
+		// The draft widens each link to the entry shape the editor edits.
+		expect(d.transcription?.fallbacks.map((f) => f.kind)).toEqual(["openrouter", "whistle"]);
 		const body = bodyFromDraft(d, providers, authDefaults);
 		expect(body.transcription).toEqual({
 			kind: "groq",

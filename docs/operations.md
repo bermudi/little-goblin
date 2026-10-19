@@ -27,7 +27,9 @@ the plain Settings client is instead loaded once at backend startup.
 
 After changing `goblin.json5` **by hand**, use an approved restart. Settings
 mini-app saves apply live where supported; boot-pinned settings (such as
-`telegram.apiRoot` and `appToken`) still need a restart.
+`telegram.apiRoot` and `appToken`) still need a restart. A save patches the
+file in place — comments, key order, and keys the schema doesn't know
+survive; only entries whose parsed value changed are re-serialized.
 
 `scripts/install.sh` is **fresh-only**, not an update or repair command. It
 must refuse any existing installed Goblin target, even a stopped one, before

@@ -594,6 +594,31 @@ describe("goblin.json5", () => {
 		expect(readFileSync(join(dir, "goblin.json5"), "utf8")).toContain("auth: 'brave'");
 	});
 
+	test("writeConfig patches in place — comments, order, and unknown keys survive", () => {
+		const dir = useHome("goblin-cfg-");
+		const p = join(dir, "goblin.json5");
+		writeFileSync(
+			p,
+			`{
+  // never lose this
+  providers: { ${P_ZAI} },
+  model: "zai/glm-4.6",
+  experimental: { notInSchema: true }, // the operator's own field
+  operators: [7],
+  thinking: "low",
+}
+`,
+		);
+		const cfg = loadConfig()!;
+		writeConfig({ ...cfg, thinking: "high" });
+		const out = readFileSync(p, "utf8");
+		expect(out).toContain("// never lose this");
+		expect(out).toContain("experimental: { notInSchema: true }, // the operator's own field");
+		expect(out).toContain('thinking: \'high\'');
+		expect(out).toContain('model: "zai/glm-4.6",'); // untouched line verbatim
+		expect(loadConfig()!.thinking).toBe("high");
+	});
+
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome("goblin-cfg-");
 		const p = join(dir, "goblin.json5");
@@ -967,6 +992,24 @@ describe("authReferences", () => {
 			tts: { kind: "edge", voice: "en-US-AriaNeural" },
 		});
 		expect([...authReferences(c)].sort()).toEqual(["telegram", "zai"]);
+	});
+
+	test("transcription fallback auth names join the sweep", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [7],
+			allowedUsers: [7],
+			transcription: {
+				kind: "groq",
+				fallbacks: [{ kind: "openrouter", auth: "or-asr" }, { kind: "whistle" }],
+			},
+		});
+		// Primary default "groq", the fallback's explicit "or-asr"; a
+		// keyless whistle entry adds nothing.
+		expect([...authReferences(c)].sort()).toEqual(["groq", "or-asr", "telegram", "zai"]);
 	});
 
 	test("missingAuthNames names the absent records, sorted — boot's warn sweep", () => {

@@ -16,6 +16,7 @@ import {
 	draftFromConfig,
 	EMPTY_DRAFT,
 	emptyTranscription,
+	emptyTrEntry,
 	FETCH_META,
 	type KindMeta,
 	type MemDraft,
@@ -27,6 +28,7 @@ import {
 	THINKING_ORDER,
 	type TranscriptionKind,
 	type TrDraft,
+	type TrEntryDraft,
 	type TrKindStash,
 	type TtsDraft,
 	type TtsKindStash,
@@ -609,6 +611,176 @@ function ChainEditor({
 				}}
 			>
 				+ Add provider
+			</button>
+		</>
+	);
+}
+
+// The transcription retry chain — same per-link field rules as the
+// primary (whistle keyless; cloud links carry model + secret name +
+// language), plus ordering controls. Depth is one by construction:
+// entries are plain TrEntryDrafts and carry no chain of their own.
+function TrFallbackEditor({
+	entries,
+	kinds,
+	trDefaults,
+	authNames,
+	token,
+	onSecretStored,
+	onChange,
+}: {
+	entries: TrEntryDraft[];
+	kinds: readonly TranscriptionKind[];
+	trDefaults: ConfigResponse["transcriptionDefaults"];
+	authNames: string[];
+	token: string | null;
+	onSecretStored: (name: string) => void;
+	onChange: (next: TrEntryDraft[] | ((current: TrEntryDraft[]) => TrEntryDraft[])) => void;
+}) {
+	const move = (i: number, d: number) => {
+		const j = i + d;
+		if (j < 0 || j >= entries.length) return;
+		const next = entries.slice();
+		next[i] = entries[j]!;
+		next[j] = entries[i]!;
+		onChange(next);
+	};
+	const patch = (i: number, p: Partial<TrEntryDraft>) =>
+		onChange(entries.map((x, j) => (j === i ? { ...x, ...p } : x)));
+	return (
+		<>
+			{entries.map((e, i) => {
+				const def = e.kind === "whistle" ? { model: "", auth: "" } : trDefaults[e.kind];
+				const effective = e.auth.trim() || def.auth;
+				const hint =
+					e.kind === "whistle"
+						? undefined
+						: (authWarn(effective, authNames) ??
+							(e.auth.trim() === "" ? `Blank uses ${def.auth}.` : undefined));
+				return (
+					<div className="chain-card" key={i}>
+						<div className="chain-head">
+							<span className="chain-num">{i + 1}</span>
+							<span className="chain-btns">
+								<button
+									type="button"
+									aria-label={`move fallback ${i + 1} up`}
+									disabled={i === 0}
+									onClick={() => move(i, -1)}
+								>
+									↑
+								</button>
+								<button
+									type="button"
+									aria-label={`move fallback ${i + 1} down`}
+									disabled={i === entries.length - 1}
+									onClick={() => move(i, 1)}
+								>
+									↓
+								</button>
+								<button
+									type="button"
+									aria-label={`remove fallback ${i + 1}`}
+									onClick={() => onChange(entries.filter((_, j) => j !== i))}
+								>
+									×
+								</button>
+							</span>
+						</div>
+						<select
+							className="mono"
+							value={e.kind}
+							aria-label={`fallback ${i + 1} engine`}
+							onChange={(ev) => {
+								const kind = kinds.find((k) => k === ev.target.value);
+								if (kind === undefined) return;
+								onChange(
+									entries.map((x, j) => (j === i ? switchTranscriptionKind(x, kind) : x)),
+								);
+							}}
+						>
+							{kinds.map((k) => (
+								<option key={k} value={k}>
+									{k}
+								</option>
+							))}
+						</select>
+						{e.kind === "whistle" ? (
+							<div className="cap">Local — no model or key. Ideal last resort.</div>
+						) : (
+							<>
+								<input
+									className="mono"
+									value={e.model}
+									onChange={(ev) => patch(i, { model: ev.target.value })}
+									placeholder={def.model}
+									autoComplete="off"
+									spellCheck={false}
+									autoCapitalize="off"
+									aria-label={`fallback ${i + 1} model`}
+								/>
+								<input
+									className="mono"
+									value={e.auth}
+									onChange={(ev) => patch(i, { auth: ev.target.value })}
+									placeholder={`${def.auth} — in auth.jsonl`}
+									autoComplete="off"
+									spellCheck={false}
+									autoCapitalize="off"
+									aria-label={`fallback ${i + 1} secret name`}
+									list={AUTH_DL}
+								/>
+								{hint !== undefined && <div className="cap">{hint}</div>}
+								<SecretEntry
+									key={`${e.kind}:${effective}`}
+									token={token}
+									name={effective}
+									onStored={(n) => {
+										onSecretStored(n);
+										onChange((current) =>
+											current.map((x, j) => (j === i ? { ...x, auth: n } : x)),
+										);
+									}}
+								/>
+							</>
+						)}
+						{e.kind === "mimo" ? (
+							<select
+								aria-label={`fallback ${i + 1} language`}
+								value={e.language}
+								onChange={(ev) => patch(i, { language: ev.target.value })}
+							>
+								<option value="">Detect</option>
+								<option value="auto">Auto</option>
+								<option value="zh">Chinese</option>
+								<option value="en">English</option>
+							</select>
+						) : (
+							<input
+								className="mono"
+								value={e.language}
+								onChange={(ev) => patch(i, { language: ev.target.value })}
+								placeholder="language — blank detects"
+								autoComplete="off"
+								spellCheck={false}
+								autoCapitalize="off"
+								aria-label={`fallback ${i + 1} language`}
+							/>
+						)}
+					</div>
+				);
+			})}
+			<button
+				className="ghost"
+				type="button"
+				disabled={entries.length >= 4}
+				onClick={() => {
+					const first = kinds[0];
+					if (first === undefined) return;
+					onChange([...entries, emptyTrEntry(first)]);
+				}}
+			>
+				+ Add fallback
 			</button>
 		</>
 	);
@@ -1627,6 +1799,34 @@ export function SettingsView({
 										cap="An ISO code like es. Blank lets the engine detect it."
 									/>
 								)}
+								<div className="cap ops-cap">
+									Fallbacks — tried in order after the engine above throws; a real answer (or
+									genuine silence) ends the chain. Whistle last is the free local net.
+								</div>
+								<TrFallbackEditor
+									entries={draft.transcription.fallbacks}
+									kinds={kinds.transcription}
+									trDefaults={kinds.trDefaults}
+									authNames={authNames}
+									token={token}
+									onSecretStored={rememberAuthName}
+									onChange={(next) =>
+										setDraft((d) =>
+											d.transcription === null
+												? d
+												: {
+														...d,
+														transcription: {
+															...d.transcription,
+															fallbacks:
+																typeof next === "function"
+																	? next(d.transcription.fallbacks)
+																	: next,
+														},
+													},
+										)
+									}
+								/>
 							</>
 						)}
 					</div>

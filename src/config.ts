@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
+import { patchConfigText } from "./config-patch.ts";
 import { durableWriteFile } from "./durable.ts";
 import { log } from "./log.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
@@ -1029,9 +1030,28 @@ export function parseConfig(raw: unknown): Config {
 	return result.data;
 }
 
-// A hardened mode on the existing file survives this whole-file rewrite.
+// The schema's declared top-level keys — the patcher deletes a key
+// from the file only when the schema owns it (a ""-cleared block);
+// anything else in the text is the operator's and survives verbatim.
+const CONFIG_TOP_KEYS = new Set(Object.keys(configSchema.in.shape));
+
+// A hardened mode on the existing file survives the rewrite.
 export function writeConfig(config: Config): void {
-	durableWriteFile(paths.config(), JSON5.stringify(parseConfig(config), null, 2) + "\n");
+	const merged = parseConfig(config);
+	let text: string | null = null;
+	try {
+		text = readFileSync(paths.config(), "utf8");
+	} catch {
+		// No readable file — the first write is canonical.
+	}
+	// Patch the file in place: only the top-level keys whose parsed
+	// value changed get re-serialized — comments, ordering, formatting
+	// and non-schema keys survive a settings save verbatim. A file the
+	// patcher can't reason about still gets the canonical rewrite —
+	// degrading beats corrupting.
+	const patched =
+		text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
+	durableWriteFile(paths.config(), patched ?? `${JSON5.stringify(merged, null, 2)}\n`);
 }
 
 // Split "<provider>/<model-id>" — model IDs themselves contain slashes
@@ -1054,6 +1074,7 @@ export function authReferences(config: Config): Set<string> {
 	for (const feature of [
 		config.memory,
 		config.transcription,
+		...(config.transcription?.fallbacks ?? []),
 		config.tts,
 		config.reviewer,
 		config.system1,

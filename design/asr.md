@@ -111,7 +111,10 @@ Kinds (`zod` discriminated union in `config.ts`):
   own), and a fully failed chain throws one error naming each engine,
   so the recorded `transcriptionError` keeps every link's reason. Each
   link gets the full orchestration — cap check, segmentation — so a
-  wav-profile fallback (whistle, mimo) still transcodes first.
+  wav-profile fallback (whistle, mimo) still transcodes first. The
+  settings form edits the chain like the search/fetch chains — per-entry
+  kind/model/auth/language plus order controls — and a save patches
+  `goblin.json5` in place rather than rewriting it (2026-10-19).
 - **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are doc-pinned,
   not live-probed (no local key at implementation time). Logfare is an
   OpenAI-compatible relay — its docs note requests may be logged

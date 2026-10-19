@@ -110,10 +110,11 @@ export function switchTtsKind(t: TtsDraft, kind: TtsKind, stash?: TtsKindStash):
 }
 export type TranscriptionKind = (typeof transcriptionKinds)[number];
 
-// The whole transcription block, widened to one shape. Whistle arms carry
-// no model/auth; cloud arms carry no keywords/engine/weights. Both kinds
-// keep every field so a save never drops a hand edit.
-export interface TrDraft {
+// One chain link, widened — the primary block and each fallback entry
+// share this shape. Whistle arms carry no model/auth; cloud arms carry
+// no keywords/engine/weights. Every field survives in the draft so a
+// save never drops a hand edit.
+export interface TrEntryDraft {
 	kind: TranscriptionKind;
 	model: string;
 	auth: string;
@@ -121,23 +122,20 @@ export interface TrDraft {
 	keywords: string[];
 	engine: string;
 	weights: string;
-	// Ordered retry chain — hand-edit-only like keywords/engine/weights,
-	// so the form carries it verbatim rather than dropping a configured
-	// chain on save.
-	fallbacks: TranscriptionEntry[] | undefined;
+}
+
+export interface TrDraft extends TrEntryDraft {
+	// Ordered retry chain — rendered by the fallback editor; entries
+	// carry no chain of their own (depth one, ≤4, per the schema).
+	fallbacks: TrEntryDraft[];
+}
+
+export function emptyTrEntry(kind: TranscriptionKind = "whistle"): TrEntryDraft {
+	return { kind, model: "", auth: "", language: "", keywords: [], engine: "", weights: "" };
 }
 
 export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft {
-	return {
-		kind,
-		model: "",
-		auth: "",
-		language: "",
-		keywords: [],
-		engine: "",
-		weights: "",
-		fallbacks: undefined,
-	};
+	return { ...emptyTrEntry(kind), fallbacks: [] };
 }
 
 // The identity fields — model + auth — don't carry across kinds: a groq
@@ -153,11 +151,11 @@ export type TrKindStash = Partial<
 	Record<TranscriptionKind, { model: string; auth: string; language: string }>
 >;
 
-export function switchTranscriptionKind(
-	t: TrDraft,
+export function switchTranscriptionKind<T extends TrEntryDraft>(
+	t: T,
 	kind: TranscriptionKind,
 	stash?: TrKindStash,
-): TrDraft {
+): T {
 	if (kind === t.kind) return t;
 	if (stash !== undefined) stash[t.kind] = { model: t.model, auth: t.auth, language: t.language };
 	const back = stash?.[kind];
@@ -194,8 +192,9 @@ export function switchProviderKind(
 	return { ...p, kind, auth: stash?.[kind] ?? "" };
 }
 
-function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
-	// Optional fields may hold an explicit undefined (zod's parse output).
+// One entry's widen — primary block or fallback link alike; optional
+// fields may hold an explicit undefined (zod's parse output).
+function transcriptionEntryDraft(e: TranscriptionEntry): TrEntryDraft {
 	const w: {
 		kind: TranscriptionKind;
 		model?: string | undefined;
@@ -204,8 +203,7 @@ function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
 		keywords?: string[] | undefined;
 		engine?: string | undefined;
 		weights?: string | undefined;
-		fallbacks?: TranscriptionEntry[] | undefined;
-	} = t;
+	} = e;
 	return {
 		kind: w.kind,
 		model: w.model || "",
@@ -214,13 +212,26 @@ function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
 		keywords: [...(w.keywords ?? [])],
 		engine: w.engine || "",
 		weights: w.weights || "",
-		fallbacks: w.fallbacks ? [...w.fallbacks] : undefined,
 	};
 }
 
-function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcription"]> {
+function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
+	return {
+		...transcriptionEntryDraft(t),
+		fallbacks: (t.fallbacks ?? []).map(transcriptionEntryDraft),
+	};
+}
+
+// The wire arm's object shape — the union also carries "" (clear) and
+// null (unchanged), so entries extract off the object arm only.
+type TrBodyArm = Extract<NonNullable<ConfigPostBody["transcription"]>, { kind: string }>;
+type TrBodyEntry = NonNullable<TrBodyArm["fallbacks"]>[number];
+
+// One chain link → its wire arm. Same field rules as the primary:
+// whistle drops model/auth, cloud drops keywords/engine/weights, and
+// blanks stay blank for the server's defaults.
+function transcriptionEntryBody(t: TrEntryDraft): Omit<TrBodyArm, "fallbacks"> {
 	const language = t.language.trim();
-	const fallbacks = t.fallbacks !== undefined && t.fallbacks.length > 0 ? { fallbacks: [...t.fallbacks] } : {};
 	if (t.kind === "whistle") {
 		return {
 			kind: "whistle",
@@ -228,7 +239,6 @@ function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcriptio
 			...(t.keywords.length ? { keywords: [...t.keywords] } : {}),
 			...(t.engine.trim() ? { engine: t.engine.trim() } : {}),
 			...(t.weights.trim() ? { weights: t.weights.trim() } : {}),
-			...fallbacks,
 		};
 	}
 	// Blank cloud fields fall back to the kind's defaults on the server.
@@ -237,8 +247,13 @@ function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcriptio
 		...(t.model.trim() ? { model: t.model.trim() } : {}),
 		...(t.auth.trim() ? { auth: t.auth.trim() } : {}),
 		...(language ? { language } : {}),
-		...fallbacks,
 	};
+}
+
+function transcriptionBody(t: TrDraft): TrBodyArm {
+	const body = transcriptionEntryBody(t);
+	if (t.fallbacks.length === 0) return body;
+	return { ...body, fallbacks: t.fallbacks.map(transcriptionEntryBody) };
 }
 export interface VisDraft {
 	model: string;

@@ -50,9 +50,11 @@ for hour-long recordings.
 
 When the primary engine can fail in a way a retry fixes — a quota, an
 outage — `fallbacks` lists the backups, tried in order after the
-primary throws. A produced transcript (or genuine silence) ends the
-chain; nothing falls back implicitly, so whistle only runs where you
-place it — last, as the free keyless safety net:
+primary throws. Settings → Voice edits the chain directly (add, order,
+remove; each entry gets its own model/secret/language fields). A
+produced transcript (or genuine silence) ends the chain; nothing falls
+back implicitly, so whistle only runs where you place it — last, as
+the free keyless safety net:
 
 ```json5
 transcription: {

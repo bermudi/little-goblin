@@ -30,9 +30,8 @@ function testConfig(apiRoot?: string): Config {
 	});
 }
 
-// Telegram's transport is the boundary we fake: a server that answers getMe
-// and swallows everything else. This is what makes the *real* createBot
-// runnable in-process, so the ordering under test is the shipped ordering.
+// Answers getMe and swallows everything else — enough to run the real
+// createBot in-process, so the ordering under test is the shipped ordering.
 function startFakeTelegram(): { apiRoot: string; stop: () => void } {
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -96,7 +95,6 @@ function stopRecords(): Record<string, unknown>[] {
 		.filter((rec) => rec.msg === "message generation stop received");
 }
 
-// Boot the real createBot against a fake Bot API, run the body, tear down.
 async function withRealBot(body: (bot: RunningBot["bot"]) => Promise<void>): Promise<void> {
 	const fake = startFakeTelegram();
 	cleanups.push(fake.stop);

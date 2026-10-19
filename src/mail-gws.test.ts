@@ -1,12 +1,7 @@
-// The gws mail reader's boundaries: history polling, baseline, thread
-// lookup, and failure mapping — all against a fake gws runner, never
-// the real CLI. The runner speaks the real surface mail-gws.ts calls:
-// `gmail users history list / messages list|get / getProfile --params
-// JSON --format json`, JSON on stdout, exit code + stderr on failure.
-// Invariants: the fake records argv per call (envelope, not behavior);
-// poll keeps the old seam's record-batch checkpoint contract (whole
-// records, cap 10, truncate at last fired); a 404 history list becomes
-// HistoryExpiredError; a missing reply target is null.
+// Fakes gws at the process seam — the fake speaks the real argv
+// surface mail-gws.ts calls: `gmail users history list / messages
+// list|get / getProfile --params JSON --format json`, JSON on stdout,
+// exit code + stderr on failure.
 
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
@@ -38,9 +33,8 @@ function msgGet(id: string, thread = "t"): unknown {
 	};
 }
 
-// A fake gws: route on (resource, method) with the handler's queued
-// responses. Defaults: empty history at head "200", empty list, generic
-// metadata get. Handlers see the parsed --params JSON.
+// Routes on (resource, method) with queued responses; defaults: empty
+// history at head "200", empty list, generic metadata get.
 function fakeGws(routes: {
 	history?: (params: Record<string, unknown>, call: number) => unknown;
 	list?: (params: Record<string, unknown>, call: number) => unknown;

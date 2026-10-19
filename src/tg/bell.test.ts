@@ -1,12 +1,3 @@
-// The bell's boundary contract (design/app.md → Spin-off → Telegram
-// rings): a finished app background turn pings every allowed operator
-// once — deep-link button only with a publicUrl — records the ping so
-// swipe-replies route back, and journals the ping text into each
-// operator's current DM. The summary is the stored assistant reply,
-// not the sink's own deltas, and one response pings once however many
-// bells its turn carried. Fenced turns are silent; one wedged send
-// never silences the rest. Fake Telegram API at the edge, real store.
-
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
@@ -68,8 +59,8 @@ function harness(opts: {
 	};
 }
 
-// The dedupe set is module-level — every test's fork shares the
-// "spun-1" app id, so reply ids must be unique per test.
+// The dedupe set is module-level and every fork shares the "spun-1"
+// app id — reply ids must be unique per test.
 let replySeq = 0;
 function reply(store: ConversationStore, convId: string, text: string): string {
 	const id = `asst-${++replySeq}`;
@@ -92,11 +83,10 @@ describe("makeBellSink", () => {
 		await sink.onDone({ kind: "completed" });
 		expect(h.sent.map((s) => s.chat)).toEqual([1, 7]);
 		expect(h.sent[0]!.text).toBe("the work: deployed the thing and all tests pass");
-		// Trailing-slash hosts normalize; the button rides every ping.
+		// Trailing-slash hosts normalize.
 		expect(h.sent[0]!.markup).toEqual({
 			inline_keyboard: [[{ text: "Open in app", url: "https://g.example/app/c/spun-1" }]],
 		});
-		// Recorded for reply routing and journaled into each current DM.
 		expect(h.pings.lookup(1, 1001)).toBe(conv.id);
 		expect(h.pings.lookup(7, 1002)).toBe(conv.id);
 		const dm = h.store.currentDm(1)!;
@@ -110,7 +100,6 @@ describe("makeBellSink", () => {
 		const h = harness({ allowedUsers: [1] });
 		const conv = appConv(h.store);
 		const sink = makeBellSink(h.deps, conv);
-		// No deltas ever reached this sink — the stored message is it.
 		reply(h.store, conv.id, "the real answer");
 		await sink.onDone({ kind: "completed" });
 		expect(h.sent.map((s) => s.chat)).toEqual([1]);
@@ -129,8 +118,8 @@ describe("makeBellSink", () => {
 	});
 
 	test("a ping that reaches nobody stays unpinged — the next bell retries", async () => {
-		// failChats is read per send, so emptying it mid-test is a
-		// Telegram outage ending.
+		// failChats is read per send — emptying it mid-test ends the
+		// simulated outage.
 		const failChats = [1];
 		const h = harness({ allowedUsers: [1], failChats });
 		const conv = appConv(h.store);
@@ -138,7 +127,7 @@ describe("makeBellSink", () => {
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
 		expect(h.sent).toEqual([]);
 		failChats.length = 0;
-		// Every send failed — the dedup key wasn't consumed, so a second
+		// All sends failed, so the dedup key was not consumed — a second
 		// bell for the same response still rings.
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
 		expect(h.sent.map((s) => s.chat)).toEqual([1]);
@@ -184,8 +173,8 @@ describe("makeBellSink", () => {
 	});
 
 	test("a deleted app conversation degrades to the generic label, no button", async () => {
-		// store.get() === null — the ping must not ride the captured
-		// stale title nor deep-link into a dead conversation.
+		// A deleted conversation must not ride the captured stale title
+		// nor deep-link into a dead conversation.
 		const h = harness({ allowedUsers: [1], publicUrl: "https://g.example/" });
 		const conv = appConv(h.store);
 		h.store.deleteConversation(conv.id);
@@ -216,8 +205,8 @@ describe("makeBellSink", () => {
 	});
 
 	test("bookkeeping failure after a landed ping keeps the dedup key", async () => {
-		// record throws after sendMessage has landed — the operator got
-		// the ping, so a second bell for the same response must not re-ring.
+		// Dedup keys on the send landing, not on bookkeeping — a record
+		// failure after delivery must not let a second bell re-ring.
 		const h = harness({ allowedUsers: [1, 7] });
 		const conv = appConv(h.store);
 		reply(h.store, conv.id, "done");
@@ -226,7 +215,6 @@ describe("makeBellSink", () => {
 			throw new Error("ping store wedged");
 		};
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
-		// Both sends landed; one chat's bookkeeping failure didn't stop the loop.
 		expect(h.sent.map((s) => s.chat)).toEqual([1, 7]);
 		h.pings.record = realRecord;
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });

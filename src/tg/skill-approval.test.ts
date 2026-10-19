@@ -1,11 +1,3 @@
-// Skill proposal taps (design/skills.md, "It proposes, then tells"):
-// the tap decides mechanically on disk — install swaps the proposal
-// into skills/ (replacing a live copy atomically, rollback on failure),
-// discard deletes the staged dir. Symlinks on either path are operator
-// state: the decision refuses loudly and the proposal stands. Disk is
-// the state, so the tests exercise real directories; the api is faked
-// at the grammy boundary like every delivery test.
-
 import {
 	chmodSync,
 	existsSync,
@@ -197,7 +189,6 @@ describe("skill approval taps", () => {
 			mkdirSync(outside, { recursive: true });
 			symlinkSync(outside, join(h.skillsDir, "smoke-test"));
 			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
-			// The linked dir is untouched, the proposal still parked.
 			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(h.edits[0]!.text).toContain("live skill is a symlink");
 			expect(h.appends).toEqual([]);
@@ -217,9 +208,8 @@ describe("skill approval taps", () => {
 		const h = harness(["smoke-test"]);
 		try {
 			// An unreadable parent makes the proposal's lstat throw EACCES —
-			// real filesystem state, not absence. Nothing decides, nothing
-			// moves, the error line carries it, and the tap answers with the
-			// failure instead of a silent dead press.
+			// a real error, not absence: nothing decides and the tap must
+			// answer the failure, not dead-press.
 			chmodSync(h.proposedDir, 0o000);
 			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
 			expect(h.strips).toEqual([]);
@@ -241,9 +231,8 @@ describe("skill approval taps", () => {
 		const h = harness([]);
 		try {
 			await h.handle({ data: skillDiscardData("dm:42", "vanished") });
-			// The header contract: "a tap on a gone proposal answers 'already
-			// handled'" — a textless answer is a dead press from the operator's
-			// side, and a bare button-strip leaves "approve to install" lying.
+			// A textless answer is a dead press, and a bare button-strip
+			// leaves "approve to install" lying — the card must be stamped.
 			expect(h.strips).toEqual([]);
 			expect(h.edits.length).toBe(1);
 			expect(h.edits[0]!.text).toContain("no longer exists");
@@ -308,12 +297,12 @@ describe("skill approval taps", () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"]);
 		try {
-			// A regular file where skills/ must be a directory: lstatSync
+			// A regular file where skills/ must be a directory — lstatSync
 			// fails ENOTDIR, which is deliberately not "gone".
 			writeFileSync(h.skillsDir, "not a dir\n");
 			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
 			expect(h.answers).toEqual(["internal error — nothing applied; check goblin logs"]);
-			// Nothing was decided: the proposal stands for a retry.
+			// Nothing was decided — the proposal stands for a retry.
 			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(h.appends).toEqual([]);
 		} finally {

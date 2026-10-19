@@ -1,11 +1,7 @@
-// The mail watcher — the scheduler's twin (DESIGN.md, "Email"). Every
-// 5 minutes it runs each enabled mail filter since its history-id
-// cursor and hands new matches to the program firing owner's mail
-// entry point, which owns the checkpoint policy — the watcher never
-// writes program state. Expiry of outbox drafts is the approval
-// gate's job — this module only polls. A dead token or quota error
-// warns once per outage episode (per program), never per tick — in
-// memory episodes: a restart re-warns, which is the honest state.
+// Each enabled mail filter runs since its history-id cursor and hands
+// new matches to the program firing owner's entry point — which owns
+// the checkpoint; the watcher never writes program state. Outbox
+// draft expiry is the approval gate's job.
 
 import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
@@ -57,10 +53,11 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 	let stopping: Promise<void> | null = null;
 	// Per-program outage episodes: the last error message, present while
 	// failing. A new message re-warns; equality stays silent; success
-	// clears. Map identity is the program id.
+	// clears. Map identity is the program id, and the map lives in
+	// memory — a restart re-warns, which is the honest state.
 	const failing = new Map<number, string>();
 	// Ticks must not overlap — Gmail calls are async, so a slow pass
-	// would stack another scan on top (the delegation watcher's rule).
+	// would stack another scan on top.
 	let current: Promise<void> | null = null;
 
 	const scan = (): Promise<void> => {
@@ -71,7 +68,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 		// filters) would run its cleanup before the assignment lands,
 		// wedging `current` on a resolved promise — every later tick then
 		// returns the dead promise and the watcher silently never scans
-		// again (the delegation watcher's rule).
+		// again.
 		const work = (async () => {
 			const now = deps.now?.() ?? new Date();
 			// The reader and the filter query sit outside the per-program
@@ -160,7 +157,7 @@ async function check(
 			if (!(err instanceof HistoryExpiredError)) throw err;
 			// Google forgot the cursor — re-baseline like a new filter.
 			// Mail between the old cursor and now may fire late or not
-			// at all; the log says which (DESIGN.md's honest boundary).
+			// at all; the log says which.
 			const head = await gmail.profileHistoryId();
 			if (deps.programs.baselineMail(program, head)) {
 				log.info("mail cursor expired — re-baselined", {
@@ -176,11 +173,11 @@ async function check(
 			recovered(deps, failing, program);
 			return;
 		}
-		// The row can change while the poll is in flight (the webhook
-		// route's fresh re-read rule): a disable, delete, or filter edit
-		// that landed mid-poll wins over this poll's snapshot. A stale
-		// charter must not fire, and setMailHistory must not clobber the
-		// null cursor a filter edit just wrote to force re-baselining.
+		// The row can change while the poll is in flight — a disable,
+		// delete, or filter edit that landed mid-poll wins over this
+		// poll's snapshot. A stale charter must not fire, and
+		// setMailHistory must not clobber the null cursor a filter edit
+		// just wrote to force re-baselining.
 		const fresh = deps.programs.get(program.id);
 		if (fresh === null) {
 			// Deleted mid-poll — nothing to write, nothing to fire; the
@@ -197,7 +194,7 @@ async function check(
 		if (stillMine && cursorUntouched) {
 			// The entry point owns what happens next: an empty or disabled
 			// poll consumes the checkpoint, a failed fire holds it, a landed
-			// fire advances it (DESIGN.md, "Email").
+			// fire advances it.
 			await deps.fire(fresh, hits, historyId, now);
 		} else {
 			// The edit won: no cursor write (it would clobber the null a

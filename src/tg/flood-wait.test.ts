@@ -6,9 +6,8 @@ import { floodWaitTransformer } from "./flood-wait.ts";
 type Prev = Parameters<Transformer>[0];
 
 // The real grammy contract: the transformer chain resolves the raw
-// ApiResponse body — an API failure is a resolved {ok:false} VALUE,
-// never a throw; callApi raises the GrammyError after the transformer
-// returns. These bodies are what prev hands us on failure.
+// ApiResponse body — an API failure is a resolved {ok:false} value,
+// never a throw; callApi raises the GrammyError above the chain.
 function apiError(errorCode: number, params?: ResponseParameters): ApiResponse<never> {
 	return {
 		ok: false,
@@ -22,9 +21,8 @@ function flood429(retryAfterS: number): ApiResponse<never> {
 	return apiError(429, { retry_after: retryAfterS });
 }
 
-// grammy constructs these internally from the api response body
-// (toGrammyError) — only reachable through our chain if a transformer
-// stacked under this one raises it, since callApi throws it above us.
+// callApi throws the GrammyError above us, so at this layer one only
+// arrives when a transformer stacked under this one raises it.
 function grammyErr(errorCode: number, params?: ResponseParameters): GrammyError {
 	return new GrammyError(
 		"Call to 'sendMessage' failed!",
@@ -49,11 +47,9 @@ const SENT: ApiResponse<Message.TextMessage> = {
 	},
 };
 
-// Scripted api: Error entries reject (network-class failures), anything
-// else resolves as the call result — including {ok:false} bodies, which
-// is exactly how grammy delivers a 429 at this layer. The cast
-// replicates grammy's internal ApiCallResult conditional — not exported
-// from the package root.
+// Error entries reject (network-class failures); anything else resolves
+// as the call result, {ok:false} bodies included. The cast replicates
+// grammy's internal ApiCallResult conditional — not exported.
 function scriptPrev(script: unknown[]) {
 	const calls: Array<{ method: string; payload: unknown }> = [];
 	const prev: Prev = async (method, payload) => {
@@ -89,7 +85,7 @@ describe("floodWaitTransformer", () => {
 		const { sleeps, sleep } = recordingSleep();
 
 		// grammy's ApiCallResult conditional resolves to never for
-		// concrete methods under this tsconfig; the transformer is
+		// concrete methods under this tsconfig — the transformer is
 		// pass-through, so this widened envelope is the real contract.
 		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(prev, "sendMessage", {
 			chat_id: 1,
@@ -214,9 +210,9 @@ describe("floodWaitTransformer", () => {
 		expect(calls).toHaveLength(1);
 	});
 
-	// The bug this module exists for end-to-end: through a real Api
-	// client, a 429 body resolves through the transformer chain and the
-	// GrammyError is raised above it — the retry must still happen.
+	// End-to-end through a real Api client — the retry must happen even
+	// though the 429 resolves as data and the GrammyError is raised
+	// above the chain.
 	test("through the real Api client: a 429 response is waited and retried", async () => {
 		const fetches: string[] = [];
 		const api = new Api("12345:test-token", {
@@ -270,9 +266,6 @@ describe("floodWaitTransformer", () => {
 	});
 });
 
-// The case the transformer exists for: grammy's callApi resolves raw
-// {ok:false} envelopes *through* transformers and only then builds
-// the GrammyError — a real 429 arrives as data, never a throw.
 describe("floodWaitTransformer — raw failure envelopes", () => {
 	const raw429 = (retryAfterS?: number): ApiResponse<Message> => ({
 		ok: false,

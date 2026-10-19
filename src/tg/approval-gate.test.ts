@@ -1,9 +1,7 @@
 // Approval callbacks are operator authority, checked on the live
-// operators list — not on whatever list admitted the chat. A demoted
-// account's stale Send/Install buttons still arrive through the sandbox
-// gate (its private-chat messages are legitimately admitted) and must
-// decide nothing. Drives the shipped createBot over a fake HTTP Bot
-// API — the same wiring an actual tap traverses.
+// operators list — not the list that admitted the chat. A demoted
+// account's stale buttons arrive through the sandbox gate legitimately
+// and must decide nothing.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
@@ -25,8 +23,7 @@ function testConfig(apiRoot: string): Config {
 		operators: [1],
 		allowedUsers: [2],
 		// The sandbox lane exists, so friend DMs legitimately pass the
-		// gate — the approval check is the only thing between them and a
-		// privileged action.
+		// gate — the approval check is all that guards a privileged action.
 		guest: {},
 		telegram: { apiRoot },
 	});
@@ -141,8 +138,8 @@ describe("approval callbacks", () => {
 		});
 		await settle();
 		expect(fake.callbackAnswers).toEqual([{ callback_query_id: "cb-2", text: "operator only" }]);
-		// Not "mail is not configured" — the operator check precedes the
-		// mail lookup, so a demoted tap can't even reach the mailbox.
+		// Not "mail is not configured" — the operator check runs before
+		// the mail lookup, so a demoted tap never reaches the mailbox.
 		expect(fake.callbackAnswers[0]).not.toMatchObject({ text: "mail is not configured" });
 	});
 

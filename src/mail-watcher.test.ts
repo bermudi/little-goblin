@@ -1,12 +1,7 @@
 import { makeWakeDelivery } from "./tg/wake.ts";
-// The mail watcher's contract: new filters baseline without firing,
-// one tick's matches become one turn, the checkpoint follows fired
-// records (held on a fire that does not land), and outages notice
-// once per episode. The boundary is real on both sides: a fake gws
-// poller at one edge, the real fireMail entry point over a fake
-// runtime.submit at the other — everything between is production
-// code. (Draft expiry is the approval gate's — its tests cover the
-// sweep.)
+// Fake gws poller at one edge, the real fireMail entry point over a
+// fake runtime.submit at the other — everything between is production
+// code.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -415,10 +410,10 @@ describe("mail watcher", () => {
 		expect(h.submitted).toHaveLength(0);
 	});
 
-	// The idle-to-active transitions (#76): a tick whose body has
-	// nothing to await must not wedge the single-flight latch — an
-	// empty, unconfigured, or all-disabled scan completes synchronously,
-	// so naive try/finally cleanup runs before the in-flight assignment
+	// The idle-to-active transitions: a tick whose body has nothing to
+	// await must not wedge the single-flight latch — an empty,
+	// unconfigured, or all-disabled scan completes synchronously, so a
+	// naive try/finally cleanup runs before the in-flight assignment
 	// lands and every later tick would return the dead promise.
 	test("a filter created after an empty tick still baselines and fires", async () => {
 		const h = harness();
@@ -478,7 +473,7 @@ describe("mail watcher", () => {
 		await w.tick();
 		expect(h.submitted).toHaveLength(0);
 		// The cursor still advances — mail matched while disabled is
-		// skipped, not owed (the cron rule).
+		// skipped, not owed.
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
 		expect(h.programs.get(p.id)!.lastRun).toBeNull();
 	});

@@ -1,9 +1,7 @@
-// The mail outbox — the send gate's memory (DESIGN.md, "Email").
-// `send` never sends: it queues a pending row and the operator's tap on
-// the draft's Send/Cancel buttons decides it. Rows survive restarts, so
-// pending drafts stay tappable across them; expiry (+24h) is swept by
-// the mail watcher. Every transition logs the recipient domain — never
-// the body.
+// `send` never sends: it queues a pending row and the operator's tap
+// decides it. Rows survive restarts, so pending drafts stay tappable
+// across them. Every transition logs the recipient domain — never the
+// body.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -80,7 +78,7 @@ const addressArraySchema = z.array(z.string());
 
 // Address columns are JSON arrays — parse them against the shape so
 // corruption names itself with the row, instead of surfacing later as
-// a mislabeled `to.map is not a function` (audit #23).
+// a mislabeled `to.map is not a function`.
 function parseAddresses(id: number, field: string, json: string): string[] {
 	try {
 		return addressArraySchema.parse(JSON.parse(json));
@@ -198,7 +196,7 @@ export function openOutbox(dbPath: string): OutboxStore {
 			// decide() re-checks pending and a racing tap wins its CAS, so
 			// a row that lost would return with someone else's verdict —
 			// and the caller would stamp "expired — never sent" over it
-			// (audit #24; unreachable today, honest under any refactor).
+			// (unreachable today, honest under any refactor).
 			const expired: OutboxEntry[] = [];
 			for (const row of due) {
 				if (this.decide(row.id, "expired", now)) expired.push(this.get(row.id)!);

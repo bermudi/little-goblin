@@ -1,15 +1,6 @@
-// Gmail reads through the gws CLI (DESIGN.md, "Email").
-//
-// The watcher's poll/profile/thread surface, backed by gws raw Discovery
-// calls (users.history.list, users.messages.list/get, users.getProfile)
-// with JSON output. The model's read path is the goblin-mail wrapper +
-// gws skill, not this module — this is the background poller plus the
-// approval gate's threading lookup.
-//
-// Fakes at the process seam: the runner is injectable (herdr.ts's
-// pattern); tests never spawn the real gws. gws owns its auth
-// (`gws auth login`) — no tokens here. Log lines carry action,
-// filter/id, counts, exit code, ms — never bodies or snippets.
+// gws owns its auth (`gws auth login`) — no tokens live here. Log lines
+// carry action, filter/id, counts, exit code, ms — never bodies or
+// snippets.
 
 import { z } from "zod";
 import { decodeRfc2047, HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
@@ -54,12 +45,11 @@ const defaultRunner: GwsRunner = async (args) => {
  *  and the approval gate depend on the shape, not the name). */
 export interface GwsMailReader extends MailPoller {}
 
-// ---------- gws output shapes (raw Discovery JSON, --format json) ----------
-// Load-bearing leaves are typed: a missing id or historyId is provider
-// drift and must throw (parseOrThrow → ProviderError), not collapse to
-// "" through str() and masquerade as success (audit #8). Display-only
-// fields (snippet, resultSizeEstimate) stay lenient — absence is a
-// legitimate empty, not drift.
+// gws output shapes (raw Discovery JSON, --format json): load-bearing
+// leaves are typed — a missing id or historyId is provider drift and
+// must throw (parseOrThrow → ProviderError), not collapse to "" through
+// str() and masquerade as success. Display-only fields (snippet,
+// resultSizeEstimate) stay lenient — absence is a legitimate empty.
 
 const historyMessageSchema = z
 	.object({
@@ -144,7 +134,7 @@ function header(
  *  match on the parsed code ("404" means history-expiry or a missing
  *  target), never on message substrings: the message embeds stderr for
  *  the log, and an unrelated failure mentioning 404 must not silently
- *  re-baseline or swallow (audit #12). Empty code = no envelope. */
+ *  re-baseline or swallow. Empty code = no envelope. */
 export class GwsApiError extends ProviderError {
 	constructor(
 		message: string,
@@ -329,9 +319,8 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		const listBody = parseOrThrow("poll.list", messagesListSchema, listData);
 		const matching = listBody.messages ?? [];
 		if (matching.length >= LIST_PAGE) {
-			// The intersection window may have truncated: arrivals older
-			// than the newest LIST_PAGE matches are invisible to it, and a
-			// head checkpoint would skip them silently — the log says so.
+			// A truncated window would let a head checkpoint skip
+			// arrivals invisible to the intersection — the log says so.
 			log.warn(
 				"mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint",
 				{

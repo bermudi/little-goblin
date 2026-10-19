@@ -103,9 +103,9 @@ describe("commands", () => {
 
 	test("/model and /think are retired — they are no longer commands", () => {
 		const { store, conv, deps } = setup();
-		// Not handled: falls through to intake as an ordinary message the
-		// model answers ("use the settings app") — muscle memory degrades
-		// gracefully instead of silently doing settings work.
+		// Returning false falls through to intake as an ordinary message
+		// — muscle memory degrades to a model answer instead of silently
+		// doing settings work.
 		expect(handleCommand(deps, conv, "/model zai/glm-4.5")).toBe(false);
 		expect(handleCommand(deps, conv, "/think high")).toBe(false);
 		store.close();
@@ -160,9 +160,9 @@ describe("commands", () => {
 
 	test("a wedged bot-api fails the command reply at the send budget, not grammy's 500s", async () => {
 		const { store, conv, deps } = setup();
-		// Never settles — a hung-but-alive bot-api connection. The reply is
-		// fire-and-forget, so the only observable bound is the warn firing
-		// at the 30s budget every sibling send uses (bug-hunt finding 16).
+		// Never settles — a hung-but-alive connection. The reply is
+		// fire-and-forget, so the only observable bound is the warn at
+		// the shared 30s send budget.
 		deps.api.sendMessage = () => new Promise<never>(() => {});
 		const warn = spyOn(log, "warn");
 		jest.useFakeTimers();
@@ -201,7 +201,6 @@ describe("commands", () => {
 		const { store, conv, sent, deps } = setup();
 		expect(handleCommand(deps, conv, "/start")).toBe(true);
 		expect(sent[0]).toContain("goblin online");
-		// A deep-link payload rides along silently — same greeting.
 		expect(handleCommand(deps, conv, "/start payload-x")).toBe(true);
 		expect(sent[1]).toContain("goblin online");
 		store.close();
@@ -224,7 +223,7 @@ function setupMemory() {
 		contexts: store.memoryContexts,
 		queue: store.memoryQueue,
 		// No worker runs in these fixtures — the quiesce seam passes
-		// through (the race test below wires a real one).
+		// through; the race test below wires a real one.
 		withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 		lastRecallOk: () => null,
 		lastRecallAt: () => null,
@@ -232,8 +231,7 @@ function setupMemory() {
 	return { store, conv, sent, stopped, deps };
 }
 
-// Enqueue one retention row for this conversation and mark it blocked —
-// the /memory degraded fixture.
+// One blocked retention row — the /memory degraded fixture.
 function blockOne(
 	store: ReturnType<typeof setup>["store"],
 	client: HindsightClient,
@@ -321,8 +319,8 @@ describe("memory commands", () => {
 
 	test("/memory still degrades on old-bank parked rows after a destination change", () => {
 		// A failed delete against the previous bank parks rows its own
-		// target names; the current bank's counts read zero, but status
-		// must still degrade — otherwise the surviving copy vanishes.
+		// target names — status must still degrade or the surviving
+		// copy vanishes.
 		const { store, conv, sent, deps } = setupMemory();
 		const old = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "previous" });
 		store.memoryQueue.enqueue(old.target, {
@@ -471,8 +469,8 @@ describe("memory commands", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		store.setMeta(conv.id, { persona: "guest", memoryExcluded: true });
 		const guest = store.get(conv.id)!;
-		// The whole surface is operator bank state: status, toggle, and
-		// the blocked-row actions all get the one class refusal.
+		// The whole surface is operator bank state — status, toggle,
+		// and the blocked-row actions all get the one class refusal.
 		for (const cmd of ["/memory", "/memory on", "/memory retry", "/memory dismiss"]) {
 			sent.length = 0;
 			expect(handleCommand(deps, guest, cmd)).toBe(true);
@@ -585,7 +583,7 @@ describe("memory commands", () => {
 			};
 			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
 			await waitFor(sent, 1);
-			// Pick #2 off the listing just rendered — the full id was never shown.
+			// Pick #2 — the full id was never shown.
 			expect(handleCommand(deps, conv, "/forget delete 2")).toBe(true);
 			await waitFor(sent, 2);
 			expect(deleted).toEqual(["exchange/b"]);
@@ -631,8 +629,7 @@ describe("memory commands", () => {
 			};
 			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
 			await waitFor(sent, 1);
-			// Age the cached listing past its ttl — row surgery is the only
-			// lever a test has over wall-clock.
+			// Row surgery is the only lever a test has over wall-clock.
 			store.db.run("UPDATE forget_listings SET created_at = ? WHERE conversation_id = ?", [
 				new Date(Date.now() - 60_000_000).toISOString(),
 				conv.id,
@@ -679,10 +676,9 @@ describe("memory commands", () => {
 				...deps.memory!,
 				client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
 			};
-			// Listing cached under conv A's id…
 			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
 			await waitFor(sent, 1);
-			// …but picked from a different conversation: the per-conversation
+			// Picked from a different conversation — the per-conversation
 			// key must refuse rather than let B spend A's number.
 			const other = store.resolve({ kind: "dm", chatId: 424242 }, "/unused");
 			expect(handleCommand(deps, other, "/forget delete 1")).toBe(true);
@@ -706,8 +702,8 @@ describe("memory commands", () => {
 			fetch: (request) => {
 				const path = new URL(request.url).pathname;
 				if (path.includes("/operations/")) {
-					// The queued row is pending; the delete still reconciles its
-					// UUID — terminal on the first poll.
+					// A pending row still reconciles its UUID — terminal
+					// on the first poll.
 					return Response.json({
 						operation_id: path.split("/").pop(),
 						status: "completed",
@@ -748,9 +744,9 @@ describe("memory commands", () => {
 	});
 });
 
-// Enqueue one retention row for this document and mark it submitted —
-// acknowledged remotely, still processing there: the /forget delete
-// settle fixture (reachable in production via /memory retry).
+// submitted = acknowledged remotely, still processing there — the
+// /forget delete settle fixture (reachable in production via /memory
+// retry).
 function submitOne(
 	store: ReturnType<typeof setup>["store"],
 	client: HindsightClient,
@@ -810,11 +806,10 @@ describe("forget delete against in-flight retention", () => {
 		}
 	});
 
-	// A pending row is not proof of never-sent — a lost submit
-	// acknowledgement (or a crash before the submitted-state write)
-	// leaves the row pending while its operation may be live remotely.
-	// The delete must reconcile the UUID: one poll, absent remotely →
-	// settled, then the cancel (#86).
+	// A pending row is not proof of never-sent — a lost submit ack (or
+	// a crash before the submitted write) leaves it pending while its
+	// operation may be live remotely. The delete reconciles the UUID:
+	// one poll, absent remotely → settled, then cancel.
 	test("a pending row is reconciled with one poll before its cancel", async () => {
 		const { store, conv, sent, deps } = setupMemory();
 		const deleted: string[] = [];
@@ -851,8 +846,8 @@ describe("forget delete against in-flight retention", () => {
 			});
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
 			await waitFor(sent, 1);
-			// The operation is absent remotely — one poll reconciles the
-			// uncertain UUID, then the row is cancelled without a wait.
+			// Absent remotely — one poll reconciles, then cancel without
+			// a wait.
 			expect(polled.length).toBe(1);
 			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
 			expect(sent[0]).toContain("1 queued cancelled");
@@ -942,8 +937,8 @@ describe("forget delete against in-flight retention", () => {
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
 			await waitFor(sent, 1);
 			expect(polls.length).toBeGreaterThanOrEqual(2);
-			expect(deleted).toEqual([]); // nothing deleted remotely
-			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(false); // nothing suppressed
+			expect(deleted).toEqual([]);
+			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(false);
 			// The row stays submitted — a later /forget delete can settle it.
 			expect(store.memoryQueue.get(operationId)?.state).toBe("submitted");
 			expect(sent[0]).toBe(
@@ -955,12 +950,12 @@ describe("forget delete against in-flight retention", () => {
 		}
 	});
 
-	// The found race: the worker flips an outbox row to submitted only
-	// AFTER client.submit() returns — during the HTTP call the row still
-	// reads pending, so an unpaused /forget delete treats it as never-sent,
-	// cancels the local row, and the submit then lands on Hindsight: the
-	// forgotten document is re-created remotely with no row left to
-	// settle. The delete must quiesce the worker (withWorkerPaused).
+	// The worker flips an outbox row to submitted only AFTER
+	// client.submit() returns — during the HTTP call the row still
+	// reads pending, so an unpaused /forget delete would treat it as
+	// never-sent, cancel the local row, and let the submit land: the
+	// forgotten document re-created remotely with no row left to
+	// settle.
 	test("a delete racing an in-flight submit waits it out — no resurrect", async () => {
 		const { store, conv, sent, deps } = setupMemory();
 		const events: string[] = [];
@@ -1030,22 +1025,22 @@ describe("forget delete against in-flight retention", () => {
 			expect(events).toContain("submit");
 
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
-			// The delete is now queued behind the worker's in-flight drain:
-			// nothing is cancelled, deleted, or replied while the submit hangs.
+			// The delete queues behind the worker's in-flight drain —
+			// nothing is cancelled, deleted, or replied while the submit
+			// hangs.
 			await sleep(80);
-			expect(events).toEqual(["submit"]); // no settle, no delete
+			expect(events).toEqual(["submit"]);
 			expect(sent).toEqual([]);
-			expect(store.memoryQueue.get(operationId)?.state).toBe("pending"); // row untouched
+			expect(store.memoryQueue.get(operationId)?.state).toBe("pending");
 
 			releaseSubmit();
 			await waitFor(sent, 1);
-			// The submit landed first, its row settled, only then the delete —
-			// the document cannot resurrect from the in-flight retain.
+			// The submit landed first — the document cannot resurrect
+			// from the in-flight retain.
 			expect(events.indexOf("submit-landed")).toBeLessThan(events.indexOf("delete"));
 			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
 			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
-			// The row settles consistently: cancelled by the delete, not
-			// stranded, and nothing re-queued after it.
+			// The row settles cancelled — not stranded, nothing re-queued.
 			expect(store.memoryQueue.get(operationId)).toBeNull();
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 		} finally {
@@ -1056,9 +1051,7 @@ describe("forget delete against in-flight retention", () => {
 	});
 });
 
-// /resume /decide /abandon — the crash-recovery verbs. The ops surface
-// is faked at the boundary; its own semantics live in
-// turn-resume.test.ts — these tests pin the command parsing and reply
+// The ops surface is faked; these pin the command parsing and reply
 // shapes.
 describe("recovery commands", () => {
 	const run: TurnRun = {
@@ -1134,9 +1127,8 @@ describe("recovery commands", () => {
 	});
 
 	test("/resume splits oversized listings under Telegram's message cap", async () => {
-		// Enough runs and parallel ambiguous calls that the joined
-		// listing far exceeds 4096 characters — one sendMessage would be
-		// rejected whole, taking every decision number with it.
+		// The joined listing far exceeds 4096 chars — one sendMessage
+		// would be rejected whole, taking every decision number with it.
 		const runs = Array.from({ length: 60 }, (_, i) => {
 			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
 			return {
@@ -1153,8 +1145,7 @@ describe("recovery commands", () => {
 		});
 		expect(handleCommand(deps, conv, "/resume")).toBe(true);
 		await tick();
-		// Split, not truncated: several messages, each under the cap,
-		// together carrying the first and the last run intact.
+		// Split, not truncated — several messages, each under the cap.
 		expect(sent.length).toBeGreaterThan(1);
 		for (const s of sent) expect(s.length).toBeLessThanOrEqual(4096);
 		const joined = sent.join("\n");
@@ -1162,8 +1153,7 @@ describe("recovery commands", () => {
 		expect(joined).toContain("/resume 00000000 · /abandon 00000000");
 		expect(joined).toContain("interrupted run 00000059");
 		expect(joined).toContain("/resume 00000059 · /abandon 00000059");
-		// Decision numbering rides the lines — every chunk boundary
-		// falls between whole lines.
+		// Chunks split on whole lines — decision numbering rides them.
 		for (const s of sent) expect(s.endsWith("\n")).toBe(false);
 		expect(joined).toContain("2. probe");
 		store.close();

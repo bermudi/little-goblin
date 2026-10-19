@@ -1,8 +1,3 @@
-// Rich replies (design/telegram.md, ruling 2026-10-12): the sink fakes
-// Telegram at the edge and pins the four behaviors that matter — draft
-// streaming + one rich send, fallback to plain on any rich failure, DM
-// gating, and the reasoning bubble/collapsed block. Config defaults ride
-// the same file: the kill switch must survive a parse round-trip.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -141,20 +136,19 @@ const silenceLogs = () => {
 };
 
 describe("rich delivery", () => {
-	// Drafts carry content, the chat action carries liveness: the typing
+	// Drafts carry content, the chat action carries liveness — the typing
 	// indicator must stay live in rich mode too, not be replaced by the
-	// draft bubble (operator ruling 2026-10-14).
+	// draft bubble.
 	test("rich mode keeps the typing chat action live alongside drafts", async () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, actions } = fakeApi();
 			const sink = makeDeliverySink(api, conv, {
 				editIntervalMs: 0,
-				typingIntervalMs: 2, // the tick drives both ping and refresh
+				typingIntervalMs: 2,
 				rich: { enabled: true },
 			});
 			await sleep(12);
-			// The placeholder draft went out AND typing pings keep coming.
 			expect(drafts.length).toBeGreaterThan(0);
 			const typings = actions.filter((a) => a === "typing").length;
 			expect(typings).toBeGreaterThanOrEqual(2);
@@ -168,10 +162,10 @@ describe("rich delivery", () => {
 		}
 	});
 
-	// Synthesis pauses the typing interval, which otherwise carries the
-	// draft keep-alive: with a tiny draft TTL the recording tick must
-	// keep re-pushing the unchanged draft, and nothing may ping typing
-	// while record_voice owns the status bar.
+	// Synthesis pauses the typing interval that carries the draft
+	// keep-alive — the recording tick must keep re-pushing the unchanged
+	// draft, and nothing may ping typing while record_voice owns the
+	// status bar.
 	test("a synthesis window keeps refreshing the rich draft — no mid-turn evaporation", async () => {
 		const done = silenceLogs();
 		try {
@@ -190,7 +184,7 @@ describe("rich delivery", () => {
 			const pushed = drafts.length;
 			actions.length = 0;
 			await sleep(25);
-			expect(drafts.length).toBeGreaterThan(pushed); // keep-alive re-pushed
+			expect(drafts.length).toBeGreaterThan(pushed);
 			expect(actions.every((a) => a === "record_voice")).toBe(true);
 			stop();
 			await sink.onDone({ kind: "completed" });
@@ -216,17 +210,15 @@ describe("rich delivery", () => {
 			sink.onTextDelta("hello ");
 			sink.onTextDelta("world");
 			await sink.onDone({ kind: "completed" });
-			// Thinking placeholder first, then the accumulated markdown.
 			expect(drafts[0]).toEqual({ kind: "plain", id: expect.any(Number), text: "" });
 			expect(drafts.some((d) => d.kind === "rich" && d.markdown === "hello world")).toBe(true);
-			// One rich send carries the reply anchor; no plain text went out.
 			expect(richSends).toHaveLength(1);
 			expect(richSends[0]!.markdown).toBe("hello world");
 			expect(richSends[0]!.other.reply_parameters).toEqual({ message_id: 77 });
 			expect(msgs).toEqual([]);
 			expect(edits).toEqual([]);
-			// 🫡 reacts on the landed message; the rating keyboard rode the
-			// send itself — no second editMessageReplyMarkup call.
+			// The rating keyboard rides the send itself — no second
+			// editMessageReplyMarkup call.
 			expect(reactions).toEqual([{ chat: 1, id: 901, emoji: "🫡" }]);
 			expect(markups).toEqual([]);
 			const keyboard = (
@@ -349,7 +341,6 @@ describe("rich delivery", () => {
 			});
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
-			// Exactly one plain draft — the answer's "Thinking…" — not two.
 			expect(drafts.filter((d) => d.kind === "plain")).toHaveLength(1);
 			expect(richSends[0]!.markdown).toBe("answer");
 			expect(richSends[0]!.markdown).not.toContain("<details>");
@@ -457,8 +448,8 @@ describe("rich delivery", () => {
 		expect(off.telegram.dmGapMinutes).toBe(45);
 	});
 
-	// The completed-turn salute rides the rich send. The memo is
-	// process-lifetime module state: these tests reset it in finally.
+	// The effects memo is process-lifetime module state — these tests
+	// reset it in finally.
 	test("a completed DM send carries the salute effect; error turns don't", async () => {
 		const done = silenceLogs();
 		try {
@@ -498,12 +489,11 @@ describe("rich delivery", () => {
 			});
 			sink.onTextDelta("first");
 			await sink.onDone({ kind: "completed" });
-			// First turn: attempt with effect, definite 400, safe retry without.
 			expect(sendAttempts()).toBe(2);
 			expect(richSends).toHaveLength(1);
 			expect(richSends[0]!.markdown).toBe("first");
 			expect(richSends[0]!.other.message_effect_id).toBeUndefined();
-			// The keyboard rode the retry too — it isn't part of the drop.
+			// The retry drops only the effect param — the keyboard rides it.
 			expect(richSends[0]!.other.reply_markup).toEqual({
 				inline_keyboard: [
 					[
@@ -513,7 +503,8 @@ describe("rich delivery", () => {
 				],
 			});
 
-			// Later turns in the same process skip the param entirely.
+			// The memo survives into the next sink — the param is skipped
+			// entirely, not retried.
 			const sink2 = makeDeliverySink(api, conv, { editIntervalMs: 0, rich: { enabled: true } });
 			sink2.onTextDelta("second");
 			await sink2.onDone({ kind: "completed" });
@@ -554,7 +545,7 @@ describe("rich delivery", () => {
 			revoke = () => sink.setAuthorityCheck?.(() => false);
 			sink.onTextDelta("stopped mid-finalize");
 			await sink.onDone({ kind: "completed" });
-			expect(attempts).toBe(1); // the ungated retry never went out
+			expect(attempts).toBe(1);
 			expect(richSends).toEqual([]);
 			expect(reactions).toEqual([]);
 			expect(markups).toEqual([]);

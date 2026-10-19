@@ -81,7 +81,7 @@ const understanding = (): Understanding => ({
 
 const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
 	server: "local",
-	session: "op",
+	session: "default",
 	agentName: "worker-1",
 	paneId: "pane-7",
 	terminalId: "term-9",

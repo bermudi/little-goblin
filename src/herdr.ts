@@ -410,7 +410,7 @@ export function makeHerdr(
 // guarded send inside herdr (expected identity validated at dispatch),
 // not more client reads.
 
-const OPERATOR_SESSION = "default";
+export const OPERATOR_SESSION = "default";
 // `agent prompt --wait` gets 120 s to observe a working/blocked state;
 // the process budget sits just above so a genuine wait expiry comes
 // back as herdr's own `timeout` code, not our kill.

@@ -11,7 +11,7 @@
 // dispatch is 'uncertain' for the same reason.
 
 import type { Database } from "bun:sqlite";
-import { HerdrRefusal, type OperatorHerdr } from "./herdr.ts";
+import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
 import type {
 	Attachment,
@@ -88,6 +88,14 @@ export function makeManagedSendEdge(
 	herdr: Pick<OperatorHerdr, "prompt">,
 ): (brief: string, target: AttachmentTarget) => Promise<unknown> {
 	return async (brief, target) => {
+		// The adapter is the operator session on the local server — a
+		// target outside that scope would misroute, so it refuses.
+		if (target.server !== "local" || target.session !== OPERATOR_SESSION) {
+			throw new HerdrRefusal(
+				"identity-unenforceable",
+				`attachment targets ${target.server}/${target.session} — the send edge covers local/${OPERATOR_SESSION} only`,
+			);
+		}
 		if (target.kind === null) {
 			throw new HerdrRefusal(
 				"kind_mismatch",

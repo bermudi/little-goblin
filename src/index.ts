@@ -517,6 +517,18 @@ async function boot() {
 		service: responsibilityService,
 		listFor: () => operatorHerdr.list(),
 	};
+	// Boot sweep: every open responsibility re-verifies its follow-up
+	// Program — a restart (or a deleted program row) re-links here,
+	// never leaves the check-in silently unarmed.
+	for (const r of responsibilities.open()) {
+		try {
+			responsibilityService.ensureFollowup(r.responsibilityId);
+		} catch (err) {
+			log.error("responsibility follow-up relink failed", err, {
+				responsibility: r.responsibilityId,
+			});
+		}
+	}
 	const responsibilityObserver = makeResponsibilityObserver({
 		db: store.db,
 		resps: responsibilities,

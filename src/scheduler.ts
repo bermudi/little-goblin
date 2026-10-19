@@ -34,7 +34,7 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  wake path; its occurrence lands here as a durable development
 	 *  on the responsibility's coordination conversation. Absent = a
 	 *  loud skip, never a misrouted fire. */
-	responsibilities?: Pick<ResponsibilityStore, "get">;
+	responsibilities?: Pick<ResponsibilityStore, "get" | "attachmentsFor">;
 	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
 }
 
@@ -536,11 +536,23 @@ function fireResponsibility(
 		return true;
 	}
 	const occurrence = (scheduledFor ?? now).toISOString();
+	// Rehydrate the responsibility's current state into the trigger
+	// text — the wake turn sees the live understanding and attachment
+	// health, not the acceptance-time snapshot in old history.
+	const atts = resps.attachmentsFor(resp.responsibilityId);
+	const attLine =
+		atts.length === 0
+			? "attachments: none"
+			: `attachments: ${atts.map((a) => `${a.target.agentName} (${a.health})`).join(", ")}`;
 	record({
 		sourceKey: `program:${program.id}:occ:${occurrence}`,
 		conversationId: resp.coordinationConversationId,
 		kind: "scheduled-checkin",
-		text: `scheduled check-in — ${resp.outcome}`,
+		text:
+			`scheduled check-in — responsibility ${resp.responsibilityId} (rev ${resp.revision})\n` +
+			`outcome: ${resp.outcome}\n` +
+			`next action: ${resp.understanding.nextAction}\n` +
+			attLine,
 		facts: {
 			programId: program.id,
 			name: program.name,

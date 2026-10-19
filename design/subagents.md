@@ -822,5 +822,5 @@ modules. REFACTOR-PLAN-2.md → P2 owns the schedule.
 `makeX(deps, ...narrowCallbacks)` returning `{ methods }` —
 `buildTransfer`/`buildHarness` already prove the shape in this same
 directory. Cross-unit calls are injected functions; a unit never
-reaches back into the owner scope. AGENTS.md → No god-functions owns
-the bound; `scripts/function-size-audit.ts` is the standing signal.
+reaches back into the owner scope. DESIGN.md owns the ~300-line
+bound; `scripts/function-size-audit.ts` is the standing signal.

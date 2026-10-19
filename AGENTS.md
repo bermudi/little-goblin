@@ -38,17 +38,12 @@ any structural work. `docs/` is operator documentation, not spec.
 - **One module, one job.** Flat modules, colocated tests (`foo.ts` /
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
-- **No god-functions.** State clusters by lifetime into units; a
-  subsystem returns an interface assembled from those units, never one
-  scope of closures. ~300 lines is the smell line —
-  `bun scripts/function-size-audit.ts` lists what crosses it (signal,
-  not a gate; run it when touching a file). One named exemption:
-  `boot()` in `src/index.ts` is the process composition root — its
-  bound is structural, not numeric: every line a binding, an ordering
-  comment, or a wire call, with zero business-rule closures. Splitting
-  the spine into bigger `wireX` bundles just hides the wiring.
-- **Only `src/tg/` knows grammy.** Domain modules never see a Telegram
-  context object.
+- **Each external contract is known by one adapter.** Only `src/tg/`
+  knows grammy; only `src/subagents/` knows pi-durable/pi-ai/chord;
+  the herdr, podman and gws wire contracts live in `src/{herdr,podman,
+  mail-gws}.ts`. Domain modules see the adapter's types, never the
+  vendor's — `module-boundaries.test.ts` enforces the importable cases.
+  (The Vercel AI SDK is the platform, not a boundary.)
 
 ## Scope discipline
 

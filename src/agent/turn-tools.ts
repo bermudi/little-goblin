@@ -246,6 +246,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							service: responsibilitySvc.service,
 							projectId: conv.projectId,
 							coordinationConversationId: conv.id,
+							journalRunId: context?.runId,
 							handoverKey: () => {
 								if (context === undefined) {
 									throw new Error("responsibility accept needs a turn run context");

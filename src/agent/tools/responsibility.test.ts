@@ -147,6 +147,9 @@ describe("responsibility tool", () => {
 		const att = r.resps.attachmentsFor(r.resps.forProject(r.projectId)[0]!.responsibilityId)[0]!;
 		const out = await r.execute({ action: "send", attachment: att.attachmentId, brief: "go" });
 		expect(out.refused).toBe("identity-unenforceable");
+		expect((out.operation as { state: string; refusal: string }).refusal).toBe(
+			"identity-unenforceable",
+		);
 		const ops = r.resps.operationsFor(att.responsibilityId);
 		expect(ops).toHaveLength(1);
 		expect(ops[0]!.state).toBe("refused");
@@ -159,7 +162,8 @@ describe("responsibility tool", () => {
 		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
 		const att = r.resps.attachmentsFor(r.resps.forProject(r.projectId)[0]!.responsibilityId)[0]!;
 		const out = await r.execute({ action: "send", attachment: att.attachmentId, brief: "go" });
-		expect(out).toEqual({ sent: true });
+		expect(out.sent).toBe(true);
+		expect((out.operation as { state: string }).state).toBe("acknowledged");
 		expect(r.resps.operationsFor(att.responsibilityId)[0]!.state).toBe("acknowledged");
 		r.store.close();
 	});
@@ -193,7 +197,7 @@ describe("responsibility tool", () => {
 			attachment: att.attachmentId,
 			brief: "fresh brief",
 		});
-		expect(out).toEqual({ sent: true }); // a fresh op at the new revision sends
+		expect(out.sent).toBe(true); // a fresh op at the new revision sends
 		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("prepared");
 		expect(sent).toHaveLength(0);
 		r.store.close();

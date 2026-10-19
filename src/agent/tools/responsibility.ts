@@ -100,6 +100,7 @@ export interface ResponsibilityToolDeps {
 	coordinationConversationId: string;
 	/** Stable identity for this handover — the operator's message. */
 	handoverKey: string | (() => string);
+	journalRunId?: string | undefined;
 	/** The operator session's read-only list — resolve targets, never
 	 *  guess them. */
 	listFor(): Promise<OperatorAgent[]>;
@@ -340,6 +341,8 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						responsibilityId: resp.responsibilityId,
 						attachmentId: input.attachment!,
 						brief: input.brief!,
+						journalRunId: deps.journalRunId,
+						toolCallId: options.toolCallId,
 					});
 					if ("refused" in prepared) {
 						done({ outcome: `refused:${prepared.refused}` });
@@ -353,6 +356,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						return {
 							refused: "identity-unenforceable",
 							note: "No send edge is wired on this turn — the operation is recorded and refused, nothing was sent",
+							operation: deps.resps.getOperation(prepared.operation.operationId),
 						};
 					}
 					const out = await deps.service.dispatch(prepared.operation.operationId, deps.guardedSend);
@@ -360,7 +364,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						operation: prepared.operation.operationId,
 						outcome: "sent" in out ? "ok" : `refused:${out.refused}`,
 					});
-					return out;
+					return { ...out, operation: deps.resps.getOperation(prepared.operation.operationId) };
 				}
 			}
 		},

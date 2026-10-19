@@ -13,6 +13,7 @@ import { openProjects } from "../projects.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { Runtime, userMessage } from "../runtime.ts";
+import { openTurnJournal } from "../turn-journal.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
@@ -130,6 +131,89 @@ describe("turn-tools responsibility composition", () => {
 		const keys = after.map((x) => x.handoverKey);
 		expect(keys).toContain(`handover:${conv.id}:${msg1.id}`);
 		expect(keys).toContain(`handover:${conv.id}:${msg2.id}`);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		store.close();
+	});
+});
+
+describe("turn-tools managed send linkage", () => {
+	test("a send stamps the journal run and tool-call identity on its operation", async () => {
+		const home = useHome(`goblin-tt2-${tmpDir().slice(-6)}-`);
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(join(home, "state", "goblin.sqlite"));
+		const projects = openProjects(store);
+		const project = projects.create({ name: "rig" });
+		const conv = store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		store.bindProject(conv.id, project.id);
+		const resps = openResponsibilities(store.db);
+		const wakes = openWakeStore(store.db);
+		const programs = openPrograms(join(home, "state", "programs.sqlite"));
+		const journal = openTurnJournal(store.db);
+		const service = makeResponsibilityService({
+			db: store.db,
+			resps,
+			wakes,
+			programs,
+			pump: () => {},
+		});
+		const herdr = {
+			list: async () => [AGENT],
+			prompt: async () => ({ ...AGENT, agent_status: "working" }),
+		} as unknown as OperatorHerdr;
+		const toolsFor = makeTurnTools({
+			configRef: { current: {} as Config, ttsDown: false },
+			auth: {} as unknown as AuthStore,
+			store,
+			projects,
+			notes: {} as unknown as NoteStore,
+			programs,
+			sendPrivate: async () => {},
+			memory: null,
+			transcribe: async () => null,
+			delegateDeps: () => undefined,
+			operatorHerdr: herdr,
+			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
+			visionDepsFor: () => undefined,
+			sandboxes: {} as unknown as Sandboxes,
+			subagents: () => null,
+			desktops: () => null,
+			subagentsBoot: () => undefined,
+			responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
+			filterGuests: (_conv, tools) => tools,
+		});
+		const SEND = JSON.stringify({ action: "send", attachment: 1, brief: "follow up" });
+		const edge = scriptedModel([
+			[toolCallPart("a1", "responsibility", ACCEPT), finishPart("tool-calls")],
+			[...textParts("taken"), finishPart("stop", 10)],
+			[toolCallPart("b1", "responsibility", SEND), finishPart("tool-calls")],
+			[...textParts("sent"), finishPart("stop", 10)],
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: toolsFor,
+		});
+		const first = new HeadlessSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "take this" }]), first);
+		expect(await first.done).toEqual({ kind: "completed" });
+		const second = new HeadlessSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "now send" }]), second);
+		expect(await second.done).toEqual({ kind: "completed" });
+		await waitUntil(
+			() => resps.operationsFor(resps.forProject(project.id)[0]!.responsibilityId).length === 1,
+			"op recorded",
+		);
+		const op = resps.operationsFor(resps.forProject(project.id)[0]!.responsibilityId)[0]!;
+		expect(op.state).toBe("acknowledged");
+		expect(op.toolCallId).toBe("b1");
+		expect(op.journalRunId).not.toBeNull();
+		const run = journal.get(op.journalRunId!);
+		expect(run).not.toBeNull();
+		expect(run!.conversationId).toBe(conv.id);
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		store.close();
 	});

@@ -158,15 +158,27 @@ export interface ResponsibilityStore {
 		responsibilityId: string;
 		attachmentId: number;
 		brief: string;
+		journalRunId?: string | undefined;
+		toolCallId?: string | undefined;
 	}): { operation: PromptOperation } | { refused: SendRefusal };
 	getOperation(operationId: string): PromptOperation | null;
 	operationsFor(responsibilityId: string): PromptOperation[];
 	/** Re-check right before dispatch — the race the refusal names. */
-	validateForSend(operationId: string): { ok: true } | { refused: SendRefusal };
+	validateForSend(
+		operationId: string,
+		expectedState?: "prepared" | "sent",
+	): { ok: true } | { refused: SendRefusal };
+	claimForSend(operationId: string): { operation: PromptOperation } | { refused: SendRefusal };
 	transitionOperation(
 		operationId: string,
 		to: OperationState,
-		opts?: { refusal?: string; runId?: string; toolCallId?: string; outcome?: unknown },
+		opts?: {
+			refusal?: string;
+			runId?: string;
+			toolCallId?: string;
+			outcome?: unknown;
+			from?: OperationState;
+		},
 	): void;
 }
 
@@ -292,15 +304,14 @@ function toOperation(r: OpRow): PromptOperation {
 	};
 }
 
-// Operations that must never dispatch — their outcome is already on
-// the record or someone refused them by name.
-const TERMINAL_OPS: ReadonlySet<OperationState> = new Set([
-	"sent",
-	"acknowledged",
-	"uncertain",
-	"refused",
-	"superseded",
-]);
+const OP_EDGES: Readonly<Record<OperationState, ReadonlySet<OperationState>>> = {
+	prepared: new Set(["sent", "refused", "superseded"]),
+	sent: new Set(["acknowledged", "uncertain", "refused"]),
+	acknowledged: new Set(),
+	uncertain: new Set(),
+	refused: new Set(),
+	superseded: new Set(),
+};
 
 const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set([
 	"active",
@@ -413,15 +424,18 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = NULL, detached_at = NULL WHERE attachment_id = ?`,
 	);
 	const qInsertOp = db.prepare(
-		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, brief, state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?)`,
+		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, brief, state, journal_run_id, tool_call_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?)`,
 	);
 	const qOp = db.query<OpRow, [string]>("SELECT * FROM prompt_operations WHERE operation_id = ?");
 	const qOpsFor = db.query<OpRow, [string]>(
 		"SELECT * FROM prompt_operations WHERE responsibility_id = ? ORDER BY created_at",
 	);
+	const qOpClaim = db.prepare(
+		`UPDATE prompt_operations SET state = 'sent', sent_at = ? WHERE operation_id = ? AND state = 'prepared'`,
+	);
 	const qOpTransition = db.prepare(
-		`UPDATE prompt_operations SET state = ?, refusal = ?, journal_run_id = COALESCE(?, journal_run_id), tool_call_id = COALESCE(?, tool_call_id), sent_at = COALESCE(?, sent_at), outcome_json = COALESCE(?, outcome_json) WHERE operation_id = ?`,
+		`UPDATE prompt_operations SET state = ?, refusal = ?, journal_run_id = COALESCE(?, journal_run_id), tool_call_id = COALESCE(?, tool_call_id), sent_at = COALESCE(?, sent_at), outcome_json = COALESCE(?, outcome_json) WHERE operation_id = ? AND state = ?`,
 	);
 
 	function requireResp(id: string): Responsibility {
@@ -587,6 +601,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				att!.generation,
 				resp!.revision,
 				input.brief,
+				input.journalRunId ?? null,
+				input.toolCallId ?? null,
 				now(),
 			);
 			const op = store.getOperation(operationId)!;
@@ -606,11 +622,13 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		operationsFor: (responsibilityId) =>
 			qOpsFor.all(responsibilityId).map((r) => toOperation(opRowSchema.parse(r))),
 
-		validateForSend(operationId) {
+		validateForSend(operationId, expectedState = "prepared") {
 			const row = qOp.get(operationId);
 			if (row === null) return { refused: "responsibility-missing" as const };
 			const op = toOperation(opRowSchema.parse(row));
-			if (TERMINAL_OPS.has(op.state)) return { refused: "already-terminal" as const };
+			// Operations that must never dispatch — their outcome is already on
+			// the record or someone refused them by name.
+			if (op.state !== expectedState) return { refused: "already-terminal" as const };
 			const resp = store.get(op.responsibilityId);
 			const att = store.getAttachment(op.attachmentId);
 			const base = checkSendable(resp, att);
@@ -620,10 +638,52 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			return { ok: true };
 		},
 
+		claimForSend(operationId) {
+			let out!: { operation: PromptOperation } | { refused: SendRefusal };
+			db.transaction(() => {
+				const check = store.validateForSend(operationId);
+				if ("refused" in check) {
+					out = check;
+					return;
+				}
+				const res = qOpClaim.run(now(), operationId);
+				if (res.changes !== 1) {
+					out = { refused: "already-terminal" };
+					return;
+				}
+				out = { operation: store.getOperation(operationId)! };
+			})();
+			if ("operation" in out) {
+				log.info("prompt operation claimed for dispatch", {
+					operation: operationId,
+					responsibility: out.operation.responsibilityId,
+					run: out.operation.journalRunId,
+				});
+			}
+			return out;
+		},
+
 		transitionOperation(operationId, to, opts) {
+			const row = qOp.get(operationId);
+			if (row === null) throw new Error(`prompt operation ${operationId} not found`);
+			const from = opRowSchema.parse(row).state;
+			if (from === to) return;
+			if (opts?.from !== undefined && from !== opts.from) {
+				log.info("prompt operation transition skipped — claim already moved", {
+					operation: operationId,
+					expected: opts.from,
+					actual: from,
+				});
+				return;
+			}
+			if (!OP_EDGES[from]!.has(to)) {
+				throw new Error(
+					`prompt operation ${operationId}: ${from} → ${to} is not a legal operation transition`,
+				);
+			}
 			// 'sent' records the dispatch instant; the rest leave sent_at alone.
 			const sentAt = to === "sent" ? now() : null;
-			qOpTransition.run(
+			const res = qOpTransition.run(
 				to,
 				opts?.refusal ?? null,
 				opts?.runId ?? null,
@@ -631,7 +691,11 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				sentAt,
 				opts?.outcome === undefined ? null : JSON.stringify(opts.outcome),
 				operationId,
+				from,
 			);
+			if (res.changes !== 1) {
+				throw new Error(`prompt operation ${operationId}: ${from} → ${to} raced a transition`);
+			}
 			log.info("prompt operation transition", {
 				operation: operationId,
 				state: to,

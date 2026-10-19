@@ -313,3 +313,102 @@ describe("attachment scoping", () => {
 		r.store.close();
 	});
 });
+
+describe("operation state machine and atomic claim", () => {
+	const prep = (r: ReturnType<typeof rig>) => {
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		return { resp, att, op: prepared.operation };
+	};
+
+	test("claimForSend validates and moves prepared → sent exactly once", () => {
+		const r = rig();
+		const { op } = prep(r);
+		const first = r.resps.claimForSend(op.operationId);
+		if (!("operation" in first)) throw new Error("expected claim");
+		expect(first.operation.state).toBe("sent");
+		expect(first.operation.sentAt).not.toBeNull();
+		expect(r.resps.claimForSend(op.operationId)).toEqual({ refused: "already-terminal" });
+		expect(r.resps.validateForSend(op.operationId)).toEqual({ refused: "already-terminal" });
+		expect(r.resps.validateForSend(op.operationId, "sent")).toEqual({ ok: true });
+		r.store.close();
+	});
+
+	test("a correction between prepare and claim makes the claim refuse", () => {
+		const r = rig();
+		const { resp, op } = prep(r);
+		r.resps.revise(resp.responsibilityId, understanding());
+		expect(r.resps.claimForSend(op.operationId)).toEqual({ refused: "stale-revision" });
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("prepared");
+		r.store.close();
+	});
+
+	test("terminal evidence cannot be overwritten; same-state is a no-op", () => {
+		const r = rig();
+		const { op } = prep(r);
+		r.resps.transitionOperation(op.operationId, "sent", { outcome: { wire: "x" } });
+		r.resps.transitionOperation(op.operationId, "acknowledged", {
+			outcome: { status: "accepted" },
+		});
+		expect(() => r.resps.transitionOperation(op.operationId, "refused", { refusal: "x" })).toThrow(
+			/not a legal operation transition/,
+		);
+		expect(() => r.resps.transitionOperation(op.operationId, "sent")).toThrow(
+			/not a legal operation transition/,
+		);
+		const row = r.resps.getOperation(op.operationId)!;
+		expect(row.state).toBe("acknowledged");
+		expect(row.outcome).toEqual({ status: "accepted" });
+		r.resps.transitionOperation(op.operationId, "acknowledged", { outcome: { status: "other" } });
+		expect(r.resps.getOperation(op.operationId)!.outcome).toEqual({ status: "accepted" });
+		const { op: op2 } = prep(r);
+		r.resps.transitionOperation(op2.operationId, "sent");
+		r.resps.transitionOperation(op2.operationId, "uncertain", { outcome: { error: "io" } });
+		expect(() =>
+			r.resps.transitionOperation(op2.operationId, "acknowledged", { outcome: {} }),
+		).toThrow(/not a legal operation transition/);
+		expect(r.resps.getOperation(op2.operationId)!.state).toBe("uncertain");
+		r.store.close();
+	});
+
+	test("prepare stamps journal run and tool-call linkage", () => {
+		const r = rig();
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "kl",
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+			journalRunId: "run-9",
+			toolCallId: "tc-9",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		expect(prepared.operation.journalRunId).toBe("run-9");
+		expect(prepared.operation.toolCallId).toBe("tc-9");
+		r.store.close();
+	});
+});

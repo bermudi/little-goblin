@@ -24,6 +24,7 @@ import {
 	type OperatorAgent,
 } from "./herdr.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
+import { Database } from "bun:sqlite";
 import { tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { feedForProject } from "./responsibility-feed.ts";
 import { openWakeStore } from "./wake-store.ts";
@@ -38,12 +39,14 @@ interface Rig {
 	projectId: string;
 	convId: string;
 	pumps: number;
+	dbPath: string;
 }
 
 function rig(): Rig {
 	const home = useHome(`goblin-rsvc-${tmpDir().slice(-6)}-`);
 	mkdirSync(join(home, "state"), { recursive: true });
-	const store = openStore(join(home, "state", "goblin.sqlite"));
+	const dbPath = join(home, "state", "goblin.sqlite");
+	const store = openStore(dbPath);
 	const projects = openProjects(store);
 	const project = projects.create({ name: "rig" });
 	const conv = store.resolve(
@@ -61,6 +64,7 @@ function rig(): Rig {
 		projectId: project.id,
 		convId: conv.id,
 		pumps: 0,
+		dbPath,
 		svc: makeResponsibilityService({
 			db: store.db,
 			resps,
@@ -245,7 +249,7 @@ describe("responsibility service", () => {
 		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("uncertain");
 		// And it can never dispatch again.
 		const again = await r.svc.dispatch(prepared.operation.operationId, async () => ({}));
-		expect(again).toEqual({ refused: "already-terminal" });
+		expect(again).toEqual({ refused: "delivery-uncertain" });
 		expect(calls).toBe(1);
 		r.store.close();
 	});
@@ -305,12 +309,12 @@ describe("responsibility service", () => {
 		});
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
 		expect(calls).toBe(1);
-		expect(out).toEqual({ refused: "already-terminal" });
+		expect(out).toEqual({ refused: "delivery-uncertain" });
 		const op = r.resps.getOperation(prepared.operation.operationId)!;
 		expect(op.state).toBe("uncertain");
 		// And the same op can never dispatch again.
 		const again = await r.svc.dispatch(prepared.operation.operationId, edge);
-		expect(again).toEqual({ refused: "already-terminal" });
+		expect(again).toEqual({ refused: "delivery-uncertain" });
 		expect(calls).toBe(1);
 		r.store.close();
 	});
@@ -834,6 +838,137 @@ describe("feed armed derivation", () => {
 		expect(item.responsibility.armed).toBe(false);
 		expect(item.responsibility.notArmedReason).toBe("responsibility paused");
 		expect(item.nextCheckinAt).toBeNull();
+		r.store.close();
+	});
+});
+
+describe("atomic dispatch claim", () => {
+	const prepRig = () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [
+				{
+					target: {
+						server: "local",
+						session: "default",
+						agentName: "w1:p1",
+						paneId: "w1:p1",
+						terminalId: "term-9",
+						agentSession: "sess-1",
+						kind: "pi",
+						cwd: "/w",
+					},
+					baseline: {},
+				},
+			],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		return { r, resp, att, op: prepared.operation };
+	};
+
+	test("overlapping dispatch: one edge call wins; the second sees delivery-uncertain without mutating", async () => {
+		const { r, op } = prepRig();
+		let release!: () => void;
+		const gate = new Promise<void>((res) => {
+			release = res;
+		});
+		let calls = 0;
+		const send = async () => {
+			calls += 1;
+			await gate;
+			return { wire: "ok" };
+		};
+		const first = r.svc.dispatch(op.operationId, send);
+		await waitUntil(() => r.resps.getOperation(op.operationId)!.state === "sent", "op claimed");
+		const second = await r.svc.dispatch(op.operationId, send);
+		expect(second).toEqual({ refused: "delivery-uncertain" });
+		expect(calls).toBe(1);
+		release();
+		await expect(first).resolves.toEqual({ sent: true });
+		const settled = r.resps.getOperation(op.operationId)!;
+		expect(settled.state).toBe("acknowledged");
+		expect(settled.outcome).toEqual({ wire: "ok" });
+		const third = await r.svc.dispatch(op.operationId, send);
+		expect(third).toEqual({ refused: "already-terminal" });
+		expect(calls).toBe(1);
+		expect(r.resps.getOperation(op.operationId)).toEqual(settled);
+		r.store.close();
+	});
+
+	test("an uncertain send is never auto-resent — repeat dispatch and a fresh store agree", async () => {
+		const { r, op } = prepRig();
+		let calls = 0;
+		const out = await r.svc.dispatch(op.operationId, async () => {
+			calls += 1;
+			throw new Error("io died");
+		});
+		expect(out).toEqual({ refused: "delivery-uncertain" });
+		const row = r.resps.getOperation(op.operationId)!;
+		expect(row.state).toBe("uncertain");
+		expect(row.outcome).toEqual({ error: "io died" });
+		const again = await r.svc.dispatch(op.operationId, async () => {
+			calls += 1;
+			return {};
+		});
+		expect(again).toEqual({ refused: "delivery-uncertain" });
+		expect(calls).toBe(1);
+		const store2 = openStore(r.dbPath);
+		const resps2 = openResponsibilities(store2.db);
+		const svc2 = makeResponsibilityService({
+			db: store2.db,
+			resps: resps2,
+			wakes: openWakeStore(store2.db),
+			pump: () => {},
+		});
+		const reopened = resps2.getOperation(op.operationId)!;
+		expect(reopened.state).toBe("uncertain");
+		expect(reopened.outcome).toEqual({ error: "io died" });
+		const out2 = await svc2.dispatch(op.operationId, async () => {
+			calls += 1;
+			return {};
+		});
+		expect(out2).toEqual({ refused: "delivery-uncertain" });
+		expect(calls).toBe(1);
+		expect(resps2.getOperation(op.operationId)).toEqual(reopened);
+		store2.close();
+		r.store.close();
+	});
+
+	test("a claimed-but-never-acknowledged row is ambiguous delivery, never resent", async () => {
+		const { r, op } = prepRig();
+		const claim = r.resps.claimForSend(op.operationId);
+		if (!("operation" in claim)) throw new Error("expected claim");
+		let calls = 0;
+		const out = await r.svc.dispatch(op.operationId, async () => {
+			calls += 1;
+			return {};
+		});
+		expect(out).toEqual({ refused: "delivery-uncertain" });
+		expect(calls).toBe(0);
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("sent");
+		r.store.close();
+	});
+
+	test("two store connections can claim the same op only once", () => {
+		const { r, op } = prepRig();
+		const db2 = new Database(r.dbPath);
+		const resps2 = openResponsibilities(db2);
+		const first = r.resps.claimForSend(op.operationId);
+		const second = resps2.claimForSend(op.operationId);
+		expect("operation" in first).toBe(true);
+		expect(second).toEqual({ refused: "already-terminal" });
+		expect(resps2.getOperation(op.operationId)!.state).toBe("sent");
+		db2.close();
 		r.store.close();
 	});
 });

@@ -305,17 +305,24 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 		},
 
 		async dispatch(operationId, send) {
+			const op = resps.getOperation(operationId);
+			if (op === null) return { refused: "responsibility-missing" };
+			if (op.state === "sent" || op.state === "uncertain") {
+				return { refused: "delivery-uncertain" };
+			}
+			if (op.state !== "prepared") return { refused: "already-terminal" };
 			const check = resps.validateForSend(operationId);
 			if ("refused" in check) {
-				resps.transitionOperation(operationId, "refused", { refusal: check.refused });
+				resps.transitionOperation(operationId, "refused", {
+					refusal: check.refused,
+					from: "prepared",
+				});
 				log.info("managed send refused pre-dispatch", {
 					operation: operationId,
 					refusal: check.refused,
 				});
 				return { refused: check.refused };
 			}
-			const op = resps.getOperation(operationId);
-			if (op === null) return { refused: "responsibility-missing" };
 			const att = resps.getAttachment(op.attachmentId);
 			if (att === null) return { refused: "attachment-detached" };
 			// agent_session is the replacement detector — without it the
@@ -323,6 +330,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			if (att.target.agentSession === null) {
 				resps.transitionOperation(operationId, "refused", {
 					refusal: "identity-unenforceable",
+					from: "prepared",
 				});
 				log.warn("managed send refused: no harness session identity to bind", {
 					operation: operationId,
@@ -330,8 +338,18 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				});
 				return { refused: "identity-unenforceable" };
 			}
+			const claim = resps.claimForSend(operationId);
+			if ("refused" in claim) {
+				const current = resps.getOperation(operationId);
+				if (current !== null && current.state !== "prepared") {
+					return current.state === "sent" || current.state === "uncertain"
+						? { refused: "delivery-uncertain" }
+						: { refused: "already-terminal" };
+				}
+				return { refused: claim.refused };
+			}
 			const recheck = () => {
-				const again = resps.validateForSend(operationId);
+				const again = resps.validateForSend(operationId, "sent");
 				if ("refused" in again) {
 					throw new HerdrRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
 				}
@@ -339,7 +357,6 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			try {
 				recheck();
 				const outcome = await send(op.brief, att.target, recheck);
-				resps.transitionOperation(operationId, "sent", { outcome });
 				resps.transitionOperation(operationId, "acknowledged", { outcome });
 				return { sent: true };
 			} catch (err) {
@@ -359,7 +376,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 					outcome: { error: err instanceof Error ? err.message : String(err) },
 				});
 				log.error("managed send outcome uncertain", err, { operation: operationId });
-				return { refused: "already-terminal" };
+				return { refused: "delivery-uncertain" };
 			}
 		},
 	};

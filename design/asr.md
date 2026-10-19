@@ -5,31 +5,28 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## ASR (speech → text)
 
-Revamped 2026-10: Whistle (Cactus Compute) is the default engine — local,
-keyless, one 16.9 MB model file on the CPU — and the cloud is a menu of
-explicit kinds behind one interface. Groq stays a kind; the AI SDK
-transcription dependency is gone (Engine interface).
+Whistle (Cactus Compute) is the default engine; cloud kinds are an explicit
+menu behind one interface (Engine interface). Groq stays a kind.
 
-Intake semantics do not change. Voice notes and video notes transcribe
-once, eagerly; the transcript rides the data-attachment part; attached
-audio stays data and uses the `transcribe` tool (DESIGN.md → Model
-layer → Transcription, design/tools.md). This doc owns the engine layer.
+Intake semantics stay: voice and video notes transcribe once, eagerly; the
+transcript rides the data-attachment part; attached audio stays data and uses
+the `transcribe` tool (DESIGN.md → Model layer → Transcription,
+design/tools.md). This doc owns the engine layer.
 
-**A failed intake transcription is recorded, not silently dropped
-(ruling 2026-10-17).** The intake catch still keeps the attachment —
-transcription is enrichment, not intake — but the part now carries
-`transcriptionError` with the bounded provider message, and the
-no-audio-modality fallback text renders it (`[attachment: path —
-transcription failed: …]`). A silent path-only fallback asked the
-model to rediscover failure with tools; the recorded reason turns it
-into "your ASR config is broken". Both intake doors populate it (tg
-voice/video, app speech); a failure never mints a `transcript` field.
+**A failed intake transcription is recorded, not silently dropped (ruling
+2026-10-17).** Intake keeps the attachment — transcription is enrichment, not
+intake — but the part carries `transcriptionError` with the bounded provider
+message, and the no-audio-modality fallback renders it
+(`[attachment: path — transcription failed: …]`). A silent path-only fallback
+would make the model rediscover failure with tools; the recorded reason says
+"your ASR config is broken". Both intake doors populate it (tg voice/video,
+app speech); a failure never mints a `transcript` field.
 
 ### Engine interface
 
-One interface, nine kinds. Every engine is a function from a prepared
-file to `{text, language?}`; the orchestrator (segmentation, silence
-semantics, logging) is shared and never sees a provider SDK:
+One interface, nine kinds. Every engine is a function from a prepared file to
+`{text, language?}`; the orchestrator (segmentation, silence semantics,
+logging) is shared and never sees a provider SDK:
 
 ```ts
 interface SpeechEngine {
@@ -44,16 +41,14 @@ interface SpeechEngine {
 
 - Empty transcript ("no speech") is the ORCHESTRATOR's null, not the
   engine's — engines return whatever the provider said, `""` included.
-  Failures throw, always with the provider's name and status in the
-  message. A provider outage must never read as silence (#101 rule,
-  unchanged).
-- `speechEngine(cfg, auth)` (in `transcribe.ts`) maps config → engine;
-  auth refs resolve lazily at the point of use, like every other
-  provider. Resolved keys never enter logs.
-- The AI SDK `transcribe()` call and the `TranscriptionModel` type are
-  gone from this layer; `@ai-sdk/groq` is dropped from the deps (chat
-  never used it — it existed only for transcription). Precedent: TTS
-  is hand-rolled Edge over WebSocket (`tts.ts`); ASR now matches.
+  Failures throw with the provider's name and status in the message; a
+  provider outage must never read as silence (#101, unchanged).
+- `speechEngine(cfg, auth)` (in `transcribe.ts`) maps config → engine; auth
+  refs resolve lazily at the point of use, like every other provider.
+  Resolved keys never enter logs.
+- The AI SDK `transcribe()`/`TranscriptionModel` layer and `@ai-sdk/groq`
+  are gone — chat never used the latter. Precedent: TTS is hand-rolled Edge
+  over WebSocket (`tts.ts`); ASR matches.
 
 ### Config
 
@@ -87,175 +82,162 @@ Kinds (`zod` discriminated union in `config.ts`):
 - `auth` optional on cloud kinds, defaulting to the kind name — the
   auth.jsonl record the operator is expected to add (`groq` precedent).
   `mimo` rides Xiaomi's first-party Open Platform API
-  (api.xiaomimimo.com); billing is per input-audio hour, reported back
-  as `usage.seconds`.
-- `openrouter` is the metaprovider: its STT catalog (verified 2026-10-09:
-  elevenlabs scribe-v2, gemini-3.5-transcribe, chirp-3, voxtral, qwen3-asr,
-  whisper, gpt-transcribe, mai-transcribe, grok-stt, nova-3 …) is one
-  `model:` string away. The dedicated kinds (elevenlabs, gemini, mistral,
-  openai) exist for direct billing/privacy control — same data, no
-  middleman.
+  (api.xiaomimimo.com); billing is per input-audio hour, reported back as
+  `usage.seconds`.
+- `openrouter` is the metaprovider: its STT catalog (verified 2026-10-09)
+  is one `model:` string away. The dedicated kinds (elevenlabs, gemini,
+  mistral, openai) exist for direct billing/privacy control — same data,
+  no middleman.
 - Chat-by-instruction kinds (`gemini`) transcribe by instruction: system
-  prompt demands verbatim transcript only, temperature 0, output capped.
-  They inherit the chat model's language coverage and its price per
-  output token; they do NOT get special parsing — `choices[0].message
-  .content` / `candidates[0].content.parts[].text`, trimmed, treated as
-  the transcript. A model that answers with commentary produces
-  commentary; the config names the model, the model is the operator's
-  choice. `mimo` shares the chat-completions envelope but is a
-  *dedicated* ASR model: the audio part alone is the whole request, and
-  its `asr_options.language` vocabulary is closed (auto/zh/en), so its
-  `language` field is that enum, not the ISO free string.
-- Optional `language` passthrough on every kind (ISO-639-1; whistle's
-  enum, elevenlabs also accepts 639-3, mimo its own closed enum).
-  Omitted = detect everywhere.
-- **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are
-  doc-pinned, not live-probed (no local key at implementation time).
-  Logfare is an OpenAI-compatible relay — its docs note requests may be
-  logged (PII-scrubbed) for eval, so it is not the kind to pick for
-  audio you want kept off third-party disks. OpenRouter warns ~60 s
-  upstream processing per request — long files prefer whistle/groq.
+  prompt demands a verbatim transcript only, temperature 0, output capped.
+  They inherit the chat model's language coverage and output-token price,
+  with no special parsing — `choices[0].message.content` /
+  `candidates[0].content.parts[].text`, trimmed, is the transcript. A
+  commentary-answering model produces commentary — the operator owns the
+  model choice. `mimo` shares the chat-completions envelope but is a
+  *dedicated* ASR model: the audio part alone is the whole request, and its
+  `asr_options.language` vocabulary is closed (auto/zh/en), so its `language`
+  field is that enum, not the ISO free string.
+- Optional `language` passthrough on every kind (ISO-639-1; whistle's enum,
+  elevenlabs also accepts 639-3, mimo its own closed enum). Omitted =
+  detect everywhere.
+- **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are doc-pinned,
+  not live-probed (no local key at implementation time). Logfare is an
+  OpenAI-compatible relay — its docs note requests may be logged
+  (PII-scrubbed) for eval, so it is not the kind to pick for audio you want
+  kept off third-party disks. OpenRouter warns ~60 s upstream processing per
+  request — long files prefer whistle/groq.
 
 ### The two adapter families
 
 **OpenAI-compatible multipart** (groq, openai, mistral, logfare): one fetch
 implementation, four base URLs. Fields `file`, `model`, `language?`;
-`Authorization: Bearer <key>`; response `{"text": …}` (groq's
-verbose_json adds `language: "English"` — full words, not codes — and
-`duration`; pass `response_format: json` for the minimal shape).
-Mistral's errors are FastAPI-shaped `{"detail": …}` — error rendering
-reads `error.message ?? detail ?? body`.
+`Authorization: Bearer <key>`; response `{"text": …}` (groq's verbose_json
+adds `language: "English"` — full words, not codes — and `duration`; pass
+`response_format: json` for the minimal shape). Mistral's errors are
+FastAPI-shaped `{"detail": …}` — error rendering reads
+`error.message ?? detail ?? body`.
 
-**Bespoke** (whistle engine binary, elevenlabs multipart with
-`xi-api-key` + `model_id`, gemini generateContent, openrouter JSON with
-base64 `input_audio`, mimo first-party chat completions). Each is small,
-each pinned verbatim in tests with the shapes recorded in the appendix.
+**Bespoke** (whistle engine binary, elevenlabs multipart with `xi-api-key` +
+`model_id`, gemini generateContent, openrouter JSON with base64
+`input_audio`, mimo first-party chat completions). Each is small, each pinned
+verbatim in tests with the shapes recorded in the appendix.
 
-Borrowed from openclaw (MIT, `src/media-understanding/`): the *shape*,
-not the code — local CLI transcription as a first-class provider kind
-(their `local-audio.ts` probes parakeet/whisper.cpp/sherpa candidates;
-we pin exactly one engine instead of probing), and OpenAI-compatible
-`/audio/transcriptions` as the shared cloud adapter (their
-`openai-compatible-audio.ts`). Their multi-provider plugin registry and
+Borrowed from openclaw (MIT, `src/media-understanding/`): the *shape*, not
+the code — a local CLI kind (their `local-audio.ts` probes candidates; we pin
+one engine) and OpenAI-compatible `/audio/transcriptions` as the shared cloud
+adapter (`openai-compatible-audio.ts`). Their plugin registry and
 per-provider option surfaces are non-goals here.
 
 ### Whistle: the local default
 
 Cactus Compute's speech model: one 16.9 MB `.cact` file, CPU-only, 16 kHz
-mono in, ≤30 s per pass, detects its 7 languages, returns empty on
-silence and steady noise. Integration is the prebuilt engine binary
-(same container as their Needle model — `needle_load` reads whichever
-`.cact` it gets), spawned per transcription. No daemon, no `--serve`,
-no Python: stateless subprocess like every other goblin child.
+mono in, ≤30 s per pass, detects its 7 languages, returns empty on silence
+and steady noise. Integration is the prebuilt engine binary (same container
+as their Needle model — `needle_load` reads whichever `.cact` it gets),
+spawned per transcription: no daemon, no `--serve`, no Python — a stateless
+subprocess like every other goblin child.
 
-- **Artifacts** (x86_64 linux): engine `linux-x86_64/needle` (1.5 MB)
-  and `whistle.cact` (16.9 MB) from `huggingface.co/Cactus-Compute/
-  needle3` and `/whistle`, auto-fetched on first use into
-  `$GOBLIN_HOME/cache/whistle/`, digest-pinned:
-  needle `f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4`,
-  whistle.cact `b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb`.
-  Digest mismatch = fail loud, never run different weights silently;
-  the error names the override fields. `engine:`/`weights:` config
-  bypasses the fetch entirely (managed installs, other platforms —
-  the fetcher maps `process.arch`; unmapped = loud error with the
-  manual-path instruction).
+- **Artifacts** (x86_64 linux): engine `linux-x86_64/needle` (1.5 MB) and
+  `whistle.cact` (16.9 MB) from `huggingface.co/Cactus-Compute/needle3` and
+  `/whistle`, auto-fetched on first use into `$GOBLIN_HOME/cache/whistle/`,
+  digest-pinned: needle
+  `f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4`,
+  whistle.cact
+  `b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb`.
+  Digest mismatch = fail loud, never run different weights silently; the
+  error names the override fields. `engine:`/`weights:` config bypasses the
+  fetch entirely (managed installs, other platforms — the fetcher maps
+  `process.arch`; unmapped = loud error with the manual-path instruction).
 - **Invocation**: `needle --model <weights> --audio <wav>` (+ optional
   `--audio-language <code>`, `--audio-keywords <file>`, `--threads N`).
   stdout: one JSON line `{"text","language","ttft_ms","decode_tps"}`;
   exit 1 with a one-line stderr message on bad input. Silence →
-  `{"text":"","language":""}`. The binary contains no HTTP client and
-  reads no environment — audio never leaves the box.
-- **Prep**: RIFF WAV only — every call is one ffmpeg pass to 16 kHz
-  mono `pcm_s16le` (`prep: {container:"wav", sampleRateHz:16000,
-  mono:true}`), `-f segment -segment_time 28` (the 30 s engine limit
-  with cut-margin) so one pass handles short notes and hour-long
-  podcasts alike. Segments transcribe sequentially, joined with
-  spaces; per-segment results log; a failed segment keeps the prefix
-  (orchestrator rule, unchanged). Guard: >240 segments (≈1 h 52 m)
-  errors loud instead of grinding the CPU for an afternoon.
-- **Speed, measured** (g7, i7-8750H, this branch): 11 s note → correct
-  transcript in 1.37 s wall including model load; ~8× realtime at
-  16 kHz mono (48 kHz stereo input works natively but transcodes
-  slowly — hence the explicit 16 kHz prep). 120 s clip through
-  `--audio-stream` took 3m24s (re-transcribes per chunk) — streaming
-  mode is rejected; fixed segments are the pattern, same as the
-  over-cap cloud path today.
-- ffmpeg becomes a hard dependency of the whistle kind (it is the
-  decoder); the boot probe warns when missing exactly like today, and
-  intake degrades per message to the path-referenced attachment.
+  `{"text":"","language":""}`. The binary contains no HTTP client and reads
+  no environment — audio never leaves the box.
+- **Prep**: RIFF WAV only — every call is one ffmpeg pass to 16 kHz mono
+  `pcm_s16le` (`prep: {container:"wav", sampleRateHz:16000, mono:true}`),
+  `-f segment -segment_time 28` (the 30 s engine limit with cut-margin).
+  Segments transcribe sequentially, joined with spaces; per-segment results
+  log; a failed segment keeps the prefix (orchestrator rule, unchanged).
+  Guard: >240 segments (≈1 h 52 m) errors loud rather than grinding the CPU.
+- **Speed, measured** (g7, i7-8750H): 11 s note → 1.37 s wall including
+  model load, ~8× realtime at 16 kHz mono (48 kHz stereo transcodes slowly —
+  hence the explicit prep). `--audio-stream` re-transcribes per chunk (120 s →
+  3m24s) and is rejected; fixed segments are the pattern, as on the over-cap
+  cloud path.
+- ffmpeg becomes a hard dependency of the whistle kind (it is the decoder);
+  the boot probe warns when missing, and intake degrades per message to the
+  path-referenced attachment.
 - **Unverified:** quality on real speech is unmeasured beyond synthetic
   probes — the `transcribed` log's chars/language fields make nonsense
   visible, and cloud kinds are one config flip away.
 
 ### Orchestrator (unchanged shape, new prep awareness)
 
-`transcribeAudio(engine, file, opts)` keeps its contract: null = no
-speech anywhere, throw = failure. The size-cap decision generalizes:
+`transcribeAudio(engine, file, opts)` keeps its contract: null = no speech
+anywhere, throw = failure. The size-cap decision generalizes:
 
-- `container:"keep"` engines (all cloud): today's behavior — under
-  `maxBytes` (default 25 MiB, OpenAI/groq/mistral multipart cap) pass
-  the original bytes; over it, 15-minute 48 kHz mono opus segments.
+- `container:"keep"` engines (all cloud): under `maxBytes` (default 25 MiB,
+  OpenAI/groq/mistral multipart cap) pass the original bytes; over it,
+  15-minute 48 kHz mono opus segments.
 - `container:"wav"` engines (whistle, mimo): always the 16 kHz mono wav
   segment pass above; `maxSeconds` per segment — 28 for whistle's 30 s
   engine cap, 180 for mimo (its contract is wav/mp3 and a 10 MB base64
   ceiling; 180 s of pcm_s16le encodes to ≈7.7 MB, so the profile makes
   request size deterministic whatever the source container or bitrate).
-- Chat-family inline-base64 engines cap bytes lower (gemini
-  `inlineData` request budget ≈ 20 MB total): `maxBytes` 12 MiB with
-  10-minute segments keeps the base64-inflated body safely under.
-- The segment pass rebuilds timestamps before the muxer sees them
-  (ruling 2026-10-17, bugs-2026-10 F6): `-af asetpts=N/SR/TB` derives
-  pts from decoded sample count, so MediaRecorder containers
-  (duration=N/A, per-packet cluster pts — PWA voice notes on every
-  browser) cut by real wall time instead of one ~60 ms segment per
-  packet. Container pts are never trusted; contiguous decoded frames
-  are the truth.
+- Chat-family inline-base64 engines cap bytes lower (gemini `inlineData`
+  request budget ≈ 20 MB total): `maxBytes` 12 MiB with 10-minute segments
+  keeps the base64-inflated body safely under.
+- The segment pass rebuilds timestamps before the muxer sees them (ruling
+  2026-10-17, bugs-2026-10 F6): `-af asetpts=N/SR/TB` derives pts from
+  decoded sample count, so MediaRecorder containers (duration=N/A,
+  per-packet cluster pts — PWA voice notes on every browser) cut by real
+  wall time instead of one ~60 ms segment per packet. Container pts are
+  never trusted; contiguous decoded frames are the truth.
 - The stored artifact gets the same rebuild at upload
-  (`src/agent/recording.ts`, run inside the composer upload's
-  `writeTemp` so it lands before the durable rename): Chromium also
-  stamps packets on the recording device's monotonic clock — a 14 s
-  note sat at pts ≈ uptime and played as ~10 h with dead seeking.
-  The gate is content-probed, never the declared part type (Bun's
-  formData re-types by extension — webm voice notes arrive claiming
-  `video/webm`): audio-only stream, no declared duration, and a
-  matroska/ogg/mp4 container → re-stamp + libopus, and the ref records
-  the honest `audio/*` type. Real video keeps its bytes (the probed
-  video stream vetoes), mp3/wav keep theirs (no Duration element to
-  miss), an unparseable or unfixable upload stores verbatim — a broken
-  note still transcribes and plays, and the upload never fails over a
-  normalization nicety.
+  (`src/agent/recording.ts`, inside the composer upload's `writeTemp` before
+  the durable rename): Chromium stamps packets on the recording device's
+  monotonic clock — a 14 s note at pts ≈ uptime played as ~10 h with dead
+  seeking. The gate is content-probed, never the declared part type (Bun's
+  formData re-types by extension — webm notes arrive claiming `video/webm`):
+  audio-only stream, no declared duration, matroska/ogg/mp4 container →
+  re-stamp + libopus, and the ref records the honest `audio/*` type. Real
+  video keeps its bytes (the probed video stream vetoes), mp3/wav keep
+  theirs (no Duration element to miss); an unparseable or unfixable upload
+  stores verbatim — a broken note still transcribes and plays, and upload
+  never fails over normalization.
 
 ### Wire, UI, docs
 
-- `ConfigPostBody.transcription` (src/http/mod.ts) widens to the union;
-  the settings editor's Voice card gains a kind `<select>` (whistle
-  first), a model input with per-kind placeholder default, and an auth
-  input disabled for whistle. The editor (`app/src/settingsDraft.ts`,
-  served on both doors) mirrors the same rules: a kind switch clears
-  model and secret, and a blank cloud model or secret is valid because
-  the server fills the kind's defaults — schema changes break
-  typecheck, not the page (App channel rule).
-- Boot log: one line naming engine, model, and (whistle) artifact
-  presence. Every transcription logs provider, model, duration, chars,
-  language — the existing `transcribed` line, generalized.
+- `ConfigPostBody.transcription` (src/http/mod.ts) widens to the union; the
+  settings editor's Voice card gains a kind `<select>` (whistle first), a
+  model input with per-kind placeholder default, and an auth input disabled
+  for whistle. The editor (`app/src/settingsDraft.ts`, served on both doors)
+  mirrors the same rules: a kind switch clears model and secret, and a blank
+  cloud model or secret is valid because the server fills the kind's
+  defaults — schema changes break typecheck, not the page (App channel
+  rule).
+- Boot log: one line naming engine, model, and (whistle) artifact presence.
+  Every transcription logs provider, model, duration, chars, language — the
+  existing `transcribed` line, generalized.
 
 ## Non-goals
 
 - **No fallback chains** for transcription. Search/fetch chains exist
   because lookups are cheap and failure-prone; a transcript is one
-  deliberate artifact. One kind, explicit. (The interface makes a
-  chain a config feature later if it's ever wanted.)
-- **No whisper.cpp/sherpa/parakeet probing.** Whistle is the local
-  engine. Candidate detection is openclaw's answer to shipping to
-  unknown machines; goblin has two.
+  deliberate artifact. One kind, explicit. (The interface makes a chain a
+  config feature later if it's ever wanted.)
+- **No whisper.cpp/sherpa/parakeet probing.** Whistle is the local engine.
+  Candidate detection is openclaw's answer to shipping to unknown machines;
+  goblin has two.
 - **No streaming/realtime ASR.** Telegram voice notes are files; the
-  engine's `--audio-stream` is slower than segmentation on our CPUs
-  and its incremental shape buys nothing at intake.
+  engine's `--audio-stream` is slower than segmentation on our CPUs and its
+  incremental shape buys nothing at intake.
 - **No provider-option passthrough** (diarize, tag_audio_events,
-  transcript_edit, timestamps). The transcript is for the model to
-  read; none of that changes the intake artifact. `keywords` on
-  whistle is the one bias knob because name errors are the personal-
-  assistant failure mode.
+  transcript_edit, timestamps). The transcript is for the model to read;
+  none of that changes the intake artifact. `keywords` on whistle is the one
+  bias knob because name errors are the personal-assistant failure mode.
 
 ## Verbatim contracts (pinned for tests)
 
@@ -291,14 +273,10 @@ Probed live 2026-10-09; the test fixtures copy these bodies exactly.
 ```
 
 Gemini (`generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`,
-header `x-goog-api-key`, `contents[].parts[].inlineData {mimeType, data}`)
-rides the docs' shape; its fixtures stay doc-pinned until the first live
-call at operator setup (no local key). The mimo arm
-(`api.xiaomimimo.com/v1/chat/completions`, header `api-key`,
+header `x-goog-api-key`, `contents[].parts[].inlineData {mimeType, data}`) is
+doc-pinned until the first live call at operator setup (no local key). The
+mimo arm (`api.xiaomimimo.com/v1/chat/completions`, header `api-key`,
 `{model:"mimo-v2.5-asr", messages:[{role:"user", content:[{type:
 "input_audio", input_audio:{data,format:"wav"}}]}], asr_options?}` →
-`choices[0].message.content`, `usage.seconds` = billed audio duration)
-is doc-pinned the same way until a `mimo` auth record exists — the
-OpenRouter chat probe that justified this kind's original shape is
-retired along with that wire.
-
+`choices[0].message.content`, `usage.seconds` = billed audio duration) is
+doc-pinned the same way until a `mimo` auth record exists.

@@ -20,6 +20,17 @@ import { formatSkillsSection, loadCatalog } from "./skills.ts";
 // not per conversation — one edit logs once; first sight primes silently.
 const lastSeen = new Map<string, string>();
 
+// Section headings are code-owned constants — the context gauge's
+// itemizer (turn/itemize.ts) splits the frozen snapshot on them, so a
+// wording change here moves those boundaries too.
+export const PROMPT_SECTIONS = {
+	environment: "## environment",
+	project: "## project — ",
+	agents: "## AGENTS.md — your operating notes",
+	user: "## USER.md — your model of the operator",
+	skills: "## skills",
+} as const;
+
 function noteSource(source: string, content: string | null): void {
 	const digest =
 		content === null ? "absent" : createHash("sha256").update(content).digest("hex").slice(0, 16);
@@ -183,7 +194,7 @@ export function buildSystemPrompt(
 				? "You are chatting with someone the operator has approved. This is their own chat with you — reply normally, over multiple turns."
 				: "You are answering a message in a third-party chat. You help whoever summoned you — answer briefly, plainly, and self-containedly.",
 			"",
-			"## environment",
+			PROMPT_SECTIONS.environment,
 			"",
 			`- Tools: ${tools.join(", ")}.`,
 			...(standing
@@ -247,7 +258,7 @@ export function buildSystemPrompt(
 	// a `note read` away.
 	const projectSection: string[] = [];
 	if (project !== null && project !== undefined) {
-		projectSection.push("", `## project — ${project.name}`);
+		projectSection.push("", `${PROMPT_SECTIONS.project}${project.name}`);
 		const parts: string[] = [];
 		if (projectInstructions !== "") parts.push(projectInstructions);
 		if (notesIndex !== undefined && notesIndex.length > 0) {
@@ -272,7 +283,7 @@ export function buildSystemPrompt(
 	const text = [
 		(soul ?? "You are goblin, a personal AI agent.").trim(),
 		"",
-		"## environment",
+		PROMPT_SECTIONS.environment,
 		"",
 		`- You are talking to your operator via ${channel} (${conv.id}).`,
 		...(project === null || project === undefined
@@ -409,8 +420,8 @@ export function buildSystemPrompt(
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
 		...projectSection,
-		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
-		...(user ? ["", "## USER.md — your model of the operator", "", user.trim()] : []),
+		...(agents ? ["", PROMPT_SECTIONS.agents, "", agents.trim()] : []),
+		...(user ? ["", PROMPT_SECTIONS.user, "", user.trim()] : []),
 		"",
 		...skillsSection,
 	].join("\n");

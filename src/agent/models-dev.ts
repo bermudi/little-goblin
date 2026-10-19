@@ -102,18 +102,27 @@ export async function contextLimit(provider: string, modelId: string): Promise<n
 }
 
 // For read paths that must never stall on the network (HTTP routes) —
-// null when cold or unlisted, no fetch kick: the turn path's ensure()
-// warms it on the first real turn, which is also when stored usage appears.
+// no fetch kick: the turn path's ensure() warms memory on the first
+// real turn, which is also when stored usage appears. A cold memory
+// falls back to one lazy disk-cache parse per process (the gauge polls;
+// a per-request parse would re-read a megabyte of catalog each time),
+// and memory wins once warm.
+let diskCatalog: Catalog | null | undefined;
+
 export function contextLimitCached(provider: string, modelId: string): number | null {
-	const cat = modelsDev.current();
-	if (!cat) return null;
-	const direct = cat[provider]?.models[modelId]?.limit?.context;
-	if (direct !== undefined) return direct;
-	for (const p of Object.values(cat)) {
-		const found = p.models[modelId]?.limit?.context;
-		if (found !== undefined) return found;
+	function limitIn(cat: Catalog): number | null {
+		const direct = cat[provider]?.models[modelId]?.limit?.context;
+		if (direct !== undefined) return direct;
+		for (const p of Object.values(cat)) {
+			const found = p.models[modelId]?.limit?.context;
+			if (found !== undefined) return found;
+		}
+		return null;
 	}
-	return null;
+	const mem = modelsDev.current();
+	if (mem !== null) return limitIn(mem);
+	if (diskCatalog === undefined) diskCatalog = modelsDev.readDisk();
+	return diskCatalog === null ? null : limitIn(diskCatalog);
 }
 
 // ---------- openrouter ----------
@@ -191,6 +200,7 @@ export function _primeModelsDevForTest(catalog: ModelsDevCatalog | null): void {
 // Test hook.
 export function _resetModelsDevForTest(): void {
 	modelsDev.resetForTest();
+	diskCatalog = undefined;
 }
 
 // Test hook.

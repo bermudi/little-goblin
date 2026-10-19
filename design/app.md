@@ -24,7 +24,14 @@ longer than "where you asked", the thinking is the bug.
 drift, or test twice. Stop ends the turn server-side, not just its stream.
 Compact (ruling 2026-10-16) puts the manual lever in the context gauge's
 popover, not a composer command grammar — the app parses no slash commands —
-and awaits the lane job (a finishing turn reads as a slow response).
+and awaits the lane job (a finishing turn reads as a slow response). The
+gauge reads the final step's prompt (`usage.lastInput`), never the turn's
+billed sum across the tool loop (ruling 2026-10-19: the two differ by the
+step count, and the sum once read as a 223k window on a 37k one); its
+itemization scales `promptChars` to that number — per-segment figures are
+estimates, exact in aggregate only. The gauge's denominator never stalls
+on the network: a cold models.dev memory falls back to a one-time
+disk-cache parse (`contextLimitCached`), memory wins once a turn warms it.
 
 **Auth.** No `initData` exists outside Telegram; the lock is a bearer token,
 optional since 2026-09-30 by operator ruling, on the collie precedent:

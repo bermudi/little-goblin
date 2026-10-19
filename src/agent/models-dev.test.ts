@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	_primeModelsDevForTest,
 	_resetModelsDevForTest,
 	_resetOpenRouterForTest,
 	ensureOpenRouterCatalog,
+	contextLimit,
+	contextLimitCached,
 	inputModalities,
 	inputModalitiesCached,
-	contextLimit,
 	readOpenRouterCache,
 } from "./models-dev.ts";
 import { useHome } from "../testkit.ts";
@@ -118,6 +120,41 @@ describe("models.dev catalog", () => {
 			expect(inputModalitiesCached("testprov", "blind")!.has("image")).toBe(false);
 			expect(inputModalitiesCached("testprov", "ghost")).toEqual(new Set(["text"]));
 			expect(inputModalitiesCached("other", "seer")!.has("image")).toBe(true);
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
+		}
+	});
+
+	// The gauge's denominator on a fresh boot: /context must never fetch,
+	// but it also mustn't read "unknown" while a perfectly good cache
+	// file sits on disk. Memory wins once a turn has warmed it.
+	test("contextLimitCached: disk backstop when memory is cold, memory wins once warm", () => {
+		const dir = useHome("goblin-mdev-");
+		mkdirSync(join(dir, "state"), { recursive: true });
+		const cachePath = join(dir, "state", "models.dev.json");
+		writeFileSync(
+			cachePath,
+			JSON.stringify({ testprov: { models: { m1: { limit: { context: 123456 } } } } }),
+		);
+		_resetModelsDevForTest();
+		const prevFetch = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (() => {
+			calls++;
+			return Promise.reject(new Error("must not fetch on the cached read path"));
+		}) as unknown as typeof fetch;
+		try {
+			expect(contextLimitCached("testprov", "m1")).toBe(123456);
+			expect(calls).toBe(0);
+			// Warm memory outranks the disk copy.
+			_primeModelsDevForTest({ testprov: { models: { m1: { limit: { context: 999 } } } } });
+			expect(contextLimitCached("testprov", "m1")).toBe(999);
+			// The reset clears the disk memo too — a gone file reads null,
+			// not the stale parse.
+			_resetModelsDevForTest();
+			rmSync(cachePath);
+			expect(contextLimitCached("testprov", "m1")).toBeNull();
 		} finally {
 			globalThis.fetch = prevFetch;
 			_resetModelsDevForTest();

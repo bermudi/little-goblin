@@ -18,6 +18,7 @@ import {
 import { appSseWriter } from "./app-sse.ts";
 import type {
 	AppCompactResponse,
+	AppContextSegment,
 	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
@@ -54,6 +55,9 @@ function contextUsageOf(m: UIMessage): {
 	output: number | null;
 	cacheRead: number | null;
 	cacheWrite: number | null;
+	lastInput: number | null;
+	lastCacheRead: number | null;
+	promptChars: Record<string, number> | null;
 } | null {
 	const md = (m as { metadata?: unknown }).metadata;
 	if (typeof md !== "object" || md === null) return null;
@@ -61,12 +65,71 @@ function contextUsageOf(m: UIMessage): {
 	if (typeof usage !== "object" || usage === null) return null;
 	const u = usage as Record<string, unknown>;
 	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	const promptChars = (md as { promptChars?: unknown }).promptChars;
+	let chars: Record<string, number> | null = null;
+	if (typeof promptChars === "object" && promptChars !== null) {
+		const record = promptChars as Record<string, unknown>;
+		if (Object.values(record).every((v) => typeof v === "number")) {
+			chars = record as Record<string, number>;
+		}
+	}
 	return {
 		input: num(u.input),
 		output: num(u.output),
 		cacheRead: num(u.cacheRead),
 		cacheWrite: num(u.cacheWrite),
+		lastInput: num(u.lastInput),
+		lastCacheRead: num(u.lastCacheRead),
+		promptChars: chars,
 	};
+}
+
+// Window occupancy is the final step's prompt; turns stored before
+// lastInput existed only carry the whole turn's billed sum.
+function windowInputOf(u: {
+	lastInput: number | null;
+	input: number | null;
+}): number | null {
+	return u.lastInput ?? u.input;
+}
+
+function windowCacheReadOf(u: {
+	lastCacheRead: number | null;
+	cacheRead: number | null;
+}): number | null {
+	return u.lastCacheRead ?? u.cacheRead;
+}
+
+// Segment keys the itemizer can produce, minus `toolResults` — a subset
+// of `history`, scaled separately so the denominator never double-counts.
+const SEGMENT_KEYS = [
+	"identity",
+	"environment",
+	"project",
+	"agentsMd",
+	"userMd",
+	"skills",
+	"toolDefs",
+	"history",
+] as const;
+
+function segmentsOf(
+	chars: Record<string, number> | null,
+	input: number | null,
+): AppContextSegment[] | null {
+	if (chars === null || input === null || input <= 0) return null;
+	const total = SEGMENT_KEYS.reduce((sum, key) => sum + (chars[key] ?? 0), 0);
+	if (total <= 0) return null;
+	const segments: AppContextSegment[] = [];
+	for (const key of SEGMENT_KEYS) {
+		const size = chars[key] ?? 0;
+		if (size > 0) segments.push({ key, tokens: Math.round((size / total) * input) });
+	}
+	const toolResults = chars.toolResults ?? 0;
+	if (toolResults > 0) {
+		segments.push({ key: "toolResults", tokens: Math.round((toolResults / total) * input) });
+	}
+	return segments;
 }
 
 function conversationFromSegment(segment: string): { id: string } | Response {
@@ -284,12 +347,7 @@ export async function handleConversationsRoute(
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
 		const model = row.model ?? deps.configRef.current.model;
-		const found: {
-			input: number | null;
-			output: number | null;
-			cacheRead: number | null;
-			cacheWrite: number | null;
-		}[] = [];
+		const found: NonNullable<ReturnType<typeof contextUsageOf>>[] = [];
 		for (const m of store.history(convId.id)) {
 			if (m.role !== "assistant") continue;
 			const u = contextUsageOf(m);
@@ -298,8 +356,10 @@ export async function handleConversationsRoute(
 		const last = found.at(-1) ?? null;
 		const rates: number[] = [];
 		for (const u of found) {
-			if (u.input !== null && u.input > 0 && u.cacheRead !== null) {
-				rates.push(u.cacheRead / u.input);
+			const turnInput = windowInputOf(u);
+			const turnCacheRead = windowCacheReadOf(u);
+			if (turnInput !== null && turnInput > 0 && turnCacheRead !== null) {
+				rates.push(turnCacheRead / turnInput);
 			}
 		}
 		let limit: number | null = null;
@@ -309,24 +369,24 @@ export async function handleConversationsRoute(
 		} catch {
 			limit = null;
 		}
-		const input = last?.input ?? null;
+		const input = last === null ? null : windowInputOf(last);
+		const cacheRead = last === null ? null : windowCacheReadOf(last);
 		const body: AppContextView = {
 			model,
 			input,
 			output: last?.output ?? null,
-			cacheRead: last?.cacheRead ?? null,
+			cacheRead,
 			cacheWrite: last?.cacheWrite ?? null,
 			cacheHitRate:
-				last !== null && last.input !== null && last.input > 0 && last.cacheRead !== null
-					? last.cacheRead / last.input
-					: null,
+				input !== null && input > 0 && cacheRead !== null ? cacheRead / input : null,
 			avgCacheHitRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
 			limit,
 			pct:
 				input !== null && limit !== null && limit > 0
 					? Math.round((input / limit) * 1000) / 10
 					: null,
-			turns: found.filter((u) => u.input !== null).length,
+			turns: found.filter((u) => windowInputOf(u) !== null).length,
+			segments: segmentsOf(last?.promptChars ?? null, input),
 		};
 		log.debug("app context served", {
 			conversation: convId.id,

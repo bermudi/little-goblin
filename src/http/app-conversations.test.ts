@@ -563,6 +563,8 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			cacheHitRate: null,
 			avgCacheHitRate: null,
 		});
+		// The turn ran the real stream path, so the itemization rode along.
+		expect((one as { segments: unknown }).segments).not.toBeNull();
 		expect(
 			(
 				await call("/api/app/conversations/ctx-01/context", {
@@ -572,6 +574,75 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 				})
 			).status,
 		).toBe(405);
+	} finally {
+		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
+test("context prefers the final step's input and itemizes the window", async () => {
+	const { http, call, store } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ctx-02" }),
+		});
+		// A turn's metadata as stream.ts now writes it: `input` is the
+		// whole tool loop's billed sum, `lastInput` the final step — the
+		// gauge must read the latter and scale the segments to it.
+		store.append("app/ctx-02", [
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [{ type: "text", text: "done" }],
+				metadata: {
+					model: "zai/m",
+					finishReason: "stop",
+					durationMs: 5,
+					forcedCompletion: null,
+					usage: {
+						input: 900,
+						output: 10,
+						cacheRead: 800,
+						cacheWrite: null,
+						lastInput: 300,
+						lastCacheRead: 280,
+					},
+					promptChars: {
+						identity: 100,
+						environment: 50,
+						skills: 50,
+						toolDefs: 50,
+						history: 250,
+						toolResults: 100,
+					},
+				},
+			},
+		]);
+		const body = (await (await call("/api/app/conversations/ctx-02/context")).json()) as {
+			input: number | null;
+			cacheRead: number | null;
+			cacheHitRate: number | null;
+			pct: number | null;
+			segments: { key: string; tokens: number }[] | null;
+		};
+		// 300, not the 900 billed sum.
+		expect(body.input).toBe(300);
+		expect(body.cacheRead).toBe(280);
+		expect(body.cacheHitRate).toBeCloseTo(280 / 300, 5);
+		expect(body.pct).toBe(30);
+		// 500 chars scale to 300 tokens; toolResults is a subset, scaled
+		// against the same denominator so it never double-counts.
+		expect(body.segments).toEqual([
+			{ key: "identity", tokens: 60 },
+			{ key: "environment", tokens: 30 },
+			{ key: "skills", tokens: 30 },
+			{ key: "toolDefs", tokens: 30 },
+			{ key: "history", tokens: 150 },
+			{ key: "toolResults", tokens: 60 },
+		]);
 	} finally {
 		_resetModelsDevForTest();
 		http.stop();

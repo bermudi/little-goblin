@@ -153,11 +153,23 @@ export interface TurnMetadata {
 	durationMs: number;
 	forcedCompletion: "repeat" | "watchdog" | "context" | null;
 	usage: {
+		/** Whole turn's billed prompt, summed across the tool loop's steps. */
 		input: number | null;
 		output: number | null;
 		cacheRead: number | null;
 		cacheWrite: number | null;
+		/** Final step's prompt — the current window occupancy. */
+		lastInput: number | null;
+		lastCacheRead: number | null;
 	};
+	/** Itemization of the final step's prompt in serialized characters
+	 *  (src/turn/itemize.ts keys); absent on pre-itemization turns. */
+	promptChars?: Record<string, number>;
+}
+
+export interface AppContextSegment {
+	key: string;
+	tokens: number;
 }
 
 export interface AppContextView {
@@ -171,6 +183,9 @@ export interface AppContextView {
 	limit: number | null;
 	pct: number | null;
 	turns: number;
+	/** Last turn's window itemization, scaled to tokens. Null on turns
+	 *  without itemization metadata. */
+	segments: AppContextSegment[] | null;
 }
 
 export interface AppRunCall {

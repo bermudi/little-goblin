@@ -358,6 +358,50 @@ describe("driveStream", () => {
 		expect(healthy.chunks.length).toBeGreaterThan(0);
 	});
 
+	test("turn metadata separates the billed sum from the final step's window", async () => {
+		const probe = probeTool();
+		const r = rig([
+			toolCallStep("c1", 10),
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "done" },
+				{ type: "text-end", id: "t1" },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 50, noCache: undefined, cacheRead: 40, cacheWrite: undefined },
+						outputTokens: { total: 5, text: undefined, reasoning: undefined },
+					},
+				},
+			],
+		]);
+		r.deps.tools = { probe };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const md = outcome.responseMessage?.metadata as {
+			usage: {
+				input: number | null;
+				lastInput: number | null;
+				cacheRead: number | null;
+				lastCacheRead: number | null;
+			};
+			promptChars: Record<string, number> | undefined;
+		};
+		// input bills every re-sent prompt across the loop; lastInput is
+		// the final step — the window occupancy the gauge reads.
+		expect(md.usage.input).toBe(60);
+		expect(md.usage.lastInput).toBe(50);
+		expect(md.usage.lastCacheRead).toBe(40);
+		// The itemization measured the final step's outbound prompt.
+		expect(md.promptChars).toBeDefined();
+		expect(md.promptChars!["history"]).toBeGreaterThan(0);
+		expect(md.promptChars!["toolDefs"]).toBeGreaterThan(0);
+		expect(md.promptChars!["identity"]).toBe("test".length);
+	});
+
 	test("a submit landing mid-turn folds into the next request, joins, and is replayed", async () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 1), textReply("folded answer")]);

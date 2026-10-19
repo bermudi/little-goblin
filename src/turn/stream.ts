@@ -23,6 +23,7 @@ import {
 import { log } from "../log.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
+import { measurePrompt, type PromptSegments } from "./itemize.ts";
 import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
@@ -257,11 +258,19 @@ export async function driveStream<M extends WireMember>(
 		deps.step.label ??
 		(typeof deps.step.model === "string" ? deps.step.model : deps.step.model.modelId);
 	let lastStepInputTokens: number | null = null;
+	let lastStepCacheRead: number | null = null;
+	let lastPromptChars: PromptSegments | null = null;
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
+	// The finish metadata part is written after the final step, so the
+	// last prepareStep capture is that step's outbound prompt — the
+	// window the gauge itemizes.
+	const notePrompt = (messages: readonly ModelMessage[]) => {
+		lastPromptChars = measurePrompt(deps.step.system, deps.tools, messages);
+	};
 	const result = streamText({
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,
@@ -298,12 +307,13 @@ export async function driveStream<M extends WireMember>(
 			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
 			const steered = deps.claimSteers();
 			if (steered.length === 0) {
-				return forced || warnMsgs.length > 0
-					? {
-							messages: [...stepMessages, ...warnMsgs, ...nudge],
-							...(forced ? { toolChoice: "none" as const } : {}),
-						}
-					: undefined;
+				if (forced || warnMsgs.length > 0) {
+					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
+					notePrompt(outbound);
+					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
+				}
+				notePrompt(stepMessages);
+				return undefined;
 			}
 			if (!deps.holdsAuthority()) {
 				deps.unrequeueSteers(steered);
@@ -340,12 +350,13 @@ export async function driveStream<M extends WireMember>(
 				}
 			}
 			if (injected.length === 0) {
-				return forced || warnMsgs.length > 0
-					? {
-							messages: [...stepMessages, ...warnMsgs, ...nudge],
-							...(forced ? { toolChoice: "none" as const } : {}),
-						}
-					: undefined;
+				if (forced || warnMsgs.length > 0) {
+					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
+					notePrompt(outbound);
+					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
+				}
+				notePrompt(stepMessages);
+				return undefined;
 			}
 			for (const e of deps.modelEntries()) {
 				if (e.seq > steerMark && claimedIds.has(e.message.id)) steerMark = e.seq;
@@ -355,8 +366,10 @@ export async function driveStream<M extends WireMember>(
 				submits: admittedCount,
 				step: stepNumber,
 			});
+			const outbound = [...stepMessages, ...warnMsgs, ...injected, ...nudge];
+			notePrompt(outbound);
 			return {
-				messages: [...stepMessages, ...warnMsgs, ...injected, ...nudge],
+				messages: outbound,
 				...(forced ? { toolChoice: "none" as const } : {}),
 			};
 		},
@@ -398,6 +411,7 @@ export async function driveStream<M extends WireMember>(
 				});
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
+			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
 			partialMessages.push(...step.response.messages);
 			deps.journal?.checkpoint(deps.runId, {
 				loopState: state.snapshot(),
@@ -459,7 +473,16 @@ export async function driveStream<M extends WireMember>(
 					output: part.totalUsage.outputTokens ?? null,
 					cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
 					cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
+					// input above sums every step's billed prompt across the
+					// tool loop; the window gauge reads the final step — the
+					// current occupancy, the number compaction math uses.
+					lastInput: lastStepInputTokens,
+					lastCacheRead: lastStepCacheRead,
 				},
+				// Itemization of the final step's prompt, in serialized
+				// characters (turn/itemize.ts); scaled to tokens by /context.
+				// Absent when no step ran.
+				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
 			};
 		},
 		onError: (error) =>

@@ -135,6 +135,15 @@ turn-structure change.
   conversion; no clock, no per-turn variability. The sanctioned one-time
   rewrites (DESIGN.md → Cache stability) remain the complete list of
   legal hash moves.
+- **Turn metadata separates billing from the window** (2026-10-19).
+  `usage.input` is the whole loop's billed prompt sum — every step
+  re-sent the full prompt; `usage.lastInput`/`lastCacheRead` are the
+  final step's, the actual window occupancy (compaction math reads the
+  same number). `promptChars` rides alongside: the final step's outbound
+  prompt measured in serialized characters, split by `turn/itemize.ts`
+  on the code-owned headings `prompt.ts` exports — the /context gauge
+  scales those chars to `lastInput`, so its per-segment figures are
+  estimates, exact in aggregate only.
 - **Admission semantics.** Snapshot-at-admission (a `/compact` landing
   mid-turn can't rewrite what the turn sees); recall is admission-time
   and never re-runs for steered input; the reply's anchor, retention

@@ -20,6 +20,7 @@ const view = (patch: Partial<AppContextView>): AppContextView => ({
 	limit: null,
 	pct: null,
 	turns: 0,
+	segments: null,
 	...patch,
 });
 
@@ -186,6 +187,61 @@ describe("ContextGauge", () => {
 		// The numbers are the last turn's usage — a fold moves the next
 		// turn, not this readout.
 		expect(container.querySelector(".ctx-btn")?.textContent).toBe("5k/10k · 50%");
+	});
+
+	test("the popover itemizes the window — strip drops the tool subset, rows keep it", async () => {
+		const ctxA = view({
+			input: 300,
+			limit: 1000,
+			pct: 30,
+			turns: 1,
+			segments: [
+				{ key: "identity", tokens: 60 },
+				{ key: "environment", tokens: 30 },
+				{ key: "toolDefs", tokens: 30 },
+				{ key: "history", tokens: 150 },
+				{ key: "toolResults", tokens: 60 },
+			],
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/aaa/context")
+				return Promise.resolve(
+					new Response(JSON.stringify(ctxA), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+				);
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		act(() => {
+			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
+		});
+		const rows = [...container.querySelectorAll(".ctx-seg-rows dt")].map((el) => el.textContent);
+		expect(rows).toEqual([
+			"Identity (SOUL.md)",
+			"Environment",
+			"Tool definitions",
+			"History",
+			"· tool calls & results",
+		]);
+		// The strip's widths exclude toolResults (a subset of history).
+		const bars = [...container.querySelectorAll(".ctx-segbar span")] as HTMLElement[];
+		expect(bars).toHaveLength(4);
+		const widths = bars.map((el) => Number.parseFloat(el.style.width));
+		// segTotal = 270; each width within a rounding whisker of its share.
+		expect(widths[0]!).toBeCloseTo((60 / 270) * 100, 5);
+		expect(widths[3]!).toBeCloseTo((150 / 270) * 100, 5);
+		// No segments → no block at all, not an empty shell.
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={false} />);
+		});
+		expect(container.querySelector(".ctx-segs")).toBeNull();
 	});
 
 	test("a late read for the previous conversation is dropped on switch", async () => {

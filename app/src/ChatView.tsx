@@ -396,6 +396,8 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 			output: num(usage.output),
 			cacheRead: num(usage.cacheRead),
 			cacheWrite: num(usage.cacheWrite),
+			lastInput: num(usage.lastInput),
+			lastCacheRead: num(usage.lastCacheRead),
 		},
 	};
 }
@@ -420,7 +422,11 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	if (meta.forcedCompletion === "watchdog") bits.push("loop watchdog — answer forced");
 	if (meta.forcedCompletion === "context") bits.push("context nearly full — answer forced");
 	bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
-	const { input, output, cacheRead } = meta.usage;
+	// The window number is the final step's prompt — not the billed sum
+	// across the tool loop's re-sent prompts; the gauge and this line agree.
+	const input = meta.usage.lastInput ?? meta.usage.input;
+	const cacheRead = meta.usage.lastCacheRead ?? meta.usage.cacheRead;
+	const { output } = meta.usage;
 	if (input !== null || output !== null) {
 		let tok = `${input === null ? "?" : kfmt(input)}→${output === null ? "?" : kfmt(output)} tok`;
 		if (cacheRead !== null && cacheRead > 0) tok += ` (${kfmt(cacheRead)} cached)`;
@@ -777,6 +783,19 @@ export function contextCount(n: number): string {
 
 const contextRate = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
 
+// Itemization row labels — keys are the server's itemize.ts segments.
+const SEGMENT_LABELS: Record<string, string> = {
+	identity: "Identity (SOUL.md)",
+	environment: "Environment",
+	project: "Project",
+	agentsMd: "AGENTS.md",
+	userMd: "USER.md",
+	skills: "Skills",
+	toolDefs: "Tool definitions",
+	history: "History",
+	toolResults: "· tool calls & results",
+};
+
 // The gauge's one-line label for a context view. Null input reads as
 // "no turns yet" on a fresh conversation, "ctx ?" when turns exist but
 // the provider reported no usable counts.
@@ -889,6 +908,12 @@ export function ContextGauge({
 	// the label carries it on wide screens, the reddened ring on narrow.
 	// The click becomes the retry, with the reason on the tooltip.
 	const failedRead = failed && ctx === null;
+	// The window itemization — a stacked strip plus receipt rows. The
+	// tool-share row is a subset of history, so it stays out of the
+	// strip's widths.
+	const segs = ctx?.segments ?? null;
+	const segBars = segs?.filter((s) => s.key !== "toolResults") ?? [];
+	const segTotal = segBars.reduce((n, s) => n + s.tokens, 0);
 	return (
 		<span className="ctx-gauge" ref={gaugeRef}>
 			<button
@@ -958,6 +983,35 @@ export function ContextGauge({
 					>
 						<span style={{ width: `${barPct}%` }} />
 					</div>
+					{segs !== null && segBars.length > 0 && (
+						<div className="ctx-segs">
+							<div className="ctx-segbar" aria-hidden="true">
+								{segBars.map((s) => (
+									<span
+										key={s.key}
+										className={`seg-${s.key}`}
+										style={{
+											width: `${segTotal > 0 ? (s.tokens / segTotal) * 100 : 0}%`,
+										}}
+									/>
+								))}
+							</div>
+							<dl className="ctx-rows ctx-seg-rows">
+								{segs.map((s) => (
+									<div key={s.key} className={s.key === "toolResults" ? "sub" : undefined}>
+										<dt>{SEGMENT_LABELS[s.key] ?? s.key}</dt>
+										<dd className="mono">
+											{contextCount(s.tokens)} tok
+											{s.key !== "toolResults" && segTotal > 0
+												? ` · ${Math.round((s.tokens / segTotal) * 100)}%`
+												: ""}
+										</dd>
+									</div>
+								))}
+							</dl>
+							<p className="empty">estimated from serialized characters</p>
+						</div>
+					)}
 					<dl className="ctx-rows">
 						<div>
 							<dt>Input</dt>

@@ -38,9 +38,16 @@ export interface Program {
 	mailHistoryId: string | null;
 	/** Monotonic generation of filter/re-enable baseline invalidations. */
 	mailRevision: number;
-	/** Pinned Telegram address — replies land where the program was born. */
+	/** Pinned Telegram address — replies land where the program was
+	 *  born. 0 when the destination is a project responsibility
+	 *  instead: Telegram chat ids are never 0, and every destination
+	 *  read branches on responsibilityId first. */
 	chatId: number;
 	threadId: number | null;
+	/** Destination union's other arm — the project responsibility this
+	 *  program checks in on. Exactly one of a real chat_id or a
+	 *  responsibility_id is set; create validates it. */
+	responsibilityId: string | null;
 	enabled: boolean;
 	createdAt: string;
 	lastRun: string | null;
@@ -71,7 +78,11 @@ export interface CreateProgram {
 	maxLatenessMinutes?: number | null;
 	hookHash?: string | null;
 	mailFilter?: string | null;
-	address: ProgramAddress;
+	/** Exactly one destination: a Telegram address OR a project
+	 *  responsibility. The service binds responsibility programs
+	 *  itself — the tool's Telegram pin is untouched. */
+	address?: ProgramAddress | undefined;
+	responsibilityId?: string | undefined;
 }
 
 // Patches are partial; cron (when present) re-validates. undefined
@@ -280,6 +291,7 @@ const programSchema = z.object({
 	mail_revision: z.number().int().nonnegative(),
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
+	responsibility_id: z.string().nullable().default(null),
 	enabled: z.number(),
 	created_at: z.string(),
 	last_run: z.string().nullable(),
@@ -323,6 +335,7 @@ function rowToProgram(row: unknown): Program {
 		mailRevision: parsed.mail_revision,
 		chatId: parsed.chat_id,
 		threadId: parsed.thread_id,
+		responsibilityId: parsed.responsibility_id,
 		enabled: parsed.enabled === 1,
 		createdAt: parsed.created_at,
 		lastRun: parsed.last_run,
@@ -380,6 +393,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		if (!progCols.has("max_lateness_minutes")) {
 			db.exec("ALTER TABLE programs ADD COLUMN max_lateness_minutes INTEGER");
 		}
+		if (!progCols.has("responsibility_id")) {
+			db.exec("ALTER TABLE programs ADD COLUMN responsibility_id TEXT");
+		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 			.get();
@@ -404,8 +420,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, responsibility_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
 		"UPDATE programs SET name = ?, charter = ?, cron = ?, max_lateness_minutes = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
@@ -498,11 +514,20 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				hookHash = null,
 				mailFilter = null,
 				address,
+				responsibilityId,
 			},
 			now = new Date(),
 		) {
 			requireTrigger(cron, hookHash, mailFilter);
 			validateLateness(cron, maxLatenessMinutes);
+			// The destination union: exactly one arm — a Telegram address
+			// or a project responsibility. chat_id 0 is the responsibility
+			// marker; a real Telegram chat id is never 0.
+			if ((address !== undefined) === (responsibilityId !== undefined)) {
+				throw new ProgramRuleError(
+					"a program needs exactly one destination: a chat address or a responsibility",
+				);
+			}
 			const next = cron === null ? null : nextFire(cron, now).toISOString();
 			const res = qInsert.run(
 				name,
@@ -511,8 +536,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				maxLatenessMinutes,
 				hookHash,
 				mailFilter,
-				address.chatId,
-				address.threadId,
+				address?.chatId ?? 0,
+				address?.threadId ?? null,
+				responsibilityId ?? null,
 				now.toISOString(),
 				next,
 			);

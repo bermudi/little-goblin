@@ -17,6 +17,9 @@ import type { ConversationStore } from "./conversation.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 import { openPrograms } from "./programs.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
+import { openProjects } from "./projects.ts";
+import { openResponsibilities } from "./responsibilities.ts";
+import type { DevelopmentInput } from "./wake-store.ts";
 import type { MailHit } from "./mail.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import type { Config } from "./config.ts";
@@ -197,6 +200,86 @@ describe("scoredMailEvent", () => {
 	test("a gate outage fails open with the unavailable line — the fire proceeds", async () => {
 		const out = await scoredMailEvent(gate(new System1Error("timeout")), "from: a");
 		expect(out).toBe("from: a\n[injection check unavailable]");
+	});
+});
+
+describe("responsibility-destination programs", () => {
+	test("fire records a durable occurrence development — never the Telegram path", () => {
+		const h = harness();
+		const projects = openProjects(h.store);
+		const project = projects.create({ name: "rig" });
+		const conv = h.store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		const resps = openResponsibilities(h.store.db);
+		const { responsibility } = resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding: {
+				outcome: "land the fix",
+				situation: "mid-task",
+				nextAction: "check diff",
+				checkpoints: [],
+				completionEvidence: ["ci green"],
+			},
+		});
+		resps.setArmed(responsibility.responsibilityId, true, null);
+		const program = h.deps.programs.create({
+			name: `followup:${responsibility.responsibilityId}`,
+			charter: "check in",
+			cron: "* * * * *",
+			responsibilityId: responsibility.responsibilityId,
+		});
+		expect(program.chatId).toBe(0);
+		const recorded: DevelopmentInput[] = [];
+		const deps: SchedulerDeps = {
+			...h.deps,
+			responsibilities: resps,
+			recordDevelopment: (i) => recorded.push(i),
+		};
+		fireScheduled(deps, program, new Date(program.nextRun!));
+		expect(recorded).toHaveLength(1);
+		expect(recorded[0]!.conversationId).toBe(conv.id);
+		expect(recorded[0]!.responsibilityId).toBe(responsibility.responsibilityId);
+		expect(recorded[0]!.kind).toBe("scheduled-checkin");
+		expect(recorded[0]!.sourceKey).toContain(`program:${program.id}:occ:`);
+		expect(h.submitted).toHaveLength(0);
+		// The cursor advanced past the fired occurrence.
+		expect(h.deps.programs.get(program.id)!.nextRun).not.toBe(program.nextRun);
+		// Paused consumes the next occurrence without a record.
+		resps.setStatus(responsibility.responsibilityId, "paused");
+		const next = h.deps.programs.get(program.id)!;
+		fireScheduled(deps, next, new Date(next.nextRun!));
+		expect(recorded).toHaveLength(1);
+		h.store.close();
+	});
+
+	test("create validates the destination union", () => {
+		const h = harness();
+		expect(() =>
+			h.deps.programs.create({ name: "x", charter: "c", cron: "* * * * *" }),
+		).toThrow(/exactly one destination/);
+		expect(() =>
+			h.deps.programs.create({
+				name: "x",
+				charter: "c",
+				cron: "* * * * *",
+				address: { chatId: 1, threadId: null },
+				responsibilityId: "r1",
+			}),
+		).toThrow(/exactly one destination/);
+		// And a Telegram program still carries a null responsibility arm.
+		const tg = h.deps.programs.create({
+			name: "tg",
+			charter: "c",
+			cron: "* * * * *",
+			address: { chatId: 1, threadId: null },
+		});
+		expect(tg.responsibilityId).toBeNull();
+		expect(tg.chatId).toBe(1);
+		h.store.close();
 	});
 });
 

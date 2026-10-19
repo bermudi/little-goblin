@@ -17,6 +17,8 @@ import type { MailHit } from "./mail.ts";
 import { formatAddress } from "./conversation.ts";
 import { programFireTag } from "./tags.ts";
 import { wake, type WakeDeps } from "./wake.ts";
+import type { ResponsibilityStore } from "./responsibilities.ts";
+import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 
@@ -27,6 +29,13 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  (the event fires unscored); a gate outage fails open with the
 	 *  unavailable line, never a held fire. */
 	checkMail?: Pick<System1Client, "decide">;
+	/** The responsibility arm of the program destination union — a
+	 *  responsibility-destination program never reaches the Telegram
+	 *  wake path; its occurrence lands here as a durable development
+	 *  on the responsibility's coordination conversation. Absent = a
+	 *  loud skip, never a misrouted fire. */
+	responsibilities?: Pick<ResponsibilityStore, "get">;
+	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
 }
 
 export interface Scheduler {
@@ -429,7 +438,7 @@ export function formatMailEvent(hits: readonly MailHit[]): string {
 // fire hands in a sink decorator for the retry ladder; webhook and
 // mail pass none and behave exactly as before.
 function fireProgram(
-	deps: WakeDeps,
+	deps: SchedulerDeps,
 	program: Program,
 	trigger: ProgramTrigger,
 	event: string | undefined,
@@ -437,6 +446,12 @@ function fireProgram(
 	scheduledFor?: Date,
 	decorateSink?: (base: TurnSink) => TurnSink,
 ): boolean {
+	// The destination union's project arm: a responsibility check-in is
+	// a durable development on the coordination conversation, routed
+	// through the wake dispatcher — never a Telegram submit.
+	if (program.responsibilityId !== null) {
+		return fireResponsibility(deps, program, now, scheduledFor);
+	}
 	const lateMs = scheduledFor === undefined ? 0 : now.getTime() - scheduledFor.getTime();
 	log.info("program fired", {
 		program: program.id,
@@ -477,6 +492,70 @@ function fireProgram(
 		});
 	}
 	return landed;
+}
+
+// A responsibility-destination fire records one occurrence-keyed
+// development — the durable enqueue the dispatcher owns from here.
+// The occurrence ISO is the dedupe key: a retried occurrence coalesces
+// onto its original event; the cursor advance in markRan comes after
+// this record, and a crash between them re-fires the same key to the
+// same event — enqueue-before-cursor holds by dedupe. Deterministic
+// skips: the responsibility gone or in a non-active state consumes
+// the occurrence without a record. A record throw propagates to the
+// scan's error line — loud, never a silent miss.
+function fireResponsibility(
+	deps: SchedulerDeps,
+	program: Program,
+	now: Date,
+	scheduledFor?: Date,
+): boolean {
+	const resps = deps.responsibilities;
+	const record = deps.recordDevelopment;
+	if (resps === undefined || record === undefined) {
+		log.error("responsibility program fired with no responsibility seam — skipped", undefined, {
+			program: program.id,
+			name: program.name,
+		});
+		return true;
+	}
+	const resp = resps.get(program.responsibilityId!);
+	if (resp === null) {
+		log.warn("responsibility program's responsibility is gone — occurrence consumed", {
+			program: program.id,
+			name: program.name,
+			responsibilityId: program.responsibilityId,
+		});
+		return true;
+	}
+	if (resp.status !== "active") {
+		log.info("responsibility check-in skipped", {
+			program: program.id,
+			responsibility: resp.responsibilityId,
+			status: resp.status,
+		});
+		return true;
+	}
+	const occurrence = (scheduledFor ?? now).toISOString();
+	record({
+		sourceKey: `program:${program.id}:occ:${occurrence}`,
+		conversationId: resp.coordinationConversationId,
+		kind: "scheduled-checkin",
+		text: `scheduled check-in — ${resp.outcome}`,
+		facts: {
+			programId: program.id,
+			name: program.name,
+			occurrence,
+			charter: program.charter,
+		},
+		origin: "scheduler",
+		responsibilityId: resp.responsibilityId,
+	});
+	log.info("responsibility check-in fired", {
+		program: program.id,
+		responsibility: resp.responsibilityId,
+		occurrence,
+	});
+	return true;
 }
 
 // The only seam where fireProgram can touch the delivery sink without

@@ -17,6 +17,7 @@ import {
 	type Understanding,
 } from "./responsibilities.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
+import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 
@@ -25,6 +26,7 @@ setLogFile(null);
 interface Rig {
 	store: ConversationStore;
 	resps: ResponsibilityStore;
+	programs: ProgramsStore;
 	svc: ReturnType<typeof makeResponsibilityService>;
 	projectId: string;
 	convId: string;
@@ -44,9 +46,11 @@ function rig(): Rig {
 	store.bindProject(conv.id, project.id);
 	const resps = openResponsibilities(store.db);
 	const wakes = openWakeStore(store.db);
+	const programs = openPrograms(join(home, "state", "programs.sqlite"));
 	const r: Rig = {
 		store,
 		resps,
+		programs,
 		projectId: project.id,
 		convId: conv.id,
 		pumps: 0,
@@ -54,6 +58,7 @@ function rig(): Rig {
 			db: store.db,
 			resps,
 			wakes,
+			programs,
 			pump: () => {
 				r.pumps += 1;
 			},
@@ -93,8 +98,15 @@ describe("responsibility service", () => {
 			attachments: [{ target: target(), baseline: { status: "working" } }],
 		});
 		expect(created).toBe(true);
-		expect(responsibility.armed).toBe(false);
-		expect(responsibility.notArmedReason).toBe("follow-up program not yet linked");
+		// Programs wired → the follow-up linked at accept → armed.
+		expect(responsibility.armed).toBe(true);
+		expect(responsibility.notArmedReason).toBeNull();
+		expect(responsibility.followupProgramId).not.toBeNull();
+		const followup = r.programs.get(Number(responsibility.followupProgramId));
+		expect(followup).not.toBeNull();
+		expect(followup!.responsibilityId).toBe(responsibility.responsibilityId);
+		expect(followup!.chatId).toBe(0);
+		expect(followup!.cron).not.toBeNull();
 		const atts = r.resps.attachmentsFor(responsibility.responsibilityId);
 		expect(atts).toHaveLength(1);
 		expect(atts[0]!.target.agentSession).toBe("sess-abc");
@@ -123,6 +135,29 @@ describe("responsibility service", () => {
 		expect(
 			(r.store.db.query("SELECT COUNT(*) AS n FROM work_events").get() as { n: number }).n,
 		).toBe(1);
+		r.store.close();
+	});
+
+	test("ensureFollowup is create-once and relinks a dangling program id", () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "handover:m1",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		});
+		const id = responsibility.responsibilityId;
+		const first = r.svc.ensureFollowup(id);
+		const again = r.svc.ensureFollowup(id);
+		expect(again!.id).toBe(first!.id);
+		expect(r.programs.list().filter((p) => p.responsibilityId === id)).toHaveLength(1);
+		// A deleted link recreates under a new id and stays armed.
+		r.programs.remove(first!.id);
+		const relinked = r.svc.ensureFollowup(id);
+		expect(relinked!.id).not.toBe(first!.id);
+		expect(r.resps.get(id)!.followupProgramId).toBe(String(relinked!.id));
+		expect(r.resps.get(id)!.armed).toBe(true);
 		r.store.close();
 	});
 

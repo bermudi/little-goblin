@@ -22,6 +22,7 @@ import type {
 	Understanding,
 } from "./responsibilities.ts";
 import type { WakeStore } from "./wake-store.ts";
+import type { Program, ProgramsStore } from "./programs.ts";
 
 export interface ServiceDeps {
 	db: Database;
@@ -29,6 +30,9 @@ export interface ServiceDeps {
 	wakes: WakeStore;
 	/** Called after every commit so the durable wake reaches its lane. */
 	pump(): void;
+	/** Programs owns the check-in's time; the service owns its purpose.
+	 *  Absent = the responsibility stays honestly unarmed. */
+	programs?: Pick<ProgramsStore, "create" | "get"> | undefined;
 }
 
 export interface HandoverInput {
@@ -48,6 +52,10 @@ export interface HandoverInput {
 
 export interface ResponsibilityService {
 	accept(input: HandoverInput): { responsibility: Responsibility; created: boolean };
+	/** One linked follow-up Program per responsibility — create-once,
+	 *  relink if the row vanished. Returns null while programs is
+	 *  unwired (the responsibility stays unarmed with the reason). */
+	ensureFollowup(responsibilityId: string): Program | null;
 	/** Dispatch a prepared operation. The send edge resolves to the
 	 *  wire's post-send record; a refusal means nothing was sent. */
 	dispatch(
@@ -56,10 +64,56 @@ export interface ResponsibilityService {
 	): Promise<{ sent: true } | { refused: SendRefusal | "identity-unenforceable" }>;
 }
 
+// The follow-up's charter: time is the cron's job; this is the purpose
+// the occurrence replays into the coordination lane each fire.
+const FOLLOWUP_CRON = "*/15 * * * *";
+function followupCharter(resp: Responsibility): string {
+	return (
+		`Scheduled check-in on a handed-over responsibility.\n` +
+		`Outcome: ${resp.outcome}\n` +
+		`Review the attached agents' observed state and pending developments; ` +
+		`if the outcome is evidenced, report and complete; if blocked, surface ` +
+		`the blocker; otherwise verify the next action is progressing.`
+	);
+}
+
 export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityService {
 	const { db, resps, wakes, pump } = deps;
 
-	return {
+	const svc: ResponsibilityService = {
+		ensureFollowup(responsibilityId) {
+			const resp = resps.get(responsibilityId);
+			if (resp === null) return null;
+			const programs = deps.programs;
+			if (programs === undefined) {
+				resps.setArmed(responsibilityId, false, "programs store unavailable");
+				return null;
+			}
+			// Idempotent: a linked row that still exists is reused; a
+			// dangling link (program deleted) recreates under a new id.
+			if (resp.followupProgramId !== null) {
+				const existing = programs.get(Number(resp.followupProgramId));
+				if (existing !== null) {
+					resps.setArmed(responsibilityId, true, null);
+					return existing;
+				}
+			}
+			const program = programs.create({
+				name: `followup:${resp.responsibilityId}`,
+				charter: followupCharter(resp),
+				cron: FOLLOWUP_CRON,
+				responsibilityId: resp.responsibilityId,
+			});
+			resps.setFollowup(responsibilityId, String(program.id));
+			resps.setArmed(responsibilityId, true, null);
+			log.info("responsibility follow-up program linked", {
+				responsibility: responsibilityId,
+				program: program.id,
+				cron: FOLLOWUP_CRON,
+			});
+			return program;
+		},
+
 		accept(input) {
 			const understanding = input.understanding;
 			let outcome: { responsibility: Responsibility; created: boolean };
@@ -98,14 +152,15 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						origin: "operator",
 						responsibilityId: responsibility.responsibilityId,
 					});
-					// Observation arms itself from the attachment rows; the
-					// follow-up Program is step 4's link — until then the
-					// responsibility is honestly not fully armed.
+					// Observation arms itself from the attachment rows;
+					// ensureFollowup links the follow-up Program and arms —
+					// or leaves a named reason when it can't.
 					resps.setArmed(
 						responsibility.responsibilityId,
 						false,
 						"follow-up program not yet linked",
 					);
+					svc.ensureFollowup(responsibility.responsibilityId);
 				}
 				outcome = { responsibility, created };
 			})();
@@ -170,4 +225,5 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			}
 		},
 	};
+	return svc;
 }

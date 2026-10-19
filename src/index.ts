@@ -510,6 +510,7 @@ async function boot() {
 		resps: responsibilities,
 		wakes: wakeStore,
 		pump: () => wakeDispatcher!.pump(),
+		programs,
 	});
 	responsibilitySvc = {
 		resps: responsibilities,
@@ -535,6 +536,11 @@ async function boot() {
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
+		// Responsibility-destination programs fire as durable
+		// developments on the coordination conversation — the
+		// dispatcher owns their wake from the record on.
+		responsibilities,
+		recordDevelopment: (input) => wakeDispatcher!.record(input),
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	};

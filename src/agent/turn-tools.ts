@@ -141,7 +141,9 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						}
 					: undefined,
 			// sendPrivate keeps hook URLs out of model context — a DM per
-			// operator, never in history. publicUrl reads live.
+			// operator, never in history. publicUrl reads live. App
+			// project turns get the responsibility-destination arm —
+			// programs bound to this project's handed-over work.
 			program: telegram
 				? {
 						programs,
@@ -150,7 +152,17 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						publicUrl: () => configRef.current.publicUrl,
 						sendPrivate,
 					}
-				: undefined,
+				: conv.projectId !== null && responsibilitySvc !== null
+					? {
+							programs,
+							project: {
+								projectId: conv.projectId,
+								resps: responsibilitySvc.resps,
+							},
+							publicUrl: () => configRef.current.publicUrl,
+							sendPrivate,
+						}
+					: undefined,
 			file: deliverFile ? { deliver: deliverFile } : undefined,
 			memory: memory
 				? {

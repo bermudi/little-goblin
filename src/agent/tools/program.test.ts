@@ -459,3 +459,50 @@ describe("program tool", () => {
 		expect(sent).toEqual([]);
 	});
 });
+
+describe("responsibility destinations", () => {
+	test("create binds a project responsibility; foreign and telegram creates keep their pins", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const resp = { projectId: "p1" };
+		const tool = programTool({
+			programs,
+			project: { projectId: "p1", resps: { get: (id: string) => (id === "r1" ? resp : null) } },
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		const out = (await exec(tool, {
+			action: "create",
+			name: "watch",
+			charter: "check in",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		})) as { program?: { id: number; responsibility_id?: string }; error?: string };
+		expect(out.error).toBeUndefined();
+		const created = programs.get(out.program!.id)!;
+		expect(created.responsibilityId).toBe("r1");
+		expect(created.chatId).toBe(0);
+		// A foreign-project responsibility refuses.
+		const foreign = (await exec(tool, {
+			action: "create",
+			name: "x",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "other",
+		})) as { error?: string };
+		expect(foreign.error).toBe("no such responsibility in this project");
+		// And a hook can't mint without the operator DM.
+		const hooked = (await exec(tool, {
+			action: "create",
+			name: "x",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+			hook: true,
+		})) as { error?: string };
+		expect(hooked.error).toBe(
+			"hook URLs deliver to the operator DM — not available on project turns",
+		);
+	});
+});

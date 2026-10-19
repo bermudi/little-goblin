@@ -33,9 +33,18 @@ function programView(program: Program): Record<string, unknown> {
 
 export interface ProgramToolDeps {
 	programs: ProgramsStore;
-	/** The conversation this tool call runs in — pinned onto new programs. */
-	chatId: number;
-	threadId: number | null;
+	/** The conversation this tool call runs in — pinned onto new
+	 *  programs. Absent on app turns, where `project` carries the
+	 *  responsibility destination instead. */
+	chatId?: number;
+	threadId?: number | null;
+	/** The app/project arm — a create may bind a program to a
+	 *  responsibility in this project (validated to belong to it).
+	 *  Absent = creates pin the Telegram address as before. */
+	project?: {
+		projectId: string;
+		resps: { get(id: string): { projectId: string } | null };
+	};
 	/** Live read — the operator can change publicUrl in the mini app. */
 	publicUrl(): string | undefined;
 	/** Direct delivery to the operators' DMs — bypasses history, so the
@@ -95,6 +104,9 @@ const createSchema = z.object({
 	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
+	/** Project turns only: bind the program to a responsibility's
+	 *  coordination lane instead of a Telegram address. */
+	responsibilityId: z.string().min(1).optional(),
 });
 const updateSchema = z.object({
 	action: z.literal("update"),
@@ -145,6 +157,7 @@ export const programInputSchema = z
 		maxLatenessMinutes: updateSchema.shape.maxLatenessMinutes,
 		hook: createSchema.shape.hook,
 		mailFilter: updateSchema.shape.mailFilter,
+		responsibilityId: createSchema.shape.responsibilityId,
 		id: updateSchema.shape.id.optional(),
 		op: hookSchema.shape.op.optional(),
 	})
@@ -174,6 +187,30 @@ export const programTool = (deps: ProgramToolDeps) =>
 							return { error: (err as Error).message };
 						}
 					}
+					// Destination union at the tool surface: a
+					// responsibility_id binds the project's coordination
+					// lane — validated to belong to this project. The
+					// hook URL rides the operator DM, which doesn't exist
+					// on app turns — refuse minting there.
+					const destination =
+						input.responsibilityId !== undefined
+							? (() => {
+									if (deps.project === undefined) {
+										return { error: "responsibility destinations exist only on project turns" };
+									}
+									const resp = deps.project.resps.get(input.responsibilityId);
+									if (resp === null || resp.projectId !== deps.project.projectId) {
+										return { error: "no such responsibility in this project" };
+									}
+									return { responsibilityId: input.responsibilityId };
+								})()
+							: deps.chatId !== undefined
+								? { address: { chatId: deps.chatId, threadId: deps.threadId ?? null } }
+								: { error: "no destination — Telegram pin and project arm are both absent" };
+					if ("error" in destination) return { error: destination.error };
+					if (input.hook === true && "responsibilityId" in destination) {
+						return { error: "hook URLs deliver to the operator DM — not available on project turns" };
+					}
 					// A requested hook needs its token+URL up front: the row's
 					// trigger invariant counts the hook from creation.
 					const minted = input.hook === true ? mintHook(deps) : null;
@@ -188,7 +225,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 								: {}),
 							...(minted !== null ? { hookHash: hookTokenHash(minted.token) } : {}),
 							...(input.mailFilter !== undefined ? { mailFilter: input.mailFilter } : {}),
-							address: { chatId: deps.chatId, threadId: deps.threadId },
+							...destination,
 						});
 						log.info("program created", {
 							program: program.id,
@@ -197,7 +234,10 @@ export const programTool = (deps: ProgramToolDeps) =>
 							maxLatenessMinutes: program.maxLatenessMinutes,
 							hook: program.hookHash !== null,
 							mail: program.mailFilter !== null,
-							conversation: `${deps.chatId}/${deps.threadId ?? "-"}`,
+							destination:
+								"responsibilityId" in destination
+									? `responsibility:${destination.responsibilityId}`
+									: `${deps.chatId}/${deps.threadId ?? "-"}`,
 						});
 						if (minted !== null) {
 							const err = await sendHookUrl(deps, program, minted.url);

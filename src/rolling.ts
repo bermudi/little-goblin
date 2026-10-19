@@ -1,14 +1,3 @@
-// Rolling DM (design/telegram.md → Rolling DM): the bot DM is a rolling
-// address — dm:<chat>:<n> conversations, one current per chat, and the
-// boundary is a quiet gap the follow-up check arbitrates. Everything a
-// caller needs to route a DM lives here; sending the "— new
-// conversation —" marker stays in src/tg/ (only tg knows grammy).
-//
-// Synchronous triggers (quoted replies, commands, program fires) never
-// pay the check's latency — they roll or join by rule. Only the
-// plain-message path past the gap asks the check, and then raced
-// against a deadline a human can feel.
-
 import type { UIMessage } from "ai";
 import { paths } from "./config.ts";
 import {
@@ -26,19 +15,13 @@ import {
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
 
-// Telegram invariant: private chat ids are positive, group ids
-// negative — chatId > 0 is the whole "is this a private chat" test for
-// call sites that hold a bare chat id (pinned program addresses, inbox
-// lane keys) instead of a message envelope.
+// Telegram: private chat ids are positive, group ids negative.
 export function isRollingChat(chatId: number): boolean {
 	return chatId > 0;
 }
 
-// The intake lane key for a private chat is the rolling address
-// "dm:<chat>" — deliberately the same string the legacy conversation id
-// uses, so inbox rows recorded before the ruling stay valid (the codec
-// formats it as a plain dm address). Returns the chat id for a rolling
-// lane, null for topics and group bare-chats.
+// "dm:<chat>" is deliberately the same string the legacy conversation id
+// uses — inbox rows recorded before the rolling ruling stay valid.
 export function rollingChatId(laneKey: string): number | null {
 	const parsed = parseAddress(laneKey);
 	return parsed !== null && parsed.kind === "dm" && isRollingChat(parsed.chatId)
@@ -67,23 +50,20 @@ export interface RollResult {
 export interface RollDeps {
 	store: ConversationStore;
 	runtime: Pick<Runtime, "busy">;
-	// Live config read — a mini-app save applies on the next message.
+	// Live read — a config save applies on the next message.
 	gapMinutes: () => number;
-	// The shared System1Client, resolved per call (it is built after the
-	// bot in the composition root). undefined = no check available — the
-	// burst joins current.
+	// Resolved per call (the client is built after the bot in the
+	// composition root). undefined = no check available — join current.
 	gate?: () => Pick<System1Client, "decide"> | undefined;
-	// Injectable clock — tests steer the gap without sleeping.
 	now?: () => Date;
-	// Interactive ceiling for the check: the shared System1Client's own 30s
-	// timeout is too long to hold an operator's message. Pass this
-	// budget into the client so primary + backup are aborted within it;
-	// the outer deadline also bounds a gate that ignores the option.
+	// Interactive ceiling: the client's own 30s timeout is too long to
+	// hold an operator's message. Passed into the client so primary +
+	// backup abort within it; the outer deadline bounds a gate that
+	// ignores the option.
 	checkDeadlineMs?: number;
 }
 
-// Fresh-below: the check answers p(follow-up) — under it the burst
-// starts a new subject and the conversation rolls.
+// Below p(follow-up) the burst starts a new subject and rolls.
 export const FRESH_BELOW = 0.3;
 const CHECK_DEADLINE_MS = 3_000;
 const HEAD_CHARS = 2_000;
@@ -101,9 +81,8 @@ const FOLLOW_UP_QUESTIONS: Record<string, System1Question> = {
 	},
 };
 
-// The deadline losing the race is a fallback trigger, not a bug —
-// typed so the catch can tell it from a real failure (fail loud covers
-// everything that isn't a System1Error or this).
+// A fallback trigger, not a bug — typed so the catch can tell it from
+// a real failure.
 class RollDeadlineError extends Error {
 	constructor() {
 		super("follow-up check deadline");
@@ -150,10 +129,7 @@ function elapsedMs(deps: RollDeps, conv: Conversation): number {
 	return now.getTime() - new Date(deps.store.lastActivityAt(conv.id)).getTime();
 }
 
-// Text-only projection for the check's state: text parts joined, an
-// attachment renders as [voice: <transcript>] when it carries one,
-// [photo] for an image, else [file: <name>]. Head-cut — the state
-// carries the shape of the exchange, not a transcript.
+// Head-cut — the state carries the shape of the exchange, not a transcript.
 export function projectRollText(parts: readonly UIMessage["parts"][number][]): string {
 	const out: string[] = [];
 	for (const part of parts) {
@@ -178,10 +154,8 @@ export function projectRollText(parts: readonly UIMessage["parts"][number][]): s
 	return out.join("\n").slice(0, HEAD_CHARS);
 }
 
-// The check's evidence: how long the quiet lasted, the last exchange
-// of the current conversation, and the new burst. The caller only runs
-// the check once an assistant reply exists, so a missing side here is
-// the rare all-assistant or unrenderable edge — it still reads "".
+// A missing side is the rare all-assistant or unrenderable edge — it
+// still reads "".
 function checkState(history: UIMessage[], gapMinutes: number, burstText: string): string {
 	let user = "";
 	let assistant = "";
@@ -207,9 +181,7 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 	});
 }
 
-// Synchronous routing: no check ever runs on these triggers. Quoted
-// replies join, settings commands and fires roll, and every other
-// command just acts on the current conversation.
+// Synchronous triggers never run the check — they roll or join by rule.
 export function routeDm(
 	deps: RollDeps,
 	chatId: number,
@@ -235,10 +207,8 @@ export function routeDm(
 	}
 }
 
-// The intake path: past the gap, the follow-up check decides continue
-// vs roll. Every failure of the check itself fails open into the
-// current conversation (the message still needs an answer); anything
-// that isn't a System1Error or the deadline propagates.
+// Check failures fail open into current (the message still needs an
+// answer); anything that isn't a System1Error or the deadline propagates.
 export async function routeDmMessage(
 	deps: RollDeps,
 	chatId: number,
@@ -254,11 +224,9 @@ export async function routeDmMessage(
 		return { conv: current, rolled: false, decidedBy: "gap" };
 	}
 	const history = deps.store.history(current.id);
-	// The check weighs the burst against the previous exchange — a
-	// conversation the assistant has never answered (a fresh /new
-	// nobody has spoken into, a first burst still awaiting its reply)
-	// has none, so the burst joins without asking. Rolling here would
-	// orphan a fragment behind a second "— new conversation —" marker.
+	// No assistant reply yet — nothing to judge against, so join
+	// without asking. Rolling here would orphan a fragment behind a
+	// second "— new conversation —" marker.
 	if (!history.some((m) => m.role === "assistant")) {
 		return continued(current, "unanswered", gapMinutes);
 	}
@@ -290,15 +258,12 @@ export async function routeDmMessage(
 			kind: err instanceof System1Error ? err.kind : "deadline",
 		});
 		if (!stillRouteable()) {
-			// Re-read the pin; navigation may have moved it after admission
-			// of this check. The caller re-checks anyway, but log/read as
-			// current to avoid carrying a stale conv (audit R2).
+			// Navigation may have moved the pin while the check ran.
 			const pinned = deps.store.currentDm(chatId);
 			return { conv: pinned ?? current, rolled: false, decidedBy: "command" };
 		}
 		// The address can still have rolled while the failed check ran
-		// — same re-read as the resolved path: join the new current
-		// rather than answering the superseded one.
+		// — join the new current rather than answering the superseded one.
 		const pinned = deps.store.currentDm(chatId);
 		if (pinned !== null && pinned.id !== current.id) {
 			return continued(pinned, "gap", gapMinutes);
@@ -328,15 +293,15 @@ export async function routeDmMessage(
 		cost: decision.cost,
 		outcome: fresh ? "fresh" : "continue",
 	});
-	// A fire (or a command, or another burst) can roll the address while
-	// the check ran — join wherever the pin points now, never roll twice.
+	// A fire/command/burst can roll the address while the check ran —
+	// join wherever the pin points now, never roll twice.
 	const pinned = deps.store.currentDm(chatId);
 	if (pinned !== null && pinned.id !== current.id) {
 		return continued(pinned, "gap", gapMinutes, probability);
 	}
 	// The pin didn't move, but the conversation may have gone busy or
-	// absorbed fresh activity while the check ran — a roll now would
-	// strand that exchange on a stale fork.
+	// absorbed fresh activity mid-check — a roll now would strand that
+	// exchange on a stale fork.
 	if (deps.runtime.busy(current.id)) {
 		return {
 			conv: current,

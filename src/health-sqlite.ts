@@ -9,7 +9,7 @@ export const sqliteProbeSchema = z.object({
 	missingExpected: z.array(z.string()).optional(),
 });
 
-// These are diagnostic-revision requirements, not an exact schema fingerprint.
+// Diagnostic-revision requirements, not an exact schema fingerprint.
 // No application store is imported: its boot path creates and migrates tables.
 const required = {
 	conversations: [
@@ -65,10 +65,9 @@ const required = {
 	dm_roll_highwater: ["chat_id", "n"],
 } as const;
 
-// Argv is a fixed vocabulary of identifiers — anything else is not a
-// table name and never becomes SQL. A present-but-invalid list is a
-// caller-contract violation, not an empty expectation: the probe fails
-// rather than reporting a subsystem check that never ran.
+// Argv is a fixed vocabulary of identifiers — anything else never
+// becomes SQL. A present-but-invalid list fails the probe rather than
+// reporting a check that never ran.
 const expectedArgSchema = z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(100);
 
 function inspect(

@@ -1,8 +1,3 @@
-// Boundary tests for the state viewer: the containment wall (a resolved
-// path must stay under its base), the ENOENT-means-empty rule, and the
-// log tail's window/filter/limit mechanics. The zod layer at the router
-// is input hygiene; these tests hold the module alone.
-
 import {
 	chmodSync,
 	mkdirSync,
@@ -71,8 +66,8 @@ describe("listSkills", () => {
 	test("a tree past the file cap is flagged truncated — files and size are a floor", () => {
 		writeRel("skills/fat/SKILL.md", "x");
 		for (let i = 0; i < 210; i++) writeRel(`skills/fat/f${String(i).padStart(3, "0")}.md`, "x");
-		// The skipped bytes live past the cap: every counted file is "x",
-		// the unlisted ones carry the extra payload.
+		// The skipped bytes live past the cap: counted files are "x", the
+		// unlisted ones carry the payload.
 		writeRel("skills/fat/zzz.md", "x".repeat(500));
 		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
 		const fat = res.skills.find((s) => s.name === "fat")!;
@@ -437,8 +432,7 @@ describe("tailLog", () => {
 		]);
 		const res = tailLog(f, { limit: 10 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["before", "after"]);
-		// The view must never silently hide content: a line it could not
-		// parse is a gap the caller has to know about.
+		// An unparseable line is a gap the caller has to know about.
 		expect(res.truncated).toBe(true);
 	});
 
@@ -448,7 +442,7 @@ describe("tailLog", () => {
 			JSON.stringify({ ts: "t0", level: "info", msg: pad }),
 			JSON.stringify({ ts: "t1", level: "info", msg: "kept" }),
 		]);
-		// Window starts inside the first line — its head is outside.
+		// Window starts inside the first line — its head is outside the scan.
 		const res = tailLog(f, { limit: 10, windowBytes: 200 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["kept"]);
 		expect(res.truncated).toBe(true);

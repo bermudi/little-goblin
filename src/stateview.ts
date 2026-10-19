@@ -1,16 +1,10 @@
-// Read-only views over $GOBLIN_HOME state for the operator surface
-// (design/app.md → Operator console): skills, attachments, identity
-// files, and the log tail. The viewer's wall is two layers — the router
-// zod-validates every name it accepts, and the containment check here
-// re-verifies, in realpath space, that a resolved path stays under the
-// directory it was addressed against: lexical traversal and symlink
-// indirection (a linked file or a linked parent directory) both fail
-// the prefix check. The viewer serves real files under the tree, never
+// The viewer's wall is two layers — the router zod-validates every name,
+// and the containment check re-verifies in realpath space: lexical
+// traversal and symlink indirection (a linked file or a linked parent
+// dir) both fail the prefix check. The viewer serves real files, never
 // links — symlinked skill dirs don't list and can't be read; the agent
-// catalog's sanctioned link-following (design/skills.md) is untouched.
-// Nothing here writes; ENOENT degrades to null/[] so a missing
-// directory renders as empty instead of failing the whole view, while
-// every other error propagates.
+// catalog's sanctioned link-following is untouched. ENOENT degrades to
+// null/[]; every other error propagates.
 
 import {
 	closeSync,
@@ -28,7 +22,6 @@ import { join, sep } from "node:path";
 
 // ---------- skills ----------
 
-/** One installed (or proposed) skill: its files, ready to be read. */
 export interface OperatorSkillItem {
 	name: string;
 	/** Files relative to the skill dir, sorted — SKILL.md first. */
@@ -59,9 +52,8 @@ const TEXT_VIEW_CAP = 2 * 1024 * 1024;
 const MAX_SKILL_FILES = 200;
 const MAX_SKILL_DEPTH = 3;
 
-// Returns true when a cap stopped the walk — a dir beyond MAX_SKILL_DEPTH
-// was never opened, so its contents count as skipped whether or not any
-// exist.
+// A dir beyond MAX_SKILL_DEPTH is never opened — its contents count as
+// skipped whether or not any exist.
 function listFilesUnder(dir: string, rel: string, depth: number, out: string[]): boolean {
 	if (out.length >= MAX_SKILL_FILES || depth > MAX_SKILL_DEPTH) return true;
 	let entries: Dirent[];
@@ -95,7 +87,6 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 		const skillDir = join(dir, entry.name);
 		const files: string[] = [];
 		const truncated = listFilesUnder(skillDir, "", 1, files);
-		// SKILL.md leads so a viewer can default to it.
 		files.sort((a, b) => {
 			if (a === "SKILL.md") return -1;
 			if (b === "SKILL.md") return 1;
@@ -106,9 +97,8 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 			try {
 				sizeBytes += statSync(join(skillDir, f)).size;
 			} catch (e) {
-				// A vanished file raced the walk — count what's still
-				// there. Anything else (a locked-down dir, say) is a real
-				// read failure, not an empty catalog.
+				// ENOENT raced the walk; anything else is a real read
+				// failure, not an empty catalog.
 				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			}
 		}
@@ -154,12 +144,7 @@ function contained(base: string, rel: string): string | null {
 	return full;
 }
 
-/**
- * Read one file under `base`, addressing it with a `/`-relative path.
- * Returns null when the file or the base directory is missing; throws
- * when the file exceeds the view cap, so an oversized target surfaces
- * instead of silently truncating.
- */
+// Oversized files throw — surface, never silently truncate.
 export function readStateFile(base: string, rel: string): string | null {
 	const full = contained(base, rel);
 	if (full === null) return null;
@@ -246,10 +231,6 @@ export function listAttachments(dir: string): AttachmentsResponse {
 	return { files };
 }
 
-/**
- * Resolve an attachment name to a servable path, or null when the name
- * is not a plain file directly inside `dir`.
- */
 export function attachmentPath(dir: string, name: string): string | null {
 	// Leading-dot names are persistAttachment's upload temps — never
 	// servable, the same rule the composer read-back enforces.
@@ -265,9 +246,8 @@ export function attachmentPath(dir: string, name: string): string | null {
 	return full;
 }
 
-/** Content-type for serving an attachment — conservative, extension-based.
- * svg is deliberately absent: inert inside an <img>, but a top-level
- * navigation would run SVG scripts in the app origin — it downloads. */
+// svg is deliberately absent: a top-level navigation would run SVG
+// scripts in the app origin — it downloads instead.
 export function attachmentContentType(name: string): string {
 	const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
 	const map: Record<string, string> = {
@@ -292,8 +272,7 @@ export function attachmentContentType(name: string): string {
 	return map[ext] ?? "application/octet-stream";
 }
 
-/** Thrown when an attachment exceeds the serve cap — the route maps it
- * to 413; nothing else catches it. */
+// The route maps it to 413; nothing else catches it.
 export class AttachmentTooLargeError extends Error {}
 
 export interface AttachmentBytes {
@@ -301,9 +280,8 @@ export interface AttachmentBytes {
 	contentType: string;
 }
 
-/** Read one attachment for serving — through attachmentPath's wall, with
- * a hard size cap: serving is a whole-file read, and an unbounded one
- * would let a single request buffer arbitrary bytes into the process. */
+// Serving is a whole-file read — an unbounded one would let a single
+// request buffer arbitrary bytes into the process.
 export function readAttachmentBytes(
 	dir: string,
 	name: string,
@@ -371,13 +349,9 @@ export interface LogTailOptions {
 
 const DEFAULT_LOG_WINDOW = 512 * 1024;
 
-/**
- * The last `limit` matching lines of the JSONL log, oldest first. The
- * scan reads at most `windowBytes` from the end; a first line with no
- * leading newline boundary inside the window is dropped as partial and
- * reported via `truncated`, never guessed at — and a line that fails to
- * parse (a torn write) is likewise dropped content, reported the same way.
- */
+// A first line with no newline boundary inside the window is dropped as
+// partial and reported via `truncated`, never guessed at; a torn write
+// is dropped content, reported the same way.
 export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse {
 	const windowBytes = opts.windowBytes ?? DEFAULT_LOG_WINDOW;
 	let size: number;
@@ -399,20 +373,18 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	} finally {
 		closeSync(fd);
 	}
-	// A short read means the file shrank under stat — the slice is no
-	// longer the true tail, so report truncation rather than guess.
+	// A short read means the file shrank under stat — report truncation
+	// rather than guess.
 	const windowCut = start > 0 || read < len;
 	const rawLines = buf.subarray(0, read).toString("utf8").split("\n");
-	// The window's first slice is mid-line unless the window starts at
-	// byte 0 or happened to cut exactly on the newline.
 	if (windowCut && rawLines.length > 0) rawLines.shift();
 
 	const q = opts.q ?? null;
 	const level = opts.level ?? null;
 	const matching: LogTailItem[] = [];
-	// Parsing comes before the q/level filters: a line that cannot be
-	// read is dropped content wherever it lands, while a filtered-out
-	// record is intentional selection — only the former is truncation.
+	// Parse before the filters: an unreadable line is dropped content
+	// wherever it lands; a filtered-out record is intentional selection —
+	// only the former is truncation.
 	let discarded = 0;
 	for (const line of rawLines) {
 		if (line === "") continue;
@@ -420,8 +392,8 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 		try {
 			parsed = JSON.parse(line);
 		} catch {
-			// A torn write can leave a half line; skip it, it counts as
-			// truncation so the view never silently hides content.
+			// A torn write leaves a half line — it counts as truncation so
+			// the view never silently hides content.
 			discarded++;
 			continue;
 		}

@@ -1,15 +1,13 @@
-// Skill provenance — which conversation generated which skill
-// (design/skills.md → Skill provenance). Immutable source facts in the
-// conversation store's SQLite; liveness (installed / proposed / gone)
-// resolves from the filesystem at read time so the conversational
-// approve/discard dir moves can never desync it.
+// Liveness (installed / proposed / gone) resolves from the filesystem
+// at read time so approve/discard dir moves can never desync it.
+
 import { type Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
-// A skill name per the catalog's own rule (skills.md): 1–64 chars,
-// a-z0-9 and hyphens, no leading/trailing or consecutive hyphen.
+// The catalog's name rule: 1–64 chars, a-z0-9 and hyphens, no
+// leading/trailing or consecutive hyphen.
 export const skillNameSchema = z
 	.string()
 	.regex(
@@ -32,9 +30,9 @@ export interface SkillSourceRow {
 	lastAt: string;
 }
 
-// Live state for one provenance row, resolved against the catalog at
-// read time. A skill can be both proposed and installed? No — approval
-// moves the dir — but a hand-copied duplicate would be; installed wins.
+// Live state for one provenance row, resolved against the catalog. A
+// hand-copied duplicate could be both proposed and installed; installed
+// wins.
 export type SkillLiveState = "installed" | "proposed" | "gone";
 
 export interface SkillSourceItem extends SkillSourceRow {

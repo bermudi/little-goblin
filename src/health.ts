@@ -415,11 +415,10 @@ function authCheck(
 				literals++;
 				continue;
 			}
-			// Shared grammar with the installer: only a single direct
-			// `!pass-keys get` (bare or literal path-prefixed executable) is a
-			// recognized profile reference. The probe itself stays the
-			// canonical `pass-keys status <profile>` on PATH — the
-			// record's executable is never invoked.
+			// Grammar shared with the installer: only a single direct
+			// `!pass-keys get` is a recognized profile reference. The
+			// record's executable is never invoked — the probe runs
+			// `pass-keys status <profile>` on PATH.
 			const parsed = parsePassKeysGet(record.value);
 			if (parsed === null) {
 				general++;
@@ -529,12 +528,10 @@ function capacity(path: string, id: string, scope: string): HealthResult {
 	}
 }
 
-// Subsystem tables the diagnostic revision's boot path creates
-// unconditionally (openStore + the unconditional open* calls + bot
-// start). Feature tables join only while their config block exists —
-// delegations needs `delegation`, memory_outage needs `memory`. Lazy
-// tables (forget_listings, tg_dm_navigation*) are deliberately absent:
-// they appear on first use, not at boot.
+// Feature tables join the expectation only while their config block
+// exists — delegations needs `delegation`, memory_outage needs
+// `memory`. Lazy tables (forget_listings, tg_dm_navigation*) are
+// deliberately absent: they appear on first use, not at boot.
 function expectedTables(config: Config | undefined): string[] {
 	const boot = [
 		"projects",

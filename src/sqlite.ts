@@ -1,8 +1,6 @@
-// Shared SQLite connection policy. Five stores open the one state file
-// (conversation, programs, mail outbox, delegations, sandboxes) as
-// separate connections in a single thread; WAL keeps readers off the
-// writers, so the only lock contention is another *writer* — an
-// operator's sqlite3 session, a checkpoint, a maintenance script.
+// Several stores open the one state file as separate connections in a
+// single thread; WAL keeps readers off writers, so contention is only
+// another writer — an operator's sqlite3 session, a checkpoint.
 
 // How long a write waits for a foreign write lock before SQLITE_BUSY.
 // Without it bun:sqlite's default is zero and the first contended

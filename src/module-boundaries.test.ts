@@ -1,28 +1,11 @@
-// The refactor round's structural rules, executable — so the next split
-// can't silently regress a boundary the way docs alone allowed. Seeded
-// by the sabotage drill's grammy check (d79ace76,
-// origin/arena/47e3f1e6-little-goblin); the three rules below pin this
-// round's rulings:
-//
-//  1. grammy — only src/tg knows it (AGENTS.md guardrail). A type-only
-//     import changes no runtime behavior, and the leak is invisible
-//     until it isn't, so the boundary is checked statically: an import
-//     of grammy outside src/tg is the wall coming down.
-//  2. Pi packages — only src/subagents/ imports pi-durable, pi-ai or
-//     chord (design/subagents.md: "Only src/subagents/ knows Pi Durable
-//     / pi-ai / chord"). Deliberately not pi-codemode: the script tool's
-//     QuickJS VM lives outside the rule.
-//  3. src/http/mod.ts stays runtime-free — the serving layer reaches the
-//     turn machinery only through injected opaque deps (the composition
-//     root's appApi callback, HttpDeps). Naming ../runtime.ts would tie
-//     the server to the harness, so every import form counts.
-//  4. No non-test sibling imports its own directory's mod.ts — mod.ts is
-//     the directory's face for outside consumers; siblings wire through
-//     each other. Value imports only: `import type` is the sanctioned
-//     cycle-breaker (app-sse.ts type-imports ../runtime.ts under the
-//     same principle). The subagents test edges (the testing.ts rig, the
-//     crash test's crash-child.ts, the podman test's kill.driver.ts) are
-//     test-only per design/subagents.md → Files.
+//  1. grammy — only src/tg knows it; checked statically because a
+//     type-only import leaks invisibly.
+//  2. pi-durable/pi-ai/chord — only src/subagents/. Deliberately not
+//     pi-codemode: the script tool's QuickJS VM lives outside the rule.
+//  3. src/http/mod.ts stays runtime-free — naming ../runtime.ts ties the
+//     server to the harness, so every import form counts.
+//  4. No non-test sibling imports its own dir's mod.ts; `import type`
+//     is the sanctioned cycle-breaker.
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,15 +19,11 @@ const RUNTIME_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']\.\.\/runtime\.ts["']/
 const SIBLING_MOD_IMPORT =
 	/(?:\bimport\b|\bexport\b)(?!\s*type\b)[^;]*from\s*["']\.\/mod\.ts["']|\bimport\s*\(\s*["']\.\/mod\.ts["']\s*\)/;
 
-// Production modules only for the grammy scan: src/tg owns grammy, and
-// the test-only edge fakes (testkit/fake-api.ts builds the Api stub) are
-// not production.
+// testkit's fake-api.ts builds the Api stub — not production code.
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 
-// Test-only edges the design docs bless: the shared rigs the module
-// maps own (design/subagents.md → Files, design/app.md → Files) — they
-// build the family's real entry to fake at the edge — and the
-// crash/podman tests' spawned child and driver processes.
+// Test-only edges: shared rigs that build the family's real entry to
+// fake at it, and the crash/podman tests' spawned child/driver processes.
 const SIBLING_EXEMPT = new Set([
 	"http/app-testing.ts",
 	"subagents/crash-child.ts",

@@ -1,13 +1,3 @@
-// Persisted tool-result pruning (DESIGN.md → Cache stability): old large
-// textual tool outputs are swapped in the model-facing view for a stored
-// marker — the events rows are never rewritten, and a committed
-// event_projections row replays byte-identically on every later read and
-// restart, even if its policy is long gone. New batches write only
-// between turns, only under a hand-edited cachePruning profile that pins
-// the route and settings hashes observedModel records, only while the
-// profile is fresh and no telemetry contradicts the presumed expiry
-// window.
-
 import { createHash } from "node:crypto";
 
 import { cacheContractFor, cacheContractFresh } from "./agent/cache-contracts.ts";
@@ -31,10 +21,8 @@ import { pruningRecoveryAddress } from "./pruning-marker.ts";
 
 const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
-// The marker a projection row stores. It keeps a bounded head/tail of the
-// original text plus the history_search address that recovers the full
-// result — deterministic bytes, so a committed row replays identically
-// forever (DESIGN.md → Cache stability).
+// Deterministic bytes — a committed projection row replays identically
+// forever.
 export function pruningReplacement(input: {
 	conversation: string;
 	seq: number;
@@ -71,9 +59,8 @@ export function openCachePruning(deps: CachePruningDeps): {
 	pruneConversation: (convId: string) => { pruned: number; reason?: string } | undefined;
 } {
 	const now = deps.now ?? Date.now;
-	// Suspension notices dedupe per (kind, conversation, route) for the
-	// process lifetime — the gate fires every drain pass, and one logged
-	// finding is the signal; repeats are noise.
+	// Notices dedupe per (kind, conversation, route) for the process
+	// lifetime — the gate fires every drain pass; repeats are noise.
 	const noticed = new Set<string>();
 	const notice = (
 		kind: string,
@@ -94,28 +81,24 @@ export function openCachePruning(deps: CachePruningDeps): {
 		if (policy === undefined) return undefined;
 		const conv = deps.store.get(convId);
 		if (conv === null) return undefined;
-		// The route and settings hash must equal what the turn's buildStep
-		// sends — the same capture admission performs (Telegram resolves
-		// the effective ref from config, app reads its persisted
-		// selection), so a divergent guess can't hash a different surface.
+		// The hashes must equal what the turn's buildStep sends — the same
+		// capture admission performs, so a divergent guess can't hash a
+		// different surface.
 		const captured = captureConversationSettings(deps.store, conv, cfg);
 		const modelRef = captured.model;
 		const route = cacheRouteFor(cfg, modelRef);
 		if (route === undefined) return undefined;
 		const routeKey = cacheRouteKey(route);
-		// The gate must hash the exact normalized settings the turn's
-		// SDK calls hash — the SDK resolves an omitted toolChoice to
-		// {type:"auto"} before observedModel sees the options, so a
-		// profile copied from telemetry never matches a bare
-		// providerOptions-only hash.
+		// Must hash the exact normalized settings the turn's SDK calls
+		// hash — the SDK resolves an omitted toolChoice to {type:"auto"}
+		// before observedModel sees the options.
 		const settingsHash = hashCacheSettings(turnCallSettings(cfg, modelRef, captured.thinking));
 
 		const profile = policy.profiles.find(
 			(p) => p.routeKey === routeKey && p.settingsHash === settingsHash,
 		);
 		if (profile === undefined) return undefined;
-		// Any byte of profile change — a reviewedAt bump, a new idle
-		// window — is a new profile hash: the operator replacing or
+		// Any byte of profile change is a new hash — replacing or
 		// reviewing the profile is the only lift for a contradiction.
 		const profileHash = sha256hex(stableStringify(profile));
 		const suspension = deps.observation.pruningSuspension(
@@ -137,11 +120,9 @@ export function openCachePruning(deps: CachePruningDeps): {
 			return { pruned: 0, reason: "profile-expired" };
 		}
 		if (profile.evidence === "documented-expiry") {
-			// A documented-expiry profile is only as good as the registry's
-			// contract for this route — an unpublished or unverifiable
-			// lifetime, an idle floor beyond the document's bound, or stale
-			// review metadata each suspend new batches. Empirical profiles
-			// skip this entirely: the operator measured the window.
+			// A documented-expiry profile stands on the registry's contract
+			// for this route; an empirical profile needs none — the
+			// operator measured the window.
 			const contract = cacheContractFor(cfg, modelRef);
 			if (
 				contract.lifetime !== "rolling-expiry" ||
@@ -159,23 +140,18 @@ export function openCachePruning(deps: CachePruningDeps): {
 			}
 		}
 		const prev = deps.observation.lastCompleted(convId, routeKey, settingsHash);
-		// No completed call on this route under these settings: there is
-		// no observed input size to measure against the token gate and no
-		// finishedMs to start the idle clock — fail closed.
+		// No completed call on this route+settings: no observed input
+		// size for the token gate and no finishedMs for the idle clock —
+		// fail closed.
 		if (prev === null || prev.finishedMs === null) return undefined;
 		const idleMs = Math.max(0, now() - prev.finishedMs);
-		// Drift check first, before the freshness gates: a same/append
-		// call inside the assumed cache window that reported zero cache
-		// reads means the presumed expiry is wrong — suspend new batches.
-		// EVERY completed receipt since the profile's review is
-		// inspected, not only the latest: a multi-call turn can bury an
-		// earlier zero-read contradiction under a later cache hit, and
-		// the latest receipt alone would hide it. Receipts the review
-		// already saw stay acknowledged — a changed profile (new hash,
-		// new reviewedAt) remains the one lift. The suspension persists
-		// under this profile's hash: a later cache-hit receipt can't
-		// erase the evidence. Committed rows still replay; only new
-		// pruning stops.
+		// Drift check before the freshness gates: a same/append call
+		// inside the assumed window reporting zero cache reads means the
+		// presumed expiry is wrong. EVERY completed receipt since the
+		// profile's review is inspected — a multi-call turn can bury an
+		// earlier contradiction under a later cache hit. Suspension
+		// persists under this profile's hash; only a changed profile lifts
+		// it, and committed rows still replay.
 		const receipts = deps.observation.completedReceipts(
 			convId,
 			routeKey,
@@ -206,9 +182,8 @@ export function openCachePruning(deps: CachePruningDeps): {
 		if (idleMs < profile.idleAfterMs) return undefined;
 		if (prev.inputTokens === null || prev.inputTokens < policy.minimumInputTokens) return undefined;
 
-		// Only entries older than the keepRecentExchanges-th-from-last
-		// user message are eligible — the live tail stays verbatim so the
-		// model's recent context never changes under it.
+		// The live tail stays verbatim — the model's recent context never
+		// changes under it.
 		const detail = deps.store.historyDetail(convId);
 		let cutoff = 0;
 		let seen = 0;
@@ -218,8 +193,8 @@ export function openCachePruning(deps: CachePruningDeps): {
 				break;
 			}
 		}
-		// Below the active compaction boundary the model never sees the
-		// event anyway — cut on the same causal key modelEntries uses.
+		// Below the compaction boundary the model never sees the event —
+		// cut on the same causal key modelEntries uses.
 		const boundary = deps.store.getCompaction(convId)?.boundarySeq ?? null;
 		const projected = new Set(
 			deps.store.eventProjections(convId).map((p) => projectionKey(p.seq, p.toolCallId)),
@@ -261,10 +236,9 @@ export function openCachePruning(deps: CachePruningDeps): {
 					headChars: policy.retainHeadChars,
 					tailChars: policy.retainTailChars,
 				});
-				// Marker + retained head/tail can outweigh a short result —
-				// policy validation bounds the budget but not the marker's
-				// fixed overhead. A projection that doesn't shrink commits
-				// the context trade permanently, so it stays unpruned.
+				// Marker + head/tail can outweigh a short result — a
+				// projection that doesn't shrink commits the context trade
+				// permanently, so it stays unpruned.
 				if (replacement.length >= p.output.length) continue;
 				projected.add(key);
 				charsBefore += p.output.length;
@@ -279,8 +253,8 @@ export function openCachePruning(deps: CachePruningDeps): {
 			}
 		}
 		if (rows.length === 0) return { pruned: 0 };
-		// The commit is synchronous: the next model request must already
-		// read the projected view — that's the durability invariant.
+		// Synchronous commit — the next model request must already read
+		// the projected view (the durability invariant).
 		const inserted = deps.store.applyEventProjections(convId, rows);
 		if (inserted > 0) {
 			log.info("context pruned", {

@@ -1,12 +1,7 @@
-// Projects — a named scope over app conversations: their own working
-// directory and prompt section (design/projects.md). A project is a row
-// in goblin.sqlite plus a goblin-owned `home` under $GOBLIN_HOME/projects
-// (created lazily, never in ensureHomeLayout); `dir` is the working
-// directory — home for managed projects, a validated existing path for
-// linked ones. The slug derives from the name once and is frozen:
-// renaming never moves home or dir, so paths recorded by delegations
-// and tool output stay valid. Binding is fixed at conversation creation
-// — no move between projects (cache stability, same doc).
+// The slug derives from the name once and is frozen: renaming never
+// moves home or dir, so paths recorded by delegations and tool output
+// stay valid. Binding is fixed at conversation creation — no move
+// between projects (cache stability).
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -22,8 +17,7 @@ export interface Project {
 	id: string;
 	name: string;
 	slug: string;
-	// Goblin-owned scratch, always $GOBLIN_HOME/projects/<slug>. Never
-	// sent to the client — dir is the only path a conversation uses.
+	// Never sent to the client — dir is the only path a conversation uses.
 	home: string;
 	dir: string;
 	managed: boolean; // dir === home
@@ -37,8 +31,7 @@ export interface Project {
 // layer maps this to 422; everything else propagates as a 500.
 export class ProjectInputError extends Error {}
 
-// Lowercase ASCII, runs of anything else collapse to one "-", 48 chars
-// max, "project" when nothing survives. Once minted it never changes.
+// Once minted it never changes.
 export function slugify(name: string): string {
 	const slug = name
 		.normalize("NFKD")
@@ -52,11 +45,10 @@ export function slugify(name: string): string {
 	return slug === "" ? "project" : slug;
 }
 
-// A linked working directory, validated at creation. "~/"-expansion is
-// the only convenience — `~user` is not expanded and fails the absolute
-// check below (delegate.ts's isHomePath ruling). The realpath is what
-// lands in the row: symlinked dirs are stored resolved so cwd changes
-// under a repointed link can't surprise a running conversation.
+// `~user` is not expanded and fails the absolute check below. The
+// realpath is what lands in the row: symlinked dirs are stored resolved
+// so cwd changes under a repointed link can't surprise a running
+// conversation.
 export function resolveLinkedDir(input: string): string {
 	const expanded =
 		input === "~" ? homedir() : input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
@@ -75,10 +67,10 @@ export function resolveLinkedDir(input: string): string {
 	if (!statSync(real).isDirectory()) {
 		throw new ProjectInputError(`project dir is not a directory: ${input}`);
 	}
-	// $GOBLIN_HOME holds the state DB, the log, goblin.json5, auth.jsonl,
-	// workspace (SOUL.md, skills), and the managed-project homes — a chat
-	// cwd'd anywhere in there reads and writes goblin's own guts.
-	// Compare realpaths: a symlink into the tree is the same refusal.
+	// $GOBLIN_HOME holds the state DB, log, goblin.json5, auth.jsonl,
+	// workspace, and managed-project homes — a chat cwd'd in there reads
+	// and writes goblin's own guts. Realpaths: a symlink into the tree is
+	// the same refusal.
 	let homeReal: string;
 	try {
 		homeReal = realpathSync(goblinHome());
@@ -100,7 +92,7 @@ export interface ProjectStore {
 		dir?: string | undefined;
 	}): Project;
 	get(id: string): Project | null;
-	// All projects, archived included, newest first.
+	// Archived included, newest first.
 	list(): Project[];
 	patch(
 		id: string,
@@ -113,8 +105,8 @@ export interface ProjectStore {
 	): Project;
 }
 
-// Owned here, driven by openStore — the conversations project_id
-// migration references this table, so it must exist first.
+// The conversations project_id migration references this table — it
+// must exist first.
 export function ensureProjectsSchema(db: Database): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS projects (
@@ -157,11 +149,9 @@ function toProject(r: ProjectRow): Project {
 	};
 }
 
-// The turn's working directory: the project's dir for a bound
-// conversation, the deployment workspace otherwise. A vanished dir
-// fails the turn — never a silent fall-back to the workspace (the
-// makeTools call site runs inside the turn's admission try, so the
-// throw lands as a failed turn, not a crash).
+// A vanished dir fails the turn — never a silent fall-back to the
+// workspace (the makeTools call site runs inside the turn's admission
+// try, so the throw lands as a failed turn, not a crash).
 export function projectWorkdir(projects: ProjectStore, conv: Conversation): string {
 	if (conv.projectId === null) return paths.workspace();
 	const project = projects.get(conv.projectId);
@@ -193,9 +183,9 @@ export function projectWorkdir(projects: ProjectStore, conv: Conversation): stri
 export function openProjects(
 	store: ConversationStore,
 	deps?: {
-		// The retention outbox — wired whenever a store exists, client
-		// or not: pending rows from an earlier memory-on run must still
-		// purge when a project switches to off, the way /memory off does.
+		// Wired whenever a store exists, client or not: pending rows from
+		// an earlier memory-on run must still purge on switch to off, the
+		// way /memory off does.
 		memoryQueue?: Pick<MemoryQueue, "cancelConversation">;
 	},
 ): ProjectStore {

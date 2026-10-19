@@ -1,9 +1,7 @@
 // The workspace file boundary, shared by the native sandbox/desktop
-// tools and subagent run inboxes (design/subagents.md → Files in and
-// out): imports start at a workspace path whose realpath stays inside
-// the workspace, exports land on a workspace-relative path whose
-// ancestors and leaf can't aim the write outside. Host reads/writes
-// are deliberate acts — these are the only gates.
+// tools and subagent run inboxes: imports' realpath must stay inside
+// the workspace; exports land on a workspace-relative path whose
+// ancestors and leaf can't aim the write outside.
 
 import {
 	closeSync,

@@ -46,8 +46,8 @@ describe("durableWriteFile", () => {
 		writeFileSync(path, "old");
 		chmodSync(path, 0o600);
 
-		// The default is deliberately less restrictive. Replacing an existing
-		// auth/config file must retain that file's mode rather than the default.
+		// Replacing an existing auth/config file must retain that file's
+		// mode rather than the default.
 		durableWriteFile(path, "new");
 
 		expect(readFileSync(path, "utf8")).toBe("new");
@@ -143,7 +143,7 @@ describe("durableCopyFile", () => {
 	test("copies byte-exact across the chunk boundary and lands a fresh inode", () => {
 		const dir = useDir();
 		const path = join(dir, "report");
-		// Two full 1 MiB chunks plus an odd tail, patterned so a short
+		// Two full chunks plus an odd tail, patterned so a short
 		// read/write off-by-one shifts the bytes and fails the compare.
 		const payload = Buffer.from("0123456789".repeat(220_000));
 		writeFileSync(path, payload);

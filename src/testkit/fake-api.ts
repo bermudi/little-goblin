@@ -1,9 +1,4 @@
-// Shared Telegram API edge fake — the partial-Api scaffold the tg/
-// suites each hand-rolled. Records every call verbatim and answers with
-// boundary-plausible defaults: sequential message ids, editMessageText
-// writing back by id (the sinks rely on in-place edit), `true` for
-// ack-shaped methods. Per-method handlers replace a default when a test
-// controls the behavior; `before`/`failOn` cover gates and outages.
+// editMessageText writes back by id — the sinks rely on in-place edit.
 // Test support only — only *.test.ts files import this directory.
 
 import type { Api } from "grammy";
@@ -103,8 +98,7 @@ export function fakeApi(
 	return { api, calls, texts };
 }
 
-// Every call of one method's args, in order — the projection idiom the
-// suites repeat (calls.filter(...).map(c => c.args)).
+// Every call of one method's args, in order.
 export function callArgs(calls: RecordedCall[], method: string): unknown[][] {
 	return calls.filter((c) => c.method === method).map((c) => c.args);
 }

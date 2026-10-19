@@ -1,6 +1,5 @@
-// Typed constructors and predicates for the marker strings that ride
-// conversation history. One module owns every spelling: a typo fails
-// one schema instead of silently changing what reaches memory.
+// One module owns every marker spelling: a typo fails one schema
+// instead of silently changing what reaches memory.
 
 // Opens a program fire's machinery speech; the prefix is what
 // isMachineryText matches on.

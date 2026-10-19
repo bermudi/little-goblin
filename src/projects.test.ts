@@ -14,9 +14,8 @@ import {
 } from "./projects.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 
-// Each test gets a fresh $GOBLIN_HOME — paths.projects()/paths.state()
-// resolve through the env var per call, so the domain sees the tmp
-// layout without any module reset.
+// Fresh $GOBLIN_HOME per test — paths.projects()/paths.state() resolve
+// through the env var per call, no module reset needed.
 
 function fixture(): { home: string; store: ConversationStore; projects: ProjectStore } {
 	const home = useHome("goblin-projects-");
@@ -85,8 +84,8 @@ describe("resolveLinkedDir", () => {
 
 	test("a symlinked dir stores the realpath — repoints can't surprise a cwd", () => {
 		useHome("goblin-projects-");
-		// The link and its target both live outside $GOBLIN_HOME —
-		// inside it the link is refused before resolution matters.
+		// Inside $GOBLIN_HOME the link is refused before resolution
+		// matters — keep both ends outside.
 		const outside = tmpDir("goblin-linked-");
 		const target = join(outside, "real-target");
 		mkdirSync(target, { recursive: true });
@@ -124,7 +123,7 @@ describe("project store", () => {
 		const { home, store, projects } = fixture();
 		const a = projects.create({ name: "dup" });
 		expect(a.slug).toBe("dup");
-		// No row, just a leftover directory — the suffix must still move.
+		// A leftover directory without a row — the suffix must still move.
 		mkdirSync(join(home, "projects", "dup-2"), { recursive: true });
 		const b = projects.create({ name: "dup" });
 		expect(b.slug).toBe("dup-3");
@@ -149,8 +148,8 @@ describe("project store", () => {
 		expect(p.dir).toBe(elsewhere);
 		expect(p.home).toBe(join(home, "projects", "linked"));
 		expect(p.managed).toBe(false);
-		// The managed home still exists — it holds project state even
-		// though the chats cd elsewhere.
+		// The managed home holds project state — chats cd elsewhere but
+		// it must still exist.
 		expect(existsSync(p.home)).toBe(true);
 		store.close();
 	});
@@ -202,12 +201,12 @@ describe("project store", () => {
 		expect(after.memoryExcluded).toBe(true);
 		expect(after.epoch).toBe(epochBefore + 1);
 		expect(cancelled).toEqual([inProject.id]);
-		// Unbound conversations are untouched.
+		// Unbound conversations must stay untouched.
 		const afterOutside = store.get(outside.id)!;
 		expect(afterOutside.memoryExcluded).toBe(false);
 		expect(afterOutside.epoch).toBe(epochOutsideBefore);
 
-		// off → shared restores nothing and bumps nothing.
+		// off → shared restores nothing, bumps nothing.
 		withQueue.patch(project.id, { memory: "shared" });
 		const restored = store.get(inProject.id)!;
 		expect(restored.memoryExcluded).toBe(true);
@@ -260,7 +259,7 @@ describe("conversation binding", () => {
 		store.bindProject(conv.id, a.id);
 		expect(store.get(conv.id)!.projectId).toBe(a.id);
 		expect(() => store.bindProject(conv.id, b.id)).toThrow("already bound");
-		// Re-binding the same project is a no-op, not an error.
+		// Re-binding the same project is a no-op.
 		store.bindProject(conv.id, a.id);
 		expect(store.get(conv.id)!.projectId).toBe(a.id);
 		store.close();

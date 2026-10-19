@@ -1,8 +1,3 @@
-// The shared workspace file boundary: imports must stay inside the
-// workspace under realpath and be regular files within the cap;
-// exports get a workspace-relative destination whose ancestors and
-// leaf are checked before any directory is created.
-
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import {

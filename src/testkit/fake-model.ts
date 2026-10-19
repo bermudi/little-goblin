@@ -1,8 +1,4 @@
-// Shared provider-edge model fakes — the LanguageModelV4 skeleton suites
-// used to hand-roll per file: scripted doStream attempts, recorded wire
-// options, canonical part lists. Still a boundary fake — no module
-// mocks — just not copied nine times. Test support only: only
-// *.test.ts files import this directory; nothing here runs in prod.
+// Test support only — only *.test.ts files import this directory.
 
 import type {
 	LanguageModelV4,
@@ -15,9 +11,8 @@ import type { LanguageModel } from "ai";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// What a drive() attempt is handed: the call's wire options plus a
-// controller that swallows closed-stream throws (a cancelled stream's
-// enqueue throws — racing cancellation is the norm in these tests).
+// The controller swallows closed-stream throws — a cancelled stream's
+// enqueue throws, and racing cancellation is the norm in these tests.
 export interface StreamDrive {
 	options: LanguageModelV4CallOptions;
 	enqueue(part: LanguageModelV4StreamPart): void;
@@ -89,8 +84,7 @@ export function toolCallPart(
 	return { type: "tool-call", toolCallId, toolName, input };
 }
 
-// One-line doGenerate answer — the shape a provider returns for a
-// finished text generation.
+// The shape a provider returns for a finished text generation.
 export function textResult(
 	text: string,
 	unified: LanguageModelV4FinishReason["unified"] = "stop",
@@ -237,9 +231,8 @@ export function scriptedModel(
 	return { model: model as unknown as LanguageModel, streamCalls, generateCalls };
 }
 
-// The common case: every call streams the same text deltas; delayMs
-// paces the deltas only — framing parts land immediately so a slow body
-// models a silent stream, not a slow handshake.
+// delayMs paces the deltas only — framing parts land immediately so a
+// slow body models a silent stream, not a slow handshake.
 export function textModel(
 	deltas: string | string[],
 	opts: { delayMs?: number; modelId?: string } = {},
@@ -255,8 +248,7 @@ export function textModel(
 	});
 }
 
-// The generate arm's common case: every doGenerate is answered by
-// `respond`; doStream stays a loud unexpected-call error.
+// doStream stays a loud unexpected-call error on the generate arm.
 export function generateModel(
 	respond: (
 		options: LanguageModelV4CallOptions,

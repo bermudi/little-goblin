@@ -1,8 +1,6 @@
-// The spin-off glue (design/app.md → Spin-off): the fork is a
-// uuid-named app conversation titled by the delegation name, the link
-// follows the configured host, and the fire-and-forget retitle lands
-// through the shared titler — still implicit so an operator rename
-// always wins.
+// The fork is a uuid-named app conversation titled by the delegation
+// name; the fire-and-forget retitle stays implicit so an operator
+// rename always wins.
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";

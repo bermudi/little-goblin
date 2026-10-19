@@ -1,9 +1,5 @@
-// Turn-journal crash test: a real Runtime + real goblin.sqlite in a
-// CHILD process, SIGKILLed at three observable points. The parent
-// reopens the same store — the journal's open must reclassify the
-// 'running' row 'interrupted' and the tool-call row must show exactly
-// how far the killed turn got. Reuses the fake model edge; no external
-// calls.
+// A real Runtime + real goblin.sqlite in a CHILD process, SIGKILLed at
+// observable points; the parent reopens the store.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -24,7 +20,6 @@ import { makeResumeOps } from "./turn-resume.ts";
 
 setLogFile(null);
 
-// The resumed model's re-ask of the call the continuation inherited.
 const streamStartPart: LanguageModelV4StreamPart = { type: "stream-start", warnings: [] };
 const reaskCallPart: LanguageModelV4StreamPart = {
 	type: "tool-call",
@@ -58,9 +53,8 @@ async function until(fn: () => boolean, what: string, ms = 30_000): Promise<void
 	throw new Error(`timed out waiting for: ${what}`);
 }
 
-// A raw connection for pre-kill polling — the journal itself must NOT
-// be opened in the parent before the kill: its open reclassifies
-// 'running', which is the very signal under test.
+// The journal must NOT be opened in the parent before the kill — its
+// open reclassifies 'running', which is the very signal under test.
 function probeCallState(db: Database): string[] {
 	try {
 		return db
@@ -101,8 +95,8 @@ function spawn(mode: string, name: string): { child: Subprocess; dbPath: string;
 async function killAndReopen(child: Subprocess, dbPath: string) {
 	child.kill(9);
 	await child.exited;
-	// A fresh open is the boot path: 'running' at open means the process
-	// died mid-turn — the row must come back 'interrupted'.
+	// 'running' at open means the process died mid-turn — the row must
+	// come back 'interrupted'.
 	const store = openStore(dbPath);
 	const journal = openTurnJournal(store.db);
 	return { store, journal };
@@ -132,8 +126,7 @@ describe("turn journal — a real killed process", () => {
 
 	test("kill with a call never dispatched: the row stays 'planned'", async () => {
 		// plan-only's provider-executed call is journaled at the chunk
-		// seam but the fence never dispatches it — the crash-time shape
-		// of a call whose dispatch write never landed.
+		// seam but the fence never dispatches it.
 		const { child, dbPath, marker } = spawn("plan-only", "planned");
 		const probe = new Database(dbPath);
 		try {
@@ -183,8 +176,8 @@ describe("turn journal — a real killed process", () => {
 
 	test("a killed overflow continuation carries the failed attempt's calls — resume replays, never re-executes", async () => {
 		const { child, dbPath, marker } = spawn("overflow-stall", "overflow");
-		// The overflowed attempt stamps error/undelivered and the
-		// continuation opens its own row before stalling — wait for both.
+		// Wait for both: the overflowed attempt stamps error/undelivered
+		// and the continuation opens its own row before stalling.
 		const probe = new Database(dbPath);
 		try {
 			await until(() => {
@@ -199,15 +192,11 @@ describe("turn journal — a real killed process", () => {
 			const runs = journal.interrupted();
 			expect(runs).toHaveLength(1);
 			const continuation = runs[0]!;
-			// The whole point: the continuation's own row already carries
-			// the overflowed attempt's settled evidence.
 			const calls = journal.callsFor(continuation.runId);
 			expect(calls.map((c) => c.toolCallId)).toEqual(["call-1"]);
 			expect(calls[0]!.state).toBe("completed");
 			expect(calls[0]!.result).toBe('{"ok":true}');
 
-			// Resume the continuation; the model re-asks the same call —
-			// the fence must answer from the record, not dispatch probe.
 			const executed: string[] = [];
 			const makeTools = () => ({
 				probe: tool({
@@ -245,8 +234,6 @@ describe("turn journal — a real killed process", () => {
 			await waitUntil(() => !runtime.busy(conv.id), "resumed lane drains");
 			await runtime.shutdown();
 			expect(executed).toEqual([]); // replayed, never re-executed
-			// The re-ask journaled on the successor with replay provenance
-			// — one execution, one replay credit, however many resumes.
 			const successor = store.db
 				.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 				.get(continuation.runId)!.run_id;

@@ -397,6 +397,18 @@ export function makeHerdr(
 // The narrow adapter for the operator's own `default` session
 // (design/delegation.md): read/list/prompt by pane ID only — no
 // creation, raw keys, or session/machine arguments.
+//
+// Dispatch identity (herdr 0.9.5-fork; source + live pins in
+// herdr.live.test.ts): targets are a live agent name or pane ID. At send
+// the server checks the pane hosts a healthy foreground agent of the
+// detected kind — never WHICH agent: AgentPromptParams carries no
+// expected-identity field, and the --wait post-check (terminal_id + name
+// + kind, never agent_session) runs after the bytes are in the PTY. A
+// same-kind replacement in the same pane keeps terminal_id and kind;
+// agent_session is the only field that changes. Check-then-send from
+// here cannot be made race-free — unattended managed sends need a
+// guarded send inside herdr (expected identity validated at dispatch),
+// not more client reads.
 
 const OPERATOR_SESSION = "default";
 // `agent prompt --wait` gets 120 s to observe a working/blocked state;

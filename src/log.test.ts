@@ -1,8 +1,5 @@
-// The file sink's failure policy is a real boundary: logging must never
-// throw, permanent target breakage silences the sink for the run, and a
-// re-attached target starts fresh. The transient path (ENOSPC-style)
-// needs a fake writer — the real filesystem can't be asked to fail that
-// way portably — via setLogWriter, same pattern as codex/auth.ts's fetchImpl.
+// The transient path (ENOSPC-style) needs a fake writer — the real
+// filesystem can't be asked to fail that way portably.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
@@ -100,12 +97,12 @@ describe("file sink", () => {
 			}
 			appendFileSync(path, line);
 		});
-		// First line: lost to the full disk (stdout only), sink stays alive.
+		// Lost to the full disk (stdout only); the sink stays alive.
 		expect(() => log.info("lost to the full disk")).not.toThrow();
-		// Second line: disk freed — it lands, and the sink recovers.
+		// Disk freed — it lands, and the sink recovers.
 		log.info("recovered line");
 		expect(lines(target).map((l) => l.msg)).toEqual(["recovered line"]);
-		// And the sink is not dead: a third line still lands.
+		// The sink is not dead: a third line still lands.
 		log.info("still alive");
 		expect(lines(target).map((l) => l.msg)).toEqual(["recovered line", "still alive"]);
 	});
@@ -117,14 +114,14 @@ describe("file sink", () => {
 		let calls = 0;
 		setLogWriter((path, line) => {
 			calls++;
-			// First append: the state dir is missing. After mkdirSync, the
-			// retry append hits the full disk — transient, must not kill.
+			// Call 1 fails ENOENT; the post-mkdir retry hits the full disk
+			// — transient, must not kill.
 			if (calls === 1) throw errno("ENOENT", "ENOENT: no such file or directory");
 			if (calls === 2) throw errno("ENOSPC", "ENOSPC: no space left on device");
 			appendFileSync(path, line);
 		});
 		log.info("first");
-		// The sink survived the compound failure: later writes land.
+		// The sink survived the compound failure — later writes land.
 		log.info("second");
 		log.info("third");
 		expect(calls).toBe(4);
@@ -177,7 +174,7 @@ describe("error parity", () => {
 		const a = new Error("cycle a");
 		const b = new Error("cycle b", { cause: a });
 		a.cause = b;
-		// Must terminate and still emit a parseable line carrying the error.
+		// Must still emit a parseable line carrying the error.
 		log.warn("cyclic", a);
 		const [first] = lines(target);
 		expect(first).toMatchObject({ level: "warn", msg: "cyclic", error: "cycle a" });

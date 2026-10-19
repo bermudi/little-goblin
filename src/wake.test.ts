@@ -168,7 +168,7 @@ test("a delegation result never rolls the DM — delegationWake pins the join", 
 	store.close();
 });
 
-// ---------- wakeApp (Spin-off → Background turns) ----------
+// ---------- wakeApp ----------
 
 test("wakeApp submits into the app conversation with the bell sink", () => {
 	const { deps, store, submitted, sinks } = harness(45);
@@ -189,7 +189,7 @@ test("wakeApp on a deleted app conversation drops landed — no submit, no retry
 	store.close();
 });
 
-// ---------- wakeConversation (subagent notices → exact origin) ----------
+// ---------- wakeConversation ----------
 
 test("wakeConversation hits the exact stored DM row — never rolls, never creates", () => {
 	const { deps, store, submitted, sends } = harness(0); // gap 0 — a rolling path would roll

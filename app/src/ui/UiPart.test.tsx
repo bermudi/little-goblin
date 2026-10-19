@@ -335,7 +335,7 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 
 	// Note fences inside ui blocks get the transcript's note context —
 	// token, project binding, in-app navigation — through every
-	// container depth (design/projects.md → Notes).
+	// container depth.
 	const fence = '````note title="Ideas"\nfenced body\n````';
 	const fakeNoteApi = (calls: { url: string; init: RequestInit | undefined }[]) => {
 		installGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {

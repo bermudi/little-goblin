@@ -44,8 +44,7 @@ export const paths = {
 	user: () => join(goblinHome(), "workspace", "USER.md"),
 	skills: () => join(goblinHome(), "workspace", "skills"),
 	// The skill reviewer's parking area: validated auto-saves wait here
-	// for the operator's yes — never in the catalog itself
-	// (design/skills.md, "It proposes, then tells").
+	// for the operator's yes — never in the catalog itself.
 	skillsProposed: () => join(goblinHome(), "workspace", "skills-proposed"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
@@ -57,11 +56,9 @@ export const paths = {
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
 	bashcache: () => join(goblinHome(), "state", "bashcache"),
-	// Project homes (design/projects.md) — lazy: created on the first
-	// project create, not by ensureHomeLayout.
+	// Lazy: created on the first project create, not by ensureHomeLayout.
 	projects: () => join(goblinHome(), "projects"),
-	// Local speech-engine artifacts (digest-pinned auto-fetch —
-	// design/asr.md → Whistle). Cache, not state: deletable at will.
+	// Digest-pinned auto-fetch artifacts. Cache, not state: deletable.
 	whistleCache: () => join(goblinHome(), "cache", "whistle"),
 };
 
@@ -375,9 +372,9 @@ export const imageConfigSchema = z.object({
 });
 export type ImageConfig = z.infer<typeof imageConfigSchema>;
 
-// In-process tool composition behind the script tool — absent = off
-// (design/tools.md → Scripting). maxCalls bounds nested tool calls per
-// script; absent falls back to the default at the wiring site.
+// In-process tool composition behind the script tool — absent = off.
+// maxCalls bounds nested tool calls per script; absent falls back to
+// the default at the wiring site.
 export const scriptingConfigSchema = z.object({
 	maxCalls: z.number().int().min(1).max(500).optional(),
 });
@@ -463,8 +460,8 @@ export const imageRefSchema = z
 	.max(255)
 	.regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/, "invalid image ref");
 
-// Sandboxed execution (design/sandbox.md) — absent or "" = no sandbox
-// tool. Goblin never pulls: `image` must already be in the local store.
+// Sandboxed execution — absent or "" = no sandbox tool. Goblin never
+// pulls: `image` must already be in the local store.
 export const sandboxConfigSchema = z.object({
 	image: imageRefSchema.default("docker.io/library/alpine:latest"),
 	// Hours of idleness before a sandbox is reaped on the next sandbox
@@ -476,10 +473,10 @@ export const sandboxConfigSchema = z.object({
 });
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
-// Subagents & computer use (design/subagents.md) — absent block = no
-// tools, no harness opened; an absent type = that type is off. Models
-// are configured per type, never guessed; api is the one transport
-// pi-ai speaks to z.ai's Coding Plan endpoint.
+// Subagents & computer use — absent block = no tools, no harness opened;
+// an absent type = that type is off. Models are configured per type,
+// never guessed; api is the one transport pi-ai speaks to z.ai's
+// Coding Plan endpoint.
 const subagentModelSchema = z.object({
 	auth: z.string().min(1),
 	id: z.string().min(1),
@@ -551,9 +548,9 @@ export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 // follow-up check (the skill-review gate rides it too, but only
 // `reviewer` enables that consumer). Set on its own it enables the
 // client; absent, reviewer still implies it. Fields fall back to
-// reviewer.auth/DEFAULT_MODEL.
-// model is a bare decision-model id, NOT a "<provider>/<model-id>" chat
-// ref — deliberately outside superRefine's provider validation.
+// reviewer.auth/DEFAULT_MODEL; model is a bare decision-model id, NOT a
+// "<provider>/<model-id>" chat ref — outside superRefine's provider
+// validation.
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),
 	model: z.string().min(1).optional(),
@@ -584,12 +581,11 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 		// reply's language, falling back to `voice`.
 		voices: z.array(z.string().min(1)).optional(),
 	}),
-	// Cloud speech endpoints (design/telegram.md → TTS) — one POST shape
-	// (OpenAI's /audio/speech: model, input, voice?, response_format),
-	// the model field picks the upstream. voice is the upstream's voice
-	// id (Fish: a voice-library hex id; Aura: aura-2-<name>-en); absent =
-	// the model's default voice. There is no language cast: upstream ids
-	// carry no language prefix to match on.
+	// Cloud speech endpoints — one POST shape (OpenAI's /audio/speech:
+	// model, input, voice?, response_format); the model field picks the
+	// upstream. voice is the upstream's voice id (Fish: a voice-library
+	// hex id; Aura: aura-2-<name>-en); absent = the model's default voice.
+	// No language cast: upstream ids carry no language prefix to match on.
 	cloudTtsSchema("openrouter"),
 	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today. Its
 	// documented speech table drops response_format (see tts-cloud.ts).
@@ -601,9 +597,9 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
-// Speech kinds — whistle (local) first, then the cloud menu
-// (design/asr.md). config.test.ts pins this array against the union
-// below in both directions, like providerKinds.
+// Speech kinds — whistle (local) first, then the cloud menu.
+// config.test.ts pins this array against the union below in both
+// directions, like providerKinds.
 export const transcriptionKinds = [
 	"whistle",
 	"groq",
@@ -682,10 +678,9 @@ const transcriptionEntrySchema = z.union([
 ]);
 export type TranscriptionEntry = z.infer<typeof transcriptionEntrySchema>;
 
-// The retry chain (design/asr.md → Non-goals, chain ruling): the
-// block's own kind first, then `fallbacks` in order — an engine
-// failure tries the next entry; a produced transcript (or a genuine
-// "no speech" null) ends it. Cap keeps the failure path bounded.
+// The retry chain: the block's own kind first, then `fallbacks` in
+// order — an engine failure tries the next entry; a produced transcript
+// (or a genuine "no speech" null) ends it. Cap bounds the failure path.
 const fallbackField = {
 	fallbacks: z.array(transcriptionEntrySchema).max(4).optional(),
 };
@@ -775,8 +770,7 @@ const configSchema = z
 						: v,
 			),
 		// Speech → text: voice/video notes at intake, other audio via the
-		// transcribe tool. The kinds and their defaults live above
-		// (design/asr.md).
+		// transcribe tool.
 		transcription: z
 			.union([transcriptionSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
@@ -804,10 +798,9 @@ const configSchema = z
 			.union([fetchEntrySchema, z.array(fetchEntrySchema).min(1), z.literal("")])
 			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
-		// Two-list trust (design/telegram.md → Roles and permissions):
-		// operators get the personal agent on every surface; allowedUsers
-		// get the sandbox class. Anyone on neither list is a stranger —
-		// one refusal line per summons, nothing else.
+		// Two-list trust: operators get the personal agent on every
+		// surface; allowedUsers get the sandbox class. Anyone on neither
+		// list is a stranger — one refusal line per summons, nothing else.
 		operators: z.array(z.number().int().positive()).min(1),
 		allowedUsers: z.array(z.number().int().positive()).default([]),
 		// apiRoot: self-hosted telegram-bot-api in --local mode. dmGapMinutes:
@@ -826,8 +819,7 @@ const configSchema = z
 				dmGapMinutes: z.number().int().min(1).default(45),
 				// Rich replies (Bot API 10.3): draft streaming and one markdown
 				// render per DM turn. A kill switch, not a feature flag — a
-				// phone-only operator needs config off, not a redeploy
-				// (design/telegram.md, "Formatted replies & draft streaming").
+				// phone-only operator needs config off, not a redeploy.
 				richReplies: z.boolean().default(true),
 				// Reasoning as a collapsed block above the reply. DMs only;
 				// guests never see it regardless.
@@ -958,6 +950,15 @@ export type FetchConfig = NonNullable<Config["fetch"]>;
 
 // ---------- load / write ----------
 
+function configSyntaxError(err: unknown): Error {
+	// JSON5 messages quote input. Only its numeric location is safe to retain.
+	const line =
+		typeof err === "object" && err !== null && "lineNumber" in err ? err.lineNumber : undefined;
+	const location =
+		typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
+	return new Error(`${paths.config()}${location}: invalid JSON5`);
+}
+
 // ENOENT → null; every other failure propagates with the path attached.
 export function loadConfig(): Config | null {
 	let raw: string;
@@ -971,12 +972,7 @@ export function loadConfig(): Config | null {
 	try {
 		parsed = JSON5.parse(raw);
 	} catch (err) {
-		// JSON5 messages quote input. Only its numeric location is safe to retain.
-		const line =
-			typeof err === "object" && err !== null && "lineNumber" in err ? err.lineNumber : undefined;
-		const location =
-			typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
-		throw new Error(`${paths.config()}${location}: invalid JSON5`);
+		throw configSyntaxError(err);
 	}
 	let config: Config;
 	try {
@@ -1041,16 +1037,25 @@ export function writeConfig(config: Config): void {
 	let text: string | null = null;
 	try {
 		text = readFileSync(paths.config(), "utf8");
-	} catch {
-		// No readable file — the first write is canonical.
+	} catch (err) {
+		// Only a missing file permits initialization. Permission/I/O
+		// failures must reach the caller without replacing existing bytes.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	// Patch the file in place: only the top-level keys whose parsed
 	// value changed get re-serialized — comments, ordering, formatting
 	// and non-schema keys survive a settings save verbatim. A file the
 	// patcher can't reason about still gets the canonical rewrite —
 	// degrading beats corrupting.
-	const patched =
-		text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
+	let patched: string | null;
+	try {
+		patched = text === null ? null : patchConfigText(text, merged, parseConfig, CONFIG_TOP_KEYS);
+	} catch (err) {
+		// A syntax failure (source or generated patch) aborts the save.
+		// Match loadConfig's safe error boundary; never retain quoted input.
+		if (err instanceof SyntaxError) throw configSyntaxError(err);
+		throw err;
+	}
 	durableWriteFile(paths.config(), patched ?? `${JSON5.stringify(merged, null, 2)}\n`);
 }
 

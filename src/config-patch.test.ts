@@ -6,9 +6,7 @@ import { patchConfigText } from "./config-patch.ts";
 // parseConfig stripping unknowns — adequate for patch mechanics. The
 // materialized-defaults case gets a defaulted normalize below.
 const id = (raw: unknown) =>
-	Object.fromEntries(
-		Object.entries(raw as Record<string, unknown>).filter(([k]) => KEYS.has(k)),
-	);
+	Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([k]) => KEYS.has(k)));
 const KEYS = new Set(["model", "thinking", "transcription", "providers", "operators", "search"]);
 
 const patch = (
@@ -77,16 +75,43 @@ describe("patchConfigText", () => {
 }`);
 	});
 
-	test("the last entry without a trailing comma takes the previous comma with it", () => {
+	for (const configured of [false, true]) {
+		test(`undefined optionals are absent without canonical fallback (configured=${configured})`, () => {
+			const text = configured
+				? `{\n  model: "a/b",\n  transcription: { kind: "groq" },\n}`
+				: `{\n  model: "a/b",\n}`;
+			expect(patch(text, { model: "a/b", transcription: undefined })).toBe(`{\n  model: "a/b",\n}`);
+		});
+	}
+
+	test("deleting the last entry preserves the previous entry's comma", () => {
 		const text = `{
   model: "a/b",
   operators: [7]
 }`;
 		const out = patch(text, { model: "a/b" });
 		expect(out).toBe(`{
-  model: "a/b"
+  model: "a/b",
 }`);
 	});
+
+	for (const thinking of [undefined, "high"]) {
+		test(`adjacent tail deletions do not overlap (insert=${thinking !== undefined})`, () => {
+			const text = `{model:"a/b",search:[{kind:"brave"}],transcription:{kind:"groq"}}`;
+			const out = patch(text, {
+				model: "a/b",
+				search: undefined,
+				transcription: undefined,
+				...(thinking === undefined ? {} : { thinking }),
+			});
+			expect(out).not.toBeNull();
+			expect(JSON5.parse(out!)).toEqual({
+				model: "a/b",
+				...(thinking === undefined ? {} : { thinking }),
+			});
+			expect(out).toStartWith('{model:"a/b",');
+		});
+	}
 
 	test("a sole entry deletes to an empty object", () => {
 		const out = patch(`{ model: "a/b" }`, {});
@@ -145,6 +170,20 @@ describe("patchConfigText", () => {
 		const out = patch(`{model:"a/b"}`, { model: "a/b", thinking: "low" });
 		expect(out).toBe(`{model:"a/b",  thinking: 'low',\n}`);
 	});
+
+	for (const comment of [" // tail note\n", " /* tail note */"]) {
+		test(`appending keeps the comma before a trailing comment (${comment.trim()})`, () => {
+			const text = `{model:"a/b"${comment}}`;
+			const out = patch(text, { model: "a/b", thinking: "high" });
+			expect(out).toContain(`model:"a/b",${comment}`);
+			expect(JSON5.parse(out!)).toEqual({ model: "a/b", thinking: "high" });
+		});
+
+		test(`replacing a value preserves its trailing comment (${comment.trim()})`, () => {
+			const text = `{model:"a/b"${comment}}`;
+			expect(patch(text, { model: "x/y" })).toBe(`{model:'x/y'${comment}}`);
+		});
+	}
 
 	test("an empty root object gets the whole merged config", () => {
 		const out = patch(`{}`, { model: "a/b" });
@@ -246,7 +285,21 @@ describe("patchConfigText", () => {
 
 	test("a non-object root bails", () => {
 		expect(patch(`["a"]`, { model: "a/b" })).toBeNull();
-		expect(patch(``, { model: "a/b" })).toBeNull();
+	});
+
+	for (const text of ["", `{model: "unterminated}`]) {
+		test(`invalid JSON5 propagates (${JSON.stringify(text)})`, () => {
+			expect(() => patch(text, { model: "a/b" })).toThrow(SyntaxError);
+		});
+	}
+
+	test("normalization failures propagate", () => {
+		const failure = new Error("normalization failed");
+		expect(() =>
+			patch(`{model: "a/b"}`, { model: "a/b" }, () => {
+				throw failure;
+			}),
+		).toThrow(failure);
 	});
 
 	test("the verify backstop: a patch that doesn't re-parse to merged is refused", () => {

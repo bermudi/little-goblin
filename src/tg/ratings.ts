@@ -1,7 +1,6 @@
-// The 👍/👎 tap record: append-only rows on the shared store handle, so
-// a tap after a restart still lands. Record-only by design — nothing
-// reads these into the model, history, FTS, or memory. A vote change is
-// a new row; reads are latest-wins per stamped message.
+// 👍/👎 tap records: record-only by design — nothing reads them into the
+// model, history, FTS, or memory. A vote change is a new row; reads are
+// latest-wins per stamped message.
 
 import type { Database } from "bun:sqlite";
 import { z } from "zod";

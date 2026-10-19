@@ -1,11 +1,7 @@
-// scripts/goblin-mail — the sanctioned mail-read path. Drives the
-// real shell script with a fake `gws` on PATH plus a fake loopback
-// injection checker (Bun.serve on an ephemeral port, GOBLIN_MAIL_PORT
-// pointing at it) — never the real gws, never the real goblin server.
-// Invariants: search shapes triage JSON into id lines; read fences the
-// body with the checker's verdict; a dead checker fails open (body
-// still printed, unavailable line); a missing gws exits 3; `</mail`
-// in the body cannot close the fence early.
+// Drives the real scripts/goblin-mail shell script with a fake `gws`
+// on PATH plus a fake loopback injection checker (Bun.serve on an
+// ephemeral port under GOBLIN_MAIL_PORT) — never the real gws, never
+// the real goblin server.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -27,18 +23,17 @@ function tmp(): string {
 	return dir;
 }
 
-// A fake gws speaking the real v0.22.5 helper surface the wrapper
-// calls: `gmail +triage --query/--max/--format json` and
-// `gmail +read --id/--headers`. The triage JSON is one single-quoted
-// printf (no raw newlines, no single quotes inside); the read body
-// rides a quoted heredoc so real newlines survive. Behavior knobs
-// via env for failure paths.
+// The real gws v0.22.5 helper surface the wrapper calls: `gmail
+// +triage --query/--max/--format json` and `gmail +read --id/--headers`.
+// The triage JSON is one single-quoted printf (no raw newlines, no
+// single quotes inside); the read body rides a quoted heredoc so real
+// newlines survive. Behavior knobs via env for failure paths.
 function fakeGws(dir: string, opts?: { exit?: number; stderr?: string }): void {
 	const bin = join(dir, "bin");
 	mkdirSync(bin, { recursive: true });
-	// Mirrors the real triage.rs JSON shape ({messages:[{id,from,subject,
-	// date}], resultSizeEstimate, query}) — triage carries NO snippet
-	// field, so the wrapper prints id lines without one.
+	// The real triage.rs JSON shape ({messages:[{id,from,subject,date}],
+	// resultSizeEstimate, query}) — triage carries NO snippet field, so
+	// the wrapper prints id lines without one.
 	const triage =
 		'{"messages":[{"id":"abc123","from":"boss@example.com","subject":"Q3 plan","date":"Mon, 28 Sep 2026"}],"resultSizeEstimate":1,"query":"is:unread"}';
 	const body = [

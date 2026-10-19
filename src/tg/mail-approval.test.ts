@@ -1,12 +1,3 @@
-// The send gate's contract: a draft request queues, posts, and binds
-// as one unit — a definite Telegram post failure cancels and answers
-// retryable; a timeout stays pending — the Send/Cancel taps decide
-// (cancel stamps and settles, send threads through the send credential,
-// expiry and
-// double-taps resolve to a single verdict, failures keep the row
-// pending with the reason in the chat), and the sweep settles expired
-// drafts without ever claiming a row mid-send.
-
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Api } from "grammy";
@@ -83,7 +74,7 @@ function fakeSender(over: Partial<MailSender> = {}): MailSender & { sent: unknow
 	};
 }
 
-// The threading lookup rides the gws poller — a read, never the send token.
+// The threading lookup rides the gws reader — never the send token.
 function fakeReader(
 	over: Partial<Pick<MailPoller, "threadFor">> = {},
 ): MailPoller & { threaded: string[] } {
@@ -118,9 +109,9 @@ function setup(
 		reader: () => reader,
 		now: () => NOW,
 	};
-	// Long tick: the timer never fires mid-test; the sweep is driven
-	// through gate.sweep(). Built on an empty outbox, so the boot
-	// catch-up sweep is a no-op for every tap test.
+	// A long tick keeps the timer out of the test — the sweep is driven
+	// through gate.sweep(). An empty outbox makes the boot catch-up a
+	// no-op.
 	const gate = startMailApproval(deps, 60_000);
 	gates.push(gate);
 	return { outbox, calls, deps, gate };
@@ -154,11 +145,9 @@ describe("draft requests", () => {
 		expect(row.replyToId).toBe("m9");
 		expect(row.chatId).toBe(-100);
 		expect(row.threadId).toBe(7);
-		// The buttons' message id is bound onto the row.
 		expect(row.draftMessageId).toBe(501);
 		expect(calls.sends).toHaveLength(1);
 		expect(calls.sends[0]).toMatchObject({ chat: -100, keyboard: true });
-		// The posted draft renders the queued content.
 		expect(calls.sends[0]!.text).toContain(`Draft #${row.id}`);
 		expect(calls.sends[0]!.text).toContain("To: a@x.com");
 		expect(calls.sends[0]!.text).toContain("Cc: b@y.com");
@@ -195,8 +184,8 @@ describe("draft requests", () => {
 	test("an accepted draft whose button post times out stays pending and its unbound button still sends", async () => {
 		const sender = fakeSender();
 		const { outbox, calls, deps, gate } = setup(sender);
-		// Telegram accepted the message (with buttons) but the response was
-		// lost. A callback can arrive even though no message id was bound.
+		// Telegram accepted the message but the response was lost — a
+		// callback can arrive with no message id bound.
 		(deps.api as unknown as Record<string, unknown>).sendMessage = async (
 			chat: number,
 			text: string,
@@ -274,8 +263,8 @@ describe("draft requests", () => {
 			extra?: { reply_markup?: unknown },
 		) => {
 			calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
-			// Three-chunk draft; the second (non-buttons) chunk's response
-			// is lost — posting stops before the buttons ever run.
+			// The second (non-buttons) chunk's response is lost — posting
+			// stops before the buttons ever run.
 			if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
 			return { message_id: 500 + calls.sends.length };
 		};
@@ -286,7 +275,7 @@ describe("draft requests", () => {
 		if (!("error" in out)) throw new Error("expected a cancelled error verdict");
 		expect(out.error).toContain(`draft #${seenId}`);
 		expect(out.error).toContain("cancelled");
-		// Stopped at the timed-out chunk — the buttons chunk never ran.
+		// The buttons chunk never ran — posting stopped at the timeout.
 		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, false]);
 		expect(outbox.get(seenId)).toMatchObject({ status: "cancelled", draftMessageId: null });
 		outbox.close();
@@ -318,8 +307,8 @@ describe("draft requests", () => {
 		expect(out.error).toBe(
 			"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
 		);
-		// No orphan: the queued row is settled cancelled, not pending
-		// for 24h with no buttons anywhere.
+		// No orphan — the row settles cancelled, not pending for 24h
+		// with no buttons anywhere.
 		const row = outbox.get(seenId)!;
 		expect(row.status).toBe("cancelled");
 		expect(row.decidedAt).not.toBeNull();
@@ -495,15 +484,15 @@ describe("mail approval taps", () => {
 		const row = queue(outbox);
 		const first = gate.handleTap({ ...tap(row.id, "send"), id: "q-first" });
 		await Bun.sleep(10);
-		// SIGTERM lands mid-send: stop resolves only once the send has
-		// settled — not while the row could still re-settle as pending
-		// and get re-tapped (duplicate email) on the next boot.
+		// SIGTERM lands mid-send — stop must join the send rather than
+		// let the row re-settle pending and get re-tapped (duplicate
+		// email) on the next boot.
 		let stopped = false;
 		const stopP = gate.stop().then(() => {
 			stopped = true;
 		});
 		await Bun.sleep(10);
-		expect(stopped).toBe(false); // still joining
+		expect(stopped).toBe(false);
 		release();
 		await first;
 		await stopP;
@@ -547,7 +536,7 @@ describe("mail approval taps", () => {
 			},
 		});
 		const { outbox, calls, deps, gate } = setup(sender);
-		// Queued a minute ago — the 24h fuse is still burning at tap time.
+		// Queued a minute ago — the fuse is still burning at tap time.
 		const row = queue(outbox, new Date(NOW.getTime() - 60_000));
 		let clock = NOW;
 		deps.now = () => clock;
@@ -604,8 +593,8 @@ describe("the expiry sweep", () => {
 		deps.now = () => clock;
 		const first = gate.handleTap({ ...tap(row.id, "send"), id: "q-first" });
 		await Bun.sleep(10);
-		// The fuse runs out while the Gmail send is in flight; the sweep
-		// must refuse the mid-send row instead of stamping a lie.
+		// The fuse runs out mid-send — the sweep must refuse the row
+		// instead of stamping a lie.
 		clock = new Date(NOW.getTime() + OUTBOX_TTL_MS + 60_000);
 		await gate.sweep();
 		expect(outbox.get(row.id)!.status).toBe("pending");
@@ -618,7 +607,7 @@ describe("the expiry sweep", () => {
 
 	test("a restart: a fresh gate over the same store settles what expired while down", async () => {
 		const outbox = openOutbox(tmpDb("goblin-mailtap-"));
-		// Left behind by the previous process: one past its fuse, one
+		// Left behind by the previous process — one past its fuse, one
 		// still pending with live buttons.
 		const stale = outbox.queue(
 			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
@@ -631,7 +620,7 @@ describe("the expiry sweep", () => {
 		);
 		const { calls, gate } = setup(fakeSender(), fakeReader(), outbox);
 		// The boot catch-up runs inside the factory — the stale row is
-		// already settled when it returns; give its stamp a beat to land.
+		// already settled when it returns.
 		expect(outbox.get(stale.id)!.status).toBe("expired");
 		await Bun.sleep(10);
 		expect(calls.edits).toContainEqual({
@@ -639,8 +628,8 @@ describe("the expiry sweep", () => {
 			message: 555,
 			text: expect.stringContaining("expired — never sent"),
 		});
-		// The sending set starts empty (factory state, not module
-		// state): pending rows keep their buttons and a tap decides.
+		// The sending set is factory state — a fresh gate's pending rows
+		// keep their buttons and a tap decides.
 		await gate.handleTap(tap(pending.id, "cancel"));
 		expect(outbox.get(pending.id)!.status).toBe("cancelled");
 		outbox.close();

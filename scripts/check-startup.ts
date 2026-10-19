@@ -31,18 +31,17 @@ const briefSchema = z.object({
 });
 
 // The pre-restart identity a watched invocation must postdate — deploy
-// measures it BEFORE `systemctl restart`, so a crash/restart between the
-// restart and this process booting can never be adopted as the watched
-// one. Both fields come from `systemctl show --value`.
+// measures it BEFORE `systemctl restart`, so a crash/restart between
+// the restart and this process booting can never be adopted as the
+// watched one.
 export interface WatchFloor {
 	invocationId: string; // "" when the unit was inactive
 	monotonic: number; // ExecMainStartTimestampMonotonic
 }
 
 // One probe with an absolute deadline — nested commands get at most 5s
-// and never outlast the caller's budget. The enable/start commands
-// return instantly; the poll loop below, not any command, owns the
-// wait behind the ordered network-online stub.
+// and never outlast the caller's budget; the poll loop, not any
+// command, owns the wait behind the ordered network-online stub.
 async function run(argv: string[], label: string, deadline: number): Promise<string> {
 	const time = deadline - performance.now();
 	if (time <= 0) throw new Error("startup deadline expired");
@@ -103,10 +102,10 @@ async function identity(deadline: number): Promise<Identity> {
 	return parsed.data;
 }
 
-// One grammar, two entries: install starts a confirmed-inactive unit, deploy
-// watches the invocation its restart just created — pinned by a floor the
-// caller measured before restarting, so an invocation predating the
-// restart can never be accepted.
+// One grammar, two entries: install starts a confirmed-inactive unit,
+// deploy watches the invocation its restart just created — pinned by a
+// floor the caller measured before restarting, so an invocation
+// predating the restart can never be accepted.
 async function watchInvocation(
 	entry: "accept" | "watch",
 	port: number,
@@ -134,9 +133,10 @@ async function watchInvocation(
 	const baseline = await identity(deadline);
 	// What an accepted invocation must postdate. accept's floor is the
 	// confirmed-inactive unit: an empty id plus the last invocation's
-	// monotonic — a fresh start is strictly newer. A floored watch trusts
-	// the caller's pre-restart measurement; an unfloored watch trusts the
-	// first observation (ad-hoc use only — deploy always floors).
+	// monotonic — a fresh start is strictly newer. A floored watch
+	// trusts the caller's pre-restart measurement; an unfloored watch
+	// trusts the first observation (ad-hoc use only — deploy always
+	// floors).
 	let floorId: string | undefined;
 	let floorMono = 0;
 	// A manual restart resets NRestarts to 0; the watched invocation must
@@ -180,10 +180,10 @@ async function watchInvocation(
 	let current: Identity | undefined;
 	let boundPort = port === 0 ? undefined : port;
 	const seen = new Set<string>();
-	// A poll that re-read the invocation's whole journal each ~250ms would
-	// hit the output cap on a flood — the run keeps a cursor instead and
-	// each journalctl resumes after the last consumed record. Absent the
-	// field (old systemd), the poll degrades to today's full re-read.
+	// Re-reading the invocation's whole journal each ~250ms would hit
+	// the output cap on a flood — each journalctl resumes after the last
+	// consumed record instead. Absent the field (old systemd), the poll
+	// degrades to a full re-read.
 	let journalCursor: string | undefined;
 	while (true) {
 		remaining();
@@ -286,8 +286,8 @@ async function watchInvocation(
 }
 
 // The 90s ordered network wait (podman-user-wait-network-online) is a
-// lower bound on how long the start job can take to even spawn goblin —
-// the budget has to clear it plus boot, poll, and HTTP acceptance.
+// lower bound on how long the start job can take to spawn goblin — the
+// budget has to clear it plus boot, poll, and HTTP acceptance.
 export async function acceptStartup(port: number, budgetMs = 120_000): Promise<void> {
 	return watchInvocation("accept", port, budgetMs);
 }
@@ -300,8 +300,8 @@ export async function watchStartup(
 	return watchInvocation("watch", port, budgetMs, floor);
 }
 
-// Optional trailing args of the --watch form: the pre-restart identity
-// deploy measured — <invocation id> <start monotonic>. Both or neither.
+// Trailing --watch args: the pre-restart identity deploy measured —
+// <invocation id> <start monotonic>. Both or neither.
 function floorFromArgv(id: string | undefined, mono: string | undefined): WatchFloor | undefined {
 	if (id === undefined && mono === undefined) return undefined;
 	if (id === undefined || mono === undefined || !/^\d+$/.test(mono))
@@ -310,8 +310,8 @@ function floorFromArgv(id: string | undefined, mono: string | undefined): WatchF
 }
 
 // --brief N: the deploy failure fallback under the same contract the
-// watcher enforces — the journal MESSAGE is private input. Only systemd
-// manager lines print verbatim (Started/Stopped/exit-status notices
+// watcher enforces — the journal MESSAGE is private input. Only
+// systemd manager lines print verbatim (Started/Stopped/exit-status
 // carry no user content); goblin's own entries project to their
 // lifecycle event names; everything else is counted, never printed.
 async function journalBrief(limit: number): Promise<string[]> {

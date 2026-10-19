@@ -1,8 +1,3 @@
-// The tools. Hand-rolled, zod-validated, bound to the caller's cwd —
-// the deployment workspace, or a project conversation's dir. Telegram
-// send is delivery, not a tool. Nothing else exists until a feature
-// needs it.
-
 import type { ToolSet } from "ai";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
@@ -40,9 +35,7 @@ import { writeFileTool } from "./write.ts";
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
 	deliver(audio: Uint8Array): Promise<void>;
-	/** Starts a record_voice chat action; returns the stopper. */
 	recording?(): () => void;
-	/** Allowlist (default included) the speak tool may pick from per call. */
 	voices?: readonly string[];
 }
 
@@ -61,8 +54,6 @@ export interface MemoryToolDeps extends MemorySearchDeps {
 }
 
 export interface TranscribeToolDeps {
-	// Same seam intake uses — the composition root reads the
-	// transcription block per call. null = unconfigured or no speech.
 	transcribe(file: SpeechFile): Promise<string | null>;
 }
 
@@ -80,14 +71,10 @@ export type {
 	VisionToolDeps,
 };
 
-// Use the registered set as the availability source, rather than
-// duplicating its dependency gates in the prompt.
 export function toolNames(tools: ToolSet): string[] {
 	return Object.keys(tools);
 }
 
-// An absent field mounts none of its tools — presence is the caller's
-// per-turn read of live config, never a default in here.
 export interface MakeToolsOptions {
 	cwd: string;
 	voice?: VoiceToolDeps | undefined;
@@ -97,8 +84,6 @@ export interface MakeToolsOptions {
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
 	delegate?: DelegateToolDeps | undefined;
-	// The operator's own `default` session — always wired at the
-	// composition root; guest surfaces lose it via filterGuestTools.
 	herdr?: HerdrToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
@@ -106,15 +91,10 @@ export interface MakeToolsOptions {
 	vision?: VisionToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
-	// The subagent pool's own gate: mounted only while the subagents
-	// block exists and the owner was built — worker/computer kind
-	// availability rides inside the deps.
 	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
 	// Project conversations only — the handover/coordination surface.
 	responsibility?: ResponsibilityToolDeps | undefined;
-	// App-channel gate: true mounts the interface tool (design/app.md →
-	// Intelligent UI). Boolean, not a dep bag — ui needs nothing.
 	ui?: boolean | undefined;
 }
 
@@ -148,27 +128,12 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),
-		// The speech-in twin of speak: gated on the transcription block
-		// like search is on its own config — presence is decided per turn
-		// by the caller, which reads configRef live.
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
-		// Image Q&A rides its config block — same per-turn gate as
-		// transcribe/search. The vision model never has to be the
-		// conversation's model: read_file's image note points here.
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
-		// generate_image rides its config block — same per-turn gate as
-		// vision: deps arrive only while `image` exists in live config.
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
-		// Same per-turn gate as search/transcribe: the caller passes deps
-		// only when the delegation block exists in the live config.
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
-		// The operator-session tool sits next to delegate — a different
-		// session and a different trust surface, but the same CLI edge.
 		...(herdr ? { herdr: herdrTool(herdr) } : {}),
-		// Same live gate on the mail block — the tool holds only the
-		// approval gate's request closure; the send credential is never
-		// in this dep tree (reads ride the goblin-mail wrapper via bash).
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory
@@ -185,32 +150,16 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 					}),
 				}
 			: {}),
-		// Fetch is always in the set (local extraction needs no config);
-		// search rides its config block. This runs per turn against
-		// configRef, so a mini-app save — the one writer that swaps the
-		// ref in place — applies next turn: provider switch and search
-		// add/remove alike (its flip is logged at the save boundary). A
-		// hand edit to goblin.json5 is only seen on restart.
 		...(web ? { fetch: fetchTool(web) } : {}),
 		...(web?.configRef.current.search ? { search: searchTool(web) } : {}),
-		// Past-chat search is local state, not a config block — always in
-		// the set (the store dep is unconditional at the composition root).
 		...(history ? { history_search: historySearchTool(history) } : {}),
-		// Notes are rows like history — no config gate; every operator
-		// conversation edits them (guests are filtered by the caller).
 		...(note ? { note: noteTool(note) } : {}),
-		// Same per-turn gate as vision: deps arrive only while the
-		// sandbox block exists in the live config.
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
-		// Neither name enters the script allowlist (guests and scripted
-		// runs keep the pre-existing set), and both mount only when the
-		// subagents config block produced a live owner.
 		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
 		// The responsibility tool mounts for project-bound turns only —
 		// the caller decides; nothing here reaches for conv state.
 		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),
-		// Last in the set so the Tools: line's shared prefix stays stable.
 		...(ui === true ? { ui: uiTool() } : {}),
 	};
 }

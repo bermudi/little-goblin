@@ -117,7 +117,7 @@ describe("history_search tool", () => {
 		const s = (await exec(tool, { action: "search", query: "needle" })) as { error: string };
 		expect(s.error).toContain("excluded");
 		// Context on another id stays refused — own-context is the only
-		// exception (design/tools.md → Chat search).
+		// exception.
 		const ctxOther = (await exec(tool, {
 			action: "context",
 			conversation: other.id,

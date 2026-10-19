@@ -1,11 +1,3 @@
-// The sandbox tool (design/sandbox.md): a disposable rootless-podman
-// container per conversation — bash's discipline (bounded run,
-// tail-truncated output, flat-schema per-action union) inside a wall
-// the host never crosses: no mounts, no env, no daemon access. Files
-// move only through import (workspace → container, realpath-contained)
-// and export (container → workspace, byte stream through `cat`, never
-// a host path the container could aim).
-
 import { tool } from "ai";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,7 +14,6 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
 export interface SandboxToolDeps {
-	/** The conversation this tool call runs in — its one sandbox. */
 	conversation: string;
 	workspace: string;
 	sandboxes: Sandboxes;
@@ -52,9 +43,6 @@ const resetSchema = z.object({
 	image: imageRefSchema.optional(),
 });
 
-// The strict per-action contract, enforced inside execute — the wire
-// schema stays flat (design/tools.md; a root discriminatedUnion
-// serializes to oneOf some providers can't generate arguments for).
 const actionSchema = z.discriminatedUnion("action", [
 	execSchema,
 	importSchema,
@@ -88,8 +76,6 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 		inputSchema: sandboxInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const input = actionSchema.parse(raw);
-			// Every action is a mutation or an engine read past this point —
-			// a dead call never starts one.
 			abortSignal?.throwIfAborted();
 			const conv = deps.conversation;
 			try {
@@ -129,24 +115,12 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 					}
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));
-						// box-files owns the containment checks; unlike its export
-						// helpers, the sandbox writes the exact destination,
-						// overwriting in place rather than numbering. The early
-						// resolve refuses bad destinations before paying the
-						// container read.
 						const early = resolveExport(deps.workspace, rel);
 						if ("error" in early) return { error: early.error };
 						const { data, note } = await deps.sandboxes.catFile(conv, input.from, {
 							...(abortSignal ? { abortSignal } : {}),
 						});
-						// The wait above is a cancellation gap: recheck before
-						// the host write so a call cancelled mid-read (or a nested
-						// export the script VM killed) never overwrites a
-						// workspace file.
 						abortSignal?.throwIfAborted();
-						// The resolved path is stale after the read — the write
-						// re-derives containment and pins the parent dir FD so a
-						// swapped ancestor can't redirect it.
 						const written = writeExportBytes(deps.workspace, rel, data);
 						if ("error" in written) return { error: written.error };
 						return {
@@ -181,10 +155,6 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 				if (err instanceof SandboxError || err instanceof PodmanError) {
 					return { error: err.message };
 				}
-				// Ordinary destination/path mistakes — a file where a
-				// directory was expected, a directory where a file was
-				// expected — are refusals the model can fix, not step-fatal.
-				// Resource/device errors (ENOSPC, EIO) stay loud.
 				const code = (err as NodeJS.ErrnoException).code;
 				if (code === "EEXIST" || code === "ENOTDIR" || code === "EISDIR" || code === "ENOTEMPTY") {
 					return { error: (err as Error).message };

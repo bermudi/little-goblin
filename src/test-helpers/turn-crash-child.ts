@@ -1,22 +1,17 @@
-// Child process for the turn-journal crash test: a real Runtime over a
-// real goblin.sqlite whose "probe" tool and scripted model stop at a
-// MODE-selected point; the parent SIGKILLs there and reopens the store.
-// Env (no secrets): DB_PATH, MARKER_PATH, MODE —
-//   plan-only:         the model emits a provider-executed call — the
-//                      fence never dispatches those, so the row sits
-//                      'planned' while the next step never answers.
+// Env: DB_PATH, MARKER_PATH, MODE — where MODE holds the stall point:
+//   plan-only:         provider-executed call — the fence never
+//                      dispatches those, so the row sits 'planned'.
 //                      (The SDK buffers tool parts until model-call-end
-//                      for the retry machinery, so a normal call has no
+//                      for retries, so a normal call has no
 //                      planned-before-dispatch window to hold open.)
-//   hang-in-tool:      probe's execute marks the host then never returns —
-//                      the call sits 'dispatched' mid-side-effect.
-//   complete-then-stall: probe returns, the second model call never
-//                      answers — the call sits 'completed' mid-turn.
-//   overflow-stall:    probe returns, the second model call overflows
-//                      the context (compaction wired, exchanges
-//                      pre-seeded), and the resumed attempt's first
-//                      model call never answers — the kill lands on the
-//                      continuation attempt, not the overflowed one.
+//   hang-in-tool:      execute marks the host then never returns —
+//                      'dispatched' mid-side-effect.
+//   complete-then-stall: second model call never answers — 'completed'
+//                      mid-turn.
+//   overflow-stall:    second call overflows the context (compaction
+//                      wired, exchanges pre-seeded) and the resumed
+//                      attempt's first call never answers — the kill
+//                      lands on the continuation, not the overflowed one.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -68,8 +63,8 @@ const parts = (list: LanguageModelV4StreamPart[]) =>
 		},
 	});
 
-// Same, but the step ends — the overflow mode's leg has to complete so
-// the next model call (the overflow) happens.
+// The step ends — the overflow mode's leg has to complete so the next
+// model call (the overflow) happens.
 const closedParts = (list: LanguageModelV4StreamPart[]) =>
 	new ReadableStream<LanguageModelV4StreamPart>({
 		start(controller) {
@@ -124,8 +119,8 @@ const tools = {
 	}),
 };
 
-// The workspace sits below the parent's own temp dir (DB_PATH's dir)
-// so a SIGKILLed child leaks nothing the parent won't remove.
+// Below DB_PATH's dir — a SIGKILLed child leaks nothing the parent
+// won't remove.
 const workspace = join(dirname(DB_PATH), "ws");
 mkdirSync(workspace, { recursive: true });
 const store = openStore(DB_PATH);

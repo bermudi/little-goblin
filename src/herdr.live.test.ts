@@ -1,16 +1,10 @@
-// Live herdr drift check: pins the REAL CLI's wire behavior the
-// adapter depends on — envelope shapes, pane run's silent success,
-// error codes, usage errors exiting 2 with non-JSON stderr. The fake
-// suite in herdr.test.ts pins the adapter's own contract; this file
-// is what catches a herdr upgrade changing the wire underneath it.
-// It spawns a real server and panes, so it is gated OFF the default
-// suite and must be run deliberately:
-//
+// Live drift check: pins the real CLI's wire behavior — envelope
+// shapes, pane run's silent success, error codes, usage errors exit 2
+// with non-JSON stderr.
 //     GOBLIN_HERDR_LIVE=1 bun test src/herdr.live.test.ts
-//
-// It boots a disposable session (never `default` or `goblin` — the
-// AGENTS.md probe rule), and the tests are a scripted sequence, not
-// independent cases: each builds on the workspace the first creates.
+// Boots a disposable session — never `default` or `goblin` — and the
+// tests are a scripted sequence building on the first test's
+// workspace.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -29,12 +23,10 @@ import {
 import { setLogFile } from "./log.ts";
 import { boundedRun } from "./proc.ts";
 
-// Hard-pinned throwaway name: the operator owns `default`, prod
-// delegation owns `goblin`, this file owns goblin-drift. Widened to
-// string so the guard below stays a live invariant, not dead code —
-// editing SESSION to a live name must fail the run, not boot prod.
-// Unique per run — never a preexisting name; the guard stays a live
-// invariant so editing it to a live session fails the run, not boots prod.
+// Throwaway name, unique per run — the operator owns `default`, prod
+// delegation owns `goblin`. `string` keeps the guard below a live
+// invariant: editing SESSION to a live name must fail the run, not
+// boot prod.
 const SESSION: string = `goblin-drift-${process.pid}-${Date.now().toString(36)}`;
 if (SESSION === "default" || SESSION === "goblin") {
 	throw new Error("herdr.live.test.ts: SESSION must be a throwaway name");
@@ -51,8 +43,8 @@ interface CliResult {
 	stderr: string;
 }
 
-// Inherited HERDR_* (socket paths, session/caller ids) must not leak
-// into the throwaway server or its CLI calls (herdr-throwaway-repro).
+// Inherited HERDR_* env (socket paths, session/caller ids) must not
+// leak into the throwaway server or its CLI calls.
 const CLEAN_ENV = Object.fromEntries(
 	Object.entries(process.env).filter(([k]) => !k.startsWith("HERDR_")),
 ) as Record<string, string>;
@@ -136,8 +128,8 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 	}, 30_000);
 
 	test("pane run: real success is silent — resolves with no envelope", async () => {
-		// The regression pin: the CLI prints nothing on success and
-		// the adapter must not demand JSON here.
+		// The CLI prints nothing on success — the adapter must not
+		// demand JSON.
 		await h!.paneRun(paneId, `printf '${MARKER}\\n'`);
 	}, 30_000);
 
@@ -200,10 +192,8 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 
 	// ---- operator adapter (the `herdr` tool's backend) ----
 	//
-	// makeOperatorHerdr pins --session default; this runner rewrites the
-	// pinned session to the throwaway one — the ONLY seam the adapter
-	// leaves open. It also records argv so the prompt-refusal test can
-	// prove nothing was sent.
+	// makeOperatorHerdr pins --session default; this runner rewrites it
+	// to the throwaway session — the only seam the adapter leaves open.
 	let opHerdr: OperatorHerdr;
 	const opCalls: string[][] = [];
 	{
@@ -245,9 +235,8 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 	}, 30_000);
 
 	test("operator prompt on the drift workspace's shell pane: topology parsed, then agent_not_found refusal", async () => {
-		// The workspace's root pane (paneId, set by the create test) is a
-		// shell — agent get must refuse it AFTER the topology reads, and
-		// nothing is sent. This pins workspace/tab list wire shapes live.
+		// The root pane (set by the create test) is a shell — agent get
+		// must refuse it AFTER the topology reads; nothing is sent.
 		opCalls.length = 0;
 		try {
 			await opHerdr.prompt(paneId, "pi", "never sent");
@@ -343,7 +332,7 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 	afterAll(async () => {
 		setLogFile(null);
 		const failures: string[] = [];
-		// A failed test above can leave the workspace open; close it so
+		// A failed test above can leave the workspace open — close it so
 		// the session stops with no live panes.
 		if (h !== null && workspaceId !== "") {
 			try {

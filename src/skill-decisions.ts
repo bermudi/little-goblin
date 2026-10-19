@@ -1,15 +1,8 @@
-// Skill proposal decisions — the mechanical approve/discard every door
-// shares (design/skills.md → "It proposes, then tells"). The Telegram
-// ✅/🚫 row, the operator doors' POST skills/decide, and the
-// conversational fallback all converge on the same disk semantics:
-// install swaps skills-proposed/<name>/ into skills/ (replacing a live
-// copy atomically, rollback on failure), discard deletes the staged
-// dir. Disk is the state — no rows, nothing pending a restart; a
-// decision on a gone proposal reports "already gone". Each decision
-// logs its own line with the caller's fields, and resolveSkillProposal
-// appends a resolution history event to the conversation that learned
-// the skill: the reviewer's "parked, not installed" event is a claim,
-// and the resolution is the durable correction.
+// Disk is the state — no rows, nothing pending a restart; a decision on
+// a gone proposal reports "already gone". Install swaps a live copy
+// atomically with rollback; discard deletes the staged dir. The
+// resolution history event is the durable correction to the reviewer's
+// "parked, not installed" claim.
 
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, renameSync, rmSync } from "node:fs";
@@ -32,8 +25,7 @@ export interface SkillDecisionDeps {
 	proposedDir: string;
 	/** Test door for the swap-trash timestamp. */
 	now?(): Date;
-	// The learning-conversation lookup and the history sink — both
-	// optional: a pre-table proposal has no provenance row, and a
+	// Both optional: a pre-table proposal has no provenance row, and a
 	// decision still lands when there's no thread to correct.
 	forSkill?(skill: string): SkillSourceRow[];
 	store?: { append(id: string, messages: UIMessage[]): void };
@@ -124,10 +116,9 @@ function discardProposal(
 	return { ok: true };
 }
 
-// The disk move plus the decision's own log line — every door gets the
-// same telemetry. logFields carries the door's context (conversation,
-// actor) onto the line. Failures log too: "gone" is informational,
-// anything else is a conflict worth a warn.
+// logFields carries the door's context (conversation, actor) onto the
+// line. Failures log too: "gone" is informational, anything else is a
+// conflict worth a warn.
 export function decideSkillProposal(
 	deps: SkillDecisionDeps,
 	skill: string,
@@ -164,8 +155,8 @@ export function decideSkillProposal(
 	return { action, ...outcome };
 }
 
-// The history sentence a successful decision writes — matches the
-// "skill proposal resolved: <name> — …" form the reviewer events use.
+// Matches the "skill proposal resolved: <name> — …" form reviewer events
+// use.
 export function skillResolutionText(
 	decision: Extract<SkillDecision, { ok: true }>,
 	skill: string,
@@ -175,8 +166,8 @@ export function skillResolutionText(
 		: `skill proposal resolved: ${skill} — discarded (deleted)`;
 }
 
-// The learning conversation's durable correction. Append failures never
-// un-decide — the log line already carries the decision.
+// Append failures never un-decide — the log line already carries the
+// decision.
 export function appendSkillResolution(
 	store: { append(id: string, messages: UIMessage[]): void },
 	conversationId: string,
@@ -193,11 +184,8 @@ export function appendSkillResolution(
 	}
 }
 
-// The full flow for non-conversational doors: look up the conversation
-// that learned the skill (provenance's newest row), decide on disk,
-// append the resolution event there. A skill with no provenance row —
-// proposals from before the table existed — still decides; history just
-// has nothing to correct.
+// A skill with no provenance row — proposals from before the table
+// existed — still decides; history just has nothing to correct.
 export function resolveSkillProposal(
 	deps: SkillDecisionDeps,
 	skill: string,

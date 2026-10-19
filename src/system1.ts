@@ -1,11 +1,8 @@
-// System One boundary: the OpenRouter Decisions API (alpha) — the shared
-// client behind the consumers in design/system1.md. One primary POST, at
-// most one backup; typed
-// yes/no (noul) questions about the turn's state, calibrated
-// probabilities back. Wire contract: POST {baseUrl}/api/alpha/decisions
-// with {model, state, questions}; answers carry {type, noul}, usage
-// carries input_tokens/output_tokens/cost. Pinned by system1.test.ts
-// against the documented response shape.
+// OpenRouter Decisions API (alpha). One primary POST, at most one
+// backup; typed yes/no (noul) questions about the turn's state,
+// calibrated probabilities back. Wire contract: POST
+// {baseUrl}/api/alpha/decisions with {model, state, questions};
+// answers carry {type, noul}; usage carries input/output tokens + cost.
 //
 // Consumers log their routing/verdict; this boundary logs the selected
 // model and recovery under one request id, never input text or secrets.
@@ -31,8 +28,8 @@ export class System1Error extends Error {
 	}
 }
 
-// The only question type the gate asks. Both criteria are required —
-// the OpenRouter transport rejects a noul carrying only one side.
+// Both criteria are required — the transport rejects a noul carrying
+// only one side.
 export interface System1Question {
 	type: "noul";
 	instructions: string;

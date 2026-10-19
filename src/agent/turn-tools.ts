@@ -1,15 +1,11 @@
-// Per-turn tool-surface mount policy (DESIGN.md → Tools). makeTools
-// assembles whatever deps it's handed — an absent field mounts nothing;
-// this factory owns WHICH fields are present per conversation: the
-// channel gates (Telegram-bound tools don't register on app turns),
-// the live-config reads (search, transcription, sandbox, image hide or
-// show next turn), and the boot-frozen blocks (subagent/desktop mount
-// only while the boot snapshot said so). index.ts binds the seams it
-// can't own — the tg send, the guest filter, the per-conv seams
-// (delegate/vision/transcribe) — and hands the result to the runtime
-// as RuntimeDeps["makeTools"]; the resume contract check rebuilds the
-// surface through the same function so the drift comparison reads the
-// set the resumed attempt would actually get.
+// Per-turn mount policy: an absent dep field mounts nothing, so this
+// factory owns which fields exist per conversation — channel gates
+// (Telegram-bound tools don't register on app turns), live-config reads
+// (search, transcription, sandbox, image hide or show next turn), and
+// boot-frozen blocks (subagent/desktop mount only while the boot
+// snapshot said so). The resume contract check rebuilds the surface
+// through this same function so the drift comparison reads the set the
+// resumed attempt would actually get.
 
 import type { RuntimeDeps } from "../runtime.ts";
 import type { Config, ConfigRef } from "../config.ts";
@@ -35,9 +31,8 @@ import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
-// Boot-frozen or boot-bound values the per-turn function closes over.
-// Anything that decides "does this tool slot exist" is a dep here; the
-// decision itself lives below, not in boot().
+// Anything deciding "does this tool slot exist" is a dep here; the
+// decision itself lives in makeTurnTools, not boot().
 export interface TurnToolsDeps {
 	configRef: ConfigRef;
 	auth: AuthStore;
@@ -45,8 +40,8 @@ export interface TurnToolsDeps {
 	projects: ProjectStore;
 	notes: NoteStore;
 	programs: ProgramsStore;
-	// DM-per-operator send for program hooks — built once at boot (the
-	// chat-id list reads live); conv-independent by construction.
+	// DM-per-operator send for program hooks; conv-independent by
+	// construction.
 	sendPrivate(text: string): Promise<void>;
 	// Boot snapshot pair — a live config read can only hide the memory
 	// tools, never swap the endpoint mid-run (same freeze as subagents).
@@ -57,8 +52,8 @@ export interface TurnToolsDeps {
 	} | null;
 	transcribe: TranscribeToolDeps["transcribe"];
 	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
-	// The operator's own `default` session — unconditional here; guest
-	// surfaces lose it in filterGuests.
+	// The operator's own `default` session — guest surfaces lose it in
+	// filterGuests.
 	operatorHerdr: OperatorHerdr;
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
@@ -78,8 +73,8 @@ export interface TurnToolsDeps {
 		service: ResponsibilityService;
 		listFor(): Promise<OperatorAgent[]>;
 	} | null;
-	// Channel/persona exclusion — tg/guest.ts owns the policy, injected
-	// so tools never imports back into tg/.
+	// tg/guest.ts owns the exclusion policy — injected so tools never
+	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
 }
 
@@ -101,8 +96,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		filterGuests,
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, accepts) => {
-		// Late-bound seams — resolved per call (they bind after Runtime
-		// construction), never at factory time.
+		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
 		const subagents = deps.subagents();
 		const desktops = deps.desktops();
@@ -110,13 +104,11 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const responsibilitySvc = deps.responsibility();
 		const tts = configRef.current.tts;
 		// Telegram-bound tools don't register on app turns — disjoint
-		// pools (DESIGN.md → App channel); delegate is the exception
-		// since the spin-off.
+		// pools; delegate is the exception.
 		const telegram = channelOf(conv.id) === "telegram";
 		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
 		// relative-path anchor, and delegation's workspaceDir — a
-		// project conversation works in its dir end to end; a vanished
-		// dir throws here and the turn fails at admission.
+		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
 		const tools = makeTools({
 			cwd: workdir,
@@ -125,8 +117,8 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					? {
 							// A per-call voice replaces the config voice outright — Edge
 							// derives the language from the voice name; the allowlist
-							// always carries the default. The cast is edge-only:
-							// openrouter voice ids carry no language to match on.
+							// always carries the default. Edge-only: openrouter voice
+							// ids carry no language to match on.
 							synthesize: (text, voice) =>
 								synthesizeSpeech(
 									text,
@@ -181,14 +173,14 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						noteRecall: memory.noteRecall,
 					}
 				: undefined,
-			// fetch is local (always on), search behind its config block —
-			// both read configRef live; the accepts ref rides for PDF rendering.
+			// fetch is local (always on), search behind its config block;
+			// the accepts ref rides for PDF rendering.
 			web: { configRef, auth, ...(accepts ? { accepts } : {}) },
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
-			// Boot fixtures under a live gate (see delegateDeps above).
+			// Boot fixtures under a live gate.
 			delegate: delegateDeps(conv, workdir),
-			// Unconditional — the operator's session isn't config-gated
-			// (guests are filtered below, script's allowlist excludes it).
+			// Unconditional — guests are filtered below and script's
+			// allowlist excludes it.
 			herdr: { herdr: operatorHerdr },
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
@@ -202,14 +194,12 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						}
 					: undefined,
 			history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
-			// Notes mount for every operator conversation — guests are
-			// excluded by the filter below, never by dep absence.
+			// Guests are excluded by the filter below, never by dep absence.
 			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 			// Threads are process-global; a model change drops them on the next call.
 			vision: visionDepsFor(conv),
-			// Same live-read gate as vision — the image block mounts
-			// generate_image; Telegram channels deliver each image
-			// inline, other channels save + report paths.
+			// Live-read like vision — mounts generate_image; Telegram
+			// delivers each image inline, other channels save + report paths.
 			image:
 				configRef.current.image !== undefined
 					? {
@@ -219,8 +209,8 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							...(deliverFile ? { deliver: deliverFile } : {}),
 						}
 					: undefined,
-			// Live-read like vision/search: the sandbox block mounts the
-			// tool for any channel (guest personas are filtered out below).
+			// Live-read like vision/search; guest personas are filtered
+			// out below.
 			sandbox:
 				configRef.current.sandbox !== undefined
 					? {
@@ -265,11 +255,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							guardedSend: makeManagedSendEdge(operatorHerdr),
 						}
 					: undefined,
-			// The interface tool mounts on app turns only — Telegram
-			// and guests render plain text (design/app.md → Intelligent UI).
+			// App turns only — Telegram and guests render plain text.
 			ui: channelOf(conv.id) === "app",
 		});
-		// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
+		// Guest mode: hard toolset exclusion after assembly.
 		const filtered = filterGuests(conv, tools);
 		// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
 		const scripting = configRef.current.scripting;

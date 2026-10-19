@@ -1,14 +1,7 @@
-// Model capability catalogs — what other agent tools already read off
-// models.dev. Two catalogs over the shared cached-catalog skeleton
-// (catalog-fetch.ts: single-flight fetch, backoff on failure, validated
-// disk cache):
-//   - models.dev: input modalities (does this model eat image/audio/pdf
-//     natively?) + context window limits
-//   - openrouter: per-route supported_parameters — the only honest
-//     source for whether a routed model takes reasoning_effort, a bare
-//     reasoning toggle, or no reasoning at all
-// An unavailable catalog degrades conservatively (text-only / unknown),
-// never fatally.
+// openrouter's per-route supported_parameters is the only honest
+// source for whether a routed model takes reasoning_effort, a bare
+// reasoning toggle, or none. An unavailable catalog degrades
+// conservatively (text-only / unknown), never fatally.
 
 import { z } from "zod";
 import { paths } from "../config.ts";
@@ -28,8 +21,7 @@ const catalogSchema = z.record(
 							input: z.array(z.string()).default(["text"]),
 						})
 						.optional(),
-					// Context window limit — the denominator for window
-					// utilization logging (DESIGN.md, Cache stability).
+					// Denominator for window-utilization logging.
 					limit: z.object({ context: z.number().optional() }).optional(),
 				}),
 			)
@@ -43,8 +35,7 @@ export type ModelsDevCatalog = Catalog;
 function parseCatalog(disk: boolean, wire: unknown): Catalog {
 	const parsed = catalogSchema.safeParse(wire);
 	if (!parsed.success) {
-		// "schema" names a fetch that went bad; "cache" names the disk
-		// copy — the helper's warn lines carry this message either way.
+		// "schema" = the wire fetch went bad; "cache" = the disk copy.
 		throw new Error(`models.dev ${disk ? "cache" : "schema"}: ${parsed.error.message}`);
 	}
 	return parsed.data;
@@ -54,8 +45,7 @@ const modelsDev: CachedCatalog<Catalog> = createCachedCatalog<Catalog>({
 	name: "models.dev",
 	url: "https://models.dev/api.json",
 	cachePath: () => paths.modelsDevCache(),
-	// Media intake rides this catalog — a stale one means file paths
-	// instead of inline attachments.
+	// A stale catalog means file paths instead of inline attachments.
 	staleNote: "media will fall back to file paths",
 	parseWire: (wire) => parseCatalog(false, wire),
 	parseDisk: (disk) => parseCatalog(true, disk),
@@ -63,10 +53,9 @@ const modelsDev: CachedCatalog<Catalog> = createCachedCatalog<Catalog>({
 	toDisk: (catalog) => catalog,
 });
 
-// Input modalities for "<provider>/<model-id>" as configured. Falls back to
-// scanning every catalog provider for the model id (openrouter keeps full
-// "anthropic/claude-…" ids; zai coding-plan models may live under a sibling
-// provider key). Text-only when unknown.
+// Falls back to scanning every catalog provider for the model id —
+// openrouter keeps full "anthropic/claude-…" ids; zai coding-plan
+// models may live under a sibling provider key. Text-only when unknown.
 export async function inputModalities(provider: string, modelId: string): Promise<Set<string>> {
 	const cat = await modelsDev.ensure();
 	if (!cat) return new Set(["text"]);
@@ -79,11 +68,9 @@ export async function inputModalities(provider: string, modelId: string): Promis
 	return new Set(["text"]);
 }
 
-// Sync sibling of inputModalities for gates that can't await — tool
-// registration runs before buildStep's catalog fetch resolves. Reads
-// only the in-memory catalog: null when cold (and kicks the fetch so
-// the next call sees the real answer), text-only when the model is
-// unlisted — same conservative reading as the async path.
+// For gates that can't await — tool registration runs before
+// buildStep's catalog fetch resolves. null when cold (kicks the fetch
+// so the next call sees the real answer), text-only when unlisted.
 export function inputModalitiesCached(provider: string, modelId: string): Set<string> | null {
 	const cat = modelsDev.current();
 	if (!cat) {
@@ -99,9 +86,9 @@ export function inputModalitiesCached(provider: string, modelId: string): Set<st
 	return new Set(["text"]);
 }
 
-// Context window (tokens) for "<provider>/<model-id>" as configured, same
-// lookup rule as inputModalities. Null when the catalog is cold or doesn't
-// list the model — callers treat null as "unknown", never "unlimited".
+// Same lookup rule as inputModalities. Null when the catalog is cold
+// or doesn't list the model — callers treat null as "unknown", never
+// "unlimited".
 export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
 	const cat = await modelsDev.ensure();
 	if (!cat) return null;
@@ -114,21 +101,28 @@ export async function contextLimit(provider: string, modelId: string): Promise<n
 	return null;
 }
 
-// Sync sibling of contextLimit for read paths that must never stall on
-// the network (HTTP routes). Reads only the in-memory catalog — null
-// when cold or unlisted, with no fetch kick: the turn path's async
-// ensure() warms it on the first real turn, which is also when stored
-// usage appears.
+// For read paths that must never stall on the network (HTTP routes) —
+// no fetch kick: the turn path's ensure() warms memory on the first
+// real turn, which is also when stored usage appears. A cold memory
+// falls back to one lazy disk-cache parse per process (the gauge polls;
+// a per-request parse would re-read a megabyte of catalog each time),
+// and memory wins once warm.
+let diskCatalog: Catalog | null | undefined;
+
 export function contextLimitCached(provider: string, modelId: string): number | null {
-	const cat = modelsDev.current();
-	if (!cat) return null;
-	const direct = cat[provider]?.models[modelId]?.limit?.context;
-	if (direct !== undefined) return direct;
-	for (const p of Object.values(cat)) {
-		const found = p.models[modelId]?.limit?.context;
-		if (found !== undefined) return found;
+	function limitIn(cat: Catalog): number | null {
+		const direct = cat[provider]?.models[modelId]?.limit?.context;
+		if (direct !== undefined) return direct;
+		for (const p of Object.values(cat)) {
+			const found = p.models[modelId]?.limit?.context;
+			if (found !== undefined) return found;
+		}
+		return null;
 	}
-	return null;
+	const mem = modelsDev.current();
+	if (mem !== null) return limitIn(mem);
+	if (diskCatalog === undefined) diskCatalog = modelsDev.readDisk();
+	return diskCatalog === null ? null : limitIn(diskCatalog);
 }
 
 // ---------- openrouter ----------
@@ -173,22 +167,19 @@ const openrouter: CachedCatalog<Map<string, Set<string>>> = createCachedCatalog<
 	},
 });
 
-// Cache read on its own so the shape-validation boundary is testable
-// without a network round-trip.
+// On its own so the shape-validation boundary is testable without a
+// network round-trip.
 export function readOpenRouterCache(): Map<string, Set<string>> | null {
 	return openrouter.readDisk();
 }
 
-// Boot warm + cold-read share one flight; a failure backs off and the
-// disk cache covers the gap.
 export function ensureOpenRouterCatalog(): Promise<Map<string, Set<string>> | null> {
 	return openrouter.ensure();
 }
 
-// Per-route supported_parameters for an openrouter model id, or null when
-// the catalog is cold or doesn't list the model — callers must treat null
-// as "unknown", never "unsupported". A cold read kicks the fetch so the
-// next caller sees the real answer.
+// Null when the catalog is cold or doesn't list the model — callers
+// must treat null as "unknown", never "unsupported". A cold read kicks
+// the fetch so the next caller sees the real answer.
 export function openrouterSupportedParams(modelId: string): Set<string> | null {
 	if (!openrouter.current() && !openrouter.backoffArmed()) {
 		void openrouter.ensure();
@@ -196,24 +187,23 @@ export function openrouterSupportedParams(modelId: string): Set<string> | null {
 	return openrouter.current()?.get(modelId) ?? null;
 }
 
-// Test hook: prime or clear the sync cache without a network round-trip.
+// Test hook.
 export function _primeOpenRouterCatalog(catalog: Map<string, Set<string>> | null): void {
 	openrouter.prime(catalog);
 }
 
-// Test hook: prime or clear the sync cache without a network round-trip.
+// Test hook.
 export function _primeModelsDevForTest(catalog: ModelsDevCatalog | null): void {
 	modelsDev.prime(catalog);
 }
 
-// Test hook: force the next ensure onto the network path with a cold
-// in-memory catalog.
+// Test hook.
 export function _resetModelsDevForTest(): void {
 	modelsDev.resetForTest();
+	diskCatalog = undefined;
 }
 
-// Test hook: force the next ensure onto the network path with a cold
-// in-memory catalog.
+// Test hook.
 export function _resetOpenRouterForTest(): void {
 	openrouter.resetForTest();
 }

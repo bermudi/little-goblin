@@ -1,8 +1,3 @@
-// Persisted tool-result pruning — the boundary under test is the gate
-// chain plus the committed-row invariant: originals in `events` never
-// change, a committed marker replays byte-identically after reopen, and
-// every gate (freshness, idle, size, recency, drift) fails closed.
-
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -59,10 +54,8 @@ function baseConfig(cachePruning?: CachePruningPolicy): Config {
 	};
 }
 
-// The profile's hashes come from the same functions the turn's buildStep
-// feeds — exactly what an operator copies out of the model_cache_calls
-// row. toolChoice rides turnCallSettings' normalized shape: the SDK
-// resolves an omitted choice to {type:"auto"} before the receipts hash.
+// toolChoice rides turnCallSettings' normalized shape: the SDK resolves
+// an omitted choice to {type:"auto"} before the receipts hash.
 function profileFor(
 	cfg: Config,
 	over?: Partial<CachePruningProfile>,
@@ -156,8 +149,8 @@ function completedCall(
 		.finish(usage(over?.input ?? 50_000, over?.cacheRead));
 }
 
-// A conversation old enough to prune: the tool result sits above the
-// keepRecentExchanges=2 cutoff (two user events trail it).
+// The tool result sits above the keepRecentExchanges=2 cutoff — two user
+// events trail it.
 function fixture(over?: {
 	policy?: Partial<Omit<CachePruningPolicy, "profiles">>;
 	profile?: Partial<CachePruningProfile>;
@@ -169,8 +162,8 @@ function fixture(over?: {
 	const store = openStore(dbPath);
 	const observation = openCacheObservation(store.db, { now: () => now });
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	// No setMeta: a dm lane's effective model/thinking resolve from config
-	// (telegram.model ?? model) — the same capture admission performs.
+	// No setMeta — a dm lane's effective model/thinking resolve from
+	// config the same way admission captures it.
 	store.append(conv.id, [userMsg("old question")]); // seq 1
 	store.append(conv.id, [toolMsg("call-1", BIG)]); // seq 2 — the prune target
 	store.append(conv.id, [userMsg("second question")]); // seq 3
@@ -221,8 +214,6 @@ describe("openCachePruning", () => {
 		const projections = f.store.eventProjections(f.conv.id);
 		expect(projections).toHaveLength(1);
 		expect(projections[0]).toMatchObject({ seq: 2, toolCallId: "call-1" });
-		// The model-facing view carries the marker — head/tail, the
-		// recovery address, and the fence.
 		const view = f.store.modelEntries(f.conv.id);
 		const output = toolOutput(view.find((e) => e.seq === 2)?.message);
 		expect(output).toBe(projections[0]!.replacement);
@@ -230,7 +221,6 @@ describe("openCachePruning", () => {
 		expect(output).toContain("Old textual tool observation reduced");
 		expect(output).toContain('"toolCallId":"call-1"');
 		expect(output).toContain(BIG.slice(0, 10));
-		// Every other reader still serves the original bytes.
 		const detail = f.store.historyDetail(f.conv.id);
 		expect(toolOutput(detail.find((e) => e.seq === 2)?.message)).toBe(BIG);
 		expect(toolOutput(f.store.history(f.conv.id)[1])).toBe(BIG);
@@ -292,9 +282,6 @@ describe("openCachePruning", () => {
 		setLogFile(logPath);
 		try {
 			const f = fixture();
-			// Two identical calls back to back: the second records
-			// prefix_relation 'same' with a small idle_ms and zero cache
-			// reads — the presumed expiry is contradicted.
 			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 			f.advance(1_000);
 			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
@@ -317,9 +304,7 @@ describe("openCachePruning", () => {
 
 	test("keepRecentExchanges protects the tail; only older results commit", () => {
 		const f = fixture();
-		// A second big result inside the protected tail (after the
-		// second-from-last user event) must not be projected.
-		f.store.append(f.conv.id, [toolMsg("call-recent", BIG)]); // seq 5
+		f.store.append(f.conv.id, [toolMsg("call-recent", BIG)]); // seq 5 — inside the protected tail
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 		f.advance(IDLE_AFTER + 1);
 		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
@@ -382,8 +367,6 @@ describe("openCachePruning", () => {
 
 	test("candidates at or below the compaction boundary are skipped", () => {
 		const f = fixture();
-		// seq 2 is folded into the summary — the model never sees it, so
-		// writing a projection for it would be dead weight.
 		f.store.setCompaction(f.conv.id, {
 			boundarySeq: 2,
 			summary: "folded",
@@ -399,9 +382,8 @@ describe("openCachePruning", () => {
 	});
 
 	test("documented-expiry on an unpublished contract suspends; empirical is the allowance", () => {
-		// zai publishes no retention — the registry contract is
-		// "unpublished", so a documented-expiry profile has nothing to
-		// stand on and suspends.
+		// zai publishes no retention — "unpublished" gives a
+		// documented-expiry profile nothing to stand on.
 		const f = fixture({ profile: { evidence: "documented-expiry" } });
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 		f.advance(IDLE_AFTER + 1);
@@ -410,8 +392,6 @@ describe("openCachePruning", () => {
 			reason: "documented-expiry-unsupported",
 		});
 		f.store.close();
-		// The identical route and window under an empirical profile —
-		// the operator's own measurement — prunes.
 		const g = fixture();
 		completedCall(g.observation, g.conv.id, g.profile.routeKey, g.profile.settingsHash);
 		g.advance(IDLE_AFTER + 1);
@@ -420,9 +400,9 @@ describe("openCachePruning", () => {
 	});
 
 	test("documented-expiry prunes on a fresh rolling-expiry contract", () => {
-		// OpenRouter serving anthropic/* is the registry's documented
-		// rolling expiry: 5 minutes of idle. A profile may presume
-		// expiry at or beyond the bound.
+		// OpenRouter serving anthropic/*: the registry's documented
+		// rolling expiry is 5 minutes of idle — a profile may presume
+		// expiry at or beyond that bound.
 		const orModel = "openrouter/anthropic/claude-sonnet-4.5";
 		const bare: Config = {
 			...baseConfig(),
@@ -473,7 +453,6 @@ describe("openCachePruning", () => {
 
 	test("a contradiction stays suspended past a later cache hit — only a profile change lifts", () => {
 		const f = fixture();
-		// The contradiction: a same-prefix zero-read inside the window.
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 		f.advance(1_000);
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
@@ -484,8 +463,6 @@ describe("openCachePruning", () => {
 			pruned: 0,
 			reason: "drift-contradiction",
 		});
-		// A healthy cache-hit receipt used to REPLACE the last-completed
-		// evidence and silently re-arm pruning under the same profile.
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
 			cacheRead: 40_000,
 		});
@@ -494,8 +471,7 @@ describe("openCachePruning", () => {
 			pruned: 0,
 			reason: "drift-contradiction",
 		});
-		// The only lift is a changed profile — even a reviewedAt bump
-		// hashes differently. Same store, same conversation, new policy.
+		// Even a reviewedAt bump hashes differently — that's the lift.
 		f.advance(IDLE_AFTER + 1);
 		const revised = {
 			...f.cfg,
@@ -514,9 +490,8 @@ describe("openCachePruning", () => {
 	test("the gate hashes the SDK-normalized settings — a telemetry-copied profile matches", async () => {
 		const f = fixture();
 		try {
-			// A real streamText through the observed middleware into the fake
-			// provider: the receipt then carries whatever the installed SDK
-			// actually put on the wire, not this test's claim about its shape.
+			// A real streamText: the receipt then carries what the installed
+			// SDK put on the wire, not this test's claim about its shape.
 			const scripted = scriptedModel([textParts("ok", 50_000)]);
 			const model = observedModel(scripted.model, {
 				conversation: f.conv.id,
@@ -534,8 +509,8 @@ describe("openCachePruning", () => {
 			expect(await result.text).toBe("ok");
 			expect(scripted.streamCalls).toHaveLength(1);
 			expect(scripted.streamCalls[0]!.toolChoice).toEqual({ type: "auto" });
-			// The frozen receipt is a profile's source of truth: its
-			// settings hash is the normalized wire options, byte for byte.
+			// The receipt's settings hash is the normalized wire options,
+			// byte for byte.
 			const receipts = f.store.db
 				.query<{ status: string; route_key: string; settings_hash: string }, [string]>(
 					"SELECT status, route_key, settings_hash FROM model_cache_calls WHERE conversation_id = ?",
@@ -551,8 +526,6 @@ describe("openCachePruning", () => {
 			expect(receipt.settings_hash).not.toBe(
 				hashCacheSettings({ providerOptions: thinkingOptions(f.cfg, MODEL, "medium") }),
 			);
-			// A profile copied off the frozen receipt gates the recorded call
-			// and pruning proceeds — no second model call needed.
 			const telemetryCfg: Config = {
 				...f.cfg,
 				cachePruning: {
@@ -583,9 +556,8 @@ describe("openCachePruning", () => {
 		const f = fixture();
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 		f.advance(1_000);
-		// The multi-call turn shape: the earlier same-prefix call inside
-		// the window reported zero cache reads; the LATEST one hit — the
-		// latest-only check missed the contradiction entirely.
+		// Multi-call turn shape: an earlier same-prefix zero-read inside
+		// the window, the latest call a cache hit.
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
 			cacheRead: 0,
 		});
@@ -603,19 +575,15 @@ describe("openCachePruning", () => {
 
 	test("evidence from other settings neither suspends nor gates the selected profile", () => {
 		const f = fixture();
-		// Contradicting receipts recorded under a DIFFERENT settings
-		// hash — the shape a thinking-level change leaves behind.
+		// The shape a thinking-level change leaves behind: contradicting
+		// receipts under a different settings hash.
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, "0".repeat(64));
 		f.advance(1_000);
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, "0".repeat(64), {
 			cacheRead: 0,
 		});
 		f.advance(IDLE_AFTER + 1);
-		// No completed call exists under the selected settings — the
-		// old evidence must not stand in as the idle basis NOR suspend.
 		expect(f.pruning.pruneConversation(f.conv.id)).toBeUndefined();
-		// A healthy call under the selected settings then prunes — the
-		// foreign receipts never governed this profile either way.
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
 			cacheRead: 40_000,
 		});
@@ -625,8 +593,6 @@ describe("openCachePruning", () => {
 	});
 
 	test("a marker that would not shrink the result commits nothing", () => {
-		// minimumResultChars admits the candidate, but head+tail plus the
-		// fixed marker outweigh it — the old path committed the growth.
 		const f = fixture({ policy: { minimumResultChars: 400 } });
 		const small = "y".repeat(450);
 		// Two trailing user events move the recency cutoff past seq 5.
@@ -643,7 +609,6 @@ describe("openCachePruning", () => {
 		expect(marker.length).toBeGreaterThanOrEqual(small.length);
 		completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
 		f.advance(IDLE_AFTER + 1);
-		// The big result still prunes; the would-grow one is skipped.
 		expect(f.pruning.pruneConversation(f.conv.id)?.pruned).toBe(1);
 		expect(f.store.eventProjections(f.conv.id)).toHaveLength(1);
 		const view = f.store.modelEntries(f.conv.id);

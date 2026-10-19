@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Manual bounded snapshot of the live state database — docs/operations.md
-# → Backups. sqlite3 .backup is the online-safe copy: it reads the live
-# WAL consistently without checkpointing or mutating the source. Each run
-# drops goblin-<UTC stamp>.sqlite plus the config beside it in
-# state/backups/, quick_checks the copy, and prunes its own stamp-shaped
-# backups to the newest KEEP (default 10). Hand-named backups are never
-# pruned; there is no timer — this is an operator decision.
+# Manual bounded snapshot of the live state database. sqlite3 .backup is
+# the online-safe copy: it reads the live WAL consistently without
+# checkpointing or mutating the source. Only stamp-shaped backups are
+# pruned to the newest KEEP (default 10) — hand-named backups are never
+# pruned; there is no timer, this is an operator decision.
 set -euo pipefail
 
 home="${GOBLIN_HOME:-$HOME/goblin}"

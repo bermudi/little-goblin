@@ -1,8 +1,3 @@
-// Destination history round-trips: the target hash must be derivable
-// from the recorded connection (a live client and its recorded row
-// always agree), auth key names update in place, unknown targets read
-// as null, and a corrupted row fails loud rather than silently
-// degrading into forget refusals.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,8 +15,6 @@ function storeAt(): ReturnType<typeof openStore> {
 	stores.push(store);
 	return store;
 }
-// afterEach closes every opened store even on assertion failure — the
-// SQLite files live in tmpdirs removed alongside.
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -48,9 +41,6 @@ describe("memory destinations", () => {
 			bankId: "goblin",
 			auth: null,
 		});
-		// The reconstructed client hashes to the same target — the whole
-		// point: forget's clientForTarget hands back a client whose rows
-		// it can actually settle.
 		const client = buildDestinationClient(recorded!, auth);
 		expect(client.target).toBe(target);
 		expect(client).toBeInstanceOf(HindsightClient);

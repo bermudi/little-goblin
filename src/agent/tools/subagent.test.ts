@@ -1,8 +1,3 @@
-// The subagent native tool: flat action schema, per-action required
-// fields, bound-conversation scoping, the toolCallId→requestId
-// idempotence bridge, and the frozen <event> fencing on every piece of
-// run-originated text.
-
 import { describe, expect, test } from "bun:test";
 import type { SubagentRun } from "../../subagent-runs.ts";
 import { SubagentError, type Subagents } from "../../subagents/mod.ts";
@@ -126,13 +121,13 @@ describe("subagentInputSchema", () => {
 	test("rejects missing per-action fields and bad names", () => {
 		const big = "x".repeat(16_001);
 		const invalid = [
-			{ action: "start", kind: "worker" }, // no task
-			{ action: "start", task: "t" }, // no kind
-			{ action: "status" }, // no id
-			{ action: "send", id: 1 }, // no message
-			{ action: "stop" }, // no id
-			{ action: "decide", id: 1 }, // no decision
-			{ action: "decide", id: 1, decision: { kind: "record-result" } }, // no result
+			{ action: "start", kind: "worker" },
+			{ action: "start", task: "t" },
+			{ action: "status" },
+			{ action: "send", id: 1 },
+			{ action: "stop" },
+			{ action: "decide", id: 1 },
+			{ action: "decide", id: 1, decision: { kind: "record-result" } },
 			{ action: "decide", id: 1, decision: { kind: "guess" } },
 			{ action: "decide", id: 1, decision: { kind: "authorize-retry" } },
 			{
@@ -470,7 +465,6 @@ describe("subagent tool", () => {
 			notice?: string;
 		};
 		expect(out.notice).toContain('<event source="subagent">');
-		// Exactly one unescaped </event remains — the real closing fence.
 		expect(out.notice!.match(/<\/event/gi)).toHaveLength(1);
 		expect(out.notice).toContain("<\\/");
 		expect(out.notice).toContain("oops");
@@ -508,9 +502,6 @@ describe("subagent tool", () => {
 	});
 
 	test("export fields ride the fenced body only — never the structural summary", async () => {
-		// Exported paths and refusal diagnostics are run-originated like
-		// task/result: a `</event>` inside them must land escaped inside
-		// the notice, and the summary must not carry either field at all.
 		const seeded = () =>
 			fakeRun({
 				status: "done",
@@ -532,18 +523,15 @@ describe("subagent tool", () => {
 		] as const) {
 			const out = (await t.execute!(input, opts)) as Record<string, unknown>;
 			expect(out.error).toBeUndefined();
-			// Trusted structural fields survive untouched.
 			expect(out.id).toBe(3);
 			expect(out.kind).toBe("worker");
 			expect(out.status).toBe("done");
-			// Neither field nor its payload appears structurally.
 			expect(out).not.toHaveProperty("exported_files");
 			expect(out).not.toHaveProperty("export_errors");
 			const structural = JSON.stringify({ ...out, notice: undefined });
 			expect(structural).not.toContain("exported_files");
 			expect(structural).not.toContain("export_errors");
 			expect(structural).not.toContain("escape.txt");
-			// The notice carries them escaped, inside the frozen fence.
 			const notice = out.notice as string;
 			expect(notice).toContain('<event source="subagent">');
 			expect(notice.match(/<\/event/gi)).toHaveLength(1);

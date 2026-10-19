@@ -10,12 +10,11 @@ const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_VERSION = "143.0.3650.75";
-// Synthesis runs ~74 chars/s (measured 2026-09-27: 1928 chars → 26s),
-// and nothing arrives mid-flight — audio only lands at turn.end, so
-// the timeout must cover the whole budget, not idle gaps. Scale with
-// the chunk: 30s floor for handshake + short text, 40ms/char ≈ 3x
-// headroom, capped so a wedged socket can't hold the voice lane for
-// more than 5 minutes (the 10k-char CHUNK_LIMIT needs ~135s).
+// Audio lands only at turn.end, so the timeout must cover the whole
+// synthesis, not idle gaps. Synthesis runs ~74 chars/s (measured
+// 2026-09-27): 30s floor for handshake + short text, 40ms/char ≈ 3x
+// headroom, capped so a wedged socket can't hold the voice lane (the
+// 10k-char CHUNK_LIMIT needs ~135s).
 const EDGE_TIMEOUT_BASE_MS = 30_000;
 const EDGE_TIMEOUT_PER_CHAR_MS = 40;
 const EDGE_TIMEOUT_MAX_MS = 300_000;
@@ -28,11 +27,9 @@ const CODE_BLOCK = /```(?:[^\n]*)\n?([\s\S]*?)```/g;
 
 // ---------- voice cast ----------
 
-// Language sniffing for the voice cast (en/es by design — the operator's
-// cast): exclusive diacritics and function words decide — cheap,
-// deterministic, no model call, and the bar is only "which configured
-// voice matches". Short or ambiguous text resolves to no language and
-// the default voice speaks.
+// en/es by design — the operator's cast. Exclusive diacritics and
+// function words decide; short or ambiguous text resolves to no
+// language and the default voice speaks.
 const ES_WORDS = new Set([
 	"el",
 	"la",
@@ -282,10 +279,10 @@ const EN_WORDS = new Set([
 
 export function detectLanguage(text: string): "en" | "es" | null {
 	const lower = text.toLowerCase();
-	// ¿ ¡ ñ are Spanish-exclusive in practice — each outweighs a function
-	// word. The plain accented vowels don't get that weight: they ride
-	// english loanwords and names (résumé, café, José), and one borrowed
-	// word must not cast a whole english sentence into the spanish voice.
+	// ¿ ¡ ñ are Spanish-exclusive in practice — each outweighs a
+	// function word. Plain accented vowels get less weight: they ride
+	// english loanwords and names (résumé, café, José), and one
+	// borrowed word must not cast a whole sentence spanish.
 	let es = 3 * (lower.match(/[¿¡ñ]/g)?.length ?? 0) + (lower.match(/[áéíóúü]/g)?.length ?? 0);
 	let en = 0;
 	for (const word of lower.split(/[^a-záéíóúüñ]+/)) {
@@ -297,9 +294,7 @@ export function detectLanguage(text: string): "en" | "es" | null {
 	return es > en ? "es" : "en";
 }
 
-// The voice for this text: the cast member whose language matches the
-// sniff, else the configured default. First match wins when several
-// voices share a language.
+// First cast member matching the sniff wins; else the default.
 export function pickVoice(
 	text: string,
 	defaultVoice: string,
@@ -364,10 +359,9 @@ export function chunkSpeech(text: string, limit = CHUNK_LIMIT): string[] {
 	return chunks;
 }
 
-// The status tail delivery appends to rendered turn output. One
-// definition, both ends: delivery.ts writes it, withoutStatusTail()
-// strips it — a second copy of the string is how voice notes quietly
-// start reading "⚙ bash" lines aloud.
+// One definition, both ends: delivery.ts writes it, withoutStatusTail()
+// strips it — a second copy is how voice notes quietly start reading
+// "⚙ bash" lines aloud.
 export const STATUS_TAIL_MARK = "\n\n—\n";
 
 function withoutStatusTail(text: string): string {
@@ -441,10 +435,9 @@ function asBuffer(data: RawData): Buffer {
 
 const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 	new Promise<Uint8Array>((resolve, reject) => {
-		// The legacy speech.platform.bing.com synthesis socket answers
-		// 403; Edge itself now dials api.msedgeservices.com, which still
-		// accepts the same client token — renamed — plus the v1 Sec-MS-GEC
-		// pair (upstream fix: rany2/edge-tts#491).
+		// The legacy speech.platform.bing.com socket answers 403; Edge
+		// now dials api.msedgeservices.com, which accepts the same
+		// client token plus the v1 Sec-MS-GEC pair.
 		const query = new URLSearchParams({
 			"Ocp-Apim-Subscription-Key": EDGE_TOKEN,
 			ConnectionId: connectionId(),
@@ -558,10 +551,10 @@ const REMUX_TIMEOUT_MS = 30_000;
 // The cap only guards a wedged ffmpeg flooding stdout, not real speech.
 const REMUX_MAX_OUTPUT = 32 * 1024 * 1024;
 
-// input → ogg/opus through one bounded ffmpeg pipe. The input container
-// is forced — webm probing from a pipe is unreliable. codecArgs decide
-// copy vs re-encode: edge already speaks opus so it stream-copies;
-// mp3 (openrouter) must re-encode to opus for a real voice note.
+// The input container is forced — webm probing from a pipe is
+// unreliable. codecArgs decide copy vs re-encode: edge already speaks
+// opus so it stream-copies; mp3 (openrouter) must re-encode to opus
+// for a real voice note.
 function oggRemuxer(inputFormat: string, codecArgs: string[]): AudioRemuxer {
 	return async (audio) => {
 		let proc: Bun.ReadableSubprocess;
@@ -588,9 +581,8 @@ function oggRemuxer(inputFormat: string, codecArgs: string[]): AudioRemuxer {
 		} catch (err) {
 			throw new Error(`ffmpeg ogg remux failed to spawn — ${(err as Error).message}`);
 		}
-		// Bounded like every other subprocess: a SIGTERM-ignoring ffmpeg is
-		// escalated to group SIGKILL instead of stalling the voice lane and
-		// shutdown forever waiting on proc.exited.
+		// A SIGTERM-ignoring ffmpeg escalates to group SIGKILL rather
+		// than stalling the voice lane and shutdown on proc.exited.
 		const r = await boundedRunBinary(proc, {
 			timeoutMs: REMUX_TIMEOUT_MS,
 			maxOutput: REMUX_MAX_OUTPUT,
@@ -618,8 +610,7 @@ function oggRemuxer(inputFormat: string, codecArgs: string[]): AudioRemuxer {
 const remuxWebmOgg = oggRemuxer("webm", ["-c:a", "copy"]);
 const remuxMp3Ogg = oggRemuxer("mp3", ["-ac", "1", "-b:a", "48k", "-c:a", "libopus"]);
 
-// Injectable seams — tests fake the synthesizer/remux per chunk and the
-// fetch behind the cloud kinds; production fills the defaults.
+// Injectable seams for tests; production fills the defaults.
 export interface SpeechDeps {
 	synthesize?: ChunkSynthesizer;
 	remux?: AudioRemuxer;
@@ -700,9 +691,8 @@ export async function synthesizeSpeech(
 	return audio;
 }
 
-// The app door's read-aloud — the live tts block gated on the boot
-// ffmpeg probe (ttsDown): null answers 503 rather than failing
-// mid-synthesis. boot() binds configRef/auth once.
+// null answers 503 rather than failing mid-synthesis — gated on the
+// boot ffmpeg probe (ttsDown).
 export function makeSpeaker(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;

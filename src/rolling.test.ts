@@ -19,8 +19,6 @@ interface GateCall {
 	questions: Record<string, System1Question>;
 }
 
-// Fake the gate at the edge like injection.test.ts: scripted answers or
-// a thrown error; calls are captured so tests can read the state.
 function fakeGate(
 	answersOrError: Record<string, number> | Error,
 	calls?: GateCall[],
@@ -53,7 +51,6 @@ function harness(opts?: {
 	return { store, deps };
 }
 
-// The clock that makes the current conversation look an hour stale.
 const anHourHence = () => new Date(Date.now() + 3_600_000);
 
 const msg = (role: "user" | "assistant", text: string): UIMessage => ({
@@ -306,7 +303,6 @@ describe("routeDmMessage", () => {
 		const store = openStore(tmpDb("goblin-roll-test-"));
 		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
-				// A fire rolled meanwhile — the pin now points elsewhere.
 				store.rollDm(7, "/w");
 				return { answers: { follow_up: 0.1 }, inputTokens: null, cost: null };
 			},
@@ -322,8 +318,8 @@ describe("routeDmMessage", () => {
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("gap");
-		expect(r.conv.id).toBe("dm:7:2"); // the fire's roll, joined
-		expect(store.currentDm(7)?.id).toBe("dm:7:2"); // exactly one roll happened
+		expect(r.conv.id).toBe("dm:7:2");
+		expect(store.currentDm(7)?.id).toBe("dm:7:2");
 		store.close();
 	});
 
@@ -331,8 +327,6 @@ describe("routeDmMessage", () => {
 		const store = openStore(tmpDb("goblin-roll-test-"));
 		const racingGate: Pick<System1Client, "decide"> = {
 			decide: async () => {
-				// A fire rolled while the check was in flight — then the
-				// check died. The pin re-read still wins.
 				store.rollDm(7, "/w");
 				throw new System1Error("timeout");
 			},
@@ -357,9 +351,8 @@ describe("routeDmMessage", () => {
 		let wentBusy = false;
 		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {
-				// A turn started on the current conversation mid-check —
-				// rolling would strand this burst from the turn that must
-				// see it.
+				// A turn starting mid-check must absorb the burst — rolling
+				// would strand it from the turn that must see it.
 				wentBusy = true;
 				return { answers: { follow_up: 0.1 }, inputTokens: 1, cost: 0 };
 			},
@@ -385,8 +378,8 @@ describe("routeDmMessage", () => {
 		let now = anHourHence();
 		const gate: Pick<System1Client, "decide"> = {
 			decide: async () => {
-				// Another burst landed meanwhile — it resets the quiet
-				// clock, and a roll now would split two adjacent inputs.
+				// Another burst landing mid-check resets the quiet clock —
+				// a roll now would split two adjacent inputs.
 				store.append("dm:7:1", [
 					{ id: "u-mid", role: "user", parts: [{ type: "text", text: "meanwhile" }] },
 				]);

@@ -1,11 +1,3 @@
-// approval-gate.ts boundary tests — the crash-approval lease's CAS
-// invariants (design/subagents.md → Crash approval). The pi-durable
-// ToolExecutionApi is faked at the boundary (an in-memory doc line
-// per task); the run row is a real subagent-runs store because the
-// park writes real routing state. What these pin: a claimed lease
-// never re-executes without a verdict, the verdict commits before
-// it acts, a declared result is always an error result, and a park
-// frees the run's slot exactly once.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -39,9 +31,6 @@ type LeaseRow = {
 	result: JsonValue | null;
 };
 
-// In-memory stand-in for the pi-durable doc line the lease lives on:
-// commit() hands the change a mutable draft seeded from the current
-// row and records every committed generation in order.
 function fakeApi(seed: LeaseRow | undefined, ids?: { conversationId?: number; taskId?: number }) {
 	const committed: LeaseRow[] = [];
 	const output: string[] = [];
@@ -61,8 +50,6 @@ function fakeApi(seed: LeaseRow | undefined, ids?: { conversationId?: number; ta
 			return seed;
 		},
 		async commit(change: (tx: unknown) => unknown) {
-			// seed starts absent once the first commit lands — the doc
-			// the draft mutates IS the row, seeded from initial state.
 			const draft: LeaseRow =
 				seed === undefined
 					? { state: "absent", attempts: null, decision: null, result: null }
@@ -160,7 +147,6 @@ describe("crash-approval lease", () => {
 		expect(base.executions).toBe(1);
 		expect(committed.map((c) => c.state)).toEqual(["claimed", "done"]);
 		expect(committed[0]?.attempts).toBe(1);
-		// The settled row carries the result the model actually saw.
 		expect(committed[1]?.result).toMatchObject({
 			output: [{ type: "text", text: "observed" }],
 		});
@@ -195,8 +181,6 @@ describe("crash-approval lease", () => {
 		const base = fakeTool();
 		const tool = gate.withGate(base);
 		const pending = tool.execute({} as never, api, BACKGROUND_CONTEXT);
-		// The park must land before the verdict: the row carries
-		// needs_input + the pendingApproval mirror, the slot freed.
 		await Bun.sleep(20);
 		const parked = runs.get(live.id);
 		expect(parked?.status).toBe("needs_input");
@@ -206,7 +190,6 @@ describe("crash-approval lease", () => {
 		expect(calls.drains).toBe(1);
 		gate.takeWaiter(gate.approvalKey("1", "1"))?.(DECISION);
 		const result = await pending;
-		// A declaration is an error result, never a success.
 		expect(result.isError).toBe(true);
 		expect((result.details as { crashResolution?: unknown })?.crashResolution).toMatchObject({
 			decidedBy: "goblin",
@@ -234,7 +217,6 @@ describe("crash-approval lease", () => {
 		const result = await tool.execute({} as never, api, BACKGROUND_CONTEXT);
 		expect(base.executions).toBe(1);
 		expect(result.output?.[0]).toMatchObject({ text: "observed" });
-		// decided → claimed(3) → done: the decision commits before the retry.
 		expect(committed.map((c) => c.state)).toEqual(["decided", "claimed", "done"]);
 		expect(committed[1]?.attempts).toBe(3);
 	});

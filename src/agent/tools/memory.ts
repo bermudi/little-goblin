@@ -1,7 +1,3 @@
-// The memory-search tool — deeper recall on demand (DESIGN.md, Recall).
-// Read-only against the shared bank; zod-validated bounds. Excluded
-// topics recall nothing, including through this tool.
-
 import { tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
@@ -11,17 +7,12 @@ import { BUDGET_ORDER, MEMORY_DEFAULTS } from "../../memory/policy.ts";
 
 export interface MemorySearchDeps {
 	client: HindsightClient;
-	// Bounds from the boot-time memory config — the tool input may narrow
-	// them, never widen past the wire cap.
 	maxTokens: number;
 	budget: "low" | "mid" | "high";
 	timeoutMs?: number;
 	preferObservations?: boolean;
 	minScores?: RecallMinScores;
-	// Topic exclusion governs inflow too: excluded conversations may not
-	// recall shared memories by any path.
 	isExcluded: () => boolean;
-	// Records the outcome for /memory status alongside turn recalls.
 	noteRecall: (ok: boolean) => void;
 }
 
@@ -55,7 +46,6 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 					...(options?.abortSignal ? { signal: options.abortSignal } : {}),
 					...(deps.minScores ? { minScores: deps.minScores } : {}),
 					preferObservations: deps.preferObservations ?? true,
-					// exactOptionalPropertyTypes: never pass an explicit undefined.
 					...(maxTokens !== undefined
 						? { maxTokens: Math.min(maxTokens, deps.maxTokens) }
 						: { maxTokens: deps.maxTokens }),

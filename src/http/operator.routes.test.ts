@@ -1,8 +1,3 @@
-// Route-level tests for the state viewer tails: the zod gates at the
-// router (bad names, bad paths, bad params) and one happy path per
-// route, all through handleOperatorRoute against a fixture $GOBLIN_HOME.
-// The containment wall under these routes is tested in stateview.test.ts.
-
 import {
 	chmodSync,
 	existsSync,
@@ -119,8 +114,6 @@ describe("state viewer routes", () => {
 		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
 		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "content");
 		const res = await getWithQuery("skills/file", "name=weather&path=../../../goblin.json5");
-		// ".." never passes the router's zod gate; a traversal that slips
-		// the regex shape would still hit stateview's containment null → 404.
 		expect([400, 404]).toContain(res.status);
 	});
 
@@ -201,14 +194,11 @@ describe("state viewer routes", () => {
 		expect(ok.status).toBe(200);
 		const body = (await ok.json()) as { lines: Array<{ msg: string }>; truncated: boolean };
 		expect(body.lines.map((l) => l.msg)).toEqual(["b"]);
-		// One match, limit 1 — nothing was dropped, so not truncated.
 		expect(body.truncated).toBe(false);
 		const badLimit = await getWithQuery("log", "limit=0");
 		expect(badLimit.status).toBe(400);
 		const badLevel = await getWithQuery("log", "level=loud");
 		expect(badLevel.status).toBe(400);
-		// An overlong q is a 400, not a silent truncation — the module's
-		// own rule: malformed input gets a typed refusal.
 		const longQ = await getWithQuery("log", `q=${"a".repeat(301)}`);
 		expect(longQ.status).toBe(400);
 		const atCap = await getWithQuery("log", `q=${"a".repeat(300)}`);
@@ -259,10 +249,6 @@ describe("state viewer routes", () => {
 	});
 });
 
-// The operator doors' ✅/🚫 — POST skills/decide, tested at the route
-// with a scripted seam, then once end-to-end through the real
-// resolveSkillProposal so the button provably shares the tap's disk
-// move and history event.
 describe("skills/decide route", () => {
 	function postDecide(body: unknown, deps: OperatorDeps = decideDeps()): Promise<Response> {
 		return handleOperatorRoute(
@@ -342,8 +328,6 @@ describe("skills/decide route", () => {
 	});
 
 	test("the seam composes the real disk move plus the history event", async () => {
-		// The route's dep is resolveSkillProposal — decide through it end
-		// to end so the button provably does what a Telegram tap does.
 		mkdirSync(join(home, "workspace/skills-proposed/smoke-test"), { recursive: true });
 		writeFileSync(join(home, "workspace/skills-proposed/smoke-test/SKILL.md"), "# smoke");
 		const appended: { conversation: string; text: string }[] = [];
@@ -392,9 +376,6 @@ describe("skills/decide route", () => {
 	});
 });
 
-// The secrets tail writes literal auth.jsonl records over the wire —
-// the seam is the real store + append against the fixture home, so the
-// exercise is the whole path minus the door's auth.
 describe("secrets route", () => {
 	function secretsDeps(): OperatorDeps {
 		const file = join(home, "auth.jsonl");
@@ -430,7 +411,6 @@ describe("secrets route", () => {
 		const res = await postSecret({ name: "groq", value: "gsk_test" });
 		expect(res?.status).toBe(200);
 		expect(await res?.json()).toEqual({ ok: true, name: "groq", replaced: false });
-		// The file gained the record at 0600, and a fresh load resolves it.
 		const file = join(home, "auth.jsonl");
 		expect(statSync(file).mode & 0o777).toBe(0o600);
 		expect(await loadAuthFile(file).resolve("groq")).toBe("gsk_test");

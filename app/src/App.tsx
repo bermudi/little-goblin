@@ -30,9 +30,8 @@ import type {
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
 
-// The operator pages ride the same shell as chat — deep links like
-// /app/settings are served the app bundle and land here. `project` is
-// /app/p/<id> and `note` /app/n/<id> — their ids live outside the union.
+// `project` and `note` carry ids parsed separately (/app/p/<id>,
+// /app/n/<id>) — the union holds the page key only.
 type Page =
 	| "chat"
 	| "settings"
@@ -60,9 +59,8 @@ const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] 
 ];
 
 function pageFromPath(pathname: string): Page | null {
-	// /app/ is the PWA door, /t/ the Telegram mini app's — both serve this
-	// bundle and both parse the same page vocabulary; each door clamps the
-	// result to its own page scope.
+	// Both doors serve this bundle: /app/ the PWA, /t/ the Telegram mini
+	// app — each door clamps the result to its own page scope.
 	const m =
 		/^\/(?:app|t)\/(settings|memory|delegations|programs|status|skills|files|log|projects|notes)\/?$/.exec(
 			pathname,
@@ -71,7 +69,7 @@ function pageFromPath(pathname: string): Page | null {
 }
 
 // /app/p/<projectId> — project ids are server-minted randomUUIDs, the
-// same url-safe shape the /app/c/ link checks (design/projects.md).
+// same url-safe shape the /app/c/ link checks.
 export function projectFromPath(pathname: string): string | null {
 	const m = /^\/app\/p\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
 	return m === null ? null : m[1]!;
@@ -105,7 +103,7 @@ interface BrowserNavigation {
 }
 
 // Native keys also identify entries created before we started tagging history.
-// The DOM typings don't yet expose Window.navigation.
+// DOM typings don't yet expose Window.navigation.
 function browserNavigation(): BrowserNavigation | null {
 	const value: unknown = Reflect.get(window, "navigation");
 	if (
@@ -123,8 +121,7 @@ function browserNavigation(): BrowserNavigation | null {
 	return value as BrowserNavigation;
 }
 
-// Sidebar timestamps are relative: "now", minutes, hours, days, then a
-// short date — the format Open WebUI's chat list uses.
+// The Open WebUI chat-list relative-time format.
 function relTime(iso: string): string {
 	const ts = Date.parse(iso);
 	if (Number.isNaN(ts)) return "";
@@ -139,12 +136,9 @@ function relTime(iso: string): string {
 	return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-// Sidebar rows are single-line labels, so markdown furniture comes off
-// the stored title at display time: fences and their language tag,
-// inline-code backticks, link syntax (text survives), paired emphasis,
-// and line-lead markers. Mirrors conversation.ts's flatLine — the client
-// does its own pass because a running server may predate the store-side
-// flattening and still hand over a fenced title.
+// Mirrors conversation.ts's flatLine — the client does its own pass
+// because a running server may predate the store-side flattening and
+// still hand over a fenced title.
 export function flatLine(text: string): string {
 	return text
 		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
@@ -157,26 +151,24 @@ export function flatLine(text: string): string {
 		.trim();
 }
 
-// A title reduced to nothing falls through to the preview, same as the
-// server's `flatLine(r.title) || null` projection.
+// An emptied title falls through to the preview — mirrors the server's
+// `flatLine(r.title) || null` projection.
 function flatTitle(title: string | null): string | null {
 	if (title === null) return null;
 	return flatLine(title) || null;
 }
 
-// The spin-off deep link (design/app.md → Spin-off → Links):
 // /app/c/<appId> opens one conversation — the id matches the server's
-// appIdSchema and the conversation id is "app/<appId>".
+// appIdSchema; the conversation id is "app/<appId>".
 export function deepLinkConv(pathname: string): string | null {
 	const m = /^\/app\/c\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(pathname);
 	return m === null ? null : `app/${m[1]}`;
 }
 
-// The token is the operator-pasted credential (the value behind the
-// auth.jsonl record config.appToken names), kept in sessionStorage — it
-// dies with the tab, so a new browser session re-asks for it. When
-// the server runs trust mode (appToken unset) no credential exists —
-// App probes unauthenticated first so the gate never shows.
+// The token is the operator-pasted credential behind the auth.jsonl
+// record config.appToken names; sessionStorage — dies with the tab.
+// Trust mode (appToken unset) has no credential — App probes
+// unauthenticated first so the gate never shows.
 
 function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: string) => void }) {
 	const [draft, setDraft] = useState("");
@@ -230,8 +222,6 @@ function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: st
 	);
 }
 
-// A small pushpin, shown persistently on pinned rows — the marker
-// explaining why the row floats above the activity stream.
 function PinGlyph() {
 	return (
 		<svg
@@ -252,9 +242,8 @@ function PinGlyph() {
 	);
 }
 
-// Stroke icons for the row's hover actions — the same 24-grid, 2px-stroke
-// style as PinGlyph. Icon-only buttons must carry aria-label + title; the
-// tests assert on the accessible name, not on visible text.
+// Icon-only buttons carry aria-label + title — the tests assert on the
+// accessible name, not visible text.
 function ActionGlyph({ children }: { children: ReactNode }) {
 	return (
 		<svg
@@ -313,13 +302,9 @@ const TrashGlyph = () => (
 	</ActionGlyph>
 );
 
-// One rail row: the conversation button plus its three icon actions —
-// pin floats the row above the rail's activity order, rename turns the
-// title into an input, archive shelves the row (no confirm — it's
-// reversible). The actions overlay the preview line on hover so the
-// title never trades width for them. Archived rows swap pin/archive for
-// unarchive and delete, delete keeping the confirm as the one
-// destructive action.
+// Archive skips the confirm (reversible); delete keeps it — the one
+// destructive action. Hover actions overlay the preview line so the
+// title never trades width for them.
 function ConversationRow({
 	conv,
 	current,
@@ -349,7 +334,7 @@ function ConversationRow({
 	const [draft, setDraft] = useState("");
 	const editRef = useRef<HTMLInputElement>(null);
 	// Enter commits and unmounts the input — its blur then fires
-	// commitRename a second time, a duplicate PATCH with the same title.
+	// commitRename a second time (a duplicate PATCH with the same title).
 	const committed = useRef(false);
 	useEffect(() => {
 		if (editing) {
@@ -416,8 +401,8 @@ function ConversationRow({
 			</div>
 		);
 	}
-	// Without a preview line the row is one line tall, so the hover icons
-	// need the head line's text out of their way (see styles.css).
+	// A one-line row needs the head text out of the hover icons' way
+	// (styles.css).
 	const hasPreviewLine = title !== null && preview !== "";
 	const rowClass = ["conv", conv.id === current ? "current" : null, hasPreviewLine ? null : "bare"]
 		.filter((c): c is string => c !== null)
@@ -478,11 +463,11 @@ function ConversationRow({
 	);
 }
 
-// The Telegram mini app door (design/telegram.md → Mini Apps, ruling
-// 2026-10-10): the deep-linked page renders settings or memories over
-// initData — the app channel's gate, rail, and conversations never
-// mount here. In-door switching is component state with no history
-// entries, so the webview's back gesture closes the mini app natively.
+// The Telegram mini app door: the deep-linked page renders settings or
+// memories over initData — the app channel's gate, rail, and
+// conversations never mount here. In-door switching is component state
+// with no history entries, so the webview's back gesture closes the mini
+// app natively.
 const TELEGRAM_PAGES = PAGES.filter((p) => p.key === "settings" || p.key === "memory");
 
 function TelegramDoor() {
@@ -492,16 +477,15 @@ function TelegramDoor() {
 	});
 	const [navOpen, setNavOpen] = useState(false);
 	const settingsDirty = useRef(false);
-	// initData empty means the page was not opened by Telegram — every
-	// request would 401. Say so instead of rendering a form that cannot
-	// save; window.Telegram is settled before first render — injected by
-	// the webview, or the local fallback installed in main.tsx.
+	// Empty initData = not opened by Telegram — every request would 401,
+	// so say so rather than render a form that cannot save.
+	// window.Telegram is settled before first render — injected by the
+	// webview, or the local fallback installed in main.tsx.
 	const [authed] = useState(() => (window.Telegram?.WebApp.initData ?? "") !== "");
-	// One callback owns the draft bit and the webview's native close
-	// guard — the in-door confirm and the SDK confirmation protect the
-	// same draft. The SDK call mirrors the transition only: the editor
-	// reports its state on every mount too, and re-arming an armed
-	// guard is pointless. Both methods are optional in older clients.
+	// Mirrors the draft bit onto the webview's native close guard — the
+	// in-door confirm and the SDK confirmation protect the same draft;
+	// the editor reports its state on every mount, so re-arming is
+	// pointless. Both SDK methods are optional in older clients.
 	const setSettingsDirty = useCallback((dirty: boolean) => {
 		if (settingsDirty.current === dirty) return;
 		settingsDirty.current = dirty;
@@ -588,19 +572,18 @@ function TelegramDoor() {
 	);
 }
 
-// One bundle, two doors: /t/ is the Telegram mini app, everything else
-// the PWA's app channel.
+// One bundle, two doors: /t/ the Telegram mini app, everything else the
+// PWA's app channel.
 export function App() {
 	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
 }
 
 function AppShell() {
 	const [token, setToken] = useState<string | null>(loadToken);
-	// The gate is conditional: the server may be in trust mode (appToken
-	// unset — the tailnet is the only lock), where a bare request just
-	// works and the token screen must never show. A stored token answers
-	// the question itself through refresh(); with none stored, probe
-	// unauthenticated first — 200 means trust mode, 401 shows the gate.
+	// Trust mode (appToken unset — the tailnet is the only lock) means a
+	// bare request just works and the gate must never show. With no
+	// stored token, probe unauthenticated: 200 = trust mode, 401 = the
+	// gate.
 	const [gate, setGate] = useState<"probing" | "shown" | "passed">(
 		token === null ? "probing" : "passed",
 	);
@@ -608,20 +591,18 @@ function AppShell() {
 	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
 		null,
 	);
-	// The rail's second pool (design/projects.md) — every project,
-	// archived included; the rail shows only the active ones.
+	// Every project, archived included — the rail shows only the active
+	// ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
-	// The chat header's thread-sources sheet belongs to the chat page.
 	const [sourcesOpen, setSourcesOpen] = useState(false);
 	const [listError, setListError] = useState<string | null>(null);
-	// Row-action failures — cleared by the next successful action or
-	// refresh, like listError but per-action and named.
+	// Per-action failures — cleared by the next successful action or
+	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
-	// Rail search: debounced against the app-pool FTS endpoint. A non-
-	// empty query swaps the conversation list for the hit list. A failed
-	// search says so — it must not read as "no matches".
+	// A failed search must surface as an error, never read as "no
+	// matches".
 	const [query, setQuery] = useState("");
 	const [hits, setHits] = useState<AppSearchHit[] | null>(null);
 	const [searchError, setSearchError] = useState<string | null>(null);
@@ -633,7 +614,7 @@ function AppShell() {
 	// swaps the empty state's composer for the new conversation's, and
 	// uploads still in flight (or failed chips) must carry across that
 	// unmount — their resolution writes this state, whichever composer
-	// is mounted (#118).
+	// is mounted.
 	const [staged, setStaged] = useState<StagedUpload[]>([]);
 	// Note chips ride beside the upload chips for the same reason —
 	// they must survive the empty-state → conversation composer swap.
@@ -663,8 +644,6 @@ function AppShell() {
 		startSeq.current += 1;
 		setStartFailed(false);
 	};
-	// The rail's second pool: archived rows sit in a collapsed section
-	// under the active list (design/app.md → Archiving).
 	const [archivedOpen, setArchivedOpen] = useState(false);
 	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
@@ -680,26 +659,23 @@ function AppShell() {
 					: "chat"),
 	);
 	useEffect(() => setSourcesOpen(false), [current, page]);
-	// /app/p/<id> — set whenever the path names a project page.
 	const [projectId, setProjectId] = useState<string | null>(() =>
 		projectFromPath(window.location.pathname),
 	);
-	// /app/n/<id> — same deal for a note page.
 	const [noteId, setNoteId] = useState<string | null>(() => noteFromPath(window.location.pathname));
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
-	// The settings editor reports its dirty bit here so navigating away
-	// can ask before discarding unsaved edits.
+	// The settings editor's dirty bit — navigation asks before
+	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
-	// Stale async completions — a held create's onCreated/onOpen firing
-	// after the operator already navigated — run the navigation guards
-	// from the render that issued them. The guard must ask which page
-	// is mounted now (a declined traversal deliberately leaves the old
-	// editor mounted), not which page rendered the callback.
+	// Stale async completions (a held create's onCreated/onOpen firing
+	// after the operator navigated) run guards against the page mounted
+	// now — a declined traversal deliberately leaves the old editor
+	// mounted — not the page that rendered the callback.
 	const pageRef = useRef(page);
 	pageRef.current = page;
-	// The note editor reports here too — unsaved body/title edits or a
-	// standing 409 conflict bar. Its draft lives only in that
-	// component; an unguarded navigation destroys it silently.
+	// Same for the note editor — unsaved body/title edits or a standing
+	// 409 conflict bar. Its draft lives only in that component; an
+	// unguarded navigation destroys it silently.
 	const noteDirty = useRef(false);
 	// Confirmed discards must reach the editor before its unmount drain.
 	const noteDiscard = useRef<(() => void) | null>(null);
@@ -800,7 +776,7 @@ function AppShell() {
 	}, [gate, refresh]);
 
 	// A /app/c/<id> load selects that conversation once the list
-	// arrives — an unknown id just shows the list.
+	// arrives.
 	useEffect(() => {
 		if (conversations === null || deepApplied.current) return;
 		deepApplied.current = true;
@@ -814,7 +790,6 @@ function AppShell() {
 		}
 	}, [conversations]);
 
-	// Back/forward between operator pages and conversations.
 	useEffect(() => {
 		const onPop = () => {
 			const p = pageFromPath(window.location.pathname);
@@ -903,11 +878,11 @@ function AppShell() {
 		return () => window.removeEventListener("beforeunload", onUnload);
 	}, [page]);
 
-	// Debounced app-pool search — an empty box clears back to the list.
-	// The sequence bumps on every invocation, including the clear, so a
-	// reply dispatched before the box emptied can never reappear after.
-	// A stale error clears on empty (and on the next settled reply),
-	// never on a fresh query — clearing there would flash "No matches.".
+	// Debounced app-pool search. The sequence bumps on every invocation
+	// including the clear, so a reply dispatched before the box emptied
+	// can never reappear. A stale error clears on empty and the next
+	// settled reply, never on a fresh query — clearing there would
+	// flash "No matches.".
 	useEffect(() => {
 		const seq = ++searchSeq.current;
 		const q = query.trim();
@@ -1066,8 +1041,7 @@ function AppShell() {
 	};
 
 	// One start path for every composer — the empty state passes null,
-	// a project page its id, and both ride the same create → seed →
-	// select flow (design/projects.md: binding is fixed at creation).
+	// a project page its id; project binding is fixed at creation.
 	const startChat = async (
 		projectId: string | null,
 		parts: UIMessage["parts"],
@@ -1076,10 +1050,8 @@ function AppShell() {
 		if (!leaveDirty()) return false;
 		if (startBusyRef.current) {
 			// Refuse loudly — a silent no-op reads as success to awaited
-			// callers (the note page's chat surfaces this rejection as an
-			// opError; fire-and-forget composer sends catch it at the
-			// call site). A composer-scoped send parks its parts back in
-			// the draft first, the same shape as the fenced path —
+			// callers. A composer-scoped send parks its parts back in the
+			// draft first, the same shape as the fenced path —
 			// note-originated starts carry no scope and restore nothing.
 			if (composerScope !== undefined) {
 				setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
@@ -1137,13 +1109,11 @@ function AppShell() {
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
-	// One payload, three pools: pinned rows float above the rail's
-	// activity order (the server sorts within each group, the client
-	// only partitions), archived ones wait behind the section toggle
-	// (design/app.md → Archiving, Pinning). Project-bound chats leave
-	// the main rail entirely — they live on their project's page
-	// (design/projects.md); `?? null` keeps pre-projects fixtures
-	// (field absent) on the rail.
+	// The server sorts within each group; the client only partitions —
+	// pinned float above the activity order, archived wait behind the
+	// section toggle. Project-bound chats leave the rail for their
+	// project page; `?? null` keeps pre-projects fixtures (field
+	// absent) on the rail.
 	const all = conversations ?? [];
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
@@ -1161,8 +1131,7 @@ function AppShell() {
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const currentProject =
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
-	// The breadcrumb above a selected project chat — the name rides the
-	// same pool the rail lists.
+	// The crumb's name rides the same pool the rail lists.
 	const currentConv = all.find((c) => c.id === current);
 	const currentConvProject =
 		currentConv?.projectId != null
@@ -1248,10 +1217,8 @@ function AppShell() {
 					</>
 				) : (
 					<>
-						{/* The conversation list sits directly below New +
-							search — its own labeled group, so the action and
-							its rows read as one. Projects and Notes wait
-							below it, never wedged between. */}
+						{/* Projects and Notes sit below the chat list, never wedged
+							between New + search and the conversations. */}
 						<div className="rail-convs">
 							<div className="rail-label">Conversations</div>
 							<ul>{rail.map(renderRow)}</ul>
@@ -1269,8 +1236,6 @@ function AppShell() {
 								</>
 							)}
 						</div>
-						{/* The Projects section sits below the chat list — header
-							links to the /app/projects index. */}
 						{projects !== null && (
 							<div className="rail-projects">
 								<button type="button" className="rail-section" onClick={openProjectsIndex}>
@@ -1543,7 +1508,7 @@ function AppShell() {
 					) : (
 						<>
 							{/* A bound chat names its project — the link lands on the
-								project page (design/projects.md). */}
+								project page. */}
 							{currentConvProject !== undefined && (
 								<button
 									type="button"

@@ -1,8 +1,5 @@
-// Turn journal boundary tests — the durable record a crash leaves
-// behind: the three-state call lifecycle, the never-regress guards,
-// the open-time reclassification, and the conversation cascade. A
-// "crash" here is a second open* on the same file: rows still
-// 'running' at open mean process death by construction.
+// A "crash" is a second open* on the same file: rows still 'running' at
+// open mean process death by construction.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -79,7 +76,6 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "call-1", "probe", {});
 		journal.noteToolDispatch(runId, "call-1", "probe", {});
 		journal.noteToolResult(runId, "call-1", "first");
-		// A late duplicate transition must not move the settled row.
 		journal.noteToolDispatch(runId, "call-1", "probe", {});
 		journal.noteToolError(runId, "call-1", new Error("late failure"));
 		journal.noteToolResult(runId, "call-1", "second");
@@ -89,7 +85,6 @@ describe("turn journal", () => {
 		expect(call.result).toBe('"first"');
 		expect(call.error).toBeNull();
 
-		// Errors settle too — a retry's success can't rewrite the failure.
 		journal.noteToolInput(runId, "call-2", "probe", {});
 		journal.noteToolDispatch(runId, "call-2", "probe", {});
 		journal.noteToolError(runId, "call-2", new TypeError("boom"));
@@ -106,8 +101,6 @@ describe("turn journal", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
 		const runId = begunRun(journal, conv.id);
-		// The stream was cut before tool-input-available — the result
-		// still records rather than throwing on the missing planned row.
 		journal.noteToolResult(runId, "orphan", { ok: true });
 		const call = journal.callsFor(runId).find((c) => c.toolCallId === "orphan")!;
 		expect(call.state).toBe("completed");
@@ -129,7 +122,6 @@ describe("turn journal", () => {
 		journal.finishRun(fenced, "fenced", "undelivered");
 		store.close();
 
-		// Process died mid-turn: a fresh open reclassifies 'running' only.
 		const reopened = openStore(dbPath);
 		const journal2 = openTurnJournal(reopened.db);
 		expect(journal2.get(live)!.status).toBe("interrupted");
@@ -266,7 +258,6 @@ describe("turn journal", () => {
 		const calls = journal.callsFor(runId);
 		const done = calls.find((c) => c.toolCallId === "c-done")!;
 		expect(done.state).toBe("resolved-done");
-		// The asserted outcome lands as the replayable result.
 		expect(done.result).toBe('"the file was written"');
 		expect(done.resolutionNote).toBe("the file was written");
 		expect(done.resolvedMs).not.toBeNull();
@@ -279,7 +270,6 @@ describe("turn journal", () => {
 		expect(skip.result).toBeNull();
 		expect(skip.resolutionNote).toBeNull();
 
-		// Only 'dispatched' rows take a decision.
 		expect(() => journal.resolveCall(runId, "c-planned", "skip")).toThrow(/only 'dispatched'/);
 		expect(() => journal.resolveCall(runId, "c-settled", "skip")).toThrow(/only 'dispatched'/);
 		expect(() => journal.resolveCall(runId, "c-done", "skip")).toThrow(/only 'dispatched'/);
@@ -296,8 +286,6 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "c1", "probe", {});
 		journal.noteToolDispatch(runId, "c1", "probe", {});
 		journal.resolveCall(runId, "c1", "skip");
-		// A result arriving after the decision (the old process's write
-		// landing late inside one open) must not unsettle the row.
 		journal.noteToolResult(runId, "c1", "late");
 		journal.noteToolError(runId, "c1", new Error("late"));
 		const call = journal.callsFor(runId).find((c) => c.toolCallId === "c1")!;
@@ -311,15 +299,14 @@ describe("turn journal", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
 		const runId = begunRun(journal, conv.id);
-		// The SDK's execution pipeline committed before the input chunk
-		// landed — the row must still decide-and-refuse by identity.
+		// SDK pipeline committed before the input chunk landed — the row
+		// must still decide-and-refuse by identity.
 		journal.noteToolDispatch(runId, "c1", "probe", { q: 9 });
 		const call = journal.callsFor(runId)[0]!;
 		expect(call.state).toBe("dispatched");
 		expect(call.name).toBe("probe");
 		expect(call.argsHash).not.toBe("");
 		journal.resolveCall(runId, "c1", "skip", "not again");
-		// A re-asked identical call matches the refusal by name:argsHash.
 		expect([...journal.skippedMap(runId).keys()]).toHaveLength(1);
 		store.close();
 	});
@@ -340,14 +327,10 @@ describe("turn journal", () => {
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(src, next);
 		const calls = journal.callsFor(next);
-		// 'resolved-skip' and 'planned' and 'completed' inherit; the
-		// source's own undecided 'dispatched' window does not move.
 		expect(calls.map((c) => c.toolCallId).sort()).toEqual(["amb", "done", "plan"]);
 		expect(calls.find((c) => c.toolCallId === "done")!.result).toBe('{"out":"landed"}');
 		expect(calls.find((c) => c.toolCallId === "amb")!.state).toBe("resolved-skip");
-		// The successor's replay surface sees the inherited result.
 		expect(journal.replayMap(next).size).toBe(1);
-		// Idempotent: a second inherit adds nothing.
 		journal.inheritCalls(src, next);
 		expect(journal.callsFor(next)).toHaveLength(3);
 		store.close();
@@ -390,7 +373,6 @@ describe("turn journal", () => {
 		expect(j2.get("src")!.status).toBe("interrupted");
 		j2.markRun("src", "resumed");
 		expect(j2.get("src")!.status).toBe("resumed");
-		// Terminal: a second lifecycle move throws.
 		expect(() => j2.markRun("src", "abandoned")).toThrow(/only 'interrupted'/);
 		reopened.close();
 	});
@@ -411,7 +393,6 @@ describe("turn journal", () => {
 			startedAt: "2026-10-11T00:00:00.000Z",
 		});
 		store.close();
-		// The crash: the running row reclassifies interrupted at open.
 		const reopened = openStore(dbPath);
 		const journal = openTurnJournal(reopened.db);
 		journal.beginRun({
@@ -450,9 +431,8 @@ describe("turn journal", () => {
 		store.close();
 		const reopened = openStore(dbPath);
 		const journal = openTurnJournal(reopened.db);
-		// A source that is not 'interrupted' (and not already 'resumed')
-		// refuses — and the refusal rolls the successor row back with it,
-		// so no half-consumed pair can survive a crash between writes.
+		// The refusal rolls the successor row back with it — no
+		// half-consumed pair can survive a crash between writes.
 		expect(() =>
 			journal.beginRun({
 				runId: "half-run",
@@ -468,7 +448,6 @@ describe("turn journal", () => {
 		).toThrow(/'error' — refusing/);
 		expect(journal.get("half-run")).toBeNull();
 		expect(journal.get("bad-run")!.status).toBe("error");
-		// A gone source refuses the same way.
 		expect(() =>
 			journal.beginRun({
 				runId: "ghost-run",
@@ -509,9 +488,9 @@ describe("turn journal", () => {
 		const reopened = openStore(dbPath);
 		const journal = openTurnJournal(reopened.db);
 		try {
-			// The injected fault lands past the successor's insert and the
-			// inherited call rows — on the write that consumes the source —
-			// so a throw here proves the transaction rolled all of it back.
+			// The fault lands on the write that consumes the source — past
+			// the successor's insert — so a throw proves the whole
+			// transaction rolled back.
 			reopened.db.run(`CREATE TRIGGER fail_source_consumption
 				BEFORE UPDATE OF status ON turn_runs
 				WHEN OLD.run_id = 'source-run' AND NEW.status = 'resumed'
@@ -535,8 +514,6 @@ describe("turn journal", () => {
 			expect(journal.callsFor("source-run")).toMatchObject([
 				{ toolCallId: "c-1", name: "probe", state: "completed", result: '{"out":"landed"}' },
 			]);
-			// Fault gone: the same admission commits whole — successor
-			// running, source consumed, exactly one replayable call carried.
 			reopened.db.run("DROP TRIGGER fail_source_consumption");
 			begin();
 			expect(journal.get("successor-run")).toMatchObject({
@@ -581,8 +558,8 @@ describe("turn journal", () => {
 		expect(journal.replayMap(next).get(replayKey("probe", { q: 1 }))).toEqual([
 			{ out: "pred-ran" },
 		]);
-		// A predecessor that no longer exists refuses — the evidence link
-		// is part of the row's creation, not a best-effort copy.
+		// The evidence link is part of the row's creation — a gone
+		// predecessor refuses, never a best-effort copy.
 		expect(() =>
 			journal.beginRun({
 				runId: "run-x",
@@ -608,11 +585,9 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "c-exec", "probe", { q: 1 });
 		journal.noteToolDispatch(runId, "c-exec", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-exec", { out: "real" });
-		// The fence answered the model's re-ask from the record above —
-		// journaled as replayed, never as a second execution. The re-ask
-		// rides the same chunk/dispatch seams as the real call, so the row
-		// carries full identity: without it the replayMap credit skip
-		// could pass on the marker row's empty name, provenance or not.
+		// The re-ask rides the same chunk/dispatch seams as the real call,
+		// so the row must carry full identity — without it the replayMap
+		// credit skip could pass on the row's empty name.
 		journal.noteToolInput(runId, "c-replay", "probe", { q: 1 });
 		journal.noteToolDispatch(runId, "c-replay", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-replay", { out: "real" }, { replayed: true });
@@ -621,14 +596,12 @@ describe("turn journal", () => {
 		const replayed = calls.find((c) => c.toolCallId === "c-replay")!;
 		expect(replayed.replayed).toBe(true);
 		expect(executed.replayed).toBe(false);
-		// Identical identity to the real execution — the credit skip must
-		// come from the replayed flag, not a missing name or hash.
+		// The credit skip must come from the replayed flag, not a missing
+		// name or hash.
 		expect(replayed.state).toBe("completed");
 		expect(replayed.name).toBe("probe");
 		expect(replayed.argsHash).toBe(executed.argsHash);
-		// One execution, one credit — the replay row adds nothing.
 		expect(journal.replayMap(runId).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
-		// Provenance survives inheritance into a successor row.
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(runId, next);
 		expect(journal.callsFor(next).find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
@@ -835,14 +808,12 @@ describe("turn journal", () => {
 		);
 
 		const journal = openTurnJournal(store.db);
-		// The migrated row reads whole; the new columns land null.
 		const run = journal.get("old-run")!;
 		expect(run.resumedFrom).toBeNull();
 		expect(run.calls.dispatched).toBe(1);
 		const call = journal.callsFor("old-run")[0]!;
 		expect(call.resolutionNote).toBeNull();
 		expect(call.resolvedMs).toBeNull();
-		// And the new writes work on the migrated table.
 		journal.resolveCall("old-run", "c1", "skip");
 		expect(journal.callsFor("old-run")[0]!.state).toBe("resolved-skip");
 		journal.markRun("old-run", "abandoned");

@@ -1,11 +1,3 @@
-// The programs table's invariants: cron validates at the boundary (an
-// invalid expression never becomes a row), a program always has a
-// trigger, next_run is always the next future occurrence, due() is the
-// boot-catch-up query, rows survive a reopen, and the legacy `jobs`
-// table purges at open — its rows copy in only when the programs table
-// itself is being created, otherwise they archive to recovery without
-// activating, and the table drops either way.
-
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -91,10 +83,9 @@ describe("nextFire", () => {
 		).toThrow("is after the scan time");
 	});
 
-	// The fast path declines to the walk on any probe throw — that is the
-	// designed answer for an unexpressible boundary, but the reason must
-	// be logged rather than swallowed: an unexpected throw is
-	// indistinguishable from a cron-parser regression otherwise.
+	// A probe throw declines to the walk by design — but the reason
+	// must be logged: an unexpected throw is indistinguishable from a
+	// cron-parser regression otherwise.
 	test("a declined catch-up probe logs the reason before the walk answers", () => {
 		const captured: string[] = [];
 		setLogFile("catchup-decline-test.log");
@@ -299,7 +290,6 @@ describe("programs store", () => {
 		);
 		expect(s.list()).toEqual([]);
 
-		// A hook alone is a valid trigger — the cron stays null.
 		const hooked = s.create(
 			{ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS },
 			NOW,
@@ -308,8 +298,7 @@ describe("programs store", () => {
 		expect(hooked.nextRun).toBeNull();
 		expect(s.due(new Date("2100-01-01"))).toEqual([]); // never cron-due
 
-		// And the invariant can't be patched away: clearing the only
-		// trigger is a readable error, not a dead row.
+		// The invariant can't be patched away either.
 		expect(() => s.update(hooked.id, { hookHash: null })).toThrow("at least one trigger");
 		expect(s.get(hooked.id)!.hookHash).toBe("abc123");
 	});
@@ -406,7 +395,7 @@ describe("programs store", () => {
 	test("setHook/findByHook/markFired — the webhook half of the store", () => {
 		const s = store();
 		const p = s.create({ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS }, NOW);
-		expect(s.setHook(999, "h")).toBeNull(); // missing row → null
+		expect(s.setHook(999, "h")).toBeNull();
 		s.setHook(p.id, "deadbeef");
 		expect(s.findByHook("deadbeef")!.id).toBe(p.id);
 		expect(s.findByHook("nope")).toBeNull();
@@ -465,7 +454,6 @@ describe("programs store", () => {
 		expect(old.mailHistoryId).toBeNull();
 		expect(old.cron).toBe("0 9 * * *");
 		expect(old.maxLatenessMinutes).toBeNull();
-		// And the new trigger works on the migrated table.
 		s.setMailFilter(old.id, "from:bank");
 		expect(s.get(old.id)!.mailFilter).toBe("from:bank");
 		expect(s.withMailFilter()).toHaveLength(1);
@@ -576,8 +564,8 @@ describe("mail trigger", () => {
 			mailRevision: 0,
 		});
 
-		// Once the failed edit rolls back, the other connection may write;
-		// a later charter edit observes its filter, cursor and revision.
+		// After the failed edit rolls back, b's write lands; a later
+		// charter edit observes its filter, cursor and revision.
 		b.setMailFilter(p.id, "from:b");
 		b.setMailHistory(p.id, "456", b.get(p.id)!.mailRevision);
 		expect(a.update(p.id, { charter: "new" })).toMatchObject({
@@ -624,7 +612,7 @@ describe("mail trigger", () => {
 	});
 });
 
-// The superseded `jobs` table, built the way openJobs built it.
+// The superseded `jobs` table in its openJobs shape.
 function createLegacyJobs(path: string, rows: number): void {
 	const db = new Database(path);
 	db.exec(`CREATE TABLE IF NOT EXISTS jobs (
@@ -877,7 +865,6 @@ describe("legacy jobs purge", () => {
 		const s = openPrograms(path);
 		expect(s.list().map((p) => p.id)).toEqual([1]);
 		expect(s.get(2)).toBeNull(); // the deleted job stays deleted
-		// And nothing unmatched is due that wasn't due before the open.
 		expect(s.due(new Date("2026-09-22T10:00:00")).map((p) => p.id)).not.toContain(2);
 		s.close();
 		const check = new Database(path);
@@ -925,7 +912,6 @@ describe("dm cutover re-pin (Rolling DM)", () => {
 		expect(s.get(dmTopic.id)!.chatId).toBe(5);
 		expect(s.get(bare.id)!.threadId).toBeNull();
 		expect(s.get(group.id)!.threadId).toBe(7);
-		// A second sweep finds nothing left.
 		expect(s.rePinDmTopics()).toBe(0);
 		s.close();
 	});

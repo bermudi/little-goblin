@@ -1,8 +1,3 @@
-// Notes domain tests — the single write path's invariants
-// (design/projects.md → Notes): version-before-write, app-write
-// coalescing, expected-rev conflicts, range-edit refusals that write
-// nothing, FTS freshness, and flag writes that move only state_rev.
-
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -21,8 +16,7 @@ import {
 import { openProjects, type ProjectStore } from "./projects.ts";
 import { useHome } from "./testkit.ts";
 
-// Each test gets a fresh $GOBLIN_HOME — the env var resolves per call
-// (projects.test.ts's pattern), so the domain sees the tmp layout.
+// $GOBLIN_HOME resolves per call — the domain sees the tmp layout.
 setLogFile("/dev/null");
 
 function setup(): {
@@ -85,7 +79,6 @@ describe("the write path", () => {
 		const beforeRestore = notes.get(n.id)!;
 		notes.restore(n.id, 1, beforeRestore.rev);
 		const versions = notes.listVersions(n.id);
-		// Three writes → three pre-write snapshots, newest first.
 		expect(versions.map((v) => v.rev)).toEqual([3, 2, 1]);
 		expect(versions.map((v) => v.source)).toEqual(["restore", "append", "agent"]);
 		expect(notes.getVersion(n.id, 3)!.body).toBe(beforeRestore.body);
@@ -99,7 +92,6 @@ describe("the write path", () => {
 	test("app writes coalesce: same-session saves record one version", () => {
 		const { notes, clock } = setup();
 		const n = notes.create({ title: "draft" });
-		// Three quick app saves — only the first versions the pre state.
 		notes.write(n.id, { body: "one" }, "app");
 		clock.t = new Date(clock.t.getTime() + 5_000);
 		notes.write(n.id, { body: "two" }, "app");
@@ -116,11 +108,8 @@ describe("the write path", () => {
 		const { notes, clock } = setup();
 		const n = notes.create({ title: "draft", body: "start" });
 		notes.append(n.id, "agent touched", "agent");
-		// App save right after the agent write: last_source !== 'app' → version.
 		notes.write(n.id, { body: "edit one" }, "app");
 		notes.write(n.id, { body: "edit two" }, "app");
-		// Two snapshots: the agent write's and the first app write's —
-		// the second coalesces into the app session.
 		expect(notes.listVersions(n.id)).toHaveLength(2);
 		// Past the 10-minute gap the next app save versions again even
 		// though the session source is still app.
@@ -150,7 +139,6 @@ describe("the write path", () => {
 			expect((err as NoteConflictError).note.body).toBe("v2");
 		}
 		expect(notes.get(n.id)!.body).toBe("v2");
-		// Right rev passes.
 		const ok = notes.write(n.id, { body: "v3" }, "app", { expectedRev: 2 });
 		expect(ok.rev).toBe(3);
 	});
@@ -171,8 +159,8 @@ describe("the write path", () => {
 		expect(() => notes.create({ title: "t", body: over })).toThrow(NoteInputError);
 		const n = notes.create({ title: "t" });
 		expect(() => notes.write(n.id, { body: over }, "app")).toThrow(NoteInputError);
-		// A legal single append that crosses the cap in aggregate
-		// refuses the same way — versioning amplifies every byte.
+		// An append crossing the cap in aggregate refuses the same way —
+		// versioning amplifies every byte.
 		const almost = "y".repeat(NOTE_BODY_MAX - 4);
 		notes.write(n.id, { body: almost }, "agent");
 		expect(() => notes.append(n.id, "z".repeat(10), "agent")).toThrow(NoteInputError);
@@ -194,7 +182,7 @@ describe("the write path", () => {
 			expect(attempt).toThrow(/archived/);
 		}
 		expect(notes.get(n.id)!.body).toBe("x\n\nmore");
-		// Flags bypass write() — unarchive makes it writable again.
+		// Flags bypass write() — unarchive lifts read-only.
 		notes.setArchived(n.id, false);
 		expect(notes.write(n.id, { body: "y" }, "app").body).toBe("y");
 	});
@@ -270,13 +258,11 @@ describe("search and scope", () => {
 		notes.create({ title: "ideas", body: "nothing to see" });
 		const found = (q: string) => notes.list({ q }).map((s) => s.id);
 		// Punctuation-only input quotes into a real (empty) FTS match;
-		// whitespace- and quote-only input strips to no terms at all.
-		// Both must read as "no hits", not degrade to the unfiltered
-		// list — searchHistory's rule.
+		// whitespace- and quote-only input strips to no terms — both
+		// must read "no hits", never degrade to the unfiltered list.
 		expect(found("+++")).toEqual([]);
 		expect(found("   ")).toEqual([]);
 		expect(found('""')).toEqual([]);
-		// A real term still filters.
 		expect(found("packing")).toHaveLength(1);
 	});
 
@@ -290,7 +276,7 @@ describe("search and scope", () => {
 		notes.setPinned(loose.id, true);
 		expect(notes.list({ project: p.id }).map((s) => s.id)).toEqual([inProject.id]);
 		expect(notes.list({ project: "loose" }).map((s) => s.id)).toEqual([loose.id]);
-		// Pinned floats above the more recently touched row.
+		// Pinned floats above the fresher row.
 		notes.write(inProject.id, { body: "fresher" }, "app");
 		expect(notes.list().map((s) => s.id)).toEqual([loose.id, inProject.id]);
 		expect(notes.list({ archived: true }).map((s) => s.id)).toEqual([archived.id]);
@@ -353,8 +339,8 @@ describe("the state_rev ordering token", () => {
 		const p = projects.create({ name: "P" });
 		const n = notes.create({ title: "t", body: "x" });
 		expect(n.stateRev).toBe(1);
-		// Every accepted flag flip is a new state — rev, updated_at,
-		// and the version list can't see any of them.
+		// rev, updated_at, and the version list see none of the flag
+		// flips.
 		notes.setPinned(n.id, true);
 		notes.setArchived(n.id, true);
 		notes.setArchived(n.id, false);
@@ -364,7 +350,6 @@ describe("the state_rev ordering token", () => {
 		expect(flagged.stateRev).toBe(5);
 		expect(flagged.updatedAt).toBe(n.updatedAt);
 		expect(notes.listVersions(n.id)).toHaveLength(0);
-		// A content write moves both counters and the clock.
 		clock.t = new Date(clock.t.getTime() + 5_000);
 		const written = notes.write(n.id, { body: "v2" }, "app");
 		expect(written.rev).toBe(2);
@@ -412,7 +397,6 @@ describe("the state_rev ordering token", () => {
 		notes.append(n.id, "three", "agent");
 		const before = notes.get(n.id)!;
 		expect(() => notes.restore(n.id, 1, 2)).toThrow(NoteConflictError);
-		// Nothing moved — body, versions, and both counters stand.
 		expect(notes.get(n.id)!).toEqual(before);
 		expect(notes.listVersions(n.id)).toHaveLength(2);
 		const ok = notes.restore(n.id, 1, 3);

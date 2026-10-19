@@ -1,13 +1,6 @@
-// Shared test harness — boundary fakes and filesystem fixtures for the
-// colocated suites. House rule (AGENTS.md): fake the model provider and
-// the Telegram API at the edge, never mock module internals. The fakes
-// here ARE that edge, so every suite shares one copy and they drift
-// together: a provider-contract change updates one fake, not four.
-//
-// Importing this module registers an afterEach that removes every
-// tracked temp dir and restores GOBLIN_HOME — test files get cleanup
-// by importing, and must not also restore GOBLIN_HOME by hand for dirs
-// obtained here. Test-only: production modules never import this file.
+// Importing registers an afterEach that removes every tracked temp dir
+// and restores GOBLIN_HOME — test files must not also restore it by
+// hand for dirs obtained here. Test-only: production never imports this.
 
 import { afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -75,12 +68,7 @@ export function openTestStore(prefix?: string): {
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/**
- * Poll `cond` until it holds, failing loud after `timeoutMs`. Replaces
- * unbounded `while (…) await sleep(1)` loops (a hang becomes a named
- * failure) and fixed "should be enough" sleeps before an observable
- * state (the condition is the proof, not the elapsed time).
- */
+/** Poll `cond` until it holds, failing loud after `timeoutMs`. */
 export async function waitUntil(
 	cond: () => boolean | Promise<boolean>,
 	label: string,
@@ -111,13 +99,10 @@ export function deferred<T = void>(): {
 
 // ---------- model provider fakes (the edge) ----------
 
-/**
- * Streaming fake: emits `deltas` as one text part, one per `delayMs`,
- * then a stop finish. Respects the abort signal between deltas — a
- * fence must be able to kill the stream mid-flight. `beforeDelta`
- * replaces the delay with an event-controlled pause point, so a race
- * test holds the stream at a known delta instead of racing the clock.
- */
+// Respects the abort signal between deltas — a fence must be able to
+// kill the stream mid-flight. beforeDelta replaces the delay with an
+// event-controlled pause point.
+
 export interface FakeModelOptions {
 	/** Optional pause before each emitted delta. Prefer beforeDelta for gated tests. */
 	delayMs?: number;
@@ -261,15 +246,9 @@ export function fakeGenerateModel(
 
 // ---------- turn sinks ----------
 
-/**
- * The full-featured recording sink: delta text, the raw chunk stream
- * (the app channel's SSE surface rides it verbatim), tool calls, and
- * event promises tests await instead of sleeping — `admitted` (the
- * authority check is installed, before any model work), `firstDelta`
- * (mid-stream), `firstToolCall` (the model emitted a tool call).
- * Defining onStreamChunk makes submits through this sink streaming —
- * use HeadlessSink where the headless lane is the subject.
- */
+// Defining onStreamChunk makes submits through this sink streaming —
+// use HeadlessSink where the headless lane is the subject.
+
 export class RecordingSink implements TurnSink {
 	text = "";
 	chunkTypes: string[] = [];
@@ -320,11 +299,9 @@ export class RecordingSink implements TurnSink {
 	}
 }
 
-/**
- * Delivery-hooks-only sink (the spin-off bell's shape): no
- * onStreamChunk, so the streaming-lane boundary treats it as headless.
- * It only ever sees the turn's terminal outcome.
- */
+// No onStreamChunk, so the streaming-lane boundary treats it as headless
+// (the spin-off bell's shape).
+
 export class HeadlessSink implements TurnSink {
 	done: Promise<TurnDone>;
 	private resolveDone: (d: TurnDone) => void;
@@ -343,11 +320,9 @@ export class HeadlessSink implements TurnSink {
 	}
 }
 
-/**
- * Delivery-completion park: the turn finished and its onDone is held
- * on a gate, so the drain loop is still "running" while new submits
- * only queue (a slow Telegram send or bell delivery holding the lane).
- */
+// onDone is held on a gate — the drain loop stays "running" while new
+// submits only queue (a slow Telegram send or bell delivery).
+
 export class ParkedDoneSink implements TurnSink {
 	done: Promise<TurnDone>;
 	private resolveDone: (d: TurnDone) => void = () => {};

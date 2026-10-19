@@ -1,7 +1,3 @@
-// The delegation store's name contract: agent names must land in
-// herdr's agent-name charset ([a-z][a-z0-9_-]{0,31}) regardless of
-// what the operator or model put in the delegation name.
-
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -29,8 +25,6 @@ function tmpdirPath(): string {
 	return dir;
 }
 
-// The app-pinned pin (design/app.md → Spin-off): app_conversation
-// round-trips, and rows written before the column existed read null.
 describe("delegations store", () => {
 	test("pre-machines rows keep NULL target — the own-local-session meaning", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
@@ -53,10 +47,9 @@ describe("delegations store", () => {
 			finished_at TEXT,
 			app_conversation TEXT
 		)`);
-		// Three pre-machines rows: two live (running, starting), one
-		// terminal. NULL target is the own-local-session meaning —
-		// local launches still write it today, so no boot warning
-		// may mislabel live local rows as pre-machines relics.
+		// NULL target is the own-local-session meaning — local launches
+		// still write it, so nothing may mislabel live local rows as
+		// pre-machines relics.
 		const ins = db.prepare(`INSERT INTO delegations
 			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
 			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);
@@ -64,7 +57,6 @@ describe("delegations store", () => {
 		ins.run("remote-starting", "starting");
 		ins.run("old-done", "done");
 		db.close();
-		// Opens through the migration (target column added).
 		const store = openDelegations(path);
 		try {
 			expect(store.get(1)?.target).toBeNull();
@@ -74,9 +66,9 @@ describe("delegations store", () => {
 		}
 	});
 
-	// #95: baseline_seq went nullable — NULL is the baseline-pending
-	// posture (a failed post-prompt read never falls back to a pre-prompt
-	// value). Legacy NOT NULL tables rebuild in place, rows intact.
+	// baseline_seq went nullable — NULL is the baseline-pending posture (a
+	// failed post-prompt read never falls back to a pre-prompt value).
+	// Legacy NOT NULL tables rebuild in place, rows intact.
 	test("a NOT NULL baseline_seq table migrates to nullable; the pending posture round-trips", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const db = new Database(path);
@@ -104,7 +96,7 @@ describe("delegations store", () => {
 		db.close();
 		const store = openDelegations(path);
 		try {
-			expect(store.get(1)!.baselineSeq).toBe(3); // the rebuild kept the row
+			expect(store.get(1)!.baselineSeq).toBe(3);
 			const d = store.create({
 				name: "pending",
 				harness: "codex",
@@ -114,7 +106,6 @@ describe("delegations store", () => {
 			});
 			store.markRunning(d.id, null, new Date());
 			expect(store.get(d.id)!.baselineSeq).toBeNull();
-			// The watcher's capture lands under the same CAS shape.
 			const row = store.get(d.id)!;
 			expect(
 				store.captureBaseline(d.id, { status: row.status, promptedAt: row.promptedAt }, 8),

@@ -1,15 +1,9 @@
-// The send-only tool hands drafts to the approval gate; it holds no sender
-// credential or Telegram context. Reads use goblin-mail + gws instead, so
-// this boundary cannot be used to bypass the checked read path.
-
 import { tool } from "ai";
 import { z } from "zod";
 
 const addressSchema = z.email().max(320);
 
-// Reject line breaks before approval text is rendered or headers are encoded;
-// keeping this boundary explicit prevents an encoder refactor from reopening
-// header injection.
+// Line-break rejection survives encoder refactors — header injection stays closed.
 const subjectSchema = z
 	.string()
 	.max(500)
@@ -24,8 +18,6 @@ export interface MailDraftInput {
 }
 
 export interface MailToolDeps {
-	/** Queue and present a draft in the pre-bound conversation, then return the
-	 * model-facing verdict. */
 	requestDraft(
 		input: MailDraftInput,
 	): Promise<{ queued: number; status: string } | { error: string }>;
@@ -40,8 +32,6 @@ const sendSchema = z.object({
 	replyToId: z.string().min(1).max(256).optional(),
 });
 
-// Keep the action at the root: some providers fail to generate arguments for
-// a nested discriminated union.
 export const mailInputSchema = z
 	.object({
 		action: z.literal("send"),

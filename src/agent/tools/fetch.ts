@@ -1,13 +1,3 @@
-// The fetch tool — URL → readable text (DESIGN.md, "Web access").
-// Default `local`: direct HTTP + in-process readability extraction
-// (linkedom + @mozilla/readability — pure JS, the industry path).
-// Provider kinds (jina/tavily/firecrawl/parallel) extract server-side.
-// All kinds share the output discipline: a head+tail window cut on line
-// boundaries — fenced as untrusted data (web.ts's fenceUntrusted) —
-// overflow written to state/webcache/, and a footer naming the exact
-// read_file call to page through the middle. No SSRF policy — bash
-// already has full network access; the boundary is the tool set.
-
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -21,9 +11,6 @@ import type { AuthStore } from "../../auth.ts";
 import { acceptsMedia, INLINE_ITEM_MAX_BYTES, type AcceptsMedia } from "../attachments.ts";
 import type { Config, FetchConfig } from "../../config.ts";
 import { paths } from "../../config.ts";
-// The webcache overflow file is state the model will page through later —
-// it gets the same crash-safe write as every other whole-file state, so a
-// mid-write crash can never leave a truncated "full text" behind.
 import { durableWriteBytes, durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { truncatedFooter, windowText } from "./truncate.ts";
@@ -42,7 +29,6 @@ const TIMEOUT_MS = 30_000;
 const LOCAL_TIMEOUT_MS = 20_000;
 const DOWNLOAD_CAP = 8 * 1024 * 1024;
 const DEFAULT_BUDGET = 15_000;
-/** Below this the page almost certainly didn't render — say so, name the browser. */
 const MIN_EXTRACT = 200;
 
 const BASES = {
@@ -57,28 +43,18 @@ type FetchKind = "local" | keyof typeof BASES;
 interface Extracted {
 	title: string;
 	text: string;
-	/** A fetched PDF (local kind): saved to webcache, carried as a small
-	 *  ref in history — the model-facing rendering is decided per turn by
-	 *  toModelOutput against that turn's model + provider pipe. */
 	pdf?: PdfRef;
-	/** Boundary metadata — the fields the fetch log line is made of. */
 	meta: HttpMeta;
 }
 
-/** The durable reference stored in a fetch tool result: where the PDF
- *  lives and where it came from — never the payload (DESIGN.md, Web
- *  access: same rule as data-attachment parts). */
 interface PdfRef {
 	path: string;
 	url: string;
 	size: number;
 }
 
-/** Everything the tool's execute can return: the extracted-text window
- *  (string), a structured refusal, or a PDF reference. */
 type FetchOutput = string | { error: string; kind: string } | { pdf: PdfRef };
 
-/** Structured refusal — the error string goes to the model, kind to the log. */
 interface Rejected {
 	error: string;
 	kind: string;
@@ -118,8 +94,7 @@ const extractors: Record<
 			key ? { Authorization: `Bearer ${key}` } : {},
 			{
 				urls: [url],
-				// v1 API: full content rides advanced_settings, not the top level
-				// (top-level `full_content` was the /v1beta shape hermes' SDK used).
+				// parallel v1: full content rides advanced_settings, not the top level.
 				advanced_settings: { full_content: true },
 			},
 		);
@@ -190,19 +165,11 @@ const extractors: Record<
 
 const TEXTUAL = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|toml))/;
 
-/** The cap is a ceiling on reads, not a post-hoc check: a lying
- * Content-Length or an endless chunked stream must never balloon
- * memory. The read is cancelled the moment the cap is crossed; chunks
- * assemble only after the stream ends within it. `seen` on the
- * too-large arm is what was actually read before cancellation — the
- * full size is unknowable without downloading it, which is the point. */
 async function readBodyCapped(
 	res: Response,
 	cap: number,
 ): Promise<{ tooLarge: false; bytes: Uint8Array } | { tooLarge: true; seen: number }> {
 	if (res.body === null) {
-		// No stream to gate (not reachable for http(s) fetch today) —
-		// there is nothing to buffer either.
 		return { tooLarge: false, bytes: new Uint8Array(await res.arrayBuffer()) };
 	}
 	const reader = res.body.getReader();
@@ -271,17 +238,6 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 		return { title: "", text, meta };
 	}
 	if (contentType === "application/pdf") {
-		// The AI-SDK payoff (DESIGN.md, Web access): a PDF the model can
-		// read natively rides as a document, not extracted text. The bytes
-		// land in webcache under the same crash-safe write as text overflow;
-		// history stores only the ref — and the ref is REPLAYED into every
-		// later request, so the path must be content-addressed (URL +
-		// bytes): a refetch that brought new bytes writes a new file and the
-		// old tool result keeps reading the old bytes. URL-keying (the text
-		// overflow's convention) would silently rewrite history's request
-		// bytes and bust the prefix cache (DESIGN.md, Cache stability); the
-		// text cache can be URL-keyed only because its tool result is the
-		// window string — the file is a recovery aid, never replayed.
 		const file = pdfCachePath(url, body.bytes);
 		mkdirSync(paths.webcache(), { recursive: true });
 		durableWriteBytes(file, body.bytes);
@@ -299,7 +255,6 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 	};
 }
 
-/** HTML → readable text. Pure so the same input materializes identically. */
 function extractReadable(
 	url: string,
 	html: string,
@@ -310,10 +265,6 @@ function extractReadable(
 		const dom = parseHTML(html);
 		article = new Readability(dom.document).parse();
 	} catch (err) {
-		// The null-fallback (→ empty-extraction refusal) is the right
-		// behavior, but the refusal alone can't tell a linkedom/readability
-		// crash from a JavaScript-shell page — the parser error rides the
-		// log with the URL so the symptom reconstructs from goblin.log.
 		log.warn("readability parse failed", err, {
 			url,
 		});
@@ -337,10 +288,6 @@ export function shapeResult(
 	budget: number,
 	note?: string,
 ): string {
-	// The title is the site's words too — it rides fenced and clamped
-	// (search clamps its titles the same way). Only the Source: line and
-	// the recovery footer are ours and stay outside, so the recovery
-	// instruction stays trusted.
 	const header = `Source: ${url}${note ? `\n${note}` : ""}\n\n`;
 	const title = extracted.title ? `# ${clampChars(extracted.title, 200)}\n\n` : "";
 	const { window, truncated } = windowText(extracted.text, budget);
@@ -352,9 +299,6 @@ export function shapeResult(
 	if (!truncated) return header + fenced;
 	const file = cachePath(url);
 	const full = `${header}${title}${extracted.text}`;
-	// The extraction is already done — a failed cache write degrades to
-	// the no-file footer; throwing here would lose the page for a
-	// recovery aid.
 	try {
 		mkdirSync(paths.webcache(), { recursive: true });
 		durableWriteFile(file, full);
@@ -385,18 +329,9 @@ export interface FetchFailure {
 export interface FetchChainOutcome {
 	extracted: Extracted | Rejected;
 	servedBy: FetchKind;
-	/** Providers that threw before the one that answered (config order). */
 	failures: FetchFailure[];
 }
 
-/**
- * Walk the configured chain in order (absent config = [{kind: "local"}]).
- * Transport, HTTP, and auth failures advance to the next entry; a
- * structured refusal (binary, too-large, empty extraction) is an ANSWER
- * from that provider and stops the walk — the search chain's rule,
- * applied here. Each failed attempt logs its own line; exhaustion
- * throws with every error.
- */
 export async function runFetchChain(
 	entries: ReadonlyArray<FetchConfig[number]>,
 	auth: AuthStore,
@@ -417,8 +352,6 @@ export async function runFetchChain(
 			}
 			return { extracted, servedBy: kind, failures };
 		} catch (err) {
-			// Auth-resolve failures carry no provider prefix; transport ones
-			// do (ProviderError). Normalize so every failure names its entry.
 			const raw = (err as Error).message;
 			const error = raw.startsWith(`${kind}:`) ? raw : `${kind}: ${raw}`;
 			failures.push({ kind, error });
@@ -429,14 +362,11 @@ export async function runFetchChain(
 			});
 		}
 	}
-	// Error strings already carry their provider prefix (ProviderError).
 	throw new Error(`fetch failed — ${failures.map((f) => f.error).join("; ")}`);
 }
 
 // ---------- tool ----------
 
-// Test door: the extractor table, so failure mapping is verifiable
-// against a fake server without touching the vendor.
 export { extractors };
 
 export const fetchTool = (deps: WebToolDeps) =>
@@ -447,22 +377,10 @@ export const fetchTool = (deps: WebToolDeps) =>
 			url: z.string().regex(/^https?:\/\//, "url must be http(s)"),
 			maxChars: z.number().int().min(2000).max(50_000).optional(),
 		}),
-		// The PDF's model-facing rendering — decided per turn, at request
-		// time, never at fetch time. The stored output is a small ref; this
-		// is the same discipline attachments use (attachments.ts): a pure
-		// function of the ref, the bytes on disk, and THIS turn's model +
-		// provider pipe, so the same history renders to identical request
-		// bytes under the same model, and a model switch recomputes once.
-		// Fresh results and replayed history both flow through here — the
-		// SDK consults the live tool on every conversion.
 		toModelOutput: async ({ output }): Promise<LanguageModelV4ToolResultOutput> => {
-			// The tool's OUTPUT generic flows through NoInfer — narrow through
-			// the union explicitly (FetchOutput), not structural guards.
 			const o = output as FetchOutput | undefined | null;
 			if (typeof o === "string") return { type: "text", value: o };
 			if (o === undefined || o === null || !("pdf" in o) || o.pdf === undefined) {
-				// Non-PDF objects (the refusal shape) keep the SDK's default
-				// JSON rendering.
 				return { type: "json", value: (o ?? null) as JSONValue };
 			}
 			const ref = o.pdf;
@@ -470,9 +388,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 			const capable =
 				accepts !== undefined &&
 				acceptsMedia(accepts.modalities, "application/pdf") &&
-				// tool-result position: the fetch result rides in a tool
-				// message, a different converter path than user-message
-				// attachments — chat-completions kinds stringify it there.
 				accepts.carries("application/pdf", "tool-result");
 			const reference = (note: string): LanguageModelV4ToolResultOutput => ({
 				type: "text",
@@ -495,10 +410,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 						"The saved copy no longer fits the inline cap — extract text with bash, or send_file to hand it to the operator.",
 					);
 				}
-				// Trusted framing outside the payload, the fence discipline's
-				// binary twin: a PDF can carry prompt-injection text, so the
-				// framing marks the bytes untrusted and nothing inside them can
-				// displace it.
 				return {
 					type: "content",
 					value: [
@@ -515,9 +426,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 					],
 				};
 			} catch (err) {
-				// Disk failure is the one degrade path for a planned-inline
-				// item (attachments' rule): the model still sees what was
-				// fetched, and the anomaly lands in the log.
 				log.warn("fetched pdf unreadable — degrading to reference", err, {
 					path: ref.path,
 				});
@@ -531,8 +439,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 			const started = Date.now();
 			const budget = input.maxChars ?? DEFAULT_BUDGET;
 
-			// Per-attempt failures already logged by the chain; exhaustion
-			// throws with every error joined — the model sees the whole story.
 			const {
 				extracted,
 				servedBy: kind,
@@ -557,9 +463,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 				});
 				return { error: extracted.error, kind: extracted.kind };
 			}
-			// A PDF is an answer, not an extraction: chain stops here, the
-			// ref rides history, and toModelOutput decides per turn whether
-			// it renders as a native document or a path reference.
 			if (extracted.pdf) {
 				log.info("web fetch", {
 					url: input.url,

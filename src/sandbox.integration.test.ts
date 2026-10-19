@@ -1,8 +1,5 @@
-// Real-podman coverage — the seams unit tests can't hold: the create
-// argv really builds a root-mapped container, the network toggle
-// really moves packets, the killed exec's fate on the engine, and an
-// exported symlink really resolves inside the container. Gated on
-// GOBLIN_TEST_PODMAN=1; uses a test-only container prefix and network
+// Real-podman coverage of the seams fakes can't hold — gated on
+// GOBLIN_TEST_PODMAN=1. Uses a test-only container prefix and network
 // and removes exactly what it creates.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -128,9 +125,8 @@ describe.skipIf(!RUN)("sandbox against real podman", () => {
 		expect(out.timed_out).toBe(true);
 		expect(out.exit_code).toBeNull();
 		expect(out.note).toContain("restarted");
-		// The restart reaped the sleeper (podman exec does not propagate
-		// the client kill — the design hypothesis, confirmed on this box)
-		// while the filesystem survived.
+		// podman exec does not propagate the client kill — the restart
+		// reaped the sleeper while the filesystem survived.
 		const after = await call({ action: "exec", command: "cat /work/kept; ps" });
 		expect(after.output).toContain("keep");
 		expect(after.output).not.toContain("sleep 60");

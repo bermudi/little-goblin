@@ -39,7 +39,7 @@ describe("mail tool", () => {
 
 	// Header injection is closed at the schema, not by encodeSubject's
 	// accident (CR/LF happens to force the encoded-word branch) — the
-	// raw text must never reach the approval draft or the wire (#103).
+	// raw text must never reach the approval draft or the wire.
 	test("a subject containing CR/LF fails validation at the boundary", () => {
 		for (const subject of ["hi\r\nBcc: x@evil.com", "hi\rBcc: x@evil.com", "hi\nBcc: x@evil.com"]) {
 			expect(

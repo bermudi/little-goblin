@@ -1,17 +1,10 @@
-// Speech → text. When a `transcription` block is configured, intake
-// transcribes voice and video notes once, eagerly — the media kinds
+// Intake transcribes voice/video notes eagerly — the media kinds
 // Telegram only produces by recording speech — and the transcript rides
-// inside the data-attachment part: durable history that materialization
-// prefers over the bare path reference for models that can't consume
-// audio (or payloads that don't fit the inline cap). Other audio —
-// attached files — is transcribed on demand by the transcribe tool,
-// which calls into this same module.
-//
-// Engines implement SpeechEngine (design/asr.md); the orchestrator owns
-// segmentation, silence semantics, and the log line, and never sees a
-// provider SDK. Engines hand-roll their HTTP (groq multipart here moves
-// to transcribe-cloud.ts) like TTS already does — the AI SDK's
-// transcribe() path is gone from this layer.
+// inside the data-attachment part, which materialization prefers over
+// the bare path for models that can't consume audio (or payloads over
+// the inline cap). Attached audio files transcribe on demand via the
+// transcribe tool. Engines hand-roll HTTP — no provider SDKs; the
+// orchestrator owns segmentation, silence semantics, and the log line.
 
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,9 +27,8 @@ import { whistleArtifactPresence, whistleEngine } from "./transcribe-whistle.ts"
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
-// Hard ceiling on one transcription's segment count (≈1 h 52 m at the
-// whistle profile's 28 s) — past it, fail loud instead of grinding the
-// CPU for an afternoon.
+// ≈1 h 52 m at the whistle profile's 28 s — past it, fail loud instead
+// of grinding CPU for an afternoon.
 const MAX_SEGMENTS = 240;
 
 export interface SpeechFile {
@@ -50,30 +42,23 @@ export interface EngineTranscript {
 	language?: string | undefined;
 }
 
-// One engine = one prepared-file → transcript function plus the prep
-// contract the orchestrator must honor before calling it. `id` is the
-// log line's provider field ("whistle", "groq/whisper-large-v3-turbo").
 export interface SpeechEngine {
 	id: string;
-	// What the orchestrator must guarantee per call: upload cap for
-	// keep-profile engines, and the per-segment ceiling both profiles
-	// segment at.
+	// Upload cap for keep-profile engines; per-segment ceiling both
+	// profiles segment at.
 	limits: { maxBytes?: number; maxSeconds?: number };
-	// keep: pass the original bytes under the cap; over it (or always,
-	// for wav) run the ffmpeg segmentation pass. sampleRateHz/mono shape
-	// the wav profile (whistle: 16 kHz mono).
+	// keep: original bytes under the cap, ffmpeg segmentation over it.
+	// wav: always segment, shaped by sampleRateHz/mono (whistle: 16 kHz mono).
 	prep: { container: "keep" | "wav"; sampleRateHz?: number; mono?: boolean };
 	transcribe(file: SpeechFile): Promise<EngineTranscript>;
 }
 
-// Injectable engine dependencies (tests fake fetch and the process
-// shape); production defaults live in the engine modules.
 export interface EngineDeps {
 	fetchFn?: typeof fetch;
 }
 
-// Config → engine. The auth ref resolves lazily at the point of use like
-// every other provider — the resolved key never leaves the engine.
+// Auth resolves lazily at the point of use — the resolved key never
+// leaves the engine.
 export function speechEngine(
 	cfg: TranscriptionConfig,
 	auth: AuthStore,
@@ -101,12 +86,10 @@ export function speechEngine(
 	}
 }
 
-// Boot probe for speech features that need ffmpeg on PATH. Resolves
-// false when the binary is missing or broken — the caller decides what
-// that costs (TTS takes the feature down for the run; transcription
-// degrades per message: keep-profile engines only lose the over-cap
-// path, wav-profile engines lose everything). The warn here is the
-// audit trail either way.
+// false when ffmpeg is missing or broken — the caller decides the cost
+// (TTS takes the feature down for the run; transcription degrades per
+// message: keep-profile engines lose only the over-cap path, wav-profile
+// engines lose everything).
 export async function probeFfmpeg(
 	feature = "transcription",
 	requiredEncoder?: string,
@@ -123,8 +106,8 @@ export async function probeFfmpeg(
 		log.warn("ffmpeg unavailable", err, { feature });
 		return false;
 	}
-	// Encoder presence: a minimal ffmpeg can run and still lack the
-	// codec the feature encodes with (openrouter TTS needs libopus).
+	// A minimal ffmpeg can run and still lack the codec the feature
+	// encodes with (openrouter TTS needs libopus).
 	if (requiredEncoder !== undefined) {
 		const enc = await boundedRun(spawnProc(["ffmpeg", "-hide_banner", "-encoders"]), {
 			timeoutMs: 10_000,
@@ -142,20 +125,13 @@ export async function probeFfmpeg(
 }
 
 export interface TranscribeOptions {
-	// Provider upload cap override — over it, the file is segmented first.
 	maxBytes?: number;
-	// Segment length override (tests shrink it; production keeps the
-	// engine's own limit).
 	segmentSeconds?: number;
 }
 
-// null = no speech found (an empty transcript under the cap, or every
-// segment empty over it). Failures — including a provider outage that
-// leaves the segmented path with zero transcribed segments — propagate
-// instead: a failure must never read as silence. ffmpeg absence, a
-// corrupt file, and other IO/provider failures propagate the same way
-// — the intake caller degrades them to a warn + path-referenced
-// attachment.
+// null = no speech found. Failures propagate instead — a failure must
+// never read as silence (the intake caller degrades them to a warn +
+// path-referenced attachment).
 export async function transcribeAudio(
 	engine: SpeechEngine,
 	file: SpeechFile,
@@ -164,8 +140,8 @@ export async function transcribeAudio(
 	const maxBytes = opts.maxBytes ?? engine.limits.maxBytes;
 	const segmentSeconds = opts.segmentSeconds ?? engine.limits.maxSeconds;
 	if (engine.prep.container === "wav") {
-		// The wav profile always transcodes: the local engine only eats
-		// 16 kHz mono RIFF, so even a short note is one segment pass.
+		// The wav profile always transcodes — the local engine only eats
+		// 16 kHz mono RIFF.
 		return transcribeSegmented(engine, file, (dir) =>
 			segmentAudio(file.path, dir, segmentSeconds ?? 28, {
 				container: "wav",
@@ -210,22 +186,19 @@ async function transcribeSegmented(
 			try {
 				const t = await transcribeOne(engine, {
 					path: seg,
-					// Extension-derived mime for multipart engines; the
-					// local engine only ever sees the path.
+					// Extension-derived mime — only multipart engines consume it.
 					mediaType: seg.endsWith(".wav") ? "audio/wav" : "audio/ogg",
 					filename: seg,
 				});
 				if (t !== null) texts.push(t);
 			} catch (err) {
-				// Keep what transcribed — a partial transcript beats a bare
-				// path, and the segment boundary tells the model where it ends.
+				// A partial transcript beats a bare path.
 				log.warn("transcription segment failed — result is partial", err, {
 					file: file.filename,
 					segment: seg,
 				});
-				// Nothing transcribed means there is no partial to keep:
-				// returning null would read as "no speech" to every caller
-				// (#101) — the provider error must name itself instead.
+				// No partial to keep: null would read as "no speech" —
+				// the provider error must name itself.
 				if (texts.length === 0) throw err;
 				break;
 			}
@@ -240,17 +213,14 @@ async function transcribeSegmented(
 
 interface PrepSpec {
 	container: "keep" | "wav";
-	// Optional fields carry explicit undefined: they're forwarded from
-	// engine.prep under exactOptionalPropertyTypes.
+	// Explicit undefined — forwarded from engine.prep under
+	// exactOptionalPropertyTypes.
 	sampleRateHz: number | undefined;
 	mono: boolean | undefined;
 }
 
-// Extract the audio track and split into fixed-length chunks — one pass
-// handles both "video whose audio fits" (one segment) and "genuinely
-// long recording" (many). The keep profile ships mono 48k opus (a
-// video note's payload is mostly pixels); the wav profile ships the
-// engine's sample rate as pcm_s16le. Returns sorted chunk paths.
+// keep ships mono 48k opus (a video note's payload is mostly pixels);
+// wav ships the engine's sample rate as pcm_s16le.
 async function segmentAudio(
 	src: string,
 	dir: string,
@@ -258,9 +228,8 @@ async function segmentAudio(
 	prep: PrepSpec,
 ): Promise<string[]> {
 	const wav = prep.container === "wav";
-	// wav: the local engine's contract — 16 kHz mono pcm_s16le. keep:
-	// mono 48k opus, small enough that a 15-minute segment stays under
-	// every cloud upload cap.
+	// wav = the local engine's contract (16 kHz mono pcm_s16le); keep =
+	// mono 48k opus, sized so a 15-min segment stays under every cloud cap.
 	const audio = wav
 		? [
 				"-ar",
@@ -279,12 +248,11 @@ async function segmentAudio(
 		"-i",
 		src,
 		"-vn",
-		// Browser MediaRecorder output (PWA voice notes: webm, ogg,
-		// mp4) carries duration=N/A headers and packet timestamps that
-		// don't map to wall time — the segment muxer then cuts one
-		// ~60 ms segment per packet (153 segments from a 9 s note).
-		// Rebuild pts from decoded sample count instead: contiguous
-		// frames are true wall time regardless of container lies.
+		// MediaRecorder output carries duration=N/A headers and packet
+		// pts that don't map to wall time — the segment muxer would cut
+		// one ~60 ms segment per packet (a 9 s note → 153 segments).
+		// Rebuild pts from decoded sample count: contiguous frames are
+		// true wall time regardless of container lies.
 		"-af",
 		"asetpts=N/SR/TB",
 		...audio,
@@ -331,12 +299,10 @@ async function transcribeOne(engine: SpeechEngine, file: SpeechFile): Promise<st
 	return text === "" ? null : text;
 }
 
-// One file against the configured chain: engines run in order, a
-// throw advances to the next — each gets the full orchestration (cap,
-// segmentation). null ("no speech") is a successful answer from the
-// engine that produced it, never a retry trigger. A whole failed
-// chain throws one error naming each engine — the recorded
-// transcriptionError stays readable (bounded per link).
+// Engines run in order, a throw advances to the next. null ("no
+// speech") is a successful answer from the engine that produced it,
+// never a retry trigger. A whole failed chain throws one error naming
+// each engine, bounded per link.
 export async function transcribeChain(
 	engines: SpeechEngine[],
 	file: SpeechFile,
@@ -366,11 +332,10 @@ export async function transcribeChain(
 	throw new Error(errors.join(" | "));
 }
 
-// The intake/tool call seam — reads the live config per call so a
-// mini-app save applies to the next voice note; absent block answers
-// null. boot() builds it once and hands the closure to makeTools.
-// The block's own kind is the primary; `fallbacks` run in order —
-// whistle-last is the free safety net, cloud kinds bill per call.
+// Live config read per call so a mini-app save applies to the next
+// note; absent block answers null. `fallbacks` run in order after the
+// block's own kind — whistle-last is the free safety net, cloud kinds
+// bill per call.
 export function makeTranscriber(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;
@@ -385,12 +350,11 @@ export function makeTranscriber(deps: {
 	};
 }
 
-// Boot-time media readiness: voice replies and transcription die at
-// runtime without ffmpeg — probing costs ~30ms and saves a tool
-// failing per message; transcription needs it only over the upload cap
-// (for the wav-profile kinds, always — whistle's ogg→wav decode,
-// mimo's wav-only input contract). Writes configRef.ttsDown when the
-// probe fails on a configured tts block.
+// Voice replies and transcription die at runtime without ffmpeg;
+// transcription needs it only over the upload cap — except the
+// wav-profile kinds (whistle's ogg→wav decode, mimo's wav-only input),
+// which need it always. Probe failure on a configured tts block writes
+// configRef.ttsDown.
 export async function checkBootMedia(config: Config, configRef: ConfigRef): Promise<void> {
 	if (config.transcription || config.tts) {
 		const chain = [config.transcription, ...(config.transcription?.fallbacks ?? [])].filter(
@@ -402,9 +366,8 @@ export async function checkBootMedia(config: Config, configRef: ConfigRef): Prom
 			: wavKind !== undefined
 				? `transcription (${wavKind})`
 				: "transcription";
-		// Edge's remux is a stream copy; the cloud kinds' mp3 must
-		// re-encode to opus, so a binary without libopus would die per
-		// chunk.
+		// Edge's remux is a stream copy; cloud kinds' mp3 must re-encode
+		// to opus — a libopus-less binary would die per chunk.
 		const ok = await probeFfmpeg(
 			feature,
 			config.tts !== false && config.tts !== undefined && config.tts.kind !== "edge"
@@ -426,7 +389,7 @@ export async function checkBootMedia(config: Config, configRef: ConfigRef): Prom
 			...(tr.kind === "whistle" ? whistleArtifactPresence(tr) : { model: tr.model, auth: tr.auth }),
 			...(tr.fallbacks?.length ? { fallbacks: tr.fallbacks.map((f) => f.kind) } : {}),
 			// A whistle fallback's artifacts matter too — first real use
-			// hits the digest-pinned fetch path, not a silent download.
+			// hits the digest-pinned fetch.
 			...(whistle !== undefined && tr.kind !== "whistle"
 				? { whistle: whistleArtifactPresence(whistle) }
 				: {}),

@@ -1,9 +1,6 @@
-// The settings editor's draft state — seeded as a port of the retired
-// plain-JS mini app's DraftState/populate()/buildBody()/validate(),
-// now an independent client (design/app.md, Operator console): the
-// contract is ConfigPostBody, and the server's config-schema validation
-// is the gate. This module only catches what the form can express
-// badly before a round trip.
+// The settings editor's draft state — the contract is ConfigPostBody
+// and the server's config-schema validation is the gate; this module
+// only catches what the form can express badly before a round trip.
 
 import type {
 	Config,
@@ -16,8 +13,8 @@ import type {
 import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
 
 // The full operator vocabulary — the fallback when the model is
-// unknown, and the ordering for nearest-rung clamping (mirrors the
-// server's thinkingLevels).
+// unknown, and the ordering for nearest-rung clamping. Mirrors the
+// server's thinkingLevels.
 export const THINKING_ORDER: readonly ThinkingLevel[] = [
 	"off",
 	"low",
@@ -68,12 +65,11 @@ export const VOICE_SUGGESTIONS = [
 	"sv-SE-SofieNeural",
 ];
 
-/** One ordered chain step (search/fetch) while editing. */
 export interface ChainEntry {
 	kind: string;
 	auth: string;
 }
-/** Provider card while editing — numeric-ish fields stay strings. */
+/** Numeric-ish fields stay strings while editing. */
 export interface ProvDraft {
 	id: number;
 	name: string;
@@ -82,9 +78,9 @@ export interface ProvDraft {
 	auth: string;
 }
 export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo";
-// Widened like TrDraft: edge-only fields (rate/voices) and
-// cloud-only fields (model/auth) all ride the draft so a save
-// never drops a hand edit; bodyFromDraft emits each kind's own arm.
+// Widened like TrDraft: edge-only fields (rate/voices) and cloud-only
+// fields (model/auth) all ride the draft so a save never drops a hand
+// edit; bodyFromDraft emits each kind's own arm.
 export interface TtsDraft {
 	kind: TtsKind;
 	voice: string;
@@ -95,11 +91,11 @@ export interface TtsDraft {
 }
 
 // Identity fields don't carry across kinds: an edge voice name left
-// under openrouter would go upstream as a Fish voice-library id and
-// 400, and a stale model/auth would point a key at the wrong model.
-// Blank falls back to the kind's defaults server-side. The stash
-// remembers each kind's fields so a switch away and back restores
-// them — session memory only, never part of the saved body.
+// under openrouter goes upstream as a Fish voice-library id and 400s,
+// and a stale model/auth points a key at the wrong model. Blank falls
+// back to the kind's defaults server-side. The stash restores each
+// kind's fields on a switch back — session memory only, never part of
+// the saved body.
 export type TtsKindStash = Partial<Record<TtsKind, { voice: string; model: string; auth: string }>>;
 
 export function switchTtsKind(t: TtsDraft, kind: TtsKind, stash?: TtsKindStash): TtsDraft {
@@ -125,8 +121,8 @@ export interface TrEntryDraft {
 }
 
 export interface TrDraft extends TrEntryDraft {
-	// Ordered retry chain — rendered by the fallback editor; entries
-	// carry no chain of their own (depth one, ≤4, per the schema).
+	// Entries carry no chain of their own — depth one, ≤4, per the
+	// schema.
 	fallbacks: TrEntryDraft[];
 }
 
@@ -139,14 +135,14 @@ export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft
 }
 
 // The identity fields — model + auth — don't carry across kinds: a groq
-// model + secret left under openai would send groq's credential to
-// openai. Blank is always safe — cloud blanks fall back to the kind's
-// defaults server-side. Whistle-only fields (keywords/engine/weights)
-// DO ride along: they are hand-edit-only, so clearing them would
-// destroy config the form cannot restore, and transcriptionBody emits
-// them on the whistle arm only — they cannot leak into a cloud save.
-// The stash remembers each kind's fields so a switch away and back
-// restores them — session memory only, never part of the saved body.
+// model + secret left under openai sends groq's credential to openai.
+// Blank is always safe — cloud blanks fall back to the kind's defaults
+// server-side. Whistle-only fields (keywords/engine/weights) DO ride
+// along: they are hand-edit-only, so clearing them would destroy config
+// the form cannot restore, and transcriptionBody emits them on the
+// whistle arm only — they cannot leak into a cloud save. The stash
+// restores each kind's fields on a switch back — session memory only,
+// never part of the saved body.
 export type TrKindStash = Partial<
 	Record<TranscriptionKind, { model: string; auth: string; language: string }>
 >;
@@ -174,14 +170,13 @@ export function switchTranscriptionKind<T extends TrEntryDraft>(
 	return { ...t, kind, model: back?.model ?? "", auth: back?.auth ?? "", language };
 }
 
-// Same rule as transcription kinds above: the auth reference is
-// kind-scoped — a secret name left over from openai-compatible would
-// resolve and be sent to openrouter's endpoint on the next autosave.
-// Blank is always safe: it materializes to the provider's own name
-// (openrouter: the kind's default record) at save. baseUrl rides
-// along — not a credential, and the kinds that need it restore the
-// editable field. The stash remembers each kind's auth so a switch
-// away and back restores it — session memory only.
+// Same rule as transcription kinds: the auth reference is kind-scoped —
+// a secret name left over from openai-compatible resolves and is sent
+// to openrouter's endpoint on the next autosave. Blank is always safe:
+// it materializes to the provider's own name (openrouter: the kind's
+// default record) at save. baseUrl rides along — not a credential, and
+// the kinds that need it restore the editable field. The stash restores
+// each kind's auth on a switch back — session memory only.
 export function switchProviderKind(
 	p: ProvDraft,
 	kind: string,
@@ -192,8 +187,8 @@ export function switchProviderKind(
 	return { ...p, kind, auth: stash?.[kind] ?? "" };
 }
 
-// One entry's widen — primary block or fallback link alike; optional
-// fields may hold an explicit undefined (zod's parse output).
+// Primary block or fallback link alike; optional fields may hold an
+// explicit undefined (zod's parse output).
 function transcriptionEntryDraft(e: TranscriptionEntry): TrEntryDraft {
 	const w: {
 		kind: TranscriptionKind;
@@ -273,8 +268,8 @@ export interface MemDraft {
 	>;
 }
 
-// The editor's mirror of the config. null blocks mean "unset" — saved
-// as "", which the server normalizes to absent.
+// null blocks mean "unset" — saved as "", which the server normalizes
+// to absent.
 export interface SettingsDraft {
 	model: string;
 	titleModel: string;
@@ -325,8 +320,8 @@ export const EMPTY_DRAFT: SettingsDraft = {
 
 let provSeq = 0;
 
-// populate(): the loaded Config → the editable draft. Optional blocks
-// arrive as their config arm or absent; draft nulls are "off".
+// Optional blocks arrive as their config arm or absent; draft nulls are
+// "off".
 export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: ProvDraft[] } {
 	const widen = (e: { kind: string; auth?: string | undefined }): ChainEntry => ({
 		kind: e.kind,
@@ -407,9 +402,8 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 	return { draft, providers };
 }
 
-// The nearest expressible rung at or above the configured level —
-// the segmented control highlights the rung the model will actually
-// deliver (mirrors the mini app's displayLevel()).
+// The nearest expressible rung at or above the configured level — the
+// rung the model will actually deliver.
 export function displayLevel(configured: ThinkingLevel, levels: readonly string[]): string {
 	const idx = THINKING_ORDER.indexOf(configured);
 	return (
@@ -419,9 +413,9 @@ export function displayLevel(configured: ThinkingLevel, levels: readonly string[
 	);
 }
 
-// validate(): catches what the form can express badly; the server's
-// schema is still the gate. The mini app's own-id check has no
-// requester here — the schema's min(1) on operators covers lockout.
+// Catches what the form can express badly; the server's schema is
+// still the gate. No own-id check — the schema's min(1) on operators
+// covers lockout.
 export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string | null {
 	const names = provs.map((p) => p.name.trim());
 	if (names.some((n) => !n)) return "Every provider needs a name.";
@@ -466,11 +460,10 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	return null;
 }
 
-// buildBody(): the POST body — the contract is ConfigPostBody. Blank
-// provider auths materialize here (the provider's own name; openrouter:
-// its default record) so the saved file always carries an explicit
-// name — the config stays self-describing and a later rename never
-// re-points a credential.
+// Blank provider auths materialize here (the provider's own name;
+// openrouter: its default record) so the saved file always carries an
+// explicit name — the config stays self-describing and a later rename
+// never re-points a credential.
 export function bodyFromDraft(
 	draft: SettingsDraft,
 	provs: ProvDraft[],

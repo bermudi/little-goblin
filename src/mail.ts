@@ -1,12 +1,7 @@
-// Gmail send over the operator's own OAuth client (DESIGN.md, "Email").
-//
-// Reads ride gws: the model's read path is the goblin-mail wrapper +
-// gws skill, the watcher's poll surface is mail-gws.ts — this module
-// owns only the operator-gated SEND. makeSender mints send tokens
-// in-process per call and never touches disk; the send credential never
-// reaches a tool path or a skill. Resolved secrets never enter logs or
-// errors: log lines carry action, counts, status, and ms — never tokens
-// or bodies.
+// Gmail send over the operator's own OAuth client. The send credential
+// is minted in-process per call, never touches disk, and never reaches
+// a tool path or a skill; log lines carry action, counts, status, ms —
+// never tokens or bodies.
 
 import type { AuthStore } from "./auth.ts";
 import type { ConfigRef } from "./config.ts";
@@ -14,8 +9,6 @@ import { makeGwsReader } from "./mail-gws.ts";
 import { log } from "./log.ts";
 import { z } from "zod";
 import { fetchOk, ProviderError, readJson, str } from "./agent/tools/web.ts";
-
-// ---------- shapes ----------
 
 export interface MailHit {
 	id: string;
@@ -41,8 +34,6 @@ export interface MailDraft {
 	threadId?: string;
 	inReplyTo?: string | null;
 }
-
-// ---------- client ----------
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1";
 const OAUTH_BASE = "https://oauth2.googleapis.com";
@@ -94,12 +85,10 @@ export function makeSender(deps: GmailSenderDeps): MailSender {
 	};
 }
 
-// ---------- boot wiring (index.ts binds, this module rules) ----------
-
-// Split mail authority (DESIGN.md → Mail): gws polling serves the
-// watcher, the send client only approval taps — gws owns its own auth,
-// no OAuth secret here. Both return getters gating on the live mail
-// block per call: a config write mounts or unmounts them next read.
+// Split mail authority: gws polling serves the watcher, the send
+// client only approval taps — gws owns its own auth, no OAuth secret
+// here. Both return getters gating on the live mail block per call: a
+// config write mounts or unmounts them next read.
 export function wireMailAuthority(deps: { configRef: ConfigRef; auth: AuthStore }): {
 	poller(): MailPoller | null;
 	sender(): MailSender | null;
@@ -237,8 +226,8 @@ class Gmail {
 		);
 		// The wire's own contract, not a mask: a 2xx send owes an id and a
 		// threadId. Shape drift here used to collapse to `sentId: ""` via
-		// str() — a silent lie in the outbox row (audit #8); now it fails
-		// loud as a ProviderError so the row stays pending and re-tappable.
+		// str() — a silent lie in the outbox row; now it fails loud as a
+		// ProviderError so the row stays pending and re-tappable.
 		const sent = parseOrThrow(
 			"send",
 			z.object({ id: z.string(), threadId: z.string() }).passthrough(),
@@ -290,8 +279,6 @@ export function decodeRfc2047(value: string): string {
 		},
 	);
 }
-
-// ---------- sending ----------
 
 // Minimal RFC 5322: the authenticated account is the From (Gmail fills
 // it), the body is plain UTF-8, non-ASCII subjects ride RFC 2047.

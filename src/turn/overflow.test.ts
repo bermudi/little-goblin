@@ -1,10 +1,3 @@
-// Overflow unit tests: the recovery decision's boundary rules
-// (design/runtime-turn.md → phase 7) — the failure translation, the
-// one-recovery budget, the partial's worth-continuing gate, and the
-// fenced / give-up / resume decision over an injected compaction. The
-// resume loop itself (steering across attempts, lane interplay, the
-// one-compaction-per-turn bound) stays pinned e2e in runtime.test.ts.
-
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
@@ -80,9 +73,6 @@ interface Harness {
 	compacted: () => unknown;
 }
 
-// The runtime half of the seam, faked at its edges: compaction is a
-// script, the authority checks are toggles, the wire and membership
-// are plain objects.
 function harness(
 	over: {
 		failure?: ContextOverflowError;
@@ -194,8 +184,6 @@ describe("overflowHoldable — the one-recovery budget", () => {
 			overflowed: true,
 		};
 		expect(overflowHoldable(recovery, true)).toBe(false);
-		// An operator-resume seed is a recovery slot without a spent
-		// budget — the resumed admission still gets its one overflow.
 		const seed: TurnRecovery = { ...recovery, overflowed: undefined, resumedFrom: "src" };
 		expect(overflowHoldable(seed, true)).toBe(true);
 		expect(overflowHoldable(undefined, false)).toBe(false);
@@ -227,8 +215,6 @@ describe("recoverFromOverflow", () => {
 		const outcome = await recoverFromOverflow(h.deps);
 		expect(outcome.kind).toBe("resume");
 		if (outcome.kind !== "resume") return;
-		// The whitelist is passed through untouched — identity, not copy,
-		// for the objects the resume must continue (wire, loop, digest).
 		expect(outcome.recovery.conversation).toBe(h.deps.conversation);
 		expect(outcome.recovery.partial).toBe(failure.partial);
 		expect(outcome.recovery.memory).toBe(h.deps.memory);
@@ -277,8 +263,6 @@ describe("recoverFromOverflow", () => {
 		if (outcome.kind !== "error") return;
 		const prefix = "context window full and compacting failed: ";
 		expect(outcome.message.startsWith(prefix)).toBe(true);
-		// The provider's own message is truncated to 120 chars — the
-		// operator gets the cause, not the wall.
 		expect(outcome.message.length).toBe(prefix.length + 120);
 	});
 

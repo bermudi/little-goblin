@@ -1,12 +1,3 @@
-// /forget's numbered-selection cache. `/forget <query>` lists matching
-// sources as `1. … 2. …`; `/forget delete <n>` resolves n against the
-// listing that query produced — the operator never types a full document
-// id on a phone. One row per conversation, replace-in-place, expiring:
-// a stale number must never delete a document the operator cannot
-// currently see. Fail-closed everywhere — missing, expired, out-of-range,
-// and unreadable all refuse. This is command UX, not memory-domain
-// state, so it lives under tg/ and never leaves this boundary.
-
 import { type Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "../log.ts";
@@ -14,14 +5,9 @@ import { log } from "../log.ts";
 export interface ForgetItem {
 	documentId: string;
 	preview: string;
-	// Date-ish fragment shown in the listing when the query carried one.
-	// Deliberately not persisted: resolution needs only id + preview, and
-	// the listing is rendered at query time from the richer objects.
 	date?: string;
 }
 
-// What actually lands in SQLite — and the zod boundary it is re-validated
-// through on read (disk state is external input).
 const listingSchema = z.array(z.object({ documentId: z.string(), preview: z.string() }));
 
 const MAX_ITEMS = 20;
@@ -36,8 +22,6 @@ export class ForgetListings {
 		)`);
 	}
 
-	// Replace-in-place: a new /forget <query> supersedes the previous
-	// listing wholesale — numbers always address the latest listing.
 	save(conversationId: string, items: ForgetItem[]): void {
 		const capped = items
 			.slice(0, MAX_ITEMS)
@@ -50,10 +34,6 @@ export class ForgetListings {
 		);
 	}
 
-	// A pure integer ref addresses the cached listing 1-based; anything
-	// else is a document id and the caller's business. Null = refuse:
-	// no listing, older than ttl, index out of range, or the row cannot
-	// be validated. Never guess.
 	resolve(
 		conversationId: string,
 		ref: string,
@@ -92,9 +72,6 @@ export class ForgetListings {
 	}
 }
 
-// The phone-friendly listing: numbers to pick, previews to recognize,
-// dates when known — no raw ids (the delete confirmation echoes the
-// resolved id back anyway).
 export function renderNumberedListing(items: ForgetItem[]): string {
 	return items
 		.map((it, i) => `${i + 1}. ${it.preview}${it.date ? ` (${it.date})` : ""}`)

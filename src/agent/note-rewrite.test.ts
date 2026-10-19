@@ -1,8 +1,6 @@
-// The one-off rewrite call through the real SDK seam (house pattern —
-// vision.test.ts): the fake sits at the LanguageModel provider edge, so
-// generateText, observedModel, thinkingOptions, and the abort wiring
-// all run as production code. What the fake captures is what a provider
-// would actually receive.
+// The fake sits at the LanguageModel provider edge — generateText,
+// observedModel, thinkingOptions, and the abort wiring all run as
+// production code. What it captures is what a provider would receive.
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import { generateModel } from "../testkit/fake-model.ts";

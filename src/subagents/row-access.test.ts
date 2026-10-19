@@ -1,9 +1,3 @@
-// row-access.ts boundary tests — the shared run-row vocabulary the
-// owner's units speak (design/subagents.md → Owner decomposition).
-// Real subagent-runs store on a temp db; the halted/closing flags are
-// plain getters. What these pin is the refuse semantics every unit
-// re-runs before an effect: a closing owner, a vanished row, a stop
-// intent, a non-running status — each has its own named refusal.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,8 +21,6 @@ function rig() {
 	dirs.push(dir);
 	const runs = openSubagentRuns(join(dir, "runs.sqlite"));
 	stores.push(runs);
-	// The owner-level flags as a mutable cell — the access getters
-	// read them per call, so a test flips them live.
 	const flags = { closing: false, harnessClosed: false };
 	const access = makeRowAccess({
 		runs,

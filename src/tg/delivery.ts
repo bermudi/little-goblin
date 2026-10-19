@@ -1,7 +1,3 @@
-// Delivery — streamText deltas → throttled message edits (~1/s), final
-// flush on completion, typing indicator while a turn runs. This is a
-// TurnSink: the runtime streams into it, grammy does the sending.
-
 import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
@@ -16,37 +12,17 @@ import { rateCallbackData } from "./rate-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
-// Rich draft keep-alive: re-push an unchanged draft at this age so the
-// 30 s Telegram TTL never expires mid-turn. Parameterized for tests the
-// same way typingIntervalMs is.
 const DRAFT_TTL_MS = 20_000;
-// Leave headroom under Telegram's 4096 limit for the status block.
 const CHUNK_LIMIT = 3800;
-// Rich messages cap at 32768 chars (Bot API 10.3); headroom under the
-// cap for the reasoning block's markup and the status tail.
 const RICH_LIMIT = 32_000;
-// The reasoning block's fixed markup, plus one char for the tail-cut
-// "…" marker — the budget check below sizes the escaped text into
-// what's left of the send.
 const REASONING_BLOCK_OVERHEAD =
 	"<details><summary>Thinking</summary>\n<pre></pre>\n</details>\n\n".length + 1;
-// Draft ids must be non-zero; updates under one id animate. A process
-// counter is enough — drafts are ephemeral and chat-local. Two per rich
-// sink: the answer bubble and, when showReasoning is on, the reasoning
-// bubble ahead of it.
+// Draft ids must be non-zero; updates under one id animate.
 let nextDraftId = 1;
 
-// The completed-turn salute: the send itself carries the message effect
-// matching the 🫡 reaction (private chats only — the DM door). The id was
-// pinned against the live API, which rejects garbage with
-// EFFECT_ID_INVALID. Effects are premium-gated at the receiving chat:
-// PREMIUM_ACCOUNT_REQUIRED is a definite 400 (nothing landed), so the
-// one safe retry drops the param, and the memo keeps every later turn
-// this process to a single send. A restart re-probes.
 const SALUTE_EFFECT_ID = "4913930782671635058";
 let messageEffectsUsable = true;
 
-/** Test door for the process-lifetime premium memo. */
 export function resetMessageEffectsGateForTests(): void {
 	messageEffectsUsable = true;
 }
@@ -55,41 +31,24 @@ function isPremiumGateError(err: unknown): boolean {
 	const haystacks: unknown[] = [err];
 	if (typeof err === "object" && err !== null) {
 		const rec = err as Record<string, unknown>;
-		// Same rule as isNotModifiedError below: the code is the stable
-		// identifier — the token matches only the definite 400.
 		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
 		haystacks.push(rec.description, rec.message);
 	}
 	return haystacks.some((h) => typeof h === "string" && h.includes("PREMIUM_ACCOUNT_REQUIRED"));
 }
-// onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const RECENT_REPLY_LIMIT = 256;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
 export const SPEAK_CALLBACK = "speak_reply";
 
-// Genuine cross-instance singleton: written by whichever delivery sink
-// rendered a reply, read later by the 🔊 speak button — a different
-// handler with no link to that (long-gone) sink, keyed by Telegram-global
-// message ids. No per-sink home exists; per-sink state would strand every
-// reply the moment its sink closed.
 const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Telegram answers an edit whose content is identical with 400
-// "message is not modified" — benign, not a failure. The drain counts a
-// failed edit as still-pending and retries it; without this carve-out one
-// no-op edit makes the drain give up and skips the 🫡 + 🔊 on a turn that
-// actually delivered. Treat it as success: the message already shows what
-// we wanted.
 export function isNotModifiedError(err: unknown): boolean {
 	const haystacks: unknown[] = [err];
 	if (typeof err === "object" && err !== null) {
 		const rec = err as Record<string, unknown>;
-		// The stable identifier is the code: Telegram/grammy errors carry
-		// error_code 400 for this no-op. A phrase match alone would fire on
-		// any coincidental wording with a different failure class.
 		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
 		haystacks.push(rec.description, rec.message);
 	}
@@ -98,9 +57,6 @@ export function isNotModifiedError(err: unknown): boolean {
 	);
 }
 
-// The edit target is gone — Telegram answers 400 "message to edit not
-// found". Same gate as above: a present non-400 error_code wins over
-// the phrase, so a wrapped proxy/fetch error can't freeze a sink.
 export function isMessageGoneError(err: unknown): boolean {
 	const haystacks: unknown[] = [err];
 	if (typeof err === "object" && err !== null) {
@@ -120,18 +76,10 @@ export interface DeliveryVoiceDeps {
 	voiceMode: boolean;
 }
 
-// The 👍/👎 row rides every completed reply this dep is wired into. It
-// resolves the landed reply's anchor at stamp time — after the turn's
-// append — so the buttons' payload carries the reply's durable identity.
-// The conversation store satisfies it.
 export interface DeliveryRatingDeps {
 	lastReplyAnchor(conversationId: string): number | null;
 }
 
-// Rich replies (design/telegram.md, ruling 2026-10-12): draft streaming
-// and one markdown render per DM turn. `enabled` is the config kill
-// switch (telegram.richReplies); DM gating and voice-mode exclusion
-// happen in the sink. `reasoning` is telegram.showReasoning.
 export interface RichSinkOpts {
 	enabled?: boolean;
 	reasoning?: boolean;
@@ -141,9 +89,6 @@ function replyKey(chatId: number, messageId: number): string {
 	return `${chatId}:${messageId}`;
 }
 
-// The forced-landing stamp (design/model.md): a loop-cut answer is
-// degraded goods — telegram reads that on the reply itself, riding the
-// status-tail mark so TTS never speaks it.
 function forcedNotice(done: TurnDone): string | null {
 	if (done.kind !== "completed" || done.forced === undefined) return null;
 	switch (done.forced) {
@@ -156,8 +101,6 @@ function forcedNotice(done: TurnDone): string | null {
 	}
 }
 
-// Exported for speak-button tests: prime the reply cache directly
-// instead of driving a full delivery sink to completion.
 export function rememberReply(chatId: number, messageId: number, text: string): void {
 	recentReplies.set(replyKey(chatId, messageId), text);
 	while (recentReplies.size > RECENT_REPLY_LIMIT) {
@@ -171,30 +114,15 @@ export function recentReplyText(chatId: number, messageId: number): string | nul
 	return recentReplies.get(replyKey(chatId, messageId)) ?? null;
 }
 
-// One chunk per Telegram message. id: -1 = unsent (definite failure or not yet
-// attempted), -2 = send in flight or timed out (outcome unknown), otherwise
-// the Telegram message id.
-// shown = the content we believe the message displays. A chunk sent early
-// as the trailing message can later slide into the middle of the stream;
-// its window then outgrows what it shows, so it gets patched with an edit
-// — no slice of the output is silently dropped.
 interface Chunk {
 	id: number;
 	shown: string;
 }
 
-// Slicing between a high and a low surrogate produces a lone surrogate —
-// not valid text, and Telegram may reject or mangle the message. Window
-// boundaries are nudged so a pair never splits across two messages.
+// A split surrogate pair is a lone surrogate Telegram may reject or mangle.
 const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
 const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
 
-// The end of the window starting at `start`: CHUNK_LIMIT ahead, pulled
-// back one code unit if that lands inside a surrogate pair. Boundaries
-// are recomputed every flush — the body's status tail can still change
-// under a fixed seam, so a seam computed against provisional chars may
-// drift by one; the shown≠desired re-edit below heals it. Once stream
-// text covers the seam the chars are final and it never moves again.
 function windowEnd(body: string, start: number): number {
 	const end = start + CHUNK_LIMIT;
 	if (
@@ -207,7 +135,6 @@ function windowEnd(body: string, start: number): number {
 	return end;
 }
 
-// Telegram adapter type; domain wake ports expose only TurnSink.
 export type DeliveryApi = Api;
 
 export interface DeliverySinkOptions {
@@ -218,9 +145,7 @@ export interface DeliverySinkOptions {
 	maxDrainIterations?: number;
 	rating?: DeliveryRatingDeps;
 	rich?: RichSinkOpts;
-	/** How long a photo-path file waits for burst siblings before delivery. */
 	mediaGroupWindowMs?: number;
-	/** Age at which an unchanged rich draft is re-pushed (TTL keep-alive). */
 	draftTtlMs?: number;
 }
 
@@ -239,25 +164,14 @@ export function makeDeliverySink(
 		draftTtlMs = DRAFT_TTL_MS,
 	}: DeliverySinkOptions = {},
 ): TurnSink {
-	// Routing bug alarm (DESIGN.md, App channel): app conversations have
-	// no Telegram door — their sink is the HTTP stream. A silent send
-	// into the chat_id filler is worse than a throw.
 	if (channelOf(conv.id) === "app") {
 		throw new Error(`telegram delivery sink requested for app conversation ${conv.id}`);
 	}
 	let text = "";
 	const toolStatus: string[] = [];
-	// At most one send is in flight and it is always the earliest unsent
-	// chunk, so messages can't land out of order.
 	const chunks: Chunk[] = [];
 	let lastEdit = 0;
-	// Serialized api calls — edits must not race sends. The chain never
-	// rejects: each link logs its own failure, so `await chain` is always
-	// safe and onDone can't throw on a delivery error.
 	let chain: Promise<void> = Promise.resolve();
-	// Reply threading is cosmetic — if a send fails (e.g. the operator
-	// deleted the triggering message), retries go out without it rather
-	// than failing forever.
 	let replyTo = replyToMessageId;
 	let authoritative = () => true;
 	let cancelled = false;
@@ -306,27 +220,14 @@ export function makeDeliverySink(
 			});
 		}
 	}
-	// Typing indicator state. `let` because onVoiceSynthesisStart pauses
-	// it and a synthesis stopper resumes it. Parallel speak calls overlap,
-	// so every live record_voice interval is tracked in a set — a single
-	// shared handle would orphan all but the newest interval and make a
-	// stopper clear the wrong one.
 	let typing = setInterval(sendTyping, typingIntervalMs);
 	const recordings = new Set<ReturnType<typeof setInterval>>();
-	// onDone is terminal: a synthesis stopper firing after it must not
-	// restart a typing indicator on a dead sink.
 	let sinkDone = false;
 
-	// Rich mode degrades to the plain path on any rich failure — the
-	// reply never hangs on formatting. DMs only; voice turns own their
-	// delivery; guests never get here (guest.ts passes no opts).
 	const richOpts = rich;
 	const answerDraftId = nextDraftId++;
 	const reasonDraftId = nextDraftId++;
 	let richMode = richOpts?.enabled === true && conv.id.startsWith("dm:") && !voice?.voiceMode;
-	// The reasoning surface is operator-only: a guest-persona DM (the
-	// standing sandbox lane) never shows thinking, whatever
-	// telegram.showReasoning says (design/telegram.md → Roles).
 	const reasoningOn = richOpts?.reasoning === true && conv.persona !== "guest";
 	let reasoningText = "";
 	let reasoningPushed = 0;
@@ -344,10 +245,6 @@ export function makeDeliverySink(
 
 	function sendTyping(): void {
 		if (!mayDeliver()) return;
-		// The chat-status indicator stays live in rich mode too: drafts
-		// carry content, the chat action carries liveness. While a
-		// synthesis window is open the record_voice interval owns the
-		// status bar instead.
 		if (recordings.size === 0) pingTyping();
 		if (richMode) refreshRichDrafts();
 	}
@@ -362,19 +259,10 @@ export function makeDeliverySink(
 			log.debug("typing ping failed", { error: String(err) });
 		});
 	}
-	// Telegram clears the chat action when a real message lands, and the
-	// next tick is up to typingIntervalMs away — dead air while the turn
-	// is still busy. Re-ping right after a mid-turn send; skipped while a
-	// synthesis window owns the status bar and once the sink is done (no
-	// ghost typing on a finished turn).
 	function repingTyping(): void {
 		if (sinkDone || recordings.size > 0 || !mayDeliver()) return;
 		pingTyping();
 	}
-	// Draft refresh policy for rich mode: push only on new content or TTL
-	// keep-alive — identical re-sends would re-animate the bubble every
-	// 4 s. The reasoning bubble's own growth/staleness counts too: a long
-	// thinking stretch with no answer text must still keep its draft alive.
 	function refreshRichDrafts(): void {
 		const body = rendered();
 		const stale =
@@ -394,9 +282,6 @@ export function makeDeliverySink(
 		).catch((err: unknown) => {
 			log.debug("record voice ping failed", { error: String(err) });
 		});
-		// Synthesis pauses the typing interval, which otherwise carries
-		// the draft keep-alive — without this a long synthesis lets the
-		// draft evaporate mid-turn (30 s TTL) while record_voice runs.
 		if (richMode) refreshRichDrafts();
 	}
 
@@ -430,8 +315,6 @@ export function makeDeliverySink(
 		});
 		await chain;
 		if (failure) throw failure.error;
-		// A landed voice note clears the chat action — restore the typing
-		// indicator immediately instead of waiting out the tick.
 		repingTyping();
 		if (uncertain) {
 			throw new Error(
@@ -440,21 +323,9 @@ export function makeDeliverySink(
 		}
 	}
 
-	// Multi-image turns arrive as a burst: one model step fires several
-	// send_file calls in parallel, and their deliver() calls land within
-	// milliseconds of each other. Photo-path files hold in a short batch
-	// window so the burst shares one album; a lone photo just pays the
-	// window once. Documents (as_file, GIFs, non-images) never wait and
-	// never flush the batch — a doc whose stat resolves mid-burst would
-	// split the album for a purely cosmetic ordering win.
 	interface QueuedPhoto {
 		file: OutgoingFile;
-		// Filled by the batch link's stat; the joiner pushes before any
-		// await, so a parallel burst joins in one deterministic tick.
 		bytes: number;
-		// Set by the batch link when this file definitively failed or went
-		// uncertain. undefined = delivered (or fenced-skip, same as the
-		// solo path's silent return).
 		error?: unknown;
 	}
 	let photoQueue: QueuedPhoto[] = [];
@@ -463,7 +334,7 @@ export function makeDeliverySink(
 	let photoKick: ReturnType<typeof setTimeout> | null = null;
 
 	function flushPhotoBatch(): void {
-		if (photoBatchResolve === null) return; // no open batch
+		if (photoBatchResolve === null) return;
 		if (photoKick !== null) {
 			clearTimeout(photoKick);
 			photoKick = null;
@@ -499,9 +370,6 @@ export function makeDeliverySink(
 	): Promise<void> {
 		if (q.bytes > MAX_SEND_BYTES)
 			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${MAX_SEND_BYTES})`);
-		// Authority is re-checked at the send, not at batch entry: /stop
-		// landing mid-burst must fence the next photo, and an earlier
-		// uncertain timeout fences everything after it.
 		if (!mayDeliver()) return;
 		try {
 			const sent = await withTimeout(
@@ -530,19 +398,14 @@ export function makeDeliverySink(
 	}
 
 	async function sendPhotoBatch(batch: QueuedPhoto[]): Promise<void> {
-		// A batch queued behind an uncertain send reports not-sent, same
-		// as the doc link — an error-free claim would read as delivered.
 		if (uncertain) {
 			for (const q of batch) {
 				q.error = new Error("not sent — delivery stopped after an uncertain timeout");
 			}
 			return;
 		}
-		if (!mayDeliver()) return; // entries stay error-free: fenced = skipped
+		if (!mayDeliver()) return;
 		const thread = conv.threadId !== null ? { message_thread_id: conv.threadId } : {};
-		// Late stat — the joiner pushed before any await, so the vanished-
-		// file guard lives here: a file that died between the tool's check
-		// and this link fails alone and never takes the burst down.
 		const sendable: QueuedPhoto[] = [];
 		for (const q of batch) {
 			try {
@@ -552,12 +415,7 @@ export function makeDeliverySink(
 				q.error = new Error(`file unreadable: ${q.file.path}`);
 			}
 		}
-		// Files whose send provably landed — a later group's failure must
-		// never resend them, and an uncertain close must not mark them
-		// failed.
 		const delivered = new Set<QueuedPhoto>();
-		// A fence is silent for a dead turn, but uncertainty is not dead:
-		// files that never attempted must report not-sent, not delivered.
 		const markUnsent = (): void => {
 			if (!uncertain) return;
 			for (const q of sendable) {
@@ -568,8 +426,6 @@ export function makeDeliverySink(
 		};
 		let fallback: QueuedPhoto[] | null = null;
 		for (let at = 0; at < sendable.length; at += 10) {
-			// Per-request authority: the fence can land between albums,
-			// not only before the batch.
 			if (!mayDeliver()) {
 				markUnsent();
 				return;
@@ -581,14 +437,9 @@ export function makeDeliverySink(
 					delivered.add(group[0]!);
 				} catch (err) {
 					if (err instanceof DeliveryUncertainError) {
-						// Ambiguous — the photo may have landed (the sink is
-						// already marked uncertain); the burst stops here and
-						// nothing resends.
 						for (const q of sendable) if (!delivered.has(q)) q.error = err;
 						return;
 					}
-					// A definite solo failure is this file's — the rest of
-					// the burst still goes out.
 					group[0]!.error = err;
 					delivered.add(group[0]!);
 				}
@@ -614,18 +465,11 @@ export function makeDeliverySink(
 				repingTyping();
 			} catch (err) {
 				if (err instanceof TelegramTimeoutError) {
-					// A group timeout is as ambiguous as a solo one — the album
-					// may have landed. Mark the sink so the remaining delivery
-					// stops, and fail every not-provably-delivered file as
-					// uncertain.
 					markUncertain(err, "sendMediaGroup");
 					const wrapped = new DeliveryUncertainError(err);
 					for (const q of sendable) if (!delivered.has(q)) q.error = wrapped;
 					return;
 				}
-				// Definite failure: this album provably never landed, so the
-				// failed group plus anything never attempted degrades to
-				// solo sends — delivered groups do not go out twice.
 				log.warn("media group failed — falling back to solo sends", err, {
 					conversation: conv.id,
 					chat: conv.chatId,
@@ -637,7 +481,6 @@ export function makeDeliverySink(
 		}
 		if (fallback === null) return;
 		for (const q of fallback) {
-			// Per-send authority again — the fence can land mid-fallback.
 			if (!mayDeliver()) {
 				markUnsent();
 				return;
@@ -647,8 +490,6 @@ export function makeDeliverySink(
 			} catch (err) {
 				q.error = err;
 				if (err instanceof DeliveryUncertainError) {
-					// The uncertain fence now governs — the rest of the
-					// fallback never goes out.
 					for (const rest of fallback) if (rest.error === undefined) rest.error = err;
 					return;
 				}
@@ -658,25 +499,15 @@ export function makeDeliverySink(
 
 	async function sendFile(file: OutgoingFile): Promise<void> {
 		if (!authoritative()) return;
-		// Images go as photo previews, everything else as documents —
-		// sniffed from magic bytes, never the extension. Two things force
-		// the document path: as_file (sendPhoto re-encodes — a document is
-		// byte-exact) and GIFs (sendPhoto strips animation). Sniffing is
-		// sync, so a photo joins its burst before the first await.
 		const sniff = sniffImage(file.path);
 		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
 		if (photo) {
 			const q: QueuedPhoto = { file, bytes: 0 };
 			const wait = joinPhotoBatch(q);
-			// The batch's verdict for THIS file — a group failure degrades
-			// to solo sends, so siblings can succeed while this one fails.
 			await wait;
 			if (q.error !== undefined) throw q.error;
 			return;
 		}
-		// Fail fast on a file that vanished between the tool's check and
-		// now, so the tool reports it. Send failures below reject too —
-		// see the sentinel comment there.
 		const st = await stat(file.path).catch((err: unknown) => {
 			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
 		});
@@ -686,18 +517,8 @@ export function makeDeliverySink(
 	async function sendDocumentSolo(file: OutgoingFile, bytes: number): Promise<void> {
 		if (bytes > MAX_SEND_BYTES)
 			throw new Error(`file too large: ${file.path} (${bytes} bytes, max ${MAX_SEND_BYTES})`);
-		// The chain never rejects (onDone awaits it bare), so a failed
-		// send can't travel through it. The link records the failure and
-		// rethrows — the chain's catch still warn-logs it — and the
-		// rethrow below rejects sendFile, the tool's only honest "it
-		// didn't arrive" signal. Unlike text chunks, a file send gets no
-		// drain retry: swallowing it makes send_file report a sent file
-		// the operator never saw.
 		let failure: { err: unknown } | undefined;
 		enqueue(async () => {
-			// Authority is checked at the send itself: a doc queued behind
-			// an uncertain send must not slip out after it — and must not
-			// silently claim it did.
 			if (uncertain) {
 				failure = {
 					err: new Error("not sent — delivery stopped after an uncertain timeout"),
@@ -725,10 +546,6 @@ export function makeDeliverySink(
 				repingTyping();
 			} catch (err) {
 				if (err instanceof TelegramTimeoutError) {
-					// A file-send timeout is as ambiguous as a text one — the
-					// upload may have landed. Mark the sink so the remaining
-					// text/reaction stop and the notice goes out, and fail the
-					// tool as uncertain rather than "didn't arrive".
 					markUncertain(err, "sendDocument");
 					err = new DeliveryUncertainError(err);
 				}
@@ -746,12 +563,6 @@ export function makeDeliverySink(
 		return text + status;
 	}
 
-	// Shared rich-failure policy for the draft sends: a draft is an
-	// ephemeral preview — nothing real can have landed, so even a
-	// timeout is a stall, never delivery uncertainty. Every draft
-	// failure degrades the turn to the plain path; the reply is never
-	// lost to a dead preview. The real sendRichMessage keeps
-	// markUncertain — its timeout means the reply may be live.
 	function richFailure(err: unknown, method: string): never {
 		log.warn("rich delivery failed — falling back to plain", err, {
 			conversation: conv.id,
@@ -762,20 +573,7 @@ export function makeDeliverySink(
 		throw err;
 	}
 
-	// Serialized draft updates: the reasoning bubble (when enabled) and
-	// the answer bubble. An empty body renders as the client's "Thinking…"
-	// placeholder; a markdown body is the live preview. Rich messages
-	// can't be edited, so the preview accumulates under one draft id and
-	// the 30 s TTL rides the typing tick above.
 	function pushDrafts(body: string): void {
-		// The reasoning bubble appears with the first reasoning delta —
-		// an empty draft pushed at sink start would sit there as a
-		// second perpetual "Thinking…" bubble on turns with no
-		// reasoning at all. Once live it re-pushes on growth or
-		// staleness: it stops growing early and would otherwise
-		// evaporate mid-turn (30 s TTL) while the answer keeps
-		// refreshing. The enqueued fns re-check richMode — a mid-turn
-		// degrade must not fire queued drafts at a dead path.
 		if (
 			reasoningOn &&
 			reasoningText !== "" &&
@@ -786,10 +584,6 @@ export function makeDeliverySink(
 			reasoningSentAt = Date.now();
 			enqueue(async () => {
 				if (!mayDeliver() || !richMode) return;
-				// The draft renders inside the client's native thinking block
-				// (Bot API 10.2) — the raw text stays literal, tail-capped:
-				// it's a preview; the final message's collapsed block carries
-				// the fuller cut.
 				const tail = snap.length > 4000 ? `…${snap.slice(-4000)}` : snap;
 				try {
 					await withTimeout(
@@ -825,29 +619,16 @@ export function makeDeliverySink(
 		});
 	}
 
-	// Collapsed reasoning block for the final rich message. Syntax pinned
-	// by probe 2026-10-12: <details>/<summary> renders collapsed in the
-	// rich markdown dialect; <tg-details> does not parse. Reasoning is
-	// raw text, not markdown — the <pre> wrapper keeps **, $$, ||
-	// spoilers and [x](y) literal instead of parsed (or 400-ing the
-	// send); HTML metachars still need escaping, & before <. The block
-	// sizes itself into the send's remaining budget so a long reply
-	// never pushes the combined markdown over the cap — drops out
-	// entirely when there's no room.
 	function reasoningBlock(budget: number): string {
 		if (!reasoningOn) return "";
 		const trimmed = reasoningText.trim();
 		if (trimmed === "") return "";
-		// Escape before measuring — entities expand up to 5x.
 		const escaped = trimmed.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 		const room = Math.min(8_000, budget - REASONING_BLOCK_OVERHEAD);
 		if (room <= 0) return "";
 		if (escaped.length <= room) {
 			return `<details><summary>Thinking</summary>\n<pre>${escaped}</pre>\n</details>\n\n`;
 		}
-		// A slice that opens mid-entity ("&am…") would print the fragment
-		// literally — when a ';' shows before the first '&' the cut
-		// landed inside one; drop it.
 		let tail = escaped.slice(-room);
 		const semi = tail.indexOf(";");
 		const amp = tail.indexOf("&");
@@ -855,11 +636,6 @@ export function makeDeliverySink(
 		return `<details><summary>Thinking</summary>\n<pre>…${tail}</pre>\n</details>\n\n`;
 	}
 
-	// Push the current rendered output to Telegram: fixed-position chunks
-	// become messages, the trailing one is edited in place. A sent chunk
-	// whose displayed content no longer matches its window gets re-edited
-	// — covers both failed edits and chunks sent before their window
-	// filled.
 	function flush(): void {
 		if (!mayDeliver()) return;
 		const body = rendered();
@@ -878,26 +654,21 @@ export function makeDeliverySink(
 		}
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
 		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
-		// Seams are recomputed each flush so both neighbours share one
-		// value — a drifted boundary re-edits the sent chunk instead of
-		// leaving a duplicated or dropped character between messages.
 		let start = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			if (c.id === -2) break; // send in flight — wait it out
+			if (c.id === -2) break;
 			const isLast = idx === chunks.length - 1;
 			const end = isLast ? body.length : windowEnd(body, start);
 			const desired = body.slice(start, end);
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1) {
-				// Window emptied before the send — the status tail shrank
-				// past it. Nothing to send; later windows are empty too.
 				if (desired === "") break;
 				c.id = -2;
 				c.shown = out;
 				enqueue(async () => {
 					if (!mayDeliver()) {
-						c.id = -1; // queued, never sent; don't leave a phantom in-flight chunk
+						c.id = -1;
 						return;
 					}
 					try {
@@ -916,17 +687,8 @@ export function makeDeliverySink(
 							message: sent.message_id,
 							...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 						});
-						// The chunk landing cleared the chat action — restore it now;
-						// the finalize drain (sinkDone) stays silent.
 						repingTyping();
 					} catch (err) {
-						// API-level Grammy errors (400s etc.) provably never
-						// landed, so retry on the next flush. Other Error results
-						// (including programming throws) are definite failures.
-						// Transport ambiguity is recognized only when a grammy
-						// HttpError carries a coded transport failure (e.g.
-						// ECONNRESET) — Telegram may have committed the message
-						// before the response was lost (audit D2, P1).
 						const transportCause =
 							err instanceof HttpError ? (err.error as { code?: unknown } | null) : null;
 						const transportError =
@@ -939,13 +701,13 @@ export function makeDeliverySink(
 						) {
 							markUncertain(err, "sendMessage", idx);
 						} else {
-							replyTo = undefined; // never retry the reply link
-							c.id = -1; // definite failure — retry on next flush
+							replyTo = undefined;
+							c.id = -1;
 						}
 						throw err;
 					}
 				});
-				break; // strictly ordered — later chunks go out on a later flush
+				break;
 			}
 			if (c.shown !== out) {
 				const mid = c.id;
@@ -955,9 +717,6 @@ export function makeDeliverySink(
 						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
 					} catch (err) {
 						if (isNotModifiedError(err)) {
-							// Already shows `out` — adopt it so the drain
-							// sees no pending work instead of retrying a
-							// no-op until it gives up and skips the 🫡 + 🔊.
 							log.debug("edit no-op — message already current", {
 								conversation: conv.id,
 								message: mid,
@@ -975,9 +734,6 @@ export function makeDeliverySink(
 		lastEdit = Date.now();
 	}
 
-	// Cancellation is the sole post-fence edit: label only a bubble that
-	// actually landed, using what it showed rather than unsent stream text.
-	// In-flight sends have already settled by the time this runs.
 	async function stampSuperseded(): Promise<void> {
 		await chain;
 		const last = [...chunks].reverse().find((c) => c.id > 0);
@@ -1000,10 +756,6 @@ export function makeDeliverySink(
 		if (Date.now() - lastEdit >= editIntervalMs) flush();
 	}
 
-	// Chunks that still need Telegram work: never-sent ones with a
-	// non-empty window, plus sent ones whose shown content no longer
-	// matches their current window — a failed edit counts here, so the
-	// drain retries it instead of declaring victory.
 	function pendingCount(): number {
 		const body = rendered();
 		let n = 0;
@@ -1019,14 +771,9 @@ export function makeDeliverySink(
 		return n;
 	}
 
-	// One keyboard, one edit — editMessageReplyMarkup replaces the whole
-	// markup, so the rating row and 🔊 stamp together or the second call
-	// erases the first. Shared by the plain and rich finalize paths; on a
-	// rich message the edit lands after the send (probed working).
 	function buildKeyboard(): Array<Array<{ text: string; callback_data: string }>> | null {
 		if (rating === undefined && voice === undefined) return null;
 		const anchor = rating?.lastReplyAnchor(conv.id) ?? null;
-		// One compact row per reply: 👍/👎 and 🔊 share it when both are on.
 		const row: Array<{ text: string; callback_data: string }> = [];
 		if (rating !== undefined) {
 			row.push(
@@ -1047,9 +794,6 @@ export function makeDeliverySink(
 			if (!voice?.voiceMode) maybeFlush();
 		},
 		onReasoningDelta(delta) {
-			// Off or plain path: thinking stays in history, not in the chat
-			// stream — unchanged. Rich + showReasoning streams it into its
-			// own draft bubble (design/telegram.md).
 			if (!richMode || !reasoningOn) return;
 			reasoningText += delta;
 			if (!voice?.voiceMode) maybeFlush();
@@ -1069,11 +813,6 @@ export function makeDeliverySink(
 		async onFile(file) {
 			await sendFile(file);
 		},
-		// DESIGN.md (TTS): record_voice runs while synthesis is in flight —
-		// the speak tool's door, matching the 🔊 button and /voice mode.
-		// Typing pauses for the duration; the stopper restores it only when
-		// the turn is still live (a fenced turn must not ghost a typing
-		// indicator after onDone already tore the sink down).
 		onVoiceSynthesisStart() {
 			clearInterval(typing);
 			sendRecording();
@@ -1089,9 +828,6 @@ export function makeDeliverySink(
 		},
 		async onDone(done: TurnDone) {
 			if (done.kind === "fenced") cancelled = true;
-			// The forced-landing stamp joins the body BEFORE the final flush,
-			// so the drain's re-edit publishes it on the last bubble and the
-			// 🫡 still lands on the same (now stamped) message.
 			const notice = forcedNotice(done);
 			if (notice !== null) text += `${STATUS_TAIL_MARK}${notice}`;
 			clearInterval(typing);
@@ -1126,12 +862,6 @@ export function makeDeliverySink(
 					return;
 				}
 				const content = speechContent(text);
-				// A completed turn that renders to nothing — no spoken text,
-				// no supplemental, no forced-landing notice — would end in
-				// total silence: no voice note, no bubble, no log line
-				// (finding 15). Warn with the address; the delivery contract
-				// sanctions a short chat message for errors only, so no
-				// placeholder bubble is invented here.
 				if (content.spoken === "" && content.supplemental === null && notice === null) {
 					log.warn("completed turn rendered empty", {
 						conversation: conv.id,
@@ -1144,8 +874,6 @@ export function makeDeliverySink(
 					let audio: Uint8Array[] = [];
 					if (content.spoken !== "") {
 						sendRecording();
-						// Local to this synthesis — distinct from the speak-tool
-						// indicator state above (already torn down by onDone).
 						const synthesisPing = setInterval(sendRecording, TYPING_INTERVAL_MS);
 						try {
 							audio = await voice.synthesize(content.spoken);
@@ -1177,9 +905,6 @@ export function makeDeliverySink(
 						if (failure) throw failure.error;
 					}
 					for (const chunk of audio) await sendVoice(chunk);
-					// The stamp is visual — speechContent strips the status
-					// tail from spoken text — so voice turns ship it as its own
-					// notice line after the audio, not inside it.
 					if (notice !== null) {
 						enqueue(async () => {
 							if (!mayDeliver()) return;
@@ -1242,11 +967,6 @@ export function makeDeliverySink(
 			if (done.kind === "error") {
 				toolStatus.push(`⚠ ${done.message.slice(0, 200)}`);
 			}
-			// Rich finalize: one markdown send replaces the chunk drain. The
-			// drafts vanish when the send lands; 🫡 + keyboard ride the rich
-			// message (reply anchors, reactions and markup edits all work on
-			// rich messages — probed live 2026-10-12). A failure falls through
-			// to the plain drain with the same body.
 			if (richMode) {
 				await chain;
 				if (uncertain) {
@@ -1257,9 +977,6 @@ export function makeDeliverySink(
 					await stampSuperseded();
 					return;
 				}
-				// Draft failures during that await degrade the turn — re-check
-				// before committing to the rich send; false falls through to
-				// the plain drain below.
 				if (richMode) {
 					const body = rendered();
 					if (body === "") {
@@ -1270,10 +987,6 @@ export function makeDeliverySink(
 						});
 						return;
 					}
-					// The reasoning block shares the one rich send and sizes
-					// into the body's remaining budget. A body that outgrew
-					// the cap between the last flush and onDone skips the
-					// doomed send and drains plain instead.
 					const md = reasoningBlock(RICH_LIMIT - body.length) + body;
 					if (md.length > RICH_LIMIT) {
 						log.warn("rich reply over cap — plain chunks from here", {
@@ -1290,10 +1003,6 @@ export function makeDeliverySink(
 							done.kind === "completed" && conv.id.startsWith("dm:") && messageEffectsUsable
 								? { message_effect_id: SALUTE_EFFECT_ID }
 								: {};
-						// The keyboard rides the send itself — one call, no
-						// post-land editMessageReplyMarkup window where the
-						// reply sits buttonless. The premium-gate retry keeps
-						// it; only the effect param drops.
 						const keyboard = done.kind === "completed" ? buildKeyboard() : null;
 						const markup = keyboard === null ? {} : { reply_markup: { inline_keyboard: keyboard } };
 						try {
@@ -1318,9 +1027,6 @@ export function makeDeliverySink(
 									conversation: conv.id,
 									chat: conv.chatId,
 								});
-								// The gated send's settle may have outlived
-								// the turn — the retry is a new side effect,
-								// fenced like any other.
 								if (!mayDeliver()) return;
 								sent = await withTimeout(
 									api.sendRichMessage(conv.chatId, { markdown: md }, { ...base, ...markup }),
@@ -1336,9 +1042,6 @@ export function makeDeliverySink(
 							});
 							if (done.kind === "completed") {
 								if (voice) rememberReply(conv.chatId, sent.message_id, text);
-								// Same recheck per side effect — the reaction and
-								// the keyboard are new calls made after the send
-								// resolved, not part of it.
 								if (mayDeliver()) {
 									await withTimeout(
 										api.setMessageReaction(conv.chatId, sent.message_id, [
@@ -1365,9 +1068,6 @@ export function makeDeliverySink(
 					}
 				}
 			}
-			// Final flush. No flush runs after this, so drain here: keep
-			// flushing while chunks remain unsent, retrying failures with a
-			// short backoff. Give up loudly rather than dropping the tail.
 			let prevPending = Number.POSITIVE_INFINITY;
 			let stagnant = 0;
 			let gaveUp = false;
@@ -1384,10 +1084,6 @@ export function makeDeliverySink(
 				}
 				const pending = pendingCount();
 				if (pending === 0) {
-					// Sends that resolved inside `await chain` were still
-					// in flight when the flush above ran, so their (possibly
-					// drifted) windows were never re-checked — one last
-					// pass patches them.
 					flush();
 					await chain;
 					if (uncertain) {
@@ -1412,9 +1108,6 @@ export function makeDeliverySink(
 				}
 				await sleep(300 * stagnant);
 			}
-			// Safety net for a burst whose window outlives the turn — every
-			// send_file tool call resolved before onDone, so this is normally
-			// a no-op. After the drain, so the link joins the awaited chain.
 			flushPhotoBatch();
 			await chain;
 			if (uncertain) {
@@ -1425,10 +1118,6 @@ export function makeDeliverySink(
 				await stampSuperseded();
 				return;
 			}
-			// Steady progress on a backlog bigger than the drain budget
-			// never trips the stagnant guard — the loop simply runs out of
-			// iterations and the tail would drop silently. Same failure,
-			// same warn (and the 🫡 check below still sees the residue).
 			const unsent = pendingCount();
 			if (unsent > 0 && !gaveUp) {
 				log.warn("delivery gave up on unsent chunks", {
@@ -1436,10 +1125,6 @@ export function makeDeliverySink(
 					unsent,
 				});
 			}
-			// Per-turn mode line (design/telegram.md): rich turns name
-			// their send in "delivered rich"; a plain turn — kill switch,
-			// non-DM, or a mid-turn degrade — must be identifiable too,
-			// not just per-message debug lines.
 			if (unsent === 0) {
 				const landed = chunks.filter((c) => c.id > 0).length;
 				if (landed > 0) {
@@ -1452,11 +1137,6 @@ export function makeDeliverySink(
 					});
 				}
 			}
-			// Clean finish → 🫡 on the last bubble. The turn's end-marker:
-			// visible, silent (reactions don't notify), and it rides the
-			// exact message that finished. Errors already surface as ⚠ in
-			// the body; fenced turns end quietly by design. Cosmetic — a
-			// failure is the enqueue warn, never the turn's.
 			if (done.kind === "completed" && pendingCount() === 0) {
 				const last = [...chunks].reverse().find((c) => c.id > 0);
 				if (last) {
@@ -1469,7 +1149,6 @@ export function makeDeliverySink(
 							"setMessageReaction",
 						);
 					});
-					// One keyboard, one edit — see buildKeyboard above.
 					const keyboard = buildKeyboard();
 					if (keyboard !== null) {
 						enqueue(async () => {
@@ -1482,7 +1161,6 @@ export function makeDeliverySink(
 									"editMessageReplyMarkup",
 								);
 							} catch (err) {
-								// Buttons already stamped — benign, not a failure.
 								if (isNotModifiedError(err)) return;
 								throw err;
 							}
@@ -1491,12 +1169,6 @@ export function makeDeliverySink(
 					await chain;
 					if (!mayDeliver()) await stampSuperseded();
 				} else {
-					// Same empty-render warn as the voice path (finding 15):
-					// reaching the clean-finish check with no sent chunk means
-					// no text, no tool status, no forced notice ever rendered —
-					// the operator saw typing… then nothing. Warn with the
-					// address rather than inventing a bubble the delivery
-					// contract doesn't provide for.
 					log.warn("completed turn rendered empty", {
 						conversation: conv.id,
 						chat: conv.chatId,

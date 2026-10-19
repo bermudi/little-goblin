@@ -37,7 +37,6 @@ describe("app chat", () => {
 			expect(types).toContain("text-delta");
 			expect(types).toContain("finish");
 
-			// The turn landed in durable history — user + assistant.
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
@@ -45,11 +44,6 @@ describe("app chat", () => {
 	});
 
 	test("long silent stretches get SSE comment pings — the wire never idles out", async () => {
-		// Bun.serve's default idleTimeout (10s) killed silent streams
-		// mid-tool-call before the heartbeat existed (2026-10-07): the
-		// browser's fetch body died with the wire. Slow deltas fake the
-		// tool-call silence; the heartbeat must keep comment pings flowing
-		// without polluting data frames.
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b"],
@@ -71,10 +65,7 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(200);
 			const body = await res.text();
-			// Comment keepalives rode the wire through the silence…
 			expect(body).toContain(": ping\n\n");
-			// …and stay invisible to data-frame parsing — exactly how the
-			// client's eventsource parser skips them.
 			const frames = body
 				.split("\n\n")
 				.filter((f) => f.startsWith("data: "))
@@ -105,15 +96,11 @@ describe("app chat", () => {
 					}),
 				});
 			const base = { mediaType: "text/plain", filename: "x", size: 1 };
-			// Outside the attachments dir outright, or escaping it through
-			// a `..` segment — both would become readFile targets at turn
-			// time.
 			expect((await chat({ ...base, path: join(home, "goblin.sqlite") })).status).toBe(422);
 			expect(
 				(await chat({ ...base, path: join(home, "workspace", "attachments", "..", "evil") }))
 					.status,
 			).toBe(422);
-			// A ref the upload endpoint minted passes the pin.
 			const form = new FormData();
 			form.append(
 				"file",
@@ -188,7 +175,6 @@ describe("app chat", () => {
 			h2.stop();
 		}
 
-		// A null return is "speech unavailable at runtime" — same 503.
 		const { http: h3, call: c3 } = setup({ token: APP_TOKEN_NAME, speak: async () => null });
 		try {
 			expect(
@@ -216,7 +202,6 @@ describe("app chat", () => {
 		});
 		try {
 			await createAndChat(call, "what is the meaning of this");
-			// titleFor fires beside the turn — poll briefly for the write.
 			await waitUntil(() => store.get("app/chat-01")?.title !== null, "title lands");
 			const conv = store.get("app/chat-01");
 			expect(conv?.title).toBe("First Burst Title");
@@ -313,7 +298,6 @@ describe("app chat", () => {
 			expect(res.status).toBe(200);
 			await res.text();
 			expect(heard).toEqual([{ filename: "note.ogg" }]);
-			// The transcript rode into durable history with the ref.
 			const stored = store.history("app/chat-01")[0]!;
 			const part = stored.parts[0] as { type: string; data: { transcript?: string } };
 			expect(part.data.transcript).toBe("spoken words here");
@@ -333,7 +317,6 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(200);
 			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
-			// One user event, two anchored answers — history stays honest.
 			const roles = store.history("app/chat-01").map((m) => m.role);
 			expect(roles).toEqual(["user", "assistant", "assistant"]);
 		} finally {
@@ -377,7 +360,6 @@ describe("app chat", () => {
 			await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			await chat.text();
 
-			// retry:true with a message attached is a client bug, not a turn.
 			expect(
 				(
 					await call("/api/app/chat", {
@@ -431,9 +413,6 @@ describe("app chat", () => {
 				data: { transcript?: string; transcriptionError?: string; path: string };
 			};
 			expect(part.data.transcript).toBeUndefined();
-			// The failure must ride the part — a model that can't consume
-			// the audio needs "transcription failed: stt down", not a bare
-			// path to guess at.
 			expect(part.data.transcriptionError).toBe("stt down");
 			expect(part.data.path).toBe(String(ref.path));
 		} finally {

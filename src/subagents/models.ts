@@ -1,6 +1,3 @@
-// Model construction (design/subagents.md): the pinned z.ai catalog
-// recipe per kind, plus the explicit-profile experiment seam.
-
 import type { Model } from "@earendil-works/pi-ai";
 import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
 import { z } from "zod";
@@ -13,11 +10,6 @@ const KIND_MODEL_ID: Record<SubagentKind, string> = {
 	computer: "glm-5.3-flash",
 };
 
-// An explicit model profile is the experiment seam (design/subagents.md):
-// a constructor-supplied catalog entry for one approved non-GLM route.
-// It carries model shape only — provider/baseUrl/credential stay bound
-// by the configured model block; the production pin policy below is
-// unchanged for callers that pass none.
 export const subagentModelProfileSchema = z
 	.object({
 		id: z.string().min(1),
@@ -66,8 +58,6 @@ export function kindSpec(config: SubagentsConfig, kind: SubagentKind, profile?: 
 	if (profile !== undefined) {
 		const parsed = subagentModelProfileSchema.safeParse(profile);
 		if (!parsed.success) {
-			// A rejected profile must not echo the caller's object — it
-			// could carry anything.
 			throw new SubagentError(`subagents.${kind} explicit model profile failed schema validation`);
 		}
 		const p = parsed.data;

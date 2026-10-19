@@ -1,14 +1,11 @@
-// deploy/desktop/goblin-launch — the in-image app whitelist. Drives
-// the real shell script with stub `id`/`setpriv`/`chromium` binaries
-// on PATH (the goblin-mail pattern) — no container, no real setpriv.
-// What the stubs pin at the argv boundary: a root invocation must
-// dispatch the app THROUGH setpriv to the fixed desk uid/gid with the
-// fixed session env, a desk invocation dispatches directly with the
-// same fixed env, any other caller is refused, and none of it may be
-// steered by environment the caller injected (the desk-writable
-// /run/desk/env file the script used to evaluate). The real
-// privilege drop is live territory (GOBLIN_DESKTOP_LIVE); this is the
-// stub-boundary regression.
+// Drives the real deploy/desktop/goblin-launch shell script with stub
+// `id`/`setpriv`/`chromium` binaries on PATH — no container, no real
+// setpriv. The stubs pin argv: root must dispatch THROUGH setpriv to
+// the fixed desk uid/gid and session env, desk dispatches directly,
+// any other caller is refused, and none of it may be steered by
+// caller-injected environment (the desk-writable /run/desk/env file
+// the script used to evaluate). The real privilege drop is live
+// territory (GOBLIN_DESKTOP_LIVE).
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

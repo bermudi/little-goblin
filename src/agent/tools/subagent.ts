@@ -1,12 +1,3 @@
-// The subagent tool (design/subagents.md): Goblin's handle on the
-// managed run queue — start returns a durable #id immediately and the
-// result arrives later as a wake, so the conversation never waits or
-// polls. Run-originated text (task, result, question, error) is
-// untrusted data and every path that returns it fences it through the
-// frozen subagentNotice wrapper. Ownership is the origin conversation
-// id bound at construction — status/send/stop can never see another
-// conversation's run, and holder ids are never taken from the model.
-
 import { tool } from "ai";
 import { z } from "zod";
 import { SUBAGENT_TOOL_DESCRIPTION, subagentNotice } from "../../subagent-prompts.ts";
@@ -20,20 +11,14 @@ import {
 } from "../../subagent-runs.ts";
 import { SubagentError, type Subagents } from "../../subagents/mod.ts";
 
-// The same rule desktops.ts enforces — the tool refuses a bad name
-// before it reaches the pool.
 const desktopNameSchema = z
 	.string()
 	.regex(/^[a-z0-9][a-z0-9-]{0,30}$/, "desktop names are [a-z0-9-], 1-31 chars");
 
 export interface SubagentToolDeps {
-	/** The conversation this call runs in — the origin of every run it
-	 *  can see or start. */
 	conversation: string;
 	workspace: string;
 	subagents: Subagents;
-	/** worker runs need a configured sandbox — absent, start(kind:
-	 *  "worker") refuses with an operator-actionable error. */
 	workerEnabled: boolean;
 	computerEnabled: boolean;
 }
@@ -59,10 +44,6 @@ const stopSchema = z.object({
 	action: z.literal("stop"),
 	id: z.number().int().positive(),
 });
-// The crash-resolution verdict on a run parked by the crash-approval
-// gate — the shared input schema requires evidence and reasoning on
-// every kind and the declared result text for record-result;
-// provenance and outcome are owner-stamped, never caller-supplied.
 const decideSchema = z.object({
 	action: z.literal("decide"),
 	id: z.number().int().positive(),
@@ -98,8 +79,6 @@ export const subagentInputSchema = z
 		}
 	});
 
-// Trusted fields stay structural; everything the run produced rides
-// inside the frozen <event> fence with the untrusted note.
 function runSummary(row: SubagentRun) {
 	return {
 		id: row.id,
@@ -175,8 +154,6 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 						if (input.kind === "computer" && input.desktop === undefined) {
 							return { error: "computer runs need a desktop name (the desktop tool lists them)" };
 						}
-						// The toolCallId is the idempotence key: a retried call
-						// returns the same row instead of starting a second run.
 						const row = await deps.subagents.start(
 							{
 								kind: input.kind,

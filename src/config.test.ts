@@ -32,12 +32,10 @@ import {
 	transcriptionSchema,
 	writeConfig,
 } from "./config.ts";
-import { setLogFile } from "./log.ts";
+import { log, setLogFile } from "./log.ts";
 import { useHome } from "./testkit.ts";
 
 // ----- parseConfig (object input): value/throw tables -----
-// One row per case keeps every original assertion; the loop is the
-// only boilerplate. Bespoke multi-step cases stay as plain tests.
 
 const objBase = {
 	providers: { test: { kind: "codex" } },
@@ -202,9 +200,7 @@ describe("goblin.json5", () => {
 		}
 	});
 
-	// Per-block tables: [case name, extra fragment, expected] — the
-	// field under test is the call's pick. Every row keeps the exact
-	// value/error its bespoke test asserted.
+	// Per-block tables: [case name, extra fragment, expected].
 	const valueRows = (
 		block: string,
 		providers: string,
@@ -614,10 +610,99 @@ describe("goblin.json5", () => {
 		const out = readFileSync(p, "utf8");
 		expect(out).toContain("// never lose this");
 		expect(out).toContain("experimental: { notInSchema: true }, // the operator's own field");
-		expect(out).toContain('thinking: \'high\'');
+		expect(out).toContain("thinking: 'high'");
 		expect(out).toContain('model: "zai/glm-4.6",'); // untouched line verbatim
 		expect(loadConfig()!.thinking).toBe("high");
 	});
+
+	for (const configured of [false, true]) {
+		test(`writeConfig clears optional integrations without losing comments (configured=${configured})`, () => {
+			useHome("goblin-cfg-");
+			const original = parseConfig({
+				...valid,
+				...(configured
+					? {
+							transcription: { kind: "groq" },
+							search: [{ kind: "brave" }],
+							fetch: [{ kind: "jina" }],
+						}
+					: {}),
+			});
+			const { transcription, search, fetch, ...rest } = original;
+			const text = `// keep this comment\n${JSON.stringify(
+				{
+					...rest,
+					experimental: { keep: true },
+					...(configured ? { transcription, search, fetch } : {}),
+				},
+				null,
+				2,
+			)}\n`;
+			writeFileSync(paths.config(), text);
+			const cleared = parseConfig({ ...original, transcription: "", search: "", fetch: "" });
+			expect(Object.hasOwn(cleared, "transcription")).toBe(true);
+			expect(cleared.transcription).toBeUndefined();
+
+			writeConfig(cleared);
+
+			const out = readFileSync(paths.config(), "utf8");
+			expect(out).toContain("// keep this comment");
+			expect(out).toContain('"experimental": {\n    "keep": true\n  }');
+			const loaded = loadConfig()!;
+			for (const key of ["transcription", "search", "fetch"] as const) {
+				expect(loaded[key]).toBeUndefined();
+				expect(out).not.toContain(`"${key}":`);
+			}
+			if (!configured) expect(out).toBe(text);
+		});
+	}
+
+	test("writeConfig initializes a missing file", () => {
+		useHome("goblin-cfg-");
+		writeConfig(valid);
+		expect(loadConfig()).toEqual(parseConfig(valid));
+	});
+
+	test("writeConfig can enable an integration after a comma-less tail comment", () => {
+		useHome("goblin-cfg-");
+		const original = parseConfig(valid);
+		const text = JSON.stringify({ ...original, experimental: true }, null, 2).replace(
+			/\n}$/,
+			" // tail note\n}",
+		);
+		writeFileSync(paths.config(), text);
+		writeConfig({ ...original, transcription: { kind: "whistle" } });
+		expect(loadConfig()!.transcription).toEqual({ kind: "whistle" });
+		expect(readFileSync(paths.config(), "utf8")).toContain('"experimental": true, // tail note');
+	});
+
+	test("writeConfig leaves malformed JSON5 intact", () => {
+		useHome("goblin-cfg-");
+		const text = '// keep this comment\n{model: "unterminated}';
+		writeFileSync(paths.config(), text);
+		expect(() => writeConfig(valid)).toThrow(`${paths.config()}:2: invalid JSON5`);
+		expect(readFileSync(paths.config(), "utf8")).toBe(text);
+	});
+
+	test.skipIf(process.getuid?.() === 0)(
+		"writeConfig propagates EACCES and leaves the file intact",
+		() => {
+			useHome("goblin-cfg-");
+			const p = paths.config();
+			const text = `// keep this comment\n${JSON.stringify({ ...valid, experimental: true })}\n`;
+			writeFileSync(p, text);
+			chmodSync(p, 0o000);
+			try {
+				expect(() => readFileSync(p, "utf8")).toThrow(expect.objectContaining({ code: "EACCES" }));
+				expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow(
+					expect.objectContaining({ code: "EACCES" }),
+				);
+			} finally {
+				chmodSync(p, 0o600);
+			}
+			expect(readFileSync(p, "utf8")).toBe(text);
+		},
+	);
 
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome("goblin-cfg-");
@@ -719,23 +804,23 @@ describe("ensureHomeLayout", () => {
 		ensureHomeLayout();
 		const skill = readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8");
 		// The compatibility line is what the system prompt's catalog
-		// renders — the recovery command must ride it, so a missing CLI is
-		// never a dead-end invitation (DESIGN.md, "Web access").
+		// renders — the recovery command must ride it, so a missing CLI
+		// is never a dead-end invitation.
 		expect(skill).toContain(
 			"compatibility: Requires the agent-browser CLI and a Chrome/Chromium binary",
 		);
 		expect(skill).toContain("npm i -g agent-browser && agent-browser install");
 		// Frontmatter name must match the directory or the catalog skips it.
 		expect(skill).toContain("name: browser");
-		// The pass-cli skill seeds the same way (DESIGN.md, "Proton
-		// Pass") — its compatibility line names the dependency (goblin's
-		// own agent token), which the catalog renders every turn.
+		// The pass-cli skill seeds the same way — its compatibility line
+		// names the dependency (goblin's own agent token), which the
+		// catalog renders every turn.
 		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
-		// The herdr skill seeds the same way (delegation.md): a rebuilt
-		// box must regain the pane-targeting contract — operator-pointed
-		// panes go through the `herdr` tool, never the raw CLI.
+		// The herdr skill seeds the same way: a rebuilt box must regain
+		// the pane-targeting contract — operator-pointed panes go through
+		// the `herdr` tool, never the raw CLI.
 		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
 		expect(herdr).toContain("name: herdr");
 		expect(herdr).toContain("the `herdr` tool, never the CLI from bash");
@@ -768,8 +853,7 @@ describe("ensureHomeLayout", () => {
 		expect(skill).toContain("name: mcp");
 		expect(skill).toContain("compatibility:");
 		// The seed is the isolation default: no servers, and imports []
-		// so mcporter never merges the operator's editor setups
-		// (DESIGN.md, "Web access" → "MCP").
+		// so mcporter never merges the operator's editor setups.
 		const mcporter = readFileSync(join(dir, "mcporter.json"), "utf8");
 		expect(mcporter).toContain('"mcpServers": {}');
 		expect(mcporter).toContain('"imports": []');
@@ -1216,5 +1300,22 @@ describe("config parser safety", () => {
 		expect(safeFailure(() => loadConfig()).message).toBe(
 			`${join(dir, "goblin.json5")}:2: invalid JSON5`,
 		);
+	});
+
+	test("write errors and their logs omit malformed file input without replacing it", () => {
+		const dir = useHome("goblin-cfg-");
+		const text = `{\nmodel: ${sentinel}\n}`;
+		writeFileSync(paths.config(), text);
+		const err = safeFailure(() => writeConfig(valid));
+		expect(err.message).toBe(`${paths.config()}:2: invalid JSON5`);
+		const logPath = join(dir, "config.log");
+		setLogFile(logPath);
+		try {
+			log.error("fixture config write failed", err);
+		} finally {
+			setLogFile(null);
+		}
+		expect(readFileSync(logPath, "utf8")).not.toContain(sentinel);
+		expect(readFileSync(paths.config(), "utf8")).toBe(text);
 	});
 });

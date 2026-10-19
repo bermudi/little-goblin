@@ -23,9 +23,8 @@ const memConfig = memoryConfigSchema.parse({
 
 interface Harness {
 	recallCount(): number;
-	// The recall query text of every /memories/recall request — the
-	// exclusion boundary's regression assertions read exactly what left
-	// the process (#85).
+	// The recall query text of every /memories/recall request — exclusion
+	// assertions read exactly what left the process.
 	recallQueries(): string[];
 	retains: unknown[];
 	conversation: string;
@@ -181,7 +180,6 @@ describe("memory turn integration", () => {
 		);
 		expect(await excluded.done).toEqual({ kind: "completed" });
 		expect(h.recallCount()).toBe(0);
-		// Re-enable and run an unrelated fresh turn.
 		h.store.applySettings(h.conversation, { memoryExcluded: false });
 		const fresh = new RecordingSink();
 		h.runtime.submit(

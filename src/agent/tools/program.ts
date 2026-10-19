@@ -1,16 +1,3 @@
-// The program tool — standing orders (DESIGN.md, "Programs"). A
-// program is standing authority for one concern: a charter plus the
-// triggers that wake it (a cron; optionally a webhook — a secret URL
-// whose bearer wakes the program). Management is state mutation:
-// zod-validated actions against the programs store, every action
-// logged. The creating conversation is bound by the runtime (the model
-// never handles chat ids); replies to a fired program land in that
-// same chat/topic.
-//
-// The hook token never enters model context: only its sha256 is
-// stored, and the URL goes straight to the operator via sendPrivate —
-// the tool result carries just "url_sent". The hash is never logged.
-
 import { tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
@@ -45,25 +32,14 @@ export interface ProgramToolDeps {
 		projectId: string;
 		resps: { get(id: string): { projectId: string } | null };
 	};
-	/** Live read — the operator can change publicUrl in the mini app. */
 	publicUrl(): string | undefined;
-	/** Direct delivery to the operators' DMs — bypasses history, so the
-	 *  hook token never becomes model context next turn. Built by
-	 *  makePrivateSender in production. */
 	sendPrivate(text: string): Promise<void>;
 }
 
-// 32 random bytes, base64url — the whole URL path is the credential.
 function newHookToken(): string {
 	return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 }
 
-// Builds the tool's sendPrivate dep. The hook URL is a bearer
-// credential and DESIGN.md rules group readers aren't implicitly
-// authorized — so it goes to each operator's private chat (user id as
-// chat id), never the possibly-shared topic the tool ran in. One
-// delivered DM counts as sent; zero deliveries throws so the caller
-// can surface "rotate to resend".
 export function makePrivateSender(
 	send: (chatId: number, text: string) => Promise<unknown>,
 	operatorIds: () => number[],
@@ -99,8 +75,6 @@ const createSchema = z.object({
 	name: z.string().min(1).max(100),
 	charter: z.string().min(1),
 	cron: z.string().min(5).optional(),
-	// The 30s scan tick is the finest lateness there is — 0 reads as
-	// structurally un-fireable, so the floor is 1 minute.
 	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
@@ -113,7 +87,6 @@ const updateSchema = z.object({
 	id: z.number().int().positive(),
 	name: z.string().min(1).max(100).optional(),
 	charter: z.string().min(1).optional(),
-	// null clears the cron — allowed only while a hook remains.
 	cron: z.string().min(5).nullable().optional(),
 	maxLatenessMinutes: z
 		.number()
@@ -122,7 +95,6 @@ const updateSchema = z.object({
 		.max(Number.MAX_SAFE_INTEGER)
 		.nullable()
 		.optional(),
-	// null clears the mail filter — allowed only while another trigger remains.
 	mailFilter: z.string().min(1).max(500).nullable().optional(),
 });
 const deleteSchema = z.object({ action: z.literal("delete"), id: z.number().int().positive() });
@@ -132,7 +104,6 @@ const hookSchema = z.object({
 	id: z.number().int().positive(),
 	op: z.enum(["enable", "rotate", "disable"]),
 });
-// The strict per-action contract, enforced inside execute.
 const actionSchema = z.discriminatedUnion("action", [
 	listSchema,
 	createSchema,
@@ -142,12 +113,6 @@ const actionSchema = z.discriminatedUnion("action", [
 	hookSchema,
 ]);
 
-// Tool providers expect an object at the root. A discriminated union
-// serializes to root-level oneOf, which some providers cannot use to
-// generate arguments — every call then arrives as `{}` and fails
-// validation (took down mail on Sep 28, then program the same way).
-// Keep the wire schema flat; actionSchema still owns the exact
-// per-action contract.
 export const programInputSchema = z
 	.object({
 		action: z.enum(["list", "create", "update", "delete", "toggle", "hook"]),
@@ -211,8 +176,6 @@ export const programTool = (deps: ProgramToolDeps) =>
 					if (input.hook === true && "responsibilityId" in destination) {
 						return { error: "hook URLs deliver to the operator DM — not available on project turns" };
 					}
-					// A requested hook needs its token+URL up front: the row's
-					// trigger invariant counts the hook from creation.
 					const minted = input.hook === true ? mintHook(deps) : null;
 					if (minted !== null && "error" in minted) return { error: minted.error };
 					try {
@@ -265,7 +228,6 @@ export const programTool = (deps: ProgramToolDeps) =>
 							return { error: (err as Error).message };
 						}
 					}
-					// exactOptionalPropertyTypes: never pass an explicit undefined.
 					const patch: {
 						name?: string;
 						charter?: string;
@@ -289,8 +251,6 @@ export const programTool = (deps: ProgramToolDeps) =>
 						});
 						return { program: programView(program) };
 					} catch (err) {
-						// The trigger invariant is model-actionable; storage
-						// failures propagate — never swallowed.
 						if (isProgramRuleError(err)) {
 							return { error: err.message };
 						}
@@ -324,16 +284,12 @@ export const programTool = (deps: ProgramToolDeps) =>
 						log.info("program hook disabled", { program: input.id, name: current.name });
 						return { program: programView(deps.programs.get(input.id)!) };
 					}
-					// enable | rotate — same work; the difference is only in
-					// what we call it to the model.
 					const minted = mintHook(deps);
 					if ("error" in minted) return { error: minted.error };
 					deps.programs.setHook(input.id, hookTokenHash(minted.token));
 					const op = input.op === "rotate" ? "rotated" : "enabled";
 					const err = await sendHookUrl(deps, current, minted.url);
 					if (err !== null) {
-						// The hook IS set — the failure is delivery, and rotate
-						// is the recovery path.
 						return {
 							error: `hook ${op} but the URL delivery failed: ${err} — run hook/rotate to resend`,
 						};
@@ -345,14 +301,10 @@ export const programTool = (deps: ProgramToolDeps) =>
 		},
 	});
 
-// Program invariants are model-actionable; storage failures propagate.
-// Identity, not message text — wording stays free to change.
 function isProgramRuleError(err: unknown): err is ProgramRuleError {
 	return err instanceof ProgramRuleError;
 }
 
-// Token + URL + the publicUrl gate. Returns the minted pair or an
-// error — checked before any row change.
 function mintHook(deps: ProgramToolDeps): { token: string; url: string } | { error: string } {
 	const base = deps.publicUrl();
 	if (base === undefined) {
@@ -362,7 +314,6 @@ function mintHook(deps: ProgramToolDeps): { token: string; url: string } | { err
 	return { token, url: `${base.replace(/\/+$/, "")}/hook/${token}` };
 }
 
-// The URL goes straight to the operator — never into the tool result.
 async function sendHookUrl(
 	deps: ProgramToolDeps,
 	program: Program,

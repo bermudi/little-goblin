@@ -5,10 +5,8 @@ export function resolvePath(cwd: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
-// An existing differently-normalized twin of a path (macOS stores
-// filenames NFD; models and terminals usually emit NFC), or null. Shared
-// by the file tools so a read, an edit, and a write all land on the same
-// file instead of silently forking it under a second spelling.
+// macOS stores filenames NFD; models and terminals emit NFC. Match the twin so
+// read/edit/write land on one file.
 export function unicodeTwin(abs: string): string | null {
 	for (const norm of [abs.normalize("NFC"), abs.normalize("NFD")]) {
 		if (norm !== abs && existsSync(norm)) return norm;
@@ -16,15 +14,9 @@ export function unicodeTwin(abs: string): string | null {
 	return null;
 }
 
-// Where a durable write (tmp + rename) must land. rename replaces the
-// directory entry it names, so a leaf symlink handed straight to it is
-// silently destroyed while the file the link manages keeps its old
-// contents — the config forks and the dots store stops propagating.
-// Per design/delegation.md's symlink ruling the write goes through the
-// link to the file it manages. lstat, never stat: a dangling link is
-// still a link and must fail loudly with its target named, not count
-// as an absent path a write may quietly create (harness-trust.ts keeps
-// the same discipline for managed harness settings).
+// rename() replaces the directory entry, silently destroying a leaf symlink
+// (the managed file keeps old contents). Write through the link; lstat so a
+// dangling link fails loud instead of being "created".
 export function writeThroughTarget(abs: string): { target: string } | { error: string } {
 	try {
 		if (!lstatSync(abs).isSymbolicLink()) return { target: abs };

@@ -17,9 +17,7 @@ describe("main branch regressions", () => {
 	// The pending provider-name departure guard: a half-typed name sits in
 	// the card's blur-commit field, outside every serialized field, so the
 	// serialized diff can't see it — it must still arm onDirtyChange and
-	// hold the autosave. Mounted with happy-dom like StateViews.test.tsx;
-	// the wire is faked at globalThis.fetch with the same config fixture
-	// shape App.test.tsx uses.
+	// hold the autosave. happy-dom mount, fetch faked at globalThis.fetch.
 
 	let win: Window;
 	let container: HTMLElement;
@@ -260,6 +258,55 @@ describe("main branch regressions", () => {
 		}
 	}
 
+	for (const edit of ["reorder", "remove target", "edit target"] as const) {
+		test(`transcription: delayed Store preserves ${edit} and the saved fallbacks`, async () => {
+			settings = parseConfig({
+				...SETTINGS,
+				transcription: {
+					kind: "whistle",
+					fallbacks: [{ kind: "groq" }, { kind: "openai", auth: "openai" }],
+				},
+			});
+			await mount();
+			await click(
+				[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Voice")),
+			);
+			const cards = () => [...container.querySelectorAll(".chain-card")];
+			const authInput = (card: Element) =>
+				card.querySelector<HTMLInputElement>('input[aria-label$="secret name"]')!;
+			await typeInto(authInput(cards()[0]!), "");
+			await startStore(cards()[0]!);
+			let expected = [
+				{ kind: "groq" as const, auth: "groq", model: transcriptionDefaults.groq.model },
+				{ kind: "openai" as const, auth: "openai", model: transcriptionDefaults.openai.model },
+			];
+			if (edit === "reorder") {
+				await click(cards()[0]!.querySelector('[aria-label="move fallback 1 down"]'));
+				expected.reverse();
+			} else if (edit === "remove target") {
+				await click(cards()[0]!.querySelector('[aria-label="remove fallback 1"]'));
+				expected = expected.slice(1);
+			} else {
+				await typeInto(authInput(cards()[0]!), "edited");
+				expected[0]!.auth = "edited";
+			}
+			await act(async () => secretGate.resolve());
+			await settle();
+			expect(
+				cards().map((card) => ({
+					kind: card.querySelector("select")!.value,
+					auth: authInput(card).value,
+				})),
+			).toEqual(expected.map(({ kind, auth }) => ({ kind, auth })));
+			await waitFor(
+				() => savedBodies.length > 0 && lastDirty() === false,
+				"updated transcription save",
+			);
+			const transcription = savedBodies.at(-1)?.transcription;
+			expect(transcription && transcription.fallbacks).toEqual(expected);
+		});
+	}
+
 	test("changing a chain provider clears the pending password before Store", async () => {
 		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
 		await openWeb();
@@ -434,8 +481,7 @@ describe("quiet harbor regressions", () => {
 	// faked fetch): an edit debounces into one POST; success rebaselines; a
 	// 422 surfaces the server's message with a retry button; a 409 (stale
 	// etag) refuses retry — only reload helps; and a failed signature is
-	// never re-fired by the debounce. Mounted with happy-dom, like
-	// ChatView.test.tsx.
+	// never re-fired by the debounce.
 
 	// GET /api/app/settings payload — no providers keeps the thinking-level
 	// lookups away (a "p/m" model with no matching provider resolves to the

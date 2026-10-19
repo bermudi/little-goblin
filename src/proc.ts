@@ -2,31 +2,23 @@ import { log } from "./log.ts";
 
 export type ProcessGroupMode = "new" | "inherit";
 
-// Bounded subprocess execution. spawnProc only fixes the stdio layout and
-// can throw (caller labels the failure); boundedRun never hangs — the
-// promise always settles:
-//
-//   timeout/abort/cap-overflow → SIGTERM → grace → SIGKILL → give up
-//
-// By default kills target the child's new process group: a timed-out
-// `bash -c` takes its backgrounded grandchildren with it. Explicit inherited
-// probes kill only their leader; their outer supervisor owns group cleanup.
-//
-// and pipe EOF gets a short grace after process exit, then the readers are
-// cut: a backgrounded or orphaned child inheriting the write end must not
-// outlive the command. Used by the bash tool, TTS remux, and auth.jsonl
-// `!command` resolution — a wedged child must never stall a turn or a lane.
+// Bounded subprocess execution; boundedRun's promise always settles:
+// timeout/abort/cap-overflow → SIGTERM → grace → SIGKILL. Kills target
+// the child's new process group by default — a timed-out `bash -c` takes
+// its backgrounded grandchildren; "inherit" probes kill only the leader
+// (an outer supervisor owns group cleanup). Pipe EOF gets a short grace
+// after exit, then readers are cut — a backgrounded child inheriting the
+// write end must not outlive the command.
 
 const PIPE_DRAIN_MS = 250;
-// SIGTERM gets a grace period, then SIGKILL. If even KILL can't reap it
-// (e.g. D-state), the caller gets an honest null rather than a hang.
+// If even SIGKILL can't reap it (e.g. D-state), the caller gets an
+// honest null rather than a hang.
 const KILL_GRACE_MS = 1_000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Bun's pipe readers carry extra methods the standard
-// ReadableStreamDefaultReader type doesn't declare — all the drain cutoff
-// needs is cancel().
+// Bun's pipe readers have cancel(), which the standard
+// ReadableStreamDefaultReader type doesn't declare.
 interface CancellableReader {
 	cancel(reason?: unknown): Promise<void>;
 }
@@ -37,22 +29,19 @@ export interface BoundedProc {
 	// null when even SIGKILL couldn't reap the process.
 	exitCode: number | null;
 	timedOut: boolean;
-	// A capped stream killed the process, or the post-exit drain window cut
-	// output still in flight — the output is incomplete either way.
+	// A capped stream killed the process, or the post-exit drain window
+	// cut output still in flight — incomplete either way.
 	truncated: boolean;
-	// The kill was specifically a stream-cap overflow — a cause
-	// distinct from timedOut, not exclusive of it (the deadline can
-	// still fire while the cap-kill drain is in flight). Optional so
-	// external fakes building this shape stay valid.
+	// The kill was a stream-cap overflow — distinct from timedOut but
+	// not exclusive (the deadline can still fire mid-drain). Optional
+	// so external fakes building this shape stay valid.
 	outputCapped?: boolean;
-	// The process was killed (deadline, abort, or output cap) rather than
-	// exiting on its own — distinct from truncated because a kill can
-	// leave work running that a post-exit drain cut cannot.
+	// Killed (deadline/abort/cap), not self-exited — a kill can leave
+	// work running that a post-exit drain cut cannot.
 	killed: boolean;
 }
 
-// Binary variant for callers whose stdout isn't text (TTS remux returns
-// ogg/opus bytes). stderr stays text — it's only ever an error message.
+// stderr stays text — it's only ever an error message.
 export interface BoundedProcBytes {
 	stdout: Uint8Array;
 	stderr: string;
@@ -64,10 +53,8 @@ export interface BoundedProcBytes {
 	killed: boolean;
 }
 
-// Fixed stdio for callers: both pipes captured, the daemon's environment
-// (no secrets live there by design — auth.jsonl keeps them out). Detached
-// by default so group kills reach grandchildren. Inherited mode is only
-// for callers with an outer group owner. Throws if spawning fails.
+// env carries no secrets by design (auth.jsonl keeps them out).
+// "inherit" is only for callers whose outer supervisor owns the group.
 export function spawnProc(
 	argv: string[],
 	cwd?: string,
@@ -106,9 +93,9 @@ export function killProc(
 	}
 }
 
-// Drain a pipe to EOF, capped — a runaway process that floods a stream gets
-// killed instead of buffering forever. The reader registers itself so the
-// drain window after process exit can cut it off.
+// Capped drain — a runaway process flooding a stream is killed rather
+// than buffered forever. The reader registers so the post-exit drain
+// window can cut it off.
 async function collectBytes(
 	stream: ReadableStream<Uint8Array>,
 	cap: number,
@@ -157,10 +144,7 @@ type Collector<S> = (
 	readers: Set<CancellableReader>,
 ) => Promise<{ value: S; truncated: boolean }>;
 
-// The one runner: combined deadline, abort, and cap-overflow kills funnel
-// into group TERM→KILL escalation; pipe readers get a short window after
-// exit before being cut. stdout's shape (text vs bytes) is the caller's
-// collector; stderr is always text — it's only ever an error message.
+// stderr is always text — only stdout's shape is the caller's collector.
 async function runBounded<S>(
 	proc: Bun.ReadableSubprocess,
 	opts: {
@@ -260,7 +244,6 @@ async function runBounded<S>(
 	};
 }
 
-// Run an already-spawned process to a settled result — text stdout.
 export async function boundedRun(
 	proc: Bun.ReadableSubprocess,
 	opts: {
@@ -273,9 +256,6 @@ export async function boundedRun(
 	return runBounded(proc, opts, collect);
 }
 
-// Binary-stdout twin for callers whose stdout isn't text (TTS ffmpeg
-// remux). Same deadline/abort/cap/group-kill contract, same
-// bounded-settles guarantee — one runner, different collector.
 export async function boundedRunBinary(
 	proc: Bun.ReadableSubprocess,
 	opts: {

@@ -1,18 +1,3 @@
-// The operator surface — settings, memory browse/forget, programs,
-// delegations, service status — shared verbatim between the two
-// doors that can reach it: the mini app's /api/* routes (initData
-// auth, actor carries a Telegram user id) and the app channel's
-// /api/app/* routes (bearer/trust auth, no user id). Both doors call
-// handleOperatorRoute after their own auth ran; the actor only
-// changes audit fields and the save lockout guard (the app's schema
-// min(1) on operators is the guard there — there is no requester
-// id to preserve).
-//
-// Same import discipline as mod.ts: this module is pulled into the
-// client typecheck program via the wire types, so value imports stay
-// shallow (config, memory seams, hindsight) and never reach into
-// runtime/tg/agent graphs.
-
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
@@ -85,13 +70,6 @@ import type {
 
 const NO_STORE = { "cache-control": "no-store" };
 
-// State viewer name rules (ruling 2026-10-11): a skill/attachment name
-// is one path segment; a file path inside a skill may carry slashes but
-// every segment must itself be a legal name. Ordinary Unicode, spaces,
-// parens and dots are names — only separators, controls and the exact
-// "."/".." traversal segments are refused. Both gates sit in front of
-// stateview.ts's containment check — validation here is input hygiene,
-// containment is the wall.
 const SEGMENT_SCHEMA = z
 	.string()
 	.min(1)
@@ -106,22 +84,15 @@ const REL_PATH_SCHEMA = z
 		error: "invalid relative path",
 	});
 
-// Serving cap for attachments/file — the upload cap's twin (32 MiB);
-// the viewer never serves what the composer cannot store.
 const ATTACHMENT_SERVE_CAP = 32 * 1024 * 1024;
 
 export interface OperatorDeps {
 	configRef: { current: Config };
 	onConfigWritten(): void;
 	beforeConfigWritten?(previous: Config, next: Config): void;
-	// Long-term memory — the same seams the /memory command reads; see
-	// HttpDeps.memory for the member-by-member contract.
 	memory?: {
 		target?: { baseUrl: string; bankId: string };
 		counts(): MemoryQueueCounts;
-		// Outstanding forget work across all destinations — parked rows bind
-		// to the bank that owns them, so this stays visible after a
-		// destination change while counts() reads zero.
 		deletingAll(): number;
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
@@ -134,37 +105,23 @@ export interface OperatorDeps {
 	};
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
-	// auth.jsonl record names for the settings pickers — names only,
-	// never values, and only as the boot-time store sees them (auth
-	// edits need the approved restart). Absent = the pickers offer
-	// nothing; a name typed against an empty list still saves.
+	// auth.jsonl record names only — values never cross this surface.
 	authNames?: () => string[];
-	// auth.jsonl writes for the secrets tail — store() appends the
-	// record on disk then updates the live store, so a pasted key
-	// resolves on this boot. Absent = the tail 503s.
 	secrets?: {
 		has(name: string): boolean;
 		isCommand(name: string): boolean;
 		store(name: string, value: string): void;
 	};
-	// Service identity for /status — the composition root owns boot
-	// time and knows which fields are boot-pinned.
 	service?: {
 		version: string;
 		startedAt: string;
 		restartHints(): string[];
 	};
-	// Skill provenance reads (design/skills.md → Skill provenance) —
-	// the thread panel's data. Absent = the tail 503s with the reason.
 	skillSources?: {
 		forConversation(conversationId: string): SkillSourceRow[];
 		skillsDir: string;
 		proposedDir: string;
 	};
-	// Proposal decisions — the operator doors' approve/discard (the
-	// same mechanics the Telegram ✅/🚫 row runs, src/skill-decisions.ts).
-	// The seam owns the disk move and the resolution event in the
-	// learning conversation. Absent = the tail 503s.
 	skillDecisions?: {
 		decide(skill: string, action: SkillAction): SkillDecision;
 	};
@@ -172,12 +129,6 @@ export interface OperatorDeps {
 
 export type OperatorActor = { via: "mini-app"; userId: number } | { via: "app" };
 
-// ---------- boot wiring (index.ts binds, this module rules) ----------
-
-// The operator surface is one bundle mounted at both doors — the mini
-// app's /api/* (initData) and the app channel's /api/app/* (bearer/
-// trust). This factory assembles the seam set; index.ts supplies
-// configRef and onConfigWritten per door.
 export interface OperatorSeamsDeps {
 	store: ConversationStore;
 	memory: MemoryWiring;
@@ -200,8 +151,6 @@ export function makeOperatorSeams(
 	return {
 		beforeConfigWritten: (previous: Config, next: Config) =>
 			prepareAppSettingsForConfig(store, previous, next),
-		// Same memory surfaces the /memory command reads, bound to the
-		// boot-time target.
 		...(surfaces
 			? {
 					memory: {
@@ -224,9 +173,6 @@ export function makeOperatorSeams(
 		delegations,
 		service: { version: deps.version, startedAt: deps.startedAt, restartHints: deps.restartHints },
 		authNames: () => auth.names(),
-		// Settings' "+ key" affordance — the record appends to auth.jsonl
-		// (durable, 0600) then lands in the live store, so a pasted key
-		// resolves without a restart.
 		secrets: {
 			has: (name: string) => auth.has(name),
 			isCommand: (name: string) => auth.isCommand(name),
@@ -240,9 +186,6 @@ export function makeOperatorSeams(
 			skillsDir: paths.skills(),
 			proposedDir: paths.skillsProposed(),
 		},
-		// The operator doors' ✅/🚫 — same mechanics the Telegram row
-		// runs, plus the resolution event into the learning conversation
-		// (provenance's newest row) when there is one.
 		skillDecisions: {
 			decide: (skill: string, action: SkillAction) =>
 				resolveSkillProposal(
@@ -260,27 +203,12 @@ export function makeOperatorSeams(
 	};
 }
 
-// The page posts a full form snapshot. Require the version of the
-// config it loaded, or a second tab/hand edit could be silently
-// overwritten.
 function configTag(config: Config): string {
 	return `"${createHash("sha256").update(JSON.stringify(config)).digest("hex")}"`;
 }
 
-// Serialized config saves across BOTH doors: the If-Match check reads
-// the on-disk tag, and two requests passing against the same tag must
-// not both write — the second write would silently discard the first
-// (lost update). Module-level so a mini-app save and an app save
-// serialize against each other, not just within their own door.
 let configSaveQueue: Promise<unknown> = Promise.resolve();
 
-// The POST body's key allowlist, tied to the wire type so a
-// ConfigPostBody change breaks typecheck. The body merges over the
-// saved config, so a key the page doesn't own (hand-edited-only
-// blocks like sandbox, delegation, mail, guest, reviewer, system1,
-// appToken — or anything new) would be silently accepted by
-// parseConfig; the boundary check below refuses it before the save
-// is enqueued.
 const CONFIG_POST_KEYS = {
 	providers: true,
 	model: true,
@@ -310,9 +238,6 @@ const CONFIG_POST_TELEGRAM_KEYS = {
 	showReasoning: true,
 } as const satisfies Record<keyof ConfigPostBody["telegram"], true>;
 
-// Key shape only — every field is unknown+optional; values stay
-// validated by parseConfig in saveConfig. .strict() turns a key not
-// in the allowlist into an unrecognized_keys issue.
 const configPostBodySchema = z
 	.object(
 		Object.fromEntries(
@@ -335,8 +260,6 @@ const configPostBodySchema = z
 	)
 	.strict();
 
-// Unknown top-level or telegram.* keys in the body — empty when the
-// body is key-clean (value errors are never reported here).
 function unknownConfigKeys(body: object): string[] {
 	const parsed = configPostBodySchema.safeParse(body);
 	if (parsed.success) return [];
@@ -358,10 +281,6 @@ async function saveConfig(
 	const who = actor.via === "mini-app" ? { userId: actor.userId } : {};
 	let wrote = false;
 	try {
-		// The page sends a partial; merge over the freshest on-disk
-		// config — a hand edit since boot must not be silently
-		// discarded by an app save. An invalid on-disk file fails
-		// here with its own parse error.
 		const base = loadConfig() ?? deps.configRef.current;
 		const expected = req.headers.get("if-match");
 		if (!expected) {
@@ -378,9 +297,6 @@ async function saveConfig(
 				{ status: 409, headers: NO_STORE },
 			);
 		}
-		// Pin legacy Telegram settings before applying app-default
-		// edits. A channel patch must also preserve its transport
-		// settings (apiRoot, rolling-DM gap).
 		const normalized = parseConfig(base);
 		const candidate = { ...normalized, ...body };
 		if (
@@ -392,11 +308,6 @@ async function saveConfig(
 			candidate.telegram = { ...normalized.telegram, ...body.telegram };
 		}
 		const merged = parseConfig(candidate);
-		// The mini app is an operator's only door that doesn't need a
-		// shell — a save that drops the requester's own id locks them
-		// out of it and the bot gate. Refuse before writing. The app
-		// door has no requester id; the schema's min(1) on operators
-		// is the lockout guard there.
 		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
 			return Response.json(
 				{ error: `config would remove your own telegram user id (${actor.userId})` },
@@ -442,10 +353,7 @@ async function saveConfig(
 	}
 }
 
-// The secrets tail takes name + literal value only: a `!`-led value
-// would resolve as a shell command at use — this surface must never
-// mint command records (same wall as the pass-cli poison rule), they
-// stay hand-edited. The value never logs; errors name the record only.
+// Values never log; errors name the record only.
 const secretPostBody = z
 	.object({
 		name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
@@ -453,13 +361,6 @@ const secretPostBody = z
 	})
 	.strict();
 
-// ---------- memory gates ----------
-
-// The boot-target gate every memory route shares: the provider is a
-// boot-time snapshot, the config is live — memory removed or re-pointed
-// via a save reads as not configured until restart, and a stale
-// destination must never be read (or forgotten against). Returns the
-// usable deps or the operator-facing reason.
 function memoryGate(deps: OperatorDeps): NonNullable<OperatorDeps["memory"]> | string {
 	const configured = deps.configRef.current.memory;
 	const targetChanged =
@@ -475,8 +376,6 @@ function memoryGate(deps: OperatorDeps): NonNullable<OperatorDeps["memory"]> | s
 	return deps.memory;
 }
 
-// The memories browser's extra seams — a status-only wiring (tests,
-// partial composition) serves status but not browse/delete.
 function browseGate(
 	deps: OperatorDeps,
 ): { mem: NonNullable<OperatorDeps["memory"]>; client: HindsightClient } | string {
@@ -511,9 +410,6 @@ function forgetGate(deps: OperatorDeps):
 	};
 }
 
-// Hindsight failures never echo the service's internals — the response
-// is the operator-facing line the chat command uses; the log line
-// carries kind/status for reconstruction. Anything else fails loud.
 function memoryUpstreamError(err: unknown, what: string): Response {
 	if (err instanceof HindsightError) {
 		log.warn(what, { kind: err.kind, status: err.status });
@@ -597,10 +493,6 @@ function memoryFactItem(source: MemoryFact): MemoryFactItem {
 	};
 }
 
-// Query params for the documents list — bounded like every boundary;
-// an out-of-range or malformed value is a 422, not a guess. The two
-// filters are mutually exclusive: `conversation` selects a literal thread,
-// while q retains the global browser's upstream search semantics.
 const browseQuerySchema = z
 	.object({
 		q: z.string().min(1).max(256).optional(),
@@ -611,8 +503,6 @@ const browseQuerySchema = z
 	.refine((v) => !(v.q !== undefined && v.conversation !== undefined), {
 		message: "q and conversation are mutually exclusive",
 	});
-
-// ---------- list projections ----------
 
 function programItem(program: Program): OperatorProgramItem {
 	return {
@@ -650,15 +540,6 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 	};
 }
 
-// ---------- the router ----------
-
-// tail is the operator route relative to the door's mount point:
-// "config", "thinking-levels", "secrets", "memory/status",
-// "memory/documents", "memory/documents/<raw id>", "programs",
-// "delegations", "status", and the state viewer (ruling 2026-10-11):
-// "skills", "skills/from", "skills/file", "skills/decide",
-// "attachments", "attachments/file", "identity", "log".
-// Returns null when the tail matches nothing — the caller 404s.
 export async function handleOperatorRoute(
 	deps: OperatorDeps,
 	actor: OperatorActor,
@@ -669,8 +550,6 @@ export async function handleOperatorRoute(
 	const who = actor.via === "mini-app" ? { userId: actor.userId } : {};
 
 	if (tail === "thinking-levels") {
-		// The page passes provider kind + base url from its own form
-		// state — an unsaved provider card still resolves correctly.
 		const levels = thinkingLevelsFor(
 			url.searchParams.get("kind") ?? "",
 			url.searchParams.get("model") ?? "",
@@ -721,9 +600,6 @@ export async function handleOperatorRoute(
 					{ status: 400, headers: NO_STORE },
 				);
 			}
-			// One save at a time (see configSaveQueue): the queue swallows
-			// rejections so a failed save never poisons the next; each
-			// attempt answers for itself.
 			const attempt = configSaveQueue.then(() => saveConfig(deps, actor, req, body));
 			configSaveQueue = attempt.catch((err: unknown) => {
 				log.error("config save queue attempt failed", err, who);
@@ -767,9 +643,6 @@ export async function handleOperatorRoute(
 				{ status: 422, headers: NO_STORE },
 			);
 		}
-		// A `!command` record under this name is a pass-keys ref —
-		// shadowing it here would quietly sever the vault link. Literal
-		// records may be replaced (that IS a key rotation).
 		if (secrets.isCommand(name)) {
 			return Response.json(
 				{
@@ -795,8 +668,6 @@ export async function handleOperatorRoute(
 
 	if (tail === "memory/status") {
 		const view = memoryStatusResponse(deps);
-		// A read the page polls — debug, so the boundary is observable
-		// without drowning the log at the default level.
 		log.debug("memory status served", {
 			...who,
 			via: actor.via,
@@ -832,8 +703,6 @@ export async function handleOperatorRoute(
 			const { conversation, q, limit, offset } = parsed.data;
 			let page: MemoryDocPage<MemoryDocSummary>;
 			if (conversation !== undefined) {
-				// Upstream q is SQL ILIKE, not a literal conversation filter.
-				// Scan the exchange superset before paginating and counting.
 				const prefix = `exchange/${conversation}/`;
 				const items: MemoryDocSummary[] = [];
 				let total = 0;
@@ -884,10 +753,6 @@ export async function handleOperatorRoute(
 
 	if (tail.startsWith("memory/documents/")) {
 		const rawId = tail.slice("memory/documents/".length);
-		// Malformed percent-encoding (%E0%A4%A, a bare %) throws URIError
-		// out of decodeURIComponent — undecodable is just another invalid
-		// id here, so answer the route's 404 instead of letting it escape
-		// the fetch handler as a generic 500.
 		let decoded: string | undefined;
 		try {
 			decoded = decodeURIComponent(rawId);
@@ -1047,8 +912,6 @@ export async function handleOperatorRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// ---------- state viewer (ruling 2026-10-11, read-only) ----------
-
 	if (tail === "skills") {
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -1056,10 +919,6 @@ export async function handleOperatorRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// The thread panel's skills half (design/skills.md → Skill
-	// provenance): rows the conversation authored, liveness resolved
-	// from the catalog at read time. Reads stay here; approve/discard
-	// goes through skills/decide below.
 	if (tail === "skills/from") {
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -1111,7 +970,6 @@ export async function handleOperatorRoute(
 		const rel = REL_PATH_SCHEMA.safeParse(url.searchParams.get("path") ?? "SKILL.md");
 		if (!rel.success)
 			return Response.json({ error: "bad path" }, { status: 400, headers: NO_STORE });
-		// Throws on an over-cap file — loud 500, never a silent truncation.
 		const file = readSkillFile(
 			paths.skills(),
 			paths.skillsProposed(),
@@ -1124,11 +982,6 @@ export async function handleOperatorRoute(
 		return Response.json(file, { headers: NO_STORE });
 	}
 
-	// The operator doors' ✅/🚫 — the same mechanical disk decision the
-	// Telegram row runs (src/skill-decisions.ts): install swaps the
-	// proposal into skills/, discard deletes it, and a successful
-	// decision appends the resolution event to the conversation that
-	// learned the skill when provenance names one.
 	if (tail === "skills/decide") {
 		if (req.method !== "POST")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -1190,12 +1043,8 @@ export async function handleOperatorRoute(
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
-		// Dotfiles are persistAttachment's upload temps — the composer's
-		// read-back refuses them; same refusal, same shape here.
 		if (!name.success || name.data.startsWith("."))
 			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
-		// Matches the upload cap: the viewer never serves more than the
-		// composer accepts, and serving is a whole-file read.
 		let served: ReturnType<typeof readAttachmentBytes>;
 		try {
 			served = readAttachmentBytes(paths.attachments(), name.data, ATTACHMENT_SERVE_CAP);
@@ -1207,8 +1056,6 @@ export async function handleOperatorRoute(
 		}
 		if (served === null)
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
-		// The inert-byte defenses the upload read-back route carries: bytes
-		// from outside are never same-origin executable content.
 		const inline = /^(image|audio|video)\//.test(served.contentType);
 		return new Response(served.bytes, {
 			headers: {

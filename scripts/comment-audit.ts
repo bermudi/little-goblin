@@ -1,5 +1,5 @@
-// Comment-ratio report (AGENTS.md → Comment policy) — a signal, not a
-// gate: exits 0 even when files flag. Comment line = a line matching
+// Comment-ratio report — a signal, not a gate: exits 0 even when files
+// flag. Comment line = a line matching
 // /^\s*(\/\/|\/\*|\*)/; product = src/ + app/src/ minus test files.
 
 import { readdirSync, readFileSync } from "node:fs";

@@ -1,22 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	_primeModelsDevForTest,
 	_resetModelsDevForTest,
 	_resetOpenRouterForTest,
 	ensureOpenRouterCatalog,
+	contextLimit,
+	contextLimitCached,
 	inputModalities,
 	inputModalitiesCached,
-	contextLimit,
 	readOpenRouterCache,
 } from "./models-dev.ts";
 import { useHome } from "../testkit.ts";
 
 describe("models.dev catalog", () => {
-	// Module-level catalog state persists across tests in this file — the
-	// backoff window armed here would mask a later test's fetch. One test
-	// covers the invariant that was broken: a down endpoint is hit once,
-	// then the disk cache serves without another network attempt.
+	// Module-level catalog state persists across tests — a backoff
+	// armed in one test would mask a later test's fetch.
 	test("a failed fetch serves the disk cache and backs off the endpoint", async () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
@@ -44,12 +44,10 @@ describe("models.dev catalog", () => {
 		}
 	});
 
-	// refresh() arms its backoff synchronously on entry, so the pre-fix
-	// nextFetchAt-first ensure handed the second same-tick caller a cold
-	// null instead of the in-flight fetch — index.ts awaits
+	// Regression: a nextFetchAt-first ensure handed the second same-tick
+	// caller a cold null instead of the in-flight fetch — index.ts awaits
 	// inputModalities and contextLimit together, so the first turn after
-	// every boot ran without a contextWindow. The gate keeps the fetch
-	// pending until both callers have entered ensure.
+	// every boot ran without a contextWindow.
 	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
@@ -92,9 +90,7 @@ describe("models.dev catalog", () => {
 	});
 
 	// The sync read is the vision tool's registration gate — tool
-	// building can't await a fetch. Cold reads null and kick the fetch;
-	// warm reads match the async path, including the cross-provider
-	// fallback scan and the text-only default for unlisted models.
+	// building can't await a fetch.
 	test("inputModalitiesCached: cold → null + kicks fetch; warm → the async answer", async () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
@@ -129,6 +125,41 @@ describe("models.dev catalog", () => {
 			_resetModelsDevForTest();
 		}
 	});
+
+	// The gauge's denominator on a fresh boot: /context must never fetch,
+	// but it also mustn't read "unknown" while a perfectly good cache
+	// file sits on disk. Memory wins once a turn has warmed it.
+	test("contextLimitCached: disk backstop when memory is cold, memory wins once warm", () => {
+		const dir = useHome("goblin-mdev-");
+		mkdirSync(join(dir, "state"), { recursive: true });
+		const cachePath = join(dir, "state", "models.dev.json");
+		writeFileSync(
+			cachePath,
+			JSON.stringify({ testprov: { models: { m1: { limit: { context: 123456 } } } } }),
+		);
+		_resetModelsDevForTest();
+		const prevFetch = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (() => {
+			calls++;
+			return Promise.reject(new Error("must not fetch on the cached read path"));
+		}) as unknown as typeof fetch;
+		try {
+			expect(contextLimitCached("testprov", "m1")).toBe(123456);
+			expect(calls).toBe(0);
+			// Warm memory outranks the disk copy.
+			_primeModelsDevForTest({ testprov: { models: { m1: { limit: { context: 999 } } } } });
+			expect(contextLimitCached("testprov", "m1")).toBe(999);
+			// The reset clears the disk memo too — a gone file reads null,
+			// not the stale parse.
+			_resetModelsDevForTest();
+			rmSync(cachePath);
+			expect(contextLimitCached("testprov", "m1")).toBeNull();
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
+		}
+	});
 });
 
 describe("openrouter catalog", () => {
@@ -149,12 +180,10 @@ describe("openrouter catalog", () => {
 		try {
 			const fresh = await ensureOpenRouterCatalog();
 			expect(fresh?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
-			// The successful fetch landed on disk…
 			const cached = JSON.parse(
 				readFileSync(join(dir, "state", "openrouter-models.json"), "utf8"),
 			) as Record<string, string[]>;
 			expect(cached).toEqual({ "prov/m1": ["reasoning", "reasoning_effort"] });
-			// …and serves the next cold start when the endpoint is down.
 			_resetOpenRouterForTest();
 			fail = true;
 			const cold = await ensureOpenRouterCatalog();
@@ -165,9 +194,9 @@ describe("openrouter catalog", () => {
 		}
 	});
 
-	// Same invariant as the models.dev join test above: refreshOpenRouter
-	// arms its backoff synchronously, so a second same-tick caller must
-	// join the flight rather than take the early null.
+	// Same invariant as the models.dev join test: backoff arms
+	// synchronously on entry, so a second same-tick caller must join
+	// the flight rather than take the early null.
 	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
@@ -204,9 +233,8 @@ describe("openrouter catalog", () => {
 });
 
 describe("readOpenRouterCache", () => {
-	// The disk-boundary invariant: a valid-JSON-wrong-shape cache degrades
-	// to null with a warn — the old blind cast built a Set of characters
-	// out of a params string and reasoning ladders went silently wrong.
+	// Regression: a blind cast once built a Set of characters out of a
+	// params string and reasoning ladders went silently wrong.
 	test("a wrong-shape cache degrades to null, not a Set of characters", () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });

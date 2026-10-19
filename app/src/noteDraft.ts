@@ -1,5 +1,5 @@
-// Durable local draft for the note editor (design/projects.md →
-// Notes): same-origin localStorage, one record per note, markdown only.
+// Durable local draft for the note editor: same-origin localStorage,
+// one record per note, markdown only.
 
 import { z } from "zod";
 

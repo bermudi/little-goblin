@@ -1,6 +1,6 @@
 // The log tail view: bounded, server-filtered slices of goblin.log —
-// never the whole file (ruling 2026-10-11). The server owns the window
-// and the filters; this view only picks them and renders lines.
+// never the whole file. The server owns the window and the filters;
+// this view only picks them and renders lines.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { tailLog } from "./api.ts";
 import { describe } from "./opsShared.tsx";

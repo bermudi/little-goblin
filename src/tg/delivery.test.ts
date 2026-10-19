@@ -36,7 +36,7 @@ const conv: Conversation = {
 	createdAt: "",
 };
 
-// Fake the Telegram API at the edge. `gate` holds sends while set.
+// gate.current holds sends while set.
 function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
 	const msgs: string[] = [];
 	const voices: number[] = [];
@@ -94,28 +94,27 @@ describe("delivery", () => {
 		const { api, msgs } = fakeApi({ gate });
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 
-		sink.onTextDelta("a".repeat(CHUNK)); // → send msg1
+		sink.onTextDelta("a".repeat(CHUNK));
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(CHUNK)]);
 
-		// msg2 sends with a partial window; hold it in flight.
+		// Hold msg2's send in flight with a partial window.
 		let release: () => void = () => {};
 		gate.current = new Promise<void>((r) => {
 			release = r;
 		});
 		sink.onTextDelta("b".repeat(100));
 		await sleep(0);
-		expect(msgs.length).toBe(1); // msg2 send still in flight
+		expect(msgs.length).toBe(1);
 
-		// Output grows past the boundary while msg2 is in flight.
+		// The window fills while msg2's send is still in flight.
 		sink.onTextDelta("b".repeat(CHUNK));
 		gate.current = null;
 		release();
 		await sink.onDone({ kind: "completed" });
 
-		// msg2 must be patched to its full window, not left short —
-		// otherwise the slice between what it showed and the boundary is
-		// dropped silently.
+		// msg2 must be patched to its full window — a short message
+		// would silently drop the slice up to the boundary.
 		expect(msgs).toEqual(["a".repeat(CHUNK), "b".repeat(CHUNK), "b".repeat(100)]);
 	});
 
@@ -139,7 +138,7 @@ describe("delivery", () => {
 		} as unknown as Api;
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
 		sink.onTextDelta("tail");
-		// First send fails inside onDone's flush; the drain retries it.
+		// The first send fails inside onDone's flush — the drain retries it.
 		await sink.onDone({ kind: "completed" });
 		expect(msgs).toEqual(["tail"]);
 		expect(reactions).toEqual([1]);
@@ -335,18 +334,18 @@ describe("delivery", () => {
 	test("a seam computed against the status tail re-seats when status changes", async () => {
 		const { api, msgs } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
-		// First send goes out before the status tail exists; the tool call
-		// then pushes body past CHUNK, so the seam is computed against
-		// status chars, which are still provisional.
+		// The first send goes out before the status tail exists — the
+		// tool call pushes body past CHUNK, so the seam is computed
+		// against still-provisional status chars.
 		sink.onTextDelta("a".repeat(3791));
 		sink.onToolCall("t", { path: "pppppp" });
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(3791)]);
 
 		// Five more tool calls push that entry out of the last-5 status
-		// window; the new first entry puts a surrogate pair exactly on the
-		// seam. The sent chunk must be re-edited and the pair must land
-		// intact in the next message — not split, dropped, or duplicated.
+		// window — the new first entry puts a surrogate pair exactly on
+		// the seam. The sent chunk must be re-edited, the pair landing
+		// intact in the next message.
 		sink.onToolCall("t", { path: "\u{1f600}" });
 		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
@@ -366,7 +365,7 @@ describe("delivery", () => {
 			editMessageText: async (_chat: number, id: number, text: string) => {
 				edits++;
 				// Two transient failures — the drain must keep retrying a
-				// stale shown window, not exit on zero unsent sends.
+				// stale shown window rather than exit on zero unsent sends.
 				if (edits <= 2) throw new Error("transient edit failure");
 				msgs[id - 1] = text;
 				return true;
@@ -376,9 +375,9 @@ describe("delivery", () => {
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(3791)]);
-		// The error status entry lands at done time, so the seam under
-		// msg1 moves only in the final flush — its edit fails twice and
-		// the drain has to come back for it.
+		// The error status entry lands at done time — the seam under
+		// msg1 moves only in the final flush, so its edit must be
+		// drained, not declared done.
 		await sink.onDone({ kind: "error", message: "boom" });
 		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚠ boom");
 	});
@@ -404,20 +403,19 @@ describe("delivery", () => {
 			},
 		} as unknown as Api;
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
-		// Two long status entries (the hint caps at 60 chars) push the body
-		// past the chunk limit, so a second message goes out showing the
-		// tail.
+		// Two long status entries (the hint caps at 60 chars) push the
+		// body past the chunk limit — a second message goes out.
 		sink.onTextDelta("a".repeat(3700));
 		sink.onToolCall("t", { path: "p".repeat(200) });
 		sink.onToolCall("t", { path: "p".repeat(200) });
 		await sleep(0);
-		// Tiny entries roll the long ones out of the last-5 window — the
-		// tail shrinks back under the limit and msg2's window empties.
+		// Tiny entries roll the long ones out of the last-5 window —
+		// the tail shrinks back under the limit and msg2's window empties.
 		for (let i = 0; i < 6; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
 		expect(msgs[1]).toBe("…");
 		// shown already holds "…" — comparing against the rendered value
-		// means later flushes see no diff. Each would re-edit otherwise.
+		// means a later flush sees no diff and would re-edit otherwise.
 		expect(ellipsisEdits).toBe(1);
 		expect(reactions).toEqual([2]);
 	});
@@ -432,8 +430,8 @@ describe("delivery", () => {
 	test("completed turn reacts 🫡 on the last bubble", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
-		sink.onTextDelta("a".repeat(CHUNK)); // msg1
-		sink.onTextDelta("tail"); // msg2
+		sink.onTextDelta("a".repeat(CHUNK));
+		sink.onTextDelta("tail");
 		await sink.onDone({ kind: "completed" });
 		expect(msgs.length).toBe(2);
 		expect(reactions).toEqual([{ chat: 1, id: 2, emoji: "🫡" }]);
@@ -449,10 +447,10 @@ describe("delivery", () => {
 
 	test("a backlog past the drain budget warns instead of dropping the tail silently", async () => {
 		const { api, msgs, reactions } = fakeApi({});
-		// editIntervalMs ∞ → nothing sends while streaming, so four full
-		// chunks wait for onDone; the drain sends one chunk per flush and
-		// only gets two iterations. Progress is steady (stagnant never
-		// trips) — the loop must still announce the dropped tail.
+		// editIntervalMs ∞ → nothing sends while streaming; the drain
+		// sends one chunk per flush and gets two iterations. Progress is
+		// steady (stagnant never trips) — the loop must still announce
+		// the dropped tail.
 		const sink = makeDeliverySink(api, conv, {
 			editIntervalMs: Number.POSITIVE_INFINITY,
 			typingIntervalMs: 4_000, // the module default, irrelevant here
@@ -480,10 +478,8 @@ describe("delivery", () => {
 	});
 
 	test("a completed turn that renders empty warns with the conversation id", async () => {
-		// A provider returning an empty final message must not end in
-		// total silence (no bubble, no reaction, no log line). The design's
-		// delivery contract sanctions a short message for *errors* only —
-		// so this warns, it never invents a placeholder bubble.
+		// An empty final message warns — the delivery contract sanctions
+		// a short message for errors only, never an invented bubble.
 		const { api, msgs } = fakeApi({});
 		const captured: string[] = [];
 		setLogFile("delivery-empty-test.log");
@@ -506,9 +502,8 @@ describe("delivery", () => {
 	});
 
 	test("a completed plain turn logs its delivery with the send target", async () => {
-		// The log bar: a screenshot of the bubble plus the log file must
-		// name the chat and thread the reply landed in. A silent
-		// delivery leaves the operator guessing which topic got it.
+		// The log bar: a screenshot plus the log file must name the chat
+		// and thread the reply landed in.
 		const { api, msgs } = fakeApi({});
 		const topic: Conversation = { ...conv, id: "topic:1:7", threadId: 7 };
 		const captured: string[] = [];
@@ -776,8 +771,8 @@ describe("delivery", () => {
 				return { message_id: msgs.length };
 			},
 			editMessageText: async () => {
-				// Telegram 400 when the edit changes nothing — must not
-				// wedge the drain or skip the end-marker reaction.
+				// Telegram 400s when the edit changes nothing — it must
+				// not wedge the drain or skip the end-marker reaction.
 				throw new Error(
 					"Call to 'editMessageText' failed! (400: Bad Request: message is not modified)",
 				);
@@ -791,19 +786,17 @@ describe("delivery", () => {
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
 		expect(msgs).toEqual(["a".repeat(3791)]);
-		// The tool status tail moves msg1's window at done time — its edit
-		// hits the benign 400, which must clear as success instead of
-		// stagnating the drain and skipping the 🫡.
+		// The status tail moves msg1's window at done time — the benign
+		// 400 must clear as success, not stagnate the drain and skip the 🫡.
 		sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
 		expect(reactions).toEqual([{ id: 1, emoji: "🫡" }]);
 	});
 
 	test("overlapping speak syntheses keep independent recording indicators", async () => {
-		// Parallel speak tool calls open overlapping synthesis windows on
-		// one sink. A shared recording handle would orphan all but the
-		// newest interval (it keeps pinging record_voice after the sink is
-		// done), let a stopper clear another window's interval, and resume
+		// Parallel speak calls open overlapping synthesis windows on one
+		// sink — a shared recording handle would orphan all but the newest
+		// interval, let a stopper clear another window's, and resume
 		// typing while a synthesis is still live.
 		const actions: string[] = [];
 		const api = {
@@ -822,35 +815,32 @@ describe("delivery", () => {
 		stopB(); // B ends while A is still synthesizing
 		actions.length = 0;
 		await sleep(12);
-		// Only A's window is live: record_voice, never typing.
 		expect(actions.length).toBeGreaterThan(0);
 		expect(actions.every((a) => a === "record_voice")).toBe(true);
 
 		stopA();
 		actions.length = 0;
 		await sleep(12);
-		// Last window closed → typing resumes.
 		expect(actions).toContain("typing");
 
 		await sink.onDone({ kind: "completed" });
 		actions.length = 0;
 		await sleep(12);
-		// Terminal sink: no orphaned record_voice, no ghost typing.
+		// Terminal sink — no orphaned record_voice, no ghost typing.
 		expect(actions).toEqual([]);
 	});
 
-	// Telegram clears the chat action when a real message lands. The
-	// tick is up to typingIntervalMs away, so every mid-turn send must
-	// re-ping immediately — the indicator stays visible while the turn
-	// is still busy. The interval here is 60 s: any "typing" recorded
-	// below is a re-ping, never the tick.
+	// Telegram clears the chat action when a real message lands — every
+	// mid-turn send must re-ping immediately or the indicator dies. The
+	// interval here is 60 s: any "typing" below is a re-ping, never the
+	// tick.
 	test("a mid-turn voice note re-pings typing immediately", async () => {
 		const { api, actions } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, typingIntervalMs: 60_000 });
 		actions.length = 0; // drop construction's immediate ping
 		await sink.onVoiceNote!(new Uint8Array([1]));
 		await sleep(0);
-		// record_voice announces the note, typing follows its landing.
+		// record_voice announces the note; typing re-pings on its landing.
 		expect(actions).toEqual(["record_voice", "typing"]);
 	});
 
@@ -873,7 +863,7 @@ describe("delivery", () => {
 		actions.length = 0;
 		sink.onTextDelta("a".repeat(CHUNK + 10));
 		await sleep(0);
-		expect(actions).toEqual(["typing"]); // the chunk landing's re-ping
+		expect(actions).toEqual(["typing"]);
 	});
 
 	test("finalize sends after onDone ghost no typing", async () => {
@@ -884,8 +874,8 @@ describe("delivery", () => {
 		actions.length = 0;
 		sink.onTextDelta(" tail");
 		await sink.onDone({ kind: "completed" });
-		// The drain sent the remaining chunk after the sink was done —
-		// that send must not resurrect the indicator on a finished turn.
+		// The drain's post-done send must not resurrect the indicator on
+		// a finished turn.
 		expect(actions).toEqual([]);
 	});
 
@@ -1059,9 +1049,8 @@ describe("delivery files", () => {
 		}
 	});
 
-	// Deterministic burst harness: joins are synchronous (the stat lives
-	// in the batch link), so onDone's post-drain flush sends exactly the
-	// burst — no timer, no fs race.
+	// Joins are synchronous (the stat lives in the batch link), so
+	// onDone's post-drain flush sends exactly the burst — no fs race.
 	async function settledBurst(
 		sink: ReturnType<typeof makeDeliverySink>,
 		files: OutgoingFile[],
@@ -1076,8 +1065,8 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, documents, mediaGroups } = fileApi();
-			// A huge window makes the onDone flush the only one — no timer
-			// race against real fs stat latencies under parallel test load.
+			// A huge window makes the onDone flush the only one — no
+			// timer race against real fs stat latencies.
 			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
@@ -1152,8 +1141,8 @@ describe("delivery files", () => {
 				})),
 			);
 			expect(attempt).toBe(2);
-			// The first ten rode their album and are never resent; only
-			// the failed group's two files degrade to solo sends.
+			// Delivered groups never resend — only the failed group's
+			// files degrade to solo sends.
 			expect(mediaGroups).toEqual([{ files: 10, captions: Array(10).fill(undefined) }]);
 			expect(photos).toHaveLength(2);
 			for (const r of results.slice(0, 10)) expect(r.status).toBe("fulfilled");
@@ -1173,7 +1162,8 @@ describe("delivery files", () => {
 			};
 			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, mediaGroupWindowMs: 60_000 });
 			const results = await settledBurst(sink, [{ path: pngFile(dir), filename: "a.png" }]);
-			// The upload may be live — one attempt, one uncertain verdict.
+			// The upload may be live — one attempt, one uncertain verdict,
+			// never a retry.
 			expect(photoAttempts).toBe(1);
 			expect(results[0]!.status).toBe("rejected");
 			if (results[0]!.status === "rejected")
@@ -1316,13 +1306,13 @@ describe("delivery files", () => {
 				throw new TelegramTimeoutError("sendDocument", 30_000);
 			};
 			const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
-			// The tool must see the ambiguity made explicit, not a bare timeout
-			// it could read as "didn't arrive — resend it".
+			// The tool sees the ambiguity made explicit — a bare timeout
+			// could read as "didn't arrive — resend it".
 			await expect(sink.onFile!({ path: f, filename: "report.pdf" })).rejects.toBeInstanceOf(
 				DeliveryUncertainError,
 			);
-			// Uncertainty fences the turn's remaining output: no text after it,
-			// no completion reaction — just the distinct notice.
+			// Uncertainty fences the turn's remaining output — no text,
+			// no completion reaction, just the distinct notice.
 			sink.onTextDelta("tail that must not go out");
 			await sink.onDone({ kind: "completed" });
 			expect(sent).toEqual(["⚠ Delivery uncertain—check Telegram before retrying."]);
@@ -1371,7 +1361,7 @@ describe("delivery files", () => {
 			await expect(sink.onFile!({ path: f, filename: "a.txt" })).rejects.toThrow(
 				"sendDocument wedged",
 			);
-			// The chain survived the rejection: the next file delivers.
+			// The send chain must survive a rejection.
 			await sink.onFile!({ path: f, filename: "a.txt" });
 			expect(sent).toHaveLength(1);
 		} finally {
@@ -1397,9 +1387,8 @@ describe("delivery files", () => {
 });
 
 describe("channel guard", () => {
-	// The grammy door refuses app conversations outright (DESIGN.md, App
-	// channel): app/<id> has no chat, so a routing bug must throw here —
-	// never silently address the chat_id 0 filler.
+	// app/<id> has no chat — a routing bug must throw here, never
+	// silently address the chat_id 0 filler.
 	test("an app conversation cannot get a telegram sink", () => {
 		const { api, msgs } = fakeApi({});
 		expect(() =>
@@ -1409,8 +1398,8 @@ describe("channel guard", () => {
 	});
 });
 
-// The forced-landing stamp (design/model.md): a loop-cut answer is
-// degraded goods — telegram reads that on the reply itself.
+// A loop-cut answer is degraded goods — the stamp rides the reply
+// itself.
 describe("forced-completion stamp", () => {
 	const TAIL = "\n\n—\n";
 

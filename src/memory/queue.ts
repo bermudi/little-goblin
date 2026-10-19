@@ -1,5 +1,3 @@
-// Durable retention outbox. Shares the conversation store's SQLite connection:
-// enqueue inside the history append transaction, never after it.
 import { type Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -13,8 +11,6 @@ import {
 } from "./hindsight.ts";
 import { screenMemoryText } from "./screen.ts";
 
-// The destination-identity vocabulary lives in hindsight.ts; this local
-// alias keeps the queue's validation reads the same as before.
 const targetSchema = targetHashSchema;
 export interface MemoryQueueCounts {
 	pending: number;
@@ -22,14 +18,8 @@ export interface MemoryQueueCounts {
 	completed: number;
 	blocked: number;
 	dismissed: number;
-	// Rows parked mid-forget: their destination's remote delete has not
-	// confirmed yet (#113). Not worker work — never due in next().
 	deleting: number;
 }
-// Operator-facing projection of a blocked row. `document` is the last
-// path segment of the document id when it contains one (the assistant
-// message id — enough to point the operator at the exchange); `error` is
-// capped for chat surfaces.
 export interface BlockedRetention {
 	document: string;
 	error: string | null;
@@ -40,13 +30,6 @@ const rowSchema = z.object({
 	target: targetSchema,
 	document_id: z.string(),
 	payload: z.string(),
-	// `dismissed`: the operator reviewed a blocked row and chose to drop
-	// it. The row stays in the DB for audit — failed/missing remote
-	// operations remain visible, never silently discarded.
-	// `deleting`: forget parked the row. It is invisible to the worker
-	// (never submitted or polled again) but survives as the
-	// document→destination retry map until that destination's delete
-	// confirms (#113).
 	state: z.enum(["pending", "submitted", "completed", "blocked", "dismissed", "deleting"]),
 	attempts: z.number().int().nonnegative(),
 	next_attempt: z.number().int().nonnegative(),
@@ -57,13 +40,6 @@ export type MemoryQueueItem = Omit<z.infer<typeof rowSchema>, "payload"> & {
 };
 
 export class MemoryQueue {
-	// The one pending row whose submit is on the wire right now — process
-	// local, because one worker owns the outbox and its ticks never
-	// overlap. The worker flips a row to `submitted` only after submit()
-	// returns, so a cancel that deletes this row mid-call leaves the
-	// document retained remotely with no local row to forget it by; the
-	// cancel is deferred instead and the worker settles it once the
-	// request is answered (see cancelConversation / settleInflight).
 	private inflight: { operationId: string; cancelRequested: boolean } | null = null;
 
 	constructor(private readonly db: Database) {
@@ -81,19 +57,12 @@ export class MemoryQueue {
 		db.run(
 			"CREATE INDEX IF NOT EXISTS memory_outbox_due ON memory_outbox(target, state, next_attempt)",
 		);
-		// One-notice-per-document latch for blocked retention (the other
-		// half of the 2026-09-25 incident: nothing in chat ever surfaced a
-		// blocked document). A row here means the operator was already
-		// told once; it is never cleared — /memory status is the durable
-		// surface for everything after the first notice.
 		db.run(`CREATE TABLE IF NOT EXISTS memory_blocked_notices (
 			document_id TEXT PRIMARY KEY,
 			created_at TEXT NOT NULL
 		)`);
 	}
 
-	// Returns the same operation for an exact replay; never overwrites pending
-	// content or resets a terminal operation. Caller logs only after committing.
 	enqueue(target: string, document: MemoryDocument): string {
 		targetSchema.parse(target);
 		const parsed = memoryDocumentSchema.parse(document);
@@ -137,13 +106,6 @@ export class MemoryQueue {
 		return { ...fields, document: document.data };
 	}
 
-	// A row the decoder rejects (schema drift, a hand edit, torn bytes)
-	// is parked `blocked` with the decode error instead of thrown: a
-	// throw from next() aborts every drain at the same row — nothing
-	// behind it ever ships, nothing ever advances, and the only trace is
-	// a tick error per interval. Blocked rows surface in /memory status
-	// and answer to retry/dismiss like any other; addressed by rowid
-	// because the row's own columns are what failed validation.
 	private quarantine(raw: unknown, err: unknown): void {
 		const rowid = (raw as { rowid?: unknown }).rowid;
 		const message = err instanceof Error ? err.message : String(err);
@@ -161,12 +123,6 @@ export class MemoryQueue {
 		});
 	}
 
-	// Due pending submissions outrank polling already-acknowledged
-	// operations: a submitted row's poll is bookkeeping, while a due
-	// pending row is unsent work. Ordering by rowid alone let an early
-	// submitted row — re-polled at every backoff interval — continually
-	// outrank every later enqueue. rowid still orders within each state,
-	// so submitted rows poll FIFO among themselves.
 	next(target: string, now: number): MemoryQueueItem | null {
 		targetSchema.parse(target);
 		const query = this.db.query(
@@ -179,9 +135,6 @@ export class MemoryQueue {
 			try {
 				return this.decode(raw);
 			} catch (err) {
-				// Quarantine moves the row out of the due set; if it somehow
-				// did not (a concurrent state change), the next pick is the
-				// same row again — fail loud rather than spin.
 				this.quarantine(raw, err);
 				const again = query.get(target, now) as { rowid?: unknown } | null;
 				if (again !== null && again.rowid === (raw as { rowid?: unknown }).rowid) throw err;
@@ -189,11 +142,6 @@ export class MemoryQueue {
 		}
 	}
 
-	// Worker-only brackets around the submit HTTP call. settleInflight
-	// reports whether a cancel arrived while the request was on the wire
-	// — the worker finishes that cancel if the row is still pending, and
-	// leaves an accepted row tracked through completion like any other
-	// submitted operation.
 	beginInflight(operationId: string): void {
 		if (this.inflight !== null) {
 			throw new Error(`memory queue submit overlap: ${this.inflight.operationId} still in flight`);
@@ -210,10 +158,6 @@ export class MemoryQueue {
 		return { cancelRequested: current.cancelRequested };
 	}
 
-	// The deferred half of cancelConversation: the row's submit settled
-	// without an acceptance (retryable failure, or the request was
-	// aborted), so it is still the unsent pending work the cancel
-	// promised to purge. CAS on state + attempts, like update().
 	dropCancelled(item: MemoryQueueItem): boolean {
 		const change = this.db.run(
 			`DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending' AND attempts = ?`,
@@ -261,19 +205,6 @@ export class MemoryQueue {
 		});
 	}
 
-	// Forgetting's per-destination map: every target holding a row for
-	// this document, with that target's in-flight operations. A queue
-	// row reading `pending` is NOT proof its retention was never sent: a
-	// submit can be accepted remotely while its acknowledgement degrades
-	// (a retryable failure leaves the row pending), and a crash between
-	// acceptance and the submitted-state write does the same — callers
-	// reconcile both states through to terminal. Rows in every other
-	// state — completed/blocked/dismissed, and `deleting` rows parked by
-	// an earlier failed forget — keep their target listed with an empty
-	// inflight list: all of them mean the destination may hold the
-	// document, so forget must delete there too — through the owning
-	// destination, never a foreign one (#87). First-seen rowid order for
-	// determinism.
 	documentDestinations(documentId: string): {
 		target: string;
 		inflight: { operationId: string; state: "pending" | "submitted" }[];
@@ -305,14 +236,6 @@ export class MemoryQueue {
 		return [...byTarget.values()];
 	}
 
-	// Forgetting parks every row for the document in `deleting` instead
-	// of deleting it outright: the worker never selects that state, so
-	// ingestion stops (suppression already blocks new enqueues), blocked
-	// review surfaces stop offering the document, and the rows survive as
-	// the only durable document→destination map. Releasing them before
-	// the remote deletes confirmed would let a failed delete — or a crash
-	// mid-protocol — strand retry with no way to know which banks still
-	// hold the document (#113).
 	markDocumentDeleting(documentId: string): number {
 		const rows = Number(
 			this.db.run(
@@ -324,10 +247,6 @@ export class MemoryQueue {
 		return rows;
 	}
 
-	// A destination's rows are released only after that destination's own
-	// delete confirmed — until then they are the retry map. Safe to repeat
-	// after a crash between delete and release: the re-delete reads as
-	// success (a bank-scoped 404 included).
 	confirmDeleted(documentId: string, target: string): number {
 		targetSchema.parse(target);
 		const change = this.db.run("DELETE FROM memory_outbox WHERE document_id = ? AND target = ?", [
@@ -337,15 +256,6 @@ export class MemoryQueue {
 		return Number(change.changes);
 	}
 
-	// Excluding a topic purges its pending retention — "/memory off"
-	// promises no new submissions. Submitted operations were already
-	// accepted remotely and must remain tracked through completion —
-	// including the one whose submit is on the wire this instant: its
-	// row still reads pending, so it is skipped here and settled by the
-	// worker (accepted → tracked like any submitted row; unsent →
-	// dropped then). Finished, blocked, and other topics' rows are
-	// untouched; an undecodable row is quarantined, never a throw that
-	// leaves the exclusion applied with the purge half done.
 	cancelConversation(conversationId: string): number {
 		const rows = this.db
 			.query<{ rowid: number; operation_id: string; payload: string }, []>(
@@ -410,11 +320,6 @@ export class MemoryQueue {
 		return out;
 	}
 
-	// Outstanding forget work across ALL destinations: parked `deleting`
-	// rows are bound to the bank that owns them, so after a destination
-	// change the current bank's counts() reads zero while an old bank
-	// still holds the document. Status reads this seam, never the
-	// per-target counts, so a failed old-bank delete stays visible.
 	deletingCount(): number {
 		const row = this.db
 			.query("SELECT COUNT(*) AS n FROM memory_outbox WHERE state = 'deleting'")
@@ -424,13 +329,6 @@ export class MemoryQueue {
 		return row.n;
 	}
 
-	// Hand-requeue after an operator reviews a blocked retention. CRITICAL:
-	// a fresh randomUUID() is minted, not the old operation_id reused —
-	// Hindsight treats the original op as terminally failed server-side,
-	// so replaying it just re-reads the dead op's failed status forever
-	// (live finding 2026-09-25: flipping state back to pending alone
-	// never drained). In-place UPDATE, so UNIQUE(target, document_id)
-	// still holds.
 	retryBlocked(target: string): number {
 		targetSchema.parse(target);
 		const rows = this.db
@@ -456,9 +354,6 @@ export class MemoryQueue {
 		return rows.length;
 	}
 
-	// The operator reviewed the blocked rows and chose to drop them. The
-	// rows stay in the DB (state='dismissed') for audit — they are never
-	// selected by next() again.
 	dismissBlocked(target: string): number {
 		targetSchema.parse(target);
 		const rows = this.db
@@ -477,10 +372,6 @@ export class MemoryQueue {
 		return rows.length;
 	}
 
-	// The one-notice-per-document latch: true only on the first block of
-	// this document (ever — including across restarts). Commits before
-	// any notice is sent, so a failed delivery does not re-notify;
-	// /memory status remains the durable fallback surface.
 	noteBlocked(documentId: string): boolean {
 		const change = this.db.run(
 			"INSERT OR IGNORE INTO memory_blocked_notices (document_id, created_at) VALUES (?, ?)",
@@ -510,11 +401,6 @@ function abbrevOperation(id: string): string {
 	return id.slice(0, 8);
 }
 
-// Outcome of one processed item, for the outage tracker (outage.ts)
-// and the blocked-notice latch: transport failures are outage signals;
-// blocked is a permanent per-document verdict with the service
-// reachable and advances nothing — it carries the document + error so
-// the seam can fire the one-per-document notice.
 export type WorkerOutcome =
 	| { ok: true; conversationId: string }
 	| { ok: false; transport: true; conversationId: string }
@@ -527,8 +413,6 @@ export type WorkerOutcome =
 			attempts: number;
 	  };
 
-// One caller/process owns the outbox. tick() coalesces concurrent invocations;
-// it deliberately has no timer or implicit network activity at construction.
 export class MemoryQueueWorker {
 	private running: Promise<boolean> | null = null;
 
@@ -556,9 +440,6 @@ export class MemoryQueueWorker {
 		let delayMs = 5_000;
 		let error: string | null = null;
 		let transportFailure = false;
-		// A cancel that arrives while the submit is on the wire is deferred
-		// by the queue; once the request settles without an acceptance the
-		// row is still the unsent work that cancel promised to purge.
 		let cancelRequested = false;
 		try {
 			if (item.state === "pending") {
@@ -572,8 +453,6 @@ export class MemoryQueueWorker {
 			} else {
 				const operation = await this.client.operation(item.operation_id, signal);
 				if (!operation) {
-					// Hindsight prunes operation records. Absence isn't proof of
-					// non-execution: never blindly re-submit already acknowledged work.
 					state = "blocked";
 					error = "operation missing; operator reconciliation required";
 				} else if (operation.status === "completed") {
@@ -586,22 +465,17 @@ export class MemoryQueueWorker {
 				}
 			}
 		} catch (err) {
-			if (!(err instanceof HindsightError)) throw err; // SQLite/programming failures are not HTTP outages.
+			if (!(err instanceof HindsightError)) throw err;
 			if (err.kind === "cancelled") {
-				// Keep the durable row for restart — unless its topic was
-				// excluded meanwhile: an aborted submit is unsent work, and a
-				// restart must not ship it behind the exclusion.
 				if (cancelRequested) this.queue.dropCancelled(item);
 				return false;
 			}
 			state = err.retryable ? item.state : "blocked";
 			delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(item.attempts, 9));
-			error = err.message; // HindsightError is deliberately payload-free.
+			error = err.message;
 			transportFailure = err.retryable;
 		}
 		if (cancelRequested && state === "pending" && this.queue.dropCancelled(item)) {
-			// The deferred cancel, finished: the submit failed retryably, so
-			// the row would otherwise come due again behind "/memory off".
 			if (transportFailure)
 				this.observe?.({
 					ok: false,
@@ -610,7 +484,6 @@ export class MemoryQueueWorker {
 				});
 			return true;
 		}
-		// A late shutdown must not discard an already acknowledged operation.
 		this.queue.update(item, state, this.clock() + delayMs, error);
 		const conversationId = item.document.conversationId;
 		if (transportFailure) this.observe?.({ ok: false, transport: true, conversationId });

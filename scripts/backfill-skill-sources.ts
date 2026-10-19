@@ -1,17 +1,14 @@
-// One-shot skill-provenance backfill (design/skills.md → Skill
-// provenance): pre-table proposals predate skill_sources, and
-// goblin.log's "reviewer review done" / "partially proposed" lines are
-// their only surviving source — every line carries review_id,
-// conversation, and the proposed skill names. Manual turn writes are
-// not backfilled: the log's tool-call lines truncate args, and a
-// truncated path is a guess, not provenance.
+// Pre-table proposals predate skill_sources — goblin.log's "reviewer
+// review done" / "partially proposed" lines are their only surviving
+// source (each carries review_id, conversation, and the proposed skill
+// names). Manual turn writes are not backfilled: the log's tool-call
+// lines truncate args, and a truncated path is a guess, not provenance.
 //
 //   bun scripts/backfill-skill-sources.ts [logfile] [--dry]
 //
-// Defaults to $GOBLIN_HOME/state/goblin.log. --dry prints what would
-// be recorded. Idempotent by the table's upsert (first_at survives).
-// CLI, not a goblin process — stdout is the report, like
-// reviewer-stats.ts.
+// Defaults to $GOBLIN_HOME/state/goblin.log. --dry prints what would be
+// recorded. Idempotent by the table's upsert (first_at survives). CLI,
+// not a goblin process — stdout is the report.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

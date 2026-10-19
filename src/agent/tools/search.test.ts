@@ -1,8 +1,3 @@
-// The search tool's contract: providers are bound behind one tool, the
-// resolved key reaches the provider's auth header and nothing else, and
-// failures carry provider + status — never the key. Output rendering is
-// deterministic and bounded.
-
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -128,8 +123,6 @@ describe("search tool", () => {
 	});
 
 	test("ddg: a skipped snippet does not drift onto the wrong hit", async () => {
-		// Hit one has no snippet node (DDG omits some); hit two's snippet
-		// must stay on hit two — the old positional zip slid it onto one.
 		const base = serve(
 			() =>
 				new Response(
@@ -148,8 +141,6 @@ describe("search tool", () => {
 	});
 
 	test("ddg: a rejected anchor's snippet cannot drift back onto the previous hit", async () => {
-		// The ad card's href unwraps to nothing — its snippet node must
-		// not land on the good hit that preceded it.
 		const base = serve(
 			() =>
 				new Response(
@@ -167,8 +158,6 @@ describe("search tool", () => {
 	});
 
 	test("ddg: an oversized html response fails at the cap instead of buffering forever", async () => {
-		// Endless stream: an uncapped read would hang the test — the
-		// read cancelling at the cap is the only way this resolves.
 		const stream = new ReadableStream<Uint8Array>({
 			pull(controller) {
 				controller.enqueue(new TextEncoder().encode(`<html>${"x".repeat(256 * 1024)}`));
@@ -189,10 +178,6 @@ describe("search tool", () => {
 	});
 
 	test("a failed search rethrows and gets its own log line — an outage is not a silence", async () => {
-		// The tool hardwires the production base (the baseUrl door sits one
-		// layer down, on bindSearch), so the network-free seam for the
-		// tool-level catch is a failing auth resolve — same path, same
-		// warn-and-rethrow contract as a provider outage.
 		logDir = mkdtempSync(join(tmpdir(), "goblin-searchlog-"));
 		const target = join(logDir, "goblin.log");
 		setLogFile(target);
@@ -226,9 +211,6 @@ describe("search tool", () => {
 });
 
 describe("search fallback chain", () => {
-	// One fake server speaks both wire paths: brave answers 402 on its
-	// search route, ddg answers html on its POST route. The chain walks
-	// config order — exactly the live Brave-quota shape.
 	function serveChain(braveStatus: number, ddgStatus: number) {
 		let ddgCalls = 0;
 		const base = serve((req) => {
@@ -314,8 +296,6 @@ describe("search fallback chain", () => {
 			ddgServed = true;
 			return Response.json({});
 		});
-		// Single fake server can't host ddg here — a second one proves the
-		// negative (it must never be asked).
 		const outcome = await runSearchChain(
 			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
 			fakeAuth,

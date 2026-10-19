@@ -1,9 +1,3 @@
-// The delegation watcher's boundary contract: transitions fire on the
-// herdr-reported state, done requires a seq advance past the prompt
-// baseline, notifications land through wake exactly once, the report
-// file beats the screen (capped at 16 KiB), and a fresh watcher over
-// the same DB resumes where the dead one left off.
-
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -118,8 +112,6 @@ function harness(): Harness {
 	};
 }
 
-// A row as the delegate tool leaves it: bound launch ids, baseline and
-// prompt time recorded.
 function runningRow(
 	h: Harness,
 	name = "fix the thing",
@@ -204,13 +196,10 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} fix it · done]`);
 	});
 
-	// #95: a herdr hiccup on the post-prompt `get` used to fall back to
-	// a pre-prompt seq as the baseline. The next poll that caught the
-	// agent idle-before-working then read `seq > baseline` and fired a
-	// spurious done — the row left active() with the real result never
-	// notified. The fallback must instead leave the baseline pending
-	// (null) and the next scan must capture the current seq before
-	// applying any verdict to the row.
+	// A failed post-prompt `get` must leave the baseline pending (null) —
+	// falling back to a pre-prompt seq makes the next idle glance read
+	// `seq > baseline` and fire a spurious done. The next scan captures
+	// the current seq before applying any verdict.
 	describe("baseline pending (#95)", () => {
 		test("a failed post-send baseline read never reuses the previous run's baseline", async () => {
 			const h = harness();
@@ -221,8 +210,7 @@ describe("delegation watcher", () => {
 			expect(h.store.get(d.id)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(1);
 
-			// The follow-up's post-send get hiccups — the old code fell
-			// back to baseline 5 here.
+			// The follow-up's post-send get hiccups.
 			let getFails = true;
 			h.deps.herdr = {
 				...h.deps.herdr,
@@ -272,9 +260,8 @@ describe("delegation watcher", () => {
 			expect(h.store.get(1)!.status).toBe("running");
 			expect(h.store.get(1)!.baselineSeq).toBeNull();
 
-			// A brand-new agent already sits at seq 1 (the startup
-			// transition counts), idle before working — with the old 0
-			// fallback this glance fired done.
+			// A brand-new agent already sits at seq 1 — a 0 fallback
+			// would read this idle glance as done.
 			h.deps.herdr = {
 				...h.deps.herdr,
 				get: (name) => Promise.resolve(h.agents.get(name) ?? null),
@@ -376,8 +363,7 @@ describe("delegation watcher", () => {
 				},
 			};
 			// The seq advance past the park delivers the owed prompt;
-			// the post-prompt get hiccups — the old code fell back to the
-			// pre-prompt seq 3 here.
+			// the post-prompt get hiccups.
 			h.agents.set(agentName, agent(agentName, "working", 3));
 			const owner = startDelegationLifecycle(h.deps);
 			await owner.tick();
@@ -385,7 +371,7 @@ describe("delegation watcher", () => {
 			expect(h.store.get(row.id)!.baselineSeq).toBeNull();
 
 			// The pre-task work finishes; the agent idles before starting
-			// the owed task — the stale baseline closed the row here.
+			// the owed task — a stale baseline would close the row here.
 			h.agents.set(agentName, agent(agentName, "idle", 4));
 			await owner.tick();
 			expect(h.store.get(row.id)!.status).toBe("running");
@@ -438,15 +424,13 @@ describe("delegation watcher", () => {
 		});
 	});
 
-	// #119: the first successful capture after a failed post-prompt read
-	// may land on an agent that already finished. That completion is
-	// folded into the seq being captured — it can never advance past
-	// itself — and machine rows have no local report to rescue them
-	// while the stall rule only fires on idle, so without explicit
-	// handling the row ran forever.
+	// The first successful capture after a failed post-prompt read may
+	// land on an agent that already finished — the completion is folded
+	// into the captured seq and can never advance past itself, machine
+	// rows have no local report, and the stall rule only fires on idle.
 	describe("already finished at baseline capture (#119)", () => {
-		// A row in the #95 pending posture: the prompt landed, the
-		// post-prompt read failed, no verdict may fire yet.
+		// The prompt landed, the post-prompt read failed — no verdict may
+		// fire yet.
 		function pendingRow(
 			h: Harness,
 			name: string,
@@ -538,8 +522,8 @@ describe("delegation watcher", () => {
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
 			owner.stopTicker();
-			// No verdict from a bare idle — that is the #95 glance the
-			// pending posture exists for; the stall rule owns it after 90 s.
+			// No verdict from a bare idle — the glance the pending
+			// posture exists for; the stall rule owns it after 90 s.
 			expect(h.store.get(d.id)!.status).toBe("running");
 			expect(h.store.get(d.id)!.baselineSeq).toBe(9);
 			expect(h.wakes).toEqual([]);
@@ -898,11 +882,10 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).not.toContain("agent screen");
 	});
 
-	// #106: a directory named report.md (harness misbehavior) used to
-	// throw EISDIR out of reportBody — the scan's per-row catch logged
-	// it every 15 s forever while the row held its live slot and the
-	// completion never fired. A non-regular file at the report path is
-	// no report: the screen tail is the fallback channel.
+	// A directory named report.md (harness misbehavior) used to wedge:
+	// EISDIR out of reportBody every tick while the row held its live
+	// slot. A non-regular file at the report path is no report — the
+	// screen tail is the fallback channel.
 	test("a directory named report.md completes on the screen tail, not a wedge", async () => {
 		const h = harness();
 		const d = runningRow(h, "wedge", 1);
@@ -1844,7 +1827,7 @@ describe("delegation watcher", () => {
 					startAgent: (name) => {
 						// Register the agent the way a real server would:
 						// the launch's post-prompt get must see it (seq 1),
-						// not the #95 pending posture.
+						// not the baseline-pending posture.
 						h.agents.set(name, agent(name, "working", 1));
 						return Promise.resolve(agent(name, "working", 1));
 					},

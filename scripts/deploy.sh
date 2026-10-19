@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
-# Local deployment: gate → refresh deps/client → restart → verify.
-# Never push, fetch or pull: origin/main remains the separate review baseline.
-# The client is served from disk per request: the build only stages into
-# app/dist.next and the publish step flips the app/dist symlink atomically,
-# so the served tree is never half-written. Publishing the client and
-# restarting the backend are one approved rollout. Memory assets are never
-# auto-applied.
-# Rollback must restore ignored deps/client as well as the tracked revision;
-# when the previous revision is known, its recipe prints on success and on
-# any failure after the attempt marker — otherwise failures print manual
-# recovery steps, since no automated recipe can exist.
+# Never push, fetch or pull: origin/main remains the separate review
+# baseline. The client is served from disk per request: the build only
+# stages into app/dist.next and the publish step flips the app/dist
+# symlink atomically, so the served tree is never half-written.
+# Publishing the client and restarting the backend are one approved
+# rollout. Memory assets are never auto-applied.
+# Rollback must restore ignored deps/client as well as the tracked
+# revision; when the previous revision is known, its recipe prints on
+# success and on any failure after the attempt marker — otherwise
+# failures print manual recovery steps, since no automated recipe can
+# exist.
 set -euo pipefail
 
 fail() { echo "deploy: $*" >&2; exit 1; }
 step() { echo "deploy: $*"; }
 
 # goblin.log annotation: a deploy-initiated restart must be distinguishable
-# from a spontaneous one in the operational log — an unexplained "shutting
-# down" reads as an incident until proven otherwise. Lines match src/log.ts's
-# JSONL shape (ts ISO ms UTC, level, msg + free fields). Diagnostics, not
-# gating: every failure here warns on stderr and continues.
+# from a spontaneous one — an unexplained "shutting down" reads as an
+# incident. Lines match src/log.ts's JSONL shape. Diagnostics, not gating:
+# every failure here warns on stderr and continues.
 annotate_log() {
 	[ -n "$goblin_log" ] || return 0
 	local msg="$1" was="${2-}"
@@ -101,10 +100,11 @@ fi
 
 # A leftover attempt marker means the last deploy died after publishing
 # its revision — gate, build, restart or verification. Its diff against
-# the successful marker is untrustworthy (the refresh may have half-landed),
-# so it forces dependency install and client rebuild on this run. Same
-# Git-owned per-worktree location and file-shape contract as the
-# successful marker: anything else fails loudly rather than being cleared.
+# the successful marker is untrustworthy (the refresh may have
+# half-landed), so it forces dependency install and client rebuild on
+# this run. Same per-worktree location and file-shape contract as the
+# successful marker: anything else fails loudly rather than being
+# cleared.
 incomplete="$(git rev-parse --git-path GOBLIN_DEPLOY_INCOMPLETE)" ||
 	fail "cannot resolve deployment attempt marker"
 interrupted=false
@@ -126,7 +126,8 @@ branch="$(git symbolic-ref -q --short HEAD)" ||
 	fail "detached HEAD — check out the branch to deploy"
 new_rev="$(git rev-parse --verify HEAD^{commit})" || fail "cannot resolve deployment commit"
 # A missing/stale marker refreshes deps, client and the memory runbook.
-# Otherwise, resolve the diff once before builds/restart and never hide failures.
+# Otherwise, resolve the diff once before builds/restart and never hide
+# failures.
 if [ "$refresh_all" = true ]; then
 	changed_paths=$'bun.lock\npackage.json\napp/src/x.ts\ndeploy/memory/env'
 else
@@ -143,8 +144,7 @@ fi
 # marker. Any failure after this point — gate, build, restart,
 # verification — leaves the marker, forcing the next run's refresh; it
 # is never cleared by a trap and only unlinked after full verification
-# below. Conservatively written on every run, even one with nothing to
-# refresh.
+# below.
 incomplete_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOY_INCOMPLETE.XXXXXX")" ||
 	fail "cannot create deployment attempt marker temp file"
 printf '%s\n' "$new_rev" >"$incomplete_tmp" ||
@@ -189,26 +189,26 @@ on_exit() {
 trap on_exit EXIT
 
 # --- 2. Refresh deps --------------------------------------------------------
-# Before the gate: the typecheck must read new_rev's dependency tree, not
-# whatever the previous deployment left in node_modules — a merge that adds
-# or upgrades a dependency would otherwise gate on missing/stale modules.
-# The rollback line restores ignored dependencies, so syncing them here adds
-# no new recovery requirement.
+# Before the gate: the typecheck must read new_rev's dependency tree —
+# a merge that adds or upgrades a dependency would otherwise gate on
+# missing/stale modules. The rollback line restores ignored
+# dependencies, so syncing them here adds no new recovery requirement.
 if [ "$interrupted" = true ] || grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
 	bun install --frozen-lockfile
 fi
 
 # --- 3. Gate ----------------------------------------------------------------
-# Tests gate merges, not deploys: re-running the suite here re-executed work
-# every merge already proved, adding ~90s before each restart.
+# Tests gate merges, not deploys — re-running the suite here re-executes
+# what every merge already proved (~90s before each restart).
 step "gate: bun run typecheck"
 bun run typecheck
 
 # --- 4. Refresh the served bundle -------------------------------------------
 if [ "$interrupted" = true ] ||
 	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
-	# The bundle inlines dependencies and the shared UI schema, not just app/.
-	# Build stages into app/dist.next; publish flips the app/dist symlink.
+	# The bundle inlines dependencies and the shared UI schema, not just
+	# app/. Build stages into app/dist.next; publish flips the app/dist
+	# symlink.
 	bun run app:build
 	bash scripts/publish-app.sh
 fi
@@ -223,10 +223,11 @@ fi
 
 # --- 5. Restart, verify -----------------------------------------------------
 # The gate ran minutes ago against new_rev's tree; a sibling session's
-# commit in between leaves the tree clean (the status check can't see it)
-# and would restart into code the gate never saw, with the marker
-# recording the wrong rev. An *uncommitted* sibling edit is the same hole
-# — the status gate ran before the build, so re-check the tree too.
+# commit in between leaves the tree clean (the status check can't see
+# it) and would restart into code the gate never saw, with the marker
+# recording the wrong rev. An *uncommitted* sibling edit is the same
+# hole — the status gate ran before the build, so re-check the tree
+# too.
 [ "$(git rev-parse --verify "HEAD^{commit}")" = "$new_rev" ] ||
 	fail "HEAD moved during the gate — commit it and redeploy"
 tree_status="$(git status --porcelain)" || fail "cannot re-read working tree status"

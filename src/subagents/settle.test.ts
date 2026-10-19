@@ -1,10 +1,3 @@
-// settle.ts boundary tests — the one finalizer every path funnels
-// into (design/subagents.md → Owner decomposition; Settlement).
-// Real run store; the harness is a stub because the pinned contract
-// is the row transition + notice, not Pi: outcome kinds map to
-// row statuses, a stale outcome's rev can never settle a newer
-// input, persisted stop intent preempts any settle, and the notice
-// CAS clears only the rev the wake admitted.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -185,7 +178,6 @@ describe("finalize — the outcome matrix", () => {
 			outcome: { kind: "done", result: "stale", files: [], rev: 1 },
 		});
 		const row = mkrow({ inputRev: 2 });
-		// finalize for rev 2 — the doc's rev-1 outcome is stale.
 		await settle.finalize(row.id, 2);
 		const after = runs.get(row.id);
 		expect(after?.status).toBe("failed");

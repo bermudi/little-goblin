@@ -1,17 +1,14 @@
-// Image Q&A (DESIGN.md, Tools → Vision). Tool results carry no image
-// bytes — the pipe rule in design/tools.md — so a file on disk is
-// invisible to the conversation's model, vision-capable or not: intake
-// materialization only covers media that arrived through a channel as
-// history. This engine is the other channel: a configured vision model
-// answers a targeted question about an image file, and the answer
-// comes back as text.
+// Image Q&A. Tool results carry no image bytes, so a file on disk is
+// invisible to the conversation's model, vision-capable or not —
+// intake materialization only covers media that arrived through a
+// channel. This engine is the other channel: a configured vision model
+// answers a targeted question about an image file.
 //
+// Follow-up threads key on path + size + mtime — a rewritten file
+// starts a clean thread, and a vision-model switch drops every thread
+// so a new model never "remembers" answers its predecessor gave.
 // Mechanism ported from pi's vision extension
-// (agent-extensions/pi-packages/bermudis-pi-goodies/vision-core.ts):
-// query-driven Q&A rather than one frozen description, and follow-up
-// threads keyed by path + size + mtime — a rewritten file starts a
-// clean thread, and a vision-model switch drops every thread so a new
-// model never "remembers" answers its predecessor gave.
+// (agent-extensions/pi-packages/bermudis-pi-goodies/vision-core.ts).
 
 import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
@@ -29,9 +26,9 @@ import {
 } from "./providers.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
 
-// One side model call must settle — a wedged vision request would pin
-// the turn's serial lane (transcribe's 60s rule, doubled: image calls
-// are heavier than a whisper chunk).
+// A wedged vision request would pin the turn's serial lane —
+// transcribe's 60 s rule doubled (image calls are heavier than a
+// whisper chunk).
 export const VISION_TIMEOUT_MS = 120_000;
 
 export const VISION_SYSTEM_PROMPT = [
@@ -44,29 +41,26 @@ export const VISION_SYSTEM_PROMPT = [
 
 // ---------- follow-up threads ----------
 
-/** One answered question, replayed as plain text on follow-up calls. */
 export interface VisionTurn {
 	question: string;
 	answer: string;
 }
 
 export interface VisionThreads {
-	/** Prior turns for a thread key ([] when none). Refreshes LRU order. */
+	/** Refreshes LRU order. */
 	getTurns(key: string): VisionTurn[];
-	/** Record a turn: "fresh" resets the thread, "follow" appends. */
+	/** "fresh" resets the thread, "follow" appends. */
 	record(key: string, turn: VisionTurn, mode: "fresh" | "follow"): void;
-	/** Drop every thread — a vision-model switch must not replay the
-	 *  old model's answers as the new one's memory. */
+	/** A model switch must not replay the old model's answers as the
+	 *  new one's memory. */
 	clear(): void;
 }
 
 const MAX_THREADS = 16;
 const MAX_TURNS = 10;
 
-/** In-memory follow-up threads, LRU-capped. Process-local by design:
- *  nothing persists across restarts, so a follow-up after a restart
- *  simply starts a fresh thread — the tool contract says "may
- *  remember", not "will remember". */
+/** Process-local by design — the tool contract says "may remember",
+ *  not "will remember". */
 export function createVisionThreads(): VisionThreads {
 	const threads = new Map<string, VisionTurn[]>();
 	return {
@@ -91,16 +85,13 @@ export function createVisionThreads(): VisionThreads {
 	};
 }
 
-// The process-global thread store. Follow-ups land in later turns, so
-// the store must outlive makeTools (which runs per turn). A vision
-// model change inside the config block drops the threads on the next
-// call — checked here rather than at a config-write hook because the
-// config ref flips in place (mini-app save) and hand edits only apply
-// on restart anyway.
+// Follow-ups land in later turns, so the store must outlive per-turn
+// makeTools. A model change drops the threads on the next call —
+// checked here because the config ref flips in place (mini-app save);
+// hand edits only apply on restart anyway.
 let threads = createVisionThreads();
 let threadsModel: string | null = null;
 
-/** Test door: isolate the global thread state per test. */
 export function _resetVisionThreadsForTest(): void {
 	threads = createVisionThreads();
 	threadsModel = null;
@@ -123,11 +114,10 @@ export interface VisionAnswer {
 	answer: string;
 	/** "provider/modelId" of the model that answered. */
 	model: string;
-	/** Prior turns this call continued (0 = independent call). */
 	followUps: number;
 }
 
-/** Structural usage slice for the cost log line (title-call rule). */
+/** Usage slice for the cost log line. */
 export interface VisionUsage {
 	inputTokens?: number | undefined;
 	outputTokens?: number | undefined;
@@ -145,21 +135,20 @@ export interface VisionCallDeps {
 	auth: AuthStore;
 	conversation: string;
 	observation?: CacheObservation | undefined;
-	/** The turn's abort signal (/stop, Esc-equivalent) — rides the call. */
+	/** The turn's abort signal (/stop) — rides the call. */
 	signal?: AbortSignal | undefined;
 	/** Test door over the provider edge — production is resolveModel.
 	 *  Everything between this seam and the tool is real: generateText,
-	 *  the ModelMessage→LanguageModelV4Prompt conversion, the observed
-	 *  middleware, the abort wiring (the 77661ae lesson: stages tested
-	 *  in isolation hide the seam between them). */
+	 *  the prompt conversion, the observed middleware, the abort wiring —
+	 *  stages tested in isolation hide the seam between them. */
 	resolve?: (config: Config, auth: AuthStore, modelRef: string) => Promise<LanguageModel>;
 	/** Test door over the timeout race (production: VISION_TIMEOUT_MS). */
 	timeoutMs?: number | undefined;
 }
 
-/** Build the message list: prior turns replay as plain text, the image
- *  rides only in the final user turn — follow-ups cost the same image
- *  tokens as independent calls, plus a little text. */
+/** Prior turns replay as plain text; the image rides only in the final
+ *  user turn — follow-ups cost the same image tokens as independent
+ *  calls, plus a little text. */
 export function buildVisionMessages(
 	prompt: string,
 	image: { bytes: Buffer; mediaType: string },
@@ -189,8 +178,7 @@ async function defaultResolve(
 	return resolveModel(config, auth, modelRef);
 }
 
-/** Full engine flow: config → model → threads → one generateText call.
- *  Failures throw (the tool layer reports them); aborts ride the
+/** Failures throw (the tool layer reports them); aborts ride the
  *  combined signal and surface as the SDK's AbortError. */
 export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promise<VisionAnswer> {
 	const cfg = deps.configRef.current.vision;
@@ -202,9 +190,8 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 		threadsModel = cfg.model;
 	}
 
-	// The thread key carries the conversation: a follow-up must never
-	// replay another conversation's Q&A about the same image (the tool
-	// is per-turn bound to its conversation, delegate's rule).
+	// The key carries the conversation — a follow-up must never replay
+	// another conversation's Q&A about the same image.
 	const key = `${deps.conversation}|${query.path}|${query.stat.size}|${query.stat.mtimeMs}`;
 	const history = query.followUp ? threads.getTurns(key) : [];
 
@@ -217,20 +204,19 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 			route: cacheRouteFor(deps.configRef.current, cfg.model),
 		},
 	);
-	// The configured ref IS the label — resolveModel's instances spell
-	// it "provider/modelId", and LanguageModel's type also admits the
-	// bare registry-id string form, which carries neither field.
+	// The configured ref is the label — LanguageModel's type also admits
+	// the bare registry-id string form, which carries neither field.
 	const label = cfg.model;
 
-	// The turn's signal and the timeout race — either one settles the call.
+	// Turn signal and timeout — either settles the call.
 	const signal = AbortSignal.any([
 		...(deps.signal ? [deps.signal] : []),
 		AbortSignal.timeout(deps.timeoutMs ?? VISION_TIMEOUT_MS),
 	]);
 
 	const started = Date.now();
-	// Thinking pinned off — a forced-thinking vision model answers in
-	// prose anyway and burns a reasoning round-trip per question.
+	// Thinking pinned off — a forced-thinking vision model burns a
+	// reasoning round-trip per question.
 	const providerOptions = thinkingOptions(deps.configRef.current, cfg.model, "off");
 	const { text, usage } = await generateText({
 		model,
@@ -255,8 +241,8 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 
 	threads.record(key, { question: query.prompt, answer }, query.followUp ? "follow" : "fresh");
 
-	// A model call is a cost line (DESIGN.md, Cache stability) — the
-	// title-call rule. Request hashes ride the observedModel wrapper.
+	// A model call is a cost line — request hashes ride the
+	// observedModel wrapper.
 	log.info("vision model call", {
 		conversation: deps.conversation,
 		model: label,
@@ -276,11 +262,9 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	return { answer, model: label, followUps: history.length };
 }
 
-// The tool's per-turn gate (design/tools.md → Vision): "auto"
-// registers only while the chat model can't consume images (catalog
-// AND pipe gates — cold counts as blind); "always" keeps it — a file
-// on disk is invisible regardless. boot() builds it once and hands
-// the closure to makeTools.
+// "auto" registers only while the chat model can't consume images —
+// catalog AND pipe gates, cold counts as blind; "always" keeps it — a
+// file on disk is invisible regardless.
 export function makeVisionDepsFor(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;

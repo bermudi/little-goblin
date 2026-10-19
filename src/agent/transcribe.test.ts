@@ -9,7 +9,6 @@ import {
 } from "./transcribe.ts";
 import { tmpDir } from "../testkit.ts";
 
-// Fake engine: returns canned transcripts and records what it was fed.
 const fakeEngine = (
 	text: string,
 	log?: { calls: { path: string; bytes: Uint8Array }[] },
@@ -53,10 +52,9 @@ function genAudio(dest: string, seconds: number): void {
 	if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
 }
 
-// MediaRecorder pathology: pts inflated 400x at encode makes a 9 s
-// note claim ~3 600 s of packet time — without the orchestrator's
-// sample-count pts rebuild the segment muxer cuts per packet (the
-// production 9 s webm produced 153 segments).
+// MediaRecorder pathology: pts ×400 at encode makes a 9 s note claim
+// ~3600 s of packet time — without the orchestrator's sample-count pts
+// rebuild the muxer cuts per packet (the production 9 s webm made 153).
 function genBrokenAudio(dest: string, seconds: number): void {
 	const gen = Bun.spawnSync([
 		"ffmpeg",
@@ -76,8 +74,8 @@ function genBrokenAudio(dest: string, seconds: number): void {
 	if (gen.exitCode !== 0) throw new Error(`broken audio gen: ${gen.stderr.toString()}`);
 }
 
-// Codec name from the start of an Ogg stream: opus pages open with
-// "OpusHead", vorbis with "\u0001vorbis", FLAC-in-Ogg with "\u007fFLAC".
+// Ogg codec magic: opus "OpusHead", vorbis "\u0001vorbis",
+// FLAC-in-Ogg "\u007fFLAC".
 function oggCodec(audio: Uint8Array): string {
 	const head = Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength)
 		.toString("latin1")
@@ -88,8 +86,7 @@ function oggCodec(audio: Uint8Array): string {
 	return "unknown";
 }
 
-// RIFF fmt chunk: channels at byte offset 22, sample rate at 24 — the
-// wav profile's 16 kHz mono contract, read where ffmpeg wrote it.
+// RIFF fmt chunk: channels at byte offset 22, sample rate at 24.
 function wavShape(audio: Uint8Array): { channels: number; sampleRate: number } {
 	const view = new DataView(audio.buffer, audio.byteOffset, audio.byteLength);
 	return { channels: view.getUint16(22, true), sampleRate: view.getUint32(24, true) };
@@ -114,8 +111,8 @@ describe("transcribeAudio", () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long.ogg");
-		// 25s of audio → 3 segments at a shrunken 10s split. A 1-byte cap
-		// forces the segment path without a real 25MiB fixture.
+		// A 1-byte cap forces the segment path without a real 25 MiB
+		// fixture.
 		genAudio(src, 25);
 		const seen: { path: string; bytes: Uint8Array }[] = [];
 		let n = 0;
@@ -123,11 +120,10 @@ describe("transcribeAudio", () => {
 			id: "test/fake-whisper",
 			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
 			prep: { container: "keep" },
-			// DESIGN.md mandates mono opus: without -c:a the Ogg segment
-			// muxer picks the build's default encoder — libvorbis where
-			// present, else FLAC, which ignores -b:a and can re-exceed the
-			// 25 MiB upload cap. Sniffing what the engine would upload pins
-			// that at the boundary.
+			// Without -c:a the Ogg segment muxer picks the build's default
+			// encoder — libvorbis or FLAC — which ignores -b:a and can
+			// re-exceed the 25 MiB upload cap. Sniffing what the engine
+			// would upload pins that at the boundary.
 			transcribe: async (seg) => {
 				n += 1;
 				const bytes = readFileSync(seg.path);
@@ -186,7 +182,7 @@ describe("transcribeAudio", () => {
 				return { text: "nine seconds" };
 			},
 		};
-		// Unrepaired pts cut ~129 segments here; rebuilt pts see one 9 s
+		// Unrepaired pts would cut ~129 segments; rebuilt pts → one 9 s
 		// file under the 28 s ceiling → a single segment, a single call.
 		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 28 })).toBe("nine seconds");
 		expect(n).toBe(1);
@@ -205,8 +201,8 @@ describe("transcribeAudio", () => {
 				throw new Error("whisper is down");
 			},
 		};
-		// A null here would ride the tool's fixed "may contain no
-		// speech" string — the provider error must reach the caller.
+		// null would ride the tool's "may contain no speech" string —
+		// the provider error must reach the caller.
 		await expect(transcribeAudio(engine, file(src), { maxBytes: 1 })).rejects.toThrow(
 			"whisper is down",
 		);
@@ -228,7 +224,7 @@ describe("transcribeAudio", () => {
 				return { text: `chunk-${n}` };
 			},
 		};
-		// Partial beats nothing — the boundary is logged and the prefix kept.
+		// Partial beats nothing.
 		expect(await transcribeAudio(engine, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
 			"chunk-1",
 		);
@@ -259,8 +255,8 @@ describe("transcribeAudio", () => {
 			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
 			transcribe: async () => ({ text: "x" }),
 		};
-		// 11 s at 40 ms segments → 275 segments > 240: the guard fires
-		// before any engine call grinds through them.
+		// 11 s at 40 ms segments → 275 > 240: the guard fires before any
+		// engine call.
 		await expect(transcribeAudio(engine, file(src), { segmentSeconds: 0.04 })).rejects.toThrow(
 			"275 segments (max 240)",
 		);
@@ -283,8 +279,7 @@ describe("transcribeAudio", () => {
 });
 
 describe("transcribeChain", () => {
-	// A keep-profile engine with a distinct id — the chain's log line
-	// and combined error are keyed on it.
+	// Distinct ids — the chain's log line and combined error key on them.
 	const idEngine = (
 		id: string,
 		run: (f: { path: string }) => Promise<EngineTranscript>,

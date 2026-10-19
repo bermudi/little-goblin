@@ -1,46 +1,26 @@
-// Skill reviewer — automatic skill saving (DESIGN.md, "Skill reviewer").
+// Skill reviewer — automatic skill saving.
 //
-// Every completed turn is gated: System One (a typed-decision model, not
-// a chat model) answers two noul questions over the turn's state — did the
-// operator correct something, did the turn run a repeatable procedure —
-// and either at or past its per-question threshold triggers a background
-// review. This is an experiment: every gate logs both probabilities, the
-// thresholds, the trigger, unique tool names, the consecutive-fallback
-// count, the decision, input tokens, cost, and latency, so cost, hit
-// rate, and outage drift are answerable from the log. The gate
-// unreachable (any failure) falls back to the tool-count rule — a turn
-// with 8+ tool calls reviews.
+// Every completed turn is gated by System One (a typed-decision model):
+// either question at/past its threshold triggers a background review.
+// Any gate failure falls back to the 8+ tool-call rule. Every gate logs
+// probabilities, thresholds, trigger, tool names, fallback streak,
+// decision, tokens, cost, latency — the experiment must answer cost, hit
+// rate, and outage drift from the log alone.
 //
-// The review runs off the conversation lane in a private staging copy of
-// the skills tree (workspace/.reviewer-staging/<review_id>/skills):
-// read/write/edit confined there by lexical AND realpath checks, no
-// shell. It creates or edits one skill, or does nothing. Nothing reaches
-// the operator until the staged writes pass `skills-ref validate`; then
-// each changed skill is PROPOSED — swapped atomically into
-// workspace/skills-proposed/<name>/ — never installed: the live catalog
-// changes only when the operator approves (ruling 2026-10-10; the
-// approve/discard moves are conversational, the undo precedent). A
-// skill whose live copy changed mid-review is skipped, never proposed
-// from a stale base (operator edits are never clobbered), and a swap
-// that fails is rolled back. A later skill's failed swap cannot undo
-// earlier proposals: those are recorded and announced before the
-// failure surfaces. Model, budget, and validation failures leave both
-// trees byte-identical.
+// The review works in a private staging copy of the skills tree
+// (workspace/.reviewer-staging/<id>/skills), confined by lexical AND
+// realpath checks, no shell. Validated writes are PROPOSED — swapped
+// atomically into skills-proposed/<name>/ — never installed: the live
+// catalog changes only on operator approval (ruling 2026-10-10). A skill
+// whose live copy changed mid-review is skipped, never proposed from a
+// stale base. A later skill's failed swap cannot undo earlier proposals.
 //
-// Reviews queue in turn-completion order (a monotonic seq from the
-// runtime), capped (default 3; a full queue drops the incoming review
-// and logs it) and serialize one at a time. /stop cancels a
-// conversation's queued reviews and aborts its in-flight one (the
-// operator's panic lever stops background skill-writes too).
-// Memory-excluded conversations never gate at all — off the record means
-// no durable distillation. Fire-and-forget by design: the runtime never
-// awaits a review, and shutdown doesn't wait for one either — a missed
-// save on a racing shutdown is benign (the next similar turn re-gates)
-// and logged.
-//
-// One instance owns the queue, the in-flight slot, the pending gates,
-// and the fallback streak: index.ts constructs exactly one and injects
-// it into the runtime — no module-level reviewer state exists.
+// Reviews queue in turn-completion order, capped, serialized.
+// /stop cancels queued reviews and aborts the in-flight one.
+// Memory-excluded conversations never gate — off the record means no
+// durable distillation. Fire-and-forget: a missed save on a racing
+// shutdown is benign and logged. One instance owns queue, in-flight
+// slot, pending gates, fallback streak — no module-level state.
 
 import {
 	chmodSync,
@@ -97,22 +77,18 @@ export interface ToolInventoryItem {
 
 export interface CompletedTurn {
 	conversationId: string;
-	/** Monotonic completion counter — the queue's serialization order. */
+	// Monotonic completion counter — the queue's serialization order.
 	turnSeq: number;
 	operatorTexts: string[];
 	replyText: string;
-	/** Every tool call name, in order — the gate's counts. */
 	toolNames: string[];
-	/** Last-N bounded digest — the review's evidence. */
 	toolDigest: ToolCallDigest[];
-	/** The tools the turn could call — empty when unrecorded. */
 	toolInventory: ToolInventoryItem[];
 }
 
-// The previous completed turn, attached when the gate fires on a
-// correction: what the operator is correcting is usually the turn
-// before, and the reviewer needs to see the wrong answer to distill
-// the right one.
+// Attached when the gate fires on a correction: what the operator is
+// correcting is usually the turn before, and the reviewer needs to see
+// the wrong answer to distill the right one.
 export interface PriorTurnContext {
 	operatorTexts: string[];
 	replyText: string;
@@ -122,18 +98,15 @@ export interface PriorTurnContext {
 export type Trigger = "correction" | "procedure";
 
 export interface EvidenceLimits {
-	/** Tool calls kept in the digest ring (per turn). */
 	calls: number;
-	/** Truncation for each call's serialized arguments. */
 	argChars: number;
-	/** Truncation for each call's serialized result. */
 	outChars: number;
 }
 
 export interface ReviewerDeps {
 	gate: Pick<System1Client, "decide">;
 	thresholds: { correction: number; procedure: number };
-	/** Queued (not running) review cap; full queue drops the incoming. */
+	// Queued (not running) review cap; a full queue drops the incoming.
 	queueCap: number;
 	evidence: EvidenceLimits;
 	// Resolves the review model fresh per review (the mini app owns the
@@ -149,20 +122,17 @@ export interface ReviewerDeps {
 	// Posts the proposal note after history and provenance are durable.
 	// Delivery failures propagate without undoing those writes.
 	notify(conversationId: string, skills: string[]): Promise<void>;
-	// Provenance (design/skills.md → Skill provenance): rows for every
-	// successfully proposed skill, before notification can yield.
-	// Recorder failures propagate without undoing the proposal.
+	// Provenance rows for every successfully proposed skill, written
+	// before notification can yield. Recorder failures propagate without
+	// undoing the proposal.
 	recordSources?(conversationId: string, reviewId: string, skills: string[]): void;
-	/** Test door — the production path always uses `skills-ref`. */
+	// Test door — the production path always uses `skills-ref`.
 	skillsRefBin?: string;
 }
 
 // ---------- boot wiring (index.ts binds, this module rules) ----------
 
-// Deps the reviewer wiring can't own: live config/auth, the conversation
-// store, the model-call observation sink, workspace paths, and the two
-// post-proposal side effects (notify, provenance). index.ts constructs
-// exactly one — the wiring returns the shared gate so the loop watchdog
+// One instance — the wiring returns the shared gate so the loop watchdog
 // and the wake path can bind to it too.
 export interface ReviewerWiringDeps {
 	configRef: ConfigRef;
@@ -175,7 +145,7 @@ export interface ReviewerWiringDeps {
 }
 
 export interface ReviewerWiring {
-	/** Shared System1 client — null when neither block is configured. */
+	// Shared System1 client — null when neither block is configured.
 	gate: System1Client | null;
 	reviewer: Reviewer | null;
 }
@@ -185,10 +155,9 @@ export function wireReviewer(deps: ReviewerWiringDeps): ReviewerWiring {
 	// The hand-edited block boot-captures auth and threshold; the review
 	// model resolves live (see ReviewerDeps.reviewModel).
 	const reviewerBlock = configRef.current.reviewer;
-	// System One is its own switch (design/system1.md → Config): the shared
-	// client exists whenever a `system1` block is set, and `reviewer` still
-	// implies it — reviewer configs behave identically; a system1-only
-	// config gains the client it already named.
+	// The shared client exists whenever a `system1` block is set, and
+	// `reviewer` still implies it — a system1-only config gains the
+	// client it already named.
 	const system1Block = configRef.current.system1;
 	const gate =
 		system1Block || reviewerBlock
@@ -306,14 +275,12 @@ const GATE_QUESTIONS: Record<string, System1Question> = {
 	},
 };
 
-// The decision model's context is 32k tokens — the state stays an order of magnitude
+// The decision model's context is 32k tokens — the state stays well
 // under it. Operator text reads tail-first (a correction lands in the
-// latest message); the reply reads head-first. Deliberately lean: names
-// and counts only — the digest is the reviewer's evidence, not the
-// gate's (a heavy gate is a non-goal).
+// latest message); the reply reads head-first. Names and counts only —
+// a heavy gate is a non-goal.
 const MAX_OPERATOR_CHARS = 10_000;
 const MAX_REPLY_CHARS = 12_000;
-// The fallback rule when the gate is unreachable (DESIGN.md).
 const FALLBACK_TOOL_CALLS = 8;
 
 export function buildGateState(turn: CompletedTurn): string {
@@ -335,13 +302,10 @@ export function buildGateState(turn: CompletedTurn): string {
 
 // ---------- review queue ----------
 //
-// Reviews serialize one at a time, in turn-completion order (turnSeq),
-// queued-not-running capped at queueCap. Pending gate decisions hold
-// later reviews back; overlapping runs would propose over each other's
+// One at a time, in turn-completion order. Pending gate decisions hold
+// later reviews back — overlapping runs would propose over each other's
 // announced writes. A full queue drops the incoming review (the newest
-// turn is the most re-gateable — the next similar turn re-fires) and
-// logs the drop. /stop cancels a conversation's queued reviews and
-// aborts its in-flight one.
+// turn is the most re-gateable) and logs it.
 
 interface Deferred<T> {
 	promise: Promise<T>;
@@ -378,16 +342,10 @@ interface PendingGate {
 }
 
 // ---------- the reviewer instance ----------
-//
-// Owns every piece of mutable state the gate and queue need (the
-// fields below); the free functions further down (staging, propose,
-// the review run) are pure mechanics parameterized by deps/entry.
 
 export class Reviewer {
-	// Calibration counter: how many gates in a row fell back. Reset by
-	// any successful gate. Shared across every conversation this instance
-	// gates — an outage is an outage regardless of which conversation
-	// noticed (one instance per process).
+	// Shared across every conversation this instance gates — an outage is
+	// an outage regardless of which conversation noticed.
 	private fallbackStreak = 0;
 	private readonly reviewQueue: QueueEntry[] = [];
 	private inFlight: { entry: QueueEntry; controller: AbortController } | null = null;
@@ -396,7 +354,6 @@ export class Reviewer {
 
 	constructor(private readonly deps: ReviewerDeps) {}
 
-	// The runtime's digest-capture budget — read at turn setup.
 	get evidence(): EvidenceLimits {
 		return this.deps.evidence;
 	}
@@ -408,8 +365,8 @@ export class Reviewer {
 		this.pendingGates.add(pending);
 		const started = Date.now();
 		const state = buildGateState(turn);
-		// Unique tool names, bounded — the gate line must explain what kind
-		// of turn scored what without a second lookup.
+		// Bounded — the gate line must explain what kind of turn scored
+		// what without a second lookup.
 		const toolNames = [...new Set(turn.toolNames)].slice(0, 16);
 		try {
 			const decision = await this.deps.gate.decide(state, GATE_QUESTIONS);
@@ -419,12 +376,10 @@ export class Reviewer {
 			const corrHit = correction >= this.deps.thresholds.correction;
 			const procHit = procedure >= this.deps.thresholds.procedure;
 			const review = corrHit || procHit;
-			// A correction carries the prior turn as evidence; when both
-			// questions fire, correction wins the trigger.
+			// When both questions fire, correction wins the trigger.
 			const trigger: Trigger = corrHit ? "correction" : "procedure";
 			const reviewId = review ? randomUUID() : null;
-			// The experiment line: every gate answers cost, hit rate, and
-			// outage drift from the log alone.
+			// The experiment line.
 			log.info("reviewer gate", {
 				conversation: turn.conversationId,
 				correction,
@@ -492,10 +447,8 @@ export class Reviewer {
 		}
 	}
 
-	/** /stop: cancel a conversation's pending gates and reviews.
-	 * Queued entries are removed and resolved; the in-flight one (if the
-	 * conversation's) is aborted — its staging is discarded by the normal
-	 * failure path. Returns how many were cancelled. */
+	// /stop: cancel a conversation's pending gates and reviews; the
+	// in-flight one's staging is discarded by the normal failure path.
 	cancelReviews(conversationId: string): number {
 		let n = 0;
 		for (const gate of this.pendingGates) {
@@ -538,7 +491,7 @@ export class Reviewer {
 		return n;
 	}
 
-	/** Shutdown fences reviewer work even when the originating lane has drained. */
+	// Shutdown fences reviewer work even when the originating lane has drained.
 	cancelAllReviews(): number {
 		const conversations = new Set([
 			...[...this.pendingGates].map((g) => g.conversationId),
@@ -622,37 +575,32 @@ export class Reviewer {
 // staging is discarded like any other failure.
 const REVIEW_MAX_STEPS = 10;
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
-// The transcript is evidence, not the turn's full context — bounded.
-// The digest and prior-turn blocks carry their own budgets, so the
-// worst-case prompt stays ~30k chars.
+// Evidence, not full context — the digest and prior-turn blocks carry
+// their own budgets, so the worst-case prompt stays ~30k chars.
 const MAX_REVIEW_TRANSCRIPT_CHARS = 12_000;
-// The prior (corrected) turn gets smaller budgets than the live one —
-// when space is tight, the correction, the wrong turn, and the current
-// answer win; anything older is dropped first (operator text reads
-// tail-first, reply head-first).
+// The prior (corrected) turn gets smaller budgets — when space is tight
+// the correction, the wrong turn, and the current answer win.
 const PRIOR_MAX_OPERATOR_CHARS = 4_000;
 const PRIOR_MAX_REPLY_CHARS = 6_000;
-// A runaway review writes big — over this many staged bytes the write is
-// discarded unvalidated. Skills are small text; this is 10x a large one.
+// A runaway review writes big — over this the write is discarded
+// unvalidated.
 const MAX_REVIEW_BYTES = 100 * 1024;
-// Staging copy caps: a skills tree bigger than this is already wrong —
-// skip the review (loud) rather than copy it.
+// A skills tree bigger than this is already wrong — skip the review
+// (loud) rather than copy it.
 const MAX_STAGING_FILES = 512;
 const MAX_STAGING_BYTES = 2 * 1024 * 1024;
-// Staging lives in the workspace — same filesystem as skills-proposed/,
-// so the proposal swap is a real rename — and dot-prefixed so no
-// catalog scan sees it.
+// Same filesystem as skills-proposed/ so the proposal swap is a real
+// rename; dot-prefixed so no catalog scan sees it.
 const STAGING_DIRNAME = ".reviewer-staging";
 
 export function stagingRoot(workspaceDir: string): string {
 	return join(workspaceDir, STAGING_DIRNAME);
 }
 
-/** Boot-time hygiene: staging from a killed run is garbage — except
- * `.replaced-*` entries, which park the displaced half of a two-rename
- * swap (an undecided proposal here; the *live skill* on the approve
- * path). Those are recoverable operator state, not garbage: keep them
- * and say so, never delete silently. */
+// Boot-time hygiene: staging from a killed run is garbage — except
+// `.replaced-*` entries, which park the displaced half of a two-rename
+// swap. Those are recoverable operator state, not garbage: keep them
+// and say so, never delete silently.
 export function cleanupStaging(workspaceDir: string): void {
 	const root = stagingRoot(workspaceDir);
 	let names: string[];
@@ -749,13 +697,12 @@ export function reviewPrompt(
 
 // ---------- confinement ----------
 //
-// Paths refusing outside the skills root: lexical (`..`) first, then
-// real resolution — an existing symlink inside the root that points out
-// must not carry a read or write out with it. The root itself is
-// realpath'd once; a candidate is resolved through its deepest existing
-// ancestor (a not-yet-existing tail can't introduce a symlink). TOCTOU
-// on the operator's own tree is out of scope; in staging the tree is a
-// fresh copy the review itself is the only writer of.
+// Lexical (`..`) first, then real resolution — an existing symlink inside
+// the root that points out must not carry a read or write out with it. A
+// candidate resolves through its deepest existing ancestor (a
+// not-yet-existing tail can't introduce a symlink). TOCTOU on the
+// operator's own tree is out of scope; in staging the tree is a fresh
+// copy the review is the only writer of.
 export function confineTools(tools: ToolSet, root: string): ToolSet {
 	const resolved = resolve(root);
 	const realRoot = realpathSync(resolved);
@@ -780,7 +727,7 @@ function escapesRoot(root: string, realRoot: string, path: string): boolean {
 	return !realUnder(realRoot, abs);
 }
 
-/** True when `abs` (after resolving symlinks) stays inside `realRoot`. */
+// True when `abs` (after resolving symlinks) stays inside `realRoot`.
 function realUnder(realRoot: string, abs: string): boolean {
 	let dir = dirname(abs);
 	let tail = basename(abs);
@@ -841,9 +788,8 @@ function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Thrown (only) when the live skills tree exceeds the staging budget —
- * a distinct type so the caller can tell policy from mechanical
- * failure and log the true cause. */
+// Distinct type so the caller can tell policy from mechanical failure
+// and log the true cause.
 class StagingBudgetError extends Error {
 	constructor(files: number, bytes: number) {
 		super(`skills tree exceeds the staging budget (${files} files / ${bytes} bytes)`);
@@ -851,11 +797,9 @@ class StagingBudgetError extends Error {
 	}
 }
 
-/** Copy the live skills tree into `stagedDir` (created), flattening
- * in-root symlinks by content and refusing out-of-root entries.
- * Return path → sha256 of what was copied.
- * Throws over the file/byte budget — the caller skips the review loud.
- * A missing live root copies as an empty catalog. */
+// Returns path → sha256 of the copy; in-root symlinks are flattened by
+// content, out-of-root entries refused. Throws over budget — the caller
+// skips the review loud.
 function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, string> {
 	const manifest = new Map<string, string>();
 	mkdirSync(stagedDir, { recursive: true });
@@ -906,9 +850,9 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 	return manifest;
 }
 
-/** Which written paths actually differ from the copied manifest (or are
- * new), plus their combined staged size — the review's candidate
- * changes, attribution-scoped to its own writes. */
+// Written paths that differ from the copied manifest (or are new), plus
+// their combined staged size — attribution-scoped to the review's own
+// writes.
 function changedPaths(
 	stagedDir: string,
 	manifest: Map<string, string>,
@@ -968,14 +912,11 @@ type ProposeOutcome =
 	| { proposed: true }
 	| { proposed: false; reason: "conflict"; drifted: string[] };
 
-/** Does the live skill dir still byte-match the copy the review worked
- * from? The live tree is only read — but a proposal built on a base the
- * operator changed mid-review (edits, undos, hand-added files) must
- * never be offered: approving it would clobber those bytes sight-unseen,
- * so the skill is skipped instead. Symlinks count as drift too (lstat,
- * never resolved): a proposal over a link — the whole skill or one file
- * inside it — would, once approved, replace it with plain bytes and
- * silently fork whatever it points to. */
+// A proposal built on a base the operator changed mid-review must never
+// be offered — approving it would clobber those bytes sight-unseen, so
+// the skill is skipped. Symlinks count as drift too (lstat, never
+// resolved): an approved proposal over a link would replace it with
+// plain bytes and silently fork whatever it points to.
 function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: string): string[] {
 	const prefix = `${skill}/`;
 	const expected = new Map([...manifest.entries()].filter(([rel]) => rel.startsWith(prefix)));
@@ -1025,15 +966,11 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 	return drifted.sort();
 }
 
-/** Propose one staged skill: an atomic directory swap into the
- * proposals dir — earlier undecided proposal → trash (staging area,
- * same filesystem), staged → proposal, trash deleted. A newer review's
- * proposal replaces an undecided older one of the same name (latest
- * distillation wins). A failed swap restores the earlier proposal; a
- * failed trash cleanup is logged, not mistaken for a failed swap.
- * Throws on swap failures (after rollback); drift against the live
- * tree (operator edits, or any symlink under the skill — a linked-in
- * skill is never proposed over) is returned, not thrown. */
+// Atomic directory swap into the proposals dir: earlier undecided
+// proposal → .replaced-* trash (same filesystem), staged → proposal,
+// trash deleted. A newer review's proposal replaces an undecided older
+// one of the same name. Throws on swap failures (after rollback); drift
+// against the live tree is returned, not thrown.
 function proposeSkill(
 	skillsDir: string,
 	proposedDir: string,
@@ -1169,11 +1106,9 @@ async function runStagedReview(
 	try {
 		({ ref, model } = await deps.reviewModel(conv));
 	} catch (err) {
-		// The most likely real-world review failure (model resolve/auth)
-		// gets the same containment as a model-call failure: a line that
-		// carries the review id — not an escape to the runtime backstop's
-		// conversation-only line — with staging discarded by runReview's
-		// finally and nothing live touched (#107).
+		// Model resolve/auth failure gets the same containment as a
+		// model-call failure: a line carrying the review id, staging
+		// discarded by runReview's finally, nothing live touched.
 		log.error("reviewer write discarded — review model resolution failed", err, {
 			review_id: reviewId,
 			conversation: conv,

@@ -1,19 +1,13 @@
-// The programs table — standing orders (DESIGN.md, "Programs"). A
-// program is standing authority for one concern: a charter plus the
-// triggers that wake it (a 5-field cron in server-local time, optionally
-// bounded by a per-program lateness grace; a webhook whose sha256 lives
-// in hook_hash; or a Gmail filter in mail_filter). State is rows in
-// goblin.sqlite, never files: a program's instructions are the
-// program's state. Own connection, same WAL file as the conversation
-// store. Cron validates here at the boundary — an invalid expression
-// never becomes a row — and a program always has at least one
-// trigger.
+// Cron runs in server-local time. Own connection, same WAL file as
+// the conversation store. Cron validates at the boundary — an invalid
+// expression never becomes a row — and a program always has at least
+// one trigger.
 //
-// Legacy purge (W2.2): on open, a leftover `jobs` table is archived and
-// dropped — one transaction, a re-run a no-op. Rows copy into programs
-// (prompt → charter) only when the programs table itself is being
-// created: an existing programs table is the operator's truth, deletions
-// included, so legacy rows beside it must never reactivate.
+// Legacy purge: a leftover `jobs` table copies into programs only when
+// the programs table itself is being created — an existing table is
+// the operator's truth, deletions included, so legacy rows beside it
+// archive (never reactivate) and the table drops either way. One
+// transaction, a re-run a no-op.
 
 import { Database } from "bun:sqlite";
 import { CronExpression, CronExpressionParser } from "cron-parser";
@@ -25,13 +19,11 @@ export interface Program {
 	id: number;
 	name: string;
 	charter: string;
-	/** 5-field cron, or null for hook-only programs. */
 	cron: string | null;
-	/** Maximum schedule lateness in whole minutes; null preserves fire-on-wake behavior. */
+	/** null preserves fire-on-wake behavior. */
 	maxLatenessMinutes: number | null;
-	/** sha256 of the webhook token — unused until webhook delivery lands. */
+	/** sha256 of the webhook token. */
 	hookHash: string | null;
-	/** Gmail query waking the program on new matches, or null. */
 	mailFilter: string | null;
 	/** Mailbox history id checkpoint for the mail filter — the watcher's
 	 *  cursor, null until the first poll baselines it. */
@@ -51,7 +43,6 @@ export interface Program {
 	enabled: boolean;
 	createdAt: string;
 	lastRun: string | null;
-	/** ISO timestamp of the next fire, or null without a cron. */
 	nextRun: string | null;
 }
 
@@ -135,11 +126,10 @@ export interface ProgramsStore {
 	/** Reverse lookup for the /hook route — returns the row regardless
 	 *  of enabled; the route decides what disabled means. */
 	findByHook(hash: string): Program | null;
-	/** Rolling DM cutover (design/telegram.md → Rolling DM): programs
-	 *  pinned to a DM topic (private chat + thread) re-pin to the bare
-	 *  chat — DM topics are retired and replies land in the main chat.
-	 *  Group topics and already-bare pins are untouched. Idempotent,
-	 *  logged per program. */
+	/** Rolling DM cutover: programs pinned to a DM topic (private chat
+	 *  + thread) re-pin to the bare chat — DM topics are retired and
+	 *  replies land in the main chat. Group topics and already-bare
+	 *  pins are untouched. Idempotent, logged per program. */
 	rePinDmTopics(): number;
 	close(): void;
 }
@@ -187,15 +177,10 @@ export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: D
 		);
 	}
 	// prev() is exclusive of currentDate — +1ms makes it "at or before".
-	// Verification asks the forward sequence to *reproduce* the
-	// candidate: step back to the previous occurrence, then forward —
-	// a fall-back repeat's predecessor steps over it (the forward
-	// sequence never yields the repeat), while a real member's
-	// predecessor lands on it. Stepping forward from the candidate
-	// must then overshoot `through`, or a member sits between.
-	// Fresh parses only — expression `fields` carry iterator state and
-	// a .prev() on shared fields changes what later .next() calls
-	// admit across a fall-back boundary.
+	// Verification asks the forward sequence to reproduce the
+	// candidate: a fall-back repeat's predecessor steps over it while
+	// a real member's lands on it; stepping forward must then overshoot
+	// `through`, or a member sits between.
 	try {
 		const cand = parseCron(cron, new Date(through.getTime() + 1))
 			.prev()
@@ -645,7 +630,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 // and the programs row is the truth. A cron that no longer parses is
 // skipped loudly rather than copied verbatim: a bad schedule on the
 // row would refire (and re-fail) every tick once markRan advances past
-// it (audit #21's reachable half).
+// it.
 function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")

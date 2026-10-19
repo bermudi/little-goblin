@@ -8,20 +8,10 @@ import { resolvePath, unicodeTwin } from "./paths.ts";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 64 * 1024;
-// Reads are whole-file, so gate on size first — a multi-GB log or database
-// would OOM the process before the output cap ever applied. Bigger files
-// get sliced with bash (sed/head/tail) instead.
 export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
-// Any single source line longer than this is clamped before it enters the
-// output window — minified JS, base64 blobs and CSV rows would otherwise
-// eat the whole 64KB budget in a handful of lines.
 export const MAX_LINE_CHARS = 2000;
 
-// Whole-file read guarded for tool use — shared by read_file and edit_file
-// (edit_file needs the same gates: it reads the whole file too, and a
-// binary file decoded as utf8 would be corrupted on write-back). The
-// `kind` discriminates failures for callers; the message is for the model.
 export type ReadFileError =
 	| { error: string; kind: "not-found" }
 	| { error: string; kind: "is-dir" }
@@ -36,10 +26,6 @@ export function readTextFile(abs: string, display: string): { text: string } | R
 		if (st.isDirectory()) {
 			return { error: `is a directory: ${display}`, kind: "is-dir" };
 		}
-		// Special files hang or lie: /dev/zero reports size 0 (passes the gate
-		// below) and never reaches EOF; a FIFO with no writer blocks forever.
-		// /proc pseudo-files report as regular and stay readable — the stat
-		// flags are the discriminator, not a path blocklist.
 		if (st.isCharacterDevice() || st.isBlockDevice() || st.isFIFO() || st.isSocket()) {
 			return {
 				error: `refusing to read special file (device/fifo/socket): ${display} — use the bash tool if you really need it`,
@@ -55,9 +41,6 @@ export function readTextFile(abs: string, display: string): { text: string } | R
 		raw = readFileSync(abs);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			// A differently-normalized twin may exist (macOS NFD names): every
-			// file tool resolves through the same twin so read, edit, and write
-			// land on one file instead of forking it under a second spelling.
 			const twin = unicodeTwin(abs);
 			if (twin !== null) {
 				log.info("read_unicode_retry", { original: abs, variant: twin });
@@ -73,8 +56,6 @@ export function readTextFile(abs: string, display: string): { text: string } | R
 	if (raw.includes(0)) {
 		return { error: `binary file: ${display} (${raw.byteLength} bytes)`, kind: "binary" };
 	}
-	// Fatal decode: lossy utf8 would let invalid bytes through, and
-	// edit_file writes the decoded text back — corrupting the file.
 	try {
 		return { text: new TextDecoder("utf-8", { fatal: true }).decode(raw) };
 	} catch {
@@ -82,8 +63,6 @@ export function readTextFile(abs: string, display: string): { text: string } | R
 	}
 }
 
-// Bounded Levenshtein: returns true if edit distance between a and b is
-// <= max (3 at call sites). Early-exits once a row's minimum exceeds max.
 function withinLevenshtein(a: string, b: string, max: number): boolean {
 	if (Math.abs(a.length - b.length) > max) return false;
 	let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -101,9 +80,6 @@ function withinLevenshtein(a: string, b: string, max: number): boolean {
 	return prev[b.length]! <= max;
 }
 
-// Suggest up to 3 near-miss filenames from the containing directory:
-// case-insensitive exact, then substring either direction, then
-// levenshtein <= 2 on the basename.
 function suggestAlternatives(abs: string): string[] {
 	const parent = dirname(abs);
 	const base = basename(abs);
@@ -111,7 +87,7 @@ function suggestAlternatives(abs: string): string[] {
 	try {
 		entries = readdirSync(parent);
 	} catch {
-		return []; // parent missing / unreadable — plain error, no suggestion
+		return [];
 	}
 	const lower = base.toLowerCase();
 	const picked: string[] = [];
@@ -123,9 +99,6 @@ function suggestAlternatives(abs: string): string[] {
 	}
 	for (const e of entries) {
 		const el = e.toLowerCase();
-		// 4-char floor: without it a 1-3 char entry matches inside almost
-		// any miss ("efi" inside "definitely-not-here") and the suggestion
-		// is pure noise.
 		if (
 			el !== lower &&
 			el.length >= 4 &&
@@ -142,9 +115,6 @@ function suggestAlternatives(abs: string): string[] {
 	return picked;
 }
 
-// read_file's readTextFile wrapper: decorates a genuine not-found with
-// did-you-mean candidates. (The NFC/NFD twin retry lives inside
-// readTextFile itself so every file tool shares it.)
 function readTextFileSmart(abs: string, display: string): { text: string } | ReadFileError {
 	const read = readTextFile(abs, display);
 	if (!("error" in read) || read.kind !== "not-found") return read;
@@ -156,10 +126,6 @@ function readTextFileSmart(abs: string, display: string): { text: string } | Rea
 	};
 }
 
-// Image sniffing for the tool layer: providers carry tool results as
-// strings, so image bytes must never reach the model. Reads only the
-// head window — the classifier itself lives in agent/sniff.ts, shared
-// with generated-image naming so the two can never drift.
 export function sniffImage(abs: string): SniffedImage | null {
 	let fd: number;
 	try {
@@ -179,8 +145,6 @@ export function sniffImage(abs: string): SniffedImage | null {
 
 function clampLine(line: string): string {
 	if (line.length <= MAX_LINE_CHARS) return line;
-	// Back off a lone lead surrogate at the seam — slicing on UTF-16 units
-	// can otherwise split an emoji in half and hand the model a U+FFFD.
 	let cut = line.slice(0, MAX_LINE_CHARS);
 	const last = cut.charCodeAt(cut.length - 1);
 	if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
@@ -210,9 +174,6 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 			const abs = resolvePath(cwd, path);
 			const read = readTextFileSmart(abs, path);
 			if ("error" in read) {
-				// Providers can't carry image bytes in tool results — turn a
-				// binary/too-large refusal into a structured note when the file
-				// is actually an image, so the model knows what it's holding.
 				if (read.kind === "binary" || read.kind === "too-large") {
 					const sniff = sniffImage(abs);
 					if (sniff) {
@@ -221,10 +182,6 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 							sniff.width !== undefined && sniff.height !== undefined
 								? ` ${sniff.width}x${sniff.height}`
 								: "";
-						// The note names the working channels in order of preference;
-						// which ones exist is decided by the caller (the vision tool
-						// rides its config block, Telegram materialization is always
-						// there) — read_file itself knows neither.
 						const channels = visionAvailable
 							? `Use the vision tool to ask questions about what it shows; `
 							: `Have the operator send it via Telegram so I can see it natively; `;
@@ -240,33 +197,19 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 				return read;
 			}
 			if (read.text.length === 0) {
-				// 0 bytes → a single blank numbered line would just look broken.
-				// Whitespace-only files are not empty and keep their numbering.
 				return { content: "[file is empty — 0 bytes]", lines: 0, shown: 0 };
 			}
-			// A trailing newline terminates the last line; it does not start a new
-			// one. Keeping the empty tail element makes counts off by one and
-			// makes offset=-1 return a blank line.
 			const lines = read.text.split("\n");
 			if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
 			const total = lines.length;
 
-			// An offset past EOF is an error with the real count, not a silent
-			// empty read — the model can't tell "empty file" from "bad guess"
-			// otherwise. Negative offsets clamp: asking for the last 500 lines
-			// of a 30-line file means the whole file, not an error.
 			if (offset !== undefined && offset > 0 && offset > total) {
 				return { error: `offset ${offset} is beyond end of file (${total} lines)` };
 			}
 			const start =
 				offset !== undefined && offset < 0 ? Math.max(0, total + offset) : (offset ?? 1) - 1;
-			// The user's limit is honored first; caps apply to what they asked for.
 			const limitEnd = limit !== undefined ? Math.min(start + limit, total) : total;
 
-			// A single line bigger than the whole output cap can't be shown at
-			// all — point at the bash fallback instead of emitting a marker that
-			// carries no content. Checked on the raw source line, before the
-			// per-line clamp: the clamp handles 2K–64K lines, bash handles monsters.
 			const firstRaw = `${start + 1}\t${lines[start] ?? ""}\n`;
 			if (Buffer.byteLength(firstRaw, "utf8") > MAX_BYTES) {
 				return {
@@ -278,10 +221,6 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 				};
 			}
 
-			// Emit complete numbered lines only — never a partial line — stopping
-			// at whichever cap hits first (line count or output bytes, line-number
-			// prefixes included in the byte accounting). Lines are clamped before
-			// byte accounting so junk lines can't consume the window.
 			const out: string[] = [];
 			let bytes = 0;
 			let shown = 0;
@@ -294,9 +233,6 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 				shown++;
 			}
 
-			// The continuation notice is the point of pre-capping: whenever
-			// output stops short, it names the exact offset that resumes the
-			// file, so paging is one call away instead of a guessing game.
 			let notice = "";
 			if (shown < MAX_LINES && i < limitEnd) {
 				notice = `\n[Showing lines ${start + 1}–${i} of ${total} (${MAX_BYTES / 1024}KB limit). Use offset=${i + 1} to continue.]`;

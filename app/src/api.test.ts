@@ -433,9 +433,9 @@ describe("attachments", () => {
 	});
 });
 
-// The Telegram door (design/telegram.md → Mini Apps): served under /t/,
-// operator requests rewrite /api/app/* to the identically-named /api/*
-// tails and ride x-init-data instead of a bearer token.
+// The Telegram door: served under /t/, operator requests rewrite
+// /api/app/* to the identically-named /api/* tails and ride x-init-data
+// instead of a bearer token.
 describe("telegram door", () => {
 	const originalWindow = globalThis.window;
 	const originalFetch = globalThis.fetch;

@@ -26,15 +26,12 @@ describe("skill attribution (exact paths only)", () => {
 	});
 
 	test("writes outside the catalog, bare root files, and invalid names attribute nothing", () => {
-		// A project conversation's own skills/ dir — not the catalog.
 		expect(
 			attributedSkills(watch, "write_file", { path: "/proj/skills/foo/SKILL.md", bytes: 1 }),
 		).toEqual([]);
-		// The catalog root itself is not a skill.
 		expect(
 			attributedSkills(watch, "write_file", { path: join(ROOT, "skills/notes"), bytes: 1 }),
 		).toEqual([]);
-		// Names outside the catalog rule are not skills.
 		expect(
 			attributedSkills(watch, "write_file", {
 				path: join(ROOT, "skills/NotASkill/SKILL.md"),
@@ -70,7 +67,7 @@ describe("skill attribution (exact paths only)", () => {
 					tool: "write_file",
 					args: '{"path":"skills/cut-skill/SKILL.md","content":"aaaaaaaaaa',
 					ok: true,
-					result: '{"path":"/ws/skills/cut-sk', // truncated by summarize
+					result: '{"path":"/ws/skills/cut-sk',
 				},
 			],
 		};

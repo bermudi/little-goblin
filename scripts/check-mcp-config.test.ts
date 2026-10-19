@@ -6,7 +6,7 @@ import { checkMcpConfig, checkMcpConfigFile } from "./check-mcp-config.ts";
 
 // The gate's one invariant: goblin's mcporter config must carry
 // `"imports": []`, or mcporter silently merges the operator's editor
-// servers (DESIGN.md, "Web access" → "MCP").
+// servers.
 describe("checkMcpConfig", () => {
 	test("an empty server set with imports [] passes", () => {
 		expect(checkMcpConfig('{"mcpServers": {}, "imports": []}')).toEqual({ ok: true });

@@ -1,7 +1,5 @@
-// Topic titler — one small generateText call that turns a conversation's
-// first text into a Telegram topic name, ChatGPT-style. Knows nothing
-// about Telegram beyond the 128-char name cap; the caller owns the
-// editForumTopic boundary.
+// Knows nothing about Telegram beyond the 128-char topic-name cap —
+// the caller owns the editForumTopic boundary.
 
 import { generateText, type LanguageModel } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
@@ -33,10 +31,8 @@ export async function generateTopicTitle(
 		...(providerOptions ? { providerOptions } : {}),
 	});
 	const title = sanitizeTitle(result.text);
-	// A model call is a cost line even when it's a throwaway — DESIGN.md
-	// (Cache stability): every model call logs usage with the cached
-	// split, or a titling anomaly can't be reconstructed from the log.
-	// The request hashes ride the model-call wrapper (observedModel).
+	// A throwaway call is still a cost line — log usage with the cache
+	// split or a titling anomaly can't be reconstructed from the log.
 	log.info("title model call", {
 		model: typeof model === "string" ? model : `${model.provider}/${model.modelId}`,
 		usage: {
@@ -50,8 +46,8 @@ export async function generateTopicTitle(
 	return title;
 }
 
-// Model output is a boundary: take the first line, strip quote/markdown
-// decoration it was told not to add, enforce the Telegram cap.
+// Strip the quote/markdown decoration the model was told not to add;
+// enforce the Telegram cap.
 export function sanitizeTitle(raw: string): string | null {
 	const first = raw.split("\n", 1)[0] ?? "";
 	const title = first
@@ -62,9 +58,8 @@ export function sanitizeTitle(raw: string): string | null {
 	return [...title].slice(0, MAX_TITLE_CHARS).join("");
 }
 
-// The per-title seam — one generateText call through the configured
-// titleModel under the cache observation; absent model answers null.
-// boot() builds it once for the spin-off pin deps.
+// Absent titleModel answers null. boot() builds it once for the
+// spin-off pin deps.
 export function makeTitleFor(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;

@@ -1,5 +1,3 @@
-// Durable Telegram intake buffer. Shares the conversation store's SQLite handle
-// so a history append and its inbox acknowledgement commit together.
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { parseAddress } from "../conversation.ts";
@@ -30,7 +28,6 @@ const payloadSchema = z.strictObject({
 	text: z.string(),
 	media: mediaSchema.nullable(),
 	mediaError: z.string().nullable(),
-	// Optional so rows journaled before the Rolling DM cutover still parse.
 	quoted: z.strictObject({ messageId: idSchema, text: z.string() }).optional(),
 });
 
@@ -41,8 +38,6 @@ export interface InboxPayload {
 	text: string;
 	media: IncomingMedia | null;
 	mediaError: string | null;
-	// The message this one quoted (msg.reply_to_message): id + its own
-	// text/caption, head-cut at intake into the leading parts line.
 	quoted?: { messageId: number; text: string } | undefined;
 }
 export interface InboxEntry {
@@ -84,10 +79,6 @@ function decode(row: unknown): InboxEntry {
 
 const updateIdSchema = idSchema.nonnegative();
 
-// Lane keys and archive targets are codec shapes — the id spelling
-// lives in conversation.ts; these schemas only add the DM-lane rule
-// (a private chat's key) and stay the throwing zod boundary for disk
-// rows and boot recovery.
 const isDmLaneKey = (key: string): boolean => {
 	const parsed = parseAddress(key);
 	return parsed !== null && parsed.kind === "dm" && parsed.chatId > 0;
@@ -117,24 +108,11 @@ const assignmentSchema = z.object({ target_id: rollingTargetSchema });
 
 export function openTelegramInbox(db: Database): {
 	record(updateId: number, payload: InboxPayload): boolean;
-	// The pre-routing redelivery probe (#77): an update already admitted
-	// (pending or committed) keeps its row's original destination —
-	// redelivery is recognized by immutable Telegram identity, never by
-	// recomputing state-dependent routing. Returns null when no row
-	// claims the identity; genuinely conflicting identities stay with
-	// record()'s checks.
 	admittedDestination(updateId: number, chatId: number, messageId: number): string | null;
-	// A message's pending inbox row — the edited_message door: while the
-	// burst still coalesces the edit can amend it in place. Committed or
-	// absent rows return null (the turn already saw the original text,
-	// or the message was never journaled — edits never re-enter history).
 	pendingByMessage(
 		chatId: number,
 		messageId: number,
 	): { updateId: number; laneKey: string; mediaUniqueId: string | null } | null;
-	// Rewrites a pending row's sender text — payload_json is replay
-	// input, so a crash between amend and flush still produces the
-	// edited burst. False when the row is gone or already committed.
 	amendPendingText(updateId: number, text: string): boolean;
 	pending(): InboxEntry[];
 	pendingIds(updateIds: readonly number[], laneKey: string): number[];
@@ -155,8 +133,6 @@ export function openTelegramInbox(db: Database): {
 		CHECK ((committed_at IS NULL AND payload_json IS NOT NULL) OR
 		       (committed_at IS NOT NULL AND payload_json IS NULL))
 	)`);
-	// The original lane/payload is never rewritten: redelivery must still
-	// match its intake identity, even after navigation or acknowledgement.
 	db.run(`CREATE TABLE IF NOT EXISTS tg_inbox_archives (
 		update_id INTEGER PRIMARY KEY REFERENCES tg_inbox(update_id),
 		target_id TEXT NOT NULL
@@ -195,7 +171,6 @@ export function openTelegramInbox(db: Database): {
 		FROM tg_inbox WHERE chat_id = ? AND message_id = ?`);
 	const commit = db.query(`UPDATE tg_inbox SET committed_at = ?, payload_json = NULL
 		WHERE update_id = ? AND committed_at IS NULL`);
-	// Pending-guarded: an edit that lands after commit touches nothing.
 	const amendText = db.query(`UPDATE tg_inbox SET payload_json = ?
 		WHERE update_id = ? AND committed_at IS NULL`);
 
@@ -205,15 +180,10 @@ export function openTelegramInbox(db: Database): {
 			idSchema.parse(chatId);
 			idSchema.parse(messageId);
 			const byUpdate = selectOne.get(updateId);
-			// The update id's row must claim the full identity; a partial
-			// match is not this update's row and falls through to record()'s
-			// conflict checks.
 			if (byUpdate !== null) {
 				const row = rowSchema.parse(byUpdate);
 				return row.chat_id === chatId && row.message_id === messageId ? row.conversation_id : null;
 			}
-			// No row for the update id: the chat-scoped message id may still
-			// identify the message (a redelivery under a new update id).
 			const byMessage = selectMessage.get(chatId, messageId);
 			return byMessage === null ? null : rowSchema.parse(byMessage).conversation_id;
 		},
@@ -238,8 +208,6 @@ export function openTelegramInbox(db: Database): {
 			if (raw === null) return false;
 			const row = rowSchema.parse(raw);
 			if (row.committed_at !== null) return false;
-			// Re-decode, patch, re-encode: the payload boundary stays the
-			// throwing zod one even on the rewrite path.
 			const next = payloadSchema.parse({ ...decode(row).payload, text });
 			if (amendText.run(JSON.stringify(next), updateId).changes !== 1) {
 				throw new Error(`Telegram inbox update ${updateId} committed during its amend`);
@@ -266,9 +234,6 @@ export function openTelegramInbox(db: Database): {
 						JSON.stringify(valid),
 					).changes === 1;
 				if (!inserted) {
-					// An update ID and a chat-scoped message ID both identify
-					// one message. A conflict on either with a different
-					// identity is corruption, not a harmless redelivery.
 					const existing = rowSchema.parse(
 						selectOne.get(updateId) ?? selectMessage.get(valid.chatId, valid.messageId),
 					);
@@ -372,8 +337,6 @@ export function openTelegramInbox(db: Database): {
 				const row = rowSchema.parse(raw);
 				if (row.committed_at !== null || row.conversation_id !== laneKey) return false;
 				decode(row);
-				// Any assignment fences classification, even if its target
-				// happens to be the currently selected conversation.
 				return selectArchive.get(id) === null;
 			});
 		},
@@ -394,13 +357,11 @@ export function openTelegramInbox(db: Database): {
 						if (!row) throw new Error(`Telegram inbox update ${id} is missing`);
 						const lane = decode(row).payload.conversationId;
 						const target = selectArchive.get(id) ? archivedTarget(id, lane) : null;
-						// Normal routing commits by original lane; history-only
-						// intake may also commit directly by its assigned target.
 						if (lane !== conversationId && target !== conversationId) {
 							throw new Error(`Telegram inbox update ${id} is in another conversation`);
 						}
 					}
-					append(); // ConversationStore.append opens a savepoint on this same handle.
+					append();
 					const now = new Date().toISOString();
 					for (const id of updateIds) {
 						if (commit.run(now, id).changes !== 1)

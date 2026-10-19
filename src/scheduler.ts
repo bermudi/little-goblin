@@ -1,14 +1,5 @@
-// The program firing owner plus the cron ticker (DESIGN.md,
-// "Programs"). fireProgram is the shared core: it formats and submits
-// a `[program: name · trigger: …]` user message into the program's
-// pinned conversation through a normal delivery sink — no special
-// execution path, the lane queue orders it behind any live turn,
-// epoch fencing applies. Around that core, one entry point per
-// trigger owns its post-submit accounting: what a fire costs when
-// delivery fails is trigger-specific policy, and it lives here —
-// never in a caller. The scheduler scan is the cron ticker; boot
-// catch-up falls out of the due() query, then schedule lateness policy
-// decides whether to fire once or skip stale occurrences.
+// One entry point per trigger owns its post-submit accounting — what
+// a failed fire costs is trigger-specific policy, never a caller's.
 
 import { checkInjection, verdictLine } from "./injection.ts";
 import type { System1Client } from "./system1.ts";
@@ -24,10 +15,8 @@ import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 
 export interface SchedulerDeps extends WakeDeps {
 	programs: ProgramsStore;
-	/** The shared System One gate (index.ts's system1Gate) — scores the
-	 *  fired event text before the turn lands. Absent = no check
-	 *  (the event fires unscored); a gate outage fails open with the
-	 *  unavailable line, never a held fire. */
+	/** Scores fired event text before the turn lands. Absent = no
+	 *  check; a gate outage fails open, never a held fire. */
 	checkMail?: Pick<System1Client, "decide">;
 	/** The responsibility arm of the program destination union — a
 	 *  responsibility-destination program never reaches the Telegram
@@ -39,11 +28,10 @@ export interface SchedulerDeps extends WakeDeps {
 }
 
 export interface Scheduler {
-	/** One scan now; after stop this only joins existing work (or is a no-op). */
+	/** One scan now; after stop this only joins existing work. */
 	tick(): void;
-	/** Stops the timer and drops any pending schedule-fire retry — the
-	 *  occurrence's cursor is already advanced, so a dropped retry is
-	 *  what a crash would do anyway, never a held fire. */
+	/** Stops the timer and drops pending retries — the cursor already
+	 *  advanced, so a dropped retry is what a crash does anyway. */
 	stop(): void;
 }
 
@@ -108,16 +96,13 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	};
 }
 
-// The schedule-fire retry ladder (hermes' bounded zero-API-call
-// re-run): a fire whose turn died before any model call with a
-// transient cause re-fires once per delay, at most delays.length
-// retries per occurrence. Pending timers belong to the scheduler that
-// armed them — keyed by its deps, the one identity fireScheduled and
-// the sink's late onDone both hold — so a stop() ends the ladder for
-// good: an onDone that lands after the stop must not arm a fresh timer
-// into a process that is shutting down. A restart legitimately drops
-// them — the cursor already advanced at the original fire, so a dropped
-// retry is exactly the no-ladder behavior, not worse.
+// Retry ladder (hermes' bounded zero-API-call re-run): a fire whose
+// turn died before any model call with a transient cause re-fires
+// once per delay, at most delays.length retries per occurrence.
+// Timers key on deps — the one identity fireScheduled and the sink's
+// late onDone both hold — so stop() ends the ladder: a late onDone
+// must not arm a timer into a shutting-down process. A dropped retry
+// is the no-ladder behavior — the cursor already advanced.
 const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
 interface RetryLadder {
 	timers: Map<string, ReturnType<typeof setTimeout>>;
@@ -140,27 +125,21 @@ interface PendingCursorWrite {
 	at: Date;
 }
 
-// The consume record is "submit first, then markRan" (design/programs.md
-// — one attempt per occurrence). When the markRan *write* fails after
-// the submit landed, the row stays due and every tick would re-submit
-// the same occurrence — an operator-visible duplicate per scan until
-// the store heals. Fence the occurrence in-process instead: the tick
-// retries the cursor write (with the original fire time, so occurrences
-// that came due during the outage coalesce the usual way) but never
-// re-fires; a restart re-offers the still-due row once — the same
-// at-least-once a crash gets. One record per program id — a second
-// fence for the same program cannot arise while the first holds (the
-// row stays due, and every due pass takes the retry branch) — and the
-// scan drops entries whose row was deleted, disabled, or rescheduled
-// underneath them, so a fence can't outlive the program that created
-// it. Keyed per store so test stores can't share fences.
+// Consume record is "submit first, then markRan". When the markRan
+// *write* fails after the submit landed, the row stays due and every
+// tick would re-submit the same occurrence. Fence it in-process
+// instead: the tick retries the write with the original fire time
+// (occurrences due during the outage coalesce the usual way) but
+// never re-fires; a restart re-offers the still-due row once — the
+// same at-least-once a crash gets. One record per program id — a
+// second fence cannot arise while the first holds — and the scan
+// drops entries whose row was deleted, disabled, or rescheduled.
+// Keyed per store so test stores can't share fences.
 const pendingCursorWrites = new WeakMap<ProgramsStore, Map<number, PendingCursorWrite>>();
 
 // A fence goes moot when its row moves past it — deleted, disabled, or
-// rescheduled — because due() never surfaces it for the retry branch
-// again. The scan drops those entries itself so a dead program id can't
-// linger; a still-due row keeps its fence for the retry below. Writing
-// a stale markRan back is NOT the cleanup: it would clobber the new
+// rescheduled — because due() never surfaces it again. Writing a
+// stale markRan back is NOT the cleanup: it would clobber the new
 // next_run with a cursor computed off the old fire time.
 function reconcilePendingMarks(deps: SchedulerDeps): void {
 	const pending = pendingCursorWrites.get(deps.programs);
@@ -184,17 +163,14 @@ function reconcilePendingMarks(deps: SchedulerDeps): void {
 	}
 }
 
-// Cron: missed occurrences coalesce against the latest occurrence due
-// at this scan — anchored at the due row's next_run and walked with the
-// same forward steps that persist it (latestFireAtOrBefore documents
-// why a backward lookup would lie across DST transitions). A
-// per-program grace can skip an overly stale catch-up; advancing the
-// cursor is still required so it cannot warn every tick. Otherwise
-// fire once and advance — occurrences are synthetic and infinite, so
-// holding one would refire the error. A fire whose turn dies before
-// any model call with a transient cause gets one bounded in-process
-// retry ladder against the same occurrence — never a held occurrence;
-// the cursor stays advanced throughout.
+// Cron: missed occurrences coalesce against the latest due at this
+// scan — anchored at next_run, walked forward (a backward lookup
+// lies across DST). A per-program grace can skip a stale catch-up;
+// the cursor still advances so it cannot warn every tick. Otherwise
+// fire once and advance — occurrences are synthetic and infinite,
+// holding one would refire the error. A transient, zero-model-call
+// failure gets the bounded retry ladder on the same occurrence —
+// never a held occurrence; the cursor stays advanced throughout.
 export function fireScheduled(
 	deps: SchedulerDeps,
 	program: Program,
@@ -310,14 +286,12 @@ export function fireWebhook(
 	return landed;
 }
 
-// Mail: the checkpoint follows fired records (DESIGN.md, "Email"). A
-// fire that does not land holds the checkpoint — matches are real
-// events that cannot be regenerated, so they retry next poll instead
-// of being skipped forever. The checkpoint write follows the submit:
-// a crash between the two re-fires a batch rather than dropping it
-// (at-least-once). An empty poll, or one whose program was disabled
-// mid-flight, consumes the checkpoint — that mail is skipped, not
-// owed.
+// Mail: the checkpoint follows fired records. A fire that does not
+// land holds the checkpoint — matches are real events that cannot be
+// regenerated, so they retry next poll. The checkpoint write follows
+// the submit: a crash between re-fires a batch (at-least-once). An
+// empty poll, or a program disabled mid-flight, consumes the
+// checkpoint — that mail is skipped, not owed.
 export async function fireMail(
 	deps: SchedulerDeps,
 	program: Program,
@@ -346,12 +320,10 @@ export async function fireMail(
 	// The whole event is what the model sees — one call scores it all.
 	// Fail-open: a gate outage annotates unavailable, never holds fire.
 	const event = await scoredMailEvent(deps.checkMail, formatMailEvent(hits));
-	// The gate is another await the row can change across (the
-	// rolling.ts re-read rule): a disable or delete that landed mid-gate
-	// wins over this snapshot — revoked authority fences the submit
-	// itself. Filter edits and re-enables still let the old fire land
-	// (the mid-fire CAS ruling below); only the checkpoint loses that
-	// race.
+	// The gate is another await the row can change across: a disable
+	// or delete landed mid-gate wins over this snapshot — revoked
+	// authority fences the submit itself. Filter edits and re-enables
+	// still let the old fire land; only the checkpoint loses that race.
 	const admitted = deps.programs.get(program.id);
 	if (admitted === null) {
 		// Deleted mid-gate — nothing to write, nothing to fire.
@@ -404,9 +376,8 @@ export async function fireMail(
 	});
 }
 
-// Score one fired event through the shared gate and append the
-// verdict line — the same contract the goblin-mail wrapper prints.
-// No gate = unscored event; any gate outage = unavailable line.
+// Appends the verdict line the goblin-mail wrapper prints. No gate =
+// unscored event; any gate outage = unavailable line.
 export async function scoredMailEvent(
 	gate: Pick<System1Client, "decide"> | undefined,
 	event: string,
@@ -416,8 +387,8 @@ export async function scoredMailEvent(
 	return `${event}\n${verdictLine(verdict)}`;
 }
 
-// The event body: one block per match (from/subject/date/snippet/id —
-// the body is one `mail read` away, never pushed), oldest first.
+// One block per match, oldest first — the body is one `mail read`
+// away, never pushed.
 export function formatMailEvent(hits: readonly MailHit[]): string {
 	return hits
 		.map((h) =>
@@ -432,11 +403,9 @@ export function formatMailEvent(hits: readonly MailHit[]): string {
 		.join("\n---\n");
 }
 
-// The shared core: format the fire, submit it through the ordinary
-// wake path, and return whether the turn landed. The entry points
-// above own what the verdict costs — no state writes here. A schedule
-// fire hands in a sink decorator for the retry ladder; webhook and
-// mail pass none and behave exactly as before.
+// The shared core — no state writes here; the entry points own what
+// the verdict costs. A schedule fire hands in a sink decorator for
+// the retry ladder; webhook and mail pass none.
 function fireProgram(
 	deps: SchedulerDeps,
 	program: Program,
@@ -700,11 +669,10 @@ function considerRetry(
 	ladder.timers.set(key, timer);
 }
 
-// The next rung: re-read the row — it can change across the delay —
-// and fire through the ordinary path. markRan is NOT called again: the
-// cursor advanced at the original fire, and these retries ride that
-// occurrence. Revoked authority fences the submit (the mid-scoring
-// ruling): a program disabled or deleted mid-ladder drops the retry.
+// Re-read the row — it can change across the delay. markRan is NOT
+// called again: the cursor advanced at the original fire and retries
+// ride that occurrence. A program disabled or deleted mid-ladder
+// drops the retry.
 function refire(
 	deps: SchedulerDeps,
 	id: number,

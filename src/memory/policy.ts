@@ -1,5 +1,3 @@
-// Shared application policy, independent of server imports so the settings
-// client can use the same defaults without pulling in the runtime.
 export const MEMORY_DEFAULTS = {
 	recallTimeoutMs: 5_000,
 	maxTokens: 2_048,
@@ -17,8 +15,8 @@ export const MEMORY_DEFAULTS = {
 
 export const BUDGET_ORDER = { low: 0, mid: 1, high: 2 } as const;
 
-// An aggregate character bound makes the per-field limits compatible with
-// the byte ceiling even when JSON must escape every character.
+// The aggregate bound must keep the per-field caps within the response byte
+// ceiling even when JSON escapes every character.
 export const REFLECTION_LIMITS = {
 	responseBytes: 16 * 1024 * 1024,
 	totalCharacters: 2_000_000,

@@ -1,9 +1,3 @@
-// The note tool's boundary tests: actions round-trip through a real
-// store, scope "here" follows the conversation's project binding,
-// and every actionable refusal (stale rev, bad range, missing note)
-// comes back as tool output — never a thrown turn. The guest filter
-// test pins that `note` never mounts on a guest turn.
-
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -81,8 +75,6 @@ describe("note tool actions", () => {
 		})) as { note: { rev: number } };
 		expect(appended.note.rev).toBe(2);
 		expect(deps.notes.get(created.note.id)?.body).toBe("start here\n\nand then");
-		// The append is agent-sourced — the store keeps the conversation
-		// on the version so a restore names who wrote.
 		const versions = deps.notes.listVersions(created.note.id);
 		expect(versions[0]?.source).toBe("agent");
 		expect(versions[0]?.conversation).toBe("app/c1");
@@ -91,7 +83,6 @@ describe("note tool actions", () => {
 	test("list scope 'here' follows the conversation's binding", async () => {
 		const { tool, deps, projects } = setup();
 		const proj = projects.create({ name: "proj one" });
-		// A tool bound to the project sees only that project's notes.
 		const bound = noteTool({ ...deps, projectId: proj.id });
 		deps.notes.create({ title: "project note", projectId: proj.id });
 		deps.notes.create({ title: "loose note" });
@@ -105,7 +96,6 @@ describe("note tool actions", () => {
 			notes: { title: string }[];
 		};
 		expect(all.notes).toHaveLength(2);
-		// An unbound conversation's "here" is the loose shelf.
 		const unbound = (await exec(tool, { action: "list" })) as {
 			scope: string;
 			notes: { title: string }[];
@@ -138,23 +128,18 @@ describe("note tool actions", () => {
 		};
 		expect(out.error).toContain("rev 2");
 		expect(out.rev).toBe(2);
-		// Nothing was written.
 		expect(deps.notes.get(n.id)?.body).toBe("one\n\ntwo");
 	});
 
 	test("replace without a rev is refused as invalid arguments — nothing writes", async () => {
 		const { tool, deps } = setup();
 		const n = deps.notes.create({ title: "t", body: "keep me" });
-		// A whole-body write must name the rev it read; the wire
-		// schema's flat shape can't enforce that, so execute's
-		// safeParse answers with an actionable error.
 		const out = (await exec(tool, { action: "replace", id: n.id, body: "wipe" })) as {
 			error?: string;
 		};
 		expect(out.error).toContain("invalid arguments");
 		expect(deps.notes.get(n.id)?.body).toBe("keep me");
 		expect(deps.notes.get(n.id)?.rev).toBe(1);
-		// The same guard catches inputs that match no action at all.
 		const bogus = (await exec(tool, { action: "vandalize" })) as { error?: string };
 		expect(bogus.error).toContain("invalid arguments");
 	});
@@ -166,14 +151,12 @@ describe("note tool actions", () => {
 			body: "b",
 		});
 		const out = (await exec(tool, { action: "read", id: n.id })) as { content: string };
-		// The attribute values are entity-escaped end to end.
 		const open = out.content.split("\n", 1)[0]!;
 		expect(open).toContain("&quot;");
 		expect(open).toContain("&lt;evil");
 		expect(open).toContain("&amp;amp;");
 		expect(open).not.toContain(`title="a"><evil`);
 		expect(open.endsWith(">")).toBe(true);
-		// Directly through noteFence for a hostile id too.
 		expect(noteFence({ id: `x"><`, title: "t", rev: 1, body: "" })).toContain(
 			`id="x&quot;&gt;&lt;"`,
 		);
@@ -236,8 +219,6 @@ describe("note tool actions", () => {
 			content: string;
 		};
 		expect(rest.content).toContain("y".repeat(6000));
-		// The final window still carries the footer — the absolute range
-		// and the base+position arithmetic replace_range needs.
 		expect(rest.content).toContain("[Showing chars 64000–70000 of 70000");
 		expect(rest.content).not.toContain("to continue");
 		expect(rest.content).toContain("offset 64000 + p");
@@ -245,7 +226,6 @@ describe("note tool actions", () => {
 			error?: string;
 		};
 		expect(oob.error).toContain("beyond end of note (70000 chars)");
-		// A whole-body read states its absolute range too.
 		const small = deps.notes.create({ title: "small", body: "tiny" });
 		const whole = (await exec(tool, { action: "read", id: small.id })) as { content: string };
 		expect(whole.content).toContain("[Showing chars 0–4 of 4.");

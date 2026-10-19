@@ -1,11 +1,9 @@
-// Whistle — Cactus Compute's local speech model (design/asr.md →
-// Whistle). One 16.9 MB .cact weights file, CPU-only, no key, no
-// network: the engine binary contains no HTTP client and reads no
-// environment, so audio never leaves the box. Invoked as a stateless
-// subprocess per segment, like every other goblin child.
+// Whistle — Cactus Compute's local speech model. One 16.9 MB .cact
+// weights file, CPU-only, no key: the engine binary has no HTTP client
+// and reads no environment, so audio never leaves the box.
 //
 // Artifacts auto-fetch once into $GOBLIN_HOME/cache/whistle, digest
-// pinned: upstream drift fails loud instead of running different
+// pinned — upstream drift fails loud instead of running different
 // weights silently. engine:/weights: config bypasses the fetch for
 // managed installs.
 
@@ -21,8 +19,8 @@ import { boundedRun, spawnProc } from "../proc.ts";
 import { durableWriteBytes } from "../durable.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
 
-// The engine's hard per-pass ceiling — segments cut at 28 s leave the
-// margin (design/asr.md: measured on this very binary).
+// The engine's hard per-pass ceiling — 28 s leaves margin (measured on
+// this binary).
 const WHISTLE_SEGMENT_SECONDS = 28;
 const WHISTLE_TIMEOUT_MS = 120_000;
 // needle + whistle.cact are ~18 MB combined; anything bigger is not
@@ -40,22 +38,21 @@ export interface WhistleCfg {
 export interface WhistleDeps extends EngineDeps {
 	arch?: string;
 	platform?: string;
-	// Default paths.whistleCache() — tests point it at a tmpdir.
 	cacheDir?: string;
-	// Test seam: override the pinned digests so fixtures can serve
-	// small fake bytes instead of the real 17 MB artifacts.
+	// Test seam: fixtures serve small fake bytes instead of the real
+	// 17 MB artifacts.
 	digests?: { engine: string; weights: string };
 }
 
-// sha256 of the probed artifacts (2026-10-09). A mismatch is supply
-// chain drift — fail loud, never run different weights.
+// sha256 of artifacts probed 2026-10-09. A mismatch is supply-chain
+// drift — never run different weights.
 const PINNED_DIGESTS = {
 	engine: "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
 	weights: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
 } as const;
 
-// x86_64 linux is the only prebuilt platform verified here (g7; and
-// lithium before its 2026-10-09 retirement). Everything else gets the
+// linux-x86_64 is the only verified prebuilt platform (g7; lithium
+// before its 2026-10-09 retirement). Everything else gets the
 // manual-path instruction instead of an untested binary.
 function artifactUrls(arch: string, platform: string): { engine: string; weights: string } {
 	if (platform !== "linux" || arch !== "x64") {
@@ -70,7 +67,7 @@ function artifactUrls(arch: string, platform: string): { engine: string; weights
 }
 
 // One fetch per process per artifact set — concurrent transcriptions
-// share the in-flight promise, later ones reuse the result.
+// share the in-flight promise.
 const artifactMemo = new Map<string, Promise<{ engine: string; weights: string }>>();
 
 function ensureArtifacts(
@@ -82,8 +79,7 @@ function ensureArtifacts(
 	const memoized = artifactMemo.get(key);
 	if (memoized !== undefined) return memoized;
 	const p = (async () => {
-		// URLs resolve only for artifacts with no override — a
-		// fully-overridden install never reaches the platform gate, so
+		// A fully-overridden install never reaches the platform gate —
 		// managed installs run on any arch.
 		const urls =
 			cfg.engine !== undefined && cfg.weights !== undefined
@@ -91,8 +87,8 @@ function ensureArtifacts(
 				: artifactUrls(deps.arch ?? process.arch, deps.platform ?? process.platform);
 		const digests = deps.digests ?? PINNED_DIGESTS;
 		return {
-			// The empty URL is never fetched: artifact() returns an
-			// override before touching it.
+			// The empty URL is never fetched — artifact() returns an
+			// override first.
 			engine: await artifact(
 				cfg.engine,
 				join(cacheDir, "needle"),
@@ -198,16 +194,16 @@ export function whistleEngine(cfg: WhistleCfg, deps: WhistleDeps = {}): SpeechEn
 		prep: { container: "wav", sampleRateHz: 16_000, mono: true },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const { engine, weights } = await ensureArtifacts(cfg, deps);
-			// Keywords bias toward names — one per line (--help: "words
-			// and phrases to favour"). Per-call temp file; small, and the
-			// engine config can change between calls.
+			// --audio-keywords takes one word/phrase per line (needle
+			// --help). Per-call temp file — the config can change between
+			// calls.
 			const argv = [engine, "--model", weights, "--audio", file.path];
 			if (cfg.language !== undefined) argv.push("--audio-language", cfg.language);
 			let kwDir: string | undefined;
 			try {
 				if (cfg.keywords !== undefined && cfg.keywords.length > 0) {
-					// Inside the try: a failed write must still remove the
-					// dir the mkdtemp just made.
+					// Inside the try so a failed write still removes the
+					// mkdtemp dir.
 					kwDir = mkdtempSync(join(tmpdir(), "goblin-kw-"));
 					const kwFile = join(kwDir, "keywords.txt");
 					await writeFile(kwFile, `${cfg.keywords.join("\n")}\n`);

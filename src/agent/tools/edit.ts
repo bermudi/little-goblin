@@ -16,13 +16,8 @@ export const editFileTool = (cwd: string) =>
 			replace_all: z.boolean().optional(),
 		}),
 		execute: async ({ path, old_string, new_string, replace_all }) => {
-			// Resolve the unicode twin BEFORE reading, and read, write, and
-			// report the same path: reading via the twin retry while writing
-			// the requested spelling silently forks the file into two names.
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;
-			// And write through a leaf symlink to the file it manages —
-			// tmp+rename over the link would replace it and fork the config.
 			const through = writeThroughTarget(target);
 			if ("error" in through) return { error: through.error };
 			const file = through.target;
@@ -39,8 +34,6 @@ export const editFileTool = (cwd: string) =>
 					error: `old_string matches ${count} times in ${path}; set replace_all or make it unique`,
 				};
 			}
-			// Function replacer: new_string is literal — a string replacer
-			// would interpret $&, $`, $', $n as special patterns.
 			const next = replace_all
 				? text.split(old_string).join(new_string)
 				: text.replace(old_string, () => new_string);

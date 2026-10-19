@@ -1,16 +1,12 @@
-// Transcript markdown — a small block renderer over the shapes a chat
-// model actually emits: ATX headings, fenced code, blockquotes, lists
-// (bullets, ordered, checkboxes, one level of indent), pipe tables,
-// paragraphs. Inline: links, code spans, bold, italic, strike, bare
-// URLs. This is comfortable reading, not CommonMark conformance —
-// anything unrecognized stays literal text.
+// Transcript markdown — comfortable reading, not CommonMark
+// conformance: anything unrecognized stays literal text.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
-// core + the languages a chat model actually fences — the /common bundle
-// is ~40 grammars of COBOL the bundle doesn't need.
+// core + the languages a chat model actually fences — the /common
+// bundle is ~40 grammars the client doesn't need.
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import c from "highlight.js/lib/languages/c";
@@ -95,15 +91,14 @@ export function inline(text: string): ReactNode[] {
 	return out;
 }
 
-// A fence longer than this clips to CLIP_LINES plus a show-all tail
-// (opt-in via clipFences — operator messages carry pastes that would
-// otherwise own the transcript).
+// clipFences opt-in: a fence longer than CLIP_MIN clips to CLIP_LINES
+// plus a show-all tail — operator pastes would otherwise own the
+// transcript.
 const CLIP_MIN = 20;
 const CLIP_LINES = 15;
 
-// Fenced block → a card: mono language label, copy button, then the
-// code with syntax coloring. An unknown language falls back to plain
-// text — a model's made-up fence tag must never blank the code.
+// An unknown language falls back to plain text — a model's made-up
+// fence tag must never blank the code.
 function CodeBlock({
 	lang,
 	code,
@@ -179,11 +174,10 @@ function CodeBlock({
 	);
 }
 
-// One list item line: indent (2 spaces per level), marker, optional
-// checkbox, then the text. Ordered markers keep their number only to
-// decide the <ol> — items render their own position.
+// Ordered markers keep their number only to decide the <ol> — items
+// render their own position.
 const ITEM = /^(\s*)([-*+]|\d+[.)])\s+(?:\[( |x|X)\]\s+)?(.*)$/;
-// GFM pipe table: a row of cells, then a `---` separator row.
+// GFM pipe-table separator row.
 const TABLE_SEP = /^\s*\|?\s*:?-{1,}:?[\s|:.-]*$/;
 
 function splitRow(line: string): string[] {
@@ -200,10 +194,10 @@ interface ListItem {
 	text: string;
 }
 
-// A `note` info-string fence — the convention the system prompt names
-// (design/projects.md → Notes): its body is note-ready content, and
-// the card offers to append it somewhere real. `title="…"` prenames a
-// new note; appending to an existing one keeps its title.
+// A `note` info-string fence — the convention the system prompt names:
+// its body is note-ready content the card offers to append somewhere
+// real. `title="…"` prenames a new note; appending to an existing one
+// keeps its title.
 function NoteAppendCard({
 	title,
 	body,
@@ -392,7 +386,6 @@ export function Markdown({
 	const lines = text.split("\n");
 	let i = 0;
 	let key = 0;
-	// Accumulated paragraph text — flushed on a blank line or a block.
 	let para: string[] = [];
 	const flushPara = () => {
 		if (para.length === 0) return;
@@ -450,7 +443,6 @@ export function Markdown({
 			continue;
 		}
 
-		// ATX heading.
 		const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
 		if (heading) {
 			flushPara();
@@ -465,7 +457,6 @@ export function Markdown({
 			continue;
 		}
 
-		// Horizontal rule.
 		if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
 			flushPara();
 			blocks.push(<hr key={key++} className="md-hr" />);
@@ -497,7 +488,6 @@ export function Markdown({
 			continue;
 		}
 
-		// Pipe table — header row, separator row, body rows.
 		if (line.includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]!)) {
 			flushPara();
 			const header = splitRow(line);
@@ -530,8 +520,8 @@ export function Markdown({
 			continue;
 		}
 
-		// List — consecutive item lines; depth is indent/2, list kind is
-		// per-item so a model mixing - and 1. still renders sanely.
+		// List kind is per-item so a model mixing - and 1. still renders
+		// sanely; depth is indent/2.
 		if (ITEM.test(line)) {
 			flushPara();
 			const items: ListItem[] = [];
@@ -561,9 +551,6 @@ export function Markdown({
 	return <>{blocks}</>;
 }
 
-// Items → a nested list tree. Each frame is the open list at a depth;
-// a deeper item starts a child list under the last item, a shallower
-// one closes frames until it fits.
 function ListTree({ items }: { items: ListItem[] }) {
 	interface Node {
 		item: ListItem;

@@ -1,13 +1,11 @@
 // auth.jsonl — secrets live here, never in env (the agent's bash tool
 // inherits the process environment, and env vars leak).
-//
 // One record per line:
 //   {"name": "openrouter", "value": "!pass show api/openrouter"}
-//
-// A value is a literal credential or `!<command>` — resolved by executing
-// the command and reading stdout, lazily at the point of use, in-process.
-// Resolved values never enter the tool environment, the model context, or
-// logs. This module must never log a resolved value.
+// A value is a literal credential or `!<command>` — resolved by
+// executing it and reading stdout, lazily at point of use, in-process.
+// Resolved values never enter the tool environment, the model context,
+// or logs — this module must never log one.
 
 import {
 	closeSync,
@@ -37,12 +35,10 @@ export interface AuthRecord {
 	line: number; // 1-based line number in auth.jsonl
 }
 
-// parseAuthFile validates auth.jsonl's record shape and returns the
-// records in file order — duplicates included; "last wins" is the
-// caller's rule. Shared with scripts/check-auth.ts so the install-time
-// poison scan parses exactly like the loader. `value` is secret
-// material: callers may inspect its shape (literal vs `!command`) but
-// must never print it.
+// Duplicates included — "last wins" is the caller's rule. Shared with
+// scripts/check-auth.ts so the install-time poison scan parses exactly
+// like the loader. `value` is secret material: callers may inspect its
+// shape (literal vs `!command`) but must never print it.
 export function parseAuthFile(raw: string): AuthRecord[] {
 	const records: AuthRecord[] = [];
 	for (const [i, line] of raw.split("\n").entries()) {
@@ -68,24 +64,20 @@ export function parseAuthFile(raw: string): AuthRecord[] {
 	return records;
 }
 
-// A `!` command that invokes pass-cli itself would run as the OWNER
-// session — full account, no audit trail (DESIGN.md: Proton Pass).
-// This is a lint, not a sandbox: `pass-cli` as a shell word at command
-// position — start of the string or after whitespace/`;&|()"'`` —
-// optionally path-prefixed like `/x/bin/pass-cli`, followed by a
-// separator or end. Deliberately conservative: `echo pass-cli` trips it
-// too — the fix is always "route through pass-keys".
+// A `!` command invoking pass-cli would run as the OWNER session —
+// full account, no audit trail. A lint, not a sandbox: `pass-cli` at
+// command word position, optionally path-prefixed. Deliberately
+// conservative — `echo pass-cli` trips it too; the fix is always
+// "route through pass-keys".
 export function invokesPassCliDirectly(command: string): boolean {
 	return /(?:^|[\s;&|()"'`])(?:[^\s;&|()"'`/]*\/)*pass-cli(?:[\s;&|)"'`]|$)/.test(command);
 }
 
-// pass-keys command recognition, shared by the installer's options
-// inspection (scripts/install-options.ts) and doctor's snapshot probe
-// (src/health.ts): a `!` record whose FIRST word is `pass-keys` — bare
-// or literal path-prefixed, identified by basename — is a recognized
-// credential command. Everything else stays a general, unverified
-// command. This is parsing only: these helpers never execute the
-// command.
+// Shared by scripts/install-options.ts and src/health.ts: a `!`
+// record whose FIRST word is `pass-keys` (literal or path-prefixed,
+// by basename) is a recognized credential command; everything else
+// stays a general unverified command. Parsing only — never executes
+// the command.
 export function passKeysCommandExecutable(value: string): string | undefined {
 	if (!value.startsWith("!")) return undefined;
 	const executable = value.slice(1).match(/^[^\s;&|()"'`]+/)?.[0];
@@ -95,14 +87,13 @@ export function passKeysCommandExecutable(value: string): string | undefined {
 	return executable !== undefined && basename(executable) === "pass-keys" ? executable : undefined;
 }
 
-// The one recognized record form: `!<pass-keys> get <profile> <KEY>`,
-// a single direct command with two bare arguments — no shell
-// operators, quotes, substitutions, env prefixes or wrappers. The
-// executable word must be literal too: expansion, globbing or
-// redirection characters would resolve a different command at exec
-// time than the one preflight certified. The profile class is the
-// doctor's auth-probe class; key names follow the vault's looser
-// class (digit-leading names are real).
+// The one recognized record form: `!<pass-keys> get <profile> <KEY>`
+// — two bare arguments, no shell operators, quotes, substitutions or
+// wrappers. The executable word must be literal too: expansion or
+// glob characters would resolve a different command at exec time than
+// the one preflight certified. The profile class is the doctor's
+// auth-probe class; key names follow the vault's looser class
+// (digit-leading names are real).
 const PASS_KEYS_GET = /^ get ([a-z][a-z0-9_-]{0,63}) ([A-Za-z0-9_-]+)$/;
 const NON_LITERAL_EXECUTABLE = /[$~\\*?[\]{}<>]/;
 export function parsePassKeysGet(
@@ -116,33 +107,29 @@ export function parsePassKeysGet(
 }
 
 export interface AuthStore {
-	// Resolve a named secret. Rejects if absent or if a `!command` fails —
-	// callers handle "no such secret" as a configuration error at the
-	// boundary that needs it. Async: `!command` resolution shells out and
-	// must not block the event loop.
+	// Rejects if absent or if a `!command` fails — callers map "no such
+	// secret" to a configuration error.
 	resolve(name: string): Promise<string>;
 	has(name: string): boolean;
 	names(): string[];
 }
 
-// The write face only the composition root and the secrets route see —
-// consumers typed AuthStore can read but never mutate.
+// Write face for the composition root and the secrets route —
+// AuthStore-typed consumers can read but never mutate.
 export interface WritableAuthStore extends AuthStore {
-	// Install a literal record into the live store: same last-wins rule
-	// as a file append, and the resolve cache drops so a rotation takes
-	// effect on the next call. Callers write the file FIRST — a put
-	// without the append would vanish at restart.
+	// Callers write the file FIRST — a put without the append vanishes
+	// at restart. Drops the resolve cache so a rotation takes effect
+	// on the next call.
 	put(name: string, value: string): void;
-	// Whether the record resolves through a `!command` — the secrets
-	// route refuses to shadow one (a pass-keys ref is hand-managed).
+	// `!command` records — the secrets route refuses to shadow one (a
+	// pass-keys ref is hand-managed).
 	isCommand(name: string): boolean;
 }
 
-// One JSONL record appended — the file's append-only convention, and
-// "last wins" on load makes an appended same-name record a rotation.
-// A missing file is born 0600 regardless of umask; an existing one must
-// already satisfy the loader's permission rule — a group/world-readable
-// secrets file is refused here exactly like at boot.
+// Last-wins on load makes an appended same-name record a rotation. A
+// missing file is born 0600 regardless of umask; an existing one must
+// already satisfy the loader's permission rule — group/world-readable
+// is refused here exactly like at boot.
 export function appendAuthRecord(file: string, name: string, value: string): void {
 	const line = `${JSON.stringify({ name, value })}\n`;
 	let fd = -1;
@@ -179,9 +166,8 @@ export function loadAuth(): WritableAuthStore {
 	return loadAuthFile(paths.auth());
 }
 
-// The same loader at an explicit path — the live drift check resolves
-// through this instead of reading a secret env var; the path is the
-// only thing its environment carries.
+// The live drift check resolves through an explicit path instead of a
+// secret env var; the path is all its environment carries.
 export function loadAuthFile(file: string): WritableAuthStore {
 	const entries = new Map<string, string>();
 	let raw: string;
@@ -195,8 +181,8 @@ export function loadAuthFile(file: string): WritableAuthStore {
 		throw err;
 	}
 
-	// Any group/world bit means the secrets file leaks to other users —
-	// refuse to load rather than warn and proceed.
+	// Refuse rather than warn-and-proceed — a group/world bit leaks the
+	// secrets file to other users.
 	const mode = statSync(file).mode & 0o777;
 	if ((mode & 0o077) !== 0) {
 		throw new Error(
@@ -214,9 +200,9 @@ export function loadAuthFile(file: string): WritableAuthStore {
 		}
 		entries.set(rec.name, rec.value);
 		// Poison, don't refuse the boot: the unit restarts forever and a
-		// phone-only operator can't fix a crash loop — the feature needing
-		// this key fails loud at resolve instead (DESIGN.md: Proton Pass).
-		// "Last wins" applies to poison too: a clean override un-poisons.
+		// phone-only operator can't fix a crash loop — the feature fails
+		// loud at resolve instead. Last-wins applies to poison: a clean
+		// override un-poisons.
 		if (rec.value.startsWith("!") && invokesPassCliDirectly(rec.value.slice(1))) {
 			poisoned.add(rec.name);
 			log.error(
@@ -276,10 +262,8 @@ const RESOLVE_TIMEOUT_MS = 15_000;
 // rather than buffering a flood.
 const MAX_OUTPUT = 64 * 1024;
 
-// Runs through the shared bounded runner: a command that ignores SIGTERM is
-// escalated to SIGKILL, and a spawned child holding the pipes open can't
-// keep EOF pending past the drain window. An unbounded resolve would hang
-// buildStep and wedge the conversation lane — /stop can't reach it.
+// An unbounded resolve would hang buildStep and wedge the conversation
+// lane — /stop can't reach it.
 async function resolveCommand(command: string, name: string): Promise<string> {
 	let proc: Bun.ReadableSubprocess;
 	try {
@@ -297,8 +281,8 @@ async function resolveCommand(command: string, name: string): Promise<string> {
 		throw new Error(`auth.jsonl: command for "${name}" timed out after ${RESOLVE_TIMEOUT_MS}ms`);
 	}
 	if (result.truncated) {
-		// Cut or capped output may be an incomplete credential — a wrong
-		// secret fails downstream confusingly, so refuse it here.
+		// Cut or capped output may be an incomplete credential — refuse
+		// rather than fail downstream confusingly.
 		throw new Error(`auth.jsonl: command for "${name}" produced oversized or cut-off output`);
 	}
 	if (result.exitCode !== 0) {

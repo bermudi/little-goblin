@@ -1,25 +1,3 @@
-// Coalescing buffer — rapid-fire messages in one conversation merge into
-// one turn. A message resets the quiet-window timer; when it fires, all
-// buffered items flush as a single batch. The quiet window alone is
-// unbounded — a source dribbling messages faster than the window resets
-// it forever — so the first push also arms a max-wait ceiling that flushes
-// without a quiet gap, warn-logged with the wait.
-//
-// Flushes may be sync or async (a rolling-DM flush can await the
-// follow-up check): a returned promise is tracked as in-flight work.
-// A rejected promise is treated exactly like a sync throw — the batch
-// is retained and retried on the same backoff ladder. Per key, flushes
-// serialize: while a key's flush is in flight, that key's next bucket
-// does not fire until it settles (it fires immediately after if its
-// timer already elapsed — the follow-up check's deadline must not
-// extend the burst's wait past maxWait). flush() is on the hook to
-// stay single-threaded-safe per key; the buffer guarantees it.
-//
-// Retained batches keep their firstAt (the clock measures the oldest
-// item's age, not the latest attempt's) and are merged front-first
-// with anything newer that arrived while the failed flush ran — a
-// message sent during a failing flush must not overtake the batch it
-// follows in the conversation.
 import { log } from "../log.ts";
 
 interface Bucket<T> {
@@ -32,9 +10,6 @@ interface Bucket<T> {
 
 export class CoalescingBuffer<T> {
 	private buckets = new Map<string, Bucket<T>>();
-	// Per-key async flush in flight — the next bucket for that key
-	// waits on it. `deferred` marks a key whose timer already elapsed
-	// during the in-flight flush: it fires the moment the flush settles.
 	private inflight = new Map<string, Promise<boolean>>();
 	private deferred = new Set<string>();
 
@@ -47,7 +22,6 @@ export class CoalescingBuffer<T> {
 	push(key: string, item: T): void {
 		const existing = this.buckets.get(key);
 		if (existing) {
-			// Quiet window resets; the ceiling from the first push stands.
 			clearTimeout(existing.timer);
 			existing.items.push(item);
 			existing.timer = setTimeout(() => this.fire(key), this.windowMs);
@@ -62,12 +36,6 @@ export class CoalescingBuffer<T> {
 		}
 	}
 
-	// Rewrites one still-buffered item in place — the edited_message
-	// door: a fix landing while the burst coalesces edits the batch,
-	// never the record. False when the key's bucket already fired (the
-	// item's flush owns it now, or a retry will pick up what the inbox
-	// row holds). Amending never touches the timers — an edit is not
-	// new input, and the window's bounds stay where the messages put them.
 	amend(key: string, match: (item: T) => boolean, update: (item: T) => void): boolean {
 		const bucket = this.buckets.get(key);
 		if (bucket === undefined) return false;
@@ -77,11 +45,6 @@ export class CoalescingBuffer<T> {
 		return true;
 	}
 
-	// Flush every pending bucket now, then wait out in-flight flushes —
-	// shutdown calls this so buffered input reaches history instead of
-	// dying in memory with the process. Async now: it also awaits every
-	// flush a deferred timer started mid-drain, and throws after the
-	// wait so a shutdown path learns which lanes are still owed a flush.
 	async drain(): Promise<void> {
 		let failed = 0;
 		const started = new Set<Promise<boolean>>();
@@ -122,23 +85,16 @@ export class CoalescingBuffer<T> {
 		const bucket = this.buckets.get(key);
 		if (!bucket) return true;
 		if (this.inflight.has(key)) {
-			// An async flush for this lane is still running — its settle
-			// handler fires this bucket immediately after.
 			this.deferred.add(key);
 			return true;
 		}
 		clearTimeout(bucket.timer);
 		clearTimeout(bucket.maxTimer);
 		this.buckets.delete(key);
-		// fire() runs in a timer — a throwing flush would escape as an
-		// uncaught exception and kill the process mid-update.
 		let result: void | Promise<void>;
 		try {
 			result = this.flush(key, bucket.items);
 		} catch (err) {
-			// submit did not admit this batch. Restore it before any new
-			// arrivals (including a reentrant push during flush), then
-			// retry; a timer failure must never discard acknowledged input.
 			this.retain(key, bucket, err);
 			return false;
 		}
@@ -146,8 +102,6 @@ export class CoalescingBuffer<T> {
 		const p = Promise.resolve(result).then(
 			(): boolean => true,
 			(err: unknown): boolean => {
-				// An async rejection is the same failure a sync throw was —
-				// the batch is retained and retried on the backoff ladder.
 				this.retain(key, bucket, err);
 				return false;
 			},
@@ -160,15 +114,6 @@ export class CoalescingBuffer<T> {
 		return p;
 	}
 
-	// A failed flush retains its batch for retry: the bucket goes back,
-	// merged front-first with anything that arrived while the flush ran.
-	// Consecutive failures back off exponentially — a persistently
-	// failing flush (full disk, dead history file) must not hot-loop
-	// once a second forever. Doubling from the base delay, capped at
-	// five minutes; a successful flush deletes the bucket, so any
-	// later batch starts the ladder over. The deferred flag is consumed
-	// — the retry timer is the fire, so the backoff ladder is not
-	// bypassed.
 	private retain(key: string, bucket: Bucket<T>, err: unknown): void {
 		const newer = this.buckets.get(key);
 		if (newer) {

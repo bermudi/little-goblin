@@ -1,8 +1,8 @@
-// The ping map's lifecycle: rows are written per delivered ping, and
-// the sweep is what keeps the table from growing without bound — a row
-// whose app conversation is gone is unroutable garbage (intake guards
-// store.get(hit) !== null and falls through to ordinary DM routing),
-// so it is deleted opportunistically on the next record (#110).
+// Ping-map lifecycle: rows are written per delivered ping; the sweep
+// keeps the table bounded — a row whose app conversation is gone is
+// unroutable garbage (intake guards store.get(hit) !== null and falls
+// through to ordinary DM routing), deleted opportunistically on the
+// next record.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

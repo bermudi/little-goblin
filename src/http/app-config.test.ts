@@ -25,7 +25,6 @@ describe("app config", () => {
 			expect(write.status).toBe(200);
 			expect(configRef.current.thinking).toBe("high");
 			expect(configWrites.count).toBe(1);
-			// The write is durable — the file under GOBLIN_HOME carries it.
 			expect(readFileSync(join(home, "goblin.json5"), "utf8")).toContain("'high'");
 
 			const model = await call("/api/app/config", {
@@ -36,14 +35,12 @@ describe("app config", () => {
 			expect(model.status).toBe(200);
 			expect(configRef.current.model).toBe("zai/m2");
 
-			// A ref naming an unconfigured provider fails validation.
 			const badModel = await call("/api/app/config", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ model: "ghost/x" }),
 			});
 			expect(badModel.status).toBe(422);
-			// An empty patch and a bogus level are client bugs, not writes.
 			expect(
 				(
 					await call("/api/app/config", {

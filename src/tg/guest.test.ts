@@ -1,9 +1,3 @@
-// Guest mode tests (design/telegram.md → Guest mode; Roles and
-// permissions). Boundaries and invariants only: classification by the
-// two lists, the stranger refusal, the sandbox's hard tool exclusion
-// (persona-driven), dedup, and the placeholder-then-edit delivery
-// shape — Telegram faked at the api edge like every other tg test.
-
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import {
@@ -50,8 +44,6 @@ const baseConfig = (over: Partial<Config> = {}): Config =>
 		guest: { outputChars: 3500 },
 		...over,
 	}) as Config;
-
-// ---------- pure pieces ----------
 
 describe("classifySummon", () => {
 	test("the operator is personal anywhere", () => {
@@ -228,12 +220,11 @@ describe("filterGuestTools — the sandbox invariant", () => {
 		expect(filterGuestTools(dm("personal"), tools)).toEqual(tools);
 	});
 
-	// The rollout-hold review's ssrf-chain probe, checked in: the REAL
-	// fetch tool against a loopback server holding a synthetic private
-	// marker — the exact chain a sandboxed guest used to read the
-	// operator's app histories through. Whatever fetch the sandbox gets,
-	// it must not be able to return the marker; the ruling today is no
-	// guest fetch at all (design/telegram.md → Guest mode).
+	// The ssrf-chain probe, checked in: the REAL fetch tool against a
+	// loopback holding a synthetic private marker — the chain a
+	// sandboxed guest used to read operator app histories. Whatever
+	// fetch the sandbox gets must never return the marker; today there
+	// is no guest fetch at all.
 	test("the sandbox fetch cannot reach the operator's loopback", async () => {
 		const marker = "SYNTHETIC_PRIVATE_HISTORY_MARKER";
 		const server = Bun.serve({
@@ -270,8 +261,6 @@ describe("filterGuestTools — the sandbox invariant", () => {
 	});
 });
 
-// ---------- store ----------
-
 describe("openGuestStore", () => {
 	test("seen is true once per update id", () => {
 		const store = openGuestStore(openStore(tmpDb("goblin-guest-")).db);
@@ -281,12 +270,10 @@ describe("openGuestStore", () => {
 	});
 });
 
-// ---------- GuestSink ----------
-
 function fakeApi() {
 	const edits: string[] = [];
-	// Per edit, the shape the call used — "rich" when the InputRichMessage
-	// object form went out, "plain" for a bare string.
+	// The call shape per edit — "rich" for the InputRichMessage object
+	// form, "plain" for a bare string.
 	const editForms: string[] = [];
 	const sends: { chatId: number; text: string; options: Parameters<Api["sendMessage"]>[2] }[] = [];
 	const answers: string[] = [];
@@ -500,7 +487,7 @@ describe("GuestSink", () => {
 			sink.onTextDelta("llo");
 			await new Promise((r) => setTimeout(r, 10));
 			await sink.onDone({ kind: "completed" });
-			// One rich attempt, then the retry and every later edit go plain.
+			// One rich attempt, then everything goes plain.
 			expect(api.editForms[0]).toBe("rich");
 			expect(api.editForms.slice(1).every((f) => f === "plain")).toBe(true);
 			expect(api.edits[api.edits.length - 1]).toBe("hello");
@@ -514,8 +501,6 @@ describe("GuestSink", () => {
 		}
 	});
 });
-
-// ---------- handlers ----------
 
 interface Submitted {
 	conv: Conversation;
@@ -565,10 +550,9 @@ const guestMsg = (
 		...over,
 	}) as Message & { guest_query_id?: string };
 
-// Park answerGuestQuery for one query id, mirroring the review's probe:
-// the handler is suspended at the placeholder await while the test
-// mutates the world (/off, config edits, a competing turn), then the
-// release lets the handler continue to its submit decision.
+// Park answerGuestQuery for one query id: the handler suspends at the
+// placeholder await while the test mutates the world, then release
+// lets it reach its submit decision.
 function holdPlaceholder(
 	api: ReturnType<typeof fakeApi>,
 	queryId: string,
@@ -639,9 +623,8 @@ describe("handleGuestUpdate", () => {
 		expect(turn?.conv.id).toBe("guest:-100:7");
 		expect(turn?.conv.memoryExcluded).toBe(true);
 		expect(turn?.conv.persona).toBe("personal");
-		// The placeholder was answered before the submit (edits[0] is the
-		// placeholder text the fake answerGuestQuery ignores; the sink's
-		// edits ride the same api record).
+		// The fake answerGuestQuery doesn't record into edits — the
+		// placeholder's real answer went out before the submit.
 		expect(api.edits.length).toBe(0);
 	});
 	test("a stranger's summons is answered with the refusal line and never submits", async () => {
@@ -709,8 +692,8 @@ describe("handleGuestUpdate", () => {
 		} as typeof env.configRef.current;
 		await handleGuestUpdate(env, friendMsg({ guest_query_id: "promo" }), 50);
 		expect(submitted).toHaveLength(1);
-		// The fake runtime records submits without appending (the real
-		// Runtime.submit appends first) — persist the turn's history here.
+		// The fake runtime records without appending like the real
+		// submit — persist the turn's history here.
 		store.append("guest:-100:8", [
 			submitted[0]!.message,
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "personal answer" }] },
@@ -726,12 +709,11 @@ describe("handleGuestUpdate", () => {
 		await handleGuestUpdate(env, friendMsg({ guest_query_id: "demo" }), 51);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]?.conv.persona).toBe("guest");
-		// The reset wiped the personal exchange; the fake runtime
-		// records submits without appending (the real Runtime.submit
-		// appends first), so the fresh conversation is empty here.
+		// The reset wiped the personal exchange — history is empty here
+		// because the fake runtime doesn't append like the real submit.
 		expect(store.history("guest:-100:8")).toHaveLength(0);
-		// Persisting the sandbox summons the way the real submit would
-		// leaves exactly that message — no personal text survives.
+		// Persist the sandbox summons the way the real submit would —
+		// no personal text survives.
 		store.append("guest:-100:8", [submitted[0]!.message]);
 		expect(store.history("guest:-100:8")).toHaveLength(1);
 		expect(store.modelEntries("guest:-100:8")).toHaveLength(1);
@@ -785,9 +767,8 @@ describe("handleGuestUpdate", () => {
 		const { env, store, submitted } = makeEnv();
 		await handleGuestUpdate(env, friendMsg({ guest_query_id: "sand" }), 60);
 		expect(submitted[0]?.conv.persona).toBe("guest");
-		// The fake runtime records submits without appending (the real
-		// Runtime.submit appends first) — persist the sandbox exchange
-		// the way the real submit would.
+		// The fake runtime records without appending like the real
+		// submit — persist the sandbox exchange the way it would.
 		store.append("guest:-100:8", [
 			submitted[0]!.message,
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "sandbox answer" }] },
@@ -803,16 +784,15 @@ describe("handleGuestUpdate", () => {
 		await handleGuestUpdate(env, friendMsg({ guest_query_id: "prom" }), 61);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]?.conv.persona).toBe("personal");
-		// Same conversation row, not a reset — sandbox exchanges are
-		// safe for the operator to see, so the history survives.
+		// Same row, not a reset — sandbox exchanges are safe for the
+		// operator to see, so history survives.
 		expect(store.history("guest:-100:8")).toHaveLength(2);
 		expect(store.modelEntries("guest:-100:8")).toHaveLength(2);
 	});
 
-	// The placeholder await is a suspension point between the
-	// eligibility checks and the submit — every state it read can
-	// change, and a submit must never run on eligibility that changed
-	// under us.
+	// The placeholder await suspends between the eligibility checks and
+	// the submit — every read can change under it, so a submit must
+	// never run on stale eligibility.
 	test("a class flip during the placeholder await drops the summons", async () => {
 		const { env, submitted, api } = makeEnv();
 		const hold = holdPlaceholder(api, "summon");
@@ -856,8 +836,8 @@ describe("handleGuestUpdate", () => {
 		} as typeof env.configRef.current;
 		hold.release();
 		await pending;
-		// A demoted caller must not run the personal-persona turn that
-		// was resolved before the demotion.
+		// A demoted caller must not run the personal-persona turn
+		// resolved before the demotion.
 		expect(submitted.length).toBe(0);
 		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
 	});
@@ -869,8 +849,8 @@ describe("handleGuestUpdate", () => {
 		const hold = holdPlaceholder(api, "summon");
 		const pending = handleGuestUpdate(env, friendMsg({ guest_query_id: "summon" }), 44);
 		await hold.started;
-		// The member surface bypasses the guest lane: a same-conversation
-		// summons submits while this one is parked at its placeholder.
+		// The member surface bypasses the guest lane — a same-conversation
+		// summons can submit while this one is parked at its placeholder.
 		busy = true;
 		hold.release();
 		await pending;

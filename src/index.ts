@@ -1,5 +1,3 @@
-// Composition root — it wires, it never rules (DESIGN.md → Module map).
-
 import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
@@ -97,8 +95,7 @@ process.on("uncaughtException", (err: unknown) => {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
 // confirm; short enough that a wedged Telegram API can't hold a deploy.
-// Declared above boot(): the startup-failure cleanup below budgets a
-// wedged close with the same constant the shutdown drain uses.
+// The startup-failure cleanup budgets a wedged close with it too.
 const SHUTDOWN_DRAIN_MS = 10_000;
 
 async function boot() {
@@ -153,16 +150,14 @@ async function boot() {
 		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
 		listFor: () => ReturnType<typeof operatorHerdr.list>;
 	} | null = null;
-	// Between-turns pruning of old textual tool outputs — inert without a
-	// hand-edited cachePruning block (DESIGN.md → Cache stability).
+	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
 		observation: cacheObservations,
 		getConfig: () => configRef.current,
 	});
-	// Skill provenance shares the store's SQLite (design/skills.md →
-	// Skill provenance): the reviewer and the turn stream record, the
-	// operator doors read.
+	// One table: the reviewer and the turn stream record, the operator
+	// doors read.
 	const skillSources = new SkillSources(store.db);
 	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
 	const programs = openPrograms(paths.db());
@@ -186,15 +181,15 @@ async function boot() {
 		store: sandboxStore,
 		config: () => configRef.current.sandbox,
 		// A live worker run pins its sandbox: the reaper skips it and
-		// reset refuses while a lease stands (design/subagents.md).
+		// reset refuses while a lease stands.
 		runLease: (conv) => subagentRuns.workerLease(conv),
 		// Destructive sandbox lifecycle (recreate/restart) reaches the
 		// worker on its next tool result — persisted until carried.
 		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
 	// A block absent at boot or removed by a write strands the tracked
-	// containers — warnIfStranded owns the report (design/sandbox.md:
-	// a boot sweep would kill experiments; the operator decides).
+	// containers — warn only: a boot sweep would kill experiments; the
+	// operator decides.
 	const warnStrandedSandboxes = () => warnIfStranded(sandboxStore);
 	if (!sandboxConfigured(config)) warnStrandedSandboxes();
 	// Split mail authority: gws polling serves the watcher, the send client
@@ -281,18 +276,15 @@ async function boot() {
 		surfaces: memorySurfaces,
 	} = memory;
 
-	// The project domain — the retention outbox rides along whether or
-	// not a memory client exists: pending rows can survive a disable,
-	// and project→off must still purge them like /memory off
-	// (design/projects.md). Submission needs the client; purging does not.
+	// The retention outbox rides along whether or not a memory client
+	// exists: pending rows can survive a disable, and project→off must
+	// still purge them like /memory off. Submission needs the client;
+	// purging does not.
 	const projects = openProjects(store, { memoryQueue: store.memoryQueue });
 
-	// The notes surface (design/projects.md → Notes) — one store for
-	// the tool, the app routes, and the project prompt's index.
+	// One store for the tool, the app routes, and the project prompt's index.
 	const notes = openNotes(store, { projects });
 
-	// Per-call seams for voice notes and the vision gate — the policies
-	// live in the agent modules; boot only binds configRef/auth.
 	const transcribeFile = makeTranscriber({ configRef, auth });
 	const visionDepsFor = makeVisionDepsFor({ configRef, auth, observation: cacheObservations });
 	const speak = makeSpeaker({ configRef, auth });
@@ -355,8 +347,6 @@ async function boot() {
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
 		},
-		// Per-turn model resolution + compaction live in agent/step.ts —
-		// boot binds configRef/auth/stores and the observation sink.
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
@@ -425,9 +415,7 @@ async function boot() {
 			})
 		: null;
 
-	// The skill reviewer runs after the bot (save notes deliver through
-	// bot.api); reviewer.ts owns the gate construction, threshold merge and
-	// live review-model resolution — boot binds the seams it can't own.
+	// Runs after the bot — save notices deliver through bot.api.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
 		configRef,
 		auth,
@@ -441,9 +429,9 @@ async function boot() {
 		},
 	});
 	if (system1Gate !== null) {
-		// The loop watchdog rides the same System1Client (design/model.md → "No step
-		// budget"): every 16 completed calls system1 scores the digest ring — warn
-		// once, cut on the second stuck verdict.
+		// The loop watchdog rides the same System1Client: every 16
+		// completed calls system1 scores the digest ring — warn once,
+		// cut on the second stuck verdict.
 		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
 	}
 	if (skillReviewer !== null) runtime.setReviewer(skillReviewer);
@@ -474,8 +462,6 @@ async function boot() {
 		runtime,
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		makeTools: makeTurnTools,
-		// Per-lane sink routing + the operator DM notice live in
-		// turn-resume.ts; boot binds the wake sinks and the send seam.
 		...makeResumeSinks({
 			wake: wakeDeps,
 			operators: () => configRef.current.operators,
@@ -611,10 +597,9 @@ async function boot() {
 		);
 	}
 
-	// The crash journal's boot notice (design/runtime-turn.md → The turn
-	// journal): rows reclassified 'interrupted' at open get one DM per
-	// operator — terse facts, never a replay. A failed send must not hold
-	// boot; the log line is the record.
+	// Rows reclassified 'interrupted' at open get one DM per operator —
+	// terse facts, never a replay. A failed send must not hold boot;
+	// the log line is the record.
 	sendInterruptedTurnNotices(
 		tg.bot.api,
 		turnJournal.interruptedAtOpen,
@@ -632,7 +617,7 @@ async function boot() {
 	const appTokenName = resolveAppAuth(config.appToken);
 	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
 	// delegation/subagents freeze adapters and pool limits at boot — a
-	// mid-run change is a warn + restart (config-pins.ts owns the diff).
+	// mid-run change is a warn + restart.
 	const bootPins: BootPins = {
 		memory: memoryBootConfig,
 		appToken: appTokenName,

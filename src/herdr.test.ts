@@ -1,7 +1,3 @@
-// The herdr adapter's boundary contract: argv shape, envelope parsing,
-// and the error translation — non-zero exits throw HerdrError carrying
-// the stderr JSON, and agent_not_found on `get` alone maps to null.
-
 import { describe, expect, test } from "bun:test";
 import {
 	HerdrError,
@@ -232,10 +228,8 @@ describe("herdr adapter", () => {
 		]);
 	});
 
-	// #98: a cap-killed read (output > 1 MiB → SIGKILL → empty stderr)
-	// used to fall back to stdout — up to 1 MiB of raw agent screen
-	// text poured into the error string, goblin.log, and the model as
-	// unfenced prose. Screen text is data, never an error message.
+	// Screen text is data, never an error message — a cap-killed read
+	// must not pour raw stdout into the error.
 	test("a killed agent read never quotes stdout in the error", async () => {
 		const screen = `agent screen flood\n${"x".repeat(200_000)}`;
 		const f = fakeRunner([{ code: -1, stdout: screen, stderr: "" }]);
@@ -265,8 +259,6 @@ describe("herdr adapter", () => {
 		}
 	});
 
-	// Non-read verbs may quote non-envelope CLI text, but bounded: a
-	// usage flood on stderr is an excerpt for a human, not a relay.
 	test("a non-envelope fallback message is capped", async () => {
 		const flood = `usage: herdr agent get <target>\n${"e".repeat(100_000)}`;
 		const f = fakeRunner([{ code: 2, stdout: "", stderr: flood }]);
@@ -314,12 +306,8 @@ describe("herdr adapter", () => {
 	});
 });
 
-// The operator adapter's boundary contract (design/delegation.md → "A
-// herdr tool reaches the operator's session"): every call pins
-// --session default, list joins agent/workspace/tab records, prompt
-// verifies pane+kind immediately before one send, and abort/timeout
-// semantics are checked — nothing is ever retried or re-read after a
-// send. The runner is the fake edge; calls also record the opts.
+// Prompt verifies pane+kind immediately before one send — nothing is
+// ever retried or re-read after a send.
 
 const OP_AGENT = {
 	agent: "pi",
@@ -375,11 +363,10 @@ describe("operator herdr adapter", () => {
 	test("every verb runs under --session default", async () => {
 		const f = opRunner([
 			opOk({ result: { agents: [] } }),
-			opOk({ result: { workspaces: [] } }), // prompt's topology
-			// get + prompt for the success path:
+			opOk({ result: { workspaces: [] } }),
 			opOk({ result: { agent: { ...OP_AGENT, agent_status: "working" } } }),
 			opOk({ result: { agent: { ...OP_AGENT, agent_status: "working" } } }),
-			{ code: 0, stdout: "screen text\n", stderr: "" }, // read
+			{ code: 0, stdout: "screen text\n", stderr: "" },
 		]);
 		const h: OperatorHerdr = makeOperatorHerdr(f.run);
 		expect(await h.list()).toEqual([]);
@@ -430,7 +417,6 @@ describe("operator herdr adapter", () => {
 		});
 		expect(agents[1]!.name).toBe("dev-review");
 		expect(agents[2]).toMatchObject({ workspace_label: "scratch", tab_label: "other" });
-		// The second workspace's tabs came from its own scoped call.
 		expect(f.calls[3]!.args).toEqual(["--session", "default", "tab", "list", "--workspace", "w8B"]);
 	});
 
@@ -593,8 +579,6 @@ describe("operator herdr adapter", () => {
 		]);
 		// The prompt's process budget rides above the CLI's own wait.
 		expect(f.calls[4]!.opts?.timeoutMs).toBe(125_000);
-		// The echo is the record herdr returned from the matched wait
-		// (status is validated to working|blocked by the response check).
 		expect(out).toMatchObject({
 			pane_id: "w1:p1",
 			agent: "pi",
@@ -670,7 +654,6 @@ describe("operator herdr adapter", () => {
 				expect((err as Error).message).toContain(message);
 			}
 			expect(prompts(f.calls)).toHaveLength(1);
-			// The failed send is the last call — nothing re-read topology after it.
 			expect(verbOf(f.calls[f.calls.length - 1]!.args)).toBe("agent prompt");
 		},
 	);

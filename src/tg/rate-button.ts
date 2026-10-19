@@ -1,20 +1,9 @@
-// The 👍/👎 buttons on a completed reply: one tap → one durable row.
-// Extracted like speak-button so the tap boundaries — answer once,
-// surface a store failure honestly — are testable without a live bot.
-
 import type { Api, Bot } from "grammy";
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from "grammy/types";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import type { ReplyRating, ReplyRatings } from "./ratings.ts";
 
-// callback_data: rate:<vote>|<conversation>|<anchor>. The payload is
-// self-describing — no binding table — so a tap on a pre-restart reply
-// still records, and a rolled DM's older bubbles keep their own
-// exchange. `x` marks a landed reply that had no user anchor.
-// The routing claim is the bare prefix — a payload from a drifted
-// version still routes here and gets an honest "stale" answer instead
-// of a spinning button.
 export const RATE_CALLBACK_RE = /^rate:/;
 const RATE_DATA_RE = /^rate:(up|down)\|([^|]+)\|(\d+|x)$/;
 
@@ -41,10 +30,6 @@ function parseRateCallback(data: string): {
 	};
 }
 
-// Structural subset of Telegram's CallbackQuery — the fields this flow
-// reads (the speak-button pattern: grammy's full type is assignable).
-// reply_markup rides along so the tap can retire its own row without
-// touching siblings like 🔊.
 export interface RateQuery {
 	id: string;
 	data?: string | undefined;
@@ -62,9 +47,6 @@ export interface RateButtonDeps {
 }
 
 export function registerRateButton(bot: Bot, deps: RateButtonDeps): void {
-	// Awaited, not detached: the whole job is one store write plus the
-	// toast, so grammy serializes taps and a failure lands in bot.catch's
-	// neighbourhood instead of a floating promise.
 	bot.callbackQuery(RATE_CALLBACK_RE, (ctx) => handleRateButton(ctx.callbackQuery, deps));
 }
 
@@ -72,8 +54,6 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 	try {
 		await rate(query, deps);
 	} catch (err) {
-		// Outside the guarded boundaries below — a programming error, not
-		// an edge failure. Registration can't surface it, so it lands here.
 		log.error("rate button handler failed", err, { query: query.id });
 		await withTimeout(
 			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
@@ -82,11 +62,6 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 	}
 }
 
-// A tap retires the rating row (design/telegram.md — "Buttons and small
-// parts"): when it shared the keyboard (the 🔊 row), the row collapses
-// into a disabled button recording the vote — layout persists; when it
-// was the whole markup, the strip leaves nothing. Cosmetic — the rating
-// is already durable, so a failed strip just keeps its buttons.
 async function stripRatingRow(
 	api: Api,
 	message: NonNullable<RateQuery["message"]>,
@@ -114,8 +89,6 @@ async function stripRatingRow(
 }
 
 async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
-	// The tap is answered exactly once; the answer rides the recorded
-	// outcome, so it waits for the (synchronous, fast) store write.
 	const answer = (text: string) =>
 		withTimeout(deps.api.answerCallbackQuery(query.id, { text }), "answerCallbackQuery").catch(
 			(err: unknown) => {
@@ -157,8 +130,6 @@ async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
 		message: message.message_id,
 		rating: parsed.rating,
 	});
-	// The toast shouldn't wait behind the strip — an API stall there
-	// would hold the ack for the full call timeout.
 	await Promise.all([
 		stripRatingRow(deps.api, message, parsed.rating),
 		answer(parsed.rating === "up" ? "👍 recorded" : "👎 recorded"),

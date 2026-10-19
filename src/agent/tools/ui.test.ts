@@ -1,7 +1,7 @@
 // The ui tool's boundary tests: the schema is the contract the model
 // writes against, and its JSON Schema is what the provider receives —
-// a shape the provider rejects would break every app turn
-// (design/app.md → Intelligent UI: two levels, no $ref/$defs).
+// a shape the provider rejects would break every app turn (two levels,
+// no $ref/$defs).
 
 import { describe, expect, test } from "bun:test";
 import { asSchema } from "ai";

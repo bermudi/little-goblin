@@ -1,8 +1,4 @@
-// Live desktop drift check: the same wall the sandbox live test pins,
-// plus the product path end to end — a real goblin-desktop container
-// through desktops.ts: session up, screenshot bytes, cua-driver
-// element click verified independently by the window title, and the
-// observation-binding refusal. Gated OFF the default suite, run
+// Live desktop drift check — gated OFF the default suite, run
 // deliberately:
 //
 //     GOBLIN_DESKTOP_LIVE=1 bun test src/desktops.live.test.ts
@@ -97,8 +93,7 @@ function statusField(status: string, field: string): string {
 	return m[1]!;
 }
 
-// A cua-driver call as the session user, straight through the adapter —
-// the same argv desktops.ts builds.
+// The same argv desktops.ts builds — session user and its env.
 async function cua(tool: string, args: Record<string, unknown>): Promise<unknown> {
 	const r = await podman!.exec(
 		CONTAINER,
@@ -259,16 +254,14 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 			tool: "click",
 			args: { element_token: button!.element_token, pid: chromiumPid },
 		});
-		// The driver's honesty rides back verbatim.
 		expect(JSON.stringify(clicked.result)).toContain('"effect"');
-		// Independent verification: the window title, not the driver.
+		// Verify by window title, not the driver's own report.
 		await Bun.sleep(1500);
 		const titles = await execOut(
 			["xdotool", "search", "--name", "clicked", "getwindowname", "%@"],
 			{ DISPLAY: ":99" },
 		);
 		expect(titles.trim()).toContain("clicked");
-		// The consumed observation cannot act again.
 		await expect(
 			desktops!.act(DESKTOP, op, ins!.id, {
 				kind: "cua",
@@ -277,8 +270,8 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 			}),
 		).rejects.toBeInstanceOf(DesktopError);
 
-		// Typing, the same way: click the input to focus, then
-		// type_text — each act bound to a fresh observation.
+		// Typing: click the input to focus, then type_text — each act
+		// bound to a fresh observation.
 		const focusObs = await desktops!.inspect(DESKTOP);
 		const input = ((focusObs.state as CuaWindowState).elements ?? []).find(
 			(e) => e.role === "entry" && e.in_web_content === true,
@@ -323,9 +316,8 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		});
 		expect(procs).toContain("chromium");
 		expect(procs).not.toContain("--no-sandbox");
-		// Navigate to chrome://sandbox with real input: ctrl+l focuses
-		// the omnibox, type the URL, press enter — each act bound to
-		// its own fresh observation.
+		// ctrl+l focuses the omnibox; type the URL, press enter —
+		// each act bound to its own fresh observation.
 		const wins = (await cua("list_windows", {})) as {
 			windows?: Array<{ pid: number; app_name: string }>;
 		};
@@ -349,12 +341,9 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 			tool: "press_key",
 			args: { pid, key: "enter" },
 		});
-		// The sandbox page renders as AT-SPI text — read the status
-		// back from the page itself, plus a screenshot for evidence.
 		await Bun.sleep(3000);
 		const page = await desktops!.inspect(DESKTOP);
-		// Assert the page's own verdicts, not just that the labels
-		// rendered: each checked row's value cell must read "Yes".
+		// Each checked row's value cell (label + 1) must read "Yes".
 		const cells = (
 			(page.state as { elements?: Array<{ role?: string; label?: string }> }).elements ?? []
 		).filter((e) => e.role === "table cell");
@@ -381,14 +370,13 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 	}, 120_000);
 
 	test("import lands desk-owned and readable; export round-trips bytes", async () => {
-		// A real seeded host file through cpIn — the podman-cp boundary
-		// that used to leave root-owned imports desk can't read.
+		// podman cp writes as container root — desk must still be able
+		// to read the import.
 		const seed = join(cwd, "seed.bin");
 		const payload = new Uint8Array([0, 1, 2, 0xff, 65, 66, 10]);
 		await Bun.write(seed, payload);
 		const dest = `/home/desk/inbox/subagents/7/${crypto.randomUUID().slice(0, 8)}-seed.bin`;
 		await desktops!.cpIn(DESKTOP, seed, dest);
-		// Desk itself reads it, and the leaf is chowned to uid 1000.
 		const stat = await podman!.exec(CONTAINER, ["stat", "-c", "%u:%g:%s", "--", dest], {
 			timeoutMs: 30_000,
 			maxOutput: 1 << 20,
@@ -401,7 +389,6 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		expect(stat.stdout.trim()).toBe(`1000:1000:${payload.length}`);
 		const back = await desktops!.catFile(DESKTOP, dest);
 		expect([...back.data]).toEqual([...payload]);
-		// Non-regular leaves stay refused.
 		await expect(desktops!.catFile(DESKTOP, "/home/desk")).rejects.toThrow();
 	}, 60_000);
 

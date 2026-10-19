@@ -1,7 +1,7 @@
-// The note editor's markdown round-trip gate (design/projects.md →
-// Notes): Milkdown's parser→serializer must be idempotent and
-// content-preserving over the GFM surface notes actually carry, or
-// every autosave would silently rewrite the operator's text.
+// The note editor's markdown round-trip gate: Milkdown's
+// parser→serializer must be idempotent and content-preserving over the
+// GFM surface notes actually carry, or every autosave would silently
+// rewrite the operator's text.
 //
 // Driven through the real Editor — the same presets NoteEditor mounts
 // (commonmark + gfm + listener + history). Runs under happy-dom like

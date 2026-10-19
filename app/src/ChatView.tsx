@@ -50,16 +50,9 @@ import type {
 // ---------- transcript rendering ----------
 
 // Tool calls and thoughts collapse into one expandable fold per
-// contiguous run — the answer stays readable, the work stays
-// inspectable, and a turn that alternates call → thought → call no
-// longer shreds into a column of one-line folds. Prose (or a ui part,
-// which renders inline as the interface itself) ends a run. The fold
-// opens itself while a call is live (streaming rows show skeletons)
-// and stays open when a call failed; each tool row is its own fold
-// inside, collapsed to tool name + one-line outcome, expanding to the
-// tool's component. The collapsed summary carries the same one-liners
-// — "search «q» · 5 results" — so the outcome is legible without
-// expanding.
+// contiguous run — prose (or a ui part, which renders inline) ends a
+// run. The fold opens while a call is live or failed; the collapsed
+// summary carries the one-line outcomes.
 type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
 // A part that folds into an Activity run: a tool call (ui parts render
 // inline as the interface and never join) or thought text with
@@ -131,9 +124,8 @@ function FileIcon() {
 	);
 }
 
-// Read-back for a stored attachment — bearer header, blob, object URL.
-// The name segment is the stored path's basename; the server confines
-// reads to workspace/attachments/ regardless.
+// Read-back for a stored attachment — bearer header, blob, object URL;
+// the server confines reads to workspace/attachments/.
 // Raster formats keep their type for inline rendering (<img> and a
 // top-level image document run no script). Everything else — SVG
 // carries script, and blob: URLs execute in this origin — is
@@ -155,10 +147,8 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
 	const path = typeof ref.path === "string" ? ref.path : "";
 	const [thumb, setThumb] = useState<string | null>(null);
-	// A failed download is a boundary-safe error response: the fetch
-	// rejects on HTTP (!ok) or network failure, and the chip shows the
-	// message instead of swallowing it (a missing attachment or an
-	// expired credential otherwise reads as a dead button).
+	// A failed download surfaces as a chip message — a missing
+	// attachment or expired credential otherwise reads as a dead button.
 	const [dlError, setDlError] = useState<string | null>(null);
 	useEffect(() => {
 		if (!isImage || path === "") return;
@@ -199,9 +189,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 		<span className="attachment">
 			<FileIcon />
 			{path !== "" ? (
-				// Click downloads the stored file — fetched lazily so
-				// non-image attachments cost nothing until asked. A
-				// download, not window.open: the bytes aren't render-safe
+				// A download, not window.open: the bytes aren't render-safe
 				// (fetchAttachmentUrl wraps them as octet-stream) and the
 				// object URL can be revoked the moment it starts.
 				<button
@@ -238,8 +226,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 }
 
 // A stored note attachment — the server expanded it at intake, so the
-// chip carries title+rev as of that message (design/projects.md →
-// Attach). Clicking lands on the note's page.
+// chip carries title+rev as of that message.
 function NoteChip({
 	data,
 	onOpenNote,
@@ -312,7 +299,7 @@ export function MessageParts({
 		const p = parts[i]!;
 		if (isToolUIPart(p) && getToolName(p) === "ui") {
 			// ui parts render inline as the interface itself — they never
-			// join a Worked run (design/app.md → Intelligent UI).
+			// join a Worked run.
 			out.push(
 				<UiPart
 					key={p.toolCallId === "" ? i : p.toolCallId}
@@ -329,15 +316,11 @@ export function MessageParts({
 			continue;
 		}
 		if (isActivityPart(p)) {
-			// Collapse a run of adjacent tool parts and thoughts into one
-			// Worked row — reasoning between calls stays inside the fold
-			// instead of splitting it.
 			const run: ActivityPart[] = [];
 			let j = i;
 			while (j < parts.length) {
 				const q = parts[j]!;
 				if (isToolUIPart(q)) {
-					// The ui interface renders inline and ends the run.
 					if (getToolName(q) === "ui") break;
 					run.push(q);
 				} else if (q.type === "reasoning") {
@@ -347,10 +330,8 @@ export function MessageParts({
 					// break nothing.
 					if (q.text.trim() !== "") run.push(q);
 				} else if (q.type === "text") {
-					// Prose ends the run.
 					if (q.text.trim() !== "") break;
 				} else if (q.type === "data-attachment" || q.type === "data-note" || q.type === "file") {
-					// Visible chips end it too.
 					break;
 				}
 				// step-start, sources, and any future plumbing render as
@@ -384,7 +365,6 @@ export function MessageParts({
 					<span className="attachment-name">{p.filename ?? "attachment"}</span>
 				</span>,
 			);
-		// step-start and other plumbing parts render as nothing.
 	}
 	return <>{out}</>;
 }
@@ -416,6 +396,8 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 			output: num(usage.output),
 			cacheRead: num(usage.cacheRead),
 			cacheWrite: num(usage.cacheWrite),
+			lastInput: num(usage.lastInput),
+			lastCacheRead: num(usage.lastCacheRead),
 		},
 	};
 }
@@ -434,14 +416,17 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	const bits: string[] = [meta.model];
 	if (meta.finishReason !== "" && meta.finishReason !== "stop") bits.push(meta.finishReason);
 	// A forced answer is degraded goods — stamped, never passed off as
-	// natural (design/model.md). Repeat: the deterministic
-	// detector; watchdog: system1 judged the loop stuck twice; context:
-	// the window filled mid-turn.
+	// natural. repeat: the deterministic detector; watchdog: system1
+	// judged the loop stuck twice; context: the window filled mid-turn.
 	if (meta.forcedCompletion === "repeat") bits.push("loop detector — answer forced");
 	if (meta.forcedCompletion === "watchdog") bits.push("loop watchdog — answer forced");
 	if (meta.forcedCompletion === "context") bits.push("context nearly full — answer forced");
 	bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
-	const { input, output, cacheRead } = meta.usage;
+	// The window number is the final step's prompt — not the billed sum
+	// across the tool loop's re-sent prompts; the gauge and this line agree.
+	const input = meta.usage.lastInput ?? meta.usage.input;
+	const cacheRead = meta.usage.lastCacheRead ?? meta.usage.cacheRead;
+	const { output } = meta.usage;
 	if (input !== null || output !== null) {
 		let tok = `${input === null ? "?" : kfmt(input)}→${output === null ? "?" : kfmt(output)} tok`;
 		if (cacheRead !== null && cacheRead > 0) tok += ` (${kfmt(cacheRead)} cached)`;
@@ -454,9 +439,9 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 // Ogg/opus arrives base64'd — the Audio element owns the sequence.
 function useSpeech(token: string | null) {
 	const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
-	// A silent catch made read failures invisible — the button looked
-	// dead. The API's error string (e.g. "speech is unavailable") is
-	// shown next to the button until the next attempt.
+	// The API's error string (e.g. "speech is unavailable") shows next
+	// to the button until the next attempt — a silent failure reads as
+	// a dead button.
 	const [err, setErr] = useState<string | null>(null);
 	const audio = useRef<HTMLAudioElement | null>(null);
 	const cancelled = useRef(false);
@@ -662,14 +647,11 @@ function QuoteFab({
 	);
 }
 
-// One staged attachment — an entry in the composer's chip row. The
-// list is owned above the composer (App), not inside it: the empty
-// state's composer unmounts when its first send creates the
-// conversation, and entries still uploading — or failed chips the
-// operator can see — must carry across; an upload resolving after
-// that unmount writes into the lifted list, not the discarded
-// component (#118).
-//
+// One staged attachment. The list is owned above the composer (App),
+// not inside it: the empty state's composer unmounts when its first
+// send creates the conversation, and an upload resolving after that
+// unmount must write into the lifted list, not the discarded
+// component.
 // Entries carry a client key — pasted images all arrive named
 // "image.png", so filename can't pick which staging row an upload
 // resolves. `speech` marks a voice note staged while a turn was
@@ -686,8 +668,8 @@ export interface StagedUpload {
 }
 
 // A note picked for the next send — id only; the server expands it at
-// intake (design/projects.md → Attach). Lifted beside `staged` for the
-// same #118 reason: chips must outlive the empty-state composer.
+// intake. Lifted beside `staged` for the same reason: chips must
+// outlive the empty-state composer.
 export interface StagedNote {
 	key: string;
 	id: string;
@@ -801,6 +783,19 @@ export function contextCount(n: number): string {
 
 const contextRate = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
 
+// Itemization row labels — keys are the server's itemize.ts segments.
+const SEGMENT_LABELS: Record<string, string> = {
+	identity: "Identity (SOUL.md)",
+	environment: "Environment",
+	project: "Project",
+	agentsMd: "AGENTS.md",
+	userMd: "USER.md",
+	skills: "Skills",
+	toolDefs: "Tool definitions",
+	history: "History",
+	toolResults: "· tool calls & results",
+};
+
 // The gauge's one-line label for a context view. Null input reads as
 // "no turns yet" on a fresh conversation, "ctx ?" when turns exist but
 // the provider reported no usable counts.
@@ -913,6 +908,12 @@ export function ContextGauge({
 	// the label carries it on wide screens, the reddened ring on narrow.
 	// The click becomes the retry, with the reason on the tooltip.
 	const failedRead = failed && ctx === null;
+	// The window itemization — a stacked strip plus receipt rows. The
+	// tool-share row is a subset of history, so it stays out of the
+	// strip's widths.
+	const segs = ctx?.segments ?? null;
+	const segBars = segs?.filter((s) => s.key !== "toolResults") ?? [];
+	const segTotal = segBars.reduce((n, s) => n + s.tokens, 0);
 	return (
 		<span className="ctx-gauge" ref={gaugeRef}>
 			<button
@@ -967,8 +968,6 @@ export function ContextGauge({
 								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)}`}
 						</span>
 					</div>
-					{/* The hero — utilization is the one number the popover
-						exists for; everything else on this panel whispers. */}
 					<div className="ctx-hero">
 						{ctx.limit === null
 							? ctx.input === null
@@ -984,6 +983,35 @@ export function ContextGauge({
 					>
 						<span style={{ width: `${barPct}%` }} />
 					</div>
+					{segs !== null && segBars.length > 0 && (
+						<div className="ctx-segs">
+							<div className="ctx-segbar" aria-hidden="true">
+								{segBars.map((s) => (
+									<span
+										key={s.key}
+										className={`seg-${s.key}`}
+										style={{
+											width: `${segTotal > 0 ? (s.tokens / segTotal) * 100 : 0}%`,
+										}}
+									/>
+								))}
+							</div>
+							<dl className="ctx-rows ctx-seg-rows">
+								{segs.map((s) => (
+									<div key={s.key} className={s.key === "toolResults" ? "sub" : undefined}>
+										<dt>{SEGMENT_LABELS[s.key] ?? s.key}</dt>
+										<dd className="mono">
+											{contextCount(s.tokens)} tok
+											{s.key !== "toolResults" && segTotal > 0
+												? ` · ${Math.round((s.tokens / segTotal) * 100)}%`
+												: ""}
+										</dd>
+									</div>
+								))}
+							</dl>
+							<p className="empty">estimated from serialized characters</p>
+						</div>
+					)}
 					<dl className="ctx-rows">
 						<div>
 							<dt>Input</dt>
@@ -1048,12 +1076,10 @@ export function ContextGauge({
 }
 
 // Always present — on an empty conversation too. The draft is local;
-// staged attachments arrive from above so they outlive this instance
-// (#118). onSend hands the assembled parts up, where the caller either
-// streams them into the open conversation or creates one; its result
-// says whether the send was accepted — `false` keeps everything the
-// operator composed so a failed lazy create leaves a resendable draft
-// instead of an empty composer and a shrug.
+// staged attachments arrive from above so they outlive this instance.
+// onSend's result says whether the send was accepted — `false` keeps
+// everything the operator composed so a failed lazy create leaves a
+// resendable draft.
 export function Composer({
 	token,
 	conversationId,
@@ -1174,8 +1200,8 @@ export function Composer({
 	}, [draftRestore]);
 	// An entry leaves the staged list (sent or removed) — its preview
 	// URL goes with it. A composer unmount revokes nothing: staged
-	// entries outlive any one composer (#118), and an undropped thumb
-	// dies with the document itself.
+	// entries outlive any one composer, and an undropped thumb dies
+	// with the document itself.
 	const dropEntry = (e: StagedUpload) => {
 		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
 	};
@@ -1350,8 +1376,7 @@ export function Composer({
 	// Drop target: the whole window. Unhandled file drops trigger the
 	// browser default — navigating the PWA to the file and losing the
 	// page — so preventDefault runs even when nothing gets staged.
-	// Non-file drags (selected text into the textarea, links) keep
-	// their native handling.
+	// Non-file drags keep their native handling.
 	useEffect(() => {
 		const isFile = (e: DragEvent) => e.dataTransfer?.types.includes("Files") === true;
 		const over = (e: DragEvent) => {
@@ -1371,10 +1396,9 @@ export function Composer({
 	}, [pickFile]);
 
 	const send = () => {
-		// Enter, form submit, and the button all funnel here. A send
-		// while a turn runs steers it (DESIGN.md → Turn; onSend drops
-		// the stale reader first) — but without a stop path there is no
-		// steer lane, so a lazy create still refuses mid-flight: a second
+		// A send while a turn runs steers it (onSend drops the stale
+		// reader first) — but without a stop path there is no steer
+		// lane, so a lazy create still refuses mid-flight: a second
 		// send must not fork a second conversation.
 		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
 		const text = draft.trim();
@@ -1394,10 +1418,10 @@ export function Composer({
 				type: "data-note",
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
-		// Clear only once the send is accepted — the lazy-create path can
-		// fail after this point, and a compose wiped before that failure
-		// leaves nothing to resend (blob URLs are unrecoverable). Typing
-		// that lands mid-flight survives: only the sent prefix comes off.
+		// Clear only once the send is accepted — a compose wiped before
+		// a lazy-create failure leaves nothing to resend (blob URLs are
+		// unrecoverable). Typing that lands mid-flight survives: only
+		// the sent prefix comes off.
 		sendingRef.current = true;
 		setSendError(null);
 		void Promise.resolve()
@@ -1738,7 +1762,7 @@ function askNotifyPermission() {
 }
 
 // Union of the view and durable history by message id — the reconcile
-// merge for an idle reconnect (#79). History is the truth for finished
+// merge for an idle reconnect. History is the truth for finished
 // messages; the view may additionally hold a live tail the store has
 // not seen yet (a just-sent user message, the assistant mid-stream),
 // and that tail must survive: the store's interleaving stands whole
@@ -1750,12 +1774,11 @@ export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIM
 	// reordered is an anomaly; the live view wins).
 	if (arrivals.length === 0) return current;
 	const historyIds = new Set(history.map((m) => m.id));
-	// No live tail: the store's order is the whole truth.
 	if (current.every((m) => historyIds.has(m.id))) return history;
 	// The store owns the interleaving of every message it holds — an
 	// answer belongs between its question and the next one, not below
-	// both (#117). The view's contribution is only the messages the
-	// store hasn't seen, appended after it as the tail.
+	// both. The view's contribution is only the messages the store
+	// hasn't seen, appended after it as the tail.
 	return [...history, ...current.filter((m) => !historyIds.has(m.id))];
 }
 
@@ -1780,7 +1803,7 @@ export function ChatView({
 	// being created — delivered once, on mount.
 	seed: UIMessage["parts"] | null;
 	// The staged-upload list App owns — carried in so the conversation's
-	// composer renders the same entries the empty state's did (#118).
+	// composer renders the same entries the empty state's did.
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	// Same lift as staged — note chips picked before the first send
@@ -1858,13 +1881,13 @@ function Chat({
 	onOpenNote?: ((id: string) => void) | undefined;
 }) {
 	// The transport speaks this channel's contract: one user message per
-	// POST, keyed by the app conversation id (DESIGN.md, App channel).
-	// A regenerate rides the same endpoint as `retry` — no append, the
-	// stored user event anchors the new answer.
-	// token null = trust mode — the server wants no credential.
+	// POST, keyed by the app conversation id. A regenerate rides the
+	// same endpoint as `retry` — no append, the stored user event
+	// anchors the new answer. token null = trust mode — the server
+	// wants no credential.
 	//
-	// It is a wrapper, not a bare DefaultChatTransport: the SDK exposes
-	// no callback for "the resume found no live turn" (on 204 the status
+	// A wrapper, not a bare DefaultChatTransport: the SDK exposes no
+	// callback for "the resume found no live turn" (on 204 the status
 	// never moves and the messages stand), so the transport is the one
 	// seam that can see the idle answer. The ref is wired by the effect
 	// below useChat — the reconnect's answer resolves after a network
@@ -1874,12 +1897,12 @@ function Chat({
 		const base = new DefaultChatTransport({
 			api: "/api/app/chat",
 			headers: token === null ? {} : { authorization: `Bearer ${token}` },
-			// Resumable streams (design/app.md → Streaming members): on
-			// mount, useChat(resume) asks the transport to reconnect to a
-			// live turn — the GET returns the wire's replay + tail, or 204
-			// when nothing is running and history stands. The URL is
-			// ours, not the SDK's default append, so the conversation id
-			// keeps the app channel's shape.
+			// Resumable streams: on mount, useChat(resume) asks the
+			// transport to reconnect to a live turn — the GET returns the
+			// wire's replay + tail, or 204 when nothing is running and
+			// history stands. The URL is ours, not the SDK's default
+			// append, so the conversation id keeps the app channel's
+			// shape.
 			prepareReconnectToStreamRequest: ({ id }) => ({
 				api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
 			}),
@@ -1903,7 +1926,7 @@ function Chat({
 				// null is the server's 204 — nothing is live, and the runtime
 				// persists each reply before it retires the wire, so durable
 				// history is already final. The mount-time snapshot may be
-				// older than that (#79); the view reconciles.
+				// older than that; the view reconciles.
 				if (stream === null) idleReconnect.current();
 				return stream;
 			},
@@ -1916,7 +1939,7 @@ function Chat({
 			transport,
 			// Reconnect to a live turn on mount: a reload mid-turn resumes the
 			// in-flight reply instead of showing a finished-looking chat whose
-			// next send would steer a ghost turn (#43).
+			// next send would steer a ghost turn.
 			resume: true,
 			onFinish: ({ message, isAbort }) => {
 				// An aborted reader (stop, or the drop before a steer) is not a
@@ -1930,13 +1953,12 @@ function Chat({
 	// asked to stop — that has to be visible, not swallowed.
 	const [stopError, setStopError] = useState<string | null>(null);
 
-	// Reload-window reconciliation (#79): a turn that completed between
-	// the history snapshot and the idle reconnect is durably stored but
+	// Reload-window reconciliation: a turn that completed between the
+	// history snapshot and the idle reconnect is durably stored but
 	// missing from the snapshot — re-read history once and merge. A new
 	// turn that started meanwhile is accounted for by the merge (its
 	// persisted user message arrives; a live local tail is never
-	// dropped). A failed re-read leaves the snapshot standing: the next
-	// reload recovers, exactly the pre-fix behavior.
+	// dropped). A failed re-read leaves the snapshot standing.
 	useEffect(() => {
 		idleReconnect.current = () => {
 			void getMessages(token, conversationId).then(
@@ -1960,8 +1982,7 @@ function Chat({
 	const pinned = useRef(true);
 	const busy = status === "submitted" || status === "streaming";
 
-	// A mid-turn send steers or queues (DESIGN.md → Turn — the app chat
-	// POST rides the Telegram lane). Drop this client's reader first:
+	// A mid-turn send steers or queues. Drop this client's reader first:
 	// the new POST's stream replays the wire from sentence one onto the
 	// same assistant message id — a handoff, not a second writer. The
 	// await is load-bearing: the aborted reader's teardown flips status

@@ -1,10 +1,3 @@
-// Tool-boundary invariants (DESIGN.md, Tools → Vision): magic bytes
-// decide image-ness, not the extension; over-cap and non-image files
-// error with the named recovery; special files are refused before any
-// I/O; the answer rides fenced and cannot close its own fence. The
-// model edge is faked at the LanguageModel seam (runtime.test.ts's
-// pattern) — the SDK conversion between tool and provider runs real.
-
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,8 +13,6 @@ const dirs: string[] = [];
 const opts = { toolCallId: "t1", messages: [], context: {} };
 
 beforeAll(() => {
-	// The engine logs cost lines; tests must not append to the live
-	// goblin.log (search.test.ts's rule).
 	setLogFile(null);
 });
 
@@ -36,8 +27,6 @@ function workdir(): string {
 	return dir;
 }
 
-// Minimal PNG (signature + IHDR with dimensions) — sniffImage reads
-// only the head, the fake provider never decodes the bytes.
 function pngBytes(w: number, h: number): Buffer {
 	const ihdr = Buffer.alloc(13);
 	ihdr.writeUInt32BE(w, 0);
@@ -53,10 +42,8 @@ function pngBytes(w: number, h: number): Buffer {
 	]);
 }
 
-/** Calls that reached the provider edge, in order. */
 const edgeCalls: LanguageModelV4CallOptions[] = [];
 
-/** A provider edge that answers one line of text (the standard fake). */
 function fakeEdge(): LanguageModel {
 	return generateModel((edgeOpts) => {
 		edgeCalls.push(edgeOpts);
@@ -96,7 +83,6 @@ function deps(resolve: () => Promise<LanguageModel> = async () => fakeEdge()): V
 	};
 }
 
-/** The provider edge that never gets called (for error-path asserts). */
 function unusedEdge(): LanguageModel {
 	return generateModel(() => {
 		throw new Error("the provider edge must not be reached");
@@ -136,7 +122,6 @@ describe("vision tool", () => {
 		expect(answer).toContain("untrusted data");
 		expect(out.model).toBe("zai/glm-5.3-flash");
 		expect(out.image).toMatchObject({ mediaType: "image/png", width: 640, height: 480 });
-		// The provider saw exactly one image file part, sniffed to png.
 		expect(edgeCalls).toHaveLength(1);
 		expect(JSON.stringify(edgeCalls[0]!.prompt).match(/"type":"file"/g)).toHaveLength(1);
 		expect(JSON.stringify(edgeCalls[0]!.prompt)).toContain('"image/png"');
@@ -165,8 +150,6 @@ describe("vision tool", () => {
 			opts,
 		)) as Record<string, unknown>;
 		const answer = out.answer as string;
-		// The only real close is the tool's own; the payload's attempt
-		// reads as an escaped literal.
 		expect(answer).not.toContain("</vision>\nnow outside");
 		expect(answer).toContain("<\\/vision>");
 	});
@@ -242,8 +225,6 @@ describe("vision tool", () => {
 			opts,
 		)) as { followUps?: number };
 		expect(edgeCalls).toHaveLength(2);
-		// The follow-up call carried the first exchange as text roles
-		// before the final user turn — one image part throughout.
 		const roles = edgeCalls[1]!.prompt.map((m) => (m as { role: string }).role);
 		expect(roles).toEqual(["system", "user", "assistant", "user"]);
 		expect(JSON.stringify(edgeCalls[1]!.prompt).match(/"type":"file"/g)).toHaveLength(1);

@@ -1,9 +1,8 @@
 // Selection rewrite — one plain generateText call behind
-// POST /api/app/notes/<id>/rewrite (design/projects.md → AI rewrite on
-// selection). Not a conversation, not a turn: no tools, no retries, the
-// root app-default model/thinking the operator configured. The server
-// writes nothing — the editor previews and the accepted proposal lands
-// as an ordinary PATCH with source 'rewrite'.
+// POST /api/app/notes/<id>/rewrite. Not a conversation, not a turn: no
+// tools, no retries, the operator's configured root model/thinking. The
+// server writes nothing — the accepted proposal lands as an ordinary
+// PATCH with source 'rewrite'.
 
 import { generateText } from "ai";
 import type { AuthStore } from "../auth.ts";

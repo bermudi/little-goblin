@@ -1,10 +1,3 @@
-// View unit tests: the pure builder's boundary rules
-// (design/runtime-turn.md → phase 3) — recall-block interleaving, the
-// partial's placement, the compaction boundary shape, render-only
-// system events, per-message degradation, and the byte-stability
-// prefix property. Cross-turn cache behavior (steering append-only,
-// the failed-boundary burst merge) stays pinned e2e in runtime.test.ts.
-
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,9 +30,6 @@ const recall = (anchorSeq: number, content: string): RecallContext => ({
 	content,
 	sourceIds: [`e${anchorSeq}`],
 });
-// The text of each message, in view order — user messages keep their
-// content parts (post-merge) as an array of strings; the placeholder
-// and system-event tests read the same projection.
 const texts = (view: ModelMessage[]): string[] =>
 	view.flatMap((m) =>
 		typeof m.content === "string"
@@ -71,8 +61,6 @@ describe("the model view", () => {
 			recall(3, "prefers dark"),
 		);
 		expect(view.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-		// The block leads the anchored user's own text — one merged user
-		// message per anchored exchange, memory first.
 		expect(texts(view)).toEqual([
 			"prefers quiet",
 			"i like quiet",
@@ -103,10 +91,6 @@ describe("the model view", () => {
 	});
 
 	test("a compaction summary heads the view and never inherits the boundary's block", async () => {
-		// The boundary view per DESIGN.md → Compaction: the store's
-		// modelEntries mints the summary at the boundary event's seq — a
-		// recall block anchored there belongs to the message the summary
-		// replaced, and must not ride ahead of it.
 		const summary = summaryMessage(
 			{
 				boundarySeq: 2,
@@ -139,8 +123,6 @@ describe("the model view", () => {
 			user("u2", "and dark mode"),
 		]);
 		const view2 = await build(turn2, [recall(1, "prefers quiet")], recall(3, "prefers dark"));
-		// Byte-stability (DESIGN.md → Cache stability): the prefix
-		// survives verbatim; only appended content differs.
 		expect(JSON.stringify(view2.slice(0, view1.length))).toBe(JSON.stringify(view1));
 	});
 
@@ -153,8 +135,6 @@ describe("the model view", () => {
 		]);
 		const view = await build(history);
 		expect(view.map((m) => m.role)).toEqual(["assistant", "user"]);
-		// The note leads the merged burst's content; the stored role is
-		// untouched (render-only mapping).
 		expect(texts(view)).toEqual([
 			"earlier answer",
 			`[system event: ${event}]`,
@@ -178,8 +158,7 @@ describe("the model view", () => {
 	});
 
 	test("a stored data-note part reaches the model as the fenced text — malformed degrades in place", async () => {
-		// convertToModelMessages drops unknown data parts silently;
-		// the view maps them to text first (design/projects.md → Attach).
+		// convertToModelMessages drops unknown data parts silently — map them to text first.
 		const attached = {
 			id: "n1",
 			role: "user",
@@ -276,11 +255,6 @@ describe("the steer variant", () => {
 });
 
 describe("unfinished tool calls", () => {
-	// Durable history pairs every tool call with its result (abort paths
-	// never persist partials), so the model view's incomplete-call drop
-	// is an alarm when it fires on history and expected only on the
-	// resume partial. These tests pin the drop AND its log line — a
-	// silent drop violates the logging bar.
 	let logDir: string | null = null;
 	afterEach(() => {
 		setLogFile(null);
@@ -323,7 +297,6 @@ describe("unfinished tool calls", () => {
 				user("u2", "hello?"),
 			]),
 		);
-		// The dangling call never reaches the wire; the message's text does.
 		expect(JSON.stringify(view)).not.toContain("tool-bash");
 		expect(texts(view)).toContain("checking");
 		const entry = lines(target).find((l) => l.msg === historyDropMsg);
@@ -379,7 +352,6 @@ describe("unfinished tool calls", () => {
 				} as unknown as UIMessage,
 			]),
 		);
-		// Call and result both reach the wire — nothing dropped, nothing logged.
 		const wire = JSON.stringify(view);
 		expect(wire).toContain("tool-call");
 		expect(wire).toContain("tool-result");

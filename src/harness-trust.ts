@@ -1,18 +1,11 @@
-// Pre-seed harness first-run gates for a delegation launch
-// (design/delegation.md — "First-run gates"). Harnesses gate on
-// dialogs that no-approval flags don't bypass, and the launcher's
-// plain shell doesn't carry the operator's alias flags — so the
-// launcher's kind is consulted and the corresponding state file gets
-// its "already accepted" markers before the agent starts. The
-// alternative — scripting answers into the pane — hides a consent
-// dialog from the operator; seeding makes explicit what a keypress
-// would hide.
-//
-// Preservation rule: these are the operator's own config files —
-// the same ones a hand-edit or a stitch-managed dotfile produced —
-// so a launch may add flags but never change or delete what the
-// operator wrote, and a file we can't extend safely fails the
-// launch loudly rather than corrupt it.
+// Harnesses gate on first-run dialogs that no-approval flags don't
+// bypass, and the launcher's plain shell doesn't carry the operator's
+// alias flags — so the state file gets its "already accepted" markers
+// before the agent starts. Scripting answers into the pane would hide
+// a consent dialog from the operator.
+// These are the operator's own files: a launch may add flags but never
+// change or delete what the operator wrote, and a file we can't extend
+// safely fails the launch loudly rather than corrupt it.
 
 import {
 	existsSync,
@@ -25,10 +18,8 @@ import {
 import { dirname, join } from "node:path";
 import { durableWriteFile } from "./durable.ts";
 
-// Returns a short description of what was seeded (for the launch
-// log line) — [] means nothing to do or kind has no known gates.
-// A corrupt or unextendable state file throws: failing the launch
-// loudly beats silently losing the delegation.
+// [] means nothing to do or kind has no known gates; a corrupt or
+// unextendable state file throws.
 export function seedHarnessTrust(kind: string, cwd: string, homeDir: string): string[] {
 	switch (kind) {
 		case "claude":
@@ -40,14 +31,12 @@ export function seedHarnessTrust(kind: string, cwd: string, homeDir: string): st
 	}
 }
 
-// The settings file may be a symlink (stitch-managed dots); writing
-// through the symlink path replaces it with a regular file and forks
-// the config — tmp+rename over the link is exactly that. Resolve to
-// the managed target first. lstat, never stat: a dangling link is
-// still a link and must fail the launch loudly with its target named,
-// not count as an absent path a write may quietly create at the link
-// path (#97 — the same discipline as paths.ts's writeThroughTarget;
-// design/delegation.md's "never replace the link" ruling).
+// The settings file may be a stitch-managed symlink; tmp+rename over
+// the link would replace it with a regular file and fork the config —
+// write through to the realpath target. lstat, never stat: a dangling
+// link is still a link and must fail the launch loudly with its target
+// named (paths.ts's writeThroughTarget discipline), not be quietly
+// created at the link path.
 function managedPath(path: string): string {
 	try {
 		if (!lstatSync(path).isSymbolicLink()) return path;
@@ -117,15 +106,10 @@ function seedClaude(cwd: string, file: string): string[] {
 
 // ---------- codex: ~/.codex/config.toml ----------
 
-// TOML survives only as text: Bun.TOML.parse validates the file and
-// answers "is the entry already trusted?", but a parse→stringify
-// round-trip would lose comments and reorder tables — the operator's
-// file, not ours to reformat. The write is one line inserted at a
-// location the grammar guarantees lands in the right scope: after the
-// table's own `[projects."<cwd>"]` header, after its last
-// `projects."<cwd>".` dotted key, or as a fresh appended section when
-// no entry exists. Anything else — inline tables, forms we can't
-// locate — is refused, not rewritten.
+// TOML survives only as text: a parse→stringify round-trip would lose
+// comments and reorder tables — the operator's file, not ours to
+// reformat. The write is one line inserted at a grammar-guaranteed
+// scope; anything we can't locate is refused, not rewritten.
 function seedCodex(cwd: string, file: string): string[] {
 	const path = managedPath(file);
 	const text = existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -169,7 +153,6 @@ function seedCodex(cwd: string, file: string): string[] {
 	return [`dir trust ${cwd}`];
 }
 
-// The entry exists but carries no trust_level — extend it in place.
 function insertIntoExisting(
 	lines: string[],
 	quoted: string,
@@ -184,14 +167,12 @@ function insertIntoExisting(
 			return lines.join("\n");
 		}
 	}
-	// Defined by root-level dotted keys — a dotted line after the
-	// last one inherits the same scope. That scope is root only when
-	// no [table] header precedes the match: under a header the
-	// inserted key would land in that table
-	// (other.projects."<cwd>".trust_level) with the file still valid
-	// TOML — root trust unset, no error anywhere. Refuse instead.
-	// (A multi-line string holding a "["-leading line also refuses —
-	// the wrong side of that mistake is loud, not silent.)
+	// Defined by root-level dotted keys — a dotted line inherits the
+	// scope of any [table] header preceding it. Under a foreign header
+	// the insert would write other.projects."<cwd>".trust_level: still
+	// valid TOML, root trust unset, no error anywhere. Refuse instead.
+	// (A "["-leading line inside a multi-line string refuses too — the
+	// wrong side of that mistake is loud, not silent.)
 	const dotted = new RegExp(`^\\s*projects\\s*\\.\\s*${quoted}\\s*\\.`);
 	let last = -1;
 	for (const [i, line] of lines.entries()) if (dotted.test(line)) last = i;
@@ -209,9 +190,9 @@ function insertIntoExisting(
 	);
 }
 
-// No entry: a new [projects."<cwd>"] section appended at EOF is a
-// fresh table — legal under every way `projects` was declared except
-// the root inline-table form, which no appended text can extend.
+// A fresh appended [projects."<cwd>"] section is legal under every
+// `projects` declaration except the root inline-table form, which no
+// appended text can extend.
 function appendProjectTable(
 	lines: string[],
 	text: string,
@@ -238,9 +219,8 @@ const TOML_ESCAPES: Record<string, string> = {
 	"\\": "\\\\",
 };
 
-// TOML basic strings must escape the quote, backslash, and every
-// control character — a cwd named with a newline or tab still yields
-// a valid key, and the escaped form is what on-disk matching finds.
+// TOML basic strings escape quote, backslash, and every control
+// character — the escaped form is what on-disk matching finds.
 function tomlBasic(s: string): string {
 	return `"${s.replace(
 		/[\\"\x00-\x1f\x7f]/g,
@@ -250,21 +230,18 @@ function tomlBasic(s: string): string {
 
 // ---------- remote (machine-target) trust seeding payloads ----------
 
-// The delegation lifecycle applies these same markers on machine
-// targets through the delegation's root pane (`pane run`, fresh-host
-// write-if-absent). They live HERE so "what the markers are" has one
-// owner — a harness changing its trust format updates this module,
-// and both transports follow.
+// Machine targets get these same markers through the delegation's
+// root pane — they live here so a harness changing its trust format
+// updates one module and both transports follow.
 
-/** The TOML a fresh codex config needs for `cwd` to be trusted —
- *  the key is TOML-escaped exactly like the local append path. */
+/** The TOML a fresh codex config needs — the key is escaped exactly
+ *  like the local append path. */
 export function codexTrustSection(cwd: string): string {
 	return `[projects.${tomlBasic(cwd)}]\ntrust_level = "trusted"\n`;
 }
 
-/** The JSON a fresh ~/.claude.json needs for `cwd` to be accepted
- *  (the local path extends an existing doc instead — a fresh remote
- *  host has none, so the whole doc is the payload). */
+/** Whole fresh ~/.claude.json — the local path extends an existing
+ *  doc; a fresh remote host has none. */
 export function claudeFreshTrustJson(cwd: string): string {
 	return `${JSON.stringify({
 		bypassPermissionsModeAccepted: true,

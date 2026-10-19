@@ -16,12 +16,7 @@ export const writeFileTool = (cwd: string) =>
 		}),
 		execute: async ({ path, content }) => {
 			const abs = resolvePath(cwd, path);
-			// A differently-normalized twin may exist (macOS NFD vs NFC): write
-			// to the twin, not beside it — otherwise the write silently forks
-			// the file under a second spelling no tool ever resolves back to.
 			const target = unicodeTwin(abs) ?? abs;
-			// And write through a leaf symlink to the file it manages —
-			// tmp+rename over the link would replace it and fork the config.
 			const through = writeThroughTarget(target);
 			if ("error" in through) return { error: through.error };
 			const file = through.target;

@@ -34,8 +34,6 @@ const patterns: readonly { label: string; pattern: RegExp; prefix?: boolean }[] 
 	},
 ];
 
-// Screen copies at both enqueue and HTTP boundaries; never mutate history or
-// print a match. The marker check keeps retries byte-identical.
 export function screenMemoryText(text: string, boundary: string): string {
 	const hits: Record<string, number> = {};
 	let result = text;

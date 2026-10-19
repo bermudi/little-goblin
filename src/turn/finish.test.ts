@@ -1,10 +1,3 @@
-// Finish unit tests (design/runtime-turn.md → phase 6): the durable
-// landing's boundary rules — the ownership-bounded anchor, the
-// defiance guard, the window signal, retentionOpt's skip table, and
-// the reviewer submission (snapshot, exclusion, prior-turn chain).
-// The cross-phase net — a fenced turn never gates, shutdown fencing a
-// held gate — stays e2e in runtime.test.ts.
-
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,7 +31,6 @@ afterEach(() => {
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-// Flush the fire-and-forget gate chain (decide → catch → finally).
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const conv = (epoch = 1, id = "dm:1"): Conversation => ({
@@ -133,9 +125,6 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 describe("landAttempt", () => {
 	test("anchors the reply to the newest owned user message and appends it", () => {
 		const h = land({
-			// Queued input above the ownership mark: durable, but this
-			// turn never read it — it must not anchor the reply nor enter
-			// the retention burst.
 			modelEntries: () => [
 				{ seq: 1, message: msg("u1", "user", text("first")) },
 				{ seq: 2, message: msg("a1", "assistant", text("earlier")) },
@@ -149,8 +138,6 @@ describe("landAttempt", () => {
 		expect(h.appended[0]!.messages[0]!.parts).toEqual([text("done")]);
 		expect(h.landed.done).toEqual({ kind: "completed" });
 		expect(h.landed.reply?.id).toBe("a2");
-		// The retention source reads the exchange as it ended, bounded
-		// by the same mark.
 		expect(h.landed.source.userTexts).toEqual(["run it"]);
 	});
 
@@ -206,8 +193,6 @@ describe("landAttempt", () => {
 			expect((note as { text: string }).text).toContain(
 				"My context window filled up before I wrote my answer",
 			);
-			// Telegram delivers text only through deltas — the note rides
-			// the live path too, behind a block separator.
 			expect(h.deltas).toHaveLength(1);
 			expect(h.deltas[0]).toContain("My context window filled up");
 			expect(h.landed.done).toEqual({ kind: "completed", forced: "context" });
@@ -215,8 +200,6 @@ describe("landAttempt", () => {
 
 		test("synthetic text reaches members, live replay and attach subscribers before completion", async () => {
 			const live = openLive();
-			// Landing runs after the provider's finish chunk; the SDK must
-			// still read the synthetic part before the wire's terminal close.
 			live.chunks.push({ type: "start", messageId: "a2" }, { type: "finish" });
 			const attached: UIMessageChunk[] = [];
 			const ends: WireEnd[] = [];
@@ -428,8 +411,6 @@ function reviewerStub(decide?: ReviewerDeps["gate"]["decide"]): Reviewer {
 }
 
 interface ReviewHarness {
-	// The reviewer rides each submit — undefined is itself the case
-	// under test (the feature off), so it cannot default through ??.
 	submit(reviewer?: Reviewer): void;
 	submitWithReviewer(reviewer: Reviewer | undefined): void;
 	state: {
@@ -507,8 +488,6 @@ describe("submitTurnReview", () => {
 			}),
 		});
 		h.submit();
-		// Off-lane by shape: the submission returns and the prior-turn
-		// chain is already updated while the gate is still deciding.
 		expect(h.state.remembered).toHaveLength(1);
 		expect(h.state.seq).toBe(1);
 		release();
@@ -526,7 +505,7 @@ describe("submitTurnReview", () => {
 		h.state.excluded = true;
 		h.submit();
 		await tick();
-		expect(h.state.seq).toBe(0); // no counter spent
+		expect(h.state.seq).toBe(0);
 		expect(h.state.forgotten).toBe(1);
 		const skipped = logLines(root).find((e) => e.msg === "reviewer skipped — memory excluded");
 		expect(skipped).toMatchObject({ conversation: "dm:1" });

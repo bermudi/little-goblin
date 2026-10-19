@@ -1,5 +1,5 @@
-// Function-size report (REFACTOR-PLAN-2.md → P0) — a signal, not a
-// gate: exits 0 even when functions flag. Span = the function-like
+// Function-size report — a signal, not a gate: exits 0 even when
+// functions flag. Span = the function-like
 // node's loc.start.line..loc.end.line; nested functions count their
 // container's span too, so the god-function and its closures both
 // surface. Scope = src/ + app/src/ minus test files, same as

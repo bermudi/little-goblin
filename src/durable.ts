@@ -1,6 +1,6 @@
-// Durable whole-file writes: tmp file + fsync + rename, preserving the
-// existing file's mode so a hardened 0600 never downgrades. This ritual is
-// for whole-file state only — SQLite uses WAL + transactions instead.
+// Preserving the existing file's mode so a hardened 0600 never
+// downgrades. This ritual is for whole-file state only — SQLite uses
+// WAL + transactions instead.
 
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
@@ -27,12 +27,10 @@ import { log } from "./log.ts";
 export interface DurableWriteOptions {
 	/** Mode for a file that does not exist yet; an existing file keeps its own. */
 	modeIfNew?: number;
-	/** Timestamps stamped on the new inode before its fsync — an archive
-	 *  copy keeps the original's mtime so freshness checks still read it
-	 *  as old, and the stamp is durable with the data. */
+	/** Stamped before fsync so freshness checks still read it as old —
+	 *  the stamp is durable with the data. */
 	times?: { atime: Date | number; mtime: Date | number };
-	/** Create-only: the destination appears by link(2), not rename(2) —
-	 *  EEXIST where rename would silently replace. */
+	/** link(2), not rename(2) — EEXIST where rename would silently replace. */
 	exclusive?: boolean;
 }
 
@@ -44,8 +42,7 @@ export function durableWriteFile(
 	durableWriteBuffer(path, Buffer.from(content, "utf8"), normalize(options));
 }
 
-/** The bytes twin — fetched PDFs and other binary state get the same
- *  tmp+fsync+rename ritual as every other whole-file write. */
+/** Binary state gets the same tmp+fsync+rename ritual. */
 export function durableWriteBytes(
 	path: string,
 	data: Uint8Array,
@@ -54,9 +51,8 @@ export function durableWriteBytes(
 	durableWriteBuffer(path, Buffer.from(data), normalize(options));
 }
 
-/** The create-only twin: same durable ritual, but the destination
- *  appears by link(2) instead of rename(2) — EEXIST where rename
- *  would silently replace. Collision-numbering callers retry on it. */
+/** Create-only: link(2) instead of rename(2) — EEXIST where rename
+ *  would silently replace; collision-numbering callers retry on it. */
 export function durableWriteBytesExclusive(
 	path: string,
 	data: Uint8Array,
@@ -70,11 +66,9 @@ export function durableWriteBytesExclusive(
 // footprint is the chunk, never the file.
 const COPY_CHUNK_BYTES = 1024 * 1024;
 
-/** The streamed copy twin: same ritual as the writes (fresh inode,
- *  source's mode, stamped times, fsync + rename + directory fsync)
- *  without ever holding the whole source in memory — a runaway source
- *  costs latency, not the heap. src and dest may be the same path;
- *  the rename still lands a fresh inode. */
+/** Same ritual without holding the whole source in memory — a runaway
+ *  source costs latency, not the heap. src and dest may be the same
+ *  path; the rename still lands a fresh inode. */
 export function durableCopyFile(
 	src: string,
 	dest: string,

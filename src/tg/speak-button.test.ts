@@ -59,7 +59,6 @@ describe("speak button", () => {
 		await p;
 		expect(synthesized).toBe(1);
 		expect(fake.calls.filter((c) => c.method === "sendVoice")).toHaveLength(1);
-		// Exactly one answer for the whole interaction.
 		expect(answers(fake.calls)).toEqual([undefined]);
 	});
 
@@ -87,7 +86,7 @@ describe("speak button", () => {
 		await first;
 		expect(synthesized).toBe(1);
 		expect(fake.calls.filter((c) => c.method === "sendVoice")).toHaveLength(1);
-		// Second tap got a toast, not a second rendering.
+		// The second tap got a toast — not a second rendering.
 		expect(answers(fake.calls)).toEqual([undefined, "already reading this reply"]);
 	});
 
@@ -145,8 +144,8 @@ describe("speak button", () => {
 				return [];
 			},
 		};
-		// Two sequential taps on the same message: the finally cleanup is
-		// what keeps the button from dying after its first success.
+		// The finally cleanup is what keeps the button alive after its
+		// first success.
 		await handleSpeakButton(query(chatId, 6), deps);
 		await handleSpeakButton(query(chatId, 6), deps);
 		expect(synthesized).toBe(2);

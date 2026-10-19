@@ -1,18 +1,5 @@
-// Notes — the operator's writing surface outside conversations
-// (design/projects.md → Notes). Rows, not files: the server mediates
-// every mutation so snapshot-before-edit, `expected`-guarded range
-// edits, and a live `rev` exist for attach and the editor's If-Match.
-// body_md is the only format — what the model reads is what the
-// editor saves.
-//
-// Every content write rides ONE path (`write`): it versions the
-// pre-write state, bumps rev, and prunes past 100 versions, all in
-// one transaction. Flags (pin/archive/move) never touch content —
-// `rev` stays still — but every accepted mutation advances
-// `state_rev`, the page's forward-ordering token: a delayed flag
-// response can't resurrect state a newer mutation already replaced.
-// The cache-stability split between a conversation's frozen prompt
-// and a note's freely-moving scope is why flags stay off `rev`.
+// A note's scope moves freely where a conversation's prompt is
+// frozen — that cache-stability split is why flags stay off `rev`.
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -39,9 +26,8 @@ function checkBodySize(body: string, previousLength = 0): void {
 
 export interface Note {
 	id: string;
-	// null = a loose note — it can move between projects or out to
-	// loose (it carries no prompt cache; frozen indexes just show the
-	// stale scope until their next build).
+	// null = loose. No prompt cache — frozen indexes show the stale
+	// scope until their next build.
 	projectId: string | null;
 	title: string;
 	body: string;
@@ -99,9 +85,8 @@ export class NoteConflictError extends Error {
 	}
 }
 
-// The attach part (design/projects.md → Attach): the client sends only
-// {id}; intake expands it to this shape, which is what history stores
-// and the model view renders — never a client-supplied body.
+// Clients send only {id}; intake expands to this shape — history
+// stores and the model view renders it, never a client-supplied body.
 export const NOTE_PART = "data-note";
 export const notePartDataSchema = z.object({
 	id: z.string().min(1),
@@ -112,10 +97,9 @@ export const notePartDataSchema = z.object({
 });
 export type NotePartData = z.infer<typeof notePartDataSchema>;
 
-// The fenced rendering the note tool's read and the model view share.
-// Attributes carry id/rev/title; a literal `</note` inside the body is
-// neutralized so operator text can't close its own fence (the
-// delegation <event> ruling).
+// Fenced rendering shared by the note tool's read and the model view;
+// a literal `</note` in the body is neutralized so operator text
+// can't close its own fence.
 export function noteFence(d: { id: string; title: string; rev: number; body: string }): string {
 	// id/title ride XML attributes — escape the full entity set, not
 	// just quotes, or a crafted title can break out of the attribute.
@@ -130,16 +114,13 @@ export function noteFence(d: { id: string; title: string; rev: number; body: str
 	return `<note id="${attr(d.id)}" rev="${d.rev}" title="${attr(d.title)}">\n${body}\n</note>`;
 }
 
-// Autosave coalescing: an `app` write versions the prior state only
-// when the previous write wasn't app-sourced or the newest version is
-// this old — a typing session is one version, not hundreds.
+// A typing session is one version, not hundreds — an `app` write
+// versions only on a source change or a gap this old.
 const APP_VERSION_GAP_MS = 10 * 60 * 1000;
 const VERSION_CAP = 100;
-// list() is the index — unbounded body materialization would make every
-// page load O(total body bytes). The preview flattens in JS (flatLine's
-// markdown rules aren't SQL); a bounded source prefix keeps the query
-// cheap — only a body opening with ~4k of whitespace/markup under-fills
-// the 200-char preview.
+// flatLine's markdown rules aren't SQL — the preview flattens a
+// bounded source prefix in JS. A body opening with ~4k of
+// whitespace/markup under-fills the 200-char preview.
 const LIST_PREVIEW_SOURCE_CHARS = 4096;
 const LIST_DEFAULT_LIMIT = 200;
 
@@ -150,28 +131,23 @@ export interface NoteStore {
 		projectId?: string | null | undefined;
 	}): Note;
 	get(id: string): Note | null;
-	// project: a project id, "loose" (project_id IS NULL), or "all"
-	// (default). archived: true lists the archived shelf only; default
-	// is active notes. q searches title+body via notes_fts. limit
-	// defaults to 200 — callers after completeness must say so.
 	list(filter?: {
 		project?: string | "loose" | "all" | undefined;
 		q?: string | undefined;
 		archived?: boolean | undefined;
 		limit?: number | undefined;
 	}): NoteSummary[];
-	// The one content-write path (see header). expectedRev refuses a
-	// stale writer with the live note; a no-op write bumps nothing.
+	// The one content-write path. expectedRev refuses a stale writer
+	// with the live note; a no-op write bumps nothing.
 	write(
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
 		source: NoteSource,
 		opts?: { conversation?: string | undefined; expectedRev?: number | undefined },
 	): Note;
-	// The app PATCH's atomic unit: flag/move mutations and the content
-	// write land together or not at all — a failed body write must not
-	// strand a committed archive or move. expectedRev guards only when
-	// title/body ride the patch; flag-only patches still bump stateRev.
+	// Flag/move mutations and the content write commit together — a
+	// failed body write must not strand a committed archive or move.
+	// expectedRev guards only when title/body ride the patch.
 	patch(
 		id: string,
 		next: {
@@ -185,30 +161,28 @@ export interface NoteStore {
 		opts?: { expectedRev?: number | undefined },
 	): Note;
 	append(id: string, text: string, source: NoteSource, conversation?: string): Note;
-	// UTF-16 offsets into body_md, each guarded by the text currently
-	// there — a mismatch or overlap refuses the whole call with nothing
-	// written (NoteRangeError carries the current rev).
+	// UTF-16 offsets into body_md, each guarded by expected text — a
+	// mismatch or overlap refuses the whole call with nothing written.
 	replaceRanges(
 		id: string,
 		edits: { start: number; end: number; expected: string; text: string }[],
 		conversation?: string,
 	): Note;
-	// A restore IS a content write — expectedRev guards the live rev it
-	// lands on, or a stale panel rolls newer work back silently.
+	// A restore IS a content write — expectedRev guards the live rev,
+	// or a stale panel rolls newer work back silently.
 	restore(id: string, rev: number, expectedRev: number): Note;
 	setPinned(id: string, pinned: boolean): Note;
 	setArchived(id: string, archived: boolean): Note;
 	move(id: string, projectId: string | null): Note;
 	listVersions(id: string): NoteVersionMeta[];
 	getVersion(id: string, rev: number): NoteVersion | null;
-	// Archived only — the conversation archive pattern.
+	// Archived only.
 	delete(id: string): void;
-	// The prompt's index slice: non-archived, pinned first then recent.
 	index(projectId: string, cap?: number): { id: string; title: string }[];
 }
 
-// Owned here, driven by openStore right after ensureProjectsSchema —
-// the project_id reference needs that table first.
+// Driven by openStore right after ensureProjectsSchema — project_id
+// references that table.
 export function ensureNotesSchema(db: Database): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS notes (
@@ -224,8 +198,7 @@ export function ensureNotesSchema(db: Database): void {
 			updated_at TEXT NOT NULL,
 			state_rev INTEGER NOT NULL DEFAULT 1
 		)`);
-	// Additive migration for stores that predate the column — existing
-	// rows initialize to 1, which stays strictly below anything minted
+	// Existing rows initialize to 1 — strictly below anything minted
 	// after the upgrade.
 	if (
 		db
@@ -235,9 +208,8 @@ export function ensureNotesSchema(db: Database): void {
 	) {
 		db.run("ALTER TABLE notes ADD COLUMN state_rev INTEGER NOT NULL DEFAULT 1");
 	}
-	// Versions are full pre-write copies (the Open WebUI pattern),
-	// capped at the newest 100 per note — `source` names the write that
-	// superseded this state, so every agent edit is one restore away.
+	// Full pre-write copies — `source` names the write that superseded
+	// this state.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS note_versions (
 			note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -249,9 +221,7 @@ export function ensureNotesSchema(db: Database): void {
 			at TEXT NOT NULL,
 			PRIMARY KEY (note_id, rev)
 		)`);
-	// External-content FTS5 (the events_fts pattern): the index mirrors
-	// title+body through triggers; MATCH goes through toFtsQuery so no
-	// query syntax reaches it. rows join on notes.rowid — the TEXT
+	// External-content FTS5: rows join on notes.rowid — the TEXT
 	// primary key isn't the rowid.
 	db.run(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -266,8 +236,7 @@ export function ensureNotesSchema(db: Database): void {
 		INSERT INTO notes_fts(notes_fts, rowid, title, body_md)
 		VALUES('delete', old.rowid, old.title, old.body_md);
 		INSERT INTO notes_fts(rowid, title, body_md) VALUES (new.rowid, new.title, new.body_md); END`);
-	// A fresh table on an upgraded DB indexes what already exists —
-	// 'rebuild' reads the content table, no hand-rolled backfill.
+	// 'rebuild' reads the content table — no hand-rolled backfill.
 	const ftsEmpty =
 		db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM notes_fts").get()?.n === 0;
 	const notesCount = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM notes").get()?.n;
@@ -290,8 +259,6 @@ interface NoteRow {
 	updated_at: string;
 }
 
-// list() reads a bounded body prefix for the preview — the NoteRow
-// fields it doesn't select (last_source, created_at) are unused there.
 type NoteListRow = Pick<
 	NoteRow,
 	| "id"
@@ -344,8 +311,6 @@ export function openNotes(
 	store: ConversationStore,
 	deps: {
 		projects: Pick<ProjectStore, "get">;
-		// Injectable for the coalescing tests — the version's `at`
-		// stamps from this clock.
 		now?: (() => Date) | undefined;
 	},
 ): NoteStore {
@@ -355,8 +320,8 @@ export function openNotes(
 	const qNewestVersion = db.query<{ at: string }, [string]>(
 		"SELECT at FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT 1",
 	);
-	// The versions index is metadata-only — selecting body_md would
-	// materialize every full-history copy to compute a byte count.
+	// Selecting body_md itself would materialize every full-history
+	// copy to compute a byte count.
 	const qVersionMetas = db.query<
 		{ rev: number; source: string; conversation: string | null; at: string; bytes: number },
 		[string]
@@ -393,10 +358,8 @@ export function openNotes(
 		}
 	}
 
-	// The write guts, run inside the caller's transaction — patch()
-	// composes it with flag mutations, so it can't open its own
-	// (bun:sqlite nesting isn't savepoints: an inner throw leaves the
-	// outer statements committed).
+	// Runs inside the caller's transaction — bun:sqlite nesting isn't
+	// savepoints: an inner throw leaves the outer statements committed.
 	function applyWrite(
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
@@ -420,8 +383,7 @@ export function openNotes(
 		checkBodySize(body, current.body.length);
 		if (title === current.title && body === current.body) return current;
 		// The PRE-write state is the version — its `source` names the
-		// write superseding it. App autosaves coalesce: record only on
-		// a source change, a >10min gap, or the first version.
+		// write superseding it.
 		let versioned = false;
 		if (source !== "app" || current.lastSource !== "app") {
 			versioned = true;
@@ -476,9 +438,6 @@ export function openNotes(
 		return db.transaction(() => applyWrite(id, next, source, opts))();
 	}
 
-	// Flag mutations bump state_rev — never rev or updated_at — so a
-	// delayed response orders strictly behind anything newer without
-	// masquerading as a content change.
 	function applyMove(id: string, projectId: string | null): void {
 		checkProjectId(projectId);
 		db.run("UPDATE notes SET project_id = ?, state_rev = state_rev + 1 WHERE id = ?", [
@@ -535,7 +494,7 @@ export function openNotes(
 				const match = toFtsQuery(filter.q);
 				if (match === null) {
 					// A query that strips to nothing matches nothing —
-					// searchHistory's rule, never a silent unfiltered list.
+					// never a silent unfiltered list.
 					clauses.push("1 = 0");
 				} else {
 					join = "JOIN notes_fts ON notes_fts.rowid = n.rowid";
@@ -623,10 +582,7 @@ export function openNotes(
 		restore(id, rev, expectedRev) {
 			// One transaction: the version read and the guarded write must
 			// see the same row — a concurrent bump between them would let
-			// a stale caller roll live content back. expectedRev rides
-			// applyWrite's ordinary conflict check, so a stale restore
-			// throws 409-shaped and writes nothing (no version, no
-			// state_rev).
+			// a stale caller roll live content back.
 			return db.transaction(() => {
 				const version = qVersion.get(id, rev);
 				if (version === null) throw new NoteInputError(`note ${id} has no rev ${rev}`);
@@ -676,8 +632,8 @@ export function openNotes(
 				throw new NoteInputError("only an archived note can be deleted — archive it first");
 			}
 			db.transaction(() => {
-				// Versions go explicitly — foreign_keys ON makes the CASCADE
-				// redundant, and a pragma-off reopen must not leak rows.
+				// foreign_keys ON makes the CASCADE redundant — a
+				// pragma-off reopen must not leak rows.
 				db.run("DELETE FROM note_versions WHERE note_id = ?", [id]);
 				db.run("DELETE FROM notes WHERE id = ?", [id]);
 			})();

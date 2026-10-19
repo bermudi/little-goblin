@@ -1,7 +1,3 @@
-// Shared rig for the app-channel test files: the real-listener setup
-// (model faked at the provider edge, the suite's convention) and the
-// create-and-chat helper every feature test starts from.
-
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef } from "../config.ts";
@@ -26,8 +22,6 @@ export function setup(
 		delayMs?: number;
 		transcribe?: AppChannelDeps["transcribe"];
 		speak?: AppChannelDeps["speak"];
-		// Records each turn's resolved working directory — the same
-		// workdirFor value index.ts feeds makeTools/sandbox/delegate.
 		workdirs?: string[];
 		titleFor?: AppChannelDeps["titleFor"];
 		operator?: AppChannelDeps["operator"];
@@ -60,8 +54,6 @@ export function setup(
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
-		// projectWorkdir mirrors index.ts's workdirFor — a vanished
-		// project dir throws here, inside the turn's admission.
 		makeTools: (conv) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
 			return {};
@@ -92,8 +84,6 @@ export function setup(
 		ttsDown: false,
 	};
 	const configWrites = { count: 0 };
-	// Boot-time resolution, verbatim index.ts: the mode pins for the
-	// life of this "process" — a configRef flip below must not reach it.
 	const appTokenName = resolveAppAuth(opts.token);
 	const appDeps: AppChannelDeps = {
 		store,
@@ -124,8 +114,6 @@ export function setup(
 		configRef,
 		botToken: "test-bot-token",
 		onConfigWritten: () => {},
-		// The composition-root wiring, verbatim: the handler reaches this
-		// module only through the opaque dep.
 		...(opts.wireApp === false
 			? {}
 			: { appApi: (req: Request, url: URL) => handleAppApi(req, url, appTokenName, appDeps) }),
@@ -153,8 +141,6 @@ export function setup(
 	};
 }
 
-// The minted conversation + one chat turn, drained — the shape every
-// feature test below starts from.
 export async function createAndChat(
 	call: (path: string, init?: RequestInit) => Promise<Response>,
 	text = "hi",

@@ -63,7 +63,6 @@ describe("initData validation", () => {
 	test("missing or malformed user payload is refused before the operator check", () => {
 		expect(refused(makeInitData({ auth_date: fresh() }))).toBe("no-user");
 		expect(refused(makeInitData({ auth_date: fresh(), user: "{oops" }))).toBe("bad-user");
-		// A payload without an id parses to 0 — not malformed, just not an operator.
 		expect(refused(makeInitData({ auth_date: fresh(), user: "{}" }))).toBe("not-operator");
 	});
 

@@ -1,8 +1,3 @@
-// Explicit model-profile seam (phase 4 experiment): the profile schema
-// gates bad configuration, and a profile-driven run reaches the
-// endpoint with exactly the fields the profile pins — while a no-profile
-// run keeps the old request shape. Drives the owner rig from
-// ./testing.ts.
 
 import { describe, expect, test } from "bun:test";
 import { setLogFile } from "../log.ts";
@@ -72,8 +67,6 @@ describe("explicit model profile", () => {
 			desktop: "d1",
 		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
-		// The request after the screenshot tool call must carry the image
-		// bytes through the real Pi adapter — not text-only history.
 		const withImage = r.model.seen.find((s) => JSON.stringify(s.messages).includes("iVBORw=="));
 		expect(withImage).toBeDefined();
 		expect(JSON.stringify(withImage!.messages)).toContain("image");
@@ -82,8 +75,6 @@ describe("explicit model profile", () => {
 	test("explicit text-only computer profile refuses before credentials or model calls", async () => {
 		const textOnly = subagentModelProfileSchema.parse({ ...HAIKU_PROFILE, input: ["text"] });
 		const r = rig({
-			// worker left unconfigured: a prior kind's credential resolve
-			// would make the no-resolution assertion ambiguous.
 			configOverrides: {
 				worker: undefined,
 				computer: haikuConfig("computer", "http://127.0.0.1:1"),

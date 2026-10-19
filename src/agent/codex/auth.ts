@@ -1,9 +1,6 @@
-// Codex OAuth: the credentials lifecycle for the codex provider kind
-// (src/agent/codex/model.ts). Auth is codex CLI's OAuth file (default
-// ~/.codex/auth.json), read fresh per call so the CLI's own refreshes
-// propagate. Expired access tokens are refreshed against the public OAuth
-// endpoint and written back — refresh tokens rotate, so not writing back
-// would invalidate the CLI's login.
+// The auth file is read fresh per call so the CLI's own refreshes
+// propagate. Refresh tokens rotate — a refreshed pair must be written
+// back or the CLI's login is invalidated.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -39,8 +36,7 @@ const refreshResponseSchema = z.object({
 
 export type CodexAuthFile = z.infer<typeof authFileSchema>;
 
-// Read + parse the codex CLI auth file. ENOENT propagates as a pointed
-// "run codex login" — the file is the only credential source.
+// ENOENT gets a pointed "run codex login" — the file is the only credential source.
 function readAuthFile(path: string): CodexAuthFile {
 	let raw: string;
 	try {
@@ -89,8 +85,6 @@ function expired(token: string): boolean {
 	return exp !== null && exp - Date.now() / 1000 <= EXPIRY_MARGIN_S;
 }
 
-// Fresh credentials for one request: file → expiry check → refresh.
-// Exported for tests; the model calls it per request.
 export async function codexCredentials(
 	path: string,
 	fetchImpl: FetchLike = fetch,

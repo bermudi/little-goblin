@@ -1,15 +1,13 @@
-// Provider-error classification for turn recovery (issue #12). The
-// question a classifier answers is "does this failure deserve a
-// recovery attempt". Context overflow compacts and resumes; an explicit
-// provider content filter gets one unchanged-request retry.
+// "Does this failure deserve a recovery attempt": context overflow
+// compacts and resumes; a provider content filter gets one
+// unchanged-request retry.
 
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 
-// Provider errors arrive deeply wrapped: APICallError carries the HTTP
-// status on statusCode and the provider's own body on responseBody, the
-// SDK's RetryError nests the real failure under lastError/errors, and
-// anything can ride a cause chain. Walk the structure, collect every
-// reachable string, and judge the union — guessing which field the
+// Errors arrive deeply wrapped: APICallError carries the status on
+// statusCode and the body on responseBody, RetryError nests the real
+// failure under lastError/errors, anything can ride a cause chain.
+// Judge the union of every reachable string — guessing which field the
 // truth lives in per provider is how classifiers drift false.
 const MAX_DEPTH = 4;
 
@@ -47,8 +45,8 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 	}
 	collect(o.cause, depth + 1, seen, out);
 	collect(o.lastError, depth + 1, seen, out);
-	// These two envelopes are accepted by the SDK's stream-error
-	// normalizer. Our model adapter sees them before that normalization.
+	// error/response are the envelopes the SDK's stream-error normalizer
+	// accepts — this walk sees them pre-normalization.
 	collect(o.error, depth + 1, seen, out);
 	collect(o.response, depth + 1, seen, out);
 	if (Array.isArray(o.errors)) {
@@ -68,8 +66,7 @@ function collectAll(err: unknown): Collected {
 }
 
 // Exact provider phrasings, lowercased — the walk's text is folded
-// before matching. The test pins each real string to its source; add
-// phrasings only with an observed body to back them.
+// before matching. Add phrasings only with an observed body to back them.
 const OVERFLOW_PHRASES = [
 	"context_length_exceeded",
 	"context_window_exceeded",
@@ -98,9 +95,8 @@ const CONTEXT_WORDED = /exceed|too long|too large|overflow|ran out of room/;
 // z.ai's body code for prompt-too-long (docs.z.ai/api-reference/api-code).
 const ZAI_1261 = /"code"\s*:\s*"?1261"?/;
 
-// The phrase half of the overflow verdict, over the already-folded
-// text — shared verbatim with isTransientTurnFailure so the retry
-// ladder's overflow exclusion can never drift from this classifier.
+// Shared verbatim with isTransientTurnFailure — the retry ladder's
+// overflow exclusion must never drift from this classifier.
 function overflowByPhrases(text: string): boolean {
 	if (REASONING_REQUIRED.test(text)) return false;
 	for (const phrase of OVERFLOW_PHRASES) {
@@ -115,10 +111,9 @@ function overflowByPhrases(text: string): boolean {
 	return ZAI_1261.test(text);
 }
 
-// True when the failure says the request outgrew the model's context
-// window — the one failure a compaction can actually fix. Explicitly
-// NOT a rate limit (TPM rejections mention "tokens" generously and a
-// 429 statusCode is decisive) and not a reasoning-mode rejection.
+// The one failure a compaction can actually fix. Explicitly NOT a rate
+// limit — TPM rejections mention "tokens" generously; a 429 statusCode
+// is decisive — and not a reasoning-mode rejection.
 export function isContextOverflow(err: unknown): boolean {
 	const collected = collectAll(err);
 	const text = collected.texts.join("\n").toLowerCase();
@@ -127,9 +122,9 @@ export function isContextOverflow(err: unknown): boolean {
 	return overflowByPhrases(text);
 }
 
-// Verbatim warning reported by the operator in Telegram on 2026-10-04.
-// The provider's underlying HTTP/SSE envelope is unverified. Match the
-// specific warning, not "sensitive", "unsafe", or normal assistant refusals.
+// Verbatim warning reported by the operator 2026-10-04; the provider's
+// underlying HTTP/SSE envelope is unverified. Match the specific
+// warning — not "sensitive", "unsafe", or normal assistant refusals.
 const FILTER_WARNING =
 	"system detected potentially unsafe or sensitive content in input or generation.";
 
@@ -143,9 +138,8 @@ export class ProviderContentFilterError extends Error {
 	}
 }
 
-// The filter verdict over an already-collected walk — shared verbatim
-// with isTransientTurnFailure so a recognized warning riding a 5xx can
-// never be classified both filtered and transient.
+// Shared verbatim with isTransientTurnFailure — a recognized warning
+// riding a 5xx must never classify both filtered and transient.
 function contentFilterDetected(collected: Collected): boolean {
 	return (
 		collected.contentFiltered ||
@@ -158,9 +152,8 @@ export function isContentFilter(err: unknown): boolean {
 	return contentFilterDetected(collectAll(err));
 }
 
-// Transport- and availability-class phrases, lowercased like the folded
-// walk text. Transient means exactly that: a retry with nothing spent
-// can succeed. Spend-bearing failures (any completed model work) are
+// Transient means exactly that: a retry with nothing spent can
+// succeed. Spend-bearing failures (any completed model work) are
 // excluded upstream by the caller's zero-completed-calls gate; any
 // model output at all disqualifies the retry at the sink.
 const TRANSIENT_PHRASES = [
@@ -178,11 +171,10 @@ const TRANSIENT_PHRASES = [
 	"network connection lost",
 ];
 
-// True when the failure is availability-class: a rate limit, a timeout
-// or 5xx status, or a broken connection. Content filters and context
-// overflows are verdicts about the request, not the provider's
-// availability — retrying them unchanged cannot help, so they read
-// false even when a status code might otherwise say transient.
+// Availability-class only. Content filters and context overflows are
+// verdicts about the request, not the provider's availability —
+// retrying them unchanged cannot help, so they read false even when a
+// status code might otherwise say transient.
 export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
 	if (contentFilterDetected(collected)) return false;

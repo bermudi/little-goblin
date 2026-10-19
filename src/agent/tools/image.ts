@@ -1,11 +1,3 @@
-// Image generation behind generate_image (design/tools.md → Image
-// generation): the engine (src/agent/image.ts) owns the provider call;
-// this layer owns the file boundary — durable attachment writes, then
-// delivery. Saved bytes land in the attachments dir like intake media
-// (one naming convention, already inside the model's readable world);
-// Telegram delivery sends each as a photo preview, so the operator
-// sees the result inline without a follow-up send_file call.
-
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tool } from "ai";
@@ -20,12 +12,8 @@ import { DeliveryUncertainError, type OutgoingFile } from "./send.ts";
 export interface ImageToolDeps {
 	configRef: ConfigRef;
 	auth: AuthStore;
-	/** Conversation id for the generation-call log lines. */
 	conversation: string;
-	/** Per-channel delivery (Telegram sends photos); absent on channels
-	 *  without a file sink — the tool still saves and reports paths. */
 	deliver?: ((file: OutgoingFile) => Promise<void>) | undefined;
-	/** Test door over the provider edge. */
 	fetchFn?: typeof fetch | undefined;
 }
 
@@ -59,8 +47,6 @@ export function imageTool(deps: ImageToolDeps) {
 						configRef: deps.configRef,
 						auth: deps.auth,
 						conversation: deps.conversation,
-						// exactOptionalPropertyTypes: never assign an explicit
-						// undefined to an optional field.
 						...(options.abortSignal ? { signal: options.abortSignal } : {}),
 						...(deps.fetchFn !== undefined ? { fetchFn: deps.fetchFn } : {}),
 					},
@@ -88,9 +74,6 @@ export function imageTool(deps: ImageToolDeps) {
 						await writeFile(temp, img.bytes);
 					},
 				);
-				// Delivery mirrors send_file's contract: an uncertain send is
-				// reported, never silently retried — the saved path is the
-				// fallback the model can hand the operator.
 				let sent = false;
 				let sendError: string | null = null;
 				if (deps.deliver) {

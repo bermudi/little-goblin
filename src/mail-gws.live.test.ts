@@ -1,11 +1,10 @@
 // Live gws drift check: pins the REAL CLI's wire behavior the mail
-// adapter depends on — pure-JSON stdout, the profile/history/list
-// response shapes, and the error envelope (JSON with error.code on
-// stdout, human text on stderr, exit 1) that apiCode() and the
-// 404→null threading mapping are built on. mail-gws.test.ts fakes the
-// runner — hermetic, but blind to upstream drift; this file is what
-// catches a gws upgrade or a Gmail API change moving the wire
-// underneath it. Gated OFF the default suite, run deliberately:
+// adapter is built on — pure-JSON stdout, the response shapes, and the
+// error envelope (JSON error.code on stdout, human text on stderr,
+// exit 1) behind apiCode() and the 404→null threading mapping. The
+// hermetic fakes can't see upstream drift; this file is what catches
+// a gws upgrade moving the wire. Gated OFF the default suite, run
+// deliberately:
 //
 //     GOBLIN_GWS_LIVE=1 bun test src/mail-gws.live.test.ts
 //

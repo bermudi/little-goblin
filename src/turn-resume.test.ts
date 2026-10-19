@@ -1,8 +1,5 @@
-// Turn resume boundary tests (design/runtime-turn.md → Resuming an
-// interrupted turn) — the operator surface over a real Runtime +
-// journal + scripted model edge. An "interrupted" run is fixture-stamped
-// into the journal the way a crash leaves it; every assertion rides the
-// same fence/admission path production resumes take.
+// "Interrupted" runs are fixture-stamped the way openTurnJournal's
+// reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
@@ -25,17 +22,13 @@ import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 setLogFile(null);
 
 function setup(opts: {
-	// The resumed attempt's script — the model is faked at the edge.
 	attempts?: StreamAttempt[];
-	// A model override for the non-resume turn (the busy-lane test).
 	model?: LanguageModel;
-	// What makeTools registers beyond `probe` — the surface check reads
-	// these names against the recorded tool surface.
+	// The surface check reads these names against the recorded surface.
 	tools?: Record<string, ReturnType<typeof tool>>;
-	// Journal wrapper — the fault-injection tests break writes on the
-	// runtime's own db, not a side store.
+	// Fault-injection tests break writes on the runtime's own db, not a
+	// side store.
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
-	// Tool-factory override — the early-failure test throws inside it.
 	makeTools?: RuntimeDeps["makeTools"];
 	sinkFactory?: () => RecordingSink;
 }) {
@@ -91,10 +84,8 @@ function setup(opts: {
 	};
 }
 
-// What a crash leaves behind: the run row begun under the dead process,
-// its calls journaled to whatever point they reached, status flipped to
-// 'interrupted' the way openTurnJournal's reclassify does on a real
-// boot — stamped directly so the runtime under test keeps its handle.
+// What a crash leaves behind — stamped directly so the runtime under
+// test keeps its handle.
 function interruptedRun(
 	store: ConversationStore,
 	journal: TurnJournal,
@@ -119,8 +110,8 @@ function interruptedRun(
 	store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
 }
 
-// The original user message must be durable history for the resume's
-// trigger label — append it, then hand the run its seq as the anchor.
+// The trigger message must be durable history for the resume's label —
+// its seq is the run's anchor.
 function appendUser(store: ConversationStore, conv: Conversation, text: string): number {
 	store.append(conv.id, [userMessage([{ type: "text", text }])]);
 	const entries = store.modelEntries(conv.id);
@@ -168,7 +159,6 @@ describe("turn resume", () => {
 		const calls = journal.callsFor("run-dead");
 		expect(calls.find((c) => c.toolCallId === "call-aa")!.state).toBe("resolved-done");
 		expect(calls.find((c) => c.toolCallId === "call-bb")!.state).toBe("resolved-retry");
-		// A decided call takes no second decision.
 		expect(ops.decide(conv.id, "run-dead", "call-aa", "skip").kind).toBe("refused");
 		await runtime.shutdown();
 		store.close();
@@ -190,7 +180,6 @@ describe("turn resume", () => {
 		// #2 must still name c2 — an ordinal over the shrunk dispatched
 		// list would hit c3 (an unapproved side effect) or refuse.
 		expect(ops.decide(conv.id, "run-dead", "2", "authorize-retry").kind).toBe("ok");
-		// A decided ordinal refuses like the id path does.
 		const again = ops.decide(conv.id, "run-dead", "1", "skip");
 		expect(again.kind).toBe("refused");
 		if (again.kind === "refused") {
@@ -275,9 +264,7 @@ describe("turn resume", () => {
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		await runtime.shutdown();
 
-		// q:1 replayed — execute never ran it. q:2 retried, q:3 planned.
 		expect(executed.map((e) => e.args)).toEqual([{ q: 2 }, { q: 3 }]);
-		// The source is consumed; the fresh run row links back to it.
 		expect(journal.get("run-src")!.status).toBe("resumed");
 		const rows = store.db
 			.query<{ run_id: string; resumed_from: string | null; status: string }, [string]>(
@@ -286,8 +273,6 @@ describe("turn resume", () => {
 			.all("run-src");
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.status).toBe("completed");
-		// The replayed dispatch+result journaled under the new run row —
-		// alongside the source's settled history it inherited.
 		const newCalls = journal.callsFor(rows[0]!.run_id);
 		expect(newCalls.map((c) => c.toolCallId).sort()).toEqual([
 			"c-amb",
@@ -297,8 +282,8 @@ describe("turn resume", () => {
 			"n2",
 			"n3",
 		]);
-		// The inherited rows carry the source's states verbatim: 'dispatched'
-		// stays un-inherited — ambiguity remains owned by the row that ran.
+		// 'dispatched' stays un-inherited — ambiguity remains owned by the
+		// row that ran.
 		expect(newCalls.find((c) => c.toolCallId === "c-done")!.state).toBe("completed");
 		expect(newCalls.find((c) => c.toolCallId === "c-amb")!.state).toBe("resolved-retry");
 		expect(newCalls.find((c) => c.toolCallId === "c-plan")!.state).toBe("planned");
@@ -306,7 +291,6 @@ describe("turn resume", () => {
 			newCalls.filter((c) => c.toolCallId.startsWith("n")).every((c) => c.state === "completed"),
 		).toBe(true);
 		expect(newCalls.find((c) => c.toolCallId === "n1")!.result).toBe('{"out":"landed"}');
-		// Headless notice fired exactly once with the terminal outcome.
 		await waitUntil(() => notices.length === 1, "done notice");
 		expect(notices[0]!.sourceRunId).toBe("run-src");
 		expect(notices[0]!.done.kind).toBe("completed");
@@ -355,7 +339,6 @@ describe("turn resume", () => {
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		await runtime.shutdown();
-		// The model re-emitted the declined call; execute never ran.
 		expect(executed).toEqual([]);
 		const newRun = store.db
 			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
@@ -402,7 +385,6 @@ describe("turn resume", () => {
 		const gated = pauseFakeModelAtDelta(["parked", "tail"], 0);
 		const { store, conv, journal, ops, runtime } = setup({ model: gated.model });
 		interruptedRun(store, journal, conv, "run-src");
-		// Occupy the lane with a parked ordinary turn.
 		const blocker = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hold the lane" }]), blocker);
 		await gated.entered;
@@ -440,7 +422,6 @@ describe("turn resume", () => {
 		gated.release();
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-		// Consumed for good: the source is 'resumed', no longer interrupted.
 		expect(journal.get("run-src")!.status).toBe("resumed");
 		expect(notices).toHaveLength(1);
 		expect(ops.resume(conv.id, "run-src")).toMatchObject({
@@ -685,12 +666,10 @@ describe("turn resume", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), sink);
 		const done = await sink.done;
 		expect(done.kind).toBe("error");
-		// Exactly one dispatch ran, and the model never saw a retryable
-		// tool error — the stream died with the journal.
 		expect(executed).toEqual([{ name: "probe", args: { q: 1 } }]);
 		expect(edge.streamCalls).toHaveLength(1);
-		// The run row reads error, not completed — a completed run with
-		// dispatched calls is the lie this fix removes.
+		// A completed run with dispatched calls is the lie the status
+		// guard removes — the row must read error.
 		const row = store.db.query<{ status: string }, []>("SELECT status FROM turn_runs").get();
 		expect(row?.status).toBe("error");
 		await runtime.shutdown();
@@ -698,8 +677,8 @@ describe("turn resume", () => {
 	});
 
 	test("a resume dying before its successor keeps the source resumable", async () => {
-		// makeTools is called once by ops.resume's surface check and once
-		// inside the admitted attempt — the second call throwing is the
+		// makeTools fires once in resume's surface check and once in the
+		// admitted attempt — the second call throwing is the
 		// /stop-then-crash shape: admission accepted, successor never begun.
 		let calls = 0;
 		const { store, conv, journal, ops, runtime, sink } = setup({
@@ -720,11 +699,9 @@ describe("turn resume", () => {
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		const done = await sink()!.done;
 		expect(done.kind).toBe("error");
-		// The successor never began — the source row stays interrupted.
 		expect(journal.get("run-src")!.status).toBe("interrupted");
-		// The claim released on terminal delivery — once the dead attempt's
-		// lane drains, the operator can take the same run again instead of
-		// hitting 'already in flight'.
+		// The claim releases on terminal delivery — otherwise every later
+		// resume hits 'already in flight'.
 		await waitUntil(() => !runtime.busy(conv.id), "dead attempt's lane drains");
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		expect(await sink()!.done).toEqual({ kind: "completed" });
@@ -761,10 +738,9 @@ describe("turn resume", () => {
 	});
 });
 
-// makeResumeSinks — the per-lane routing the composition root wires:
-// app lanes take the bell with no delivery hooks and no terminal DM
-// (the bell is already the notice); telegram lanes take the delivery
-// sink, full hooks, and one operator DM per resumed turn.
+// Per-lane routing the composition root wires: app lanes take the bell
+// with no hooks and no terminal DM (the bell is already the notice);
+// telegram lanes take the delivery sink, full hooks, and one DM.
 describe("makeResumeSinks", () => {
 	function sinks() {
 		const sent: { chat: number; text: string }[] = [];

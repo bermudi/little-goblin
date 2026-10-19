@@ -1,10 +1,5 @@
-// Per-turn model-step policy (DESIGN.md → Tools/Compaction): resolve
-// the conversation's model fresh per turn (auth resolution may be
-// async), gate media through catalog AND the provider pipe, assemble
-// the system prompt from the mounted tool set, and observe every call
-// at the model boundary. Compaction uses the same resolution with no
-// tools. index.ts binds configRef/auth/observation and spreads this
-// into RuntimeDeps — the shape is RuntimeDeps["buildStep"|"compaction"].
+// index.ts binds configRef/auth/observation and spreads this into
+// RuntimeDeps — the shape is RuntimeDeps["buildStep"|"compaction"].
 
 import { generateText } from "ai";
 import type { RuntimeDeps } from "../runtime.ts";
@@ -51,9 +46,8 @@ export function makeStepBuilder(
 				inputModalities(provider, modelId),
 				contextLimit(provider, modelId),
 			]);
-			// The pipe gate is what the provider's SDK converter can deliver — catalog
-			// truth alone once cost a thrown turn (openai-compatible < v3 rejected
-			// allowed file parts).
+			// Catalog truth alone once cost a thrown turn — openai-compatible
+			// < v3 rejected file parts its converter now carries.
 			const kind = cfg.providers[provider]?.kind;
 			const carries = (mediaType: string, position: MediaPosition): boolean =>
 				carriesMedia(kind ?? "", mediaType, position);
@@ -88,7 +82,6 @@ export function makeStepBuilder(
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},
-		// Compaction: the conversation's own model, plain generate, no tools (DESIGN.md → Compaction).
 		compaction: {
 			modelRef: (conv) => conv.model!,
 			summarize: async (conv, system, prompt, signal) => {

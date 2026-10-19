@@ -35,10 +35,8 @@ describe("accessGate", () => {
 		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
 		answerCallbackQuery: (async () => true) as Api["answerCallbackQuery"],
 	} as unknown as Api;
-	// The access-control boundary — everything else hangs off it.
-	// The guest block is configured here: without it the sandbox class
-	// is off entirely and an approved user's DM refuses like a
-	// stranger's (design/telegram.md → Roles and permissions).
+	// Without the guest block the sandbox class is off entirely — an
+	// approved user's DM refuses like a stranger's.
 	test("operators pass everywhere; friends pass in the DM; strangers get the refusal line", async () => {
 		const configRef: { current: Config } = {
 			current: { ...baseConfig, guest: { outputChars: 3500 } },
@@ -52,7 +50,6 @@ describe("accessGate", () => {
 		const group = (id: number) => ({ from: { id }, chat: { id: -50, type: "group" }, api });
 		await gate(dm(1), next);
 		expect(reached).toBe(1);
-		// A friend's DM is the standing sandbox lane.
 		await gate(dm(2), next);
 		expect(reached).toBe(2);
 		// A friend's plain group message drops — ambient chatter, not a summons.
@@ -60,15 +57,13 @@ describe("accessGate", () => {
 		try {
 			await gate(group(2), next);
 			expect(reached).toBe(2);
-			// A stranger's DM gets the fixed refusal line and nothing else.
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
 			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL, {}, expect.any(AbortSignal));
-			// Service update, no sender.
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
-			// Read per message: a mini-app save applies without a restart.
+			// Config is re-read per message.
 			configRef.current = { ...baseConfig, operators: [1, 2], allowedUsers: [] };
 			await gate(dm(2), next);
 			expect(reached).toBe(3);
@@ -98,7 +93,6 @@ describe("accessGate", () => {
 		expect(answer).toHaveBeenCalledTimes(2);
 		expect(reached).toBe(0);
 		answer.mockRestore();
-		// An operator's tap still passes through to the handlers.
 		await gate({ ...tap, from: { id: 1 } }, next);
 		expect(reached).toBe(1);
 	});
@@ -117,13 +111,10 @@ describe("accessGate", () => {
 		try {
 			await gate(dm(2), next);
 			expect(reached).toBe(1);
-			// A mini-app/hand edit that drops the block applies on the
-			// very next message — the same sender is now refused.
 			configRef.current = { ...baseConfig };
 			await gate(dm(2), next);
 			expect(reached).toBe(1);
 			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL, {}, expect.any(AbortSignal));
-			// Operators never need the block.
 			await gate(dm(1), next);
 			expect(reached).toBe(2);
 			configRef.current = { ...baseConfig, guest: { outputChars: 3500 } };
@@ -134,8 +125,8 @@ describe("accessGate", () => {
 		}
 	});
 
-	// The refusal send rides a detached promise so intake/polling never
-	// awaits Telegram — a wedged send must not stall the gate.
+	// Refusal sends ride a detached promise — a wedged send must not
+	// stall intake or the gate.
 	test("a held refusal send never blocks the gate or an operator's next", async () => {
 		const configRef: { current: Config } = { current: { ...baseConfig } };
 		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
@@ -153,17 +144,14 @@ describe("accessGate", () => {
 		const next = async (): Promise<void> => {
 			reached++;
 		};
-		// Denied synchronously — the gate resolves while the send is held.
 		await gate(dm(9), next);
 		expect(reached).toBe(0);
 		await Bun.sleep(0);
 		expect(calls).toEqual([9]);
-		// Operators pass immediately regardless of pending sends.
 		await gate(dm(1), next);
 		expect(reached).toBe(1);
 		release.resolve();
 		await Bun.sleep(0);
-		// The settled send freed its slot — the next stranger schedules.
 		await gate(dm(10), next);
 		await Bun.sleep(0);
 		expect(calls).toEqual([9, 10]);
@@ -183,17 +171,13 @@ describe("accessGate", () => {
 		} as unknown as Api;
 		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api: heldApi });
 		const next = async (): Promise<void> => {};
-		// A hundred unique strangers under a wedged boundary: eight real
-		// sends, every later update still denied but never queued.
 		for (let id = 100; id < 200; id++) await gate(dm(id), next);
 		await Bun.sleep(0);
 		expect(calls).toHaveLength(8);
-		// A pending user's repeat coalesces onto the in-flight refusal.
 		await gate(dm(100), next);
 		await Bun.sleep(0);
 		expect(calls).toHaveLength(8);
 		expect(calls.filter((id) => id === 100)).toHaveLength(1);
-		// No backlog — freeing the boundary admits the next stranger.
 		release.resolve();
 		await Bun.sleep(0);
 		await gate(dm(300), next);
@@ -218,10 +202,8 @@ describe("accessGate", () => {
 		await gate(dm(9), next);
 		await Bun.sleep(0);
 		expect(signals).toHaveLength(1);
-		// The deadline fires even though the send itself never settles.
 		await Bun.sleep(60);
 		expect(signals[0]!.aborted).toBe(true);
-		// The rejection settled the slot — a new stranger schedules.
 		await gate(dm(10), next);
 		await Bun.sleep(0);
 		expect(signals).toHaveLength(2);
@@ -248,7 +230,6 @@ describe("accessGate", () => {
 		expect(calls).toEqual([9]);
 		await gate(dm(1), next);
 		expect(reached).toBe(1);
-		// The failure settled its slot — the next stranger schedules.
 		await gate(dm(10), next);
 		await Bun.sleep(0);
 		expect(calls).toEqual([9, 10]);
@@ -276,8 +257,7 @@ describe("applyCommands", () => {
 });
 
 describe("conversationAddress", () => {
-	// Rolling DM: private chats always address the dm lane — DM topics
-	// are retired, so a thread id on a private message is ignored.
+	// DM topics are retired — a thread id on a private message is ignored.
 	test("private chat with thread id is the rolling dm lane", () => {
 		expect(
 			conversationAddress({ chat: { id: 42, type: "private" }, message_thread_id: 7 }),
@@ -337,14 +317,6 @@ describe("applyMenuButton", () => {
 		]);
 	});
 });
-
-// ---------- handleMessage / flushConversation ----------
-//
-// The intake router and the coalescing flush, driven through explicit
-// fakes: real store (SQLite in a tmpdir — the house pattern), fake Api,
-// fake buffer. These tests pin the rulings that used to live only
-// inside createBot's closures: command-vs-media precedence, the failed
-// attachment sentinel, one-attempt titling, and the sink release.
 
 import type { UIMessage } from "ai";
 import type { Message } from "grammy/types";
@@ -499,8 +471,8 @@ function flushTest(
 			media: null,
 			mediaError: null,
 		});
-		// Mirroring enqueuePersisted's slot bookkeeping — inert here since
-		// fixture items never take the edited_message amend path.
+		// Mirrors enqueuePersisted's slot bookkeeping (inert — fixtures
+		// never take the edited_message amend path).
 		const textIndex = item.parts.findIndex(
 			(p) => p.type === "text" && !p.text.startsWith("[replying to:"),
 		);
@@ -548,15 +520,11 @@ describe("handleMessage", () => {
 			submitted.push(conv.id);
 			return true;
 		};
-		// The intake gate admitted chat 2; the config save demoting it
-		// lands while the burst coalesces — flush must recheck, not
-		// trust intake-time truth (same rule as the guest surface).
+		// The demotion lands while the burst coalesces — flush rechecks
+		// class, never trusting intake-time truth.
 		h.env.deps.configRef.current = { ...baseConfig, allowedUsers: [] };
 		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hello" }], chatId: 2 }]);
 		expect(submitted).toEqual([]);
-		// The recheck runs before routing: a stranger never mints a
-		// conversation, never sends the boundary marker — the refusal
-		// line is the only send.
 		expect(h.store.currentDm(2)).toBeNull();
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			GUEST_REFUSAL,
@@ -568,14 +536,10 @@ describe("handleMessage", () => {
 	test("a promotion to operator clears the guest lane's class-forced exclusion", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
 		h.env.deps.runtime.submitPersisted = () => true;
-		// chat 2 is allowedUsers — its DM is the sandbox lane: persona
-		// guest, off the record.
 		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
 		const lane = h.store.currentDm(2)!;
 		expect(h.store.get(lane.id)?.persona).toBe("guest");
 		expect(h.store.get(lane.id)?.memoryExcluded).toBe(true);
-		// Promoted: chat 2 joins operators — the same lane turns personal
-		// and must not keep the sandbox's off-the-record stamp.
 		h.env.deps.configRef.current = { ...baseConfig, operators: [1, 2] };
 		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "now" }], chatId: 2 }]);
 		expect(h.store.get(lane.id)?.persona).toBe("personal");
@@ -589,8 +553,8 @@ describe("handleMessage", () => {
 			guest: { outputChars: 3500 },
 			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
-		// chat 2 = allowedUsers. An answered exchange lets the burst
-		// reach the check instead of joining unanswered.
+		// An answered exchange seeds — without one the burst never
+		// reaches the check.
 		const old = h.store.rollDm(2, "/w");
 		h.store.append(old.id, [
 			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
@@ -620,8 +584,8 @@ describe("handleMessage", () => {
 			{ parts: [{ type: "text", text: "hello" }], chatId: 2 },
 		]);
 		await checking;
-		// The save lands inside the check's await — routing already ran,
-		// but the last class read before admission must still win.
+		// The save lands inside the check's await — the last class read
+		// before admission must win over routing's earlier one.
 		h.env.deps.configRef.current = {
 			...baseConfig,
 			allowedUsers: [],
@@ -639,9 +603,8 @@ describe("handleMessage", () => {
 
 	test("a stranger's command is refused without minting a conversation", async () => {
 		const h = routerHarness();
-		// handleMessage sits behind the access gate in production —
-		// invoked directly here it must still never pin a stranger as
-		// guest: the class check precedes routing.
+		// handleMessage sits behind the access gate in production — the
+		// class check must still precede routing when invoked directly.
 		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 5, chat: { id: 9, type: "private" }, text: "/stop" }),
@@ -657,8 +620,7 @@ describe("handleMessage", () => {
 	});
 
 	test("a settings command without media is consumed — nothing reaches the buffer", () => {
-		// tts on (the default) so /voice actually toggles — the observable
-		// proof the command ran against meta, not just a reply.
+		// tts must be on or /voice toggles nothing visible.
 		const h = routerHarness({
 			...baseConfig,
 			tts: { kind: "edge", voice: "en-US-AriaNeural" },
@@ -674,8 +636,6 @@ describe("handleMessage", () => {
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
-		// The command really ran: the voice toggle and epoch bump landed —
-		// on the rolling conversation /voice rolled into, not a legacy id.
 		const conv = h.store.get(h.store.currentDm(1)!.id)!;
 		expect(conv.id).toBe("dm:1:1");
 		expect(conv.voice).toBe(true);
@@ -694,8 +654,6 @@ describe("handleMessage", () => {
 			}),
 		);
 		await h.env.intake.get("dm:1");
-		// The command never ran (media wins), and intake kept going:
-		// caption text + the failed-download sentinel, reply-anchored.
 		expect(h.stopped).toEqual([]);
 		expect(h.pushed).toHaveLength(1);
 		expect(h.pushed[0]!.replyTo).toBe(2);
@@ -742,8 +700,8 @@ describe("handleMessage", () => {
 		const part = h.pushed[0]!.parts[0]!;
 		expect(part.type).toBe("data-attachment");
 		const data = (part as { data: Record<string, unknown> }).data;
-		// The bounded provider error, not the raw throw — and never a
-		// transcript key the model could mistake for silence.
+		// transcript stays absent — a key the model could mistake for
+		// silence.
 		expect(data.transcriptionError).toBe(`auth.jsonl: no secret named "mimo"`);
 		expect(data.speech).toBe(true);
 		expect(data.transcript).toBeUndefined();
@@ -778,7 +736,6 @@ describe("handleMessage", () => {
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
-		// Service messages drop silently — no note, no log-worthy send.
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage")).toEqual([]);
 		h.store.close();
 	});
@@ -808,9 +765,8 @@ describe("handleMessage", () => {
 				throw new Error("runtime wedged");
 			},
 		} as unknown as Runtime;
-		// Commands are never inbox-recorded, so a throw inside one is an
-		// operator-facing failure — logged and replied — not the fatal
-		// intake class.
+		// Commands are never inbox-recorded — a throw inside one is
+		// operator-facing (logged and replied), not the fatal intake class.
 		expect(() =>
 			handleMessageDurably(
 				h.env,
@@ -836,8 +792,8 @@ describe("handleMessage", () => {
 				throw new Error("runtime wedged");
 			},
 		} as unknown as Runtime;
-		// The failure reply wedges mid-send — it must still fail (and warn)
-		// at the 30s budget every sibling send uses.
+		// The failure reply wedges mid-send — it must still fail at the
+		// 30s send budget every sibling send uses.
 		(
 			h.env.api as unknown as { sendMessage: (chat: number, text: string) => Promise<never> }
 		).sendMessage = (chat, text) => {
@@ -854,7 +810,7 @@ describe("handleMessage", () => {
 					901,
 				),
 			).not.toThrow();
-			// Drain the async intake chain to the command-failure catch.
+			// Flush the async intake chain to the command-failure catch.
 			for (let i = 0; i < 10; i++) await Promise.resolve();
 			jest.advanceTimersByTime(30_000);
 			await new Promise<void>((r) => process.nextTick(r));
@@ -882,11 +838,10 @@ describe("handleMessage", () => {
 	});
 });
 
-// The privileged-command gate (design/telegram.md → Roles and
-// permissions): /voice /memory /forget /compact are operator-only,
-// refused by sender at the parsed-command boundary — before
-// navigation, routing, conversation creation, or journaling. Approval
-// buys sandbox chat, not command authority.
+// /voice /memory /forget /compact are refused by sender at the
+// parsed-command boundary — before navigation, routing, conversation
+// creation, or journaling. Approval buys sandbox chat, not command
+// authority.
 describe("operator-only command gate", () => {
 	const REFUSAL = "This command is only available to operators.";
 	const MEM_BLOCK = memoryConfigSchema.parse({
@@ -905,12 +860,11 @@ describe("operator-only command gate", () => {
 			text,
 		});
 
-	// A memory deps whose remote and queue boundaries are counters —
-	// the proof a refused command never reached recall, delete, or the
-	// outbox. The client is a real HindsightClient (its derived target
-	// must satisfy the queue's validation) with the remote verbs
-	// wrapped; the queue delegates to the store's real one so an
-	// admitted operator command still behaves.
+	// Remote and queue boundaries as counters — the proof a refused
+	// command never reached recall, delete, or the outbox. The client
+	// is a real HindsightClient (its derived target must satisfy the
+	// queue's validation) with the remote verbs wrapped; the queue
+	// delegates to the real one so an admitted command still behaves.
 	function countingMemory(store: ConversationStore): {
 		memory: CommandMemoryDeps;
 		calls: string[];
@@ -973,9 +927,6 @@ describe("operator-only command gate", () => {
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			REFUSAL,
 		]);
-		// No conversation, no journaled or buffered input, no runtime
-		// stop — and neither the recall/delete boundary nor the memory
-		// queue was ever entered.
 		expect(h.store.currentDm(2)).toBeNull();
 		expect(h.env.inbox.pending()).toEqual([]);
 		expect(h.pushed).toEqual([]);
@@ -1031,7 +982,6 @@ describe("operator-only command gate", () => {
 		await Promise.resolve();
 		expect(h.store.currentDm(1)?.id).toBe("dm:1:1");
 		const replies = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
-		// The roll marker leads; the status answer is the real command's.
 		expect(replies.at(-1)).toContain("memory:");
 		expect(replies).not.toContain(REFUSAL);
 		expect(calls).toContain("queue.counts");
@@ -1073,7 +1023,6 @@ describe("operator-only command gate", () => {
 		handleMessage(h.env, guestMsg("/back", 63), 63);
 		await Promise.resolve();
 		expect(h.apiCalls.map((c) => c.text)).toEqual([
-			// The first DM rolls — its boundary marker leads the greeting.
 			"— new conversation —",
 			expect.stringContaining("goblin online"),
 			"stopped",
@@ -1086,8 +1035,7 @@ describe("operator-only command gate", () => {
 });
 
 describe("ping replies (Spin-off)", () => {
-	// A swipe-reply to a delegation ping routes into the app
-	// conversation that rang — the lane IS that id, the quoted ping
+	// A ping-reply's lane IS the app conversation id — the quoted ping
 	// text never becomes a part.
 	test("a reply to a recorded ping routes into the app conversation", async () => {
 		const h = routerHarness();
@@ -1111,9 +1059,8 @@ describe("ping replies (Spin-off)", () => {
 		h.store.close();
 	});
 
-	// The ping route is operator-only: a demoted operator still holds
-	// the pings in their chat, but their reply must take the ordinary
-	// DM lane — the guest-persona pin and tool filter apply there.
+	// Ping routing is operator-class-gated at flush — a demoted
+	// operator's reply takes the ordinary DM lane.
 	test("a demoted operator's ping reply stays in their own DM lane", async () => {
 		const h = routerHarness();
 		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -1141,9 +1088,8 @@ describe("ping replies (Spin-off)", () => {
 		h.store.close();
 	});
 
-	// The app lane's flush: commit, a delivery-only "sent to" ack on
-	// the DM, and a headless submit — the bell rings back when the
-	// turn lands. No topic titling exists on this lane to attempt.
+	// App-lane flush: commit, delivery-only "sent to" ack on the DM,
+	// headless submit — no titling exists on this lane.
 	test("the app flush acks the DM and submits with the bell sink", async () => {
 		const h = routerHarness({ ...baseConfig, titleModel: "zai/t" });
 		const app = h.store.forkToApp(
@@ -1171,7 +1117,7 @@ describe("ping replies (Spin-off)", () => {
 				(c) => c.method === "sendMessage" && c.chat === 1 && c.text === "sent to the work",
 			),
 		).toBe(true);
-		// The ack is delivery-only chatter — silent (#126).
+		// The ack is delivery-only chatter — silent.
 		expect(h.apiCalls.find((c) => c.text === "sent to the work")?.opts?.disable_notification).toBe(
 			true,
 		);
@@ -1179,13 +1125,10 @@ describe("ping replies (Spin-off)", () => {
 		expect(submitted[0]!.sink).toBe(nullSink); // the bell, never a delivery sink
 		expect(h.bellConvs).toEqual([app.id]);
 		expect(h.env.titleAttempts.size).toBe(0);
-		// The reply is real history on the app side — no quoted part.
 		expect(h.store.history(app.id).at(-1)!.parts).toEqual([{ type: "text", text: "looks good" }]);
 		h.store.close();
 	});
 
-	// A ping whose app conversation was deleted degrades to the
-	// ordinary reply path: DM lane, quote leading the parts.
 	test("a deleted ping target falls back to ordinary reply routing", async () => {
 		const h = routerHarness();
 		h.pings.record(1, 99, "app/gone-forever");
@@ -1205,12 +1148,10 @@ describe("ping replies (Spin-off)", () => {
 		h.store.close();
 	});
 
-	// #77: a redelivered update is the same message it was last time —
-	// identity is immutable, routing is not. The ping target aged out
-	// of the store between delivery and redelivery; recomputing the
-	// destination must not turn the duplicate into corruption. The
-	// durable row keeps its original admission (the app conversation),
-	// and the flush owns the deleted-target landing per Spin-off.
+	// A redelivered update keeps its original admission — identity is
+	// immutable, routing is not. The ping target aged out between
+	// delivery and redelivery; recomputing must not turn the duplicate
+	// into corruption.
 	test("a redelivered ping reply after target deletion keeps its admission — pending row", async () => {
 		const h = routerHarness();
 		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -1228,8 +1169,6 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
 		h.store.deleteConversation(app.id);
 		expect(() => handleMessageDurably(h.env, reply, 100)).not.toThrow();
-		// Redelivery re-enqueues nothing; the pending row still names the
-		// app conversation it was admitted under.
 		expect(h.pushed).toHaveLength(1);
 		expect(h.env.inbox.pending().map((e) => e.updateId)).toEqual([100]);
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
@@ -1250,8 +1189,8 @@ describe("ping replies (Spin-off)", () => {
 		h.store.close();
 	});
 
-	// Same defect against a committed tombstone: the first flush already
-	// consumed the row (drop ack sent), and Telegram redelivers anyway.
+	// Same defect against a committed tombstone — the first flush
+	// consumed the row, Telegram redelivers anyway.
 	test("a redelivered ping reply after its row was tombstoned is consumed, not corruption", async () => {
 		const h = routerHarness();
 		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -1325,17 +1264,16 @@ describe("flushConversation", () => {
 			{ parts: [{ type: "text", text: "what did the photo say?" }], replyTo: 5 },
 		]);
 		await Bun.sleep(10);
-		// The sentinel never became the topic's name.
 		expect(titleCalls).toEqual(["what did the photo say?"]);
 		expect(submitted).toHaveLength(1);
-		// The audience note rides every group-addressed burst (ruling
-		// 2026-10-11) ahead of the batch's own parts.
+		// The audience note rides every group-addressed burst ahead of
+		// the batch's own parts.
 		expect(submitted[0]!.parts).toEqual([
 			{ type: "text", text: SHARED_CHAT_NOTE },
 			{ type: "text", text: "[attachment failed to download: boom]" },
 			{ type: "text", text: "what did the photo say?" },
 		]);
-		// Sinks are constructed "typing" — close them.
+		// Sinks start a "typing" interval at construction — close them.
 		await submitted[0]!.sink.onDone({ kind: "completed" });
 	});
 
@@ -1351,7 +1289,6 @@ describe("flushConversation", () => {
 		setTitle("Titled");
 		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "again" }], replyTo: 2 }]);
 		await Bun.sleep(10);
-		// Attempt burned on the first flush — never retried this process.
 		expect(titleCalls).toEqual(["hello"]);
 		expect([...h.env.titleAttempts]).toContain(conv.id);
 	});
@@ -1365,8 +1302,8 @@ describe("flushConversation", () => {
 	});
 
 	test("a submit failure after commit releases the sink with the error — never rethrown", async () => {
-		// chat 9 is a stranger in baseConfig — the flush recheck would
-		// drop its batch; list it as an operator like production DM tests.
+		// chat 9 must be an operator — the flush recheck would drop a
+		// stranger's batch.
 		const h = routerHarness({ ...baseConfig, operators: [1, 9] });
 		const conv = h.store.resolve({ kind: "dm", chatId: 9 }, "/w");
 		let seen: TurnSink | null = null;
@@ -1379,14 +1316,13 @@ describe("flushConversation", () => {
 				},
 			} as unknown as Runtime,
 		};
-		// The batch committed before admission failed, so a rethrow would
-		// make the buffer retry forever against already-consumed rows.
-		// dm:9 is a rolling lane — the flush is async.
+		// The batch committed before admission failed — a rethrow would
+		// make the buffer retry forever against consumed rows. dm:9 is a
+		// rolling lane, so the flush is async.
 		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]);
 		expect(seen).not.toBeNull();
-		// The sink was released (not left ghosting "typing…"): its error
-		// path delivers the failure to Telegram — either door, the intake
-		// config enables rich replies for DMs.
+		// The sink's error path delivers the failure — either send door
+		// (rich replies are on for DMs).
 		await Bun.sleep(10);
 		expect(
 			h.apiCalls.some(
@@ -1423,7 +1359,8 @@ describe("flushConversation", () => {
 				throw new Error("disk failed");
 			},
 		};
-		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
+		// dm:1 is a rolling lane — the flush is async, so the failure is
+		// a rejection.
 		await expect(
 			flushConversation(h.env, conv.id, [
 				{
@@ -1438,8 +1375,7 @@ describe("flushConversation", () => {
 		).rejects.toThrow("disk failed");
 		await Bun.sleep(10);
 		expect(pings).toBe(0);
-		// The roll marker is the only send — the roll happened even though
-		// the batch's history append did not.
+		// The roll still landed — only its marker sent.
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			"— new conversation —",
 		]);
@@ -1462,14 +1398,12 @@ describe("flushConversation", () => {
 				{ parts: [{ type: "text", text: "hi" }], replyTo: 1, chatId: 7 },
 			]),
 		).not.toThrow();
-		// The rows are consumed — no 5-minute retry ladder, no boot replay.
+		// Rows consumed — no retry, no boot replay.
 		expect(h.env.inbox.pending()).toHaveLength(0);
-		// The DM learns the reply never landed instead of waiting for an
-		// ack that would never come.
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			"not sent — that app conversation was deleted",
 		]);
-		// The ack is chatter on a screen the operator is holding (#126).
+		// The ack is chatter on a screen the operator is holding.
 		expect(h.apiCalls.find((c) => c.method === "sendMessage")?.opts?.disable_notification).toBe(
 			true,
 		);
@@ -1523,7 +1457,7 @@ describe("durable intake", () => {
 			602,
 		);
 		await h.env.intake.get("dm:1");
-		// Simulate a restart after journaling but before flush: old buffered
+		// Simulate a restart after journaling but before flush — buffered
 		// parts are lost; replay uses only the normalized SQLite payload.
 		const submitted: UIMessage[][] = [];
 		h.env.deps.runtime = {
@@ -1540,8 +1474,8 @@ describe("durable intake", () => {
 			120_000,
 		);
 		await replayInbox(h.env);
-		// Scheduling recovery is non-blocking: new polling can start while
-		// a media download waits, but each conversation keeps its order.
+		// Recovery is non-blocking — polling can start while a media
+		// download waits, but each conversation keeps its order.
 		await Promise.all([...h.env.intake.values()]);
 		await h.env.buffer.drain();
 		expect(submitted).toHaveLength(1);
@@ -1744,11 +1678,10 @@ describe("handleEditedMessage", () => {
 		);
 		await h.env.intake.get("dm:2");
 		await buffer.drain();
-		// The edit amends the batch — the fix is what the turn reads.
 		expect(batches).toEqual([
 			[expect.objectContaining({ parts: [{ type: "text", text: "hello" }] })],
 		]);
-		// payload_json holds the corrected text too — a crash-replay sees
+		// The amend must hit the durable row too — a crash-replay sees
 		// the same burst the live buffer carried.
 		expect(h.env.inbox.pending().map((e) => e.payload.text)).toEqual(["hello"]);
 		h.store.close();
@@ -1763,8 +1696,8 @@ describe("handleEditedMessage", () => {
 		});
 		h.env.api.getFile = async () => {
 			await gate;
-			// Absolute path takes the local-copy branch — the copy fails
-			// fast ENOENT, no network in the test.
+			// Absolute path takes the local-copy branch — ENOENT, no
+			// network in the test.
 			return { file_path: "/nonexistent/f.jpg" } as never;
 		};
 		handleMessage(
@@ -1777,8 +1710,8 @@ describe("handleEditedMessage", () => {
 			}),
 			701,
 		);
-		// The original's getFile is still pending — the edit chains behind
-		// it on the lane, so the amend runs after the push, not before.
+		// The original's getFile is still pending — the edit must chain
+		// behind it on the lane, amending after the push, not before.
 		handleEditedMessage(
 			h.env,
 			tgMsg({
@@ -1791,8 +1724,6 @@ describe("handleEditedMessage", () => {
 		release();
 		await Promise.all([...h.env.intake.values()]);
 		await buffer.drain();
-		// Slot 0 is the amended sender text — the failed-attachment tail
-		// sits after it.
 		expect(batches[0]![0]!.parts[0]).toEqual({ type: "text", text: "hello" });
 		expect(h.env.inbox.pending()[0]!.payload.text).toBe("hello");
 		h.store.close();
@@ -1814,8 +1745,8 @@ describe("handleEditedMessage", () => {
 			h.env,
 			tgMsg({ message_id: 44, chat: { id: 2, type: "private" }, text: "hello" }),
 		);
-		// No pending row, nothing enqueued — a tombstone replay never
-		// reads and the landed turn keeps its history.
+		// A tombstone replay never reads — the landed turn keeps its
+		// history.
 		expect(h.env.inbox.pending()).toEqual([]);
 		h.store.close();
 	});
@@ -1846,7 +1777,8 @@ describe("handleEditedMessage", () => {
 		);
 		await h.env.intake.get("dm:2");
 		await buffer.drain();
-		// fileUniqueId moved — this is a different message, not a fix.
+		// fileUniqueId is the media identity — moved means a different
+		// message, not a fix.
 		expect(batches[0]![0]!.parts).toEqual([{ type: "text", text: "helo" }]);
 		expect(h.env.inbox.pending()[0]!.payload.text).toBe("helo");
 		h.store.close();
@@ -1855,8 +1787,8 @@ describe("handleEditedMessage", () => {
 
 describe("rolling dm", () => {
 	test("a private message carrying a thread id still lands in the rolling lane", async () => {
-		// chat 7 as operator — the flush's class pin no-ops on the
-		// fresh personal row, matching this test's pre-recheck intent.
+		// chat 7 as operator so the flush's class pin no-ops — this test
+		// predates the recheck.
 		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
 		handleTestMessage(
 			h.env,
@@ -1868,8 +1800,8 @@ describe("rolling dm", () => {
 			}),
 		);
 		await h.env.intake.get("dm:7");
-		// The lane key is the rolling address; the dm:<chat>:<n>
-		// conversation is chosen at flush.
+		// The lane key is the rolling address — the dm:<chat>:<n> row is
+		// minted at flush.
 		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:7"]);
 		await flushTest(h.env, "dm:7", [{ parts: [{ type: "text", text: "hello" }], replyTo: 40 }]);
 		const current = h.store.currentDm(7)!;
@@ -1880,8 +1812,8 @@ describe("rolling dm", () => {
 
 	test("a rolled flush sends the boundary marker before the turn's delivery", async () => {
 		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
-		// submitPersisted stands in for the turn's first Telegram write —
-		// the marker must already be on the wire when it runs.
+		// submitPersisted stands in for the turn's first Telegram write
+		// — the marker must already be on the wire.
 		h.env.deps.runtime = {
 			submitPersisted: (_c: unknown, _m: unknown, _s: TurnSink) => {
 				void h.env.api.sendMessage(7, "turn output");
@@ -1892,7 +1824,7 @@ describe("rolling dm", () => {
 		const sends = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
 		expect(sends[0]).toBe("— new conversation —");
 		expect(sends[1]).toBe("turn output");
-		// The marker is silent chatter; the turn's own delivery is not (#126).
+		// The marker is silent chatter; the turn's own delivery is not.
 		expect(
 			h.apiCalls.find((c) => c.text === "— new conversation —")?.opts?.disable_notification,
 		).toBe(true);
@@ -1920,9 +1852,8 @@ describe("rolling dm", () => {
 	});
 
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
-		// dmGapMinutes 0 makes every flush past the gap — the check is
-		// the only path a plain burst can take. chat 7 is allowed but
-		// no operator: admitted to the guest lane.
+		// dmGapMinutes 0 puts every flush past the gap; chat 7 is
+		// allowed but not an operator → the guest lane.
 		const h = routerHarness({
 			...baseConfig,
 			allowedUsers: [2, 7],
@@ -1946,14 +1877,13 @@ describe("rolling dm", () => {
 				message_id: 40,
 				chat: { id: 7, type: "private" },
 				message_thread_id: 5,
-				// The thread's root service message — Telegram reports it as
-				// reply_to_message on ordinary messages in a threaded chat.
+				// Telegram reports the thread root's service message as
+				// reply_to_message in threaded chats.
 				reply_to_message: { message_id: 5, text: "" },
 				text: "a fresh thought",
 			}),
 		);
 		await h.env.intake.get("dm:7");
-		// No quoted context was journaled or projected.
 		expect(h.env.inbox.pending()[0]?.payload.quoted).toBeUndefined();
 		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "a fresh thought" }]);
 		await flushTest(h.env, "dm:7", [
@@ -1961,9 +1891,9 @@ describe("rolling dm", () => {
 		]);
 		// Past the gap and NOT a reply — the follow-up check ran.
 		expect(calls).toHaveLength(1);
-		// Chat 7 is no operator: admission demotes the personal dm:7:1
-		// (it has history) — the reset deletes the row and the roll
-		// mints the NEXT ordinal off the tombstone, never reusing :1.
+		// Admission demotes the personal dm:7:1 — the reset deletes the
+		// row and the roll mints the NEXT ordinal off the tombstone,
+		// never reusing :1.
 		expect(h.store.currentDm(7)?.id).toBe("dm:7:2");
 		h.store.close();
 	});
@@ -2024,9 +1954,9 @@ describe("manual DM navigation", () => {
 		expect(h.store.history("dm:7:2")).toEqual([]);
 		expect(h.pushed).toEqual([]);
 		expect(h.apiCalls.at(-1)?.text).toBe("— new conversation —");
-		// The receipt is silent — the operator just typed the command (#126).
+		// The receipt is silent — the operator just typed the command.
 		expect(h.apiCalls.at(-1)?.opts?.disable_notification).toBe(true);
-		// Redelivery is not another manual /new.
+		// A redelivered /new is deduped, not another roll.
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
 		expect(h.stopped).toEqual([old.id]);

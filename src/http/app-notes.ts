@@ -1,7 +1,3 @@
-// Note routes (design/projects.md → Notes): the index (search +
-// project filter), the editor's read/write/append, the versions panel,
-// and the AI rewrite.
-
 import { z } from "zod";
 import { log } from "../log.ts";
 import {
@@ -22,8 +18,6 @@ import type {
 	AppNoteVersionList,
 } from "./app-wire.ts";
 
-// Notes (design/projects.md → Notes). projectId: explicit null moves
-// a note back to loose — the flag-write half of a PATCH.
 const noteCreateBody = z.object({
 	title: z.string().trim().min(1).max(200),
 	body: z.string().max(NOTE_BODY_MAX).optional(),
@@ -33,15 +27,10 @@ const noteCreateBody = z.object({
 const notePatchBody = z
 	.object({
 		title: z.string().trim().min(1).max(200).optional(),
-		// The store bounds the result, allowing legacy oversized bodies to shrink.
 		body: z.string().optional(),
 		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),
-		// The accepted rewrite lands as an ordinary guarded write —
-		// 'rewrite' versions the pre-state so the operator can see what
-		// the model changed. Only app-facing sources; agent/append/
-		// restore keep their own doors.
 		source: z.enum(["app", "rewrite"]).optional(),
 	})
 	.strict()
@@ -57,14 +46,8 @@ const notePatchBody = z
 
 const noteAppendBody = z.object({ text: z.string().min(1).max(NOTE_BODY_MAX) });
 
-// The index route's own bound — past it the list stops being an index.
-// The store is asked for limit+1 so "is there more" needs no second
-// query; the wire reports it as `truncated`, never a silent cap.
 const NOTE_LIST_LIMIT = 1000;
 
-// design/projects.md → AI rewrite: the selection cap rides a whole
-// note's plausible size; whitespace-only selection can't anchor a
-// rewrite, and a blank instruction is a client bug.
 const noteRewriteBody = z
 	.object({
 		selection: z
@@ -76,9 +59,6 @@ const noteRewriteBody = z
 	})
 	.strict();
 
-// Note wire shapes — `rev` doubles as the etag, so the note GET/PATCH
-// responses carry it in the header too (the editor's If-Match rides
-// the same number back).
 function appNote(n: Note): AppNote {
 	return {
 		id: n.id,
@@ -116,8 +96,6 @@ function noteResponse(n: Note, status = 200): Response {
 	});
 }
 
-// The domain's typed refusals → statuses. A conflict hands the live
-// note back so the editor's "load theirs" path has the body already.
 function noteError(err: unknown): Response | null {
 	if (err instanceof NoteConflictError) {
 		return Response.json(
@@ -131,8 +109,6 @@ function noteError(err: unknown): Response | null {
 	return null;
 }
 
-// If-Match: "<rev>" — required on content writes, ignored for flags.
-// Parses the weak/strong forms to the int; anything else is a 428.
 function ifMatchRev(req: Request): number | null {
 	const header = req.headers.get("if-match");
 	if (header === null) return null;
@@ -149,10 +125,6 @@ export async function handleNotesRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 
-	// Notes (design/projects.md → Notes): the index (search + project
-	// filter), the editor's read/write/append, and the versions panel.
-	// Content writes are If-Match guarded (etag = rev); flag writes —
-	// pin, archive, move — never are.
 	if (path === "/api/app/notes") {
 		if (req.method === "GET") {
 			const projectParam = url.searchParams.get("project");
@@ -239,13 +211,9 @@ export async function handleNotesRoute(
 		if (note === null) {
 			return Response.json({ error: "no such note" }, { status: 404, headers: NO_STORE });
 		}
-		// Archived notes are read-only — a rewrite has no place to land.
 		if (note.archivedAt !== null) {
 			return noteError(new NoteInputError("note is archived"))!;
 		}
-		// Generation only — the accepted proposal returns through PATCH.
-		// Model failures propagate to the logged 500 like every other
-		// unexpected error; the client surfaces them inline.
 		const replacement = await deps.rewriteNote(note.id, parsed.data, req.signal);
 		return Response.json({ replacement } satisfies AppNoteRewriteResponse, {
 			headers: NO_STORE,
@@ -257,9 +225,6 @@ export async function handleNotesRoute(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		// A restore writes content, so it rides the same If-Match guard
-		// as PATCH — a stale etag conflicts with the live note instead
-		// of rolling newer work back to the historical body.
 		const expectedRev = ifMatchRev(req);
 		if (expectedRev === null) {
 			return Response.json(
@@ -341,8 +306,6 @@ export async function handleNotesRoute(
 			);
 		}
 		try {
-			// The card's path — source "append" so versions name the
-			// operator's button, never the editor's autosave.
 			const note = deps.notes.append(noteAppendMatch[1]!, parsed.data.text, "append");
 			return noteResponse(note);
 		} catch (err) {
@@ -398,8 +361,6 @@ export async function handleNotesRoute(
 		const wantsContent = patch.title !== undefined || patch.body !== undefined;
 		let expectedRev: number | undefined;
 		if (wantsContent) {
-			// Content writes are optimistic-concurrency guarded — the
-			// etag the editor read is the rev it writes against.
 			const rev = ifMatchRev(req);
 			if (rev === null) {
 				return Response.json(
@@ -407,22 +368,15 @@ export async function handleNotesRoute(
 					{ status: 428, headers: NO_STORE },
 				);
 			}
-			// Refuse a stale etag before any flag mutation — otherwise a
-			// combined {body, pinned} 409s on content yet still pins.
 			if (rev !== note.rev) {
 				return noteError(new NoteConflictError(note))!;
 			}
 			expectedRev = rev;
-			// The shelf is read-only — refuse up front, before the flag
-			// writes below can move a patch whose content won't land.
 			if (note.archivedAt !== null) {
 				return noteError(new NoteInputError("note is archived"))!;
 			}
 		}
 		try {
-			// One store transaction: the flag/move mutations and the
-			// content write commit together or roll back together — a
-			// failed write must not strand a committed archive or move.
 			const updated = deps.notes.patch(noteId, parsed.data, parsed.data.source ?? "app", {
 				expectedRev,
 			});

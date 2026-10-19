@@ -1,10 +1,3 @@
-// admission.ts boundary tests — the admit verdict taxonomy the
-// scheduler speaks (design/subagents.md → Owner decomposition;
-// Admission). The run store is real; the harness is a stub because
-// the pinned invariants live on the goblin side of the line:
-// halted vs blocked vs requeued vs admitted, the durable
-// requestId's idempotent resubmit, the parked-approval
-// continuation, and the retry budget's terminal settle.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -41,7 +34,6 @@ const SPEC = {
 interface HarnessStub {
 	conversationsCreated: number;
 	submits: { content: unknown; requestId?: string }[];
-	// Test knobs — undefined answers drive the failure branches.
 	conversationResult: unknown;
 	submissionByRequestResult: unknown;
 	createConversationError?: Error;
@@ -198,8 +190,6 @@ describe("admit verdicts", () => {
 		const { admission, mkrow, runs, gate } = rig();
 		const row = mkrow({
 			piConversationId: "7",
-			// A parked run was running before the park — its submission
-			// id survives for the settlement watcher to reacquire.
 			piSubmissionId: "55",
 			pendingApproval: {
 				piTaskId: "t1",
@@ -214,10 +204,6 @@ describe("admit verdicts", () => {
 		const after = runs.get(row.id);
 		expect(after?.status).toBe("running");
 		expect(after?.pendingApproval).toBeNull();
-		// No waiter existed — the verdict is stored for the gate's
-		// post-restart re-entry: a second admit of a claimed lease
-		// would consume it. Direct evidence: storeDecision lands in
-		// the same map takeWaiter reads.
 		expect(gate.takeWaiter(gate.approvalKey("7", "t1"))).toBeUndefined();
 	});
 });
@@ -253,8 +239,6 @@ describe("the submit path", () => {
 		const row = mkrow({ piConversationId: "7" });
 		const out = await admission.admit(row);
 		expect(out.kind).toBe("requeued");
-		// The row stays running and owned — a submission may have
-		// landed before the error; scan recovery drives the re-admit.
 		expect(runs.get(row.id)?.status).toBe("running");
 		expect(shared.recoveryPending.has(row.id)).toBe(true);
 	});
@@ -268,7 +252,6 @@ describe("the retry budget", () => {
 			admitRetryMs: 1,
 		});
 		const row = mkrow();
-		// Attempts 1..4 requeue queued with backoff; attempt 5 fails terminal.
 		for (let i = 1; i <= 4; i++) {
 			const out = await admission.admit(row);
 			expect(out.kind).toBe("requeued");

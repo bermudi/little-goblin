@@ -138,10 +138,9 @@ describe("toolNames ↔ makeTools", () => {
 
 	test("every tool's wire schema is a root-level object (unions break providers)", () => {
 		// Some providers cannot generate arguments against a root-level
-		// oneOf — every call arrives as `{}` and fails validation. That
-		// silently killed mail, then program, then delegate and
-		// history_search. Per-tool tests pin the shapes we know; this one
-		// pins the invariant for every tool that will ever join the set.
+		// oneOf — every call arrives as `{}` and fails validation.
+		// Per-tool tests pin the shapes we know; this one pins the
+		// invariant for every tool that will ever join the set.
 		const tools = makeTools({
 			cwd: "/tmp",
 			voice: { synthesize: async () => [], deliver: async () => {} },

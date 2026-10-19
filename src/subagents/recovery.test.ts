@@ -1,10 +1,3 @@
-// recovery.ts boundary tests — scan-driven repair for rows whose Pi
-// side is uncertain (design/subagents.md → Owner decomposition;
-// Recovery). Real run store; the harness is a stub — what these pin
-// is the ownership discipline: a recorded Pi conversation means a
-// submission may still be executing, so recovery reacquires or
-// re-admits before it may settle, and terminal settle needs the
-// confirm-cancel to prove the slot isn't still burning.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -31,7 +24,6 @@ afterEach(() => {
 
 function rig(
 	opts: {
-		/** null = the Pi conversation is gone; undefined = default conv. */
 		conv?: { abort?: () => Promise<void> } | null;
 		outcome?: (RunOutcomeBody & { rev: number }) | null;
 		submission?: unknown;
@@ -242,8 +234,6 @@ describe("drive", () => {
 		deps.recoveryPending.add(row.id);
 		await recovery.drive();
 		expect(deps.recoveryAttempts.get(row.id)?.count).toBe(1);
-		// The monitor attached — but the count clears only on observed
-		// settlement, not on the attempt's return. The row still runs.
 		expect(deps.recoveryAttempts.has(row.id)).toBe(true);
 	});
 
@@ -283,8 +273,6 @@ describe("drive", () => {
 		deps.recoveryPending.add(row.id);
 		deps.recoveryAttempts.set(row.id, { count: 10, lastError: "keeps failing" });
 		await recovery.drive();
-		// The run stays running and recovery-pending — its slot was
-		// never proven free.
 		expect(runs.get(row.id)?.status).toBe("running");
 		expect(deps.recoveryPending.has(row.id)).toBe(true);
 	});

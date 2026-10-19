@@ -179,9 +179,9 @@ describe("skill proposal notice send", () => {
 });
 
 describe("app conversation notices", () => {
-	// App conversations ring nothing (DESIGN.md, App channel — no push):
-	// every notice is a deliberate skip, not a parse failure — the api is
-	// never touched and nothing throws for the caller's retry loop.
+	// App conversations ring nothing — no push channel exists. Every
+	// notice is a deliberate skip, not a parse failure: the api is never
+	// touched and nothing throws for the caller's retry loop.
 	test("all three notices skip app ids without sending", async () => {
 		let calls = 0;
 		const api = {

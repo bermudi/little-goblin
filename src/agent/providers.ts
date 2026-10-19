@@ -41,8 +41,8 @@ export async function resolveModel(
 				apiKey: await auth.resolve(p.auth),
 			}).chatModel(modelId);
 		case "responses":
-			// z.ai emits raw reasoning_text events; the shim maps them to the
-			// reasoning_summary shape expected by the SDK. `name` keeps options
+			// z.ai emits raw reasoning_text events the SDK's schema drops;
+			// the shim maps them to reasoning_summary. `name` keeps options
 			// keyed to this config provider.
 			return createOpenAI({
 				name: provider,
@@ -61,9 +61,9 @@ export async function resolveModel(
 	}
 }
 
-// Catalog modalities describe what a model accepts; this predicate describes
-// what the SDK converter can carry at each position. Unsupported media falls
-// back to its saved path rather than becoming silently corrupted content.
+// What the SDK converter can carry at each position — not what the model
+// accepts (that's the catalog). Unsupported media falls back to its saved
+// path rather than becoming silently corrupted content.
 export function carriesMedia(
 	kind: string,
 	mediaType: string,
@@ -126,17 +126,14 @@ export function cacheRouteFor(config: Config, modelRef: string): CacheRoute | un
 
 const sha256hex = (json: string) => createHash("sha256").update(json).digest("hex");
 
-// The telemetry route identity: a configured route via cacheRouteFor, or
-// the inferred provider/modelId fallback below (which also pins the call's
-// purpose so its key can't collide with configured lanes). The pruning
-// policy profiles key on this hash, so the byte shape is frozen.
+// Pruning profiles key on this hash — the byte shape is frozen. The
+// inferred fallback pins the call's purpose so its key can't collide
+// with configured lanes.
 export function cacheRouteKey(route: CacheRoute & { purpose?: string | null }): string {
 	return sha256hex(JSON.stringify(route));
 }
 
-// The settings hash pins the non-prompt call surface — providerOptions and
-// the sampling/format knobs. Object key order is load-bearing: pruning
-// profiles key on this exact hash.
+// Object key order is load-bearing: pruning profiles key on this exact hash.
 export function hashCacheSettings(fields: {
 	providerOptions?: LanguageModelV4CallOptions["providerOptions"];
 	temperature?: LanguageModelV4CallOptions["temperature"];
@@ -157,12 +154,10 @@ export function hashCacheSettings(fields: {
 	);
 }
 
-// The settings-hash input for an ordinary turn call. The SDK's
-// prepareToolChoice normalizes an omitted toolChoice to {type:"auto"}
-// BEFORE the middleware boundary sees the call options — so the
-// receipts observedModel records hash that shape, and the pruning gate
-// (plus any profile copied from telemetry) must hash the identical
-// bytes or never match.
+// The SDK's prepareToolChoice normalizes an omitted toolChoice to
+// {type:"auto"} BEFORE the middleware boundary sees the call options —
+// receipts hash that shape, so the pruning gate (and any profile copied
+// from telemetry) must hash the identical bytes or never match.
 export function turnCallSettings(
 	config: Config,
 	modelRef: string,
@@ -193,9 +188,8 @@ function safeErrorFields(error: unknown): Record<string, unknown> {
 	return fields;
 }
 
-// Hash at the model boundary, the only seam that sees every call. `headHash`
-// isolates system/tools; with that head unchanged, `requestHash` should evolve
-// by prompt append rather than history rewrite.
+// headHash isolates system/tools; with that head unchanged, requestHash
+// should evolve by prompt append rather than history rewrite.
 export function observedModel(
 	model: LanguageModel,
 	context: {
@@ -224,7 +218,6 @@ export function observedModel(
 		routeEvidence: context.route === undefined ? "inferred" : "configured",
 	};
 	const beginCall = (type: "generate" | "stream", params: LanguageModelV4CallOptions) => {
-		// Hash the leading system messages and tools as the request head.
 		const headHash = sha256hex(
 			JSON.stringify({
 				system: params.prompt.filter((m) => m.role === "system"),
@@ -398,7 +391,6 @@ export function observedModel(
 	return wrapLanguageModel({ model, middleware });
 }
 
-// Map thinking levels to provider-specific controls and clamp known ladders.
 export function thinkingOptions(
 	config: Config,
 	modelRef: string,
@@ -479,7 +471,7 @@ function zaiCodingEndpoint(baseUrl?: string): boolean {
 	try {
 		const u = new URL(baseUrl);
 		if (u.hostname !== "api.z.ai") return false;
-		// Compare non-empty segments so a trailing slash does not matter.
+		// Non-empty segments — a trailing slash must not matter.
 		const segments = u.pathname.split("/").filter(Boolean);
 		return segments.includes("coding") || segments.join("/") === "api/v1";
 	} catch {
@@ -487,15 +479,15 @@ function zaiCodingEndpoint(baseUrl?: string): boolean {
 	}
 }
 
-// Return the active model's honest ladder; unknown models retain the full
-// vocabulary so unsupported values fail at the endpoint rather than here.
+// Unknown models retain the full vocabulary so unsupported values fail
+// at the endpoint rather than here.
 export function thinkingLevelsFor(
 	kind: string,
 	modelId: string,
 	baseUrl?: string,
 ): readonly ThinkingLevel[] {
-	// Detect from the bare id, including relayed names; z.ai coding aliases all
-	// GLM ids to its forced-thinking ladder.
+	// Bare id, including relayed names; z.ai coding aliases all GLM ids
+	// to its forced-thinking ladder.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (bare.startsWith("glm-")) {
 		if ((kind === "openai-compatible" || kind === "responses") && zaiCodingEndpoint(baseUrl)) {
@@ -523,7 +515,7 @@ function gptLevels(modelId: string): readonly ThinkingLevel[] {
 	return ["low", "medium", "high", "xhigh"];
 }
 
-// Clamp to the nearest rung at or above the requested vocabulary level.
+// Nearest rung at or above the requested vocabulary level.
 function clampToLadder(ladder: readonly ThinkingLevel[], level: ThinkingLevel): ThinkingLevel {
 	const idx = thinkingLevels.indexOf(level);
 	return ladder.find((l) => thinkingLevels.indexOf(l) >= idx) ?? ladder[ladder.length - 1]!;

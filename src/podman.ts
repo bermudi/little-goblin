@@ -1,17 +1,9 @@
-// The only module that knows podman (design/sandbox.md — the herdr.ts
-// rule): a thin adapter over the CLI. Fakes sit at the argv seam —
-// tests never spawn the real podman. Every invocation logs op,
-// container, conversation, exit code and ms, so a sandbox symptom plus
-// goblin.log reconstructs exactly what the engine was told. No prune
-// anywhere: lifecycle ops address an exact name or filter on the
-// goblin.sandbox or goblin.desktop label — the memory stack shares
-// this container store.
-//
-// Two argv seams: `runner` for lifecycle ops (fixed budget, text out),
-// and exec runners for in-container commands (per-call deadline, abort
-// and output caps via boundedRun/boundedRunBinary — a timed-out exec is
-// group-killed, which does NOT kill the in-container process; callers
-// restart the container, see sandboxes.ts).
+// Thin adapter over the podman CLI; fakes sit at the argv seam. No
+// prune anywhere: lifecycle ops address an exact name or the
+// goblin.sandbox/goblin.desktop label — the memory stack shares this
+// container store.
+// A timed-out exec is group-killed, which does NOT kill the
+// in-container process — callers restart the container (sandboxes.ts).
 
 import { z } from "zod";
 import { log } from "./log.ts";
@@ -38,7 +30,7 @@ export interface PodmanExecOpts {
 	user?: string;
 	/** exec -e pairs: the session's DISPLAY/bus env for desk processes. */
 	env?: Record<string, string>;
-	/** exec -w: defaults to the sandbox workdir below. */
+	/** exec -w — defaults to SANDBOX_WORKDIR. */
 	workdir?: string;
 }
 export type PodmanExecRunner = (args: string[], opts: PodmanExecOpts) => Promise<BoundedProc>;
@@ -47,8 +39,8 @@ export type PodmanExecBytesRunner = (
 	opts: PodmanExecOpts,
 ) => Promise<BoundedProcBytes>;
 
-// Lifecycle calls are local-socket round trips; the budget sits well
-// above them and below nothing that matters.
+// Lifecycle calls are local-socket round trips — the budget sits well
+// above them.
 const PODMAN_TIMEOUT_MS = 60_000;
 const PODMAN_MAX_OUTPUT = 1 << 20;
 
@@ -120,8 +112,7 @@ export interface ContainerInspect {
 	startedAt: string;
 }
 
-// podman inspect: an array of container objects (or [] on a miss). Only
-// the leaves the lifecycle reconciles against are load-bearing.
+// podman inspect: an array of container objects ([] on a miss).
 const inspectSchema = z.array(
 	z
 		.object({
@@ -143,8 +134,8 @@ const inspectSchema = z.array(
 		.passthrough(),
 );
 
-// network inspect: an array; options.isolate is the opt we create with
-// and the property the existing-network check enforces.
+// options.isolate is the opt we create with and the existing-network
+// check enforces.
 const networkInspectSchema = z.array(
 	z.object({ options: z.record(z.string(), z.string()).optional() }).passthrough(),
 );
@@ -184,8 +175,8 @@ export function makePodman(deps?: {
 	const execRunner = deps?.execRunner ?? defaultExecRunner;
 	const execBytesRunner = deps?.execBytesRunner ?? defaultExecBytesRunner;
 
-	// The one lifecycle call site: log the invocation's outcome, then let
-	// the op interpret the exit code (missing-vs-error is per-op).
+	// Log the outcome here; the op interprets the exit code —
+	// missing-vs-error is per-op.
 	async function call(
 		op: string,
 		args: string[],
@@ -207,7 +198,6 @@ export function makePodman(deps?: {
 		return new PodmanError(op, r.code, detail === "" ? "no output" : detail);
 	}
 
-	// exec -w/-u/-e share one argv shape between exec and execBytes.
 	function execArgs(name: string, argv: string[], opts: PodmanExecOpts): string[] {
 		return [
 			"exec",
@@ -222,8 +212,8 @@ export function makePodman(deps?: {
 		];
 	}
 
-	// True when the named network exists with the required isolation,
-	// false when missing — a present-but-wrong network is a hard error.
+	// false only when missing — a present-but-wrong network is a hard
+	// error.
 	async function networkOk(name: string, conv: string | undefined): Promise<boolean> {
 		const r = await call("network inspect", ["network", "inspect", name], {
 			conversation: conv,
@@ -255,9 +245,8 @@ export function makePodman(deps?: {
 				{ conversation: conv },
 			);
 			if (created.code === 0) return;
-			// A peer's create can win the inspect→create gap (two
-			// conversations' first sandboxes run in different lanes). Only
-			// a now-compliant network turns the loser's failure into a
+			// A peer's create can win the inspect→create gap — only a
+			// now-compliant network turns the loser's failure into a
 			// success; anything else reports the original create error.
 			if (await networkOk(name, conv)) return;
 			throw fail("network create", created);
@@ -320,11 +309,10 @@ export function makePodman(deps?: {
 				labels: {},
 				startedAt: "",
 			};
-			// Missing is an empty array on stdout (podman 6 answers "no such
-			// object" + 125). Portability: some builds exit non-zero with
-			// EMPTY stdout for a missing object, naming it on stderr — a
-			// bare throw there would wedge every reconcile before create.
-			// Any other non-zero is a real failure.
+			// Missing is `[]` on stdout (podman 6: "no such object" +
+			// 125). Some builds exit non-zero with EMPTY stdout, naming it
+			// on stderr — a bare throw there would wedge every reconcile
+			// before create. Any other non-zero is a real failure.
 			if (r.code !== 0) {
 				if (r.stdout.trim() === "[]") return missing;
 				if (r.stdout.trim() === "" && /no such (object|container)/i.test(r.stderr)) {

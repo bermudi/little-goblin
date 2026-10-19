@@ -92,8 +92,8 @@ describe("draftFromConfig", () => {
 		expect(d.search).toBeNull();
 		expect(d.fetch).toBeNull();
 		expect(d.memory).toBeNull();
-		// Mini-app populate(): telegram model/thinking pin to the
-		// top-level when the channel block doesn't carry them.
+		// telegram model/thinking pin to the top-level when the channel
+		// block doesn't carry them.
 		expect(d.telegramModel).toBe("main/gpt-5");
 		expect(d.telegramThinking).toBe("high");
 	});
@@ -170,7 +170,7 @@ describe("validateDraft", () => {
 
 	test("openai-compatible providers need a base url; blank auth means their own name", () => {
 		expect(validateDraft(draft(), [prov({ baseUrl: "" })])).toMatch(/base url/);
-		// Blank auth is no longer a validation error — bodyFromDraft
+		// Blank auth isn't a validation error — bodyFromDraft
 		// materializes the provider's name (openrouter: its default record).
 		expect(validateDraft(draft(), [prov({ auth: " " })])).toBeNull();
 		// codex needs neither — the CLI's own auth file is the default.
@@ -381,9 +381,9 @@ describe("transcription block", () => {
 		expect(validateDraft(draft({ transcription: emptyTranscription() }), [prov()])).toBeNull();
 	});
 
-	// Blank cloud model and secret are the server's job: config.ts fills the
-	// kind's defaults, and the mini app already saves blanks the same way.
-	// Rejecting blanks here blocked a valid Whistle -> Groq switch.
+	// Blank cloud model and secret are the server's job: config.ts fills
+	// the kind's defaults. Rejecting blanks here blocked a valid
+	// Whistle -> Groq switch.
 	test("a blank cloud block validates, and the server fills the kind's defaults", () => {
 		const c = baseConfig();
 		const { draft: d, providers } = draftFromConfig(c);

@@ -5,10 +5,8 @@ import { log } from "../../log.ts";
 import { readTextFile } from "./read.ts";
 import { resolvePath } from "./paths.ts";
 
-// The voice param exists only when the operator configured alternates
-// (tts.voices). With none configured, z.never rejects a hallucinated
-// voice — the call errors and the model drops the param, instead of a
-// silent strip leaving it believing it spoke the requested language.
+// z.never rejects a hallucinated voice — the call errors instead of a silent
+// strip that leaves the model believing it spoke the requested language.
 export function speakInputSchema(voices?: readonly string[]) {
 	const allowed = voices?.length ? ([...new Set(voices)] as [string, ...string[]]) : null;
 	return z
@@ -31,12 +29,7 @@ export function speakTool(
 	cwd: string,
 	synthesize: (text: string, voice?: string) => Promise<Uint8Array[]>,
 	deliver: (audio: Uint8Array) => Promise<void>,
-	// Starts a record_voice chat action for the duration of the synthesis
-	// and returns its stopper — the delivery sink's job, threaded through
-	// the runtime (Telegram send is delivery, not a tool).
 	recording?: () => () => void,
-	// Full allowlist (default included) when the operator configured
-	// alternates; explicitly picking the default is a no-op.
 	voices?: readonly string[],
 ) {
 	const allowed = voices?.length ? [...new Set(voices)] : null;

@@ -1,9 +1,3 @@
-// The crash-approval gate and its durable lease (design/subagents.md →
-// Crash approval; Owner decomposition ruling 2026-10-17). Extracted
-// from mod.ts verbatim — the lease is a correctness boundary, not
-// plumbing: it decides whether a replayed side-effecting tool call may
-// run again after a restart, and nothing in the move may change that.
-
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import {
@@ -24,22 +18,11 @@ import {
 import { SubagentError } from "./errors.ts";
 import type { RunOutcomeBody } from "./run-doc.ts";
 
-// ---------- the crash-approval lease ----------
-
-// Every side-effecting subagent tool is lease-gated (design/subagents.md
-// → Crash approval): a process kill between the call's durable dispatch
-// and its result commit leaves "dispatched, effect unobserved" — and a
-// Goblin verdict says what that means. The lease is a
-// task-scoped pi-durable doc keyed by the tool task's own id, so claim,
-// decision, and a completed-but-unsettled result share the tool task's
-// commit line and survive SIGKILL with exactly the durability the
-// transcript has. The run row's pendingApproval is only a routing mirror
-// — this doc is the truth.
-
-// The decision type and its boundary schema live in subagent-runs.ts —
-// the verdict now persists on the row's pendingApproval mirror.
 export type { SubagentApprovalDecision };
 
+// Keyed by the tool task's own id, so claim, decision and result share
+// its commit line and survive SIGKILL with transcript durability; the
+// row's pendingApproval is only a routing mirror — this doc is truth.
 const ApprovalLeaseSchema = z.discriminatedUnion("state", [
 	z.object({ state: z.literal("absent") }),
 	z.object({ state: z.literal("claimed"), attempts: z.number() }),
@@ -53,9 +36,6 @@ const ApprovalLeaseSchema = z.discriminatedUnion("state", [
 
 type JsonObject = { [key: string]: JsonValue };
 
-// Flat storage row so whole-value writes typecheck; nulls, not absent
-// keys — doc values are strict JSON. Reads validate the persisted shape
-// against ApprovalLeaseSchema at the boundary (readApprovalLease).
 type ApprovalLeaseRow = {
 	state: "absent" | "claimed" | "decided" | "done";
 	attempts: number | null;
@@ -82,9 +62,6 @@ const approvalDoneRow = (result: JsonValue): ApprovalLeaseRow => ({
 	result,
 });
 
-// Exported for the crash tests: a pre-seeded `done` lease is how the
-// result-committed-but-unobserved window is exercised without racing a
-// real kill.
 export const approvalLeaseDoc = defineDoc<ApprovalLeaseRow>({
 	kind: "goblin.subagent-approval-lease",
 	version: 1,
@@ -109,7 +86,6 @@ function readApprovalLease(
 	};
 }
 
-/** The claim generation and any prior decision a validated lease carries. */
 function approvalLeaseGeneration(lease: ApprovalLeaseRow | undefined): {
 	attempts: number;
 	decision: SubagentApprovalDecision | undefined;
@@ -118,8 +94,6 @@ function approvalLeaseGeneration(lease: ApprovalLeaseRow | undefined): {
 		return { attempts: lease.attempts ?? 0, decision: undefined };
 	}
 	if (lease?.state === "decided") {
-		// readApprovalLease validated the decision's shape; the cast only
-		// restores the type zod already checked.
 		return {
 			attempts: lease.attempts ?? 0,
 			decision: lease.decision as SubagentApprovalDecision,
@@ -146,8 +120,6 @@ async function commitApprovalLease(
 	}, context);
 }
 
-// ---------- the approval host (the gate's park surface) ----------
-
 export interface ApprovalGateDeps {
 	runs: SubagentRuns;
 	rowForConversation: (piConversationId: string) => SubagentRun | null;
@@ -155,9 +127,6 @@ export interface ApprovalGateDeps {
 	notify: (row: SubagentRun) => void;
 	releaseLeases: (row: SubagentRun) => void;
 	scheduleDrain: () => void;
-	// Best-effort abort of the run's Pi conversation after a park that
-	// could not persist — the owner supplies it because the harness is
-	// its own dependency (and binds only at buildHarness time).
 	abortConversation: (row: SubagentRun) => Promise<void>;
 }
 
@@ -201,13 +170,9 @@ function approvalQuestion(request: {
 	].join("\n\n");
 }
 
-// Parking writes the run needs_input plus the pendingApproval mirror
-// and notice — the same routing surface ask_operator uses — then waits
-// on decide(), raced against the invocation's abort so a stopped or
-// closing run ends the wait instead of hanging waitForIdle. The host
-// deliberately never takes the run lane: completeStop joins the Pi
-// conversation that is waiting here, so a lane-held park would
-// deadlock the stop.
+// The host deliberately never takes the run lane: completeStop joins
+// the Pi conversation waiting here, so a lane-held park would deadlock
+// the stop.
 function makeApprovalHost(
 	deps: ApprovalGateDeps,
 	waiters: Waiters,
@@ -220,9 +185,6 @@ function makeApprovalHost(
 			const key = approvalKey(request.conversationId, request.taskId);
 			const queued = decisions.get(key);
 			if (queued !== undefined) {
-				// decide() ran before this task re-entered the gate — the
-				// post-restart window. Apply the stored decision instead of
-				// asking again.
 				decisions.delete(key);
 				log.info("subagent approval: stored decision applied on gate re-entry", {
 					piConversation: request.conversationId,
@@ -243,17 +205,13 @@ function makeApprovalHost(
 				row.status === "done" ||
 				row.status === "failed"
 			) {
-				// Stop or settle won the race — the invocation's own abort
-				// lands next; refuse to stand the wait up at all.
 				throw new SubagentError(
 					`run #${row.id} is ${row.stopRequested ? "stopping" : row.status} — no approval is parked`,
 				);
 			}
 			if (row.status === "queued" && row.pendingApproval?.decision !== undefined) {
-				// The verdict is durable on the row and the run waits only
-				// for a global slot — re-parking would clobber it. The
-				// scheduler's grant resolves this wait; the invocation's
-				// abort still ends it on a stop or close.
+				// The verdict is already durable — re-parking would
+				// clobber it; the scheduler's grant resolves this wait.
 				try {
 					return await awaitWithContext(
 						new Promise<SubagentApprovalDecision>((resolve) => {
@@ -265,11 +223,6 @@ function makeApprovalHost(
 					waiters.delete(key);
 				}
 			}
-			// needs_input frees the run's global slot, and for a computer
-			// run the desktop controller lease releases — the same rules
-			// as an ask_operator park. The write is idempotent across
-			// re-entries: a crash between the recorded decision and its
-			// lease commit re-parks the same ask.
 			let parked: SubagentRun;
 			try {
 				parked = runs.update(row.id, {
@@ -284,14 +237,9 @@ function makeApprovalHost(
 					},
 				});
 			} catch (err) {
-				// A park the store can't record must NOT become an ordinary
-				// tool error — the model would retry the interrupted side
-				// effect with no operator decision behind it. Persisted
-				// stop intent fences every later tool re-entry (requireLive
-				// refuses a stopping row), the fired abort ends this
-				// invocation, and the scan's pendingStops completes the
-				// terminal mark. When even the intent can't land, a direct
-				// 'failed' mark is the last fence a retry can hit.
+				// A park the store can't record must NOT surface as an ordinary
+				// tool error — the model would retry the interrupted side effect.
+				// Fence: stop intent, the fired abort, then a direct failed mark.
 				log.error("crash-approval park could not persist — fencing the run", err, {
 					run: row.id,
 					tool: request.tool,
@@ -329,7 +277,6 @@ function makeApprovalHost(
 				attempts: request.attempts,
 			});
 			notify(parked);
-			// The parked row just freed its slot — admit whoever is queued.
 			scheduleDrain();
 			try {
 				return await awaitWithContext(
@@ -345,17 +292,9 @@ function makeApprovalHost(
 	};
 }
 
-// ---------- the gate wrapper ----------
-
-// The crash-approval gate (design/subagents.md → Crash approval).
-// replay:"safe" is deliberate and NOT an idempotency claim: it is
-// the only re-entry point pi-durable offers — recovery re-executes
-// replay-safe tool tasks — and re-entry lands here. Re-entry on a
-// `claimed` lease parks the run for an operator decision; on a
-// `done` lease it replays the recorded result without re-executing.
-// This wrapper sits OUTSIDE withRunGuards: a parked row is
-// needs_input, which requireLive rejects — inside the guards the
-// re-entry could never reach the gate.
+// replay:"safe" is pi-durable's only re-entry point, not an idempotency
+// claim — recovery re-executes replay-safe tool tasks and lands here. Outside
+// withRunGuards: a parked row is needs_input, which requireLive rejects.
 
 const legacyDeclaredDoneSchema = z
 	.object({
@@ -375,12 +314,6 @@ function declaredApprovalResult(
 				text: `[crash resolution: ${decision.decidedBy === "goblin" ? "Goblin-decided" : "legacy decision; provenance not recorded"}; interrupted outcome: unverified]\nThis is a declared result, not observed tool output or proof of success. Independently check the effect before claiming success.\nDeclared result: ${decision.result}\nEvidence: ${decision.evidence ?? "not recorded (legacy decision)"}\nReasoning: ${decision.reasoning ?? "not recorded (legacy decision)"}${decision.note === undefined ? "" : `\nDecision note: ${decision.note}`}`,
 			},
 		],
-		// Answered as an error result, not a success: a successful
-		// call would have to return the tool's own schema-valid
-		// `structuredOutput`, and a declaration must never present
-		// itself as observed output. `isError` is the harness's own
-		// convention for a call that produced no observed result, and
-		// the model still reads the declaration text above.
 		isError: true,
 		diagnostics: [
 			{
@@ -410,12 +343,9 @@ function withApprovalGate<T extends ToolRegistration>(
 	const inner = tool.execute;
 	const name = tool.name;
 	const { rowForConversation, recordOutcome } = deps;
-	// A tool that declares a structured output schema can only have
-	// succeeded with that output; a persisted row without it — a
-	// declaration committed by a build from before declarations
-	// became error results — replays as an error result, exactly as
-	// a fresh declaration returns. A pure function of the stored row,
-	// so replay stays deterministic across restarts.
+	// A persisted declaration from before declarations became error
+	// results carries no structuredOutput — replay it as an error, a
+	// pure function of the stored row so restarts stay deterministic.
 	function replayed(result: ToolExecutionResult, api: ToolExecutionApi): ToolExecutionResult {
 		if (tool.structuredOutputSchema === undefined) return result;
 		if (result.isError === true || result.structuredOutput !== undefined) return result;
@@ -450,14 +380,11 @@ function withApprovalGate<T extends ToolRegistration>(
 				}
 				return replayed(lease.result as ToolExecutionResult, api);
 			}
-			// Claim generations survive decisions — a retry that itself
-			// dies mid-flight re-asks with the raised count.
+			// Claim generations survive decisions — a retry that dies
+			// mid-flight re-asks with the raised count.
 			const prior = approvalLeaseGeneration(lease);
 			let decision = prior.decision;
 			if (decision === undefined && lease?.state === "claimed") {
-				// The ambiguity: dispatch committed, result absent, effect
-				// unobserved. Park — nothing model-facing happens until a
-				// decide verdict lands.
 				api.output(
 					`${name} was interrupted and may have partially run — awaiting Goblin crash resolution`,
 				);
@@ -474,9 +401,6 @@ function withApprovalGate<T extends ToolRegistration>(
 				);
 			}
 			if (decision !== undefined) {
-				// The decision commits BEFORE acting on it — a crash in
-				// between leaves `claimed` and the gate re-asks on the
-				// next boot.
 				await commitApprovalLease(
 					api,
 					approvalDecidedRow(prior.attempts, asJson(decision)),
@@ -503,24 +427,14 @@ function withApprovalGate<T extends ToolRegistration>(
 							text: reason,
 						},
 					],
-					// The call never produced an observed result, so it is
-					// answered as an error result — the harness's own
-					// convention for an interrupted call (see
-					// declaredApprovalResult above).
 					isError: true,
 					control: { terminate: true },
 				} satisfies ToolExecutionResult;
 			}
-			// Fresh call, or an authorized re-execution. Either way the
-			// gate admits exactly one dispatch under this generation.
 			await commitApprovalLease(api, approvalClaimRow(prior.attempts + 1), context);
-			// The lease must replay the result the model actually saw —
-			// Pi folds streamed output(), diagnostic() and details()
-			// calls into the resolved result when the return value
-			// omits them (bash returns {} and streams stdout/stderr).
-			// Persisting the raw return would replay "(no tool
-			// output)" after a restart, so the durable row carries the
-			// effective result instead.
+			// Pi folds streamed output(), diagnostic() and details() into the
+			// resolved result when the return omits them (bash returns {} and
+			// streams stdout/stderr); persist the effective result for replay.
 			const capturedOutput: string[] = [];
 			const capturedDiagnostics: ToolDiagnostic[] = [];
 			let capturedDetails: JsonValue | undefined;
@@ -558,38 +472,20 @@ function withApprovalGate<T extends ToolRegistration>(
 				diagnostics: [...capturedDiagnostics, ...(result.diagnostics ?? [])],
 			};
 			await commitApprovalLease(api, approvalDoneRow(asJson(effective)), context);
-			// The settled tool-result replay and the model-facing
-			// result both come from this return — the lease doc
-			// itself retires with the tool task, so it can only
-			// cover a crash inside the call's own window.
 			return effective;
 		},
 	} as T;
 }
 
-// ---------- the gate surface ----------
-
 export interface ApprovalGate {
-	/** Wrap a side-effecting tool registration in the lease gate. */
 	withGate<T extends ToolRegistration>(tool: T): T;
-	/** The waiter/decision map key for a Pi conversation + task. */
 	approvalKey(piConversationId: string, piTaskId: string): string;
-	/** Take the parked invocation's waiter if this process holds one —
-	 *  admission resolves it only after the settlement watcher attaches. */
 	takeWaiter(key: string): ((decision: SubagentApprovalDecision) => void) | undefined;
-	/** Store a decision for a gate re-entry that has not happened yet. */
 	storeDecision(key: string, decision: SubagentApprovalDecision): void;
-	/** Drop every waiter/decision keyed under a Pi conversation. */
 	dropForConversation(piConversationId: string): void;
 }
 
 export function makeApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
-	// In-memory waiters and pre-registered decisions, keyed by
-	// piConv:piTaskId. A parked gate resolves on decide(); a decide()
-	// landing before the gate's post-restart re-entry is consumed by the
-	// next park instead of re-asking. Both maps die with the owner —
-	// waiters reject on the invocation's abort at close, and a parked
-	// row re-parks from the durable lease on the next boot.
 	const waiters: Waiters = new Map();
 	const decisions: Decisions = new Map();
 	const host = makeApprovalHost(deps, waiters, decisions);

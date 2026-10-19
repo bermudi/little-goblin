@@ -52,9 +52,6 @@ interface Rig {
 	runtime: Runtime;
 }
 
-// The lane rig: a temp store, one resolved conversation, and a Runtime
-// whose buildStep serves opts.model (default: one fast "ok" reply) —
-// the ceremony every single-lane test used to spell out.
 function rig(
 	opts: {
 		model?: LanguageModel;
@@ -85,7 +82,6 @@ function rig(
 	return { store, conv, runtime };
 }
 
-// A text submit into a fresh RecordingSink (or the caller's own sink).
 function submit(r: Rig, text: string): RecordingSink;
 function submit<S extends TurnSink>(r: Rig, text: string, sink: S): S;
 function submit(r: Rig, text: string, sink?: TurnSink): TurnSink {
@@ -98,8 +94,7 @@ const drain = (r: Rig) => waitUntil(() => !r.runtime.busy(r.conv.id), "lane drai
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 
-// Scripted stream attempts plus the wire record every assertion wants:
-// prompts is each call's JSON.stringify'd prompt, requests the whole
+// prompts = each call's JSON.stringify'd prompt; requests = the whole
 // options object.
 function scripted(attempts: StreamAttempt[], opts: { extra?: StreamAttempt } = {}) {
 	const edge = scriptedEdge(attempts, { ...(opts.extra ? { extra: opts.extra } : {}) });
@@ -115,8 +110,6 @@ function scripted(attempts: StreamAttempt[], opts: { extra?: StreamAttempt } = {
 	};
 }
 
-// Log capture: point the log at a temp file for fn's run, then return
-// the parsed JSONL lines.
 async function capturedLog(
 	fn: (logFile: string) => Promise<void>,
 ): Promise<Record<string, unknown>[]> {
@@ -146,7 +139,6 @@ describe("provider-filter retry", () => {
 	];
 	const call = toolCallPart("call", "probe");
 	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
-	// A turn that should complete with just the recovered text.
 	const completed = async (r: Rig, sink: RecordingSink) => {
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await drain(r);
@@ -670,10 +662,9 @@ describe("turn authority", () => {
 	});
 
 	test("a history system event reaches the model as a bracketed user-role note", async () => {
-		// The reviewer lands its save note in history as role "system"
-		// (design/skills.md — "lands in history as a system event"). The
-		// SDK's streamText rejects system messages in `messages`, so the
-		// runtime renders the event as a user-role note in position —
+		// The reviewer lands its save note in history as role "system".
+		// The SDK's streamText rejects system messages in `messages`, so
+		// the runtime renders the event as a user-role note in position —
 		// the stored role is untouched.
 		const event =
 			"proposed skill: talk-first — parked in skills-proposed/talk-first/, not installed; " +
@@ -867,8 +858,6 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 });
-
-// ---------- context overflow recovery ----------
 
 // A provider-side context overflow: the OpenAI wording over a 400
 // APICallError — the shape a provider actually throws out of doStream.
@@ -1192,10 +1181,10 @@ describe("context overflow recovery", () => {
 });
 
 describe("cache stability", () => {
-	// DESIGN.md, Cache stability: the request for turn N+1 is the request
-	// for turn N with new content appended — bytes already sent are never
-	// rewritten. This is the end-to-end guard: history out of SQLite,
-	// through materialization and conversion, onto the wire.
+	// The request for turn N+1 is the request for turn N with new content
+	// appended — bytes already sent are never rewritten. This is the
+	// end-to-end guard: history out of SQLite, through materialization
+	// and conversion, onto the wire.
 	function prefixOf(request: string, count: number): string {
 		const msgs = JSON.parse(request) as unknown[];
 		return JSON.stringify(msgs.slice(0, count));
@@ -1368,9 +1357,9 @@ describe("cache stability", () => {
 		// resolving only means the reply landed. Poll for the pointer,
 		// bounded, instead of a fixed sleep.
 		await waitUntil(() => r.store.getCompaction(r.conv.id) !== null, "compaction pointer lands");
-		// Exactly 75% is inclusive — the trigger fired.
-		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
-		// next queued turn's snapshot — here, before done resolves.
+		// Exactly 75% is inclusive — the trigger fired. The compactor ran
+		// in-lane before onDone settled the next queued turn's snapshot —
+		// here, before done resolves.
 		expect(summaries).toHaveLength(1);
 		expect(summaries[0]).toContain("q0");
 		const pointer = r.store.getCompaction(r.conv.id);
@@ -1429,10 +1418,10 @@ describe("cache stability", () => {
 		const outcome = await compacted;
 		expect(outcome.kind).toBe("compacted");
 		const boundary = r.store.getCompaction(r.conv.id)!.boundarySeq;
-		// THE invariant (DESIGN.md, Compaction): the model view's tail is
-		// exactly the events whose causal position follows the boundary —
-		// nothing orphaned (an anchored reply without its question), and
-		// nothing silently swallowed (an event neither summarized nor shown).
+		// The invariant: the model view's tail is exactly the events whose
+		// causal position follows the boundary — nothing orphaned (an
+		// anchored reply without its question), and nothing silently
+		// swallowed (an event neither summarized nor shown).
 		const tail = r.store
 			.modelEntries(r.conv.id)
 			.slice(1)
@@ -1771,11 +1760,6 @@ describe("skill reviewer hook", () => {
 		held.resolve();
 		await sleep(20); // settle window: the released gate's continuation has no handle
 	});
-	// The finish-side behaviors (snapshot construction, exclusion,
-	// prior-turn chain, the digest payload) moved to turn/finish.test.ts
-	// at the module seam; what stays here is the cross-phase net:
-	// shutdown fencing a held gate, and authority (a fenced turn never
-	// reaches the finish path at all).
 	test("a fenced turn never gates", async () => {
 		const r = rig({ deltas: ["a", "b", "c", "d", "e"], delayMs: 20 });
 		let gated = false;
@@ -1810,12 +1794,8 @@ describe("skill reviewer hook", () => {
 	});
 });
 
-// ---------- steering ----------
-
-// Two-step model: call #1 finishes with a tool call, call #2 streams
-// `secondText`. The test's gate promise blocks the tool's execute, so
-// the step boundary (prepareStep before call #2) opens exactly when the
-// test decides. Every wire prompt is captured JSON-stringified.
+// The gate blocks the tool's execute, so the step boundary (prepareStep
+// before call #2) opens exactly when the test decides.
 function gatedToolModel(secondText: string) {
 	return scripted(
 		[
@@ -1861,9 +1841,9 @@ describe("steering", () => {
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(s1.text).toBe("adjusted"); // call #1 streams no text — only the tool call
 		expect(s2.text).toBe(""); // delta-style text is the head's delivery seam
-		// The steered member's chunk stream did NOT run dry (audit #4):
-		// it saw the same wire as the head — replay of what preceded the
-		// join, live tail after. One turn, one reply, every screen sees it.
+		// The steered member's chunk stream must not run dry — it saw the
+		// same wire as the head: replay of what preceded the join, live
+		// tail after. One turn, one reply, every screen sees it.
 		expect(s2.chunks).toEqual(s1.chunks);
 		expect(s2.chunks.some((c) => c.type === "start")).toBe(true);
 		// One turn, two model calls; the second call's wire prompt
@@ -2124,7 +2104,7 @@ describe("steering", () => {
 			joiner,
 		);
 		gate.resolve();
-		await sleep(40); // park window: conversion is blocked on the FIFO read (see above)
+		await sleep(40); // park window: conversion is blocked on the FIFO read
 		r.store.bumpEpoch(r.conv.id);
 		await writeFile(fifo, "pngdata");
 		expect(await head.done).toEqual({ kind: "fenced" });
@@ -2139,14 +2119,11 @@ describe("steering", () => {
 });
 
 describe("app channel", () => {
-	// The turn loop is shared machinery: an app conversation submits,
-	// steers, fences and persists exactly like a telegram one — the only
-	// difference is the sink it streams into (DESIGN.md, App channel).
-	// The basic app turn (submit → chunk stream → history) is pinned
-	// end-to-end through the real door in http/app-channel.test.ts
-	// ("chat submits a user message and streams UIMessage chunks as
-	// SSE"); what stays here is the Runtime-level steering pin the HTTP
-	// surface cannot assert as directly.
+	// The turn loop is shared machinery — an app conversation submits,
+	// steers, fences and persists exactly like a telegram one; only the
+	// sink differs. The basic app turn is pinned end-to-end through the
+	// real door in http/app-channel.test.ts; what stays here is the
+	// Runtime-level steering pin the HTTP surface cannot assert directly.
 	test("steering into a running app turn works through the same queue", async () => {
 		const { model, prompts } = recordingModel(["done"], 0);
 		const stepGate = deferred<void>();
@@ -2176,10 +2153,9 @@ describe("app channel", () => {
 });
 
 // A submit "streams" iff its sink defines onStreamChunk. A turn headed
-// by a headless sink — the spin-off's bell — must never absorb a
-// streaming submit: the merged sink would see only onDone and the
-// client watching the stream would wait forever (design/app.md →
-// Spin-off).
+// by a headless sink — e.g. the spin-off's bell — must never absorb a
+// streaming submit: the merged sink would see only onDone and the client
+// watching the stream would wait forever.
 describe("streaming lane boundary", () => {
 	test("a headless turn never absorbs a streaming submit — it heads the next turn", async () => {
 		const gate = deferred<void>();
@@ -2235,12 +2211,12 @@ describe("streaming lane boundary", () => {
 		r.store.close();
 	});
 
-	// #82: the lane boundary must hold at ADMISSION too. Drain's splice
-	// leaves a streaming submit queued behind a headless head; its
-	// message is durable history (every submit appends before admission),
-	// so the headless turn's admission snapshot would otherwise read it,
-	// anchor its reply to it — and the client's own successor turn would
-	// answer the same message a second time. Multiple pending submits at
+	// The lane boundary must hold at admission too: drain's splice leaves
+	// a streaming submit queued behind a headless head; its message is
+	// durable history (every submit appends before admission), so the
+	// headless turn's admission snapshot would otherwise read it, anchor
+	// its reply to it — and the client's own successor turn would answer
+	// the same message a second time. Multiple pending submits at
 	// admission, not arrivals during the model loop.
 	test("admission never reads a queued streaming submit — the client keeps its own turn", async () => {
 		const { model, prompts } = recordingModel(["answer"], 5);
@@ -2286,14 +2262,13 @@ describe("streaming lane boundary", () => {
 });
 
 describe("loop landings", () => {
-	// Design/model.md → "No step budget — loops are caught, not capped":
-	// a turn has no step count. What bounds it is the repeat detector
-	// (10 identical call+result pairs warn, 20 cut), the system1 loop
-	// watchdog (two consecutive stuck verdicts cut), and the context
-	// landing (a step at ≥85% of the catalog window lands tools-off).
-	// Tool-greedy while tools exist (and under the call cap, if any),
-	// answering the moment toolChoice goes none — the compliant model
-	// every forced step relies on.
+	// A turn has no step cap — loops are caught, not capped: the repeat
+	// detector (10 identical call+result pairs warn, 20 cut), the system1
+	// loop watchdog (two consecutive stuck verdicts cut), and the context
+	// landing (a step at ≥85% of the window lands tools-off). The fixture
+	// model is tool-greedy while tools exist, answering the moment
+	// toolChoice goes none — the compliant model every forced step
+	// relies on.
 	function loopModel(
 		opts: { calls?: number; input?: (n: number) => unknown; inputTokens?: number } = {},
 	) {
@@ -2411,9 +2386,9 @@ describe("loop landings", () => {
 	});
 
 	describe("loop watchdog", () => {
-		// The system1 progress check (design/model.md): every N completed
-		// calls the turn's own digest ring is scored "stuck". ≥0.7 warns;
-		// a second consecutive ≥0.7 cuts; a pass resets. Fail-open.
+		// Every N completed calls the turn's own digest ring is scored
+		// "stuck": ≥0.7 warns, a second consecutive ≥0.7 cuts, a pass
+		// resets. Fail-open.
 		function decideScript(scores: (number | Error)[]): {
 			decide: System1Client["decide"];
 			states: { totalToolCalls: number; recentCalls: { result: string }[] }[];
@@ -2561,7 +2536,7 @@ describe("loop landings", () => {
 
 	test("a poisoned steer at the landing step does not eat the cut", async () => {
 		// The steer claims the pending queue but its conversion fails —
-		// the landing must still land tools-off (review m1).
+		// the landing must still land tools-off.
 		let releaseTool: () => void = () => {};
 		const gate = new Promise<void>((r) => {
 			releaseTool = r;

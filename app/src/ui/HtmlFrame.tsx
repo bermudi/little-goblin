@@ -1,8 +1,8 @@
 // The html leaf — model-written documents in <iframe sandbox=
-// "allow-scripts" srcdoc> (design/app.md → Intelligent UI, escape
-// hatch). No allow-same-origin ever: the opaque origin cannot read the
-// app's storage, DOM, or token. Height comes from an injected
-// ResizeObserver via postMessage — this frame's window only, clamped.
+// "allow-scripts" srcdoc>. No allow-same-origin ever: the opaque origin
+// cannot read the app's storage, DOM, or token. Height comes from an
+// injected ResizeObserver via postMessage — this frame's window only,
+// clamped.
 // CSP governs fetches, never navigations: a frame navigated away sheds
 // the injected CSP but keeps allow-scripts, handing a remote page
 // network egress and rendering inside trusted chrome. Declarative and
@@ -36,8 +36,7 @@ const RESIZE = `<script>addEventListener("DOMContentLoaded",function(){new Resiz
 // and removes any refresh meta that script inserts (or retrofits onto
 // an existing tag). Drags on anchors are dead. What remains is the
 // documented residual: a direct `location` assignment from script,
-// un-interceptable from inside the document (design/app.md →
-// Intelligent UI → Escape hatch: html).
+// un-interceptable from inside the document.
 const NAVIGATION_GUARD = `<script>
 document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a){e.preventDefault();var h=a.getAttribute("href")||"";if(h.charAt(0)==="#")location.hash=h}},true);
 document.addEventListener("dragstart",function(e){var t=e.target;if(t instanceof Element&&t.closest("a[href]"))e.preventDefault()},true);

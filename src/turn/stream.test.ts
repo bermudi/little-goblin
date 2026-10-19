@@ -1,11 +1,3 @@
-// Stream driver boundary tests (design/runtime-turn.md → Module map):
-// the membership seam — #96's regression home, now that claim+replay has
-// one home — plus the steer fold's mechanics, fan-out/wire-log
-// semantics, and the failed-outcome handoff. Landing decisions live in
-// state.test.ts; the sink contract (exactly one onDone) and
-// ownership-mark semantics stay
-// e2e in runtime.test.ts.
-
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -37,8 +29,6 @@ import {
 	type WireMember,
 } from "./stream.ts";
 
-// FIFO fixtures for parking an attachment conversion mid-await —
-// cleaned per test so a parked read never outlives the file.
 const fifoDirs: string[] = [];
 afterEach(() => {
 	for (const d of fifoDirs) rmSync(d, { recursive: true, force: true });
@@ -71,10 +61,6 @@ test("a failed attach subscriber is logged and detached without losing the share
 	}
 });
 
-// Fake the model at the provider edge (the suite's one fake): a script
-// per doStream call — parts stream verbatim, an Error throws (a
-// provider rejection the SDK surfaces as an error chunk). Every wire
-// prompt and toolChoice is captured.
 function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
 	const prompts: string[] = [];
 	const toolChoices: string[] = [];
@@ -238,7 +224,7 @@ function rig(
 	};
 }
 
-// ---------- the membership seam (#96's regression home) ----------
+// ---------- the membership seam ----------
 
 describe("membership seam", () => {
 	test("a streaming member claimed by the resume sees the pre-overflow wire replayed (#96)", () => {
@@ -261,7 +247,7 @@ describe("membership seam", () => {
 		expect(members).toEqual([joiner]);
 		// Gapless: the joiner saw the same wire the head saw — the tool
 		// call the failed attempt emitted was REPLAYED to it, not
-		// mid-sentence (design/app.md → Join replay).
+		// mid-sentence.
 		expect(joiner.chunks).toEqual(before);
 	});
 
@@ -370,6 +356,50 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("ok");
 		expect(dead.streamFailed).toBe(true);
 		expect(healthy.chunks.length).toBeGreaterThan(0);
+	});
+
+	test("turn metadata separates the billed sum from the final step's window", async () => {
+		const probe = probeTool();
+		const r = rig([
+			toolCallStep("c1", 10),
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "done" },
+				{ type: "text-end", id: "t1" },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 50, noCache: undefined, cacheRead: 40, cacheWrite: undefined },
+						outputTokens: { total: 5, text: undefined, reasoning: undefined },
+					},
+				},
+			],
+		]);
+		r.deps.tools = { probe };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const md = outcome.responseMessage?.metadata as {
+			usage: {
+				input: number | null;
+				lastInput: number | null;
+				cacheRead: number | null;
+				lastCacheRead: number | null;
+			};
+			promptChars: Record<string, number> | undefined;
+		};
+		// input bills every re-sent prompt across the loop; lastInput is
+		// the final step — the window occupancy the gauge reads.
+		expect(md.usage.input).toBe(60);
+		expect(md.usage.lastInput).toBe(50);
+		expect(md.usage.lastCacheRead).toBe(40);
+		// The itemization measured the final step's outbound prompt.
+		expect(md.promptChars).toBeDefined();
+		expect(md.promptChars!["history"]).toBeGreaterThan(0);
+		expect(md.promptChars!["toolDefs"]).toBeGreaterThan(0);
+		expect(md.promptChars!["identity"]).toBe("test".length);
 	});
 
 	test("a submit landing mid-turn folds into the next request, joins, and is replayed", async () => {

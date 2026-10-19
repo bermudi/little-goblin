@@ -6,9 +6,9 @@ import JSON5 from "json5";
 try {
 	const config = parseConfig(JSON5.parse(readFileSync(paths.config(), "utf8")) as unknown);
 	const records = parseAuthFile(readFileSync(paths.auth(), "utf8"));
-	// Profile names are data, not installer constants: the warmer is
-	// rendered from these, so only the record shape is enforced here.
-	// The profile class mirrors the doctor's auth probe (src/health.ts).
+	// Profile names are data, not installer constants — the warmer is
+	// rendered from these, so only the record shape is enforced here;
+	// the profile class mirrors the doctor's auth probe (src/health.ts).
 	// Only config-referenced records render warm lines — the same set
 	// preflight gates. A stale unreferenced record must not ship a warm
 	// line for an unprovisioned profile: a oneshot unit stops at the

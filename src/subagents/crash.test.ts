@@ -1,11 +1,3 @@
-// Crash-approval gate tests against a real killed process: a child
-// owns a run whose sandbox "bash" writes a host-side marker and then
-// never returns; the test SIGKILLs it mid-dispatch and reopens the two
-// stores. The gate's claimed lease must park the run for an operator
-// decision — never re-dispatch, never let the model guess — and each
-// decision kind (authorize-retry, record-result, abandon) plus the
-// kill-while-parked and pre-seeded-done windows must behave as
-// designed. Reuses the fake model edge; no external calls.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -26,9 +18,6 @@ import { captureLog, harnessReports } from "./testing.ts";
 
 setLogFile(null);
 
-// Same localhost OpenAI-completions fake as mod.test.ts — each
-// test pushes its replies onto a shared queue; `seen` accumulates and
-// tests slice from their own base.
 function sse(events: object[]): Response {
 	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });
@@ -98,7 +87,6 @@ async function until(fn: () => boolean, what: string, ms = 30_000): Promise<void
 	throw new Error(`timed out waiting for: ${what}`);
 }
 
-// One isolated pair of stores + marker + workspace per test.
 function bed(tag: string): {
 	dir: string;
 	dbPath: string;
@@ -186,9 +174,6 @@ const fakeDesktops: Desktops = (() => {
 	};
 })();
 
-// The parent-side owner over a test's stores: sandboxes count "markit"
-// dispatches and append a REPLAYED marker line — any gated re-dispatch
-// is visible on the host and counted.
 async function openOwner(b: ReturnType<typeof bed>): Promise<{
 	owner: Subagents;
 	runs: SubagentRuns;
@@ -277,18 +262,14 @@ describe("subagent crash approval — a real killed process", () => {
 			() => runs.get(1)?.status === "needs_input" && runs.get(1)?.pendingApproval !== null,
 			"run parked on the ambiguous call",
 		);
-		// The park is needs_input + a durable mirror of the call — the
-		// marker ran once in the child and zero times here.
 		const parked = runs.get(1)!;
 		expect(parked.pendingApproval?.tool).toBe("bash");
 		expect(parked.question ?? "").toContain("bash");
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);
 		expect(wakes.some((w) => /interrupted|partially run/.test(w.text))).toBe(true);
-		expect(runs.get(1)?.noticePending).toBe(false); // the wake delivered
+		expect(runs.get(1)?.noticePending).toBe(false);
 
-		// authorize-retry: the gate commits the decision, then dispatches
-		// exactly once more — the model sees the fresh bash result.
 		replies.push(finishReply());
 		const resumed = await owner.decide(1, "crash:one", {
 			kind: "authorize-retry",
@@ -330,9 +311,6 @@ describe("subagent crash approval — a real killed process", () => {
 			reasoning: "the interrupted write is externally visible; re-dispatch would double it",
 		});
 		await until(() => runs.get(1)?.status === "done", "run settled on the recorded result");
-		// The declared result, not a fresh dispatch, fed the next request —
-		// wrapped as an unverified Goblin declaration, never operator
-		// testimony or observed tool output.
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);
 		const next = seen[base];
@@ -355,14 +333,8 @@ describe("subagent crash approval — a real killed process", () => {
 			outcome: "unverified",
 		});
 		expect(wakes.some((w) => w.text.includes("Crash resolution warning"))).toBe(true);
-		// A declared answer is an error result, never a success-shaped one:
-		// a success would have to carry bash's declared structured output,
-		// and answering without it made pi-durable report a broken tool —
-		// "Tool bash returned no structuredOutput" — on every resolution.
 		captured.stop();
 		expect(harnessReports(captured.lines)).toEqual([]);
-		// The resumed run logged its own lines, so an empty report list is
-		// the report's absence, not a failed capture.
 		expect(captured.lines.some((l) => l.includes("subagent settle"))).toBe(true);
 		await owner.close();
 		runs.close();
@@ -386,12 +358,8 @@ describe("subagent crash approval — a real killed process", () => {
 		expect(runs.get(1)?.error ?? "").toContain("Goblin abandoned this run");
 		expect(markerLines(b.marker)).toEqual(["dispatched"]);
 		expect(dispatches()).toBe(0);
-		// Terminate settled the submission at the round boundary — the
-		// model was never asked again.
 		await Bun.sleep(400);
 		expect(seen.length).toBe(base);
-		// The abandoned call produced no observed result: an error result,
-		// so the harness reports no broken tool.
 		captured.stop();
 		expect(harnessReports(captured.lines)).toEqual([]);
 		expect(captured.lines.some((l) => l.includes("subagent settle"))).toBe(true);
@@ -403,8 +371,6 @@ describe("subagent crash approval — a real killed process", () => {
 		const b = bed("repark");
 		const wakeLog = join(b.dir, "wakes.jsonl");
 		await dispatchAndKill(b);
-		// Second process: resume only — the gate re-enters, parks the
-		// row needs_input + pendingApproval, and wakes the ask.
 		const c2 = spawnChild(b, { MODE: "resume", WAKE_PATH: wakeLog });
 		const probe = openSubagentRuns(b.dbPath);
 		try {
@@ -422,9 +388,6 @@ describe("subagent crash approval — a real killed process", () => {
 		c2.kill(9);
 		await c2.exited;
 
-		// Third open: the claimed lease still guards the call. The row
-		// is already parked persistently, so the re-park signal is the
-		// re-asked wake, not a status change.
 		const { owner, runs, dispatches, wakes } = await openOwner(b);
 		await until(
 			() => wakes.some((w) => /interrupted|partially run/.test(w.text)),
@@ -449,9 +412,8 @@ describe("subagent crash approval — a real killed process", () => {
 	for (const [tag, seededResult, assertions] of [
 		[
 			"ordinary",
-			// pi-durable 1.3.0's ToolExecutionResult carries the model-facing
-			// text under `output`; `content` is the pre-bump key the legacy
-			// fixture below still uses (and the gate still normalizes).
+			// pi-durable 1.3.0 carries tool results under `output`; `content`
+			// is the legacy key the fixture below seeds.
 			{ output: [{ type: "text", text: "seeded-result: the marker already landed" }] },
 			(wire: string) => {
 				expect(wire).toContain("seeded-result: the marker already landed");
@@ -485,10 +447,6 @@ describe("subagent crash approval — a real killed process", () => {
 			const b = bed(`seeded-${tag}`);
 			await dispatchAndKill(b);
 
-			// The settle-only crash window: the tool's result committed to
-			// the lease but the call never settled. Seed `done` directly in
-			// pi-durable's own task-scoped storage through a bare harness —
-			// no scheduling, just the commit line.
 			const storage = await openNodeSqliteStorage(b.storagePath);
 			const bare = await Harness.open(
 				storage,
@@ -523,10 +481,6 @@ describe("subagent crash approval — a real killed process", () => {
 			assertions(JSON.stringify(seen[base]?.messages));
 			expect(runs.get(1)?.result).toBe("recovered");
 			captured.stop();
-			// The stored row predates declarations being error results, so
-			// it replays with the same marking: a schema tool's stored
-			// success always carries its structured output, and a row
-			// without one can only replay as an error result.
 			expect(harnessReports(captured.lines)).toEqual([]);
 			expect(
 				captured.lines.some((l) =>

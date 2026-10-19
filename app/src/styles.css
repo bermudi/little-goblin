@@ -1717,6 +1717,56 @@ a.hit-title {
 	padding: 0;
 	font-size: 11px;
 }
+/* The itemization strip — one thin bar, history-sized segments in
+   graded inks so the picture reads without the legend. */
+.ctx-segs {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.ctx-segbar {
+	display: flex;
+	height: 0.3rem;
+	border-radius: 999px;
+	overflow: hidden;
+	background: var(--app-hover);
+}
+.ctx-segbar span {
+	display: block;
+	height: 100%;
+}
+/* Grade from identity (loudest) down through the message tail; the
+   shades reuse the app's grays so no new palette enters the sheet. */
+.seg-identity {
+	background: var(--app-fg-muted);
+}
+.seg-environment {
+	background: color-mix(in oklab, var(--app-fg-muted) 88%, transparent);
+}
+.seg-project {
+	background: color-mix(in oklab, var(--app-fg-muted) 78%, transparent);
+}
+.seg-agentsMd {
+	background: color-mix(in oklab, var(--app-fg-muted) 68%, transparent);
+}
+.seg-userMd {
+	background: color-mix(in oklab, var(--app-fg-muted) 58%, transparent);
+}
+.seg-skills {
+	background: color-mix(in oklab, var(--app-fg-muted) 48%, transparent);
+}
+.seg-toolDefs {
+	background: color-mix(in oklab, var(--app-fg-muted) 38%, transparent);
+}
+.seg-history {
+	background: color-mix(in oklab, var(--app-fg-muted) 28%, transparent);
+}
+.ctx-seg-rows {
+	font-size: 11.5px;
+}
+.ctx-seg-rows > div.sub dd {
+	color: var(--app-fg-muted);
+}
 /* The manual lever — a quiet footer action under a hairline, not a
    form button floating in the panel. */
 .ctx-act {

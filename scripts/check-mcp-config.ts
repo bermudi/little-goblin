@@ -1,9 +1,9 @@
-// Call-time gate (DESIGN.md: "Web access" → "MCP"): goblin's mcporter
-// must never see the host's servers. mcporter merges editor imports
-// (Cursor, Claude, Codex, …) unless the config carries `"imports": []`
-// — an omitted or non-empty key silently widens goblin's tool surface
-// to the operator's editors. scripts/mcp runs this before every call
-// so a widened config fails loud instead of leaking.
+// Call-time gate: goblin's mcporter must never see the host's servers.
+// mcporter merges editor imports (Cursor, Claude, Codex, …) unless the
+// config carries `"imports": []` — an omitted or non-empty key silently
+// widens goblin's tool surface to the operator's editors. scripts/mcp
+// runs this before every call so a widened config fails loud instead of
+// leaking.
 //
 // Silent on success (exit 0). On failure prints the reason — structural
 // facts only, never file contents — to stderr and exits 1.

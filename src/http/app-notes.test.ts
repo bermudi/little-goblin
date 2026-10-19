@@ -58,7 +58,6 @@ describe("app notes", () => {
 				notes: { title: string }[];
 			};
 			expect(projOnly.notes.map((n) => n.title)).toEqual(["project note"]);
-			// FTS over title+body.
 			const found = (await (await call("/api/app/notes?q=pancake")).json()) as {
 				notes: { title: string }[];
 			};
@@ -70,8 +69,6 @@ describe("app notes", () => {
 
 	test("the index serves past the store's 200 default and reports its own bound truthfully", async () => {
 		const { http, call, notes } = setup({ token: APP_TOKEN_NAME });
-		// A thousand fixture creates would flood stdout — info lines go
-		// quiet for the seeding loops only, never for the assertions.
 		try {
 			setLogLevel("error");
 			const ids: string[] = [];
@@ -84,7 +81,6 @@ describe("app notes", () => {
 					truncated: boolean;
 				};
 
-			// Past the old silent cap: all 250 come back.
 			let page = await read("/api/app/notes");
 			expect(page.notes).toHaveLength(250);
 			expect(page.truncated).toBe(false);
@@ -93,7 +89,6 @@ describe("app notes", () => {
 			for (let i = 250; i < 1000; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
 			setLogLevel("info");
 
-			// Exactly at the bound is not truncation.
 			page = await read("/api/app/notes");
 			expect(page.notes).toHaveLength(1000);
 			expect(page.truncated).toBe(false);
@@ -102,7 +97,6 @@ describe("app notes", () => {
 			ids.push(notes.create({ title: "bulk 1000" }).id);
 			setLogLevel("info");
 
-			// One past: 1000 rows and the flag — a search reports the same.
 			page = await read("/api/app/notes");
 			expect(page.notes).toHaveLength(1000);
 			expect(page.truncated).toBe(true);
@@ -113,7 +107,6 @@ describe("app notes", () => {
 			expect(page.notes).toHaveLength(0);
 			expect(page.truncated).toBe(false);
 
-			// The archived shelf is the same contract.
 			setLogLevel("error");
 			for (const id of ids) notes.setArchived(id, true);
 			setLogLevel("info");
@@ -138,10 +131,8 @@ describe("app notes", () => {
 			const created = await create(call, { title: "t", body: "v1" });
 			const note = (await created.json()) as { id: string; rev: number };
 
-			// Content keys without the header refuse.
 			const noMatch = await patchJson(call, `/api/app/notes/${note.id}`, { body: "v2" });
 			expect(noMatch.status).toBe(428);
-			// A stale rev conflicts and hands the live note back.
 			const stale = await patchJson(
 				call,
 				`/api/app/notes/${note.id}`,
@@ -152,7 +143,6 @@ describe("app notes", () => {
 			const conflict = (await stale.json()) as { note: { rev: number; body: string } };
 			expect(conflict.note.rev).toBe(1);
 			expect(conflict.note.body).toBe("v1");
-			// The right rev writes — and the etag advances.
 			const ok = await patchJson(
 				call,
 				`/api/app/notes/${note.id}`,
@@ -161,7 +151,6 @@ describe("app notes", () => {
 			);
 			expect(ok.status).toBe(200);
 			expect(ok.headers.get("etag")).toBe('"2"');
-			// Flags never need If-Match.
 			const flagged = await patchJson(call, `/api/app/notes/${note.id}`, {
 				pinned: true,
 				archived: true,
@@ -175,11 +164,8 @@ describe("app notes", () => {
 			};
 			expect(after.pinnedAt).not.toBeNull();
 			expect(after.archivedAt).not.toBeNull();
-			// Flags bump nothing content-visible — the token still
-			// moves, once per accepted flag write.
 			expect(after.rev).toBe(2);
 			expect(after.stateRev).toBe(4);
-			// Strictness: unknown keys refuse.
 			expect(
 				(await patchJson(call, `/api/app/notes/${note.id}`, { frobnicate: true })).status,
 			).toBe(422);
@@ -193,8 +179,6 @@ describe("app notes", () => {
 		try {
 			const created = await create(call, { title: "t", body: "v1" });
 			const note = (await created.json()) as { id: string; rev: number };
-			// Stand-in for "disk full": only the body_md write fails —
-			// flag updates don't target the column and still land.
 			store.db.run(`CREATE TRIGGER fault_on_big_body BEFORE UPDATE OF body_md ON notes
 				WHEN length(new.body_md) > 1000
 				BEGIN SELECT RAISE(ABORT, 'injected fault'); END`);
@@ -214,7 +198,7 @@ describe("app notes", () => {
 			};
 			expect(after.body).toBe("v1");
 			expect(after.rev).toBe(1);
-			expect(after.stateRev).toBe(1); // the token rolled back too
+			expect(after.stateRev).toBe(1);
 			expect(after.pinnedAt).toBeNull();
 			expect(after.archivedAt).toBeNull();
 		} finally {
@@ -235,7 +219,6 @@ describe("app notes", () => {
 			const note = (await created.json()) as { id: string; rev: number; body: string };
 			expect(note.body).toBe(atCap);
 
-			// A live etag keeps the size refusal unambiguous (422, not 428/409).
 			const refusedPatch = await patchJson(
 				call,
 				`/api/app/notes/${note.id}`,
@@ -269,7 +252,6 @@ describe("app notes", () => {
 			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
 				body: string;
 			};
-			// append joins with a blank line.
 			expect(after.body).toBe(`small\n\n${text}`);
 			expect(after.body.length).toBe(1_000_000);
 		} finally {
@@ -321,8 +303,6 @@ describe("app notes", () => {
 		try {
 			const created = await create(call, { title: "t", body: "v1" });
 			const note = (await created.json()) as { id: string; rev: number };
-			// A body write riding a stale etag must not apply the flag
-			// that came with it.
 			const combo = await patchJson(
 				call,
 				`/api/app/notes/${note.id}`,
@@ -394,24 +374,19 @@ describe("app notes", () => {
 					method: "POST",
 					headers,
 				});
-			// Missing or malformed — the write never reaches the store.
 			expect((await restore()).status).toBe(428);
 			expect((await restore({ "if-match": "abc" })).status).toBe(428);
-			// Stale — conflicts with the live note like a PATCH does.
 			const stale = await restore({ "if-match": '"1"' });
 			expect(stale.status).toBe(409);
 			expect(stale.headers.get("etag")).toBe('"2"');
 			const conflict = (await stale.json()) as { note: { rev: number; body: string } };
 			expect(conflict.note.rev).toBe(2);
 			expect(conflict.note.body).toBe("one\n\ntwo");
-			// A missing version stays 422 under a live guard.
 			const gone = await call(`/api/app/notes/${note.id}/versions/9/restore`, {
 				method: "POST",
 				headers: { "if-match": '"2"' },
 			});
 			expect(gone.status).toBe(422);
-			// The current rev restores — and nothing the refused calls
-			// touched shows up (body, versions, token all stand).
 			const ok = await restore({ "if-match": '"2"' });
 			expect(ok.status).toBe(200);
 			const back = (await ok.json()) as { rev: number; body: string; stateRev: number };
@@ -437,7 +412,6 @@ describe("app notes", () => {
 				200,
 			);
 
-			// Body patch, append, restore — all refuse as input errors.
 			expect(
 				(await patchJson(call, `/api/app/notes/${note.id}`, { body: "v2" }, { "if-match": '"2"' }))
 					.status,
@@ -453,14 +427,12 @@ describe("app notes", () => {
 					})
 				).status,
 			).toBe(422);
-			// Nothing wrote — not even the rev bumped.
 			const got = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
 				body: string;
 				rev: number;
 			};
 			expect(got.body).toBe("v1\n\nx");
 			expect(got.rev).toBe(2);
-			// Unarchive is a flag write — then content lands again.
 			expect((await patchJson(call, `/api/app/notes/${note.id}`, { archived: false })).status).toBe(
 				200,
 			);
@@ -499,15 +471,12 @@ describe("app notes", () => {
 			const created = await create(call, { title: "t" });
 			const note = (await created.json()) as { id: string };
 			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
-			// Active notes refuse.
 			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(422);
-			// A move — flag write, no If-Match.
 			const moved = await patchJson(call, `/api/app/notes/${note.id}`, {
 				projectId: proj.id,
 			});
 			expect(moved.status).toBe(200);
 			expect(((await moved.json()) as { projectId: string | null }).projectId).toBe(proj.id);
-			// And back to loose with explicit null.
 			const unbound = await patchJson(call, `/api/app/notes/${note.id}`, {
 				projectId: null,
 			});
@@ -529,8 +498,6 @@ describe("app notes", () => {
 			const note = (await created.json()) as { id: string; rev: number };
 			await postJson(call, "/api/app/conversations", { id: "n-attach" });
 
-			// A client-supplied body can't ride the part — the stored
-			// expansion is the server's own read.
 			const res = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -557,7 +524,6 @@ describe("app notes", () => {
 			expect(part?.data?.title).toBe("ref");
 			expect(part?.data?.rev).toBe(note.rev);
 
-			// An unknown note refuses before submit — nothing is appended.
 			const bad = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -600,7 +566,6 @@ describe("app note rewrite", () => {
 	const goodBody = { selection: "some *text*", instruction: "fix it" };
 
 	test("the route rides the shared gates — auth, origin, JSON, method", async () => {
-		// Bearer mode: no token, no route.
 		const a = setup({
 			token: APP_TOKEN_NAME,
 			rewriteNote: () => Promise.resolve("x"),
@@ -619,8 +584,6 @@ describe("app note rewrite", () => {
 		} finally {
 			a.http.stop();
 		}
-		// Trust mode: a foreign-origin browser mutation refuses before
-		// the route; the JSON gate precedes the body parse; GET 405s.
 		const b = setup({ rewriteNote: () => Promise.resolve("x") });
 		try {
 			const foreign = await b.call(
@@ -702,7 +665,6 @@ describe("app note rewrite", () => {
 			for (const body of cases) {
 				expect((await postRewrite(call, note.id, body)).status).toBe(422);
 			}
-			// Bad JSON follows the shared convention.
 			const badJson = await call(`/api/app/notes/${note.id}/rewrite`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -718,7 +680,6 @@ describe("app note rewrite", () => {
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			rewriteNote: (_id, input) => {
-				// The request reaches the seam validated and intact.
 				expect(input).toEqual(goodBody);
 				return Promise.resolve("a **better** take");
 			},
@@ -780,14 +741,12 @@ describe("app note rewrite", () => {
 			};
 			expect(versions.versions).toHaveLength(1);
 			expect(versions.versions[0]).toMatchObject({ rev: 1, source: "rewrite" });
-			// The internal agent source is not client-selectable.
 			const forged = await call(`/api/app/notes/${note.id}`, {
 				method: "PATCH",
 				headers: { "content-type": "application/json", "if-match": '"2"' },
 				body: JSON.stringify({ body: "forged", source: "agent" }),
 			});
 			expect(forged.status).toBe(422);
-			// Source alone is not a content write.
 			const bare = await call(`/api/app/notes/${note.id}`, {
 				method: "PATCH",
 				headers: { "content-type": "application/json" },

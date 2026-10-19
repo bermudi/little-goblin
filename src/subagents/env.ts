@@ -1,8 +1,3 @@
-// The worker execution env (design/subagents.md → worker execution env):
-// Pi Durable's ExecutionEnv over a goblin Sandboxes container. Every call
-// is cancellation-aware — an aborted context refuses before any sandbox
-// work is issued.
-
 import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync } from "node:fs";
 import { basename, join, posix } from "node:path";
@@ -35,27 +30,21 @@ import { log } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 
 const READ_CAP = 100 * 1024 * 1024;
-/** Bounded scan reads; 8 MiB keeps a 1 GiB scan at ~128 podman execs. */
 const SCAN_CHUNK_BYTES = 8 * 1024 * 1024;
 const WATCH_POLL_MS = 500;
 const SHELL_TIMEOUT_DEFAULT_S = 60;
 const SHELL_TIMEOUT_CAP_S = 600;
 const SPILL_CAP_BYTES = 100 * 1024 * 1024;
 
-// One goblin exec captures stdout and stderr in separate guest files — the
-// streams must stay apart for delivery (ShellOutputInfo.stream), and
-// `ulimit -f` bounds each file on its own. The wrapper's own exit status is
-// reserved for start failures (96 = cd failed, 97 = program missing), so the
-// command's exit code exists only in the rc file: a command exiting 96/97 or
-// 125–127 itself can never be misread as a wrapper failure.
+// The wrapper's own exit status is reserved for start failures (96 =
+// cd failed, 97 = program missing); the command's own exit code exists
+// only in the rc file, so an exit 96/97 or 125–127 can't be misread.
 const EXEC_SH_SCRIPT =
 	'cd "$1" || { echo "cd failed: $1" >&2; exit 96; }; ( ulimit -f "$6" 2>/dev/null; /bin/sh -c "$5" >"$2" 2>"$3"; printf %s "$?" >"$4" )';
 const EXEC_ARGV_SCRIPT =
 	'cd "$1" || { echo "cd failed: $1" >&2; exit 96; }; p="$5"; command -v "$p" >/dev/null 2>&1 || { echo "program not found: $p" >&2; exit 97; }; cap="$6"; out="$2"; err="$3"; rc="$4"; shift 6; ( ulimit -f "$cap" 2>/dev/null; "$p" "$@" >"$out" 2>"$err"; printf %s "$?" >"$rc" )';
 
-/** `wc -l -c` over one captured stream. */
 type StreamMeasure = { path: string; bytes: number; newlines: number };
-/** The caller's retained tail, normalized for arithmetic. */
 type TailWindow = { maxBytes: number; maxLines: number };
 type StreamDelivery = { kind: "ok" } | { kind: "aborted" } | { kind: "failed"; message: string };
 
@@ -109,8 +98,6 @@ export class SandboxEnv implements ExecutionEnv {
 		timedOut: boolean;
 		truncated: boolean;
 	}> {
-		// A pre-aborted context makes zero sandbox calls — a stopped
-		// write must not keep running.
 		if (context.abortSignal?.aborted) {
 			return { stdout: "", stderr: "", exitCode: null, timedOut: false, truncated: false };
 		}
@@ -154,8 +141,8 @@ export class SandboxEnv implements ExecutionEnv {
 		path: string,
 		context: Context,
 	): Promise<ConstructorParameters<typeof FileError>[0]> {
-		// Only our probe's exit statuses classify errors; filenames and localized
-		// command diagnostics never participate in control flow.
+		// Classification uses only the probe's exit statuses — never
+		// filenames or localized command diagnostics.
 		const probe = await this.run(
 			[
 				"/bin/sh",
@@ -232,9 +219,6 @@ export class SandboxEnv implements ExecutionEnv {
 	): Promise<Result<TextLineReader, FileError>> {
 		const r = await this.catBytes(path, context);
 		if (!r.ok) return r;
-		// Split keeps the real line structure: "" → EOF at once,
-		// "x" → one unterminated line, "x\n" → one terminated line,
-		// "x\ny" → terminated then unterminated.
 		const raw = new TextDecoder().decode(r.value);
 		const lines =
 			raw === "" ? [] : raw.endsWith("\n") ? raw.slice(0, -1).split("\n") : raw.split("\n");
@@ -258,8 +242,6 @@ export class SandboxEnv implements ExecutionEnv {
 	): Promise<Result<string[], FileError>> {
 		const r = await this.readTextFile(path, context);
 		if (!r.ok) return r;
-		// Same line semantics as openTextLineReader: "" → [],
-		// "x\n" → ["x"], "x\ny" → ["x","y"].
 		const lines =
 			r.value === ""
 				? []
@@ -273,12 +255,9 @@ export class SandboxEnv implements ExecutionEnv {
 	readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
 		return this.catBytes(path, context);
 	}
-	// `openBinaryReader` must keep reading the file it opened even after
-	// the path is renamed, and no guest process can hold an fd for us
-	// across podman execs — a hidden same-directory hardlink pins the
-	// inode instead. When linking fails (read-only directory, filesystem
-	// without links) reads fall back to the path: weaker (a rename steals
-	// them), warned about, never silent.
+	// openBinaryReader must keep reading its opened file after a rename, and
+	// no guest process can hold an fd across podman execs — a hidden hardlink
+	// pins the inode; on link failure reads fall back to the path (warned).
 	private async pinFile(
 		path: string,
 		abs: string,
@@ -299,8 +278,6 @@ export class SandboxEnv implements ExecutionEnv {
 		});
 		return ok({ readPath: abs, pinPath: null });
 	}
-	/** One positional read. dd's `iflag=skip_bytes` seeks on regular files,
-	 *  so the cost is the transferred bytes, not the offset. */
 	private async readBytesAt(
 		readPath: string,
 		offset: number,
@@ -341,8 +318,6 @@ export class SandboxEnv implements ExecutionEnv {
 	): Promise<Result<BinaryReader, FileError>> {
 		if (context.abortSignal?.aborted) return aborted();
 		const abs = this.resolve(path);
-		// `stat -L` classifies the referent; `noFollow` refuses a symbolic
-		// link as the final component instead.
 		const kindOut = await this.runOut(
 			options?.noFollow ? ["stat", "-c", "%F", "--", abs] : ["stat", "-L", "-c", "%F", "--", abs],
 			path,
@@ -367,8 +342,6 @@ export class SandboxEnv implements ExecutionEnv {
 			info: async (rctx) => {
 				if (rctx.abortSignal?.aborted) return aborted();
 				if (closed) return envErr("invalid", `${path}: reader is closed`, path);
-				// The pin's metadata is the opened file's, not whatever the
-				// original path names now.
 				const st = await this.runOut(["stat", "-L", "-c", "%F|%s|%Y", "--", readPath], path, rctx);
 				if (!st.ok) return st;
 				const parsed = this.parseStat(st.value, path);
@@ -403,8 +376,6 @@ export class SandboxEnv implements ExecutionEnv {
 						path,
 					);
 				}
-				// Whole-file pass in bounded chunks — a 1 GiB scan is ~128
-				// reads; upstream LineScanner owns the line semantics.
 				const scanner = new LineScanner(startLine, endLine);
 				let pos = 0;
 				for (;;) {
@@ -424,8 +395,6 @@ export class SandboxEnv implements ExecutionEnv {
 		};
 		return ok<BinaryReader, FileError>(reader);
 	}
-	/** One stat batch for a DirReader page: `name\0stat\0` pairs, a stat of
-	 *  `MISSING` for an entry that vanished since the directory was listed. */
 	private async statEntries(
 		batch: string[],
 		path: string,
@@ -454,8 +423,6 @@ export class SandboxEnv implements ExecutionEnv {
 			}
 			const parsed = this.parseStat(raw, name);
 			if (!parsed.ok) {
-				// Unsupported kinds are skipped per the DirReader contract;
-				// anything else is the call's error.
 				if (parsed.error.code === "not_supported") {
 					entries.push(null);
 					continue;
@@ -483,8 +450,6 @@ export class SandboxEnv implements ExecutionEnv {
 		);
 		if (!out.ok) return out;
 		if (context.abortSignal?.aborted) return aborted();
-		// Names are the directory's state at open; metadata is read per
-		// page, so an entry that vanishes before its stat is skipped.
 		const names = out.value === "" ? [] : out.value.split("\0");
 		if (names[names.length - 1] === "") names.pop();
 		let next = 0;
@@ -520,13 +485,8 @@ export class SandboxEnv implements ExecutionEnv {
 			},
 		});
 	}
-	/** The state of one watch target: canonical root, then one
-	 *  `kind|size|mtime|name` stat record per entry (`MISSING` for an
-	 *  absent target). `%y` carries nanosecond mtime, so a same-size
-	 *  rewrite inside one poll still differs. Symbolic links below a
-	 *  directory are listed, never followed (find without -L); the target
-	 *  itself is followed, so a watched link reports its referent's
-	 *  changes. Excludes are pruned here, not in the guest. */
+	// `%y` (nanosecond mtime) catches a same-size rewrite inside one
+	// poll; links below a directory are listed, never followed.
 	private async targetSnapshot(
 		abs: string,
 		recursive: boolean,
@@ -556,7 +516,6 @@ export class SandboxEnv implements ExecutionEnv {
 				kept.push(line);
 				continue;
 			}
-			// The name is the field after the third '|' (it may contain '|').
 			let at = -1;
 			for (let k = 0; k < 3; k++) at = line.indexOf("|", at + 1);
 			const name = at === -1 ? line : line.slice(at + 1);
@@ -577,10 +536,9 @@ export class SandboxEnv implements ExecutionEnv {
 		context: Context,
 	): Promise<Result<FileWatcher, FileError>> {
 		if (context.abortSignal?.aborted) return aborted();
-		// Polling: the sandbox filesystem is reached only through one-shot
-		// podman execs, so there is no live fs event stream to subscribe
-		// to. `mode: "polling"` is the contract's own escape hatch for
-		// this — a change undone between two snapshots can be missed.
+		// Polling: the sandbox fs is reached only through one-shot podman
+		// execs, so there is no live event stream — a change undone
+		// between two snapshots can be missed.
 		const plans = targets.map((t) => ({
 			abs: this.resolve(t.path),
 			recursive: t.recursive === true,
@@ -595,8 +553,6 @@ export class SandboxEnv implements ExecutionEnv {
 				plan.state = snap.value;
 				plan.owed = false;
 			}
-			// A failed baseline is not fatal: the next successful snapshot
-			// reports overflow (rescan everything) and re-baselines.
 		}
 		let closed = false;
 		let running: Promise<void> | null = null;
@@ -614,8 +570,6 @@ export class SandboxEnv implements ExecutionEnv {
 				const snap = await this.targetSnapshot(plan.abs, plan.recursive, plan.exclude, context);
 				if (closed) return;
 				if (!snap.ok) {
-					// Coverage was uncertain: report overflow once, then a
-					// fresh baseline (no second overflow for the same gap).
 					if (plan.state !== null) emit({ overflow: true });
 					else plan.owed = true;
 					plan.state = null;
@@ -661,9 +615,8 @@ export class SandboxEnv implements ExecutionEnv {
 		context: Context,
 	): Promise<Result<void, FileError>> {
 		if (context.abortSignal?.aborted) return aborted();
-		// Content never enters argv: host staging under transferRoot,
-		// cpIn into the guest, an in-guest shell op moves it. Cleanup must
-		// also cover cancellation before that script ever dispatches.
+		// Content never enters argv: it is staged on the host, cpIn'd,
+		// then moved by an in-guest shell op.
 		mkdirSync(this.transferRoot, { recursive: true });
 		const staged = join(
 			this.transferRoot,
@@ -673,8 +626,6 @@ export class SandboxEnv implements ExecutionEnv {
 		let cleanup: string | null = null;
 		try {
 			if (context.abortSignal?.aborted) return aborted();
-			// Inside the finally's reach: a failed write must not leave
-			// the staged file behind in transferRoot.
 			await Bun.write(staged, content);
 			if (context.abortSignal?.aborted) return aborted();
 			await this.sandboxes.cpIn(
@@ -698,9 +649,6 @@ export class SandboxEnv implements ExecutionEnv {
 			cleanup = await this.guestRm([guest]);
 			rmSync(staged, { force: true });
 		}
-		// Only a successful staged write reaches here — an error or
-		// thrown return above already owns the outcome; cleanup's
-		// failure is the operation's error, never a silent leak.
 		if (cleanup !== null) {
 			return envErr("unknown", `${path}: guest staging cleanup failed: ${cleanup}`, path);
 		}
@@ -781,8 +729,6 @@ export class SandboxEnv implements ExecutionEnv {
 		return ok({ kind, size, mtimeMs: mtime * 1000 });
 	}
 	async fileInfo(path: string, context: Context): Promise<Result<FileInfo, FileError>> {
-		// The filename is never echoed — it's already the argv — so a
-		// name with '|' or a newline can't corrupt the numeric fields.
 		const abs = this.resolve(path);
 		const out = await this.runOut(["stat", "-c", "%F|%s|%Y", "--", abs], path, context);
 		if (!out.ok) return out;
@@ -796,8 +742,6 @@ export class SandboxEnv implements ExecutionEnv {
 	}
 	async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
 		const abs = this.resolve(path);
-		// NUL-separated records: name\0 then "kind|size|mtime\n"\0 —
-		// a filename with '|', '\n' or spaces can't corrupt fields.
 		const out = await this.runOut(
 			[
 				"/bin/sh",
@@ -828,8 +772,6 @@ export class SandboxEnv implements ExecutionEnv {
 		// absolute path so there is no flag ambiguity.
 		const out = await this.runOut(["realpath", this.resolve(path)], path, context);
 		if (!out.ok) return out;
-		// realpath emits exactly one trailing newline — strip only it:
-		// a filename ending in "\n" must survive.
 		return ok<string, FileError>(out.value.endsWith("\n") ? out.value.slice(0, -1) : out.value);
 	}
 	async exists(path: string, context: Context): Promise<Result<boolean, FileError>> {
@@ -899,11 +841,6 @@ export class SandboxEnv implements ExecutionEnv {
 		if (!out.ok) return out;
 		return ok<string, FileError>(out.value.trim());
 	}
-	// rm of guest temp files is never silent: a nonzero exit, a
-	// timeout or a thrown exec comes back as a detail string — a
-	// caller whose operation succeeded turns it into the operation's
-	// error, while one already holding a primary failure keeps it.
-	// The warn is the record either way.
 	private async guestRm(paths: string[]): Promise<string | null> {
 		try {
 			const { result } = await this.sandboxes.execArgv(this.origin, ["rm", "-f", "--", ...paths], {
@@ -927,12 +864,9 @@ export class SandboxEnv implements ExecutionEnv {
 			return e instanceof Error ? e.message : String(e);
 		}
 	}
-	/** Deliver one captured stream to `onOutput`, trimmed to the caller's tail
-	 *  window with an exact skip descriptor. A trimmed chunk always exceeds
-	 *  the window by a byte or a line — OutputBuffer's requirement for a
-	 *  skip — and its cut is fenced back onto a character boundary.
-	 *  Skipped bytes count decoded text, including replacement characters,
-	 *  rather than raw file offsets. */
+	// A trimmed chunk must exceed the window by a byte or a line —
+	// OutputBuffer's skip requirement — and its cut is fenced back onto
+	// a character boundary; skipped bytes count decoded text.
 	private async deliverStream(
 		rec: StreamMeasure,
 		stream: "stdout" | "stderr",
@@ -949,10 +883,8 @@ export class SandboxEnv implements ExecutionEnv {
 		) {
 			if (rec.bytes > window.maxBytes + 1) start = rec.bytes - (window.maxBytes + 1);
 			if (rec.newlines > window.maxLines) {
-				// `tail -n +K` keeps maxLines+1 complete lines — one more than
-				// the window, so a line-based cut satisfies the skip rule on
-				// its own. `head -c` bounds the transfer: a tail larger than
-				// the byte window (plus one) can never win the max() below.
+				// `tail -n +K` keeps maxLines+1 complete lines, so a
+				// line-based cut alone satisfies the skip rule.
 				const keepFrom = rec.newlines - window.maxLines;
 				const counted = await this.runOut(
 					[
@@ -975,8 +907,6 @@ export class SandboxEnv implements ExecutionEnv {
 					};
 				}
 				const tailBytes = Number(counted.value.trim());
-				// A failed tail leaves `wc` over an empty pipe; a real tail
-				// here always holds at least one byte.
 				if (!Number.isInteger(tailBytes) || tailBytes < 1) {
 					return {
 						kind: "failed",
@@ -988,10 +918,9 @@ export class SandboxEnv implements ExecutionEnv {
 				}
 			}
 			if (start > 0) {
-				// A six-byte window — the byte at the cut plus five back —
+				// A six-byte window (the byte at the cut plus five back)
 				// covers every valid character; the cut moves back at most
-				// three bytes, so a byte-based cut still exceeds the byte
-				// window and a line-based cut stays inside one line.
+				// three bytes.
 				const fenceFrom = Math.max(0, start - 5);
 				const fence = await this.readBytesAt(
 					rec.path,
@@ -1014,16 +943,12 @@ export class SandboxEnv implements ExecutionEnv {
 					const span = start - (fenceFrom + at);
 					if (at >= 0 && span <= 3) {
 						if (fenceFrom + at === 0) {
-							// The cut was already the stream's first character:
-							// deliver everything, omit nothing.
 							start = 0;
 						} else {
 							start = fenceFrom + at;
 							omittedLast = probe[at - 1]!;
 						}
 					}
-					// A continuation run with no nearby lead byte has no
-					// character crossing the cut; leave the cut where it was.
 				} else {
 					omittedLast = probe[at - 1]!;
 				}
@@ -1053,7 +978,6 @@ export class SandboxEnv implements ExecutionEnv {
 				skippedBytes += Buffer.byteLength(decoder.decode(chunk.value, { stream: true }), "utf8");
 				offset += count;
 			}
-			// Flush any incomplete sequence immediately before the fenced cut.
 			skippedBytes += Buffer.byteLength(decoder.decode(), "utf8");
 		}
 		if (context.abortSignal?.aborted) return { kind: "aborted" };
@@ -1065,8 +989,8 @@ export class SandboxEnv implements ExecutionEnv {
 				message: "command output could not be read back — result not claimed complete",
 			};
 		}
-		// A byte-order mark drops only at the very start of the stream; a
-		// U+FEFF after a cut (or later in the file) is text.
+		// A BOM drops only at the very start of the stream; a U+FEFF
+		// after a cut (or later in the file) is text.
 		const text =
 			start > 0
 				? new TextDecoder("utf-8", { ignoreBOM: true }).decode(read.value)
@@ -1088,10 +1012,8 @@ export class SandboxEnv implements ExecutionEnv {
 		});
 		return { kind: "ok" };
 	}
-	/** Merge the two captured streams into the advertised spill file: stdout
-	 *  first, then stderr — arrival order across separate files is not
-	 *  recoverable (design/subagents.md → worker subagents). Best-effort:
-	 *  callers decide what an unreadable spill means. */
+	// stdout first, then stderr — arrival order across separate files is
+	// not recoverable; best-effort, callers decide what a failed merge means.
 	private async mergeSpill(
 		outPath: string,
 		errPath: string,
@@ -1146,10 +1068,8 @@ export class SandboxEnv implements ExecutionEnv {
 		const errPath = `/tmp/.goblin-err-${tag}`;
 		const rcPath = `/tmp/.goblin-rc-${tag}`;
 		const spillPath = `/tmp/.goblin-spill-${tag}`;
-		// Relative cwd resolves against the env's own cwd, like every path.
 		const cwd = this.resolve(options?.cwd ?? this.cwd);
 		const capBlocks = String(Math.ceil(SPILL_CAP_BYTES / 512));
-		// $1..$4 are cwd/out/err/rc for both forms; the tail follows.
 		const form =
 			typeof command === "string"
 				? [EXEC_SH_SCRIPT, "goblin-sh", command, capBlocks]
@@ -1175,9 +1095,6 @@ export class SandboxEnv implements ExecutionEnv {
 				...(context.abortSignal !== undefined ? { abortSignal: context.abortSignal } : {}),
 			});
 			if (result.timedOut) {
-				// The sandbox restarted after the kill — files were kept, and
-				// the partial streams merge into the advertised file. Nothing
-				// is advertised that could not be read back.
 				const merged = await this.mergeSpill(outPath, errPath, spillPath, context);
 				await this.guestRm(
 					merged.ok ? [outPath, errPath, rcPath] : [outPath, errPath, rcPath, spillPath],
@@ -1208,8 +1125,6 @@ export class SandboxEnv implements ExecutionEnv {
 			}
 			return await this.finishExec(outPath, errPath, rcPath, spillPath, options, context);
 		} catch (error) {
-			// An abort that lands mid-flight surfaces as a throw from the
-			// executor, not a result — same contract, same cleanup.
 			if (context.abortSignal?.aborted === true) {
 				await this.guestRm([outPath, errPath, rcPath, spillPath]);
 				return err<ShellExecResult, ExecutionError>(
@@ -1219,8 +1134,6 @@ export class SandboxEnv implements ExecutionEnv {
 			throw error;
 		}
 	}
-	/** Post-exit classification of one finished command: recorded exit code,
-	 *  stream measures, windowed delivery, spill, cleanup. */
 	private async finishExec(
 		outPath: string,
 		errPath: string,
@@ -1239,7 +1152,6 @@ export class SandboxEnv implements ExecutionEnv {
 			await this.guestRm([outPath, errPath, rcPath, spillPath]);
 			return err<ShellExecResult, ExecutionError>(new PiExecutionError("unknown", message));
 		};
-		// The rc file must parse or nothing is claimed.
 		const rc = await this.run(["cat", "--", rcPath], undefined, context);
 		const rcText = rc.stdout.trim();
 		const exitCode = /^[0-9]{1,3}$/.test(rcText) ? Number(rcText) : NaN;
@@ -1256,7 +1168,6 @@ export class SandboxEnv implements ExecutionEnv {
 				`command exit code was not recorded (rc file: ${JSON.stringify(rcText.slice(0, 60))})`,
 			);
 		}
-		// Per-stream lines and bytes; wc appends a `total` row — ignored.
 		const wc = await this.run(["wc", "-l", "-c", "--", outPath, errPath], undefined, context);
 		const rows = wc.stdout.trim().split("\n");
 		const fields = (row: string | undefined): { lines: number; bytes: number } | null => {
@@ -1293,9 +1204,9 @@ export class SandboxEnv implements ExecutionEnv {
 			newlines: errFields.lines,
 		};
 		if (exitCode === 153 && (outRec.bytes >= SPILL_CAP_BYTES || errRec.bytes >= SPILL_CAP_BYTES)) {
-			// 128+SIGXFSZ with an output file itself at the wall: nothing is
-			// claimed. A 153 from some other file's write is just the
-			// command's exit code — the explanation below rides along.
+			// 128+SIGXFSZ with an output file itself at the wall: nothing
+			// is claimed. A 153 from some other file's write is just the
+			// command's own exit code.
 			return failed(
 				`command output exceeded the ${SPILL_CAP_BYTES / (1024 * 1024)} MiB wall — killed by ulimit, output not claimed`,
 			);
@@ -1318,8 +1229,8 @@ export class SandboxEnv implements ExecutionEnv {
 				if (delivered.kind === "failed") return failed(delivered.message);
 			}
 			if (exitCode === 153) {
-				// After the chunks: with a tail window anything sent before
-				// later output can be dropped, and the notice must survive.
+				// Sent after the chunks: with a tail window, output sent
+				// before later output can be dropped — the notice must not.
 				onOutput(
 					`[goblin] exit 153: a file write exceeded the sandbox's ${SPILL_CAP_BYTES / (1024 * 1024)} MiB per-file cap (SIGXFSZ) — produce large artifacts in chunks or stream them\n`,
 					context,
@@ -1362,9 +1273,6 @@ export class SandboxEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {}
 }
 
-// Test seam: the real sandbox-backed ExecutionEnv for direct
-// conformance checks — production reaches the same class only
-// through openSubagents' env hook.
 export function makeSandboxEnv(
 	sandboxes: Sandboxes,
 	transferRoot: string,

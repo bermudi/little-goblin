@@ -1,12 +1,3 @@
-// Skill proposal taps — the in-chat ✅/🚫 that mail approval proved
-// (design/skills.md, "It proposes, then tells"). The notice posts one
-// message per proposed skill with an Install/Discard row; taps decide
-// here through the shared decision machinery (src/skill-decisions.ts —
-// the same disk semantics and resolution-event the operator doors'
-// POST skills/decide runs). This file keeps the Telegram-only parts:
-// callback parse, the message stamp, and the toast answer. A tap on a
-// gone proposal answers "already handled".
-
 import type { Api } from "grammy";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
@@ -27,9 +18,6 @@ export function skillDiscardData(conversationId: string, skill: string): string 
 	return `skill:discard:${conversationId}:${skill}`;
 }
 
-// Spec name rule (agent/skills.ts): a-z0-9 with single hyphens, 1–64.
-// The handler never trusts callback bytes for a path component — the
-// parse rejects anything the catalog would reject.
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function parseSkillCallback(
@@ -44,8 +32,6 @@ export function parseSkillCallback(
 	return { op, conversationId, skill };
 }
 
-// Structural subset of Telegram's CallbackQuery — the fields this flow
-// reads (the mail-approval pattern: grammy's full type is assignable).
 export interface SkillApprovalQuery {
 	id: string;
 	data: string;
@@ -57,14 +43,10 @@ export interface SkillApprovalQuery {
 
 export interface SkillApprovalDeps {
 	api: Api;
-	// History appends land in the conversation that learned the skill —
-	// the same one whose door carried the notice. Narrowed to the one
-	// method the flow needs.
 	store: { append(id: string, messages: UIMessage[]): void };
 	workspaceDir: string;
 	skillsDir: string;
 	proposedDir: string;
-	/** Test door for the swap-trash timestamp. */
 	now?(): Date;
 }
 
@@ -77,9 +59,6 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 		try {
 			await decide(query);
 		} catch (err) {
-			// Outside the guarded paths — a programming error, not an edge
-			// failure. The fire-and-forget registration can't surface it,
-			// so it lands here instead of unhandledRejection.
 			log.error("skill approval handler failed", err, { query: query.id });
 		}
 	};
@@ -100,14 +79,9 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			return;
 		}
 		try {
-			// A missing notice only loses the stamp — the action still
-			// decides on disk with a null query.
 			const answerText = await runDecision(parsed, query.message === undefined ? null : query);
 			await answer(answerText);
 		} catch (err) {
-			// A filesystem error that isn't absence — the decision did not
-			// happen, the buttons stay, and the tap gets the failure line
-			// rather than a silently dead press.
 			log.error("skill proposal decision failed", err, {
 				skill: parsed.skill,
 				conversation: parsed.conversationId,
@@ -130,7 +104,6 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 				}),
 				"editMessageText",
 			).catch((err: unknown) => {
-				// Cosmetic — the log line already carries the decision.
 				log.debug("skill proposal stamp failed", { skill, error: String(err) });
 			});
 		};

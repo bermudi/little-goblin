@@ -13,8 +13,7 @@ import {
 	MessageParts,
 } from "./ChatView.tsx";
 
-// Static markup only — these guard the transcript's render contract
-// (links become anchors, tool runs fold), not React behavior.
+// Static markup — guards the render contract, not React behavior.
 
 const toolPart = {
 	type: "tool-lookup",
@@ -174,13 +173,11 @@ describe("MessageParts", () => {
 	});
 });
 
-// Shared rig for the mounted describes below: one fresh happy-dom
-// window per test with the DOM globals React touches installed on
-// globalThis; afterEach unmounts the root, closes the window, deletes
-// every installed global, and restores globalThis.fetch (the mounted
-// tests fake the network edge there). Call it first inside a describe —
-// its hooks must run before the describe's own, or a beforeEach that
-// installs a fake fetch would be captured as realFetch.
+// Shared rig for the mounted describes: one fresh happy-dom window
+// per test, DOM globals installed on globalThis, network faked at
+// globalThis.fetch. Call it first inside a describe — its hooks must
+// run before the describe's own, or a beforeEach that installs a fake
+// fetch would be captured as realFetch.
 function mountDom() {
 	const dom = {
 		win: undefined as unknown as Window,
@@ -227,14 +224,13 @@ function mountDom() {
 	return dom;
 }
 
-// The reload window (#79): history is fetched once on mount, then the
-// SDK's resume reconnects to a live turn. A reply that completes between
+// The reload window: history is fetched once on mount, then the SDK's
+// resume reconnects to a live turn. A reply that completes between
 // those two operations makes the reconnect answer 204 — and the SDK
 // leaves the stale snapshot standing, hiding a reply that is durably
-// stored. The network edge (api.ts + the transport) is faked at
-// globalThis.fetch, with the reconnect's 204 held back so the test owns
-// the ordering that is the bug: history snapshot → turn completes →
-// idle reconnect.
+// stored. The reconnect's 204 is held back so the test owns the
+// ordering that is the bug: history snapshot → turn completes → idle
+// reconnect.
 describe("ChatView reload window (issue #79)", () => {
 	const dom = mountDom();
 
@@ -254,8 +250,8 @@ describe("ChatView reload window (issue #79)", () => {
 	});
 
 	test("a reply that completes between history fetch and reconnect becomes visible", async () => {
-		// The durable store: one user message at snapshot time; the answer
-		// lands before the reconnect is answered.
+		// The durable store: the answer lands before the reconnect is
+		// answered.
 		let stored: UIMessage[] = [userMsg("u1", "run the thing")];
 		let historyFetches = 0;
 		let reconnects = 0;
@@ -315,12 +311,11 @@ describe("ChatView reload window (issue #79)", () => {
 			answerIdle();
 			await idle;
 		});
-		// Reconciliation fetch + merge flush.
 		await act(async () => {});
 		await act(async () => {});
 
 		expect(dom.container.textContent).toContain("COMPLETED ANSWER");
-		// The mechanism, pinned: one snapshot, one reconnect, one reconcile.
+		// Pinned: one snapshot, one reconnect, one reconcile.
 		expect(historyFetches).toBe(2);
 		expect(reconnects).toBe(1);
 	});
@@ -484,11 +479,11 @@ describe("ChatView reload window (issue #79)", () => {
 	});
 });
 
-// A send while a turn runs steers it (DESIGN.md → Turn; app-channel
-// admits the second POST onto the same lane). The client drops its
-// stream reader first so the new POST's join replay is the only writer
-// — the wire's start chunk carries the same assistant id, so the reply
-// is rebuilt in place, not forked.
+// A send while a turn runs steers it — app-channel admits the second
+// POST onto the same lane. The client drops its stream reader first
+// so the new POST's join replay is the only writer — the wire's start
+// chunk carries the same assistant id, so the reply is rebuilt in
+// place, not forked.
 describe("ChatView mid-turn steer", () => {
 	const dom = mountDom();
 
@@ -582,7 +577,7 @@ describe("ChatView mid-turn steer", () => {
 				await new Promise((resolve) => setTimeout(resolve, 15));
 			});
 		}
-		// Busy: Stop and Send share the composer — Send waits for content.
+		// Stop and Send share the composer — Send waits for content.
 		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
 		const sendBtn = dom.container.querySelector<HTMLButtonElement>(".send-btn");
 		expect(sendBtn).not.toBeNull();
@@ -590,7 +585,7 @@ describe("ChatView mid-turn steer", () => {
 		const ta = dom.container.querySelector("form.composer textarea")!;
 		await act(async () => {
 			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment (the App.test.tsx typeInto ruling).
+			// this environment.
 			(ta as HTMLElement).focus();
 			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
 				ta,
@@ -652,9 +647,8 @@ describe("contextCount", () => {
 	});
 });
 
-// A failed context read has no numbers and the popover won't open —
-// the "failed" class is what lets the narrow-screen ring carry it
-// (the label is display:none there).
+// A failed context read has no numbers — the "failed" class lets the
+// narrow-screen ring carry it (the label is display:none there).
 describe("ContextGauge", () => {
 	const dom = mountDom();
 
@@ -678,10 +672,9 @@ describe("ContextGauge", () => {
 	});
 });
 
-// The composer's note picker is a floating panel — same contract as the
-// context gauge's popover: an outside press or Escape puts it away, a
-// press on the panel or its opener does not (the opener's own click
-// does the toggling).
+// The note picker is a floating panel — an outside press or Escape
+// puts it away; a press on the panel or its opener does not (the
+// opener's own click does the toggling).
 describe("NotePicker dismissal", () => {
 	const dom = mountDom();
 
@@ -730,7 +723,7 @@ describe("NotePicker dismissal", () => {
 		});
 		expect(pick()).not.toBeNull();
 
-		// A press inside the panel is not outside.
+		// Inside the panel is not outside.
 		act(() =>
 			pick()!
 				.querySelector("input")!
@@ -738,7 +731,7 @@ describe("NotePicker dismissal", () => {
 		);
 		expect(pick()).not.toBeNull();
 
-		// The opener's own press is exempt — its click does the toggling.
+		// The opener's press is exempt — its click does the toggling.
 		act(() =>
 			opener()!.dispatchEvent(
 				new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event,
@@ -751,7 +744,7 @@ describe("NotePicker dismissal", () => {
 		);
 		expect(pick()).toBeNull();
 
-		// Reopen, then Escape puts it away too.
+		// Escape puts it away too.
 		await act(async () => {
 			opener()!.click();
 		});
@@ -765,8 +758,8 @@ describe("NotePicker dismissal", () => {
 	});
 });
 
-// The reconcile merge behind #79's fix — union by id, nothing dropped:
-// store arrivals land, a live local tail survives.
+// The reconcile merge — union by id, nothing dropped: store arrivals
+// land, a live local tail survives.
 describe("mergeTranscript", () => {
 	const msg = (id: string, role: "user" | "assistant"): UIMessage => ({
 		id,
@@ -798,8 +791,8 @@ describe("mergeTranscript", () => {
 		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
 	});
 
-	// #117: the durable history owns the interleaving of every message
-	// it holds — the previous answer sits between its question and the
+	// The durable history owns the interleaving of every message it
+	// holds — the previous answer sits between its question and the
 	// next one — and only the genuinely local tail (here the streaming
 	// answer the store hasn't seen) appends, after it.
 	test("a streaming tail appends after the durable interleaving (#117)", () => {
@@ -825,11 +818,9 @@ describe("appendQuote", () => {
 	});
 });
 
-// A failed attachment download is a boundary-safe error response — the
-// fetch rejects on HTTP (!ok) or network failure, and the chip shows
-// the message (a missing file or expired credential otherwise reads
-// as a dead button). Mounted with happy-dom like Composer.test.tsx;
-// the attachment GET is faked at globalThis.fetch.
+// A failed download shows its message — a missing file or expired
+// credential otherwise reads as a dead button. The attachment GET is
+// faked at globalThis.fetch.
 describe("AttachmentChip download failure", () => {
 	const dom = mountDom();
 
@@ -914,8 +905,7 @@ describe("MessageParts note-fence affordance (happy-dom)", () => {
 });
 
 // Tool calls and thoughts fold into one Worked run per contiguous
-// stretch — a thought between two calls must not shred the transcript
-// into a column of one-line rows.
+// stretch — a thought between two calls must not shred it.
 describe("MessageParts activity folding (happy-dom)", () => {
 	const dom = mountDom();
 
@@ -1002,9 +992,9 @@ describe("MessageParts activity folding (happy-dom)", () => {
 	});
 });
 
-// Operator-sent fences over 20 lines clip to a preview with a
-// show-all tail — the user branch sets clipFences; model output
-// renders whole. The toggle itself lives in markdown.tsx's CodeBlock.
+// Operator-sent fences over 20 lines clip to a preview — the user
+// branch sets clipFences; model output renders whole. The toggle
+// lives in markdown.tsx's CodeBlock.
 describe("MessageParts fence clipping (happy-dom)", () => {
 	const dom = mountDom();
 

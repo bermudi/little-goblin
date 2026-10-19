@@ -1,18 +1,13 @@
-// Browser MediaRecorder uploads (PWA/mini-app voice notes) are
-// unbounded streams: the muxer can't know the length, so the segment
-// header carries no Duration element — and Chromium additionally
-// stamps packets on the recording device's monotonic clock, so a 14 s
-// note lands at pts ≈ uptime and players report ~10 h with dead
-// seeking. The repair is the same rebuild the segment pass runs
-// (design/asr.md): decode once, re-stamp from sample count, re-encode.
-// It runs at upload so the stored artifact — read-back, model inline,
-// transcription, human playback — is honest before any ref exists.
+// Browser MediaRecorder uploads are unbounded streams — no Duration
+// element, and Chromium stamps packets on the device's monotonic clock,
+// so a 14 s note lands at pts ≈ uptime. The repair decodes, re-stamps
+// from sample count, re-encodes; it runs at upload so the stored
+// artifact is honest before any ref exists.
 //
 // Detection is by content, never the declared type: Bun's formData
 // re-types multipart parts by filename extension, so a webm voice
-// note arrives claiming video/webm regardless of what the browser
-// sent. ffprobe answers the real questions — duration present,
-// audio-only, a container family where the missing element matters.
+// note arrives claiming video/webm regardless of what the browser sent.
+// ffprobe answers duration, audio-only, container family.
 
 import { rename, stat, unlink } from "node:fs/promises";
 import { z } from "zod";

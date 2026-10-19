@@ -168,7 +168,6 @@ test("destination changes cannot redirect queued personal content", async () => 
 
 test("worker outcome classification: transport failure vs advance (feeds the outage tracker)", async () => {
 	const outcomes: { ok: boolean; transport: boolean }[] = [];
-	// Dead port: submit fails as a retryable transport error.
 	const dead = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 	const deadStore = storeAt(database());
 	const deadId = enqueue(deadStore, dead);
@@ -179,7 +178,6 @@ test("worker outcome classification: transport failure vs advance (feeds the out
 	expect(outcomes).toEqual([{ ok: false, transport: true }]);
 	expect(deadStore.memoryQueue.get(deadId)?.state).toBe("pending");
 
-	// Live service: submit acknowledged — an advance, not an outage.
 	let opId = "";
 	const client = service(() =>
 		Response.json({
@@ -272,7 +270,7 @@ test("slow HTTP failures do not consume the backoff before it begins", async () 
 	let calls = 0;
 	const client = service(() => {
 		calls++;
-		now += 30_000; // Advance the test clock while the request is in flight.
+		now += 30_000;
 		return new Response("slow outage", { status: 503 });
 	});
 	const store = storeAt(database());
@@ -293,16 +291,11 @@ test("due pending submissions outrank polling older submitted operations", () =>
 	const firstId = store.memoryQueue.enqueue(client.target, doc);
 	const first = store.memoryQueue.get(firstId);
 	if (!first) throw new Error("expected queued memory");
-	// Older rowid, acknowledged, due — its next step is a status poll.
 	store.memoryQueue.update(first, "submitted", 0, null);
 	const secondId = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
 	expect(store.memoryQueue.next(client.target, Date.now())?.operation_id).toBe(secondId);
 });
 
-// The 2026-09-25 incident: hand-requeuing by flipping state back to
-// pending could never drain — the stale operation_id is a dead remote op
-// server-side, so the replay just re-read its failed status. A retry
-// must reach the wire as a brand-new operation.
 test("retryBlocked mints a fresh operation id and the replay completes", async () => {
 	let remoteStatus = "failed";
 	const client = service(async (request) => {
@@ -324,12 +317,11 @@ test("retryBlocked mints a fresh operation id and the replay completes", async (
 	const firstId = enqueue(store, client);
 	let now = Date.now();
 	const worker = new MemoryQueueWorker(store.memoryQueue, client, () => now);
-	await worker.tick(); // submit acknowledged
+	await worker.tick();
 	now += 5_000;
-	await worker.tick(); // poll: remote says failed → blocked
+	await worker.tick();
 	expect(store.memoryQueue.get(firstId)?.state).toBe("blocked");
 	expect(store.memoryQueue.retryBlocked(client.target)).toBe(1);
-	// In-place UPDATE under a new primary key: the old operation id is gone.
 	expect(store.memoryQueue.get(firstId)).toBeNull();
 	const requeued = store.memoryQueue.next(client.target, now);
 	if (!requeued) throw new Error("expected requeued memory");
@@ -338,10 +330,10 @@ test("retryBlocked mints a fresh operation id and the replay completes", async (
 	expect(requeued.state).toBe("pending");
 	expect(requeued.attempts).toBe(0);
 	expect(requeued.next_attempt).toBe(0);
-	await worker.tick(); // fresh submit under the new operation id
+	await worker.tick();
 	now += 5_000;
 	remoteStatus = "completed";
-	await worker.tick(); // poll completes the new operation
+	await worker.tick();
 	expect(store.memoryQueue.get(requeued.operation_id)?.state).toBe("completed");
 	expect(store.memoryQueue.next(client.target, now + 5_000)).toBeNull();
 });
@@ -363,10 +355,7 @@ test("dismissed rows stay for audit: never due, counted apart, forgotten with th
 		dismissed: 1,
 		deleting: 0,
 	});
-	// Dismissed is a terminal operator verdict — next() never offers it again.
 	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
-	// /forget parks the dismissed row, then releases it once its bank
-	// confirms — no dismissed row lingers after a completed forget.
 	expect(store.memoryQueue.markDocumentDeleting(doc.id)).toBe(1);
 	expect(store.memoryQueue.counts(client.target).deleting).toBe(1);
 	expect(store.memoryQueue.confirmDeleted(doc.id, client.target)).toBe(1);
@@ -388,11 +377,9 @@ test("parking a blocked document ends review surfaces but keeps the retry map", 
 	);
 	expect(store.memoryQueue.markDocumentDeleting(doc.id)).toBe(1);
 	expect(store.memoryQueue.get(id)?.state).toBe("deleting");
-	// Parked: never due, never re-offered as review or retry.
 	expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 	expect(store.memoryQueue.blockedDetail(client.target)).toEqual([]);
 	expect(store.memoryQueue.retryBlocked(client.target)).toBe(0);
-	// Still the destination map a forget retry needs (#113).
 	expect(store.memoryQueue.documentDestinations(doc.id)).toEqual([
 		{ target: client.target, inflight: [] },
 	]);
@@ -406,15 +393,13 @@ test("noteBlocked latches once per document", () => {
 	const queue = store.memoryQueue;
 	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(true);
 	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(false);
-	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(false); // still latched
+	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(false);
 	expect(queue.noteBlocked("exchange/dm:1/2/b")).toBe(true);
 });
 
 test("the one-notice latch survives a restart", () => {
 	const path = database();
 	expect(storeAt(path).memoryQueue.noteBlocked("exchange/dm:1/1/a")).toBe(true);
-	// A fresh store over the same disk state = a process restart: the
-	// operator must not be told twice about the same document.
 	expect(storeAt(path).memoryQueue.noteBlocked("exchange/dm:1/1/a")).toBe(false);
 });
 
@@ -427,7 +412,7 @@ test("blockedDetail abbreviates documents and caps errors for chat surfaces", ()
 	store.memoryQueue.update(item, "blocked", 0, "x".repeat(300));
 	const detail = store.memoryQueue.blockedDetail(client.target);
 	expect(detail).toHaveLength(1);
-	expect(detail[0]?.document).toBe("a7"); // last path segment
+	expect(detail[0]?.document).toBe("a7");
 	expect(detail[0]?.error?.length).toBe(120);
 	expect(detail[0]?.attempts).toBe(1);
 });
@@ -439,8 +424,6 @@ test("deletingCount spans every destination, separately from the current bank", 
 	store.memoryQueue.enqueue(current.target, { ...doc, id: "exchange-1" });
 	store.memoryQueue.enqueue(old.target, { ...doc, id: "exchange-2" });
 	expect(store.memoryQueue.deletingCount()).toBe(0);
-	// A failed old-bank delete leaves its rows parked while the current
-	// bank holds nothing parked — the per-target counts read zero.
 	store.memoryQueue.markDocumentDeleting("exchange-2");
 	expect(store.memoryQueue.counts(current.target).deleting).toBe(0);
 	expect(store.memoryQueue.deletingCount()).toBe(1);
@@ -450,10 +433,6 @@ test("deletingCount spans every destination, separately from the current bank", 
 	expect(store.memoryQueue.deletingCount()).toBe(1);
 });
 
-// The cancel race: "/memory off" (and a project switch-off, a
-// conversation delete) purges pending rows while the worker may have
-// one on the wire. Deleting that row strands the document remotely with
-// nothing local to forget it by; the queue defers the cancel instead.
 test("a cancel during an in-flight submit keeps the accepted row tracked", async () => {
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => (release = resolve));
@@ -475,18 +454,15 @@ test("a cancel during an in-flight submit keeps the accepted row tracked", async
 	});
 	const store = storeAt(database());
 	const inflightId = enqueue(store, client);
-	// A second pending row for the same topic — the ordinary purge.
 	store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
 	const worker = new MemoryQueueWorker(store.memoryQueue, client);
 	const tick = worker.tick();
 	await wired;
-	// The operator excludes the topic while the request is on the wire.
 	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
 	expect(store.memoryQueue.get(inflightId)?.state).toBe("pending");
 	release();
 	expect(await tick).toBe(true);
 	expect(accepted).toBe(1);
-	// Accepted remotely → tracked through completion, forgettable by id.
 	expect(store.memoryQueue.get(inflightId)?.state).toBe("submitted");
 	expect(store.memoryQueue.documentDestinations(doc.id)).toEqual([
 		{ target: client.target, inflight: [{ operationId: inflightId, state: "submitted" }] },
@@ -514,16 +490,11 @@ test("a cancel during an in-flight submit that fails unsent finishes the purge",
 	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(0);
 	release();
 	expect(await tick).toBe(true);
-	// Retryable failure → the row would come due again behind the
-	// exclusion; the deferred cancel drops it instead.
 	expect(store.memoryQueue.get(inflightId)).toBeNull();
 	expect(await worker.tick()).toBe(false);
 	expect(requests).toBe(1);
 });
 
-// A row the decoder rejects must not wedge the drain at that row forever
-// (every tick: same ORDER BY, same row, same throw) nor turn every
-// cancelConversation into a throw after the exclusion already applied.
 test("an undecodable row is quarantined as blocked, not a permanent drain stall", async () => {
 	let opId = "";
 	const client = service(async (request) => {
@@ -538,8 +509,6 @@ test("an undecodable row is quarantined as blocked, not a permanent drain stall"
 		});
 	});
 	const store = storeAt(database());
-	// An earlier rowid than the good row: schema drift or a hand edit left
-	// a payload the document schema rejects.
 	store.db.run(
 		"INSERT INTO memory_outbox (operation_id, target, document_id, payload) VALUES (?, ?, ?, ?)",
 		["7f1d2e3c-0000-4000-8000-000000000001", client.target, "poison", '{"not":"a document"}'],
@@ -554,8 +523,6 @@ test("an undecodable row is quarantined as blocked, not a permanent drain stall"
 	expect(store.memoryQueue.blockedDetail(client.target)).toEqual([
 		{ document: "poison", error: expect.stringContaining("undecodable row"), attempts: 0 },
 	]);
-	// The poison row sits in another topic's purge path too — it must not
-	// stop /memory off from cancelling this topic's rows.
 	store.db.run(
 		"INSERT INTO memory_outbox (operation_id, target, document_id, payload) VALUES (?, ?, ?, ?)",
 		["7f1d2e3c-0000-4000-8000-000000000002", client.target, "poison-2", "{not json"],

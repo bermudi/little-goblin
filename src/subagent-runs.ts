@@ -1,12 +1,7 @@
-// The subagent_runs table — goblin's routing half of a run
-// (design/subagents.md → Run state is rows). Pi Durable's own storage
-// holds transcripts; this table holds what survives it: origin,
-// status, the Pi conversation/submission ids needed to reacquire a
-// run after restart, durable input intent, terminal outcome, export
-// results, and whether the settle notice still owes a wake.
-//
-// Additive like sandboxes/desktops: CREATE TABLE IF NOT EXISTS on the
-// shared goblin.sqlite, own file because nothing else reads it.
+// Pi Durable's own storage holds transcripts; this table holds what
+// survives it — origin, status, the Pi ids needed to reacquire a run
+// after restart, durable input intent, outcome, exports, and whether
+// the settle notice still owes a wake.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -21,24 +16,19 @@ export const MAX_MESSAGE_CHARS = 16_000;
 export const MAX_RESULT_CHARS = 16_000;
 export const MAX_INPUT_FILES = 20;
 
-/** How the persisted input intent reached the row — the admission
- *  path differs: initial submits the task, resume reopens a parked
- *  run, steer rides a live conversation. */
+// How the persisted input intent reached the row — the admission path
+// differs: initial submits the task, resume reopens a parked run, steer
+// rides a live conversation.
 export type InputMode = "initial" | "resume" | "steer";
 
-/** One completed (or refused) export step — deterministic so a
- *  restart reuses the artifact instead of recopying the box file. */
+// Deterministic per step so a restart reuses the artifact instead of
+// recopying the box file.
 export type ExportProgress = Record<string, { rel: string } | { error: string }>;
 
-/** A verdict on a crash-ambiguous call (design/subagents.md) — the
- *  backward-compatible disk schema for pending mirrors and Pi decided
- *  leases: rows written before evidence, reasoning and provenance were
- *  recorded omit them, so those fields stay optional here. New writes
- *  always carry them; decidedBy/outcome are owner-stamped constants,
- *  never caller-supplied. `record-result` supplies the call's declared
- *  result — the tool never re-executes and the model sees it labeled
- *  unverified; `authorize-retry` re-executes the call exactly once
- *  more; `abandon` terminates the call and the run. */
+// Backward-compatible disk schema for pending mirrors and Pi decided
+// leases: rows written before evidence/reasoning/provenance existed omit
+// them, so those fields stay optional — new writes always carry them, and
+// decidedBy/outcome are owner-stamped, never caller-supplied.
 export const approvalDecisionSchema = z.object({
 	kind: z.union([z.literal("record-result"), z.literal("authorize-retry"), z.literal("abandon")]),
 	note: z.string().max(MAX_MESSAGE_CHARS).optional(),
@@ -90,19 +80,17 @@ export function crashDecisionNotice(records: readonly SubagentCrashDecision[]): 
 }
 
 const pendingApprovalSchema = z.object({
-	/** The durable Pi tool-task id — the lease key the gate re-parks on. */
 	piTaskId: z.string(),
 	callId: z.string(),
 	tool: z.string(),
 	args: z.unknown(),
 	attempts: z.number(),
-	/** The recorded verdict — decide() persists it on the row BEFORE the
-	 *  scheduler's grant consumes it, so a crash in between can't lose
-	 *  the decision. Absent = no verdict recorded yet. */
+	// The recorded verdict — decide() persists it on the row BEFORE the
+	// scheduler's grant consumes it, so a crash in between can't lose it.
 	decision: approvalDecisionSchema.optional(),
 });
-/** The durable mirror of a parked crash-approval: which tool call the
- *  run is parked on (design/subagents.md → crash approval). */
+// The durable mirror of a parked crash-approval: which tool call the run
+// is parked on.
 export type PendingApproval = z.infer<typeof pendingApprovalSchema>;
 const parsePendingApproval = (s: string): PendingApproval =>
 	pendingApprovalSchema.parse(JSON.parse(s));
@@ -110,53 +98,45 @@ const parsePendingApproval = (s: string): PendingApproval =>
 export interface SubagentRun {
 	id: number;
 	kind: SubagentKind;
-	/** The conversation that owns this run — status/send/stop are
-	 *  refused for any other. */
+	// The owning conversation — status/send/stop are refused for any other.
 	conversationId: string;
-	/** The origin's working dir, captured at start — imports and the
-	 *  export landing zone resolve against it. */
+	// The origin's working dir, captured at start — imports and the export
+	// landing zone resolve against it.
 	workspace: string;
-	/** Computer runs only: the desktop name they bind. */
 	desktop: string | null;
 	piConversationId: string | null;
 	piSubmissionId: string | null;
 	task: string;
-	/** Workspace paths requested at start (as given), imported to inbox. */
 	files: string[];
-	/** Absolute in-box paths of the imported files. */
 	inbox: string[];
-	/** The native toolCallId for admission idempotence. */
+	// The native toolCallId for admission idempotence.
 	requestId: string | null;
-	/** Monotonic input counter — `subagent:<id>:input:<rev>` is the
-	 *  deterministic Pi requestId so a crash-and-resubmit is a no-op. */
+	// `subagent:<id>:input:<rev>` is the deterministic Pi requestId, so a
+	// crash-and-resubmit is a no-op.
 	inputRev: number;
-	/** Input text persisted before admit; non-null = in flight. */
+	// Input text persisted before admit; non-null = in flight.
 	inputIntent: string | null;
-	/** Which admission the persisted intent belongs to. */
 	inputMode: InputMode | null;
 	status: SubagentStatus;
-	/** Stop intent lands BEFORE the Pi abort — a late settlement or a
-	 *  mid-admission step can never overwrite it. */
+	// Stop intent lands BEFORE the Pi abort — a late settlement or a
+	// mid-admission step can never overwrite it.
 	stopRequested: boolean;
 	result: string | null;
 	question: string | null;
 	error: string | null;
 	exportedFiles: string[];
 	exportErrors: string[];
-	/** Per-source export outcomes, persisted as each file lands. */
 	exportProgress: ExportProgress;
 	finalScreenshot: string | null;
-	/** Latest destructive sandbox lifecycle note the run hasn't seen —
-	 *  replaced, never cleared before a tool result carries it. */
+	// Replaced, never cleared before a tool result carries it — a clear-
+	// before-send gap would lose a destructive-lifecycle note.
 	lifecycleNote: string | null;
-	/** The parked crash-approval this run waits on — non-null only
-	 *  while `needs_input` was set by the gate, never by ask_operator.
-	 *  `send` refuses; only `decide` resolves it. */
+	// Non-null only while `needs_input` was set by the approval gate,
+	// never by ask_operator — `send` refuses; only `decide` resolves it.
 	pendingApproval: PendingApproval | null;
 	crashDecisions: SubagentCrashDecision[];
-	/** A settle/question notice still owes a wake (retry on scan). */
 	noticePending: boolean;
-	/** Bumped per notice so a stale ack can't clear a newer one. */
+	// Bumped per notice so a stale ack can't clear a newer one.
 	noticeRev: number;
 	createdAt: number;
 	updatedAt: number;
@@ -273,32 +253,26 @@ export interface SubagentRuns {
 		requestId?: string | null;
 	}): SubagentRun;
 	get(id: number): SubagentRun | null;
-	/** Sparse update; updated_at always bumps. */
+	// Sparse update; updated_at always bumps.
 	update(id: number, patch: SubagentRunPatch): SubagentRun;
 	listFor(conversationId: string): SubagentRun[];
-	/** The sandbox lease the owner exposes to sandboxes.ts: a live
-	 *  worker run on this conversation (queued/running/needs_input). */
+	// The sandbox lease the owner exposes to sandboxes.ts: a live worker
+	// run on this conversation.
 	workerLease(conversationId: string): { id: number; status: SubagentStatus } | null;
-	/** Every row that outlives a process restart. */
+	// Every row that outlives a process restart.
 	unfinished(): SubagentRun[];
-	/** Rows still owing a settle/question notice. */
 	pendingNotices(): SubagentRun[];
-	/** Rows whose stop intent may still owe a Pi abort/join — stop
-	 *  is confirmed stopped only after the abort lands. */
+	// Stop is confirmed stopped only after the Pi abort lands; until then
+	// the stop intent may still owe an abort/join.
 	pendingStops(): SubagentRun[];
-	/** Clear the pending flag only while the row's noticeRev is still
-	 *  `rev` — a reentrant notice can't let an older ack clear a newer
-	 *  pending. Returns false when the rev moved on. */
+	// Clears only while the row's noticeRev is still `rev` — a reentrant
+	// notice can't let an older ack clear a newer pending.
 	ackNotice(id: number, rev: number): boolean;
-	/** Merge one export outcome into the persisted progress map. */
 	recordExport(
 		id: number,
 		source: string,
 		outcome: { rel: string } | { error: string },
 	): SubagentRun;
-	/** Persist a destructive lifecycle note onto the conversation's
-	 *  live worker run — repeat-until-replaced delivery, never a
-	 *  clear-before-send gap (design/subagents.md). */
 	noteLifecycle(conversationId: string, note: string): void;
 	byPiConversation(piConversationId: string): SubagentRun | null;
 	close(): void;

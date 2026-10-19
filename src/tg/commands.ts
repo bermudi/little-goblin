@@ -1,13 +1,3 @@
-// Commands are deliberately few: /voice /memory /forget /stop /compact
-// plus DM-only /new /back (handled by intake before settings routing),
-// plus the crash-recovery verbs /resume /decide /abandon
-// (design/runtime-turn.md → Resuming an interrupted turn).
-// — plus /start, the one non-settings command: a canned greeting for the
-// message every Telegram client fires automatically on first open.
-// /model and /think are retired — the mini app owns model and thinking
-// settings. Topics still own conversation lifecycle in groups. Every
-// settings change bumps the conversation epoch, fencing in-flight turns.
-
 import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
 import { type ConfigRef } from "../config.ts";
@@ -24,27 +14,12 @@ import { type ForgetItem, ForgetListings, renderNumberedListing } from "./forget
 
 export interface CommandMemoryDeps {
 	client: HindsightClient;
-	// Reconstruct the client owning a queue target — destination history
-	// for previous banks after a config change (#87); wired from index.ts.
-	// Absent = foreign-target forgetting refuses (never a foreign poll).
 	clientForTarget?: (target: string) => HindsightClient | null;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
-	// The /memory status reads queue.deletingCount() — outstanding forget
-	// work across all destinations — never the boot target's counts: parked
-	// rows bind to the bank that owns them, so a failed old-bank delete
-	// would vanish from status after a destination change.
-	// Quiesce the retention worker around /forget delete (see
-	// MemoryWorker.withWorkerPaused) — wired from the boot worker in
-	// index.ts; tests inject a passthrough when no worker runs.
 	withWorkerPaused: MemoryWorker["withWorkerPaused"];
 	lastRecallOk(): boolean | null;
-	// ISO timestamp of the latest recall outcome (set alongside
-	// lastRecallOk) — null when no recall has happened yet.
 	lastRecallAt(): string | null;
-	// /forget delete's settle-wait timing. Production omits it and gets
-	// the defaults; tests inject small values instead of sleeping the
-	// real budget (same ruling as MemoryQueueWorker's injectable clock).
 	settleTiming?: { pollMs: number; budgetMs: number };
 }
 
@@ -53,13 +28,8 @@ export interface CommandDeps {
 	configRef: ConfigRef;
 	store: ConversationStore;
 	runtime: Runtime;
-	// This bot's own username — commands can be addressed /cmd@botname.
 	botUsername: string;
-	// Long-term memory wiring — absent = memory not configured.
 	memory?: CommandMemoryDeps;
-	// Crash-recovery verbs — absent = the turn journal is not wired.
-	// Resolved per tap — the ops are built after the bot starts, so a
-	// verb landing in the boot window reads undefined, not a TDZ throw.
 	resumeOps?: () => ResumeOps | undefined;
 }
 
@@ -83,8 +53,6 @@ function target(conv: Conversation) {
 	};
 }
 
-// Local wall clock — the operator is the admin and /memory status is
-// read by them, on this box (same ruling as cron's local timezone).
 function clockHM(iso: string): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return "never";
@@ -92,8 +60,6 @@ function clockHM(iso: string): string {
 }
 
 function reply(deps: CommandDeps, conv: Conversation, text: string): void {
-	// Same 30s send budget as every sibling call — a wedged bot-api
-	// fails here instead of hanging grammy's client-wide 500s default.
 	withTimeout(
 		deps.api.sendMessage(conv.chatId, text, target(conv)),
 		"sendMessage (command reply)",
@@ -102,12 +68,6 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	});
 }
 
-// Telegram rejects any message over 4096 characters — a recovery
-// listing with enough interrupted runs or parallel ambiguous calls
-// would fail WHOLE, taking every decision number with it. Split on
-// line boundaries under the cap; the numbering lives on the lines
-// themselves, so a split never renumbers. Margin absorbs entity
-// overhead differences between here and Telegram's counting.
 const REPLY_CHUNK_LIMIT = 4000;
 
 function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): void {
@@ -128,10 +88,6 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 	flush();
 }
 
-// /forget's numbered listings live in the store's own SQLite file — one
-// ForgetListings per database, built on first use. Not a CommandDeps
-// field: /forget is the only consumer, and the cache is command UX, not
-// memory-domain wiring.
 const forgetListingsByDb = new WeakMap<Database, ForgetListings>();
 function listingsFor(db: Database): ForgetListings {
 	let listings = forgetListingsByDb.get(db);
@@ -142,8 +98,6 @@ function listingsFor(db: Database): ForgetListings {
 	return listings;
 }
 
-// Apply a settings change: patch meta + bump epoch (fences in-flight
-// turns) atomically.
 function apply(
 	deps: CommandDeps,
 	conv: Conversation,
@@ -152,12 +106,9 @@ function apply(
 	deps.store.applySettings(conv.id, patch);
 }
 
-// Returns true if the text was a command and got handled.
 export function handleCommand(deps: CommandDeps, conv: Conversation, text: string): boolean {
 	const parsed = parseCommand(text, deps.botUsername);
 	if (parsed === null) return false;
-	// "/stop@otherbot" is not for this bot — consumed silently rather than
-	// fed to the model as a user message.
 	if (!parsed.forThisBot) {
 		return true;
 	}
@@ -165,9 +116,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 
 	switch (cmd) {
 		case "/start": {
-			// Sent automatically by the client on first open — answering it
-			// with a model turn wastes the very first interaction; a canned
-			// reply is the whole job. A deep-link payload is ignored.
 			reply(
 				deps,
 				conv,
@@ -189,10 +137,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 		}
 
 		case "/compact": {
-			// The manual lever (DESIGN.md, Compaction) — the same compaction
-			// the 75% auto-trigger runs, forced now. Serialized through the
-			// conversation's lane: a running turn completes first, so the cut
-			// never orphans that exchange's response from its question.
 			void (async () => {
 				try {
 					const outcome = await deps.runtime.compact(conv);
@@ -214,8 +158,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 		}
 
 		case "/resume": {
-			// Bare /resume lists this conversation's interrupted runs and
-			// their ambiguous calls; /resume <runId> admits the fresh turn.
 			const ops = deps.resumeOps?.();
 			if (ops === undefined) {
 				reply(deps, conv, "turn resume is not wired");
@@ -234,8 +176,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 						`interrupted run ${id} — started ${new Date(run.startedMs).toISOString()}`,
 						`  ${run.calls.completed} completed · ${run.calls.dispatched} ambiguous · ${run.calls.resolved} decided · ${run.calls.planned} planned · ${run.calls.failed} failed`,
 					);
-					// /decide's ordinal namespace: decided rows keep their slot
-					// so a number printed earlier still names the same call.
 					const numbered = numberedCalls(calls);
 					for (const [i, c] of numbered.entries()) {
 						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
@@ -262,8 +202,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			}
 			if (outcome.kind === "needs-decisions") {
 				const id = outcome.runId.slice(0, 8);
-				// Same numbering the bare listing prints — decided rows keep
-				// their slot and are skipped over here.
 				const lines = [
 					"undecided tool calls block resume:",
 					...outcome.numbered.flatMap((c, i) => {
@@ -352,18 +290,12 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				reply(deps, conv, "memory is not configured — see docs/memory.md");
 				return true;
 			}
-			// Sandbox lanes are memory-excluded by class (design/telegram.md
-			// → Roles and permissions), and the whole surface is operator
-			// data: status reads the bank's queue, retry/dismiss manage its
-			// blocked rows, and on would strip the lane's own fence.
 			if (conv.persona === "guest") {
 				reply(deps, conv, "memory is off for this lane by class — it is not a setting here");
 				return true;
 			}
 			if (arg === "off") {
 				apply(deps, conv, { memoryExcluded: true });
-				// Pending rows are purged; operations already submitted
-				// remain tracked until Hindsight reaches a terminal state.
 				const cancelled = mem.queue.cancelConversation(conv.id);
 				log.info("memory excluded", { conversation: conv.id, cancelled });
 				reply(
@@ -380,7 +312,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				return true;
 			}
 			if (arg === "retry") {
-				// Fresh operation ids are the whole point — see MemoryQueue.retryBlocked.
 				const requeued = mem.queue.retryBlocked(mem.client.target);
 				log.info("memory blocked retentions requeued by operator", {
 					conversation: conv.id,
@@ -432,7 +363,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 						`  ${i + 1}. ${b.document} (${b.attempts} attempt${b.attempts === 1 ? "" : "s"}): ${b.error ?? "unknown error"}`,
 					);
 				}
-				// blockedDetail caps at 10 — the header count is the truth.
 				if (counts.blocked > status.blockedDetail.length) {
 					lines.push(
 						`  … and ${counts.blocked - status.blockedDetail.length} more (goblin.log has every id)`,
@@ -460,8 +390,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				reply(deps, conv, "memory is not configured — see docs/memory.md");
 				return true;
 			}
-			// The bank is shared — a sandbox lane must never list or
-			// delete the operator's documents (same class rule as /memory).
 			if (conv.persona === "guest") {
 				reply(deps, conv, "memory is off for this lane by class — nothing to forget here");
 				return true;
@@ -488,10 +416,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					);
 					return true;
 				}
-				// A pure integer addresses the listing this conversation last
-				// got from /forget <query> — no full document ids on a phone.
-				// Fail-closed: expired, missing, or out of range refuses
-				// outright; a stale number must never delete something unseen.
 				let id = ref;
 				let preview: string | null = null;
 				if (/^\d+$/.test(ref)) {
@@ -508,17 +432,8 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					preview = picked.preview;
 					log.info("forget listing ref resolved", { conversation: conv.id, ref, document: id });
 				}
-				// Resolve-then-confirm already happened: the operator ran
-				// /forget <query>, saw this id, and typed delete. The protocol
-				// itself (quiesce the retention worker, settle in-flight
-				// retention, suppress, park outbox rows, delete, redact) lives in
-				// memory/forget.ts — shared with the mini app's forget button.
-				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
 				void (async () => {
 					try {
-						// A turn may already hold prior recall or be awaiting a
-						// fresh one. Revoke its epoch before redacting snapshots:
-						// a late recall must not reinsert the forgotten source.
 						deps.runtime.stop(conv.id);
 						const result = await forgetDocument(mem, id, {
 							channel: "telegram",
@@ -582,8 +497,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 						preview: s.snippet,
 						date: s.date,
 					}));
-					// The listing becomes this conversation's pick-list: numbers
-					// address it for the next 10 minutes (/forget delete <n>).
 					listingsFor(deps.store.db).save(conv.id, items);
 					reply(
 						deps,
@@ -606,10 +519,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 	return false;
 }
 
-// The settings surface Telegram advertises — registered via
-// setMyCommands at boot so autocomplete shows exactly what works.
-// COMMAND_RE derives from the registered DM list plus HIDDEN_COMMANDS.
-// Groups receive only COMMANDS; the private scope adds navigation.
 export const COMMANDS = [
 	{ command: "voice", description: "toggle voice-note replies" },
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
@@ -627,8 +536,6 @@ export const DM_COMMANDS = [
 	...COMMANDS,
 ] as const;
 
-// Handled but not advertised: /start is the client's automatic opener,
-// not an operator command — it stays out of the command menu.
 const HIDDEN_COMMANDS = ["start"] as const;
 
 export const COMMAND_RE = new RegExp(

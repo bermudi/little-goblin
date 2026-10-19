@@ -1,8 +1,3 @@
-// The program tool's contract: cron validates at the boundary, new
-// programs are pinned to the conversation the tool call runs in (the
-// model never passes chat ids), and every action round-trips through
-// the store the scheduler reads.
-
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,9 +29,6 @@ function toolFor(
 		chatId,
 		threadId,
 		publicUrl: () => publicUrl,
-		// The real dep: DMs to each operator id, bare api.sendMessage —
-		// it goes to Telegram only and never writes the conversation
-		// store, so the token can't become model context next turn.
 		sendPrivate: makePrivateSender(
 			async (chatId, text) => {
 				if (opts.sendError) throw new Error(opts.sendError);
@@ -64,7 +56,6 @@ describe("program tool", () => {
 		expect(programInputSchema.safeParse({}).success).toBe(false);
 		expect(programInputSchema.safeParse({ action: "create" }).success).toBe(false);
 		expect(programInputSchema.safeParse({ action: "create", name: "x" }).success).toBe(false);
-		// null only clears on update — never on create.
 		expect(
 			programInputSchema.safeParse({ action: "create", name: "x", charter: "y", cron: null })
 				.success,
@@ -277,9 +268,6 @@ describe("program tool", () => {
 	});
 
 	test("a storage failure that merely sounds like a rule violation propagates", async () => {
-		// Identity routing, not message matching: the old check keyed on
-		// message prefixes, so a failure whose text happened to contain one
-		// was swallowed into a model-facing error result.
 		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
 		dirs.push(dir);
 		const store = openPrograms(join(dir, "goblin.sqlite"));
@@ -340,18 +328,12 @@ describe("program tool", () => {
 			op: "enable",
 		})) as { hook: string; url_sent: boolean };
 		expect(out).toEqual({ hook: "enabled", url_sent: true });
-
-		// The operator-facing text carries a URL whose token hashes to the
-		// stored hash — and it's the only place the token exists.
 		expect(sent).toHaveLength(1);
 		const url = sent[0]!.text.match(/https:\/\/goblin\.ts\.net\/hook\/(\S+)/);
 		expect(url).not.toBeNull();
 		const token = url![1]!;
 		expect(programs.get(created.program.id)!.hookHash).toBe(hookTokenHash(token));
 		expect(programs.findByHook(hookTokenHash(token))!.id).toBe(created.program.id);
-
-		// The token is in neither the tool result nor the conversation
-		// history (history is what the model reads next turn).
 		expect(JSON.stringify(out)).not.toContain(token);
 		for (const m of store.history("topic:-100:7")) {
 			expect(JSON.stringify(m)).not.toContain(token);
@@ -360,8 +342,6 @@ describe("program tool", () => {
 	});
 
 	test("hook enable DMs every operator, never the topic chat", async () => {
-		// The tool ran in a group topic (-100/7) — the credential must
-		// reach each operator's private chat and nothing else.
 		const { tool, sent } = toolFor(-100, 7, "https://g.ts.net", {
 			operatorIds: [42, 7],
 		});
@@ -398,8 +378,6 @@ describe("program tool", () => {
 		})) as { error: string };
 		expect(out.error).toContain("couldn't DM");
 		expect(out.error).toContain("rotate");
-		// The hook is live — rotate is the resend path — and nothing
-		// URL-shaped reached the model.
 		expect(programs.get(created.program.id)!.hookHash).not.toBeNull();
 		expect(JSON.stringify(out)).not.toContain("/hook/");
 		expect(sent).toEqual([]);
@@ -407,7 +385,6 @@ describe("program tool", () => {
 
 	test("hook rotate replaces the credential; disable on a cron-less program refuses", async () => {
 		const { tool, programs, sent } = toolFor(-100, 7, "https://g.ts.net");
-		// Hook-only program — the hook is its only trigger.
 		const created = (await exec(tool, {
 			action: "create",
 			name: "ci",
@@ -427,11 +404,8 @@ describe("program tool", () => {
 		expect(rotated).toEqual({ hook: "rotated", url_sent: true });
 		const newToken = sent[1]!.text.match(/\/hook\/(\S+)/)![1]!;
 		expect(newToken).not.toBe(oldToken);
-		// The old credential is dead at the store level.
 		expect(programs.findByHook(hookTokenHash(oldToken))).toBeNull();
 
-		// Disabling the only trigger refuses — the invariant holds at the
-		// tool boundary too.
 		const refused = (await exec(tool, {
 			action: "hook",
 			id: created.program.id,
@@ -442,7 +416,7 @@ describe("program tool", () => {
 	});
 
 	test("hook needs publicUrl — unset is an error, no row change", async () => {
-		const { tool, programs, sent } = toolFor(-100, 7); // no publicUrl
+		const { tool, programs, sent } = toolFor(-100, 7);
 		const created = (await exec(tool, {
 			action: "create",
 			name: "ci",

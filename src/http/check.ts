@@ -1,7 +1,3 @@
-// Loopback-only injection-check endpoint. Value imports (injection.ts,
-// system1.ts, log.ts) live here so http/mod.ts keeps only type imports —
-// it typechecks in a DOM-lib program, and a value pull drags the server
-// graph into it.
 import { z } from "zod";
 import type { System1Client } from "../system1.ts";
 import { checkInjection, verdictLine, type InjectionVerdict } from "../injection.ts";
@@ -21,11 +17,6 @@ export interface InjectionCheckResponse {
 const CHECK_BODY_CAP = 64 * 1024;
 const CHECK_MAX_CHARS = 64000;
 
-// The route's auth IS its host check — the server binds loopback, and
-// only loopback names may reach the check. Parsed against an explicit
-// allowlist, not prefix-matched: the header is client-controlled, and
-// the loopback bind being the real lock should be true by construction
-// here too, not by string luck (audit #19).
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 export function isLoopbackHost(req: Request): boolean {
@@ -36,13 +27,6 @@ export function isLoopbackHost(req: Request): boolean {
 	return LOOPBACK_HOSTS.has(name.toLowerCase());
 }
 
-// Read a request body's bytes with a hard cap — Content-Length is a
-// hint, not the contract, so the stream itself is bounded too: a
-// chunked upload skips the header entirely. Null = oversize (or a
-// lying header); the caller answers without ever holding the bytes.
-// Shared by the injection check's text reader and the app channel's
-// attachment route — the one place the "bound before buffering" rule
-// lives.
 export async function readBodyBytesCapped(req: Request, cap: number): Promise<Uint8Array | null> {
 	const declared = Number(req.headers.get("content-length") ?? 0);
 	if (declared > cap) return null;
@@ -65,7 +49,6 @@ export async function readBodyBytesCapped(req: Request, cap: number): Promise<Ui
 	return Buffer.concat(chunks);
 }
 
-// The text flavor the injection check reads.
 export async function readBodyCapped(
 	req: Request,
 	cap: number,
@@ -81,12 +64,6 @@ const checkBodySchema = z.object({
 
 const NO_STORE = { "cache-control": "no-store" };
 
-// POST /api/check-injection — loopback-only (host check IS the auth:
-// same trust class as the model calling gws on the same box). Scores
-// {text} through the shared System One gate and returns the same verdict line
-// the mail wrapper prints. Absent gate = 503; checkInjection is
-// fail-open (unavailable verdict, never throws System1Error), so only
-// unexpected bugs reach the 500 below — never the text in any log line.
 export async function serveInjectionCheck(
 	req: Request,
 	dep: InjectionCheckGate | undefined,

@@ -1,26 +1,3 @@
-// Desktop pool — the desktops table plus the lifecycle owner
-// (design/subagents.md → Desktops: a managed pool). A desktop is a
-// named, long-lived `goblin-desk-*` container running the
-// goblin-desktop session (Xvfb + XFCE + cua-driver); anyone may
-// observe it, exactly one lease holder may drive it. The row is
-// intent, podman is truth, and every call reconciles the two —
-// running → use, stopped → start + network re-applied, missing →
-// recreate (prior state gone), labelled-but-rowless → adopt.
-//
-// Observation binding is the core invariant: every observation mints a
-// fresh id, and act refuses anything not bound to the newest, unused
-// observation — an input action can never target a frame the model
-// hasn't seen. Repeating an identical action against an unchanged
-// screen is refused too.
-//
-// Reaping rides the start of every call — unleased, unreserved
-// desktops idle past idleHours lose their container then their row;
-// the stale listing is synchronous (the caller's desktop exempt),
-// the removals run on a detached single-flight chain, so another
-// desktop's reap is never on a call's critical path. No ticker, no
-// boot hook. Network is fail-closed: an off state that can't be
-// confirmed by inspect removes the container rather than use it.
-
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readdirSync, rmSync, statSync } from "node:fs";
@@ -37,8 +14,7 @@ import { durableWriteBytes } from "./durable.ts";
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
 
-// Model/operator-actionable failures (held leases, stale observations,
-// missing image) — the tool maps these to {error} results.
+// Mapped to {error} tool results — model/operator-actionable failures.
 export class DesktopError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
 		super(message, options);
@@ -53,13 +29,10 @@ export type LeaseHolder =
 	| { kind: "conversation"; id: string }
 	| { kind: "operator" };
 
-// The action surface is cua-driver 0.34.1's input tools minus the
-// ones that bypass goblin's own gates: launch_app/kill_app would
-// route around the goblin-launch whitelist and refusal logging, the
-// browser_* set drives a CDP channel we don't wire, and the raw
-// mouse_* / move_cursor / parallel_mouse_drag primitives are covered
-// by click/drag. Observation tools (list_windows, get_window_state,
-// get_desktop_state, zoom, verify_state) ride inspect/screenshot.
+// cua-driver 0.34.1's input tools minus the ones bypassing goblin's
+// gates: launch_app/kill_app route around the launch whitelist and
+// refusal logging, browser_* drives an unwired CDP channel, raw
+// mouse_*/move_cursor/parallel_mouse_drag are covered by click/drag.
 export type CuaTool =
 	| "click"
 	| "double_click"
@@ -74,11 +47,9 @@ export type CuaTool =
 	| "invoke_menu"
 	| "set_window_frame";
 
-// The dispatch allowlist — the union above as a runtime set, so act
-// fails loud on a non-member tool instead of forwarding it to
-// cua-driver. Kept literal against the union: growing one without the
-// other is a type error. Callers gate with this too, but act is the
-// enforcement point — the type cast at the boundary proves nothing.
+// Must stay literal against the CuaTool union — growing one without
+// the other is a type error. act is the enforcement point: a boundary
+// cast to CuaTool proves nothing at runtime.
 export const CUA_TOOLS: ReadonlySet<string> = new Set<CuaTool>([
 	"click",
 	"double_click",
@@ -98,10 +69,6 @@ export type DesktopAction =
 	| { kind: "launch"; app: "chromium"; url?: string }
 	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
 
-// cua-driver's list_windows payload — a subprocess boundary, so it is
-// zod-checked like every other external input: a driver upgrade that
-// drifts the shape gets a loud refusal, never a bare TypeError past
-// the tool gate.
 const listWindowsSchema = z.object({
 	windows: z
 		.array(z.object({ pid: z.number(), app_name: z.string(), z_index: z.number() }))
@@ -112,28 +79,25 @@ export interface DesktopRow {
 	name: string;
 	container: string;
 	image: string;
-	/** Intended network state — the row is intent, podman is truth. */
+	/** The row is intent, podman is truth. */
 	network: boolean;
 	reserved: boolean;
 	leaseKind: "run" | "conversation" | "operator" | null;
 	leaseId: string | null;
 	leaseExpiresAt: number | null;
-	/** Observation binding: the newest minted observation id and
-	 *  whether an action already consumed it. */
+	/** The newest minted observation; an action consumes it. */
 	lastObsId: string | null;
 	lastObsUsed: boolean;
 	/** sha256 of the observation frame — PNG bytes for screenshots,
 	 *  the cua screenshot (or state JSON) for inspect. */
 	lastObsHash: string | null;
-	/** The last action's signature and the frame it was bound to —
-	 *  the identical-action-on-unchanged-screen refusal. */
+	/** The identical-action-on-unchanged-screen refusal state. */
 	lastActSig: string | null;
 	lastActFrameHash: string | null;
-	/** The container boot (podman State.StartedAt) the recorded
-	 *  observation was minted on; null = unknown (fresh, migrated, or
-	 *  just-restarted row — the next reconcile records it). Optional
-	 *  in the type because unknown is a real state for row literals
-	 *  built outside this module. */
+	/** podman State.StartedAt the recorded observation was minted on;
+	 *  null = unknown (the next reconcile records it). Optional because
+	 *  unknown is a real state for row literals built outside this
+	 *  module. */
 	bootGen?: string | null;
 	shotSeq: number;
 	createdAt: number;
@@ -145,7 +109,6 @@ export interface DesktopStore {
 	list(): DesktopRow[];
 	put(row: DesktopRow): void;
 	delete(name: string): void;
-	/** Rows idle since before cutoffMs, excluding one desktop. */
 	staleBefore(cutoffMs: number, excludeName: string): DesktopRow[];
 	close(): void;
 }
@@ -215,9 +178,8 @@ export function openDesktops(dbPath: string): DesktopStore {
 		created_at INTEGER NOT NULL,
 		last_used_at INTEGER NOT NULL
 	)`);
-	// Pools opened before the boot generation existed get the column
-	// backfilled; NULL reads as unknown generation, so the first
-	// reconcile invalidates any recorded observation — fail-closed.
+	// NULL reads as unknown generation — the first reconcile
+	// invalidates any recorded observation (fail-closed).
 	const cols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(desktops)")
@@ -288,12 +250,12 @@ const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const LEASE_TTL_MS = 10 * 60_000;
 const DESKTOP_USER = "desk";
-// Root-owned 0755 dir for the cpIn stage — desk can read/traverse it
-// but cannot write, rename, or plant links inside.
+// Root-owned 0755 stage dir — desk reads/traverses but cannot write,
+// rename, or plant links inside.
 const IMPORT_STAGE_DIR = "/run/goblin-import";
 const SESSION_SOCKET = "/run/desk/cua.sock";
-// The fixed desk session env — goblin-launch pins the same set in the
-// image; nothing here may be derived from container-writable state.
+// Must mirror the env goblin-launch pins in the image — nothing here
+// may derive from container-writable state.
 const SESSION_ENV = {
 	HOME: "/home/desk",
 	DISPLAY: ":99",
@@ -304,12 +266,10 @@ const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
 const EXPORT_MAX_BYTES = 100 * 1024 * 1024;
 const EXPORT_TIMEOUT_MS = 120_000;
 
-// Chromium refuses background-injected input whenever its renderer
-// isn't the focused surface; foreground delivery is also just the
-// right semantic for a model driving one visible desktop. AT-SPI
-// actions (invoke_menu, set_window_frame, bring_to_front) don't take
-// delivery_mode — set_value does, but it's AT-SPI SetValue, not
-// injected input, so it's out too.
+// Chromium refuses background-injected input when its renderer isn't
+// the focused surface. AT-SPI tools (invoke_menu, set_window_frame,
+// bring_to_front) take no delivery_mode; set_value is AT-SPI
+// SetValue, not injected input.
 const FOREGROUND_TOOLS: ReadonlySet<string> = new Set([
 	"click",
 	"double_click",
@@ -345,8 +305,8 @@ function leaseHeldBy(row: DesktopRow, holder: LeaseHolder, now: number): boolean
 	return leaseLive(row, now) && row.leaseKind === holder.kind && row.leaseId === holderId(holder);
 }
 
-// The design wants every refusal on the log with its reason — the
-// model sees the same message back as the tool result.
+// Every refusal logs with its reason — the same message the model
+// gets back as the tool result.
 function refuse(
 	desktop: string,
 	op: string,
@@ -363,16 +323,16 @@ function refuse(
 	return new DesktopError(reason, cause === undefined ? undefined : { cause });
 }
 
-// Launch URLs are model-controlled strings that land on Chromium's
-// argv — a bare `--flag` would become a browser switch. Only real
-// URLs (no whitespace or control characters) or exactly about:blank.
+// Model-controlled strings land on Chromium's argv — a bare `--flag`
+// becomes a browser switch. Real URLs (no whitespace/control chars)
+// or exactly about:blank.
 const LAUNCH_URL_RE = /^(?:https?|file):\/\/[^\s\x00-\x1f\x7f]+$/;
 function launchUrlOk(url: string): boolean {
 	return url === "about:blank" || LAUNCH_URL_RE.test(url);
 }
 
-// Key-order-canonical JSON — the identical-action check must not care
-// how the caller ordered its object keys.
+// Key-order-canonical — the identical-action check ignores caller
+// key order.
 function stableJson(v: unknown): string {
 	if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
 	if (v !== null && typeof v === "object") {
@@ -392,11 +352,9 @@ function sha256Hex(data: Uint8Array | string): string {
 export interface DesktopsDeps {
 	podman: Podman;
 	store: DesktopStore;
-	/** Live read — absent = the schema defaults. */
+	/** Read live; absent = the schema defaults. */
 	config(): DesktopsConfig | undefined;
-	/** Screenshot audit dir — $GOBLIN_HOME/state/desktops in prod. */
 	shotsRoot?: string;
-	/** Test seams — prod leaves both at their defaults. */
 	networkName?: string;
 }
 
@@ -406,9 +364,8 @@ interface EnsureResult {
 	note?: string;
 }
 
-/** Cancellation for network, destroy and file transfers, including lane
- *  and preflight waits. Once dispatched, mutations finish reconciliation
- *  so cancellation cannot leave an unverified network or restart. */
+/** Once a mutation dispatches it finishes reconciling — cancellation
+ *  never leaves an unverified network or restart behind. */
 export interface DesktopOpOpts {
 	abortSignal?: AbortSignal;
 }
@@ -417,9 +374,7 @@ export interface Desktops {
 	allocate(name: string, opts?: { image?: string }): Promise<{ row: DesktopRow; note?: string }>;
 	list(): DesktopRow[];
 	get(name: string): DesktopRow | null;
-	/** The leased row, plus the reconcile's lifecycle note when the
-	 *  ensure adopted/restarted/recreated the container — callers
-	 *  surface it, it is never stored on the row. */
+	/** The reconcile's lifecycle note rides the return, never the row. */
 	claim(name: string, holder: LeaseHolder): Promise<DesktopRow & { note?: string }>;
 	release(name: string, holder: LeaseHolder): Promise<void>;
 	handoff(name: string, from: LeaseHolder, to: LeaseHolder): Promise<void>;
@@ -437,17 +392,14 @@ export interface Desktops {
 		obsId: string,
 		action: DesktopAction,
 	): Promise<{ result: unknown; note?: string }>;
-	/** hostPath → containerPath staged through podman cp, landed by a
-	 *  desk-user copy — the caller owns the source's provenance
-	 *  (box-files containment); no lease needed. */
+	/** The caller owns the source's provenance; no lease needed. */
 	cpIn(
 		name: string,
 		hostPath: string,
 		containerPath: string,
 		opts?: DesktopOpOpts,
 	): Promise<{ note?: string }>;
-	/** A regular file's bytes as `desk` (symlinks/dirs refused), or
-	 *  DesktopError. The export twin of cpIn; no lease needed. */
+	/** No lease needed. */
 	catFile(
 		name: string,
 		path: string,
@@ -498,13 +450,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		};
 	}
 
-	// Reconcile actual network state with intent. Off is fail-closed:
-	// any failure to verify it removes the container — an unknown
-	// state is not usable. Row out only after rm lands; intended-on
-	// failures never trigger this cleanup. An abort is honored only
-	// before the connect/disconnect dispatch — once the toggle has
-	// begun, the verifying inspect (and fail-closed drop) runs to
-	// completion so the caller never gets an unverified state.
+	// Off is fail-closed: any failure to verify it removes the
+	// container — an unknown state is not usable. Row out only after
+	// rm lands; intended-on failures never trigger this cleanup.
+	// Abort is honored only before the toggle dispatches — once begun,
+	// the verifying inspect (and fail-closed drop) runs to completion.
 	async function applyNetwork(name: string, want: boolean, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		const container = containerNameForDesktop(name);
@@ -560,8 +510,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				err,
 			);
 		}
-		// The confirming inspect is in its own try so a thrown drop
-		// can't be mistaken for an inspect failure and drop twice.
+		// Its own try — a thrown drop must not be mistaken for an
+		// inspect failure and drop twice.
 		let stillOn = false;
 		try {
 			const after = await podman.inspect(container);
@@ -606,19 +556,18 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			command: ["/usr/local/bin/goblin-desktop-session"],
 			hostname: "desktop",
 			shmSize: "1g",
-			// Chromium's own sandbox needs CAP_SYS_CHROOT for its zygote
-			// — desktops only, operator-approved; sandboxes keep the five.
+			// CAP_SYS_CHROOT for Chromium's own sandbox zygote —
+			// desktops only, operator-approved.
 			extraCaps: ["SYS_CHROOT"],
 			labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
 		});
-		// Created ON the network — a --network none container can never
-		// be connected later — then brought to the intended state. `run`
-		// already landed, so this reconcile finishes unconditionally: an
-		// abort here would strand a networked, rowless container.
+		// Created ON the network — a --network none container can't be
+		// connected later. `run` already landed, so the reconcile
+		// finishes unconditionally: an abort would strand a networked,
+		// rowless container.
 		await applyNetwork(name, wantNetwork);
 	}
 
-	// The reconcile, inside the desktop's lane.
 	async function ensureLocked(name: string, signal?: AbortSignal): Promise<EnsureResult> {
 		signal?.throwIfAborted();
 		const container = containerNameForDesktop(name);
@@ -629,11 +578,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		if (ins.state !== "missing") {
 			requireOurs(name, ins);
 			if (row === null) {
-				// A labelled container with no row: adopt — the inspect
-				// tells us its image, network state and boot generation.
-				// Adoption counts against the pool cap exactly like
-				// allocate: a lost database must not re-grow the pool
-				// past max one container at a time.
+				// Labelled but rowless: adopt. Counts against the pool
+				// cap like allocate — a lost database must not re-grow
+				// the pool past max.
 				const max = cfg().max;
 				const held = new Set(store.list().map((r) => r.name));
 				for (const pending of pendingAllocs) held.add(pending);
@@ -653,8 +600,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				if (ins.state === "stopped") {
 					signal?.throwIfAborted();
 					await podman.start(container);
-					// Start already dispatched: the safety reconcile
-					// finishes even on cancellation.
+					// Start dispatched — the reconcile finishes even on
+					// cancellation.
 					await applyNetwork(name, adopted.network);
 					adopted.bootGen = (await podman.inspect(container)).startedAt;
 					adopted.lastUsedAt = now;
@@ -676,13 +623,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				};
 			}
 			if (ins.state === "stopped") {
-				// E.g. a host reboot — filesystem intact, network re-applied
-				// from the row (the intent), not from whatever inspect saw.
-				// The restart kills whatever the newest observation showed,
-				// so that frame is dead: persist the invalidation BEFORE
-				// start — a failed start must not leave a dead obs id live
-				// (design/subagents.md, observation binding). Lease,
-				// reserved pin, shot sequence and files survive.
+				// The restart kills whatever the newest observation
+				// showed — persist the invalidation BEFORE start: a
+				// failed start must not leave a dead obs id live.
+				// Network re-applies from the row's intent, not inspect.
 				if (row.lastObsId !== null) {
 					row.lastObsId = null;
 					row.lastObsUsed = false;
@@ -698,8 +642,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				row.bootGen = null;
 				signal?.throwIfAborted();
 				await podman.start(container);
-				// Start already dispatched: the safety reconcile finishes
-				// even on cancellation.
+				// Start dispatched — the reconcile finishes even on
+				// cancellation.
 				await applyNetwork(name, row.network);
 				row.bootGen = (await podman.inspect(container)).startedAt;
 				row.lastUsedAt = now;
@@ -711,14 +655,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					note: "desktop was stopped — restarted it; files and network state restored, but the previous frame is gone — take a fresh screenshot before acting",
 				};
 			}
-			// Running: the row's network intent wins over a drifted actual
-			// (a crash between connect and row update fails closed).
-			// Boot reconciliation: an out-of-band restart leaves
-			// Running=true and the container in place, so the recorded
-			// StartedAt is the only witness that the newest frame died
-			// with the previous boot — invalidate it before any input can
-			// bind (observation binding). mintObservation rides the
-			// generation recorded here, in the same lane call.
+			// The row's network intent wins over a drifted actual (a
+			// crash between connect and row update fails closed). An
+			// out-of-band restart leaves Running=true — StartedAt is
+			// the only witness that the newest frame died with the
+			// previous boot; invalidate before any input binds.
 			if (row.bootGen !== ins.startedAt) {
 				if (row.lastObsId !== null) {
 					row.lastObsId = null;
@@ -740,10 +681,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			return { row, container };
 		}
 		if (row !== null) {
-			// Missing with a row: recreate fresh. The lease and
-			// observation state are gone with the container; the reserved
-			// pin survives — and so does the shot sequence, which names
-			// the audit frames and obs ids minted before the loss.
+			// Missing with a row: recreate. Lease and obs state die with
+			// the container; the reserved pin and shotSeq survive — the
+			// sequence keeps pre-loss obs ids and audit names dead.
 			await createContainer(name, row.image, row.network, signal);
 			const kept = freshRow(name, {
 				image: row.image,
@@ -764,11 +704,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		throw refuse(name, "ensure", `no desktop named ${name} — allocate it first`);
 	}
 
-	// Audit frames are bounded: the newest SHOTS_RETENTION files per
-	// desktop survive (by mtime), older ones are pruned here — the one
-	// path every call rides — so an active desktop is bounded at call
-	// time and a reaped one at removal. Destroy intentionally freezes
-	// the trail for post-mortem (ruling in design/subagents.md).
+	// Pruned on the one path every call rides. Destroy intentionally
+	// freezes the trail for post-mortem.
 	const SHOTS_RETENTION = 200;
 
 	function pruneShots(name: string): void {
@@ -793,8 +730,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		}
 		byAge.sort((a, b) => a.mtime - b.mtime);
 		for (const { file } of byAge.slice(0, over)) {
-			// Best-effort per file — a failed unlink must not fail the
-			// desktop call riding this prune, only say so on the log.
+			// Best-effort — a failed unlink must not fail the call
+			// riding this prune; the log line says so.
 			try {
 				rmSync(join(dir, file));
 			} catch (err) {
@@ -805,11 +742,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		log.info("desktop shots pruned", { desktop: name, removed: over, kept: SHOTS_RETENTION });
 	}
 
-	// The reap verdict, inside the victim's lane: the listing was a
-	// stale snapshot, so idle/reservation/lease is re-read here — a
-	// claim, observation, or pin landing between the listing and the
-	// rm must win the race. Same label guard as destroy and adoption:
-	// never touch a container goblin's labels don't claim.
+	// Re-read inside the victim's lane — a claim, observation, or pin
+	// landing between the stale listing and the rm must win the race.
+	// Same label guard as destroy/adopt: never touch a container the
+	// labels don't claim.
 	async function reapLocked(name: string, cutoff: number): Promise<void> {
 		const fresh = store.get(name);
 		if (
@@ -828,11 +764,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		log.info("desktop reaped", { desktop: name, container: fresh.container });
 	}
 
-	// Reaps run on one dedicated chain, off the callers' critical
-	// path: the listing is synchronous in the caller's own call (its
-	// desktop exempt), the lane joins and rm happen here — reaping
-	// desktop B never blocks acting on desktop A. Candidates coalesce
-	// into one set, so reaps stay single-flight.
+	// Reaps ride one detached chain — the listing is synchronous in
+	// the caller (its desktop exempt); reaping B never blocks acting
+	// on A. Candidates coalesce into one set, single-flight.
 	const reapQueue = new Map<string, number>();
 	let reapTail: Promise<void> = Promise.resolve();
 	let reapQueued = false;
@@ -841,7 +775,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		if (reapQueued) return;
 		reapQueued = true;
 		const run = reapTail.then(async () => {
-			// Cleared at run start: arrivals during the run schedule
+			// Cleared at run start — arrivals during the run schedule
 			// the follow-up instead of being dropped.
 			reapQueued = false;
 			while (reapQueue.size > 0) {
@@ -851,7 +785,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					try {
 						await lane(victim, () => reapLocked(victim, cutoff));
 					} catch (err) {
-						// Keep the row — the next call retries the reap.
+						// Keep the row — the next call retries.
 						log.warn("desktop reap failed — row kept", err, {
 							desktop: victim,
 							container: containerNameForDesktop(victim),
@@ -869,12 +803,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		);
 	}
 
-	// Called at the top of every entry point: the name check runs
-	// before pruneShots joins it under shotsRoot — an unvalidated
-	// "../" name would prune outside the audit tree — then bound the
-	// caller's audit frames, list stale rows (caller exempt) and hand
-	// them to the reaper chain. Synchronous — nothing here can block
-	// the call behind another desktop's lane.
+	// Top of every entry point: the name check must precede pruneShots
+	// — an unvalidated "../" name would prune outside shotsRoot.
+	// Synchronous, so no call blocks behind another desktop's lane.
 	function sweepOnce(name: string, op: string): void {
 		if (!NAME_RE.test(name)) {
 			throw refuse(
@@ -890,13 +821,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		for (const row of store.staleBefore(cutoff, name)) enqueueReap(row.name, cutoff);
 	}
 
-	// Lifecycle ops are single-flight per desktop; claim/obs/act
-	// read-modify-write the row inside the same lane.
+	// Lifecycle ops are single-flight per desktop — row
+	// read-modify-writes stay inside the lane.
 	const lanes = new Map<string, Promise<void>>();
 
-	// Capacity counts rows ∪ pending reservations — the check-and-add
-	// in allocate is synchronous, so two allocations on different
-	// lanes can't both slip past max.
+	// Capacity counts rows ∪ pending reservations; the synchronous
+	// check-and-add is what keeps two allocations on different lanes
+	// from slipping past max.
 	const pendingAllocs = new Set<string>();
 	function lane<T>(name: string, fn: () => Promise<T>): Promise<T> {
 		const prev = lanes.get(name) ?? Promise.resolve();
@@ -912,9 +843,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		return run;
 	}
 
-	// A cua-driver call as the session user: the socket is desk-owned
-	// and the daemon's element tokens are session-scoped — every call
-	// carries the desktop name as its session.
+	// cua-driver tokens are session-scoped — every call carries the
+	// desktop name as its session.
 	async function cuaCall(
 		container: string,
 		tool: string,
@@ -928,8 +858,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
 		);
 		if (r.timedOut || r.exitCode !== 0) {
-			// Some driver failures report on stdout (stderr empty) — take
-			// whichever channel carries the diagnostic, capped.
+			// Driver failures can report on stdout — take whichever
+			// channel carries the diagnostic.
 			const diag = (r.stderr.trim() || r.stdout.trim()).slice(0, 300);
 			throw new DesktopError(
 				`cua-driver ${tool} failed on desktop ${name} (${r.timedOut ? "timeout" : `exit ${r.exitCode}`}): ${diag}`,
@@ -945,11 +875,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 	}
 
 	// The uuid keeps an obs id unique across a same-ms
-	// destroy/re-allocate (createdAt and shotSeq both reset). The
-	// caller mints it — screenshot needs it for the audit basename —
-	// but the row publish happens only here. bootGen was reconciled
-	// against the live container earlier in this lane call, so a
-	// frame is never minted onto an unrecorded generation.
+	// destroy/re-allocate (createdAt and shotSeq both reset). bootGen
+	// was reconciled earlier in this lane call — never mint a frame
+	// onto an unrecorded generation.
 	function mintObservation(row: DesktopRow, hash: string, uuid: string): string {
 		row.shotSeq += 1;
 		row.lastObsId = `${row.name}:${row.shotSeq}:${uuid}`;
@@ -970,8 +898,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					`invalid desktop image ${JSON.stringify(opts.image)} — not a valid image ref`,
 				);
 			}
-			// Check-and-add is synchronous — a second allocate can't
-			// interleave between them.
+			// Synchronous check-and-add — no interleave between has
+			// and add.
 			if (pendingAllocs.has(name)) {
 				throw refuse(name, "allocate", `desktop ${name} is already being allocated`);
 			}
@@ -1062,10 +990,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		// release/handoff/reserve sweep then ride the same lane as
-		// claim/act — both halves keep call order: a row read outside
-		// the lane loses updates to an in-flight act, and skipping the
-		// sweep would let these cut in line ahead of it.
+		// Same sweep-then-lane order as claim/act — a row read outside
+		// the lane loses updates to an in-flight act; skipping the
+		// sweep would cut in line ahead of it.
 		async release(name, holder) {
 			sweepOnce(name, "release");
 			await lane(name, async () => {
@@ -1142,8 +1069,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const ready = await ensureLocked(name, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
 				await applyNetwork(name, enabled, opts?.abortSignal);
-				// The toggle already dispatched and verified — the row
-				// update is its reconciliation, never abort between them.
+				// Dispatched and verified — the row write is its
+				// reconciliation; never abort between them.
 				ready.row.network = enabled;
 				ready.row.lastUsedAt = Date.now();
 				store.put(ready.row);
@@ -1173,10 +1100,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const container = containerNameForDesktop(name);
 				const ins = await podman.inspect(container);
 				opts?.abortSignal?.throwIfAborted();
-				// Both absent means the name was never a desktop — a false
-				// success on the destructive verb is worse than a refusal.
-				// Either half present stays idempotent: a row/container
-				// skew is exactly what destroy reconciles.
+				// Both absent = never a desktop — a false success on
+				// the destructive verb is worse than a refusal. A
+				// row/container skew is what destroy reconciles.
 				if (row === null && ins.state === "missing") {
 					throw refuse(name, "destroy", `no desktop named ${name}`, by);
 				}
@@ -1214,8 +1140,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					user: DESKTOP_USER,
 					workdir: "/run/desk",
 				});
-				// Best-effort temp cleanup — a leftover file in /run/desk
-				// is harmless, an unobserved rejection is not.
+				// Best-effort — a leftover temp in /run/desk is
+				// harmless, an unobserved rejection is not.
 				const rm = await podman.exec(ready.container, ["rm", "-f", inContainer], {
 					...EXEC_OPTS,
 					user: DESKTOP_USER,
@@ -1228,9 +1154,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						exit: rm.timedOut ? "timeout" : rm.exitCode,
 					});
 				}
-				// A capped or drain-cut readback can still exit 0 with
-				// nonempty bytes — a partial frame must never reach the
-				// audit file or mint an observation id.
+				// A capped or drain-cut readback still exits 0 with
+				// nonempty bytes — a partial frame must never reach
+				// the audit file or mint an observation id.
 				if (read.truncated || read.outputCapped === true) {
 					throw new DesktopError(
 						`screenshot readback from desktop ${name} was truncated/capped — the frame is incomplete`,
@@ -1240,10 +1166,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);
 				}
 				const bytes = read.stdout;
-				// The uuid in the basename keeps a same-ms
-				// destroy/re-allocate generation from clobbering the
-				// previous one's frames. The durable write precedes the
-				// obs-id publish.
+				// The uuid in the basename stops a same-ms generation
+				// clobbering the previous one's frames; the durable
+				// write precedes the obs-id publish.
 				const dir = join(shotsRoot, name, "shots");
 				ensureDir(dir);
 				const uuid = randomUUID();
@@ -1279,9 +1204,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						);
 					}
 					const list = parsed.data.windows ?? [];
-					// The point of inspect is the app the operator is looking
-					// at — skip the desktop chrome (panel, desktop), take the
-					// topmost real window.
+					// Skip the desktop chrome — the topmost real window
+					// is what the operator is looking at.
 					const apps = list.filter((w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name));
 					const win =
 						apps.length === 0
@@ -1331,8 +1255,6 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						holder,
 					);
 				}
-				// Observation binding: act only on the newest, unconsumed
-				// observation (design/subagents.md — Eliza's mechanism).
 				if (obsId !== row.lastObsId || row.lastObsUsed) {
 					throw refuse(
 						name,
@@ -1359,10 +1281,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				if (action.kind === "cua" && !CUA_TOOLS.has(action.tool)) {
-					// Enforcement lives here, at the dispatch, not only in
-					// callers — the type-level CuaTool cast proves nothing
-					// at runtime. Runs before consumption: a refused tool
-					// must not burn the observation it rode in on.
+					// Before consumption — a refused tool must not burn
+					// the observation it rode in on.
 					throw refuse(
 						name,
 						"act",
@@ -1371,8 +1291,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				// Consume the observation and renew the lease BEFORE
-				// dispatch: input is never replay-safe, so a failed or
-				// timed-out call still burns the frame it was bound to.
+				// dispatch — a failed or timed-out call still burns
+				// the frame it was bound to.
 				row.leaseExpiresAt = now + LEASE_TTL_MS;
 				row.lastObsUsed = true;
 				row.lastActSig = sig;
@@ -1382,9 +1302,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				let result: unknown;
 				try {
 					if (action.kind === "launch") {
-						// The launcher runs as desk with the fixed session
-						// env, exactly like cuaCall — root would only reach
-						// it through the in-image setpriv backstop.
+						// Runs as desk with the fixed session env like
+						// cuaCall — root reaches the launcher only via
+						// the image's setpriv backstop.
 						const r = await podman.exec(
 							ready.container,
 							["goblin-launch", action.app, ...(action.url === undefined ? [] : [action.url])],
@@ -1441,9 +1361,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			return await lane(name, async () => {
 				opts?.abortSignal?.throwIfAborted();
 				const ready = await ensureLocked(name, opts?.abortSignal);
-				// File destinations only — `podman cp` onto an existing
-				// directory copies INTO it, and a recursive chown of that
-				// directory would rewrite unrelated desktop ownership.
+				// Files only — `podman cp` onto an existing directory
+				// copies INTO it, and a recursive chown of that dir
+				// would rewrite unrelated desktop ownership.
 				if (!containerPath.startsWith("/") || containerPath.endsWith("/")) {
 					throw new DesktopError(
 						`desktop import needs an absolute file path, got ${JSON.stringify(containerPath)}`,
@@ -1461,8 +1381,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						`could not create ${parent} on desktop ${name}: ${mk.stderr.slice(0, 200)}`,
 					);
 				}
-				// An existing destination must be a regular, non-symlink
-				// file — refuse before the copy touches anything else.
+				// An existing destination must be a regular,
+				// non-symlink file — refuse before the copy touches
+				// anything else.
 				const pre = await podman.exec(
 					ready.container,
 					[
@@ -1480,12 +1401,12 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				opts?.abortSignal?.throwIfAborted();
-				// podman cp writes as container root, so it only stages the
-				// bytes at a goblin-chosen path in a dir desk can't write;
-				// desk itself performs the destination write — a root-owned
-				// target fails loudly instead of silently succeeding under
-				// a chown. The dir is made per-call: adopted or recreated
-				// containers never got a create-time hook.
+				// podman cp writes as container root — it only stages
+				// bytes at a goblin-chosen path; desk performs the dest
+				// write so a root-owned target fails loud instead of
+				// silently succeeding under a chown. The stage dir is
+				// made per-call: adopted/recreated containers got no
+				// create-time hook.
 				const mkStage = await podman.exec(
 					ready.container,
 					["mkdir", "-p", "--", IMPORT_STAGE_DIR],
@@ -1500,8 +1421,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const stage = `${IMPORT_STAGE_DIR}/imp-${Date.now()}-${randomUUID().slice(0, 8)}`;
 				try {
 					await podman.cp(ready.container, hostPath, stage);
-					// podman cp preserves the host mode — a 600 file would be
-					// unreadable to the desk-side copy below.
+					// podman cp preserves the host mode — a 600 file
+					// would be unreadable to the desk-side copy.
 					const mode = await podman.exec(ready.container, ["chmod", "0644", "--", stage], {
 						...EXEC_OPTS,
 						workdir: "/run/desk",
@@ -1511,8 +1432,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 							`could not stage an import on desktop ${name}: ${mode.stderr.slice(0, 200)}`,
 						);
 					}
-					// The desk-side copy is the visible write — recheck after
-					// the staging awaits so a cancelled import never lands it.
+					// The desk-side copy is the visible write — abort
+					// rechecked after the staging awaits so a cancelled
+					// import never lands it.
 					opts?.abortSignal?.throwIfAborted();
 					const put = await podman.exec(ready.container, ["cp", "--", stage, containerPath], {
 						...EXEC_OPTS,
@@ -1524,9 +1446,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 							`could not import to ${containerPath} on desktop ${name}: ${put.stderr.slice(0, 200)}`,
 						);
 					}
-					// cp follows a dest symlink — the pre-check refused one,
-					// but a swap in between still lands bytes off-target;
-					// re-verify the leaf desk produced.
+					// cp follows a dest symlink — a swap after the
+					// pre-check still lands bytes off-target; re-verify
+					// the leaf desk produced.
 					const post = await podman.exec(
 						ready.container,
 						["/bin/sh", "-c", '{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3', "post", containerPath],
@@ -1538,8 +1460,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						);
 					}
 				} finally {
-					// Best-effort stage cleanup — a leftover in the root-owned
-					// dir is harmless and must never mask the real error.
+					// Best-effort — a leftover stage in the root-owned
+					// dir is harmless; it must never mask the real error.
 					try {
 						const rm = await podman.exec(ready.container, ["rm", "-f", "--", stage], {
 							...EXEC_OPTS,
@@ -1571,8 +1493,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				opts?.abortSignal?.throwIfAborted();
 				const ready = await ensureLocked(name, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
-				// Same export contract as sandboxes.catFile: regular
-				// files only — -f alone follows a leaf symlink.
+				// Mirrors sandboxes.catFile: regular files only —
+				// test -f alone follows a leaf symlink.
 				const probe = await podman.exec(
 					ready.container,
 					["/bin/sh", "-c", 'test -f "$1" && ! test -L "$1"', "desk-check", path],

@@ -1,11 +1,3 @@
-// The desktop pool's boundaries against a fake podman at the argv
-// seam (the sandboxes.test.ts pattern): what the tests pin is the
-// single-controller lease, the observation-binding invariant (an input
-// action must name the newest, unconsumed frame, and an identical
-// action against an unchanged screen is refused), the idle-reap
-// sweep, and the fail-closed network. No real podman runs here; the
-// real-engine check is gated on GOBLIN_DESKTOP_LIVE=1.
-
 import { describe, expect, spyOn, test } from "bun:test";
 import {
 	existsSync,
@@ -44,8 +36,8 @@ interface FakeContainer {
 	running: boolean;
 	networks: Set<string>;
 	labels: Record<string, string>;
-	/** The boot generation podman reports as State.StartedAt — a
-	 *  restart (in-band or out-of-band) moves it, Running stays. */
+	/** podman State.StartedAt — a restart moves it while Running
+	 *  stays true. */
 	startedAt: string;
 }
 
@@ -53,8 +45,8 @@ function tmpdb(): string {
 	return join(mkdtempSync(join(tmpdir(), "goblin-desk-")), "goblin.sqlite");
 }
 
-// The detached reaper chain means a caller no longer awaits reaps —
-// tests poll for the effect instead of assuming it landed.
+// Reaps are detached — poll for the effect instead of assuming it
+// landed.
 async function waitFor(what: string, pred: () => boolean, ms = 2000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (Date.now() < deadline) {
@@ -64,9 +56,6 @@ async function waitFor(what: string, pred: () => boolean, ms = 2000): Promise<vo
 	throw new Error(`timed out waiting for: ${what}`);
 }
 
-// A fake podman engine: the runner keeps container/network state, the
-// exec runners answer scrot (PNG bytes), the cua-driver calls
-// (list_windows / get_window_state / effects), and goblin-launch.
 // varyFrames makes successive screenshots differ — the "unchanged
 // screen" refusal needs identical bytes across observations.
 function fakeEngine(opts?: {
@@ -78,16 +67,12 @@ function fakeEngine(opts?: {
 		labels?: Record<string, string>;
 	}>;
 	varyFrames?: boolean;
-	/** cua act calls fail — the dispatch burn-through test. */
 	failCua?: boolean;
-	/** cua act calls fail with empty stderr and this stdout — the
-	 *  driver reports structured errors on stdout too. */
+	/** cua act calls fail with this stdout and empty stderr — driver
+	 *  errors can report on stdout. */
 	failCuaStdout?: string;
-	/** cua act calls hold until this resolves — lane-interleave tests. */
 	execGate?: Promise<void>;
-	/** Guest paths that exist as directories — the cpIn pre-check. */
 	existingDirs?: Set<string>;
-	/** Guest dirs desk cannot write — the cpIn desk-governance model. */
 	rootDirs?: Set<string>;
 }) {
 	const containers = new Map<string, FakeContainer>();
@@ -109,14 +94,14 @@ function fakeEngine(opts?: {
 	// Mutable at call time — fail-closed network tests arm these after
 	// the create path's own inspects have run.
 	const flags = {
-		// Inspect fails once the ordinal count reaches this (relative
-		// arming: flags.failInspectFrom = flags.inspectCalls + k).
+		// failInspectFrom is an ordinal: arm relative —
+		// flags.inspectCalls + k.
 		inspectCalls: 0,
 		failInspectFrom: undefined as number | undefined,
 		failRm: false,
 		failDisconnect: false,
-		// Readback integrity faults — a capped or drain-cut execBytes
-		// read still exits 0 with nonempty bytes.
+		// Readback integrity faults — a capped or drain-cut read still
+		// exits 0 with nonempty bytes.
 		truncatedRead: false,
 		cappedRead: false,
 	};
@@ -198,8 +183,8 @@ function fakeEngine(opts?: {
 		if (cmd === "start") {
 			const c = containers.get(args[1]!)!;
 			c.running = true;
-			// A start is a fresh boot — the generation moves, like the
-			// real engine's State.StartedAt.
+			// A start is a fresh boot — StartedAt moves like the real
+			// engine.
 			c.startedAt = nextBoot();
 			return { code: 0, stdout: "", stderr: "" };
 		}
@@ -218,8 +203,8 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], execOpts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
-		// The cpIn pre-check / post-check shell probes: the last
-		// positional arg before/after the marker is the guest path.
+		// The cpIn pre-check probe — the arg after the "pre" marker is
+		// the guest path.
 		const marker = args.indexOf("pre");
 		if (marker !== -1 && opts?.existingDirs?.has(args[marker + 1] ?? "")) {
 			return {
@@ -246,7 +231,6 @@ function fakeEngine(opts?: {
 				truncated: false,
 			};
 		}
-		// The cpIn post-verify probe (regular file, not a symlink).
 		if (args.some((a) => a.startsWith("{ [ -f"))) {
 			return {
 				stdout: "",
@@ -258,7 +242,7 @@ function fakeEngine(opts?: {
 			};
 		}
 		// The desk-side stage→dest copy: desk cannot write under a
-		// rootDirs parent — that refusal is the import's governance.
+		// rootDirs parent.
 		if (args.includes("cp")) {
 			const dest = args.at(-1) ?? "";
 			if (execOpts.user === "desk" && opts?.rootDirs?.has(posix.dirname(dest)) === true) {
@@ -352,7 +336,6 @@ function fakeEngine(opts?: {
 				truncated: false,
 			};
 		}
-		// cua act calls: report a driver-claimed effect.
 		if (opts?.execGate !== undefined) await opts.execGate;
 		if (opts?.failCua === true || opts?.failCuaStdout !== undefined) {
 			return {
@@ -469,9 +452,9 @@ describe("desktops pool", () => {
 		await expect(desktops.allocate("-bad")).rejects.toThrow(/invalid desktop name/);
 	});
 
-	// The audit prune joins the name under shotsRoot — an unchecked
-	// "../" name deletes files outside it. Every named entry point
-	// rides the sweep, so every one must refuse before it runs.
+	// The audit prune joins name under shotsRoot — an unchecked "../"
+	// name deletes files outside it. Every entry point rides the
+	// sweep, so every one must refuse before it runs.
 	const traversalOps: Array<[string, (d: Desktops) => Promise<unknown>]> = [
 		["allocate", (d) => d.allocate("../outside")],
 		["claim", (d) => d.claim("../outside", RUN_A)],
@@ -497,7 +480,7 @@ describe("desktops pool", () => {
 			try {
 				const parent = mkdtempSync(join(tmpdir(), "goblin-desk-trav-"));
 				const shotsRoot = join(parent, "shots-root");
-				// join(shotsRoot, "../outside", "shots") resolves here —
+				// join(shotsRoot, "../outside", "shots") lands here —
 				// over the 200-file cap, so a swept prune would delete.
 				const outside = join(parent, "outside", "shots");
 				mkdirSync(outside, { recursive: true });
@@ -513,8 +496,6 @@ describe("desktops pool", () => {
 					networkName: NETWORK,
 				});
 				await expect(run(desktops)).rejects.toThrow(/invalid desktop name/);
-				// Refusal precedes the sweep: no file removed, no podman
-				// call dispatched, and the refusal hit the log with its op.
 				expect(readdirSync(outside)).toHaveLength(205);
 				expect(engine.calls.length).toBe(0);
 				expect(engine.execCalls.length).toBe(0);
@@ -548,8 +529,8 @@ describe("desktops pool", () => {
 		const gate = Promise.withResolvers<void>();
 		const engine = fakeEngine();
 		const { desktops, store } = rig(engine, { max: 1 });
-		// Park the create so d1's reservation is held but its row is
-		// not yet visible — only the pending set can count it.
+		// Park the create — d1's reservation is held but its row
+		// invisible; only the pending set can count it.
 		const origCreate = engine.podman.create.bind(engine.podman);
 		engine.podman.create = async (spec, conv) => {
 			await gate.promise;
@@ -557,16 +538,12 @@ describe("desktops pool", () => {
 		};
 		const first = desktops.allocate("d1");
 		const second = desktops.allocate("d2");
-		// d2 rejects while d1's create is still parked — the pending
-		// reservation is what counted it.
 		const b = await second.catch((e: unknown) => e);
 		gate.resolve();
 		const a = await first;
 		expect(a.row.name).toBe("d1");
 		expect(b).toBeInstanceOf(DesktopError);
 		expect((b as Error).message).toMatch(/pool is full/);
-		// Exactly one container, exactly one row — the reservation
-		// never let both pass.
 		expect(engine.containers.has(containerNameForDesktop("d1"))).toBe(true);
 		expect(engine.containers.has(containerNameForDesktop("d2"))).toBe(false);
 		expect(store.get("d1")).not.toBeNull();
@@ -617,13 +594,10 @@ describe("desktops pool", () => {
 			return origCreate(spec, conv);
 		};
 		const first = desktops.allocate("d1");
-		// The same name is refused outright while the reservation
-		// holds, and the pool still counts it against capacity.
 		await expect(desktops.allocate("d1")).rejects.toThrow(/already being allocated/);
 		await expect(desktops.allocate("d2")).rejects.toThrow(/pool is full/);
 		gate.resolve();
 		await expect(first).rejects.toThrow(/podman exploded/);
-		// Reservation released with the failure — the retry succeeds.
 		failCreate = false;
 		await desktops.allocate("d1");
 		expect(store.get("d1")).not.toBeNull();
@@ -643,9 +617,7 @@ describe("desktops pool", () => {
 		const { desktops, store, name } = await fresh(engine);
 		await desktops.claim(name, RUN_A);
 		await expect(desktops.claim(name, RUN_B)).rejects.toThrow(/controlled by run a/);
-		// Re-claim by the holder renews.
 		await desktops.claim(name, RUN_A);
-		// Expire the lease by rewinding the row.
 		const row = store.get(name)!;
 		row.leaseExpiresAt = Date.now() - 1000;
 		store.put(row);
@@ -658,20 +630,15 @@ describe("desktops pool", () => {
 	test("act requires the newest, unconsumed observation", async () => {
 		const engine = fakeEngine({ varyFrames: true });
 		const { desktops, name } = await fresh(engine);
-		// No lease.
 		await expect(desktops.act(name, RUN_A, "d1:0", CLICK)).rejects.toThrow(/no live lease/);
 		await desktops.claim(name, RUN_A);
-		// Stale obs id (never minted).
 		await expect(desktops.act(name, RUN_A, "d1:0", CLICK)).rejects.toThrow(/fresh screenshot/);
 		const shot = await desktops.screenshot(name);
 		const out = await desktops.act(name, RUN_A, shot.id, CLICK);
 		expect(out.result).toMatchObject({ effect: "unverifiable" });
-		// Same observation can only be consumed once.
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
-		// A fresh screenshot unlocks.
 		const shot2 = await desktops.screenshot(name);
 		await desktops.act(name, RUN_A, shot2.id, CLICK);
-		// The holder's lease is renewed by acting; another holder is refused.
 		await expect(desktops.act(name, RUN_B, shot2.id, CLICK)).rejects.toThrow(/controlled by run a/);
 	});
 
@@ -683,7 +650,6 @@ describe("desktops pool", () => {
 		await desktops.act(name, RUN_A, s1.id, CLICK);
 		const s2 = await desktops.screenshot(name);
 		await expect(desktops.act(name, RUN_A, s2.id, CLICK)).rejects.toThrow(/unchanged screen/);
-		// A different action is not the same signature — allowed.
 		await desktops.act(name, RUN_A, s2.id, {
 			kind: "cua",
 			tool: "click",
@@ -710,8 +676,6 @@ describe("desktops pool", () => {
 		engine.containers.get(containerNameForDesktop(name))!.running = false;
 		const execBefore = engine.execCalls.length;
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
-		// The container restarted, but no input was dispatched and the
-		// dead frame is persisted-invalidated while the lease survives.
 		expect(engine.containers.get(containerNameForDesktop(name))!.running).toBe(true);
 		expect(engine.execCalls.length).toBe(execBefore);
 		const row = store.get(name)!;
@@ -720,7 +684,6 @@ describe("desktops pool", () => {
 		expect(row.lastActSig).toBeNull();
 		expect(row.leaseKind).toBe("run");
 		expect(row.shotSeq).toBe(1);
-		// A fresh observation mints a new id and dispatches under the same lease.
 		const shot2 = await desktops.screenshot(name);
 		expect(shot2.id).not.toBe(shot.id);
 		const out = await desktops.act(name, RUN_A, shot2.id, CLICK);
@@ -740,8 +703,6 @@ describe("desktops pool", () => {
 		};
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/start exploded/);
 		expect(store.get(name)!.lastObsId).toBeNull();
-		// The retry restarts for real, tells the caller the frame is
-		// gone, and mints a fresh observation id.
 		const obs = await desktops.screenshot(name);
 		expect(obs.note).toContain("fresh screenshot");
 		expect(obs.id).not.toBe(shot.id);
@@ -783,10 +744,9 @@ describe("desktops pool", () => {
 		},
 	);
 
-	// The abort contract on the mutating ops mirrors the sandbox's: a
-	// signal that fired before the call or while it parked — behind the
-	// lane or inside the reconcile's preflight read — stops the call
-	// before any mutation dispatches.
+	// Abort contract mirrors the sandbox's: a signal fired before the
+	// call or while parked — behind the lane or inside the reconcile's
+	// preflight — stops the call before any mutation dispatches.
 	test("a pre-aborted network/import call never reaches podman", async () => {
 		const engine = fakeEngine();
 		const { desktops, name } = await fresh(engine);
@@ -1012,15 +972,12 @@ describe("desktops pool", () => {
 		engine.containers.get(containerNameForDesktop(name))!.startedAt = "boot-out-of-band";
 		const execBefore = engine.execCalls.length;
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
-		// No input was dispatched onto the unseen frame; the dead obs is
-		// persisted-invalidated and the lease survives the reconcile.
 		expect(engine.execCalls.length).toBe(execBefore);
 		const row = store.get(name)!;
 		expect(row.lastObsId).toBeNull();
 		expect(row.lastObsHash).toBeNull();
 		expect(row.bootGen).toBe("boot-out-of-band");
 		expect(row.leaseKind).toBe("run");
-		// A fresh observation binds and dispatches under the same lease.
 		const shot2 = await desktops.screenshot(name);
 		expect(shot2.id).not.toBe(shot.id);
 		const out = await desktops.act(name, RUN_A, shot2.id, CLICK);
@@ -1037,22 +994,18 @@ describe("desktops pool", () => {
 			writeFileSync(p, PNG);
 			utimesSync(p, 1_000_000, 1_000_000 + i);
 		}
-		// The call's own sweep prunes before minting: 205 seeds → 200,
-		// oldest mtimes first, then the new frame lands.
+		// The sweep prunes oldest-mtime-first before the new frame lands.
 		await desktops.screenshot(name);
 		let files = readdirSync(dir).sort();
 		expect(files.length).toBe(201);
 		expect(files.some((f) => f.startsWith("seed-0000"))).toBe(false);
 		expect(files.some((f) => f.startsWith("seed-0005"))).toBe(true);
-		// 201 is over the cap again — the next-oldest seed goes.
 		await desktops.screenshot(name);
 		files = readdirSync(dir).sort();
 		expect(files.length).toBe(201);
 		expect(files.some((f) => f.startsWith("seed-0005"))).toBe(false);
 		expect(files.some((f) => f.startsWith("seed-0006"))).toBe(true);
-		// Destroy freezes what remains (≤ cap after its own sweep's
-		// final prune) — it never wipes the dir: the audit exists for
-		// the post-mortem, not for space reclamation.
+		// Destroy keeps the dir for post-mortem, frozen at ≤ cap.
 		await desktops.destroy(name, RUN_A);
 		expect(readdirSync(dir).length).toBe(200);
 	});
@@ -1093,13 +1046,11 @@ describe("desktops pool", () => {
 				createdAt: old,
 				lastUsedAt: old,
 			});
-			// The caller exists and rides its own sweep — squat is what
-			// gets listed stale.
+			// The caller rides its own sweep — squat is what gets
+			// listed stale.
 			await desktops.allocate("caller");
 			await desktops.screenshot("caller");
-			// The reap is detached — wait for its verdict on the log,
-			// then pin it: the squatter is untouched, the row kept for
-			// the retry, exactly like every other removal path.
+			// The reap is detached — wait for its verdict on the log.
 			await waitFor("the refused reap logged", () =>
 				lines.some((l) => l.msg === "desktop reap failed — row kept" && l.desktop === name),
 			);
@@ -1136,9 +1087,8 @@ describe("desktops pool", () => {
 		const { desktops, name } = await fresh(engine);
 		await desktops.claim(name, RUN_A);
 		const shot = await desktops.screenshot(name);
-		// The runtime gate at the dispatch is what enforces the surface
-		// — a boundary cast to CuaTool (subagents does one) proves
-		// nothing.
+		// Dispatch is the enforcement point — a boundary cast to
+		// CuaTool (subagents does one) proves nothing.
 		const bypass = {
 			kind: "cua" as const,
 			tool: "launch_app" as unknown as CuaTool,
@@ -1148,7 +1098,7 @@ describe("desktops pool", () => {
 			/not an allowed input operation/,
 		);
 		expect(engine.execCalls.some((a) => a.includes("launch_app"))).toBe(false);
-		// Refusal is validation, not dispatch — the same obs id binds.
+		// Refusal didn't consume the obs — the same id still binds.
 		await desktops.act(name, RUN_A, shot.id, CLICK);
 	});
 
@@ -1160,8 +1110,8 @@ describe("desktops pool", () => {
 		await desktops.allocate("b");
 		await desktops.claim("b", RUN_B);
 		const shotB = await desktops.screenshot("b");
-		// b looks stale to every listing, but its lease is live and its
-		// lane is parked on the gated cua exec.
+		// b lists stale but holds a live lease; its lane parks on the
+		// gated cua exec.
 		const rowB = store.get("b")!;
 		rowB.lastUsedAt = Date.now() - 2 * 3_600_000;
 		store.put(rowB);
@@ -1169,15 +1119,13 @@ describe("desktops pool", () => {
 		await waitFor("b's act parked at the cua exec", () =>
 			engine.execCalls.some((c) => c.includes("cua-driver") && c.includes("click")),
 		);
-		// Calls on a sweep stale b into the detached reaper, which
-		// queues behind b's parked lane — under the old awaited sweep
-		// this claim could not complete until the gate resolved.
+		// The sweep's reap of b queues behind b's parked lane — this
+		// claim must still land.
 		await desktops.claim("a", RUN_A);
 		const shotA = await desktops.screenshot("a");
 		expect(shotA.id).toMatch(/^a:/);
 		gate.resolve();
 		await actingB;
-		// b's reap verdict ran after the park and skipped — live lease.
 		await Bun.sleep(50);
 		expect(
 			engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerNameForDesktop("b")),
@@ -1191,8 +1139,6 @@ describe("desktops pool", () => {
 		engine.containers.delete(containerNameForDesktop(name));
 		const shot = await desktops.screenshot(name);
 		expect(shot.id).toMatch(/^d1:/);
-		// Recreated: same name row, same audit generation — the shot
-		// sequence carries over so pre-loss obs ids stay dead.
 		const row = store.get(name)!;
 		expect(row.shotSeq).toBe(1);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
@@ -1205,8 +1151,6 @@ describe("desktops pool", () => {
 		const claimed = await desktops.claim(name, RUN_A);
 		expect(claimed.note).toContain("previous contents and lease are gone");
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
-		// The note is per-claim evidence for the caller, never a row
-		// field — the row keeps no trace of it.
 		expect((store.get(name) as unknown as Record<string, unknown>).note).toBeUndefined();
 	});
 
@@ -1220,12 +1164,8 @@ describe("desktops pool", () => {
 			const row = store.get(name)!;
 			expect(row.lastObsId).toBeNull();
 			expect(row.shotSeq).toBe(0);
-			// Nothing reaches the audit dir either — a partial frame
-			// isn't just unbindable, it must not exist on disk.
 			const shotsDir = join(shotsRoot, name, "shots");
 			expect(existsSync(shotsDir) ? readdirSync(shotsDir) : []).toEqual([]);
-			// The next healthy read still works — integrity failures
-			// don't poison the lane.
 			engine.flags[flag] = false;
 			const shot = await desktops.screenshot(name);
 			expect(shot.id).toMatch(/^d1:1:[0-9a-f-]{36}$/);
@@ -1248,7 +1188,7 @@ describe("desktops pool", () => {
 		const shot = await desktops.screenshot(name);
 		const createdAt = desktops.get(name)!.createdAt;
 		expect(dirname(shot.path)).toBe(join(shotsRoot, name, "shots"));
-		// The obs id's uuid rides the audit basename: createdAt-seq-uuid.
+		// Audit basename: createdAt-seq-uuid.
 		expect(basename(shot.path)).toMatch(
 			new RegExp(`^${createdAt}-1-${shot.id.split(":")[2]}\\.png$`),
 		);
@@ -1260,8 +1200,8 @@ describe("desktops pool", () => {
 		const engine = fakeEngine();
 		const { desktops, name } = await fresh(engine);
 		const first = await desktops.screenshot(name);
-		// Engine-level loss → ensureLocked recreates; the shots dir is
-		// shared across the recreate, so both frames must survive.
+		// The shots dir is shared across a recreate — both frames
+		// must survive.
 		engine.containers.delete(containerNameForDesktop(name));
 		const second = await desktops.screenshot(name);
 		expect(second.id).toMatch(/^d1:2:[0-9a-f-]{36}$/);
@@ -1271,8 +1211,8 @@ describe("desktops pool", () => {
 	});
 
 	test("a destroy/re-allocate generation cannot clobber frames or reuse obs ids", async () => {
-		// Pin the clock so createdAt collides exactly across the
-		// recreation — the uuid is what keeps ids and frames apart.
+		// Pin the clock so createdAt collides across the recreation —
+		// the uuid alone keeps ids and frames apart.
 		const clock = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
 		try {
 			const engine = fakeEngine();
@@ -1290,8 +1230,6 @@ describe("desktops pool", () => {
 			expect(second.path).not.toBe(first.path);
 			expect(await Bun.file(first.path).exists()).toBe(true);
 			expect(await Bun.file(second.path).exists()).toBe(true);
-			// The previous generation's obs id can never bind to the new
-			// desktop's frame; the fresh id acts.
 			await desktops.claim(name, RUN_A);
 			await expect(desktops.act(name, RUN_A, firstId, CLICK)).rejects.toThrow(/fresh screenshot/);
 			await desktops.act(name, RUN_A, second.id, CLICK);
@@ -1325,7 +1263,6 @@ describe("desktops pool", () => {
 			).rejects.toThrow(/not allowed/);
 		}
 		expect(engine.execCalls.some((a) => a.includes("goblin-launch"))).toBe(false);
-		// The allowlist passes through as the single trailing arg.
 		for (const url of ["https://example.com/", "file:///tmp/probe.html", "about:blank"]) {
 			const s = await desktops.screenshot(name);
 			await desktops.act(name, RUN_A, s.id, { kind: "launch", app: "chromium", url });
@@ -1408,15 +1345,11 @@ describe("desktops pool", () => {
 				(e: unknown) => e,
 			);
 			expect(err).toBeInstanceOf(DesktopError);
-			// The driver reported on stdout with stderr empty — the cause
-			// must still carry its diagnostic.
 			expect((err as Error).cause).toBeInstanceOf(DesktopError);
 			expect((err as Error).cause).toMatchObject({ message: expect.stringContaining(diag) });
-			// The observation still burned with the attempt.
 			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
 			const logged = lines.find((l) => l.msg === "desktop act failed");
 			expect(logged).toMatchObject({ desktop: name, action: "cua:click" });
-			// Plain-text stdout diagnostics survive the same way.
 			const engine2 = fakeEngine({ failCuaStdout: `${diag}\n` });
 			const { desktops: d2, name: n2 } = await fresh(engine2);
 			await d2.claim(n2, RUN_A);
@@ -1466,10 +1399,8 @@ describe("desktops pool", () => {
 		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
 		writeFileSync(host, "x");
 		await expect(desktops.cpIn(name, host, "/home/desk")).rejects.toThrow(/non-regular/);
-		// Nothing was copied and NO recursive chown ran anywhere.
 		expect(engine.calls.some((c) => c[0] === "cp")).toBe(false);
 		expect(engine.execCalls.some((c) => c.includes("-R"))).toBe(false);
-		// Non-file destinations are refused before the guest is touched.
 		await expect(desktops.cpIn(name, host, "relative/path")).rejects.toThrow(/absolute file path/);
 		await expect(desktops.cpIn(name, host, "/home/desk/")).rejects.toThrow(/absolute file path/);
 	});
@@ -1516,8 +1447,6 @@ describe("desktops pool", () => {
 		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
 		writeFileSync(host, "x");
 		await expect(desktops.cpIn(name, host, "/etc/f.bin")).rejects.toThrow(/could not import/);
-		// The desk-side copy was attempted as desk and the staged file
-		// was cleaned up after the failure.
 		const deskCp = engine.execCalls.find((c) => c.includes("cp"));
 		expect(deskCp).toBeDefined();
 		expect(deskCp![deskCp!.indexOf("-u") + 1]).toBe("desk");
@@ -1528,12 +1457,9 @@ describe("desktops pool", () => {
 	});
 });
 
-// A sweep triggered by another desktop must not reap a stale row out
-// from under an in-flight operation on that same desktop. The stale
-// listing runs outside any lane; the removal verdict has to be
-// re-read inside the victim's lane, after the in-flight call has
-// landed its activity/lease — otherwise a live claim or a fresh
-// observation still loses its container.
+// The stale listing runs outside any lane; a reap verdict re-read
+// inside the victim's lane must not kill a row whose in-flight op
+// landed activity/lease between listing and verdict.
 describe("idle sweep vs in-flight lane op", () => {
 	function deadline<T>(p: Promise<T>, what: string, ms = 2000): Promise<T> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1569,9 +1495,8 @@ describe("idle sweep vs in-flight lane op", () => {
 			const containerName = aged.container;
 			const containerObj = engine.containers.get(containerName)!;
 
-			// The in-flight op parks at its first inspect of a, inside
-			// a's lane; the sweep's stale listing of a is only
-			// observed, then removal races the parked op's resume.
+			// The in-flight op parks at its first inspect of a; the
+			// sweep's stale listing races the parked op's resume.
 			const origInspect = engine.podman.inspect.bind(engine.podman);
 			let firstInspect = true;
 			engine.podman.inspect = async (name: string, conv?: string) => {
@@ -1645,8 +1570,8 @@ describe("idle sweep vs in-flight lane op", () => {
 });
 
 describe("fail-closed desktop network", () => {
-	// Allocate, then attach the container and mark the row's intent on
-	// so the network-off path runs its own verifies.
+	// Row intent on + container attached — setNetwork(false) must run
+	// its own verifies.
 	async function attached(name: string, engine: ReturnType<typeof fakeEngine>) {
 		const { store, desktops } = rig(engine);
 		await desktops.allocate(name);
@@ -1661,15 +1586,13 @@ describe("fail-closed desktop network", () => {
 		const name = "d1";
 		const engine = fakeEngine();
 		const { store, desktops } = await attached(name, engine);
-		// ensureLocked inspect, the want-true reconcile inspect, the
-		// desired-off pre-inspect, then the post-disconnect
-		// confirmation — that fourth one throws.
+		// +4 = the post-disconnect confirmation inspect; three earlier
+		// ones already ran.
 		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
 		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
 			/could not be inspected.*container was removed/s,
 		);
-		// The disconnect ran first — the removal is the fail-closed
-		// verdict, not a skipped-off ramp.
+		// The disconnect ran first — rm is the fail-closed verdict.
 		const calls = engine.calls;
 		const disconnect = calls.findLastIndex((a) => a[0] === "network" && a[1] === "disconnect");
 		const rm = calls.findLastIndex((a) => a[0] === "rm");
@@ -1684,8 +1607,7 @@ describe("fail-closed desktop network", () => {
 		const engine = fakeEngine();
 		const { store, desktops } = rig(engine);
 		await desktops.allocate(name);
-		// Attached container, off intent — the applyNetwork inspect
-		// (second overall) throws before any verdict.
+		// +2 = the applyNetwork inspect inside claim's reconcile.
 		engine.containers.get(containerNameForDesktop(name))!.networks.add(NETWORK);
 		engine.flags.failInspectFrom = engine.flags.inspectCalls + 2;
 		await expect(desktops.claim(name, RUN_A)).rejects.toThrow(
@@ -1716,8 +1638,7 @@ describe("fail-closed desktop network", () => {
 		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
 			/could not be inspected.*could not be removed.*rm wedged/s,
 		);
-		// rm never landed — container and row survive for the retry,
-		// the original inspect failure stays the cause.
+		// rm failed — both survive for the retry.
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
 		expect(store.get(name)).not.toBeNull();
 	});
@@ -1743,8 +1664,8 @@ describe("observation id persistence", () => {
 		// A fresh owner on the same db — the goblin-restart shape.
 		const d2 = mk();
 		expect(d2.get("a")!.lastObsId).toBe(shot.id);
-		// The boot generation rides with it — the reopened owner must
-		// not mistake the recorded frame for a different boot's.
+		// bootGen persists too — the reopened owner must not bind the
+		// recorded frame to a different boot.
 		expect(d2.get("a")!.bootGen).not.toBeNull();
 		await d2.act("a", RUN_A, shot.id, CLICK);
 	});

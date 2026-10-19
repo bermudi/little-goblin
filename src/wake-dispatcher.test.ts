@@ -6,11 +6,12 @@
 // is real, the store/journal/wake store are real SQLite.
 
 import { describe, expect, test } from "bun:test";
+import { APICallError } from "@ai-sdk/provider";
 import { type LanguageModel, tool, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
-import { Runtime, userMessage } from "./runtime.ts";
+import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { deferred, fakeModel, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import {
@@ -41,7 +42,13 @@ interface Rig {
 // ownership hooks late-bound to the dispatcher — same wiring index.ts
 // builds, minus Telegram.
 function rig(
-	opts: { model?: LanguageModel; tools?: ToolSet; store?: Store } = {},
+	opts: {
+		model?: LanguageModel;
+		tools?: ToolSet;
+		store?: Store;
+		buildStep?: RuntimeDeps["buildStep"];
+		compaction?: NonNullable<RuntimeDeps["compaction"]>;
+	} = {},
 ): Rig {
 	const store = opts.store ?? openStore(tmpDb("goblin-wd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -51,8 +58,10 @@ function rig(
 	const runtime = new Runtime({
 		store,
 		turnJournal: journal,
-		buildStep: () => ({ model: opts.model ?? fakeModel(["ok"]), system: "test" }),
+		buildStep:
+			opts.buildStep ?? (() => ({ model: opts.model ?? fakeModel(["ok"]), system: "test" })),
 		makeTools: () => opts.tools ?? {},
+		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
 			members: (r, ids) => dispatcher.hooks.members(r, ids),
@@ -105,6 +114,77 @@ function claimedOnly(r: Rig, key: string, text = "the one line") {
 }
 
 describe("wake dispatcher", () => {
+	test("/stop before journal creation never resubmits the canceled wake", async () => {
+		const script = scriptedModel([textParts("must not run")]);
+		const r = rig({ model: script.model });
+		const rec = dev(r, "immediate-stop");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		await r.runtime.stop(r.conv.id).settled;
+		await waitUntil(
+			() => !r.runtime.isAdmitted(r.conv.id, wake(r, rec.wakeId).messageId),
+			"canceled admission drained",
+		);
+		r.dispatcher.pump();
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		// Reopening the store must preserve the cancellation fence.
+		const reopened = openWakeStore(r.store.db);
+		expect(reopened.reconcile(new Date().toISOString(), () => null).toResubmit).toHaveLength(0);
+		expect(script.streamCalls).toHaveLength(0);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("overflow keeps wake claimed until its successful successor delivers", async () => {
+		const overflow = new APICallError({
+			message:
+				"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+			url: "https://api.openai.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 400,
+		});
+		const script = scriptedModel([overflow, textParts("recovered")]);
+		const continuation = deferred<void>();
+		let builds = 0;
+		const r = rig({
+			buildStep: async () => {
+				if (++builds === 3) await continuation.promise; // admission, compaction, successor
+				return { model: script.model, system: "test", contextWindow: 1000 };
+			},
+			compaction: { modelRef: () => "m", summarize: async () => "folded era" },
+		});
+		for (let i = 0; i < 3; i++) {
+			r.store.append(r.conv.id, [
+				userMessage([{ type: "text", text: `${"x".repeat(600)} q${i}` }]),
+			]);
+			r.store.append(
+				r.conv.id,
+				[
+					{
+						id: `seed-${i}`,
+						role: "assistant",
+						parts: [{ type: "text", text: `${"x".repeat(600)} a${i}` }],
+					},
+				],
+				{ anchorSeq: r.store.lastUserSeq(r.conv.id) },
+			);
+		}
+		const rec = dev(r, "overflow-recovery");
+		await waitUntil(() => builds === 3, "successor admission held");
+		const firstRun = r.store.db
+			.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs WHERE status = 'error'")
+			.get()!.run_id;
+		expect(r.journal.get(firstRun)?.delivery).toBe("undelivered");
+		r.dispatcher.pump(); // ticker while the successor is still building its prompt
+		expect(wake(r, rec.wakeId).state).toBe("claimed");
+		continuation.resolve();
+		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "successor delivered");
+		expect(wake(r, rec.wakeId).runId).not.toBe(firstRun);
+		expect(r.journal.get(wake(r, rec.wakeId).runId!)?.delivery).toBe("delivered");
+		expect(script.streamCalls).toHaveLength(2);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
 	test("record → pump appends the trigger once, links the real run, settles on completion", async () => {
 		const r = rig();
 		const rec = dev(r, "poll:1", "the development");
@@ -201,7 +281,11 @@ describe("wake dispatcher", () => {
 		const gate = deferred<void>();
 		const edge = scriptedModel(
 			[
-				[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "probe"), finishPart("tool-calls")],
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe"),
+					finishPart("tool-calls"),
+				],
 				textParts("adjusted"),
 			],
 			{ extra: textParts("adjusted") },
@@ -243,7 +327,11 @@ describe("wake dispatcher", () => {
 		const gate = deferred<void>();
 		const edge = scriptedModel(
 			[
-				[{ type: "stream-start", warnings: [] }, toolCallPart("c1", "probe"), finishPart("tool-calls")],
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe"),
+					finishPart("tool-calls"),
+				],
 				textParts("adjusted"),
 			],
 			{ extra: textParts("adjusted") },

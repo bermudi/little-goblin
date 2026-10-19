@@ -42,6 +42,56 @@ function appendInto(store: ConversationStore, conversationId: string) {
 }
 
 describe("wake store", () => {
+	test("opening a pre-epoch wake table migrates without restoring unknown authority", () => {
+		const store = openStore(":memory:");
+		const conv = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		store.db.run(`CREATE TABLE wake_deliveries (
+			wake_id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL,
+			message_id TEXT NOT NULL, state TEXT NOT NULL, history_seq INTEGER,
+			run_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+			next_attempt_at TEXT, created_at TEXT NOT NULL, claimed_at TEXT,
+			settled_at TEXT
+		)`);
+		store.db.run(
+			`INSERT INTO wake_deliveries
+			(conversation_id, message_id, state, history_seq, created_at, claimed_at)
+			VALUES (?, 'legacy-message', 'claimed', 1, '2026-10-19', '2026-10-19')`,
+			[conv.id],
+		);
+		const wakes = openWakeStore(store.db);
+		expect(wakes.get(1)?.claimEpoch).toBeNull();
+		const plan = wakes.reconcile(new Date().toISOString(), () => null);
+		expect(plan.toFail.map((w) => w.wakeId)).toEqual([1]);
+		expect(plan.toResubmit).toHaveLength(0);
+		store.close();
+	});
+
+	test("unlinked claims survive a crash, but not a durable authority fence", () => {
+		const { dir, store, conv, wakes } = setup();
+		const rec = wakes.record({
+			sourceKey: "claim-before-stop",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "a development",
+			facts: {},
+			origin: "observer",
+		});
+		wakes.commit(rec.wakeId, appendInto(store, conv.id).append);
+		expect(wakes.get(rec.wakeId)?.claimEpoch).toBe(conv.epoch);
+		const now = new Date().toISOString();
+		expect(wakes.reconcile(now, () => null).toResubmit).toHaveLength(1);
+		store.bumpEpoch(conv.id);
+		store.close();
+		const reopened = openStore(join(dir, "goblin.sqlite"));
+		const recovered = openWakeStore(reopened.db);
+		expect(recovered.reconcile(now, () => null).toResubmit).toHaveLength(0);
+		expect(recovered.reconcile(now, () => null).toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
+		// An old claim without a provable epoch must also fail closed.
+		reopened.db.run("UPDATE wake_deliveries SET claim_epoch = NULL");
+		expect(recovered.reconcile(now, () => null).toFail).toHaveLength(1);
+		reopened.close();
+	});
+
 	test("a duplicate source key cannot create a second event or wake", () => {
 		const { conv, wakes } = setup();
 		const first = wakes.record({
@@ -371,10 +421,9 @@ describe("wake store", () => {
 		const messageId = wakes.get(rec.wakeId)!.messageId;
 		const second = new Database(join(dir, "goblin.sqlite"));
 		const row = second
-			.query<
-				{ state: string; history_seq: number; message_id: string },
-				[number]
-			>("SELECT state, history_seq, message_id FROM wake_deliveries WHERE wake_id = ?")
+			.query<{ state: string; history_seq: number; message_id: string }, [number]>(
+				"SELECT state, history_seq, message_id FROM wake_deliveries WHERE wake_id = ?",
+			)
 			.get(rec.wakeId);
 		second.close();
 		expect(row).toEqual({ state: "claimed", history_seq: 1, message_id: messageId });

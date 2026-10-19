@@ -113,6 +113,16 @@ terminal `onDone`.
 
 ## What must not change
 
+Durable wake delivery (`wake-store.ts`, `wake-dispatcher.ts`) follows
+the journal's ownership hooks, not submit callbacks. Claiming a trigger
+also records the conversation epoch: an unlinked claim may recover
+after a crash only while that authority still matches. Legacy unlinked
+claims without a recorded epoch fail closed. An overflow attempt's
+`error/undelivered` stamp is not a terminal wake failure while its
+message is still admitted under the same epoch; the successor's begin
+hook transfers ownership. A stop, lost admission, or process death
+ends that temporary hold.
+
 Invariants a refactor can still break silently — the audit list for any
 turn-structure change.
 

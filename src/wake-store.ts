@@ -41,6 +41,8 @@ export interface WakeRecord {
 	state: WakeState;
 	/** events.seq of the appended trigger — the durable history reference. */
 	historySeq: number | null;
+	/** Authority at append time; an unlinked claim cannot outlive it. */
+	claimEpoch: number | null;
 	runId: string | null;
 	attempts: number;
 	lastError: string | null;
@@ -76,6 +78,7 @@ const wakeRowSchema = z.object({
 	message_id: z.string(),
 	state: z.enum(["pending", "claimed", "settled", "failed"]),
 	history_seq: z.number().nullable(),
+	claim_epoch: z.number().nullable(),
 	run_id: z.string().nullable(),
 	attempts: z.number(),
 	last_error: z.string().nullable(),
@@ -163,6 +166,7 @@ export function openWakeStore(db: Database): WakeStore {
 			message_id TEXT NOT NULL UNIQUE,
 			state TEXT NOT NULL CHECK (state IN ('pending','claimed','settled','failed')),
 			history_seq INTEGER,
+			claim_epoch INTEGER,
 			run_id TEXT,
 			attempts INTEGER NOT NULL DEFAULT 0,
 			last_error TEXT,
@@ -173,6 +177,13 @@ export function openWakeStore(db: Database): WakeStore {
 			CHECK ((state = 'pending' AND history_seq IS NULL AND claimed_at IS NULL)
 				OR (state <> 'pending' AND history_seq IS NOT NULL AND claimed_at IS NOT NULL))
 		)`);
+	const wakeCols = db.query<{ name: string }, []>("PRAGMA table_info(wake_deliveries)").all();
+	if (!wakeCols.some((c) => c.name === "claim_epoch")) {
+		// Old unlinked claims have no provable authority. Leave them NULL
+		// so reconciliation fails closed rather than reviving stopped work.
+		db.run("ALTER TABLE wake_deliveries ADD COLUMN claim_epoch INTEGER");
+		log.info("wake claim authority column added — legacy unlinked claims fail closed");
+	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS wake_events (
 			wake_id INTEGER NOT NULL REFERENCES wake_deliveries(wake_id),
@@ -219,7 +230,10 @@ export function openWakeStore(db: Database): WakeStore {
 		"SELECT seq, data FROM events WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1",
 	);
 	const qClaim = db.prepare(
-		"UPDATE wake_deliveries SET state = 'claimed', history_seq = ?, claimed_at = ? WHERE wake_id = ? AND state = 'pending'",
+		"UPDATE wake_deliveries SET state = 'claimed', history_seq = ?, claimed_at = ?, claim_epoch = (SELECT epoch FROM conversations WHERE id = wake_deliveries.conversation_id) WHERE wake_id = ? AND state = 'pending'",
+	);
+	const qEpoch = db.query<{ epoch: number }, [string]>(
+		"SELECT epoch FROM conversations WHERE id = ?",
 	);
 	const qLinkRun = db.prepare(
 		"UPDATE wake_deliveries SET run_id = ?, next_attempt_at = NULL WHERE wake_id = ? AND state = 'claimed'",
@@ -240,6 +254,7 @@ export function openWakeStore(db: Database): WakeStore {
 			messageId: parsed.message_id,
 			state: parsed.state,
 			historySeq: parsed.history_seq,
+			claimEpoch: parsed.claim_epoch,
 			runId: parsed.run_id,
 			attempts: parsed.attempts,
 			lastError: parsed.last_error,
@@ -331,8 +346,7 @@ export function openWakeStore(db: Database): WakeStore {
 		},
 
 		pending(conversationId) {
-			const rows =
-				conversationId === undefined ? qPendingAll.all() : qPending.all(conversationId);
+			const rows = conversationId === undefined ? qPendingAll.all() : qPending.all(conversationId);
 			return rows.map(rowToRecord);
 		},
 
@@ -453,7 +467,11 @@ export function openWakeStore(db: Database): WakeStore {
 					continue;
 				}
 				if (rec.runId === null) {
-					if (rec.nextAttemptAt !== null && rec.nextAttemptAt > now) {
+					const conv = qEpoch.get(rec.conversationId);
+					if (conv === null) throw new Error(`wake ${rec.wakeId} conversation missing`);
+					if (rec.claimEpoch === null || rec.claimEpoch !== conv.epoch) {
+						plan.toFail.push(rec);
+					} else if (rec.nextAttemptAt !== null && rec.nextAttemptAt > now) {
 						plan.waitingBackoff.push(rec);
 					} else {
 						plan.toResubmit.push(rec);

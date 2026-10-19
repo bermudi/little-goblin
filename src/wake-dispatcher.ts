@@ -72,6 +72,17 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			seen.add(cur);
 			const run = journal.get(cur);
 			if (run === null) return null;
+			// Overflow withholds delivery while the same admitted messages
+			// move to a successor. Its failed attempt is terminal, but its
+			// wake is not. Admission (and the epoch) bounds this hold: stop,
+			// failed continuation admission, or process death ends it.
+			if (
+				run.status === "error" &&
+				run.delivery === "undelivered" &&
+				store.get(run.conversationId)?.epoch === run.epoch &&
+				wakes.forRun(cur).some((w) => runtime.isAdmitted(w.conversationId, w.messageId))
+			)
+				return "running";
 			if (run.status !== "resumed") return run.status;
 			const next = journal.successorOf(cur);
 			if (next === null) return "error"; // resumed with no successor — corrupt
@@ -204,7 +215,10 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			for (const rec of plan.toFail) {
 				guard("fail", () =>
 					wakes.settle(rec.wakeId, "failed", {
-						error: `turn run ${rec.runId ?? "?"} ended ${runStatus(rec.runId ?? "") ?? "?"}`,
+						error:
+							rec.runId === null
+								? "wake admission authority expired or is unknown"
+								: `turn run ${rec.runId} ended ${runStatus(rec.runId) ?? "?"}`,
 					}),
 				);
 			}

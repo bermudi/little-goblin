@@ -42,7 +42,10 @@ async function readJson(req: Request): Promise<unknown | Response> {
 	if (refusedJson !== null) return refusedJson;
 	try {
 		return await req.json();
-	} catch {
+	} catch (err) {
+		// Malformed client JSON is a protocol refusal, not a successful
+		// mutation. Stream/I/O failures still reach the HTTP error boundary.
+		if (!(err instanceof SyntaxError)) throw err;
 		return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 	}
 }
@@ -164,14 +167,43 @@ export async function handleResponsibilitiesRoute(
 		// gets a new generation with its new agent_session; never the
 		// old binding revived.
 		const agents = await respsDeps.listAgents();
-		const live = agents.find(
-			(a) =>
-				(a.name === att.target.agentName || a.pane_id === att.target.paneId) &&
-				a.agent === att.target.kind,
+		// A stored pane is the identity selector; its former name may
+		// now belong to another agent. Name lookup is legacy-only.
+		const matches = agents.filter((a) =>
+			att.target.paneId !== null
+				? a.pane_id === att.target.paneId
+				: a.name === att.target.agentName,
 		);
-		if (live === undefined) {
+		if (matches.length !== 1) {
+			log.warn("app attachment reattach refused — target not unique", {
+				attachment: attachmentId,
+				pane: att.target.paneId,
+				agentName: att.target.agentName,
+				matches: matches.length,
+			});
 			return Response.json(
-				{ error: "no live agent at the attachment's target" },
+				{
+					error:
+						matches.length === 0
+							? "no live agent at the attachment's target — list agents before reattaching"
+							: "ambiguous attachment target — list agents and attach by pane instead",
+				},
+				{ status: 409, headers: NO_STORE },
+			);
+		}
+		const live = matches[0]!;
+		if (live.agent !== att.target.kind || live.terminal_id === null) {
+			log.warn("app attachment reattach refused — identity mismatch", {
+				attachment: attachmentId,
+				pane: live.pane_id,
+				expectedKind: att.target.kind,
+				kind: live.agent,
+				terminalId: live.terminal_id,
+			});
+			return Response.json(
+				{
+					error: "target kind changed or terminal identity missing — list agents before reattaching",
+				},
 				{ status: 409, headers: NO_STORE },
 			);
 		}

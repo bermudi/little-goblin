@@ -118,6 +118,18 @@ describe("app responsibilities", () => {
 			});
 			if (!("operation" in prepared)) throw new Error("expected prepared");
 
+			// Malformed client JSON is a 400, never a mutation or a
+			// successful correction with an empty/default body.
+			const malformed = await call(`/api/app/responsibilities/${id}/correct`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{",
+			});
+			expect(malformed.status).toBe(400);
+			expect(await malformed.json()).toEqual({ error: "bad json" });
+			expect(rig.resps.get(id)!.revision).toBe(responsibility.revision);
+			expect(rig.store.db.query("SELECT event_id FROM work_events").all()).toHaveLength(0);
+
 			// Correct — a comment lands as a durable operator event.
 			const corrected = await call(`/api/app/responsibilities/${id}/correct`, {
 				method: "POST",
@@ -256,3 +268,111 @@ describe("app responsibilities", () => {
 		}
 	});
 });
+
+const liveAgent = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
+	pane_id: "pane-7",
+	workspace_id: "w",
+	tab_id: "t",
+	agent: "pi",
+	agent_status: "idle",
+	name: "worker-1",
+	cwd: "/w",
+	terminal_title: null,
+	workspace_label: null,
+	tab_label: null,
+	terminal_id: "term-CURRENT",
+	agent_session: "sess-CURRENT",
+	state_change_seq: 1,
+	completion_seq: null,
+	revision: 1,
+	...over,
+});
+
+for (const scenario of [
+	{
+		name: "stored pane wins over a reused name",
+		agents: [
+			liveAgent({ pane_id: "pane-OTHER", agent_session: "sess-OTHER" }),
+			liveAgent({ name: "renamed" }),
+		],
+		paneId: "pane-7",
+		status: 200,
+	},
+	{
+		name: "missing pane never falls back to a reused name",
+		agents: [liveAgent({ pane_id: "pane-OTHER" })],
+		paneId: "pane-7",
+		status: 409,
+	},
+	{
+		name: "legacy name must resolve uniquely",
+		agents: [liveAgent(), liveAgent({ pane_id: "pane-OTHER" })],
+		paneId: null,
+		status: 409,
+	},
+	{
+		name: "legacy unique name remains supported",
+		agents: [liveAgent()],
+		paneId: null,
+		status: 200,
+	},
+	{
+		name: "duplicate pane observations are ambiguous",
+		agents: [liveAgent(), liveAgent({ name: "other" })],
+		paneId: "pane-7",
+		status: 409,
+	},
+	{
+		name: "missing terminal identity refuses binding",
+		agents: [liveAgent({ terminal_id: null })],
+		paneId: "pane-7",
+		status: 409,
+	},
+]) {
+	test(`reattach: ${scenario.name}`, async () => {
+		let rig!: Rig;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				rig = depsFor(ctx, { agents: scenario.agents });
+				return rig.responsibilities;
+			},
+		});
+		try {
+			const project = projects.create({ name: "target resolution" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = rig.resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "resolution",
+				understanding,
+			});
+			const att = rig.resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: target({ paneId: scenario.paneId }),
+				baseline: {},
+			});
+			rig.resps.detach(att.attachmentId);
+			const before = rig.resps.getAttachment(att.attachmentId)!;
+			const response = await call(
+				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
+				{ method: "POST" },
+			);
+			expect(response.status).toBe(scenario.status);
+			const after = rig.resps.getAttachment(att.attachmentId)!;
+			if (scenario.status === 200) {
+				expect(after.target.paneId).toBe("pane-7");
+				expect(after.target.agentSession).toBe("sess-CURRENT");
+				expect(after.generation).toBe(before.generation + 1);
+			} else {
+				expect(after).toEqual(before);
+				expect(await response.json()).toHaveProperty("error");
+			}
+		} finally {
+			http.stop();
+		}
+	});
+}

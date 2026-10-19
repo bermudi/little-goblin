@@ -103,6 +103,15 @@ function FeedRow({
 	const r = item.responsibility;
 	const [correcting, setCorrecting] = useState(false);
 	const [comment, setComment] = useState("");
+	const [mutationError, setMutationError] = useState<string | null>(null);
+	// Translate a rejected HTTP mutation into visible operator feedback;
+	// keep the draft and controls intact, and never retry automatically.
+	const failed = (action: string, err: unknown) => {
+		setBusy(false);
+		setMutationError(
+			`Couldn't ${action}: ${err instanceof Error ? err.message : String(err)}. Check the current state before retrying.`,
+		);
+	};
 	const open =
 		r.status === "active" ||
 		r.status === "waiting_for_operator" ||
@@ -110,18 +119,20 @@ function FeedRow({
 		r.status === "paused";
 
 	const act = (action: "pause" | "resume" | "cancel") => {
+		setMutationError(null);
 		setBusy(true);
 		void responsibilityAction(token, r.responsibilityId, action).then(
 			() => {
 				setBusy(false);
 				onChanged();
 			},
-			() => setBusy(false),
+			(err: unknown) => failed(action, err),
 		);
 	};
 	const sendCorrection = () => {
 		const text = comment.trim();
 		if (text === "") return;
+		setMutationError(null);
 		setBusy(true);
 		void correctResponsibility(token, r.responsibilityId, { text }).then(
 			() => {
@@ -130,17 +141,18 @@ function FeedRow({
 				setBusy(false);
 				onChanged();
 			},
-			() => setBusy(false),
+			(err: unknown) => failed("send correction", err),
 		);
 	};
 	const onAttachment = (attachmentId: number, action: "detach" | "reattach") => {
+		setMutationError(null);
 		setBusy(true);
 		void attachmentAction(token, r.responsibilityId, attachmentId, action).then(
 			() => {
 				setBusy(false);
 				onChanged();
 			},
-			() => setBusy(false),
+			(err: unknown) => failed(`${action} attachment ${attachmentId}`, err),
 		);
 	};
 
@@ -161,6 +173,9 @@ function FeedRow({
 				)}
 			</summary>
 			<div className="resp-detail">
+				{mutationError !== null && (
+					<p className="error" role="alert">{mutationError}</p>
+				)}
 				{r.notArmedReason !== null && (
 					<p className="resp-warn">not armed — {r.notArmedReason}</p>
 				)}
@@ -250,6 +265,7 @@ function FeedRow({
 				{correcting && (
 					<div className="resp-correct">
 						<textarea
+							disabled={busy}
 							value={comment}
 							onChange={(e) => setComment(e.target.value)}
 							placeholder="A correction or note — it lands in the work's conversation as durable context"

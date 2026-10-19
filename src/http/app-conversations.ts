@@ -1,7 +1,3 @@
-// App conversation routes: list/create, per-conversation settings and
-// context, message history, stop/compact, the resumable stream attach,
-// row patch/delete, and app-pool search.
-
 import { randomUUID } from "node:crypto";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
@@ -40,15 +36,9 @@ import type {
 const createBody = z.object({
 	id: appIdSchema.optional(),
 	title: z.string().min(1).max(200).optional(),
-	// Project binding — creation only; reposts must repeat the stored
-	// value or conflict (design/projects.md).
 	projectId: z.string().min(1).optional(),
 });
 
-// The row's three mutable fields: title (rename), archived (rail ↔
-// archived section), pinned (rail anchor above the activity order). A
-// patch with none is a client bug — same "nothing to write" refusal as
-// configPatchBody.
 const convPatchBody = z
 	.object({
 		title: z.string().min(1).max(200).optional(),
@@ -59,9 +49,6 @@ const convPatchBody = z
 		message: "nothing to write",
 	});
 
-// One stored turn's usage — the same narrowing the app client applies
-// to message.metadata (ChatView turnMeta). Unknown shapes read as
-// absent, never throw: history rows predate the stamp.
 function contextUsageOf(m: UIMessage): {
 	input: number | null;
 	output: number | null;
@@ -82,8 +69,6 @@ function contextUsageOf(m: UIMessage): {
 	};
 }
 
-// Conversation id path segment: the minted id alone (the "app/" prefix
-// can't appear inside a path segment, so the full id is rebuilt here).
 function conversationFromSegment(segment: string): { id: string } | Response {
 	let decoded: string;
 	try {
@@ -98,17 +83,12 @@ function conversationFromSegment(segment: string): { id: string } | Response {
 	return { id: `app/${parsed.data}` };
 }
 
-// The operator's verdict on one ambiguous journaled call — `note` is
-// the asserted result for 'record-result', free context for
-// 'authorize-retry'/'skip'.
 const decideBody = z.object({
 	callId: z.string().min(1).max(200),
 	decision: z.enum(["record-result", "authorize-retry", "skip"]),
 	note: z.string().max(4000).optional(),
 });
 
-// Journaled call → wire shape — the decision UI reads state, args,
-// and any recorded outcome.
 function appRunCall(c: TurnToolCall): AppRunCall {
 	return {
 		toolCallId: c.toolCallId,
@@ -133,9 +113,6 @@ function appInterruptedRun(view: InterruptedRunView): AppInterruptedRun {
 	};
 }
 
-// turn-resume's refusal classes → HTTP: unknown row 404, a state fight
-// 409, a broken contract (drift, unreadable snapshot) 422, a closed
-// runtime 503.
 function refusalStatus(code: ResumeRefusalCode): number {
 	switch (code) {
 		case "not-found":
@@ -179,11 +156,6 @@ export async function handleConversationsRoute(
 					{ status: 422, headers: NO_STORE },
 				);
 			}
-			// Creation + binding + snapshot commit together. Reposting
-			// the same id preserves its selection rather than reapplying
-			// defaults; a repost whose projectId disagrees with the stored
-			// binding conflicts — project membership is fixed at creation
-			// (design/projects.md).
 			const appId = parsed.data.id ?? randomUUID();
 			const convId = `app/${appId}`;
 			const outcome = store.db.transaction(
@@ -205,8 +177,6 @@ export async function handleConversationsRoute(
 					const row = store.resolve(appAddress(appId), paths.workspace(), deps.configRef.current);
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
-						// A memory-off project's chats arrive excluded — a
-						// birth-time stamp, so no epoch fence is owed.
 						if (project.memory === "off") store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
@@ -247,8 +217,6 @@ export async function handleConversationsRoute(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 
-	// Per-conversation settings live in SQLite, not goblin.json5. A
-	// patch does not bump the epoch or interrupt the admitted turn.
 	const configMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/config$/);
 	if (configMatch) {
 		const convId = conversationFromSegment(configMatch[1]!);
@@ -275,14 +243,11 @@ export async function handleConversationsRoute(
 					{ status: 422, headers: NO_STORE },
 				);
 			}
-			// Body reads yield: recheck the row and live registry now.
 			if (store.get(convId.id) === null) {
 				return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 			}
 			const cfg = deps.configRef.current;
 			try {
-				// Same provider-ref validation as global config; validate
-				// before initialization so a bad patch writes nothing.
 				parseConfig({ ...cfg, ...parsed.data });
 			} catch (err) {
 				if (err instanceof ConfigValidationError) {
@@ -307,9 +272,6 @@ export async function handleConversationsRoute(
 		return Response.json(configView(cfg, settings), { headers: NO_STORE });
 	}
 
-	// GET /api/app/conversations/<id>/context — the last turn's window
-	// utilization plus cache-hit rates across stored turns. Read-only:
-	// no settings initialization, no epoch fence.
 	const contextMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/context$/);
 	if (contextMatch) {
 		if (req.method !== "GET") {
@@ -375,10 +337,6 @@ export async function handleConversationsRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// GET /api/app/conversations/<id>/interrupted — the crash journal's
-	// resumable rows for this conversation: runs the process died on,
-	// each with every journaled call so the client can render the
-	// decision list. Validation and admission live in turn-resume.ts.
 	const interruptedMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/interrupted$/);
 	if (interruptedMatch) {
 		if (req.method !== "GET") {
@@ -402,9 +360,6 @@ export async function handleConversationsRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// POST /api/app/conversations/<id>/runs/<runId>/decide — the
-	// operator's verdict on one ambiguous call: done records the
-	// asserted outcome, retry authorizes re-execution, skip drops it.
 	const decideMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/decide$/);
 	if (decideMatch) {
 		if (req.method !== "POST") {
@@ -459,9 +414,6 @@ export async function handleConversationsRoute(
 		);
 	}
 
-	// POST /api/app/conversations/<id>/runs/<runId>/resume — the fresh
-	// admission for an interrupted run. 409 with the undecided calls
-	// when ambiguity remains; refusal codes map via refusalStatus.
 	const resumeMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/runs\/([^/]+)\/resume$/);
 	if (resumeMatch) {
 		if (req.method !== "POST") {
@@ -513,15 +465,11 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		// Envelope v1 unwraps verbatim — no translation layer between the
-		// store and the client (DESIGN.md, App channel).
 		const body: AppMessageList = { messages: store.history(convId.id) };
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// /stop rides the existing lane: the same epoch bump + abort the
-	// telegram command invokes — the client only reaches it through here.
 	const stopMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stop$/);
 	if (stopMatch) {
 		if (req.method !== "POST") {
@@ -538,9 +486,6 @@ export async function handleConversationsRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
-	// /compact is the same lane job the Telegram command queues — the
-	// request awaits it, so a running turn finishing first shows up as a
-	// slow response, not a 202 the client then has to poll past.
 	const compactMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/compact$/);
 	if (compactMatch) {
 		if (req.method !== "POST") {
@@ -580,15 +525,6 @@ export async function handleConversationsRoute(
 		}
 	}
 
-	// GET /api/app/conversations/<id>/stream — the resumable-stream
-	// attach point (AI SDK reconnectToStream): the wire log of a live
-	// turn, replayed from the first chunk, then a live tail until the
-	// turn's outcome. A reload mid-turn, a tunnel blip, a second screen
-	// — the caller re-watches the in-flight reply instead of staring at
-	// a finished-looking chat. No live turn → 204 (the SDK's contract) —
-	// and because the runtime persists each reply before it retires the
-	// wire, that 204 also promises durable history is final; the client
-	// re-reads and merges it (#79, pinned by test below).
 	const streamMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stream$/);
 	if (streamMatch) {
 		if (req.method !== "GET") {
@@ -613,9 +549,6 @@ export async function handleConversationsRoute(
 			},
 		);
 		if (replay === null) {
-			// No live turn — but the writer (and its heartbeat) was already
-			// constructed (review M1): dispose or the beat leaks for the
-			// process lifetime on every attach-with-nothing-to-attach.
 			writer.dispose();
 			return new Response(null, { status: 204, headers: NO_STORE });
 		}
@@ -626,15 +559,6 @@ export async function handleConversationsRoute(
 		});
 	}
 
-	// PATCH /api/app/conversations/<id> — rename and/or archive toggle.
-	// An explicit operator title wins over the implicit auto-title rule.
-	// Archiving is list visibility only: no fence, the row keeps taking
-	// turns — and the next appended event clears the flag (auto-unarchive
-	// in store.append). Pinning is refused on archived rows (409): a row
-	// hidden from the rail can't be anchored above it.
-	// DELETE /api/app/conversations/<id> — remove the row and everything
-	// it owns; a live turn is fenced first so the lane is quiet when the
-	// delete lands.
 	const convItemMatch = path.match(/^\/api\/app\/conversations\/([^/]+)$/);
 	if (convItemMatch) {
 		const convId = conversationFromSegment(convItemMatch[1]!);
@@ -659,10 +583,6 @@ export async function handleConversationsRoute(
 				);
 			}
 			if (parsed.data.pinned === true) {
-				// Mirror of the store's pin invariant (409, not a 500 from
-				// the store's throw): the patch must leave the row
-				// unarchived, so {archived: true, pinned: true} conflicts
-				// here too.
 				const row = store.get(convId.id);
 				const stays =
 					parsed.data.archived === false ||
@@ -714,14 +634,10 @@ export async function handleConversationsRoute(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 
-	// GET /api/app/search?q=…&limit= — FTS over the app pool only; the
-	// channels' histories never cross (DESIGN.md: disjoint channels).
 	if (path === "/api/app/search") {
 		if (req.method !== "GET") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		// An overlong q refuses rather than silently truncating — the
-		// operator log route's ruling.
 		const q = z
 			.string()
 			.max(256)

@@ -1,6 +1,3 @@
-// POST /api/check-injection — loopback-only scoring through the shared
-// System One gate. Fake the gate at the edge, drive real HTTP; no model, no
-// network, no Telegram.
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -23,7 +20,7 @@ const baseConfig: Config = {
 	operators: [42],
 	allowedUsers: [42],
 	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
-	http: { port: 0 }, // ephemeral
+	http: { port: 0 },
 	logLevel: "info",
 };
 
@@ -83,8 +80,6 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 		});
 		const bytes = await readBodyBytesCapped(req(stream), 16);
 		expect(bytes).toBeNull();
-		// The reader stopped at the cap — the oversize body is not
-		// drained into memory on its way to the rejection.
 		expect(pulled).toBe(0);
 	});
 
@@ -95,10 +90,6 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 				c.close();
 			},
 		});
-		// fetch won't set content-length by hand, but a hand-built
-		// Request (or any hostile client) can lie: declared 8, actually
-		// 32. The streamed byte count — not the declared header — is
-		// the lock, and this is the only test that pins it.
 		const bytes = await readBodyBytesCapped(req(stream, { "content-length": "8" }), 16);
 		expect(bytes).toBeNull();
 	});
@@ -119,7 +110,7 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 			16,
 		);
 		expect(bytes).toBeNull();
-		expect(read).toBe(0); // rejected on the header alone — the body never read
+		expect(read).toBe(0);
 	});
 
 	test("a null body is an empty read, not oversize", async () => {
@@ -138,7 +129,6 @@ describe("injection check endpoint", () => {
 			expect(j.status).toBe("malicious");
 			expect(j.injection).toBeCloseTo(0.9);
 			expect(j.severity).toBeCloseTo(0.8);
-			// The verdict is the exact display string the mail wrapper prints.
 			expect(j.verdict).toBe(
 				verdictLine({ status: "malicious", injection: 0.9, severity: 0.8, ms: 0 }),
 			);

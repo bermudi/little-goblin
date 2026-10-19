@@ -1,13 +1,3 @@
-// The ui tool's input schema — the component library the model builds
-// interfaces from (design/app.md → Intelligent UI). Shared with the app
-// client (progressive render validates partial blocks with the same
-// shapes), so this module is zod only: no server imports.
-//
-// Two levels, no recursion — container children are leaves only. A
-// recursive schema emits $ref/$defs in the wire JSON Schema, which
-// OpenAI-compatible providers handle unevenly; a rejected tool schema
-// breaks every app turn.
-
 import { z } from "zod";
 
 const md = z.string().describe("Markdown body");
@@ -201,17 +191,11 @@ export type UiInput = z.infer<typeof uiInputSchema>;
 
 // ---------- type repair ----------
 
-// GLM sometimes emits a block with every field but "type" — it writes
-// the discriminator last and drops it. These tables describe each
-// block's declared content keys (shape minus "type") so a typeless
-// object can be re-typed by exact key-set match. "Fewest declared
-// keys" is the tiebreak, so keep them in sync with the schemas above.
 interface Candidate {
 	type: string;
 	schema: { safeParse(v: unknown): { success: boolean } };
 	keys: readonly string[];
-	// A pre-parse value repair observed live: GLM writes choices
-	// options as bare strings instead of {label} objects.
+	// Observed live: GLM writes choices options as bare strings, not {label}.
 	prepare?: (obj: Record<string, unknown>) => Record<string, unknown>;
 }
 
@@ -243,8 +227,6 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// A block that is nothing but a discriminator is a streaming fragment —
-// it carries no content worth keeping.
 const DROP = Symbol("ui-drop");
 
 function repairBlock(
@@ -299,10 +281,6 @@ function repairChildren(
 	return out;
 }
 
-// Best-effort repair of the model's type omissions before validation:
-// typeless blocks are re-typed by exact key-set match, bare {type}
-// fragments drop. Anything unmatchable passes through untouched and
-// fails the real schema as before. Never mutates the input.
 export function normalizeUiInput(raw: unknown): {
 	value: unknown;
 	inferred: { path: string; type: string }[];
@@ -315,11 +293,6 @@ export function normalizeUiInput(raw: unknown): {
 	const blocks: unknown[] = [];
 	raw.blocks.forEach((b, i) => {
 		const path = `blocks.${i}`;
-		// Children repair runs first: a typeless container qualifies for a
-		// candidate only if it parses, and that parse validates its leaves —
-		// which must already carry their own types. Doing it after left a
-		// typeless container with typeless children unrepaired and the whole
-		// tool call rejected.
 		const withChildren = repairChildren(b, path, ctx);
 		const fixed = repairBlock(withChildren, blockCandidates, path, ctx);
 		if (fixed === DROP) return;

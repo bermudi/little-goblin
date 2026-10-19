@@ -16,7 +16,6 @@ describe("app conversations", () => {
 	test("create, list, and history ride the app pool only", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
-			// A telegram conversation in the same store must never surface.
 			store.resolve({ kind: "dm", chatId: 99 }, "/w");
 			const created = await call("/api/app/conversations", {
 				method: "POST",
@@ -32,8 +31,6 @@ describe("app conversations", () => {
 			const listBody = (await list.json()) as { conversations: { id: string }[] };
 			expect(listBody.conversations.map((c) => c.id)).toEqual(["app/chat-01"]);
 
-			// Bad ids 404 — including a telegram-shaped id, which parses as an
-			// app segment but resolves to nothing app-side.
 			expect((await call("/api/app/conversations/dm-1/messages")).status).toBe(404);
 			expect((await call("/api/app/conversations/../x/messages")).status).toBe(404);
 
@@ -46,7 +43,6 @@ describe("app conversations", () => {
 	});
 
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
-		// 50ms deltas keep the turn alive well past the stop POST below.
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b", "c", "d", "e"],
@@ -70,7 +66,6 @@ describe("app conversations", () => {
 			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(stop.status).toBe(200);
 			expect((await stop.json()) as { stopped: boolean }).toEqual({ stopped: true });
-			// The fenced turn's stream ends with an error chunk + [DONE].
 			const body = await chat.text();
 			expect(body).toContain('"type":"error"');
 			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
@@ -109,9 +104,6 @@ describe("app conversations", () => {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ id: "chat-01" }),
 			});
-			// The fold needs a span past the tail budget (20k tokens
-			// when the step reports no contextWindow) — big user
-			// messages put the earlier exchanges over it.
 			const big = "past ".repeat(25000);
 			for (let i = 0; i < 4; i++) {
 				store.append("app/chat-01", [
@@ -133,7 +125,6 @@ describe("app conversations", () => {
 			}
 			expect(store.getCompaction("app/chat-01")).not.toBeNull();
 
-			// Nothing to fold and a ghost stay honest — noop, 404, 405.
 			await call("/api/app/conversations", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -165,17 +156,12 @@ describe("app conversations", () => {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ id: "chat-01" }),
 			});
-			// No live turn: the SDK's reconnect contract expects 204 and
-			// falls back to history.
 			const idle = await call("/api/app/conversations/chat-01/stream");
 			expect(idle.status).toBe(204);
-			// Non-GET is refused.
 			const wrongMethod = await call("/api/app/conversations/chat-01/stream", { method: "POST" });
 			expect(wrongMethod.status).toBe(405);
-			// Unknown conversation.
 			const missing = await call("/api/app/conversations/nope/stream");
 			expect(missing.status).toBe(404);
-			// A live turn: attach mid-stream (deltas land every 60ms).
 			const chatP = call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -188,34 +174,24 @@ describe("app conversations", () => {
 			const res = await call("/api/app/conversations/chat-01/stream");
 			expect(res.status).toBe(200);
 			expect(res.headers.get("content-type")).toContain("text/event-stream");
-			const text = await res.text(); // resolves when the turn ends
+			const text = await res.text();
 			const events = text
 				.split("\n\n")
 				.filter((l) => l.startsWith("data: "))
 				.map((l) => l.slice("data: ".length));
 			expect(events.at(-1)).toBe("[DONE]");
-			// The replay starts at the wire's first chunk — a reload sees
-			// the reply from its beginning, not mid-sentence.
 			expect(JSON.parse(events[0]!) as { type: string }).toMatchObject({ type: "start" });
 			const types = events
 				.filter((e) => e !== "[DONE]")
 				.map((e) => (JSON.parse(e) as { type: string }).type);
 			expect(types).toContain("text-delta");
-			expect(types.filter((t) => t === "start")).toHaveLength(1); // no duplicate start from replay + tail
+			expect(types.filter((t) => t === "start")).toHaveLength(1);
 			await chatP;
 		} finally {
 			http.stop();
 		}
 	});
 
-	// #79's server half: the client re-reads history when a reconnect
-	// comes back idle, which is only sound because the 204 promises
-	// durability — the runtime persists a turn's reply before it retires
-	// the wire, so the moment the endpoint first says "nothing is live"
-	// (after the turn was seen live), the completed answer is already in
-	// the store. Pins that ordering at the HTTP boundary; a reorder
-	// (append after the wire retires) opens a 204-without-reply window
-	// this poll catches.
 	test("the idle 204 never precedes durability — history holds the reply the moment the stream endpoint says nothing is live (#79)", async () => {
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
@@ -242,7 +218,7 @@ describe("app conversations", () => {
 				const probe = await call("/api/app/conversations/chat-01/stream");
 				if (probe.status === 200) {
 					seenLive = true;
-					await probe.body?.cancel(); // detach; keep polling
+					await probe.body?.cancel();
 				} else if (probe.status === 204 && seenLive) {
 					wentIdle = true;
 				}
@@ -275,8 +251,6 @@ describe("app conversations", () => {
 			expect((await res.json()) as { title: string }).toEqual({ title: "Renamed thread" });
 			const conv = store.get("app/chat-01");
 			expect(conv?.title).toBe("Renamed thread");
-			// An operator title is explicit — the auto-title rule must
-			// never overwrite it.
 			expect(conv?.titleImplicit).toBe(false);
 
 			const empty = await call("/api/app/conversations/chat-01", {
@@ -316,7 +290,6 @@ describe("app conversations", () => {
 			const listed = store.listAppConversations().find((c) => c.id === "app/chat-01");
 			expect(listed?.archivedAt).not.toBeNull();
 
-			// Nothing destructive: history and search survive the shelf.
 			expect(store.history("app/chat-01").length).toBeGreaterThan(0);
 			const hits = (await (await call("/api/app/search?q=archivable")).json()) as {
 				hits: { conversationId: string }[];
@@ -334,8 +307,6 @@ describe("app conversations", () => {
 				).status,
 			).toBe(404);
 
-			// Auto-unarchive: a submitted turn appends its user event and
-			// the row comes back to the rail.
 			const chat = await call("/api/app/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -368,12 +339,9 @@ describe("app conversations", () => {
 			expect(store.get("app/chat-01")?.pinnedAt).not.toBeNull();
 			expect(store.listAppConversations()[0]?.id).toBe("app/chat-01");
 
-			// Shelving supersedes pinning: archiving clears the stamp.
 			await patch({ archived: true });
 			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
 
-			// Pin-while-archived is a 409, not a written contradiction —
-			// including the combined patch that archives and pins at once.
 			const conflict = await patch({ pinned: true });
 			expect(conflict.status).toBe(409);
 			const combo = await patch({ archived: true, pinned: true });
@@ -381,8 +349,6 @@ describe("app conversations", () => {
 			expect(store.get("app/chat-01")?.archivedAt).not.toBeNull();
 			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
 
-			// Unarchive+pin in one patch is the coherent form; unarchiving
-			// alone never resurrects the cleared pin.
 			await patch({ archived: false });
 			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
 			const unarchivePin = await patch({ archived: false, pinned: true });
@@ -409,7 +375,6 @@ describe("app conversations", () => {
 			expect(store.get("app/chat-01")).toBeNull();
 			expect(store.history("app/chat-01")).toEqual([]);
 			expect(store.listAppConversations()).toEqual([]);
-			// The FTS delete triggers kept the index honest.
 			const hitsAfter = (await (await call("/api/app/search?q=deletable")).json()) as {
 				hits: { conversationId: string }[];
 			};
@@ -444,7 +409,6 @@ describe("app conversations", () => {
 			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
 			expect(del.status).toBe(200);
 			expect(store.get("app/chat-01")).toBeNull();
-			// The fenced turn's stream still terminates cleanly.
 			const body = await chat.text();
 			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
 		} finally {
@@ -455,7 +419,6 @@ describe("app conversations", () => {
 	test("search scopes to the app pool — telegram hits never leak", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
-			// Same term in both pools; only the app hit may come back.
 			const tg = store.resolve({ kind: "dm", chatId: 99 }, "/w");
 			store.append(tg.id, [
 				{ id: "tg1", role: "user", parts: [{ type: "text", text: "needle in telegram" }] },
@@ -471,16 +434,11 @@ describe("app conversations", () => {
 			expect(body.hits.every((h) => h.conversationId.startsWith("app/"))).toBe(true);
 			expect(body.hits.some((h) => h.text.includes("needle in the app pool"))).toBe(true);
 
-			// A telegram-only term returns empty — the pool filter is on
-			// the SQL side, not a post-filter that could under-fill.
 			const tgOnly = (await (await call("/api/app/search?q=telegram")).json()) as {
 				hits: unknown[];
 			};
 			expect(tgOnly.hits).toEqual([]);
-			// Non-token queries are a clean empty, not a 500.
 			expect((await call("/api/app/search?q=")).status).toBe(200);
-			// An overlong q refuses — the log route's ruling, not a silent
-			// truncation.
 			expect((await call(`/api/app/search?q=${"x".repeat(257)}`)).status).toBe(400);
 		} finally {
 			http.stop();
@@ -497,8 +455,6 @@ test("conversation settings are isolated, durable, validated, and only future ch
 			body: JSON.stringify(body),
 		});
 	try {
-		// Legacy row never read through settings: changing defaults still
-		// freezes it against the previous selection before writing.
 		const legacy = store.resolve(appAddress("legacy-settings"), "/work");
 		const create = (id: string) =>
 			call("/api/app/conversations", {
@@ -541,7 +497,7 @@ test("conversation settings are isolated, durable, validated, and only future ch
 		expect(configRef.current.telegram).toMatchObject({ model: "zai/m", thinking: "medium" });
 		expect(store.get(legacy.id)).toMatchObject({ model: "zai/m", thinking: "medium" });
 		await create("settings-future");
-		await create("settings-a"); // idempotent create never resets settings
+		await create("settings-a");
 		expect(store.get("app/settings-future")).toMatchObject({
 			model: "zai/future",
 			thinking: "low",
@@ -578,7 +534,6 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ id: "ctx-01" }),
 		});
-		// No turns yet — utilization unknown, zero turns, limit still known.
 		const empty = (await (await call("/api/app/conversations/ctx-01/context")).json()) as Record<
 			string,
 			unknown
@@ -593,7 +548,6 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			cacheHitRate: null,
 			avgCacheHitRate: null,
 		});
-		// One turn through the fake (input 1, output 2, no cache split).
 		await createAndChat(call, "hi", "ctx-01");
 		const one = (await (await call("/api/app/conversations/ctx-01/context")).json()) as Record<
 			string,
@@ -647,9 +601,6 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 		const pending = handleAppApi(
 			new HeldRequest(url.href, {
 				method: "PATCH",
-				// The route's wire contract: JSON mutations must claim
-				// application/json (#75) — the held json() below is reached
-				// only past that line.
 				headers: { "content-type": "application/json" },
 			}),
 			url,
@@ -681,12 +632,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 	}
 });
 
-// The crash-recovery routes — GET interrupted, POST decide, POST resume —
-// over the real listener with a real ResumeOps wired to the fixture's
-// runtime and journal (the same deps shape index.ts builds).
 describe("app channel interrupted-run routes", () => {
-	// The handler reads deps.resumeOps per request, so the seam can land
-	// after setup — the deps object is the same one the closure holds.
 	function setupWithResume(opts: Parameters<typeof setup>[0] = {}) {
 		const fixture = setup(opts);
 		const wired = wireResume(fixture.store, fixture.runtime, fixture.turnJournal);
@@ -718,8 +664,6 @@ describe("app channel interrupted-run routes", () => {
 		return { journal, ops, notices };
 	}
 
-	// What the boot notice reads: a run row + its calls, stamped
-	// 'interrupted' as the crash leaves it.
 	function interruptedRun(
 		store: ConversationStore,
 		journal: ReturnType<typeof openTurnJournal>,
@@ -734,8 +678,6 @@ describe("app channel interrupted-run routes", () => {
 			epoch: conv.epoch,
 			anchorSeq: opts.anchorSeq ?? null,
 			steerMark: null,
-			// The live settings snapshot — the resume contract compare
-			// refuses drift, so the fixture must record what the conv holds.
 			convSnapshot: { model: conv.model, thinking: conv.thinking },
 			toolNames: ["probe"],
 			startedAt: "2026-10-11T00:00:00.000Z",
@@ -769,7 +711,6 @@ describe("app channel interrupted-run routes", () => {
 			expect(body.runs[0]!.toolCalls[0]!.state).toBe("dispatched");
 
 			expect((await call("/api/app/conversations/ghost/interrupted")).status).toBe(404);
-			// Not a GET — the route refuses the method.
 			expect(
 				(await call("/api/app/conversations/chat-01/interrupted", { method: "DELETE" })).status,
 			).toBe(405);
@@ -808,7 +749,6 @@ describe("app channel interrupted-run routes", () => {
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
 			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
 
-			// Malformed JSON → 400; schema violation → 422; wrong media type → 415.
 			expect(
 				(
 					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
@@ -845,8 +785,6 @@ describe("app channel interrupted-run routes", () => {
 			expect(await ok.json()).toEqual({ ok: true });
 			expect(wired.journal.callsFor("run-dead")[0]!.state).toBe("resolved-done");
 
-			// A settled call takes no second decision — the journal throws,
-			// the route maps it to a conflict.
 			expect(
 				(
 					await call("/api/app/conversations/chat-01/runs/run-dead/decide", {
@@ -856,7 +794,6 @@ describe("app channel interrupted-run routes", () => {
 					})
 				).status,
 			).toBe(409);
-			// Unknown run → 404; unknown conv → 404.
 			expect(
 				(
 					await call("/api/app/conversations/chat-01/runs/nope/decide", {
@@ -975,14 +912,11 @@ describe("app channel interrupted-run routes", () => {
 			});
 			expect(resumed.status).toBe(200);
 			expect(await resumed.json()).toEqual({ resumed: true, runId: "run-dead" });
-			// The resumed turn runs to its terminal state and the headless
-			// notice fires — the app lane's equivalent of the operator DM.
 			await waitUntil(() => wired.notices.length === 1, "done notice");
 			expect(wired.notices[0]!.runId).toBe("run-dead");
 			expect(wired.notices[0]!.done).toBe("completed");
 			expect(wired.journal.get("run-dead")!.status).toBe("resumed");
 
-			// Consumed — a second resume finds nothing.
 			expect(
 				(
 					await call("/api/app/conversations/chat-01/runs/run-dead/resume", {

@@ -3,9 +3,6 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
-// The project routes (design/projects.md): CRUD plus the immutable
-// conversation binding — creation-time only, reposts must repeat the
-// stored value.
 describe("app projects", () => {
 	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
 		call(path, {
@@ -37,7 +34,6 @@ describe("app projects", () => {
 				memory: "shared",
 				archivedAt: null,
 			});
-			// Goblin-owned scratch never leaves the server.
 			expect("home" in project).toBe(false);
 
 			const id = project.id as string;
@@ -58,7 +54,6 @@ describe("app projects", () => {
 				archivedAt: string | null;
 			};
 			expect(after.name).toBe("Renamed");
-			// The slug is frozen — a rename never moves the home.
 			expect(after.slug).toBe("side-project");
 			expect(after.archivedAt).not.toBeNull();
 		} finally {
@@ -110,8 +105,6 @@ describe("app projects", () => {
 			};
 			expect(list.conversations.find((c) => c.id === "app/bound-01")?.projectId).toBe(project.id);
 
-			// Reposting the same id + project is idempotent; a different
-			// project — or no project — conflicts.
 			expect(
 				(
 					await postJson(call, "/api/app/conversations", {
@@ -133,7 +126,6 @@ describe("app projects", () => {
 			);
 			expect((await postJson(call, "/api/app/conversations", { id: "bound-01" })).status).toBe(409);
 
-			// An existing unbound row can't be bound after the fact either.
 			await postJson(call, "/api/app/conversations", { id: "loose-01" });
 			expect(
 				(
@@ -183,7 +175,6 @@ describe("app projects", () => {
 			).json()) as { id: string };
 			await postJson(call, "/api/app/conversations", { id: "v-1", projectId: project.id });
 			expect(store.get("app/v-1")?.memoryExcluded).toBe(true);
-			// A plain chat stays eligible.
 			await postJson(call, "/api/app/conversations", { id: "v-2" });
 			expect(store.get("app/v-2")?.memoryExcluded).toBe(false);
 		} finally {
@@ -221,8 +212,6 @@ describe("app projects", () => {
 			await loose.text();
 			expect(workdirs.at(-1)).toBe(join(process.env.GOBLIN_HOME!, "workspace"));
 
-			// The dir vanishes — the turn fails at admission, and the
-			// error chunk names the missing path.
 			rmSync(project.dir, { recursive: true, force: true });
 			const gone = await chat("w-1");
 			expect(gone.status).toBe(200);

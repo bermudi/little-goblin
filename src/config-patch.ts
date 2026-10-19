@@ -216,7 +216,10 @@ export function patchConfigText<T extends object>(
 	// Replacements and deletions, applied right-to-left over the text.
 	const edits: { start: number; end: number; text: string }[] = [];
 	for (const [idx, e] of entries.entries()) {
-		const mergedHas = Object.hasOwn(m, e.key);
+		// Zod's output keeps cleared optionals as own-properties holding
+		// undefined — to the file that's "absent" (a ""-cleared block the
+		// schema owns deletes; an unknown one keeps its bytes).
+		const mergedHas = Object.hasOwn(m, e.key) && m[e.key] !== undefined;
 		if (!mergedHas) {
 			if (!knownKeys.has(e.key)) continue; // schema never heard of it — verbatim
 			if (e.commaStart === -1 && idx > 0) {
@@ -265,7 +268,7 @@ export function patchConfigText<T extends object>(
 		if (lead.trim() === "") indent = lead;
 	}
 	for (const k of Object.keys(m)) {
-		if (keys.has(k)) continue;
+		if (keys.has(k) || m[k] === undefined) continue;
 		inserts.push(`${indent}${k}: ${serializeAt(m[k], indent)},\n`);
 	}
 	if (inserts.length > 0) {

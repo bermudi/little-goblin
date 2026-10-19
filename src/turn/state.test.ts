@@ -1,8 +1,3 @@
-// TurnState unit tests: the lifetime rules (design/runtime-turn.md) —
-// what restores, what dies with the attempt, what a snapshot freezes.
-// The full turn behavior (warnings riding requests, toolChoice none,
-// forced stamps) stays pinned e2e in runtime.test.ts.
-
 import { describe, expect, test } from "bun:test";
 import type { System1Client } from "../system1.ts";
 import { LOOP_DETECT_CUT, LOOP_DETECT_WARN } from "../loop-detect.ts";
@@ -23,8 +18,6 @@ const loopOf = (over: Partial<LoopTurnState>): LoopTurnState => ({
 	...over,
 });
 
-// Flush fire-and-forget verdict chains: decide resolves on a microtask,
-// .then/.finally chain a few more.
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const decision = (stuck: number) => ({ answers: { stuck }, inputTokens: 0, cost: 0 });
@@ -61,9 +54,7 @@ describe("restore and snapshot", () => {
 	test("restored warnings re-send once per attempt — the cursor dies with the attempt", () => {
 		const first = new TurnState(deps, loopOf({ warnings: ["w"] }));
 		expect(first.drainWarnings()).toStrictEqual(["w"]);
-		expect(first.drainWarnings()).toStrictEqual([]);
-		// A resume of that same point sends it again.
-		const second = new TurnState(deps, first.snapshot());
+		expect(first.drainWarnings()).toStrictEqual([]);		const second = new TurnState(deps, first.snapshot());
 		expect(second.drainWarnings()).toStrictEqual(["w"]);
 	});
 
@@ -77,11 +68,11 @@ describe("restore and snapshot", () => {
 			{ convId: "c1", watchdog: { decide, every: 1 }, request: "r" },
 			loopOf({ warnings: ["carried"] }),
 		);
-		state.noteCompletedCall("t", 1, "x", false); // dispatches the check
+		state.noteCompletedCall("t", 1, "x", false);
 		const snap = state.snapshot();
-		release(0.99); // stuck → warn verdict, after the snapshot
+		release(0.99);
 		await tick();
-		expect(state.drainWarnings()).toHaveLength(2); // carried + late verdict
+		expect(state.drainWarnings()).toHaveLength(2);
 		expect(snap.warnings).toStrictEqual(["carried"]);
 	});
 });
@@ -117,7 +108,7 @@ describe("landings", () => {
 		for (let i = 0; i < LOOP_DETECT_CUT; i++) failed.noteCompletedCall("t", 1, "same", false);
 		expect(failed.decidedCut()).toBe("repeat");
 		const resumed = new TurnState(deps, failed.snapshot());
-		expect(resumed.isLandingIssued()).toBe(false); // issued dies with the attempt
+		expect(resumed.isLandingIssued()).toBe(false);
 		expect(resumed.issueLanding()).toBe("repeat");
 	});
 });
@@ -132,7 +123,7 @@ describe("noteCompletedCall", () => {
 		for (let i = LOOP_DETECT_WARN; i < LOOP_DETECT_CUT; i++) {
 			state.noteCompletedCall("t", 1, "same", false);
 		}
-		expect(state.drainWarnings()).toStrictEqual([]); // once per pair
+		expect(state.drainWarnings()).toStrictEqual([]);
 		expect(state.decidedCut()).toBe("repeat");
 	});
 
@@ -167,14 +158,13 @@ describe("watchdog cadence", () => {
 			return decision(0);
 		};
 		const state = new TurnState(
-			// completedCalls restores at 3: the cadence continues across the resume.
 			{ convId: "c1", watchdog: { decide, every: 2 }, request: "fix the mail" },
 			loopOf({ completedCalls: 3 }),
 		);
-		state.noteCompletedCall("t", 1, "a", false); // call 4 — fires
-		state.noteCompletedCall("t", 2, "b", false); // call 5 — skipped
+		state.noteCompletedCall("t", 1, "a", false);
+		state.noteCompletedCall("t", 2, "b", false);
 		await tick();
-		state.noteCompletedCall("t", 3, "c", false); // call 6 — fires
+		state.noteCompletedCall("t", 3, "c", false);
 		await tick();
 		expect(seen).toStrictEqual([
 			{ request: "fix the mail", totalToolCalls: 4 },
@@ -186,7 +176,7 @@ describe("watchdog cadence", () => {
 		let dispatched = 0;
 		const decide: System1Client["decide"] = () => {
 			dispatched++;
-			return new Promise(() => {}); // never settles
+			return new Promise(() => {});
 		};
 		const state = new TurnState({ convId: "c1", watchdog: { decide, every: 1 }, request: "r" });
 		state.noteCompletedCall("t", 1, "a", false);
@@ -220,7 +210,7 @@ describe("watchdog cadence", () => {
 			await tick();
 		}
 		expect(state.decidedCut()).toBeNull();
-		expect(state.drainWarnings()).toHaveLength(2); // warn, reset, warn
+		expect(state.drainWarnings()).toHaveLength(2);
 	});
 
 	test("an unavailable system1 fails open — the cadence continues", async () => {

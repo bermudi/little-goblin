@@ -1,6 +1,3 @@
-// /api/app/config — defaults for future app conversations: merge the
-// patch over the freshest on-disk file, revalidate, write, swap the ref.
-
 import { z } from "zod";
 import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import { prepareAppSettingsForConfig } from "../conversation.ts";
@@ -21,9 +18,6 @@ export async function handleConfigRoute(
 	const path = url.pathname;
 	const { store } = deps;
 
-	// /api/app/config — defaults for future app conversations. Same
-	// last-wins semantics as the mini app's save path: merge the patch
-	// over the freshest on-disk file, revalidate, write, swap the ref.
 	if (path === "/api/app/config") {
 		if (req.method === "GET") {
 			return Response.json(configView(deps.configRef.current), { headers: NO_STORE });

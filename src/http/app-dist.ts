@@ -1,11 +1,3 @@
-// Serving the app channel's built client under /app/ — app/dist is a
-// symlink to the last published slot, flipped atomically by
-// scripts/publish-app.sh. Files resolve per request so a republish
-// lands without a restart; a missing build answers 500 with a log
-// line — never a silent empty page.
-// The page itself is public like the mini app's; every byte of real
-// state rides behind /api/app/* bearer auth.
-
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, normalize, resolve, sep } from "node:path";
@@ -36,8 +28,6 @@ function contentType(file: string): string {
 	return CONTENT_TYPES[file.slice(dot)] ?? "application/octet-stream";
 }
 
-// rel is the path under /app/ — "index.html" for the root. Returns null
-// for traversal attempts and anything that escapes the dist dir.
 function resolveDistFile(rel: string, dist: string): string | null {
 	const clean = normalize(rel).replace(/^([/\\])+/, "");
 	if (clean === "" || clean.split(/[/\\]/).includes("..")) return null;
@@ -47,8 +37,6 @@ function resolveDistFile(rel: string, dist: string): string | null {
 }
 
 export async function serveAppDist(rel: string, dist = APP_DIST): Promise<Response> {
-	// A missing build is a loud 500 — the operator needs to know the
-	// channel's client isn't built, not stare at a blank page.
 	if (!existsSync(dist)) {
 		log.error("app client build missing — run bun run app:build", undefined, { dir: dist });
 		return Response.json(
@@ -71,9 +59,6 @@ export async function serveAppDist(rel: string, dist = APP_DIST): Promise<Respon
 	}
 	try {
 		const body = await readFile(file);
-		// index.html is served no-store like the mini app's page — a cached
-		// shell referencing stale hashed assets is a silent break. The
-		// hashed assets themselves are immutable.
 		const cache = file.endsWith("index.html")
 			? "no-store"
 			: file.includes(`${sep}assets${sep}`)

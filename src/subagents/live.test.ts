@@ -1,31 +1,3 @@
-// Live subagent drift check: the real Pi Durable harness against the
-// real z.ai endpoint, a real sandbox container for the worker drifts,
-// and a real desktop for the computer drift — the frozen
-// SUBAGENT_DRIFT_INPUTS verbatim, verified by artifacts, not by what
-// the model claims. Gated OFF the default suite, run deliberately
-// (needs network + a z.ai credential in the operator's auth file):
-//
-//     GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=/path/to/auth.jsonl \
-//       bun test src/subagents/live.test.ts
-//
-// Auth resolves in-process through loadAuthFile + the `zai` record,
-// exactly like the running service — the only env var is the FILE
-// PATH. No secret value may ever appear in env, argv, logs, or disk.
-//
-// Store safety: every resource this run creates carries a unique
-// per-run token, so "exists" IS "created by this run" — nothing else
-// can own these names and cleanup can never touch another run's (or
-// prod's) resources. Preflight verifies every name is absent BEFORE
-// anything is created; a collision refuses the run and nothing is
-// touched. afterAll removes only names confirmed present under this
-// run's token. Evidence/logs survive under the evidence dir; the
-// per-run temp dir is removed.
-//
-//   container goblin-subdrift-<tok>-sbx-<hash>   (conv "subdrift-<tok>:worker")
-//   container goblin-subdrift-<tok>-sbx-<hash>   (conv "subdrift-<tok>:ask")
-//   container goblin-desk-goblin-subdrift-<tok>-desk
-//   networks  goblin-subdrift-<tok>-net / goblin-subdrift-<tok>-dnet
-// No prune, anywhere, ever.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -53,8 +25,6 @@ const ASK_CONV = `subdrift-${TOKEN}:ask`;
 const DESKTOP = `goblin-subdrift-${TOKEN}-desk`;
 const DESK_CONTAINER = containerNameForDesktop(DESKTOP);
 const DESK_NETWORK = `goblin-subdrift-${TOKEN}-dnet`;
-// Every candidate resource — computed before anything exists so
-// preflight and cleanup share one list.
 const CANDIDATE_CONTAINERS = [
 	containerNameFor(WORKER_CONV, SBX_PREFIX),
 	containerNameFor(ASK_CONV, SBX_PREFIX),
@@ -71,10 +41,6 @@ let runs: SubagentRuns | null = null;
 let owner: Subagents | null = null;
 let auth: AuthStore | null = null;
 const wakes: { conv: string; text: string }[] = [];
-// Exact ownership: a name enters these sets only after ITS create
-// call succeeded. Existing==collision is refused in preflight, but
-// cleanup removes only what this run provably created — a random
-// token is a naming hint, never ownership evidence.
 const createdContainers = new Set<string>();
 const createdNetworks = new Set<string>();
 
@@ -131,8 +97,6 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 				createdNetworks.add(name);
 			},
 		};
-		// Refuse preexisting probes: a collision means these unique
-		// names are not ours — touch nothing.
 		for (const name of CANDIDATE_CONTAINERS) {
 			if (await probeExists(name)) {
 				throw new Error(`probe container ${name} already exists — refusing to run`);
@@ -147,7 +111,7 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 		sandboxes = makeSandboxes({
 			podman,
 			store: openSandboxes(join(cwd, "sandboxes.sqlite")),
-			config: () => undefined, // schema defaults
+			config: () => undefined,
 			containerPrefix: SBX_PREFIX,
 			networkName: SBX_NETWORK,
 		});
@@ -196,8 +160,6 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 	}, 60_000);
 
 	test("worker drift: read → write → read back → finish VERIFIED_WORKER", async () => {
-		// The frozen task reads /work/input.txt — seed it into the
-		// conversation's sandbox before the run starts.
 		writeFileSync(join(cwd, "drift-input.txt"), "DRIFT_IN\n");
 		await sandboxes!.exec(WORKER_CONV, "mkdir -p /work", {
 			timeoutMs: 60_000,
@@ -214,7 +176,6 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 		await untilOk(() => runs!.get(run.id)?.status === "done", "worker done");
 		const row = runs!.get(run.id)!;
 		expect(row.result).toBe("VERIFIED_WORKER");
-		// Verified by the artifact, not the claim.
 		const out = await sandboxes!.catFile(WORKER_CONV, "/work/output.txt");
 		expect(new TextDecoder().decode(out.data)).toBe("DRIFT_OUT\n");
 		expect(row.exportedFiles).toHaveLength(1);
@@ -266,9 +227,6 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 		} catch (err) {
 			failures.push(`owner close: ${String(err).slice(0, 200)}`);
 		}
-		// Remove exactly the names this run created — a refused
-		// preflight, a partial setup or another run's same-named
-		// resource can never be swept up here; evidence stays on disk.
 		if (podman !== null) {
 			for (const name of createdContainers) {
 				try {

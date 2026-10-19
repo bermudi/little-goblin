@@ -1,10 +1,3 @@
-// Speech → text on demand. Intake transcribes voice and video notes
-// eagerly (they're speech by construction), but attached audio — a song,
-// a podcast, a recording to convert — is data: paying whisper for lyrics
-// nobody asked for is the failure that motivates this split. The tool is
-// the deliberate version of the same call, registered only when a
-// `transcription` block is configured.
-
 import { statSync } from "node:fs";
 import { basename } from "node:path";
 import { tool } from "ai";
@@ -48,8 +41,6 @@ export function transcribeTool(
 			try {
 				const text = await transcribe({
 					path: target,
-					// Extension-derived mime for the log line — the provider
-					// only ever sees the bytes.
 					mediaType: Bun.file(target).type || "application/octet-stream",
 					filename: basename(target),
 				});

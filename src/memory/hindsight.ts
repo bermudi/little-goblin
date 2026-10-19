@@ -1,5 +1,4 @@
-// Hindsight boundary: HTTP only. No model selection or automatic bank creation.
-// Wire contract: https://hindsight.vectorize.io/openapi.json (0.10).
+// Hindsight wire contract: https://hindsight.vectorize.io/openapi.json (0.10).
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -7,18 +6,11 @@ import { log } from "../log.ts";
 import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
 import { screenMemoryText } from "./screen.ts";
 
-// Bank/document identifier vocabulary — shared with the forget
-// protocol (forget.ts validates operator-supplied ids before
-// touching local state) and the mini-app routes.
 export const identifier = z
 	.string()
 	.min(1)
 	.max(256)
 	.refine((value) => value !== "." && value !== "..");
-// The outbox's destination identity: sha256 over the normalized
-// endpoint+bank pair. One-way on purpose — it names a destination
-// without carrying connection details — which is why destination
-// history (destinations.ts) exists to map it back.
 export const targetHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	let url: URL;
@@ -172,8 +164,6 @@ const documentSummarySchema = z.object({
 	updated_at: z.string().max(128).nullish(),
 	text_length: z.number().int().nonnegative().nullish(),
 	memory_unit_count: z.number().int().nonnegative().nullish(),
-	// Goblin's own retain metadata — conversation_id is what the browser
-	// groups by. Optional: only id is required server-side.
 	document_metadata: z
 		.object({
 			conversation_id: z.string().max(256).nullish(),
@@ -192,9 +182,6 @@ const factListItemSchema = z.object({
 	occurred_start: z.string().max(128).nullish(),
 	occurred_end: z.string().max(128).nullish(),
 	entities: z.string().max(4_000).nullish(),
-	// Curation state: 'valid' or 'invalidated' (Hindsight 0.10) — the
-	// browser dims invalidated facts; anything unexpected renders as valid
-	// rather than throwing.
 	state: z.string().max(32).nullish(),
 });
 export type MemoryFact = z.infer<typeof factListItemSchema>;
@@ -241,7 +228,6 @@ export class HindsightError extends Error {
 		readonly kind: FailureKind,
 		readonly status?: number,
 	) {
-		// No server bodies, auth-command output, fetch errors, or URLs in errors.
 		super(`Hindsight ${kind} failure${status === undefined ? "" : ` (HTTP ${status})`}`);
 		this.name = "HindsightError";
 	}
@@ -290,9 +276,6 @@ async function readJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Prom
 	}
 }
 
-// The destination identity every queue row and destination-history
-// record carries. Normalized exactly like the constructor's base URL so
-// a recorded destination and a live client always agree on the hash.
 export function hindsightTarget(baseUrl: string, bankId: string): string {
 	return createHash("sha256")
 		.update(JSON.stringify([new URL(baseUrl).href.replace(/\/+$/, ""), bankId]))
@@ -313,7 +296,6 @@ export class HindsightClient {
 		auth?: () => Promise<string>;
 	}) {
 		const parsed = hindsightConnectionSchema.safeParse(options);
-		// Validation errors must not echo credentials accidentally supplied in a URL.
 		if (!parsed.success) throw new Error("Invalid Hindsight connection configuration");
 		this.base = `${parsed.data.baseUrl.replace(/\/+$/, "")}/v1/default/banks/${encodeURIComponent(parsed.data.bankId)}`;
 		this.target = hindsightTarget(parsed.data.baseUrl, parsed.data.bankId);
@@ -369,7 +351,7 @@ export class HindsightClient {
 				controller.signal.throwIfAborted();
 				const response = await fetch(`${this.base}${path}`, {
 					method,
-					redirect: "error", // Never forward a credential to a redirected service.
+					redirect: "error",
 					signal: controller.signal,
 					headers: {
 						accept: "application/json",
@@ -521,9 +503,6 @@ export class HindsightClient {
 		return result;
 	}
 
-	// Caller must persist this UUID before submission. A lost acknowledgement
-	// can then be retried with the same operation identity without duplicate work.
-	// Submission is NOT completion: poll operation() before marking a queue row done.
 	async submit(document: MemoryDocument, operationId: string, signal?: AbortSignal): Promise<void> {
 		const doc = memoryDocumentSchema.parse(document);
 		const id = z.uuid().parse(operationId);
@@ -585,8 +564,6 @@ export class HindsightClient {
 		);
 	}
 
-	// Caller owns operator confirmation, suppression, and settling any in-flight
-	// retain operation first. HTTP success alone is not a complete forgetting policy.
 	async deleteDocument(documentId: string, signal?: AbortSignal): Promise<void> {
 		const id = identifier.parse(documentId);
 		await this.request(
@@ -600,11 +577,6 @@ export class HindsightClient {
 
 	// ---------- browse (mini-app memories browser, read-only) ----------
 
-	// Paginated list of the bank's documents — one per retained exchange.
-	// The wire returns more fields (content_hash, retain_params, …); the
-	// schema reads only what the browser renders and lets zod strip the
-	// rest. List-item fields beyond id are optional server-side (live
-	// responses carry them); the route falls back when absent.
 	async listDocuments(options: {
 		q?: string;
 		limit: number;
@@ -630,8 +602,6 @@ export class HindsightClient {
 		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
 	}
 
-	// A document's extracted facts — what recall actually returns. Same
-	// pagination shape; `q` filters fact text server-side.
 	async listMemories(options: {
 		documentId?: string;
 		q?: string;

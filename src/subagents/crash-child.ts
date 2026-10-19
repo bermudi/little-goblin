@@ -1,10 +1,3 @@
-// Child process for the crash-approval tests: a real owner over real
-// Pi storage whose sandbox "bash" records a dispatch marker on the
-// host and then never returns. The parent SIGKILLs mid-dispatch; only
-// the marker survives, proving the gated call ran at most once.
-// Env (no secrets): MODEL_URL, DB_PATH, STORAGE_PATH, MARKER_PATH;
-// MODE=submit starts a run after resume (default), MODE=resume only
-// resumes; WAKE_PATH, when set, receives one JSON notice per line.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { subagentsConfigSchema } from "../config.ts";
@@ -43,7 +36,7 @@ const sandboxes: Sandboxes = {
 	execArgv: async (_conv, argv) => {
 		if (argv.join(" ").includes("markit")) {
 			appendFileSync(MARKER_PATH, "dispatched\n");
-			await idle(); // killed here — the unsafe call is mid-flight
+			await idle();
 		}
 		return { result: okRes };
 	},
@@ -89,8 +82,6 @@ const desktops: Desktops = {
 	catFile: async () => ({ data: new Uint8Array() }),
 };
 
-// The workspace sits below the parent's own temp dir (DB_PATH's dir)
-// so a SIGKILLed child leaks nothing the parent won't remove.
 const workspace = join(dirname(DB_PATH), "ws");
 mkdirSync(workspace, { recursive: true });
 const runs = openSubagentRuns(DB_PATH);
@@ -136,5 +127,4 @@ if (MODE === "submit") {
 		task: "run markit",
 	});
 }
-// The parent watches the marker; this process never exits on its own.
 await idle();

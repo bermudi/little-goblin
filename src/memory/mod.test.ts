@@ -101,7 +101,6 @@ describe("recall formatting", () => {
 		expect(empty).toContain("no relevant memories");
 		expect(down).toContain("unavailable");
 		expect(down).not.toContain("no relevant memories");
-		// Current statements outrank memory — the frame says so.
 		expect(results).toContain("Current operator statements take precedence");
 	});
 });
@@ -260,8 +259,6 @@ describe("attachment transcripts in retention text", () => {
 		const doc = buildRetentionDocument({
 			conversationId: "dm:1",
 			anchorSeq: 9,
-			// runtime.ts extracts the burst with this same projection
-			// (retentionSourceFrom) before buildRetentionDocument embeds it.
 			userTexts: [messageText(voiceNote)],
 			userIds: ["u9"],
 			assistant: asst("a9", "noted"),
@@ -320,7 +317,6 @@ describe("recall persistence", () => {
 		const ctx = new MemoryContexts(db);
 		ctx.save("dm:1", 1, "quiet mornings", ["exchange/dm:1/1/a"]);
 		db.run("UPDATE memory_contexts SET source_ids = 'not-json' WHERE anchor_seq = 1");
-		// Fail-closed: a snapshot we cannot prove clean is treated as citing.
 		expect(ctx.deleteByDocument("exchange/something-else")).toBe(1);
 		expect(ctx.load("dm:1")).toEqual([]);
 	});
@@ -344,15 +340,10 @@ describe("cache-stable materialization", () => {
 		const r2 = { anchorSeq: 3, content: "prefers dark", sourceIds: ["e2"] };
 		const req2 = withMemoryBlocks(entries(turn2), [r1], r2);
 		expect(req2.map((m) => m.id)).toEqual(["memory-1", "u1", "a1", "memory-3", "u2"]);
-		// Turn 1's fused head survives verbatim at the head of turn 2's
-		// pre-merge sequence — mergeConsecutiveUsers then fuses each
-		// block with its user deterministically on both sides.
 		expect(req2.slice(0, 2).map((m) => m.id)).toEqual(req1.map((m) => m.id));
 	});
 
 	test("a compaction summary never inherits the boundary's recall block", () => {
-		// The synthetic summary takes the boundary event's seq — a block
-		// anchored there belongs to the message the summary replaced.
 		const view = [
 			{
 				seq: 2,
@@ -392,8 +383,6 @@ describe("memory-bound projection", () => {
 	});
 
 	test("an ineligible summary drops even when its boundary event is eligible", () => {
-		// The synthetic summary rides at the boundary event's seq — its
-		// eligibility is the folded span's, never the boundary row's.
 		const view = [
 			{
 				seq: 2,
@@ -472,16 +461,12 @@ describe("status", () => {
 	});
 
 	test("old-bank parked rows stay visible when the current bank's counts read zero", () => {
-		// After a destination change the boot target's counts() carry no
-		// deleting rows — the parked work against the previous bank must
-		// still degrade status, or the failed delete vanishes silently.
 		const status = memoryStatus(
 			input({ counts: counts({ pending: 0, deleting: 0 }), deletingAll: 3 }),
 		);
 		expect(status.state).toBe("degraded");
 		expect(status.deleting).toBe(3);
 		expect(status.detail).toContain("3 outbox rows awaiting forget confirmation");
-		// And the reverse: current-bank rows alone never inflate the count.
 		expect(memoryStatus(input({ counts: counts({ deleting: 2 }), deletingAll: 2 })).deleting).toBe(
 			2,
 		);
@@ -498,10 +483,9 @@ describe("status", () => {
 		];
 		for (const s of samples) {
 			expect(s.detail.trim()).not.toBe("");
-			// The old redundancy: "memory: healthy — memory healthy".
 			expect(s.detail).not.toContain(`memory ${s.state}`);
 		}
-		expect(states).toHaveLength(4); // every state sampled above
+		expect(states).toHaveLength(4);
 		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).detail).toContain(
 			"1 blocked retention needs",
 		);
@@ -553,10 +537,6 @@ describe("worker timer", () => {
 		await w.stop();
 	});
 
-	// The review-found race: the notice send is detached from the tick,
-	// so two sequential drain ticks can both cross the threshold inside
-	// one Telegram round-trip. The episode latch must collapse them into
-	// a single send.
 	test("duplicate-notice race: sequential failures inside one send round-trip send once", async () => {
 		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 		const db = memdb();
@@ -570,10 +550,6 @@ describe("worker timer", () => {
 				content: "Operator: hi.\nGoblin: hello.",
 			});
 		}
-		// Pre-age the episode past the threshold with a mutable clock, in
-		// outage cadence (a failure every ~5min — a single hour-long clock
-		// jump would trip the stale-episode reset instead), so the very
-		// first worker failure is already notice-eligible.
 		let now = 1_000_000;
 		const tracker = new OutageTracker(db, () => now);
 		for (let i = 0; i < 13; i++) {
@@ -589,22 +565,18 @@ describe("worker timer", () => {
 				notify: (_conversationId, sinceMs) =>
 					new Promise<void>((resolve) => {
 						sends.push(sinceMs);
-						held.release = resolve; // hold the send open across the second tick
+						held.release = resolve;
 					}),
 			},
 		});
-		await w.tickNow(); // exchange-a fails transport → notice fired, send pending
-		await w.tickNow(); // exchange-b fails transport → latch must suppress
+		await w.tickNow();
+		await w.tickNow();
 		expect(sends).toHaveLength(1);
 		held.release?.();
 		await w.stop();
 	});
 
 	test("withWorkerPaused holds the timer gate — a pending row stays unclaimed mid-pause", async () => {
-		// The /forget quiesce's GATE, not just its drain-await: while a
-		// pause holds, the interval must not start a new drain, or a row
-		// enqueued mid-pause is submitted behind the delete's back —
-		// exactly the resurrect the pause exists to prevent.
 		const gates = new Map<string, () => void>();
 		const parked = new Map<string, Promise<void>>();
 		const server = Bun.serve({
@@ -643,17 +615,9 @@ describe("worker timer", () => {
 			});
 			parked.set(op1, new Promise<void>((resolve) => gates.set(op1, resolve)));
 			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
-			// Let the timer start its drain — it claims row 1 and parks
-			// inside the submit.
 			await Bun.sleep(50);
-			// Release row 1; its drain settles on its own (row 2 doesn't
-			// exist yet, so the drain finds nothing more and exits).
 			gates.get(op1)?.();
 			await Bun.sleep(50);
-			// Inside the pause: enqueue row 2 and let several intervals fire
-			// — the gate must refuse them all. (Without the `pauses > 0`
-			// term in the timer gate, a drain starts within ~10 ms and
-			// row 2 reads "submitted" here.)
 			const out = await w.withWorkerPaused(async () => {
 				const op2 = queue.enqueue(client.target, {
 					id: "exchange-2",
@@ -662,13 +626,12 @@ describe("worker timer", () => {
 					timestamp: "2026-09-27T10:01:00Z",
 					content: "two",
 				});
-				await Bun.sleep(80); // ≥ 8 intervals at 10 ms
+				await Bun.sleep(80);
 				const row2 = queue.get(op2);
 				if (!row2) throw new Error("expected row 2");
 				return { state: row2.state, op2 };
 			});
 			expect(out.state).toBe("pending");
-			// The pause lifted: the timer drains row 2 now.
 			await Bun.sleep(80);
 			const settled = queue.get(out.op2);
 			expect(settled?.state).toBe("submitted");
@@ -678,10 +641,6 @@ describe("worker timer", () => {
 		}
 	});
 
-	// The 2026-09-25 incident's chat-facing half: a blocked document must
-	// surface in chat exactly once, no matter how many times it goes
-	// blocked (operator retried it and it blocked again). The latch is
-	// the queue's noteBlocked row — committed before the send fires.
 	test("a document blocked twice notifies the operator exactly once", async () => {
 		const submitted: string[] = [];
 		const server = Bun.serve({
@@ -691,7 +650,6 @@ describe("worker timer", () => {
 				if (request.method === "POST") {
 					const body = (await request.json()) as { operation_id?: unknown };
 					submitted.push(typeof body.operation_id === "string" ? body.operation_id : "?");
-					// 401 is permanent, not retryable: the row goes blocked.
 					return new Response("private upstream body", { status: 401 });
 				}
 				return Response.json({ results: [] });
@@ -720,13 +678,12 @@ describe("worker timer", () => {
 					},
 				},
 			});
-			await w.tickNow(); // submit 401 → blocked → first-ever block of this document
-			expect(queue.retryBlocked(client.target)).toBe(1); // operator retry, fresh operation id
-			await w.tickNow(); // fresh submit 401 → blocked again → latch must suppress
-			expect(notices).toHaveLength(1);
+		await w.tickNow();
+		expect(queue.retryBlocked(client.target)).toBe(1);
+		await w.tickNow();
+		expect(notices).toHaveLength(1);
 			expect(notices[0]?.conversationId).toBe("dm:1");
 			expect(notices[0]?.error).toContain("HTTP 401");
-			// The retry actually reached the wire under a new operation id.
 			expect(submitted).toHaveLength(2);
 			expect(submitted[0]).not.toBe(submitted[1]);
 			await w.stop();
@@ -735,11 +692,6 @@ describe("worker timer", () => {
 		}
 	});
 
-	// The notice's failure path has no retry — the log line is the only
-	// voice it has, so its shape is pinned here: message, error, and the
-	// fields that locate the stuck document (review finding 2026-09-25:
-	// passing the fields object as the error argument collapsed it to
-	// "[object Object]").
 	test("a failed blocked-notice send logs with locating fields and never retries", async () => {
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
@@ -777,9 +729,9 @@ describe("worker timer", () => {
 					},
 				},
 			});
-			await w.tickNow(); // submit 401 → blocked → latch → notice send throws
-			await w.tickNow(); // nothing due: no second attempt, no second log
-			expect(calls).toHaveLength(1);
+		await w.tickNow();
+		await w.tickNow();
+		expect(calls).toHaveLength(1);
 			expect(calls[0]!.msg).toContain("blocked notice failed");
 			expect(String(calls[0]!.err)).toContain("telegram unreachable");
 			expect(calls[0]!.fields.conversation).toBe("dm:9");
@@ -791,12 +743,6 @@ describe("worker timer", () => {
 		}
 	});
 
-	// Shutdown during a memory outage: drain() used to run "until idle",
-	// which during an outage is one full pass of every due row at the
-	// request timeout — and index.ts awaited that before its drain budget
-	// even started, so a wedged Hindsight held every deploy until systemd
-	// SIGKILLed the process. stop() now aborts the in-flight request and
-	// the loop yields; the rows stay pending for the next boot.
 	test("stop() during an outage returns promptly and keeps the rows", async () => {
 		let requests = 0;
 		const server = Bun.serve({
@@ -804,7 +750,7 @@ describe("worker timer", () => {
 			port: 0,
 			fetch: async () => {
 				requests++;
-				await Bun.sleep(10_000); // never answers inside the client timeout
+				await Bun.sleep(10_000);
 				return new Response("late", { status: 500 });
 			},
 		});
@@ -828,16 +774,13 @@ describe("worker timer", () => {
 				);
 			}
 			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
-			await Bun.sleep(50); // the timer's drain is parked in its first submit
+			await Bun.sleep(50);
 			expect(requests).toBe(1);
 			const started = Date.now();
 			await w.stop();
-			// Well inside one request timeout: the abort cut the wait short,
-			// and no second row was attempted after the stop.
 			expect(Date.now() - started).toBeLessThan(1_000);
 			expect(requests).toBe(1);
 			for (const id of ids) expect(queue.get(id)?.state).toBe("pending");
-			// An aborted submit is not a failed attempt — no backoff consumed.
 			expect(queue.get(ids[0]!)?.attempts).toBe(0);
 		} finally {
 			server.stop(true);
@@ -871,11 +814,9 @@ describe("worker timer", () => {
 				});
 			}
 			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
-			await Bun.sleep(50); // first submit on the wire
+			await Bun.sleep(50);
 			const started = Date.now();
 			const seen = await w.withWorkerPaused(async () => requests);
-			// /forget's quiesce waits for the one request in flight — never
-			// for the six-row pass the outage would otherwise run.
 			expect(Date.now() - started).toBeLessThan(600);
 			expect(seen).toBeLessThanOrEqual(2);
 			await w.stop();

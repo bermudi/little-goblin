@@ -5,9 +5,8 @@ import { paths } from "../../config.ts";
 import { log } from "../../log.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 
-// The runaway guard, not the output budget: a stream over the cap still
-// kills the process (proc.ts). 4 MiB keeps the spill file inside
-// read_file's 8 MiB ceiling (design/tools.md → Bounded output).
+// Runaway capture guard (the process is killed over it, proc.ts). 4 MiB keeps
+// the spill inside read_file's 8 MiB ceiling.
 const MAX_CAPTURE = 4 * 1024 * 1024;
 const OUTPUT_BUDGET = 15_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -15,10 +14,6 @@ const MAX_TIMEOUT_MS = 10 * 60_000;
 
 export const bashTool = (cwd: string) =>
 	tool({
-		// Two forms, keyed on the workspace — never the cwd embedded: the
-		// description is a frozen prompt input, and the doctor shim is
-		// `../doctor` only from the workspace; a project cwd needs it
-		// absolute (design/projects.md).
 		description:
 			cwd === paths.workspace()
 				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts."
@@ -40,12 +35,6 @@ export const bashTool = (cwd: string) =>
 				...(abortSignal ? { abortSignal } : {}),
 			});
 			const combined = result.stdout + result.stderr;
-			// Incompleteness must reach the model: over-budget output
-			// arrives as a tail-heavy window with the full text spilled to
-			// bashcache (a command with side effects can't be re-run to see
-			// its head), and a capture-cap kill or a cut drain means even
-			// the saved file is partial — either way the result must not
-			// read as a clean result.
 			let output = combined;
 			let truncated = result.truncated;
 			if (combined.length > OUTPUT_BUDGET) {

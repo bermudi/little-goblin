@@ -1,15 +1,3 @@
-// Local real-environment gate: a REAL Podman sandbox (cached alpine,
-// no pulls, no external network) + real Pi Durable harness against the
-// localhost fake model — the worker's read/write/edit/bash/file
-// boundary executes in an actual container and is verified through
-// catFile/execArgv, not by what the model claims:
-//
-//     GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
-//
-// Store safety mirrors the drift check: a unique per-run token means
-// "exists" == "created by this run"; preflight refuses on collision
-// and afterAll removes only token-owned names. No external calls; the
-// model endpoint is a localhost fake.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -34,8 +22,6 @@ const NETWORK = `goblin-subenv-${TOKEN}-net`;
 const CONV = `subenv-${TOKEN}:w`;
 const CONTAINER = containerNameFor(CONV, SBX_PREFIX);
 const EVIDENCE_DIR = `/tmp/goblin-subenv-evidence-${TOKEN}`;
-
-// ---------- localhost OpenAI-completions fake ----------
 
 function sse(events: object[]): Response {
 	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
@@ -77,8 +63,6 @@ function toolReply(calls: { name: string; args: Record<string, unknown> }[]): Re
 
 const replies: Response[] = [];
 const seen: { tools: string[]; messages: unknown }[] = [];
-// The server starts inside the live-gated beforeAll — a skipped gate
-// must not leave a listener behind on a plain `bun test`.
 let server: ReturnType<typeof Bun.serve> | undefined;
 const push = (...rs: Response[]) => replies.push(...rs);
 const tools = (...calls: { name: string; args: Record<string, unknown> }[]) => toolReply(calls);
@@ -89,19 +73,10 @@ let sandboxes: Sandboxes | null = null;
 let sandboxStore: ReturnType<typeof openSandboxes> | null = null;
 let runs: SubagentRuns | null = null;
 let owner: Subagents | null = null;
-// Sweeps that fail inside a test's own finally — masking a test
-// failure is worse than reporting the leak twice.
 const sweepFailures: string[] = [];
-// Only names whose create call succeeded enter these sets; cleanup
-// removes exactly them — a refused preflight or a partial adapter
-// failure can never sweep another run's same-named resource.
 const createdContainers = new Set<string>();
 const createdNetworks = new Set<string>();
 
-// The ownership-tracking wrapper the live gate puts over the real
-// adapter: a name joins the sweep sets only after its create returned.
-// The fake-edge tests below exercise this exact function — a re-stated
-// copy would pin the test, not the gate.
 function trackCreatedPodman(base: Podman, containers: Set<string>, networks: Set<string>): Podman {
 	return {
 		...base,
@@ -116,8 +91,6 @@ function trackCreatedPodman(base: Podman, containers: Set<string>, networks: Set
 	};
 }
 
-// The collision probe — a unique per-run token makes "exists" mean
-// "created by another run". Same extraction rule as the tracker.
 async function refuseCollision(what: string, exists: () => Promise<boolean>): Promise<void> {
 	if (await exists()) throw new Error(`probe ${what} already exists — refusing`);
 }
@@ -174,16 +147,11 @@ const desktops: Desktops = {
 	catFile: async () => ({ data: new Uint8Array() }),
 };
 
-// The preflight/ownership invariant itself, on a fake edge — exercised
-// against the real helpers the live beforeAll runs, not a re-statement
-// of them (the previous inline copies could never fail).
 describe("env-gate ownership regression (fake edge)", () => {
 	test("a preexisting candidate is refused by the real collision probe", async () => {
 		await expect(refuseCollision("container c", async () => true)).rejects.toThrow(
 			"already exists",
 		);
-		// A clear probe must pass — the refusal is the probe's verdict,
-		// not a fixed answer.
 		await refuseCollision("container c", async () => false);
 	});
 
@@ -206,7 +174,6 @@ describe("env-gate ownership regression (fake edge)", () => {
 		await expect(failing.networkEnsure("partial-net", "conv")).rejects.toThrow("failed");
 		expect(containers.size).toBe(0);
 		expect(networks.size).toBe(0);
-		// And the same wrapper DOES mark a create that lands.
 		const ok = trackCreatedPodman(
 			{
 				create: async () => {},
@@ -295,7 +262,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 	}, 90_000);
 
 	test("worker env in a real container: write/read/edit/bash/import/export", async () => {
-		// Import a real workspace file through the inbox boundary.
 		const ws = join(cwd, "ws");
 		mkdirSync(ws, { recursive: true });
 		writeFileSync(join(ws, "seed.txt"), "SEED-42");
@@ -323,16 +289,13 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		});
 		await until(() => runs!.get(run.id)?.status === "done", "run done");
 		const row = runs!.get(run.id)!;
-		// Independently verified through the real sandbox, not the model.
 		const nested = await sandboxes!.catFile(CONV, "/work/deep/nested/f.txt");
 		expect(new TextDecoder().decode(nested.data)).toBe("edited-ok");
 		const bin = await sandboxes!.catFile(CONV, "/work/b.bin");
 		expect([...bin.data.slice(0, 4)]).toEqual([0, 255, 65, 66]);
 		const inbox = await sandboxes!.catFile(CONV, "/inbox/subagents/1/01-seed.txt");
 		expect(new TextDecoder().decode(inbox.data)).toBe("SEED-42");
-		// The bash result visible to the model carried real output.
 		expect(JSON.stringify(seen.at(-1)!.messages)).toContain("AB");
-		// The export landed in the workspace.
 		expect(row.exportedFiles.length).toBe(1);
 		expect([...readFileSync(join(ws, row.exportedFiles[0]!)).slice(0, 4)]).toEqual([
 			0, 255, 65, 66,
@@ -343,12 +306,9 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		);
 	}, 180_000);
 
-	// Direct conformance against the REAL sandbox env — no model, no
-	// virtual shell: every call below is a real podman exec.
 	test("env conformance in a real container", async () => {
 		const env = makeSandboxEnv(sandboxes!, join(cwd, "transfer2"), CONV);
-		const CTX = {} as Context; // no abortSignal, no scope
-		// Filenames that used to corrupt the line protocol.
+		const CTX = {} as Context;
 		for (const name of ["a|b.txt", "with space.txt", "line\nbreak.txt"]) {
 			const w = await env.writeFile(`weird/${name}`, "x", CTX);
 			if (!w.ok) throw new Error(`write ${JSON.stringify(name)}: ${w.error.message}`);
@@ -358,18 +318,14 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		expect(listed.value.map((f) => f.name).sort()).toEqual(
 			["a|b.txt", "with space.txt", "line\nbreak.txt"].sort(),
 		);
-		// Missing vs not-a-directory are distinct, honest errors.
 		const missing = await env.listDir("/work/nope-nope", CTX);
 		expect(missing.ok).toBe(false);
 		if (!missing.ok) expect(missing.error.code).toBe("not_found");
 		const notDir = await env.listDir("/work/weird/a|b.txt", CTX);
 		expect(notDir.ok).toBe(false);
-		// canonicalPath strips only realpath's own newline — a trailing
-		// newline IN the name survives.
 		const canon = await env.canonicalPath("/work/weird/line\nbreak.txt", CTX);
 		if (!canon.ok) throw new Error(`canonicalPath: ${canon.error.message}`);
 		expect(canon.value).toBe("/work/weird/line\nbreak.txt");
-		// readTextLines boundaries match openTextLineReader.
 		for (const [content, want] of [
 			["", []],
 			["x", ["x"]],
@@ -382,8 +338,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			if (!r.ok) throw new Error(r.error.message);
 			expect(r.value).toEqual([...want]);
 		}
-		// A pre-aborted context performs ZERO sandbox calls — counted at
-		// the real Podman edge, not just asserted by side effect.
 		let edgeCalls = 0;
 		const counting = new Proxy(sandboxes!, {
 			get(t, p, recv) {
@@ -407,7 +361,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			maxOutput: 1024,
 		});
 		expect(ex.result.stdout.trim()).toBe("1");
-		// Nonzero bash reports the real exit code and streamed output.
 		let streamed = "";
 		const sh = await env.exec(
 			"echo out-$((1+1)); echo err >&2; exit 3",
@@ -417,8 +370,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		if (!sh.ok) throw new Error(sh.error.message);
 		expect(sh.value.exitCode).toBe(3);
 		expect(streamed).toContain("out-2");
-		// A timed-out command reports timeout and its advertised spill
-		// file is a real, readable guest file — never a phantom path.
 		const t = await env.exec("sleep 30; echo late", { timeout: 1 }, CTX);
 		expect(t.ok).toBe(false);
 		if (!t.ok) {
@@ -429,11 +380,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		}
 	}, 180_000);
 
-	// The upstream conformance runner against the same real sandbox:
-	// every case gets a fresh /work directory as its cwd, and every call
-	// inside is a real podman exec. `it` floors the case budget at 60 s —
-	// the runner's own 30 s watch budget stays — because a real exec is
-	// ~200 ms and bun's 5 s default kills mid-case, restarts cascading.
 	let confSeq = 0;
 	registerEnvConformance(
 		{
@@ -461,10 +407,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		},
 	);
 
-	// The crash-gap promise against a real container: the owner process
-	// dies mid-bash, recovery reports the call interrupted, and the
-	// replay-unsafe command never re-executes — proven by the guest
-	// marker file, not by what the transcript claims (phase-5 check 2).
 	test("kill -9 mid-bash recovers without replaying the tool call", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-subkill-"));
 		const ws = join(dir, "ws");
@@ -503,8 +445,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 				if (await fn()) return;
 				await Bun.sleep(150);
 			}
-			// A stuck run usually means the tool result carried an error —
-			// surface what the model actually saw.
 			const last = seen[seen.length - 1];
 			throw new Error(
 				`timed out waiting for: ${what}\nlast request tail: ${JSON.stringify(last?.messages).slice(-1500)}`,
@@ -515,8 +455,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			const [pidStr, runIdStr] = readFileSync(readyFile, "utf8").trim().split("\t");
 			const pid = Number(pidStr);
 			const runId = Number(runIdStr);
-			// A second adapter over the driver's own store resolves the
-			// same container row — the marker file IS the guest fs.
 			store2 = openSandboxes(join(dir, "sandboxes.sqlite"));
 			const sandboxes2 = makeSandboxes({
 				podman: podman!,
@@ -535,7 +473,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			process.kill(pid, "SIGKILL");
 			killed = true;
 			await proc.exited;
-			// The durable row still claims running — the crash gap is on disk.
 			runs2 = openSubagentRuns(join(dir, "goblin.sqlite"));
 			expect(runs2.get(runId)?.status).toBe("running");
 			owner2 = await openSubagents({
@@ -561,8 +498,6 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			});
 			await owner2.resume();
 			await poll(async () => runs2!.get(runId)?.status === "done", "recovered run done");
-			// Exactly one request carried the interrupted tool result — and
-			// it was reported, not re-executed.
 			const interrupted = seen.filter((s) =>
 				JSON.stringify(s.messages).includes("was interrupted"),
 			);
@@ -580,12 +515,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			try {
 				if (await probeExists(CONTAINER)) await podman!.rm(CONTAINER);
 			} catch {
-				/* sweep races are reported by afterAll's own cleanup */
 			}
-			// The driver creates the network through its own adapter —
-			// afterAll's tracked set never sees it. A failed sweep is
-			// reported through afterAll, never a finally throw that would
-			// mask the test result.
 			const net = await boundedRun(spawnProc(["podman", "network", "rm", NETWORK]), {
 				timeoutMs: 30_000,
 				maxOutput: 1 << 20,

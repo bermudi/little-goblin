@@ -3,8 +3,6 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
-// A recorder-broken webm, MediaRecorder's signature: muxed to a
-// non-seekable pipe so the segment header carries no Duration.
 function genUnboundedWebm(seconds: number): Uint8Array {
 	const gen = Bun.spawnSync([
 		"ffmpeg",
@@ -77,20 +75,15 @@ describe("app attachments", () => {
 			const res = await call(`/api/app/attachments/${encodeURIComponent(name)}`);
 			expect(res.status).toBe(200);
 			expect(res.headers.get("content-type")).toBe("image/png");
-			// Operator content serves inert: no shared caches, no sniffing,
-			// a navigated document lands sandboxed.
 			expect(res.headers.get("cache-control")).toContain("private");
 			expect(res.headers.get("x-content-type-options")).toBe("nosniff");
 			expect(res.headers.get("content-security-policy")).toBe("sandbox");
 			expect(Buffer.from(await res.arrayBuffer())).toEqual(Buffer.from(bytes));
 
-			// A path segment is a basename, not a route out of the dir —
-			// traversal and dotfile temps refuse before touching disk.
 			for (const bad of ["..%2F..%2Fconfig.json", ".deadbeef.tmp", "sub%2Ff.png"]) {
 				expect((await call(`/api/app/attachments/${bad}`)).status).toBe(400);
 			}
 			expect((await call("/api/app/attachments/nope.png")).status).toBe(404);
-			// Bearer-less in token mode is refused like every other route.
 			expect((await call(`/api/app/attachments/${name}`, {}, null)).status).toBe(401);
 		} finally {
 			http.stop();
@@ -112,13 +105,9 @@ describe("app attachments", () => {
 			const body = (await res.json()) as {
 				ref: { path: string; size: number; mediaType: string };
 			};
-			// The stored artifact declares a real duration, not the
-			// unbounded stream's N/A — players and segmenters see truth.
 			const d = declaredDuration(body.ref.path);
 			expect(d).not.toBeNull();
 			expect(d!).toBeLessThan(10);
-			// Bun's formData sniffs .webm to video/webm; the rewrite
-			// records the honest audio type.
 			expect(body.ref.mediaType).toBe("audio/webm");
 		} finally {
 			http.stop();
@@ -138,8 +127,6 @@ describe("app attachments", () => {
 			const res = await call("/api/app/attachments", { method: "POST", body: form });
 			expect(res.status).toBe(201);
 			const body = (await res.json()) as { ref: { path: string } };
-			// Normalization failure never fails the post — what arrived
-			// is what's stored.
 			expect(readFileSync(body.ref.path)).toEqual(Buffer.from(bytes));
 		} finally {
 			http.stop();

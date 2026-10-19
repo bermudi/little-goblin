@@ -1,12 +1,3 @@
-// Queue admission — the global run-slot scheduler (design/subagents.md
-// → Owner decomposition ruling 2026-10-17). Extracted from mod.ts
-// verbatim: slots are the union of rows actually executing and rows
-// mid-flight, needs_input frees its slot, and every caller that frees
-// capacity kicks scheduleDrain — the drain then admits eligible queued
-// rows through the run lane. Owns the in-flight set and the scan
-// coalescing flags; retryAfter stays admission's map, shared here
-// only for eligibility reads.
-
 import type { Desktops } from "../desktops.ts";
 import { log } from "../log.ts";
 import type { SubagentRun, SubagentRuns } from "../subagent-runs.ts";
@@ -16,13 +7,9 @@ export interface DrainDeps {
 	desktops: Desktops;
 	maxRuns: number;
 	lane: <T>(id: number, fn: () => Promise<T>) => Promise<T>;
-	// The drain ignores the outcome — the row's own state carries it.
 	admit: (row: SubagentRun) => Promise<unknown>;
-	// Admission's retry-backoff map, shared for eligibility reads.
 	retryAfter: Map<number, number>;
-	/** closing || harnessClosed — the owner resolves the pair. */
 	halted: () => boolean;
-	/** Gate on resume(): nothing drains before the owner resumes. */
 	isResumed: () => boolean;
 }
 
@@ -34,14 +21,8 @@ export interface Drain {
 export function makeDrain(deps: DrainDeps): Drain {
 	const { runs, desktops, maxRuns, lane, admit, retryAfter, halted, isResumed } = deps;
 
-	// Rows mid-flight (admitting or aborting) — the drain adds the id
-	// before the lane runs admit and removes it after, so a queued row
-	// is never double-admitted across coalesced drains.
 	const inflight = new Set<number>();
 
-	// Slots = the union of rows actually executing and rows mid-flight
-	// (admitting or aborting) — never double-counted, never a slot for
-	// needs_input or a queued row.
 	function runningIds(): Set<number> {
 		const ids = new Set<number>(inflight);
 		for (const r of runs.unfinished()) {
@@ -55,13 +36,9 @@ export function makeDrain(deps: DrainDeps): Drain {
 		if ((retryAfter.get(row.id) ?? 0) > now) return false;
 		if (row.kind === "worker") {
 			const lease = runs.workerLease(row.conversationId);
-			// The lease's holder may be this very row (a resume) — a
-			// queued second worker on the same sandbox never jumps ahead
-			// because the lease query ranks active/resuming rows first.
 			if (lease !== null && lease.id !== row.id) return false;
 			return true;
 		}
-		// computer: the desktop's live holder and sibling runs decide.
 		for (const other of runs.unfinished()) {
 			if (
 				other.id !== row.id &&
@@ -73,7 +50,7 @@ export function makeDrain(deps: DrainDeps): Drain {
 			}
 		}
 		const d = desktops.get(row.desktop!);
-		if (d === null) return true; // admission fails once, loudly
+		if (d === null) return true;
 		const held =
 			d.leaseExpiresAt !== null &&
 			d.leaseExpiresAt > now &&

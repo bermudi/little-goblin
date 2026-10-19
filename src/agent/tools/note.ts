@@ -1,11 +1,3 @@
-// The note tool — the agent's only way into the notes surface
-// (design/projects.md → Notes). Mounted on every operator
-// conversation (guests are filtered out at assembly); project
-// conversations default their scope to the project, unbound ones to
-// loose notes. Every refusal a model can act on — a stale rev, a bad
-// range, a missing note — comes back as tool output, never a thrown
-// turn.
-
 import { tool } from "ai";
 import { z } from "zod";
 import {
@@ -22,11 +14,7 @@ import type { ProjectStore } from "../../projects.ts";
 export interface NoteToolDeps {
 	notes: NoteStore;
 	projects: Pick<ProjectStore, "get">;
-	// The calling conversation — recorded on versions so a restore
-	// names who wrote over the state.
 	conversation: string;
-	// The conversation's project binding — scope "here" and create's
-	// default home.
 	projectId: string | null;
 }
 
@@ -35,9 +23,6 @@ const listSchema = z.object({
 	query: z.string().optional(),
 	scope: z.enum(["here", "all"]).optional(),
 });
-// read windows the body — the one tool result that otherwise grows
-// with operator data; replace_range offsets always count into the
-// full body regardless of the window shown.
 const READ_CHARS = 64_000;
 const LIST_LIMIT = 200;
 const readSchema = z.object({
@@ -61,7 +46,6 @@ const replaceSchema = z.object({
 	id: z.string().min(1),
 	body: z.string().max(NOTE_BODY_MAX),
 	title: z.string().min(1).max(200).optional(),
-	// A whole-body write is destructive — it must name the rev it read.
 	rev: z.number().int().positive(),
 });
 const rangeSchema = z.object({
@@ -88,9 +72,6 @@ const actionSchema = z.discriminatedUnion("action", [
 	rangeSchema,
 ]);
 
-// The flat wire shape (program.ts's ruling): providers can't drive a
-// root-level oneOf, so the input schema carries every field optional
-// and the discriminated union owns the exact contract inside execute.
 export const noteInputSchema = z
 	.object({
 		action: z.enum(["list", "read", "create", "append", "replace", "replace_range"]),
@@ -113,9 +94,6 @@ export const noteInputSchema = z
 			}
 	});
 
-// The model-actionable errors — each returns text it can retry
-// against (the live rev, the refusal reason). Storage failures still
-// propagate out of the turn.
 function actionable(err: unknown): { error: string; rev?: number } | null {
 	if (err instanceof NoteConflictError) {
 		return {
@@ -148,8 +126,6 @@ export const noteTool = (deps: NoteToolDeps) =>
 			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
 		inputSchema: noteInputSchema,
 		execute: async (raw) => {
-			// A malformed call must come back as tool output the model can
-			// fix — a thrown parse error would escape the actionable path.
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {
 				const issue = parsed.error.issues[0];
@@ -164,7 +140,6 @@ export const noteTool = (deps: NoteToolDeps) =>
 				switch (input.action) {
 					case "list": {
 						const project = input.scope === "all" ? "all" : (deps.projectId ?? "loose");
-						// One extra row reads the truncation honestly.
 						const rows = deps.notes.list({
 							project,
 							...(input.query !== undefined ? { q: input.query } : {}),
@@ -198,9 +173,6 @@ export const noteTool = (deps: NoteToolDeps) =>
 						}
 						const window = note.body.slice(offset, offset + READ_CHARS);
 						const end = offset + window.length;
-						// The footer rides every read, last window included: it
-						// states the absolute range and the base+position arithmetic
-						// replace_range's absolute offsets need.
 						const footer =
 							`\n[Showing chars ${offset}–${end} of ${note.body.length}.` +
 							(end < note.body.length ? ` Read again with offset=${end} to continue.` : "") +

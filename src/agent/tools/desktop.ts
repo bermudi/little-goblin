@@ -1,12 +1,3 @@
-// The desktop tool (design/subagents.md → Desktops): the operator-
-// facing handle on the managed pool — allocate, observe, lease,
-// network, files, destroy. Input control itself belongs to computer
-// subagents; this tool can observe any desktop and manage leases for
-// its own conversation only — the operator exists solely as a handoff
-// destination, so a model can never claim, release, hand off or
-// destroy AS another holder, and "cannot take a live lease" is
-// enforced in desktops.ts.
-
 import { tool } from "ai";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,7 +10,6 @@ import { PodmanError } from "../../podman.ts";
 import { DESKTOP_TOOL_DESCRIPTION } from "../../subagent-prompts.ts";
 
 export interface DesktopToolDeps {
-	/** The conversation this call runs in — the default lease holder. */
 	conversation: string;
 	workspace: string;
 	desktops: Desktops;
@@ -28,8 +18,6 @@ export interface DesktopToolDeps {
 const nameSchema = z
 	.string()
 	.regex(/^[a-z0-9][a-z0-9-]{0,30}$/, "desktop names are [a-z0-9-], 1-31 chars");
-// The self holder admits only "conversation" — a model can never act
-// as the operator; the operator exists only as a handoff target.
 const holderSchema = z.enum(["conversation"]);
 const targetHolderSchema = z.enum(["conversation", "operator"]);
 
@@ -149,10 +137,6 @@ function view(row: DesktopRow) {
 }
 
 export const desktopTool = (deps: DesktopToolDeps) => {
-	// Holder identity is derived, never taken: the self is always THIS
-	// conversation — no ids cross the wire, and no schema path produces
-	// {kind:"operator"} for the acting side. Handoff targets resolve
-	// separately; "operator" is a destination, never a self.
 	const selfHolder = (): LeaseHolder => ({ kind: "conversation", id: deps.conversation });
 	const targetHolderOf = (h: "conversation" | "operator"): LeaseHolder =>
 		h === "operator" ? { kind: "operator" } : selfHolder();
@@ -167,8 +151,6 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 				};
 			}
 			const input = parsed.data;
-			// Refuse all pre-aborted calls; network/destroy/transfers also
-			// carry the signal through their pool lane and preflight waits.
 			abortSignal?.throwIfAborted();
 			try {
 				switch (input.action) {
@@ -182,8 +164,6 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 					case "list":
 						return { desktops: deps.desktops.list().map(view) };
 					case "shot": {
-						// The audited path, not the pixels — send_file carries
-						// it to the operator; computer runs get the image inline.
 						const shot = await deps.desktops.screenshot(input.name);
 						return {
 							observation_id: shot.id,
@@ -195,9 +175,6 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						const row = await deps.desktops.claim(input.name, selfHolder());
 						return {
 							desktop: view(row),
-							// A recreated/adopted/restarted box loses its
-							// previous files and leases — the claim note is
-							// the caller's only evidence of that.
 							...(row.note !== undefined ? { note: row.note } : {}),
 						};
 					}
@@ -231,8 +208,6 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						};
 					}
 					case "import": {
-						// cpIn takes a host path — stage a copy so the workspace
-						// file itself is never the argument a caller controls.
 						const stage = await mkdtemp(join(tmpdir(), "goblin-desk-imp-"));
 						try {
 							abortSignal?.throwIfAborted();
@@ -268,9 +243,6 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 							input.from,
 							abortSignal === undefined ? undefined : { abortSignal },
 						);
-						// The wait above is a cancellation gap: recheck before
-						// the host write so a call cancelled mid-read never
-						// overwrites a workspace file.
 						abortSignal?.throwIfAborted();
 						const out = exportBytes(deps.workspace, dirname(rel), basename(rel), data);
 						if ("error" in out) return { error: `export ${out.error}` };

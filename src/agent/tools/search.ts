@@ -1,12 +1,3 @@
-// The search tool — one tool, a provider behind it (DESIGN.md, "Web
-// access"). Provider switch is a config edit; the tool's name, schema,
-// and result shape never move. Output is deterministic text: numbered
-// `title — URL — snippet` lines, every result carrying its URL so fetch
-// is the named next step. Wire formats follow hermes' plugins/web
-// (brave/tavily verbatim) and the vendors' SDK wire paths (exa
-// /search, parallel /v1/search, firecrawl /v2/search, jina s.jina.ai).
-// ddg scrapes the unofficial html endpoint — keyless, may rate-limit.
-
 import { tool } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
@@ -26,13 +17,8 @@ import {
 } from "./web.ts";
 
 const TIMEOUT_MS = 15_000;
-// The html endpoint's response is the one search body that isn't JSON
-// — cap the read like every other remote body (fetch's DOWNLOAD_CAP
-// rule): a runaway response fails loud at the cap, never buffers.
 const DDG_HTML_CAP = 8 * 1024 * 1024;
 
-// Remote words ride fenced (DESIGN.md, "Web access") — titles and
-// snippets are provider output, not goblin's own text.
 function fenceHits(rendered: string): string {
 	return fenceUntrusted(
 		"web",
@@ -41,8 +27,6 @@ function fenceHits(rendered: string): string {
 	);
 }
 
-// Base URLs are test doors: adapters accept an override, the tool passes
-// the default. No config knob — a provider switch is a kind switch.
 const BASES = {
 	brave: "https://api.search.brave.com",
 	exa: "https://api.exa.ai",
@@ -59,11 +43,9 @@ interface AdapterOpts {
 	query: string;
 	count: number;
 	key?: string | undefined;
-	/** Test door — the production path always uses the default base. */
 	baseUrl?: string | undefined;
 }
 
-/** What an adapter owes the tool: hits plus the response status for the log line. */
 export interface SearchOutcome {
 	hits: SearchHit[];
 	status: number;
@@ -211,9 +193,6 @@ const parallelSearch: SearchAdapter = async (opts) => {
 	};
 };
 
-// DuckDuckGo html — the unofficial endpoint. Regex over the stable
-// result markup (class=result__a / result__snippet); hrefs ride a
-// redirect wrapper carrying the real URL in ?uddg=.
 const ddgSearch: SearchAdapter = async (opts) => {
 	const res = await fetchOk(
 		"ddg",
@@ -231,20 +210,12 @@ const ddgSearch: SearchAdapter = async (opts) => {
 		throw new ProviderError("ddg", "html response exceeds the 8 MiB download cap");
 	}
 	const hits: SearchHit[] = [];
-	// One pass in document order: an anchor opens a hit, and the next
-	// result__snippet belongs to the most recent anchor — DDG omits
-	// snippet nodes for some results (ads, video cards), and a
-	// positional zip after the fact drifts every snippet past the
-	// first skip onto the wrong hit (audit #17).
 	const anchorNodes = [
 		...html.matchAll(/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g),
 	].map((m) => ({ anchor: true as const, at: m.index ?? 0, m }));
 	const snippetNodes = [
 		...html.matchAll(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g),
 	].map((m) => ({ anchor: false as const, at: m.index ?? 0, m }));
-	// A snippet only attaches to the *accepted* anchor it follows —
-	// a rejected anchor (bad href, empty title) must not let its
-	// snippet drift onto the previous hit.
 	let anchorAccepted = false;
 	for (const node of [...anchorNodes, ...snippetNodes].sort((x, y) => x.at - y.at)) {
 		if (node.anchor) {
@@ -266,7 +237,6 @@ const ddgSearch: SearchAdapter = async (opts) => {
 	return { hits, status };
 };
 
-/** Mapper for providers whose rows are flat {title,url,<snippetField>}. */
 function toHit(snippetField: string) {
 	return (row: unknown): SearchHit => {
 		const rec = row as Record<string, unknown>;
@@ -314,7 +284,6 @@ export interface BoundSearch {
 	run(opts: { query: string; count: number; baseUrl?: string }): Promise<SearchHit[]>;
 }
 
-/** Bind a kind + auth ref into a key-carrying adapter. Test door: baseUrl. */
 export function bindSearch(
 	cfg: { kind: SearchKind; auth?: string | undefined },
 	auth: AuthStore,
@@ -329,7 +298,6 @@ export function bindSearch(
 	};
 }
 
-/** One provider that threw while the chain advanced past it. */
 export interface ChainFailure {
 	provider: string;
 	error: string;
@@ -339,17 +307,9 @@ export interface ChainOutcome {
 	hits: SearchHit[];
 	status: number;
 	servedBy: SearchKind;
-	/** Providers that threw before the one that answered (config order). */
 	failures: ChainFailure[];
 }
 
-/**
- * Walk the configured chain in order. Transport, HTTP, and auth
- * failures advance to the next entry; an EMPTY result set is a valid
- * answer from the first provider and stops the walk (DESIGN.md,
- * "Web access" — empty is an answer, not a failure). Each failed
- * attempt logs its own line; exhaustion throws with every error.
- */
 export async function runSearchChain(
 	entries: ReadonlyArray<{ kind: SearchKind; auth?: string | undefined }>,
 	auth: AuthStore,
@@ -363,8 +323,6 @@ export async function runSearchChain(
 			const { hits, status } = await ADAPTERS[entry.kind]({ ...opts, key });
 			return { hits, status, servedBy: entry.kind, failures };
 		} catch (err) {
-			// Auth-resolve failures carry no provider prefix; transport ones
-			// do (ProviderError). Normalize so every failure names its entry.
 			const raw = (err as Error).message;
 			const error = raw.startsWith(`${entry.kind}:`) ? raw : `${entry.kind}: ${raw}`;
 			failures.push({ provider: entry.kind, error });
@@ -376,12 +334,9 @@ export async function runSearchChain(
 			});
 		}
 	}
-	// Error strings already carry their provider prefix (ProviderError).
 	throw new Error(`search failed — ${failures.map((f) => f.error).join("; ")}`);
 }
 
-/** The fallback note names who answered and why it isn't the primary —
- * the model can tell the operator, who then fixes the primary. */
 export function withFallbackNote(result: string, outcome: ChainOutcome): string {
 	if (outcome.failures.length === 0) return result;
 	const why = outcome.failures.map((f) => f.error).join("; ");
@@ -405,8 +360,6 @@ export const searchTool = (deps: WebToolDeps) =>
 				};
 			}
 			const started = Date.now();
-			// Per-attempt failures already logged by the chain; exhaustion
-			// throws with every error joined — the model sees the whole story.
 			const outcome = await runSearchChain(entries, deps.auth, {
 				query: input.query,
 				count: input.count,
@@ -421,7 +374,6 @@ export const searchTool = (deps: WebToolDeps) =>
 				ms: Date.now() - started,
 			});
 			const rendered = renderHits(outcome.hits);
-			// "No results." is goblin's own line — nothing remote to fence.
 			return withFallbackNote(outcome.hits.length === 0 ? rendered : fenceHits(rendered), outcome);
 		},
 	});

@@ -1,9 +1,3 @@
-// Admission unit tests: the snapshot's boundary rules
-// (design/runtime-turn.md → phase 1) — epoch capture, the resume claim
-// seam, the #82 ownership filter, anchor and mark derivation, the
-// clock. Full turn behavior (steering, cache stability, overflow
-// resume end to end) stays pinned e2e in runtime.test.ts.
-
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
@@ -61,7 +55,7 @@ function baseDeps(
 			getConversation: () => (over.conversation === undefined ? conv(3) : over.conversation),
 			claimQueued: (wire) => {
 				order.push("claim");
-				expect(wire).toBe(live); // the ruling: live is passed in
+				expect(wire).toBe(live);
 				return claimed;
 			},
 			pendingIds: () => {
@@ -90,16 +84,14 @@ describe("admitTurn", () => {
 		const out = admitTurn(h.deps);
 		expect(out.kind).toBe("admitted");
 		if (out.kind !== "admitted") return;
-		// Settings are captured once, from the store row, and the epoch
-		// is the captured conversation's — the authority token.
 		expect(h.captured.map((c) => c.epoch)).toEqual([3]);
 		expect(out.snapshot.conv.epoch).toBe(9);
 		expect(out.snapshot.epoch).toBe(9);
 		expect(out.snapshot.entries.map((e) => e.seq)).toEqual([1, 2, 3]);
-		expect(out.snapshot.anchorSeq).toBe(3); // newest user message, not the first
+		expect(out.snapshot.anchorSeq).toBe(3);
 		expect(out.snapshot.steerMarkSeed).toBe(3);
 		expect(out.snapshot.turnStartMs).toBe(1234);
-		expect(h.order).toEqual(["pendingIds"]); // a fresh turn claims nothing
+		expect(h.order).toEqual(["pendingIds"]);
 	});
 
 	test("a missing conversation is admission's first failure", () => {
@@ -132,17 +124,10 @@ describe("admitTurn", () => {
 		const out = admitTurn(h.deps, { conversation: recovered, startedAt: 777 });
 		expect(out.kind).toBe("admitted");
 		if (out.kind !== "admitted") return;
-		// One settings copy per logical turn: the recovery's conversation
-		// stands in for capture, and its epoch is the token.
 		expect(h.captured).toEqual([]);
 		expect(out.snapshot.conv).toBe(recovered);
 		expect(out.snapshot.epoch).toBe(42);
 		expect(out.snapshot.turnStartMs).toBe(777);
-		// The claim's return already sits in the caller's membership
-		// (the seam registers at the splice) — the snapshot carries no
-		// record of it. The order below is the contract that matters:
-		// the claim runs before the ownership read, so claimed submits
-		// are owned input, not queued leftovers.
 		expect(h.order).toEqual(["claim", "pendingIds"]);
 	});
 
@@ -160,7 +145,6 @@ describe("admitTurn", () => {
 		if (out.kind !== "admitted") return;
 		expect(out.snapshot.entries.map((e) => e.message.id)).toEqual(["u1", "a1"]);
 		expect(out.snapshot.anchorSeq).toBe(1);
-		// The mark still spans the newest OWNED event.
 		expect(out.snapshot.steerMarkSeed).toBe(3);
 	});
 

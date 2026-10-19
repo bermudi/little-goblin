@@ -1,26 +1,11 @@
-// Flood control — the one api transformer that honors Telegram's
-// retry_after on every outbound call. The reply drain awaits its
-// in-flight send chain each iteration, so a 429 wait that resolves
-// inside this transformer is invisible to its stagnant ladder and
-// costs it nothing; left un-honored, three resolved failures in ~2s
-// drop the answer's tail — and one-shot sends (bell, notify,
-// commands) fail outright.
-
 import { GrammyError, type Transformer } from "grammy";
 import { log } from "../log.ts";
 import { API_CALL_TIMEOUT_MS } from "./deadline.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// Waits stay bounded under the caller's own deadline — every caller
-// wraps api in withTimeout (API_CALL_TIMEOUT_MS for sends; guest inline
-// answers run tighter at 8s, so answer* methods get their own cap), and
-// an honored wait that outlives it reports failure while still
-// delivering in the background. Beyond the cap the failure propagates
-// to the caller's existing uncertainty/failure handling, fail loud.
 const DEFAULT_MAX_WAIT_MS = API_CALL_TIMEOUT_MS - 10_000;
 const ANSWER_MAX_WAIT_MS = 5_000;
-// Honored waits per api call — a cap, not a promise to succeed.
 const DEFAULT_MAX_RETRIES = 2;
 
 export interface FloodWaitOpts {
@@ -34,13 +19,9 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 	const wait = opts.sleep ?? sleep;
 	return async (prev, method, payload, signal) => {
-		// Per-call budget (not process-wide): each API call starts with a
-		// fresh maxWaitMs and tracks its own honored waits.
 		let remainingMs = method.startsWith("answer")
 			? Math.min(maxWaitMs, ANSWER_MAX_WAIT_MS)
 			: maxWaitMs;
-		// False when the demanded wait is out of budget — the caller then
-		// returns/throws the original failure untouched.
 		const honored = async (
 			retryAfterS: number,
 			attempt: number,
@@ -61,13 +42,8 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 			return true;
 		};
 		for (let attempt = 0; ; attempt++) {
-			// grammy resolves the raw ApiResponse through the transformer
-			// chain — a 429 rides back as a resolved {ok:false} VALUE; the
-			// GrammyError is raised above the chain in callApi, so a catch
-			// here would never see it. The throw channel still gets the
-			// same check: network failures reach here as errors, and a
-			// transformer stacked under this one can raise a GrammyError
-			// of its own.
+			// grammy resolves a 429 body as {ok:false} at this layer —
+			// GrammyError is raised above the chain, in callApi.
 			let res;
 			try {
 				res = await prev(method, payload, signal);
@@ -82,10 +58,6 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	};
 }
 
-// Numeric retry_after from either channel: a resolved {ok:false} body
-// (grammy's real contract at this layer) or a thrown GrammyError.
-// Only a 429 carrying the parameter is waitable; anything else — other
-// errors, or a 429 without it — passes through untouched.
 function floodRetryAfter(source: unknown): number | undefined {
 	if (source instanceof GrammyError) {
 		if (source.error_code !== 429) return undefined;

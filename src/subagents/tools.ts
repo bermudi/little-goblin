@@ -1,9 +1,3 @@
-// Tool and harness assembly (design/subagents.md): goblin's tools
-// (worker coding tools, computer observation/input, finish/ask), the
-// request guard that binds each request's consumed input, and the Pi
-// Durable harness itself. Owner state arrives through HarnessDeps — this
-// module never reaches back into the owner.
-
 import { Buffer } from "node:buffer";
 import type { Context } from "@earendil-works/chord";
 import { type MutableModels, Type } from "@earendil-works/pi-ai";
@@ -57,16 +51,12 @@ import { SubagentError } from "./errors.ts";
 import type { KindSpec } from "./models.ts";
 import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./run-doc.ts";
 
-/** Cap on one inspect state dump handed to the model. */
 const INSPECT_STATE_CAP = 200_000;
 
 export interface HarnessDeps {
-	/** The SubagentsDeps slice tool and harness assembly needs. */
 	deps: {
 		desktops: Desktops;
-		/** Pi Durable storage file — state/subagents.sqlite. */
 		storagePath: string;
-		/** Extra Pi Durable settings merged over our defaults. */
 		harnessSettings?: Record<string, unknown>;
 	};
 	runs: SubagentRuns;
@@ -80,11 +70,7 @@ export interface HarnessDeps {
 	recordOutcome(api: ToolExecutionApi, outcome: RunOutcomeBody): Promise<void>;
 	envFor(origin: string): SandboxEnv;
 	persistClaimNote(rowId: number, note: string | undefined): void;
-	/** Persist a recovery nudge at a fresh rev under the owner's lane. */
 	recoveryNudge(rowId: number, inputRev: number, context: Context): Promise<void>;
-	/** The crash-approval gate (owner-local: it parks the run row and
-	 *  waits on decide) — injected so the wrap chains can sit it outside
-	 *  the run guards without this module reaching back into the owner. */
 	withApprovalGate<T extends ToolRegistration>(tool: T): T;
 }
 
@@ -112,13 +98,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		withApprovalGate,
 	} = args;
 
-	// ---------- tool wrappers ----------
-
-	// Terminal-outcome wrap: once a terminal tool committed the doc,
-	// every other tool in the bundled round returns terminate WITHOUT
-	// running — `terminate` only ends the round when every call
-	// terminates, so a blocked call would keep the round alive; this
-	// satisfies it while keeping the side effect out.
+	// pi-durable's `terminate` ends the round only when every bundled call
+	// terminates — this returns it without running once a terminal outcome is
+	// committed, so a blocked sibling can't keep the round alive.
 	function withTerminalWrap<T extends ToolRegistration>(tool: T): T {
 		const inner = tool.execute;
 		return {
@@ -128,11 +110,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				if (doc?.outcome !== undefined && doc?.outcome !== null) {
 					return {
 						control: { terminate: true },
-						// The action was not performed, so it produced no
-						// observed result: an error result, as the harness
-						// itself encodes a call with no result. A tool that
-						// declares a structured output schema (bash) cannot
-						// answer success without it.
 						isError: true,
 						output: [
 							{
@@ -147,11 +124,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		} as T;
 	}
 
-	// Every worker tool result carries the latest destructive sandbox
-	// lifecycle note as a diagnostic — recorded through api.diagnostic
-	// in a finally so a timeout or nonzero/error path carries it too,
-	// alongside whatever output the tool already streamed. Repeat
-	// until replaced, never a clear-before-result gap.
 	function withLifecycleNote<T extends ToolRegistration>(tool: T): T {
 		const inner = tool.execute;
 		return {
@@ -173,9 +145,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		} as T;
 	}
 
-	// Every run-scoped tool passes the liveness gate first: the row
-	// exists, the run is executing, no stop intent is persisted, and
-	// the owner is open.
 	function withRunGuards<T extends ToolRegistration>(tool: T): T {
 		const inner = tool.execute;
 		return {
@@ -188,9 +157,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		} as T;
 	}
 
-	// Computer tools also renew the desktop controller lease before
-	// touching the box — observation and input alike; acting under
-	// someone else's lease is impossible.
 	function withLeaseRenew<T extends ToolRegistration>(tool: T): T {
 		const inner = tool.execute;
 		return {
@@ -199,9 +165,8 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				const row = requireRow(api);
 				const claimed = await deps.desktops.claim(row.desktop!, holderFor(row.id));
 				persistClaimNote(row.id, claimed.note);
-				// The claim await is a cancellation window — stop intent can
-				// persist while it pends, and the entry row is stale. Re-gate
-				// on a fresh read immediately before dispatch.
+				// The claim await is a cancellation window: stop intent
+				// can persist while it pends, so re-gate on a fresh read.
 				requireLive(requireRow(api));
 				if (context.abortSignal?.aborted) {
 					throw new SubagentError(
@@ -212,8 +177,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 			},
 		} as T;
 	}
-
-	// ---------- tools ----------
 
 	const finishParams = Type.Object({
 		result: Type.String({
@@ -275,10 +238,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		withLifecycleNote(
 			withTerminalWrap(withRunGuards({ ...createReadTool(), replay: "safe" as const })),
 		),
-		// Side-effecting tools (write/edit/bash) get the crash-approval gate
-		// outside the run guards; read stays observation-only and replay-safe,
-		// and the terminal tools are ungated — gating them would recurse the
-		// approval machinery into the very calls that record outcomes.
 		withLifecycleNote(withApprovalGate(withTerminalWrap(withRunGuards(createWriteTool())))),
 		withLifecycleNote(withApprovalGate(withTerminalWrap(withRunGuards(createEditTool())))),
 		withLifecycleNote(
@@ -330,9 +289,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 					...(args.pid !== undefined ? { pid: args.pid } : {}),
 					...(args.window_id !== undefined ? { windowId: args.window_id } : {}),
 				});
-				// The state may carry a base64 frame — it is image data,
-				// not text: strip it from the JSON and emit it as an inline
-				// image block so a dump can't crowd out the tree.
 				const raw: unknown = ins.state;
 				const stateObj: Record<string, unknown> =
 					typeof raw === "object" && raw !== null
@@ -418,9 +374,8 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		askTool,
 	];
 
-	// abortTask joins the live invocation — it must not be awaited
-	// from inside the very invocation it joins; the mark is what
-	// refuses, the join is asynchronous.
+	// abortTask joins the live invocation — never await it from inside
+	// that invocation; the abort mark is what refuses, the join is async.
 	function abortPiTask(api: HookApi): void {
 		void harness
 			.abortTask(api.taskId, ctx)
@@ -432,10 +387,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		cutoff: z.number().int().positive(),
 	});
 
-	// inputRev means the input this request consumed, never the newest
-	// admitted intent — the request checkpoint's cutoff plus the newest
-	// placed input at or below it says which one. Binding also clears a
-	// stale committed outcome so it can't abort or mis-settle this rev.
+	// inputRev is the input this request consumed, not the newest admitted
+	// intent: the request checkpoint's cutoff bounds the search, and a
+	// stale committed outcome is cleared so it can't mis-settle this rev.
 	async function bindConsumedInput(
 		api: HookApi,
 		row: SubagentRun,
@@ -484,14 +438,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		}, ctx);
 	}
 
-	// Computer runs renew their desktop lease at every model request
-	// too — a lost lease fails the request rather than letting input
-	// land under the wrong holder. A transient claim failure rides the
-	// bounded recovery budget instead: a typed DesktopLeaseError is
-	// lost ownership, anything else keeps the run owned. A committed
-	// terminal outcome also stops generation: an unknown or malformed
-	// tool slot can leave a round "unanswered", and the monitor
-	// settles the run from the doc.
 	const requestGuard = hook(GenerationTask, {
 		beforeRequest: async (_input, api, context) => {
 			let row: SubagentRun | null;
@@ -509,8 +455,8 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				abortPiTask(api);
 				return undefined;
 			}
-			// No throw here — a hook failure is merely reported and the
-			// request would proceed. Every guard refuses through the
+			// No throw here — pi-durable merely reports a hook failure and
+			// the request would proceed; every guard refuses through the
 			// real abort mark instead.
 			if (row === null) {
 				log.warn("subagent request on an unknown row — aborting", {
@@ -531,12 +477,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				return undefined;
 			}
 			if (bound.outcome !== null) {
-				// A committed outcome for this same input means the round
-				// should already have terminated — a sibling call kept
-				// it alive (a malformed slot can't terminate). The abort
-				// mark signals the in-flight stream; the task ends
-				// `aborted`, the input settles unanswered, and the
-				// monitor classifies from the doc.
+				// A committed outcome means the round should already have
+				// terminated — a sibling (a malformed slot can't terminate)
+				// kept it alive; abort, the monitor classifies from the doc.
 				log.warn("subagent generation continued past a committed outcome — aborting", {
 					conversation: String(api.conversationId),
 				});
@@ -553,8 +496,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 					persistClaimNote(row.id, claimed.note);
 				} catch (err) {
 					if (err instanceof DesktopLeaseError) {
-						// Lost ownership is terminal — the request dies
-						// unanswered and the monitor settles the run failed.
 						log.warn("subagent lost its desktop lease — aborting the request", err, {
 							run: row.id,
 							desktop: row.desktop,
@@ -562,29 +503,17 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 						abortPiTask(api);
 						return undefined;
 					}
-					// Any other claim failure is transient podman work —
-					// killing the run for it would burn the recovery ruling.
-					// The request still aborts (the lease is unverifiable),
-					// but a continuation intent persists at a fresh rev
-					// before returning: the aborted submission's settle reads
-					// inputIntent and stays out, and the scan's bounded
-					// recovery re-drives the run. The consumed input's
-					// entry is already in the transcript, so the intent is
-					// a nudge to continue — replaying the task brief would
-					// inject a stale duplicate, and the aborted steer or
-					// answer text is not stored to replay.
+					// Any other claim failure is transient podman work: the request
+					// aborts and a fresh-rev nudge rides the bounded recovery —
+					// replaying the task brief would inject a stale duplicate.
 					log.warn(
 						"subagent desktop claim failed — the request aborts; the run stays owned for recovery",
 						err,
 						{ run: row.id, desktop: row.desktop },
 					);
 					try {
-						// Cancellation may hold the lane while joining this
-						// hook; the owner's nudge joins behind any provisional
-						// steer and owns the recovery mark.
 						await recoveryNudge(row.id, bound.inputRev, context);
 					} finally {
-						// A failed intent write must also refuse the request.
 						abortPiTask(api);
 					}
 					return undefined;
@@ -638,11 +567,8 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		name: "goblin-computer",
 		tools: computerTools.map((t) => {
 			if (t.name === "finish" || t.name === "ask_operator") return t;
-			// Lifecycle-outermost like the worker wraps — a claim note
-			// persisted mid-execute still reaches this call's result. The
-			// input tools (act/launch) are side-effecting and get the
-			// crash-approval gate outside the run guards; screenshot and
-			// inspect are observations — replay-safe, ungated.
+			// Lifecycle-outermost so a claim note persisted mid-execute
+			// still reaches this call's result.
 			if (t.name === "act" || t.name === "launch") {
 				return withLifecycleNote(
 					withApprovalGate(withRunGuards(withLeaseRenew(withTerminalWrap(t)))),
@@ -657,8 +583,6 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 	registry.install(workerExtension);
 	registry.install(computerExtension);
 
-	// The env seam: only worker rows get an ExecutionEnv — a computer
-	// conversation has no filesystem or shell, by design.
 	const storage = await openNodeSqliteStorage(deps.storagePath);
 	const harness = await Harness.open(
 		storage,
@@ -674,9 +598,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 				if (row === null || row.kind !== "worker") return undefined;
 				return envFor(row.conversationId);
 			},
-			// onReport is non-fatal (extension failures that did not
-			// fail the calling operation) — log it, never close-state.
-			// Real close is observed through subscribeClose below.
+			// onReport is non-fatal (extension failures that did not fail
+			// the calling operation) — the real close edge is mod.ts's
+			// subscribeClose, never this hook.
 			onReport: (error) => {
 				log.error("subagent harness report", error);
 			},

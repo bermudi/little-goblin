@@ -1,9 +1,3 @@
-// The script tool's contract (design/tools.md → Scripting): the
-// callable set is the allowlist ∩ the assembled set, nested calls are
-// real calls (validated, fenced by call-time lookup, capped and
-// bounded), failures reject inside the script, output is windowed and
-// spilled like fetch's, and web-tainted output rides fenced.
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,7 +93,6 @@ test("invalid arguments reject inside the script and the tool never ran", async 
 	});
 	expect(out.text).toContain("invalid arguments for bash");
 	expect(ran).toBe(false);
-	// The rejection is recorded — the tool didn't run, but the attempt did.
 	expect(out.calls).toHaveLength(1);
 	expect(out.calls[0]!.ok).toBe(false);
 });
@@ -160,10 +153,6 @@ test("excluded tools are absent from Callable and unreachable inside the VM; scr
 	expect(out.text).toContain("Script failed (script)");
 });
 
-// The call cap is enforced in the worker before a call can post to the
-// host (design/tools.md → Scripting): a fan-out over maxCalls is a
-// whole-script crash, not a per-call rejection the script can catch,
-// and the host never sees the over-limit calls.
 test("the call cap fails the whole script — the worker never forwards the over-limit calls", async () => {
 	let ran = 0;
 	const tools = composed(
@@ -184,15 +173,10 @@ return rs.length + " settled";`,
 	expect(out.error).toBe("sandbox");
 	expect(out.text).toContain("Script failed (sandbox)");
 	expect(out.text).toContain("tool call limit exceeded");
-	// At most the capped calls ever reached the tool — the rest were
-	// dropped in the worker, never posted.
 	expect(ran).toBeLessThanOrEqual(3);
 	expect(out.calls.length).toBeLessThanOrEqual(3);
 });
 
-// The same crash lands when the script awaits each call and tries to
-// catch-and-retry: the second attempt trips the worker's count, the
-// shared interrupt stops the VM, and nothing further is forwarded.
 test("a catch-and-retry loop cannot ride past the call cap", async () => {
 	let ran = 0;
 	const tools = composed(
@@ -216,8 +200,6 @@ return msg;`,
 	expect(ran).toBe(1);
 });
 
-// The 1 MiB serialized-argument bound is enforced in the worker too —
-// a huge payload dies at the port and never reaches nested execute.
 test("a call whose serialized args exceed 1 MiB fails the script before reaching the tool", async () => {
 	let ran = 0;
 	const tools = composed({
@@ -279,10 +261,6 @@ return "digested the page";`,
 	expect(bare.text).toContain("plain");
 });
 
-// Taint marks at dispatch, not on success: a fetch/search call that
-// throws or returns an error shape still puts remotely influenced text
-// (a mirrored error string, a hostile header) into a VM catch — quoted
-// output must ride inside the fence either way.
 test("a caught fetch/search failure still taints the output — error-shaped and thrown", async () => {
 	const refused = composed({
 		bash: counter(() => "ran"),
@@ -320,24 +298,17 @@ test("a caught fetch/search failure still taints the output — error-shaped and
 	return "caught: " + e.message;
 }`,
 		});
-		// The VM caught the failure and quoted it — that quote is web
-		// text. The status line stays outside, as always.
 		expect(out.error).toBeUndefined();
 		expect(out.text.indexOf("Script completed")).toBeLessThan(out.text.indexOf("<web>"));
 		expect(out.text.indexOf("caught:")).toBeGreaterThan(out.text.indexOf("<web>"));
 		expect(out.text.indexOf("caught:")).toBeLessThan(out.text.indexOf("</web>"));
 		expect(out.text).toContain("fence-break");
-		// The payload's own fence-close is neutralized — one real close.
 		expect(out.text.match(/<\/web>/g)).toHaveLength(1);
 		expect(out.text).toContain("<\\/web>");
 	}
 });
 
 test("a real fetch refusal — the loopback page's hostile content-type is quoted inside the fence", async () => {
-	// The boundary observed, not invented: Bun.serve answers with an
-	// attacker-chosen Content-Type, fetchTool's local extractor refuses
-	// it verbatim ("unsupported content type ..."), and the script's
-	// catch hands that string back as output.
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
@@ -432,7 +403,6 @@ test("the VM's signal aborts a nested call the script left unawaited", async () 
 return "detached";`,
 	});
 	expect(out.text).toContain("detached");
-	// The VM can abort the unawaited call a beat after execute returns.
 	for (let i = 0; i < 100 && !aborted; i++) {
 		await new Promise((r) => setTimeout(r, 10));
 	}
@@ -459,9 +429,6 @@ test("calls queued behind the in-flight cap never start once the VM is done", as
 return "detached";`,
 	});
 	expect(out.text).toContain("detached");
-	// 8 in flight when the script returned; the 4 queued were cancelled
-	// with the VM, not started afterwards — and they never ran, so the
-	// record carries only the 8 that did.
 	await new Promise((r) => setTimeout(r, 200));
 	expect(ran).toBe(8);
 	expect(out.calls).toHaveLength(8);
@@ -481,9 +448,6 @@ return keep.length;`,
 test("nested calls look up execute at call time — a fence swapped in later still wraps them", async () => {
 	const tools: ToolSet = { bash: bashTool(home) };
 	const wrapped = composed(tools);
-	// Simulate runtime.fenceTools: .execute is rewritten in place on the
-	// same object AFTER the script tool was built. Binding at
-	// construction would run this call unfenced.
 	tools.bash!.execute = (() => {
 		throw new Error("epoch fenced");
 	}) as unknown as NonNullable<(typeof tools)["bash"]["execute"]>;
@@ -510,8 +474,6 @@ return "tail marker";`,
 	expect(out.text).toContain("[TRUNCATED");
 	expect(out.text).toContain("line 0 ");
 	expect(out.text).toContain("tail marker");
-	// The footer must say the retained spill is temporary — the sweep
-	// can reclaim it on a later call.
 	expect(out.text).toContain("sweep may reclaim");
 	const match = /saved to: (\S+)/.exec(out.text);
 	expect(match).not.toBeNull();
@@ -524,7 +486,6 @@ return "tail marker";`,
 });
 
 test("a failed output spill still returns the window — the footer reports the lost save", async () => {
-	// A regular file where scriptcache belongs: mkdirSync can't recover.
 	mkdirSync(join(home, "state"), { recursive: true });
 	writeFileSync(join(home, "state", "scriptcache"), "x");
 	const tools = composed({ bash: counter(() => "ok") });
@@ -588,9 +549,6 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 	});
 });
 
-// The operator-session tool is never scriptable (design/delegation.md):
-// prompting the operator's panes is deliberate per-call work, and the
-// allowlist — not the tool's own guards — is what keeps it out.
 test("herdr is not in the script's callable set", () => {
 	expect(SCRIPT_CALLABLE.has("herdr")).toBe(false);
 	const tools = composed({

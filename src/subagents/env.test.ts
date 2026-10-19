@@ -1,7 +1,3 @@
-// The sandbox env's shell wall and reader/exec contract against the
-// in-memory guest fs (fakeSandboxes): spill/prefix/argv/timeout
-// semantics trained on every `bun test`. podman.test.ts runs the same
-// contracts through real containers when gated.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
@@ -15,11 +11,6 @@ import { dirs, fakeSandboxes, type MemSandbox } from "./testing.ts";
 
 setLogFile(null);
 
-// ---------- the worker shell wall (SandboxEnv.exec) ----------
-
-// Stages the wrapped-shell outcome directly: the `env` call writes the
-// given rc + stdout into the guest fs instead of evaluating a script,
-// so the SIGXFSZ exit can be pinned without a 100 MiB stdout.
 function stageShellExit(sb: MemSandbox, rc: number, spillText: string | Uint8Array): void {
 	const enc = new TextEncoder();
 	const real = sb.execArgv;
@@ -52,7 +43,7 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string | Uint8Arr
 }
 
 describe("worker shell wall", () => {
-	const CTX = {} as Context; // no abortSignal, no scope
+	const CTX = {} as Context;
 
 	test.each(["waiting", "copied"] as const)(
 		"a worker write cancelled while %s forwards cancellation and removes both stages",
@@ -139,7 +130,6 @@ describe("worker shell wall", () => {
 		expect(streamed).toContain("exit 153");
 		expect(streamed).toContain("100 MiB per-file cap");
 		expect(streamed).toContain("chunks or stream");
-		// The command's own output still rides back under the note.
 		expect(streamed).toContain("partial output");
 	});
 
@@ -153,10 +143,6 @@ describe("worker shell wall", () => {
 		expect(r.error.message).toContain("MiB wall");
 	});
 
-	// The temp files behind a shell exec (spill + rc) are cleanup the
-	// operation owns: when the guest rm fails, a successful command is
-	// still a failure — success must never be claimed over a leaked
-	// or unverified cleanup.
 	test("a failed guest temp cleanup turns a successful shell exec into an error", async () => {
 		const sb = fakeSandboxes();
 		const real = sb.execArgv;
@@ -183,9 +169,6 @@ describe("worker shell wall", () => {
 		expect(r.error.message).toContain("cleanup");
 	});
 
-	// The symmetric boundary: when the command itself already failed,
-	// its error is the operation's — the cleanup failure rides only
-	// in the log, never replacing the primary failure.
 	test("a failed guest temp cleanup never masks the primary exec error", async () => {
 		const sb = fakeSandboxes();
 		const real = sb.execArgv;
@@ -212,10 +195,6 @@ describe("worker shell wall", () => {
 		expect(r.error.message).not.toContain("cleanup");
 	});
 
-	// The same contract at the staged-write boundary, with a thrown
-	// rm (the sandbox exec dying) rather than a nonzero exit: a
-	// successful staged write reports its cleanup failure, while a
-	// write that already failed keeps its own error.
 	test("a thrown guest staging cleanup fails a successful write; a failed write keeps its own error", async () => {
 		const sb = fakeSandboxes();
 		const real = sb.execArgv;
@@ -230,10 +209,7 @@ describe("worker shell wall", () => {
 		expect(staged.ok).toBe(false);
 		if (staged.ok) return;
 		expect(staged.error.message).toContain("cleanup");
-		// The write itself landed — only the stage cleanup failed.
 		expect(sb.fs.exists("/work/out.txt")).toBe(true);
-		// A write that failed on its own keeps that error — the
-		// cleanup failure stays a log line, never the reported cause.
 		sb.fs.write("/work/blocker", new TextEncoder().encode("x"));
 		const blocked = await env.writeFile("/work/blocker/x.txt", "data", CTX);
 		expect(blocked.ok).toBe(false);
@@ -243,13 +219,8 @@ describe("worker shell wall", () => {
 	});
 });
 
-// ---------- the sandbox env's reader/exec contract (fake guest fs) ----------
-
-// The live gate runs the same contract through the upstream
-// `registerEnvConformance` against real podman execs; these cases keep
-// the boundary exercised on every `bun test` with the in-memory guest.
 describe("sandbox env contract (fake guest fs)", () => {
-	const CTX = {} as Context; // no abortSignal, no scope
+	const CTX = {} as Context;
 	const must = <T>(r: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
 		if (!r.ok) throw new Error(r.error.message);
 		return r.value;
@@ -285,8 +256,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 			kind: "file",
 			size: 12,
 		});
-		// scanLines walks the same pinned file — the selected range reads
-		// back as the second line plus its newline.
 		const scan = must(await reader.scanLines({ startLine: 1 }, CTX));
 		expect(scan.newlines).toBe(2);
 		expect(dec.decode(must(await reader.read(scan.start, scan.end - scan.start, CTX)))).toBe(
@@ -294,13 +263,9 @@ describe("sandbox env contract (fake guest fs)", () => {
 		);
 		expect(await failureCode(reader.read(-1, 1, CTX))).toBe("invalid");
 		expect(await failureCode(reader.read(0, 1.5, CTX))).toBe("invalid");
-		// The abort check precedes closed/arg checks — an aborted context
-		// wins over an otherwise-valid call.
 		expect(
 			await failureCode(reader.read(0, 1, { abortSignal: AbortSignal.abort() } as Context)),
 		).toBe("aborted");
-		// The reader keeps the opened file: the path is renamed and
-		// rewritten, the pin still serves the original bytes.
 		must(await env.renameFile("/work/data.txt", "/work/moved.txt", CTX));
 		must(await env.writeFile("/work/data.txt", "two", CTX));
 		expect(dec.decode(must(await reader.read(0, 12, CTX)))).toBe("hello\nworld\n");
@@ -308,12 +273,9 @@ describe("sandbox env contract (fake guest fs)", () => {
 		await reader.close(CTX);
 		expect(await failureCode(reader.read(0, 1, CTX))).toBe("invalid");
 		expect(await failureCode(reader.info(CTX))).toBe("invalid");
-		// No hidden pin survives the close.
 		expect(
 			sb.fs.children("/work").filter((p) => posix.basename(p).startsWith(".goblin-br-")),
 		).toEqual([]);
-		// Open classifications: a directory and a missing path are refused
-		// before any reader exists.
 		expect(await failureCode(env.openBinaryReader("/work", undefined, CTX))).toBe("is_directory");
 		expect(await failureCode(env.openBinaryReader("/work/nope.txt", undefined, CTX))).toBe(
 			"not_found",
@@ -330,9 +292,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 		expect(first.done).toBe(false);
 		expect(first.entries.map((e) => e.name)).toEqual(["a.txt", "b.txt"]);
 		expect(first.entries[0]).toMatchObject({ kind: "file", size: 1 });
-		// c and d vanish after the listing: their page reports no entries
-		// but still advances, and the final page hands over e and claims
-		// done — repeating later without another stat pass.
 		must(await env.remove("/work/d/c.txt", undefined, CTX));
 		must(await env.remove("/work/d/d.txt", undefined, CTX));
 		expect(must(await reader.next(2, CTX))).toEqual({ entries: [], done: false });
@@ -340,8 +299,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 		expect(last.entries.map((e) => e.name)).toEqual(["e.txt"]);
 		expect(last.done).toBe(true);
 		expect(must(await reader.next(2, CTX))).toEqual({ entries: [], done: true });
-		// The abort check precedes the page-size and done short-circuits:
-		// an aborted context wins even on a done reader.
 		expect(await failureCode(reader.next(1, { abortSignal: AbortSignal.abort() } as Context))).toBe(
 			"aborted",
 		);
@@ -383,11 +340,9 @@ describe("sandbox env contract (fake guest fs)", () => {
 		expect(skipped).toBeDefined();
 		if (skipped === undefined) return;
 		expect(skipped).toEqual({ bytes: 676, newlines: 196, endsWithNewline: true });
-		// skip + delivered reconstruct the full 692-byte, 200-newline stream.
 		const enc = new TextEncoder();
 		expect(skipped.bytes + enc.encode(c.text).length).toBe(692);
 		expect(skipped.newlines + c.text.split("\n").length - 1).toBe(200);
-		// The skip rule: a chunk after a skip exceeds the window.
 		expect(enc.encode(c.text).length > 20 || c.text.split("\n").length - 1 > 3).toBe(true);
 		expect(c.text.endsWith("198\n199\n200\n")).toBe(true);
 	});
@@ -430,11 +385,11 @@ describe("sandbox env contract (fake guest fs)", () => {
 		const chunkBytes = 8 * 1024 * 1024;
 		const bytes = new Uint8Array(chunkBytes + 128).fill(0x61);
 		const cut = bytes.length - 33;
-		bytes.set([0xef, 0xbb, 0xbf], 0); // Only this initial BOM is dropped.
-		bytes.set([0xe2, 0x82, 0xac], chunkBytes - 1); // Split a valid character across reads.
+		bytes.set([0xef, 0xbb, 0xbf], 0);
+		bytes.set([0xe2, 0x82, 0xac], chunkBytes - 1);
 		bytes.set([0xef, 0xbb, 0xbf], chunkBytes + 12);
 		bytes.set([0xff, 0xff], 100);
-		bytes.set([0xe2, 0x82], cut - 2); // The omitted prefix ends with an incomplete character.
+		bytes.set([0xe2, 0x82], cut - 2);
 		stageShellExit(sb, 0, bytes);
 		const reads: number[] = [];
 		const real = sb.execBytesArgv;
@@ -526,8 +481,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 		expect(new TextDecoder().decode(sb.fs.read(sb.fs.norm(spill!)))).toBe(
 			Array.from({ length: 100 }, (_, i) => `${i + 1}\n`).join(""),
 		);
-		// The measured files and the rc are gone; only the advertised
-		// spill remains.
 		expect(tmpLeftovers(sb)).toEqual([spill!]);
 	});
 
@@ -557,9 +510,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 		const call = captured.find((a) => a.includes("goblin-argv"));
 		expect(call).toBeDefined();
 		if (call === undefined) return;
-		// The wrapper layout is tag/cwd/out/err/rc/program/cap/args…: the
-		// hostile text and the spaced argument each ride as ONE argv
-		// element after the cap — never re-joined or shell-quoted.
 		const i = call.indexOf("goblin-argv");
 		expect(call[i + 5]).toBe("echo");
 		const args = call.slice(i + 6);
@@ -590,8 +540,6 @@ describe("sandbox env contract (fake guest fs)", () => {
 		const real = sb.execArgv;
 		sb.execArgv = async (conv, argv, opts) => {
 			if (argv[0] === "env" && argv.includes("goblin-sh")) {
-				// The kill left both stream files behind with partial output;
-				// the rc was never written.
 				const rest = argv.slice(1);
 				const shIdx = rest.indexOf("/bin/sh");
 				sb.fs.write(sb.fs.norm(rest[shIdx + 5] ?? ""), enc.encode("partial-out\n"));

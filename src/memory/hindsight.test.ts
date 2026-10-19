@@ -432,9 +432,7 @@ describe("Hindsight HTTP boundary", () => {
 });
 
 describe("memories browser list endpoints", () => {
-	// Verbatim item shapes from the live 0.10.0-slim API (2026-09-30),
-	// minus the fields the schema strips — the browser reads only what
-	// it renders; the rest of the payload is server-owned detail.
+	// Verbatim live 0.10.0-slim item shapes (2026-09-30); the schema strips unrendered fields.
 	test("listDocuments sends the page query and reads the live envelope", async () => {
 		const requests: URL[] = [];
 		const baseUrl = fake((request) => {

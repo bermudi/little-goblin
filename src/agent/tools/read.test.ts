@@ -29,12 +29,11 @@ describe("read_file", () => {
 		};
 		expect(out.error).toBeUndefined();
 		expect(out.content).toBe("1\tone\n2\ttwo\n");
-		expect(out.lines).toBe(2); // the trailing newline terminates line 2 — no phantom line 3
+		expect(out.lines).toBe(2);
 	});
 
 	test("oversized file is refused before it is read", async () => {
 		const dir = tmpDir("goblin-read-");
-		// Sparse file: ftruncate sets size without writing real bytes.
 		const fd = openSync(join(dir, "big.log"), "w");
 		ftruncateSync(fd, 9 * 1024 * 1024);
 		closeSync(fd);
@@ -45,9 +44,6 @@ describe("read_file", () => {
 
 	test("a limit that cannot page is refused at the schema, not coerced", async () => {
 		const t = readFileTool(tmpDir("goblin-read-"));
-		// The SDK runs a tool call's input through safeValidateTypes with
-		// this same inputSchema before execute. Zero and negative limits
-		// must die at that boundary, never reach the window arithmetic.
 		for (const limit of [0, -1]) {
 			const res = await safeValidateTypes({
 				value: { path: "f.txt", limit },
@@ -65,8 +61,6 @@ describe("read_file", () => {
 	test("a file exactly at the size cap is read; one byte more is refused", async () => {
 		const dir = tmpDir("goblin-read-");
 		const t = readFileTool(dir);
-		// The gate is `>`: MAX_FILE_BYTES is the largest readable file,
-		// not the first refused one.
 		writeFileSync(join(dir, "at-cap.txt"), "a".repeat(MAX_FILE_BYTES));
 		const atCap = (await t.execute!({ path: "at-cap.txt" }, opts)) as { error?: string };
 		expect(atCap.error).toBeUndefined();
@@ -77,7 +71,6 @@ describe("read_file", () => {
 
 	test("byte-cap truncation emits complete lines plus a continuation notice", async () => {
 		const dir = tmpDir("goblin-read-");
-		// ~126KB across 3000 lines — blows past the 64KB output cap.
 		writeFileSync(
 			join(dir, "f.txt"),
 			Array.from({ length: 3000 }, (_, i) => `line-${i}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`).join("\n"),
@@ -90,15 +83,12 @@ describe("read_file", () => {
 		};
 		expect(out.shown!).toBeLessThan(3000);
 		expect(out.lines!).toBe(3000);
-		// Every emitted line is complete and numbered — never a partial line.
 		const emitted = out.content!.split("\n").filter((l) => /^\d+\t/.test(l));
 		expect(emitted.length).toBe(out.shown!);
-		// The notice names the exact resumption offset.
 		expect(out.content).toMatch(
 			/\[Showing lines 1–\d+ of 3000 \(64KB limit\)\. Use offset=\d+ to continue\.\]/,
 		);
 		const next = Number(out.content!.match(/Use offset=(\d+)/)![1]);
-		// Following the notice resumes exactly where the cap stopped.
 		const page2 = (await t.execute!({ path: "f.txt", offset: next }, opts)) as { content?: string };
 		expect(page2.content!.startsWith(`${next}\tline-${next - 1}-`)).toBe(true);
 	});
@@ -113,7 +103,7 @@ describe("read_file", () => {
 
 	test("a single line bigger than the cap gets a bash fallback, not a marker", async () => {
 		const dir = tmpDir("goblin-read-");
-		writeFileSync(join(dir, "min.txt"), `x`.repeat(100 * 1024)); // one 100KB line
+		writeFileSync(join(dir, "min.txt"), `x`.repeat(100 * 1024));
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "min.txt" }, opts)) as {
 			content?: string;
@@ -185,14 +175,13 @@ describe("read_file line clamping", () => {
 			content?: string;
 			shown?: number;
 		};
-		expect(out.shown).toBe(30); // clamped lines fit the window — all shown
+		expect(out.shown).toBe(30);
 		const emitted = out.content!.split("\n").filter((l) => /^\d+\t/.test(l));
 		expect(emitted.length).toBe(30);
 		expect(out.content).toContain("chars truncated — see the full line with bash");
 		for (const line of emitted) {
-			expect(line.length).toBeLessThan(2200); // clamp + marker + number prefix
+			expect(line.length).toBeLessThan(2200);
 		}
-		// Unclamped, 30 × ~3006 bytes would dwarf the clamped total.
 		expect(out.content!.length).toBeLessThan(30 * 2500);
 	});
 });
@@ -281,7 +270,6 @@ describe("read_file did-you-mean", () => {
 describe("read_file images", () => {
 	test("a PNG gets a structured image note with dimensions", async () => {
 		const dir = tmpDir("goblin-read-");
-		// Hand-crafted PNG header: signature + IHDR chunk with 8x4 dims.
 		const png = Buffer.concat([
 			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
 			Buffer.from([0x00, 0x00, 0x00, 0x0d]),
@@ -299,8 +287,6 @@ describe("read_file images", () => {
 		expect(out.content).toContain("[image file image/png 8x4");
 		expect(out.content).toContain(`${png.length} bytes`);
 		expect(out.content).toContain("cannot show images");
-		// Default note (no vision block): the operator's Telegram re-send
-		// is the seeing channel.
 		expect(out.content).toContain("send it via Telegram");
 	});
 
@@ -329,7 +315,6 @@ describe("read_file images", () => {
 });
 
 describe("unicode twins — read, edit, and write land on one file", () => {
-	// "café" as NFC vs NFD: same picture in a terminal, different bytes.
 	const nfc = "café.txt";
 	const nfd = "cafe\u0301.txt";
 
@@ -351,8 +336,6 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 		)) as { replaced?: number; error?: string; path?: string };
 		expect(out.error).toBeUndefined();
 		expect(out.replaced).toBe(1);
-		// The fork this test used to miss: returning success while writing
-		// the NFC spelling would leave two files, the NFD original unchanged.
 		expect(out.path).toBe(join(dir, nfd));
 		expect(readdirSync(dir)).toEqual([nfd]);
 		expect(readFileSync(join(dir, nfd), "utf8")).toBe("one\nTWO\n");
@@ -367,12 +350,11 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 			path?: string;
 		};
 		expect(out.path).toBe(join(dir, nfd));
-		expect(existsSync(join(dir, nfc))).toBe(false); // no fork
+		expect(existsSync(join(dir, nfc))).toBe(false);
 	});
 });
 
 describe("sniffImage — JPEG marker walk", () => {
-	// SOF0 right after the SOI: height at i+5, width at i+7.
 	const jpegWithSof = Buffer.from([
 		0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x1e, 0x00, 0x32, 0x00,
 	]);
@@ -387,15 +369,12 @@ describe("sniffImage — JPEG marker walk", () => {
 
 	test("EXIF pushing SOF past 64 bytes still names the type, without dims", async () => {
 		const dir = tmpDir("goblin-read-");
-		// SOI + APP1 (EXIF) declaring a length that runs past 64 bytes, zeros
-		// after — no SOF marker inside the sniff window. The walk must give
-		// up on dims, not on the media type.
 		const app1 = Buffer.alloc(64);
 		app1[0] = 0xff;
 		app1[1] = 0xd8;
 		app1[2] = 0xff;
 		app1[3] = 0xe1;
-		app1.writeUInt16BE(0x1000, 4); // APP1 segment length 4096
+		app1.writeUInt16BE(0x1000, 4);
 		writeFileSync(join(dir, "b.jpg"), app1);
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "b.jpg" }, opts)) as { content?: string };
@@ -405,9 +384,6 @@ describe("sniffImage — JPEG marker walk", () => {
 
 	test("EXIF-sized prefix before SOF — dims found within the 4KB window", async () => {
 		const dir = tmpDir("goblin-read-");
-		// SOI + APP1 declaring a 200-byte segment, SOF0 at offset 204 — past
-		// the old 64-byte window, routine for real JPEGs. The walk must reach
-		// it and report dimensions.
 		const buf = Buffer.alloc(220);
 		buf[0] = 0xff;
 		buf[1] = 0xd8;
@@ -416,10 +392,10 @@ describe("sniffImage — JPEG marker walk", () => {
 		buf.writeUInt16BE(200, 4);
 		buf[204] = 0xff;
 		buf[205] = 0xc0;
-		buf.writeUInt16BE(0x0011, 206); // SOF0 length
-		buf[208] = 0x08; // precision
-		buf.writeUInt16BE(30, 209); // height
-		buf.writeUInt16BE(50, 211); // width
+		buf.writeUInt16BE(0x0011, 206);
+		buf[208] = 0x08;
+		buf.writeUInt16BE(30, 209);
+		buf.writeUInt16BE(50, 211);
 		writeFileSync(join(dir, "c.jpg"), buf);
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "c.jpg" }, opts)) as { content?: string };
@@ -428,9 +404,6 @@ describe("sniffImage — JPEG marker walk", () => {
 
 	test("the 2000-line ceiling caps short-line files before bytes do", async () => {
 		const dir = tmpDir("goblin-read-");
-		// Short lines: the line-count ceiling must hit while the output is
-		// still far under the 64KB byte cap — the one ceiling of the three
-		// the others can't stand in for.
 		writeFileSync(
 			join(dir, "many.txt"),
 			Array.from({ length: 2500 }, (_, i) => `l${i}`).join("\n"),
@@ -446,7 +419,6 @@ describe("sniffImage — JPEG marker walk", () => {
 		expect(out.content).toMatch(
 			/\[Showing lines 1–2000 of 2500 \(2000-line limit\)\. Use offset=2001 to continue\.\]/,
 		);
-		// Following the notice resumes exactly where the cap stopped.
 		const page2 = (await t.execute!({ path: "many.txt", offset: 2001 }, opts)) as {
 			content?: string;
 		};

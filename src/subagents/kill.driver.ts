@@ -1,13 +1,3 @@
-// Spawned by src/subagents/podman.test.ts (GOBLIN_SUBAGENTS_PODMAN_LIVE=1):
-// a second process that owns a real Pi Durable worker run against a real
-// podman sandbox, writes a ready file with its pid, then is SIGKILLed by
-// the test mid-bash. Recovery is verified by the test reopening the same
-// state — the interrupted, replay-unsafe bash call must be reported
-// interrupted, never re-executed in the container.
-//
-// usage: bun src/subagents/kill.driver.ts \
-//   <dbDir> <modelUrl> <conv> <workspace> <sbxPrefix> <network> <readyFile>
-
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { subagentsConfigSchema } from "../config.ts";
@@ -26,7 +16,6 @@ if (!dbDir || !modelUrl || !conv || !workspace || !sbxPrefix || !network || !rea
 }
 setLogFile(join(dbDir, "driver.log"));
 
-// The worker never touches desktops; the dep is structural.
 const drow: DesktopRow = {
 	name: "d",
 	container: "fake",
@@ -93,9 +82,9 @@ const owner = await openSubagents({
 	wake: () => true,
 });
 await owner.resume();
-// Ensure the sandbox before ready: the test's marker poll execs into
-// the same container, and a create race on a not-yet-started container
-// is exactly what the driver must prevent.
+// The test's readiness marker poll execs into the same container: the
+// warm-up must happen before the ready file, or the poll races sandbox
+// creation.
 await sandboxes.exec(conv, "true", { timeoutMs: 30_000, maxOutput: 1024 });
 const row = await owner.start({
 	kind: "worker",

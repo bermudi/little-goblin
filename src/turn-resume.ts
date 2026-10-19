@@ -1,18 +1,3 @@
-// Turn resume — the only door from 'interrupted' back to a live turn
-// (design/runtime-turn.md → The turn journal). Boot stays
-// notice-only; this module is the explicit operator decision: validate
-// the recorded contract (settings snapshot + tool surface), require
-// every ambiguous 'dispatched' call resolved to a decision, then admit
-// a FRESH queued turn carrying a recovery seed — a new run row linked
-// to the source by resumed_from, never the old wire.
-//
-// Replay vs decide: 'completed' source calls (and 'resolved-done' —
-// the operator asserted the outcome) replay their recorded result
-// through the fence without executing. 'resolved-retry' re-executes
-// exactly that call; 'resolved-skip' executes nothing and reads back
-// the decision note. 'planned' calls the dead model emitted but never
-// dispatched simply run if the resumed model asks for them again.
-
 import { randomUUID } from "node:crypto";
 import type { ToolSet, UIMessage } from "ai";
 import { z } from "zod";
@@ -39,17 +24,10 @@ import {
 	type TurnToolCall,
 } from "./turn-journal.ts";
 
-// The refusal classes the surfaces map onto: not-found → the run isn't
-// this conversation's interrupted row; conflict → a state fight (wrong
-// status, lane busy, call already resolved); invalid → the recorded
-// contract no longer holds (settings/tool drift, unreadable snapshot);
-// unavailable → the runtime cannot take a turn at all.
 export type ResumeRefusalCode = "not-found" | "conflict" | "invalid" | "unavailable";
 
 export type ResumeOutcome =
 	| { kind: "resumed"; runId: string }
-	// `calls` is what still blocks (dispatched only); `numbered` is the
-	// ordinal namespace the surfaces print — see numberedCalls.
 	| { kind: "needs-decisions"; runId: string; calls: TurnToolCall[]; numbered: TurnToolCall[] }
 	| { kind: "refused"; code: ResumeRefusalCode; reason: string };
 
@@ -57,9 +35,6 @@ export type DecideOutcome =
 	| { kind: "ok" }
 	| { kind: "refused"; code: ResumeRefusalCode; reason: string };
 
-// One interrupted run as the surfaces list it: the run row plus every
-// journaled call so the operator sees what completed, what's ambiguous,
-// and what was already decided.
 export interface InterruptedRunView {
 	run: TurnRun;
 	calls: TurnToolCall[];
@@ -82,28 +57,13 @@ export interface ResumeDeps {
 	store: ConversationStore;
 	journal: TurnJournal;
 	runtime: Runtime;
-	// Same capture the runtime runs at admission — the snapshot compare
-	// is only honest if it uses the identical function.
 	captureConversation(conv: Conversation): Conversation;
-	// The composition's tool factory — validation rebuilds the surface
-	// the resumed attempt will get and refuses on a shrink.
 	makeTools: RuntimeDeps["makeTools"];
-	// The resumed turn's sink — the channel's ordinary terminal sink,
-	// not a streaming door: the interrupted wire died with the process.
 	sinkFor(conv: Conversation): TurnSink;
-	// Which delivery hooks the resume sink carries — the tool-surface
-	// check must see the resumed attempt's set without constructing the
-	// sink (construction starts indicators).
 	sinkHooks(conv: Conversation): { voice: boolean; recording: boolean; file: boolean };
-	// One terminal notice per resumed turn — it is headless, nobody is
-	// watching a stream. Fires even when the sink's own onDone throws.
 	notifyDone?(conv: Conversation, sourceRunId: string, done: TurnDone): void;
 }
 
-// Per-lane sink routing for the resume surface: an app lane's resumed
-// turn pings the operators through the bell; a telegram lane's delivers
-// into its own topic and DMs each operator the terminal outcome, since
-// a resumed turn is headless and nobody is watching a stream.
 export interface ResumeSinkDeps {
 	wake: Pick<WakeDeps, "bell" | "delivery">;
 	operators(): number[];
@@ -121,7 +81,7 @@ export function makeResumeSinks(
 				? { voice: false, recording: false, file: false }
 				: { voice: true, recording: true, file: true },
 		notifyDone: (conv, sourceRunId, done) => {
-			if (channelOf(conv.id) === "app") return; // the bell is already the notice
+			if (channelOf(conv.id) === "app") return;
 			const text =
 				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
 				(done.kind === "error" ? ` — ${done.message}` : "");
@@ -140,9 +100,6 @@ export function makeResumeSinks(
 
 type RunRef = { kind: "found"; run: TurnRun } | { kind: "ambiguous" } | { kind: "missing" };
 
-// Surface addressing is by run-id prefix (what the boot notice and
-// /resume print) or the full id — resolved against this conversation's
-// interrupted runs only, so a decided/live row can never be addressed.
 function findRun(journal: TurnJournal, convId: string, ref: string): RunRef {
 	const runs = journal.interrupted().filter((r) => r.conversationId === convId);
 	const matches = runs.filter((r) => r.runId === ref || r.runId.startsWith(ref));
@@ -155,12 +112,6 @@ function refused(code: ResumeRefusalCode, reason: string) {
 	return { kind: "refused" as const, code, reason };
 }
 
-// The ordinal namespace /decide and the /resume listings share: calls
-// that are or were decidable — dispatched plus every resolved-* — in
-// journal order. A decision moves its row dispatched → resolved-* but
-// keeps its slot, so a number printed before the decision still names
-// the same call after it. Completed/planned/failed calls never took a
-// decision and never join the list.
 export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
 	return calls.filter((c) => c.state === "dispatched" || c.state.startsWith("resolved-"));
 }
@@ -170,8 +121,6 @@ const convSnapshotSchema = z.object({
 	thinking: z.string().nullable(),
 });
 
-// The journaled watchdog/loop checkpoint — a corrupt one is a refusal,
-// never a partial restore.
 const loopKindSchema = z.enum(["repeat", "watchdog", "context"]);
 const loopStateSchema = z.object({
 	detector: z.object({
@@ -189,13 +138,8 @@ const loopStateSchema = z.object({
 	forcedKind: loopKindSchema.nullable(),
 });
 
-// Bounded digest entries for the seeded evidence — the reviewer's
-// default window, since the resumed turn has no richer source.
 const SEED_DIGEST_CHARS = 300;
 
-// Assistant text the interrupted attempt checkpointed — run.partial is
-// bounded JSON of ModelMessage[]; a cut document decodes to raw text
-// and is unusable.
 function checkpointedText(partial: unknown): UIMessage["parts"] {
 	const parts: UIMessage["parts"] = [];
 	if (!Array.isArray(partial)) return parts;
@@ -219,15 +163,10 @@ function checkpointedText(partial: unknown): UIMessage["parts"] {
 	return parts;
 }
 
-// The reconstructed partial: journal calls become tool parts the model
-// reads as already-answered (recorded/decided output) — the fence then
-// replays the same answers if the model re-emits the call anyway.
-// Text lands first, calls last: the tail the model continues is the
-// call list, the most common resume need.
 function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 	const parts: UIMessage["parts"] = checkpointedText(run.partial);
 	for (const c of calls) {
-		if (c.name === "") continue; // marker rows carry no call identity
+		if (c.name === "") continue;
 		if (c.state === "completed" || c.state === "resolved-done") {
 			parts.push({
 				type: `tool-${c.name}`,
@@ -246,17 +185,11 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 				output: c.resolutionNote === null ? note : `${note} — ${c.resolutionNote}`,
 			} as UIMessage["parts"][number]);
 		}
-		// planned/failed have nothing recorded — the model re-emits a
-		// planned call if it still wants it; a failed call's error row
-		// is not a result the dead attempt ever saw.
 	}
 	if (parts.length === 0) return null;
 	return { id: randomUUID(), role: "assistant", parts };
 }
 
-// Digest evidence for the calls a resume replays — enough for the
-// reviewer's gate to see what this turn answered without pretending
-// the dead attempt's stream details survived.
 function seedDigest(calls: TurnToolCall[]): { id: string; entry: ToolCallDigest }[] {
 	const out: { id: string; entry: ToolCallDigest }[] = [];
 	for (const c of calls) {
@@ -282,8 +215,6 @@ function seedLoop(run: TurnRun, calls: TurnToolCall[]): LoopTurnState | "unreada
 		if (!parsed.success) return "unreadable";
 		return parsed.data;
 	}
-	// No checkpoint survived: keep the honest counts the rows prove so
-	// the watchdog's cadence reflects the work that already happened.
 	return {
 		detector: { records: [], warned: [] },
 		watchdogRing: [],
@@ -296,12 +227,6 @@ function seedLoop(run: TurnRun, calls: TurnToolCall[]): LoopTurnState | "unreada
 	};
 }
 
-// The resumed turn's trigger row — the original user message is
-// durable history already, so it is only a label (request text for the
-// watchdog); a conversation compaction that since removed it gets the
-// honest placeholder instead of a refusal. `found` reports whether the
-// label rides a real history entry — the caller refuses when neither
-// it nor a journaled partial can seed the model view.
 function triggerMessage(
 	store: ConversationStore,
 	convId: string,
@@ -327,14 +252,7 @@ function triggerMessage(
 
 export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 	const { store, journal, runtime } = deps;
-	// The in-flight window between admission and the attempt's markRun:
-	// the source row still reads 'interrupted' there, so a second resume
-	// would validate and queue a second turn replaying the same calls.
-	// The claim is process-local by design — a crash in the window
-	// evaporates it AND leaves the row interrupted, the correct pair.
-	// It releases on the attempt's terminal onDone — an accepted resume
-	// that dies fenced, errored, or stopped before its markRun must not
-	// leave the source interrupted yet permanently un-resumable.
+	// Between admission and markRun the source still reads 'interrupted', so this process-local claim stops a second resume from queueing a replay; it releases on terminal onDone so a resume that dies early stays re-resumable.
 	const claimed = new Set<string>();
 
 	return {
@@ -358,14 +276,10 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const all = journal.callsFor(found.run.runId);
 			const numbered = numberedCalls(all);
 			let call: TurnToolCall | undefined;
-			// An exact id wins over the ordinal namespace — a toolCallId
-			// that is itself all digits must still name its own call.
 			const exact = all.find((c) => c.toolCallId === callRef);
 			if (exact !== undefined) {
 				call = exact;
 			} else if (/^\d+$/.test(callRef)) {
-				// Ordinals index the numbered list — stable across decisions,
-				// the numbering /resume prints.
 				const i = Number.parseInt(callRef, 10) - 1;
 				if (i < 0 || i >= numbered.length) {
 					return refused(
@@ -375,8 +289,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				}
 				call = numbered[i];
 			} else {
-				// Id refs search every journaled call, so a retry on a
-				// settled call reads as the conflict it is, not a miss.
 				const matches = all.filter((c) => c.toolCallId.startsWith(callRef));
 				if (matches.length === 0) {
 					return refused(
@@ -465,9 +377,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					numbered: numberedCalls(calls),
 				};
 			}
-			// The contract the dead turn ran under: model + thinking must
-			// still be what the row recorded, or the resume is a different
-			// turn pretending to be that one.
 			let captured: Conversation;
 			try {
 				captured = deps.captureConversation(conv);
@@ -491,8 +400,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (drift.length > 0) {
 				return refused("invalid", `${drift.join("; ")} since the interruption — not resumed`);
 			}
-			// The recorded tool surface must still exist — a recorded call
-			// for a now-missing tool could neither replay nor be re-asked.
 			const hooks = deps.sinkHooks(conv);
 			let tools: ToolSet;
 			try {
@@ -531,10 +438,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			}
 			const partial = seedPartial(run, calls);
 			const trigger = triggerMessage(store, convId, run);
-			// The model view is durable history + the seeded partial —
-			// when the trigger was compacted away AND nothing journaled,
-			// the resumed attempt would ask the model to continue
-			// nothing.
 			if (!trigger.found && partial === null) {
 				return refused(
 					"invalid",
@@ -555,9 +458,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				resumedFrom: run.runId,
 			};
 			const inner = deps.sinkFor(conv);
-			// A clone through the prototype still splits the receiver —
-			// own fields copy over, but getters and private state belong
-			// to the real instance. Forward to it instead; only onDone is overridden.
+			// A prototype clone still splits the receiver — getters and private state belong to the real instance, so forward through it; only onDone is overridden.
 			const onDone = async (done: TurnDone) => {
 				try {
 					await inner.onDone(done);

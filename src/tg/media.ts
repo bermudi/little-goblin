@@ -1,9 +1,3 @@
-// Telegram media → UIMessage parts. Media is always saved to
-// workspace/attachments/ and stored as a data-attachment part (path +
-// metadata, no payload) — the inline-vs-path decision is made per turn by
-// the runtime against the current model's capability data, so intake
-// doesn't need to know the model at all.
-
 import { constants } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import type { File as TgFile } from "grammy/types";
@@ -14,13 +8,8 @@ import { attachmentPart, persistAttachment, type SavedAttachment } from "../agen
 export interface IncomingMedia {
 	fileId: string;
 	fileUniqueId: string;
-	fileName: string; // best-effort original name
+	fileName: string;
 	mimeType: string;
-	// Carries speech worth transcribing at intake: voice notes and video
-	// notes — the two kinds Telegram only produces by recording someone.
-	// Attached audio (audio, audio-mime documents) is data, not speech —
-	// a song is a wasted whisper call. The transcribe tool covers it on
-	// demand.
 	transcribable?: boolean;
 }
 
@@ -46,11 +35,6 @@ export function mediaFromMessage(msg: {
 	};
 }): IncomingMedia | null {
 	if (msg.live_photo) {
-		// A live photo is a photo with motion (Bot API 10.0). The still is
-		// the model-worthy half: prefer the LivePhoto's own sizes, then a
-		// top-level photo, and only the video part when no still arrived.
-		// Whether Telegram also populates the message-level `photo` is
-		// unprobed — every combination lands somewhere deliberate.
 		const lp = msg.live_photo;
 		const still =
 			lp.photo !== undefined && lp.photo.length > 0
@@ -128,8 +112,6 @@ export function mediaFromMessage(msg: {
 		};
 	}
 	if (msg.animation) {
-		// GIFs from the picker arrive as `animation`, not video/document —
-		// always mp4 by convention.
 		const a = msg.animation;
 		return {
 			fileId: a.file_id,
@@ -139,7 +121,6 @@ export function mediaFromMessage(msg: {
 		};
 	}
 	if (msg.video_note) {
-		// Video notes (circles) are always mp4 and carry no mime_type.
 		return {
 			fileId: msg.video_note.file_id,
 			fileUniqueId: msg.video_note.file_unique_id,
@@ -150,8 +131,6 @@ export function mediaFromMessage(msg: {
 	}
 	if (msg.sticker) {
 		const s = msg.sticker;
-		// Static stickers are .webp images; animated (.tgs) and video
-		// (.webm) stickers go the attachment-path route.
 		const staticImage = s.is_animated !== true && s.is_video !== true;
 		return {
 			fileId: s.file_id,
@@ -165,9 +144,6 @@ export function mediaFromMessage(msg: {
 
 export type { SavedAttachment };
 
-// Media kinds intake deliberately doesn't consume. The router's drop
-// path uses the label to leave a visible trace instead of a debug-only
-// vanish (#128); service messages carry none of these fields.
 export function unhandledMediaKind(msg: {
 	location?: unknown;
 	venue?: unknown;
@@ -187,14 +163,6 @@ export function unhandledMediaKind(msg: {
 	return null;
 }
 
-// Persist to workspace/attachments/ (Telegram still owns the file; this is
-// the agent-reachable copy) without ever buffering the whole file —
-// uploads run to 2GB on a self-hosted bot-api. Local-mode files are
-// copied on disk; cloud downloads stream to a same-directory temp file.
-// The write ritual itself is shared: persistAttachment in
-// agent/attachments.ts owns mkdir/sync/rename/cleanup — this function is
-// only the telegram-shaped byte source (local path copy or bot-api
-// download, token redacted).
 export async function saveAttachment(
 	media: IncomingMedia,
 	file: TgFile,
@@ -203,7 +171,6 @@ export async function saveAttachment(
 ): Promise<SavedAttachment> {
 	const filePath = file.file_path;
 	if (!filePath) throw new Error("telegram returned no file_path");
-	// Telegram's unique id is untrusted input, not a path component.
 	const uniqueId = z
 		.string()
 		.regex(/^[A-Za-z0-9_-]+$/)
@@ -214,11 +181,9 @@ export async function saveAttachment(
 		"telegram",
 		async (temp) => {
 			if (filePath.startsWith("/")) {
-				// Self-hosted bot-api in --local mode: copy on disk, no HTTP fetch.
 				await copyFile(filePath, temp, constants.COPYFILE_EXCL);
 			} else {
 				const root = apiRoot ?? "https://api.telegram.org";
-				// The URL carries the bot token. Never propagate its raw errors.
 				const url = `${root}/file/bot${token}/${filePath}`;
 				try {
 					const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
@@ -236,10 +201,6 @@ export async function saveAttachment(
 	);
 }
 
-// Media → parts: one data-attachment part carrying the saved path (plus
-// the transcript when intake produced one — or the failure when it
-// didn't: a broken engine must not read as "an audio file exists").
-// The runtime materializes it against the current model at turn time.
 export function mediaParts(
 	media: IncomingMedia,
 	saved: SavedAttachment,
@@ -254,8 +215,6 @@ export function mediaParts(
 			size: saved.size,
 			...(transcript !== undefined ? { transcript } : {}),
 			...(transcriptionError !== undefined ? { transcriptionError } : {}),
-			// The speech marker is what lets a voice note inline for a
-			// hearing model while an attached mp3 stays a path.
 			...(media.transcribable ? { speech: true } : {}),
 		}),
 	];

@@ -1,23 +1,3 @@
-// The subagent runtime (design/subagents.md): two purpose-typed runs —
-// worker (coding tools over the origin conversation's sandbox) and
-// computer (the desktop pool's observation/input surface). Only this
-// directory imports Pi Durable, pi-ai and chord (the herdr.ts rule):
-// harness, registry, extensions and env adapter live in its satellites,
-// while monitors, queue admission and close live here; goblin rows in
-// subagent-runs.ts hold routing so a restart is pause-and-resume, never
-// kill.
-//
-// Crash gaps are the design's load-bearing detail: every input text is
-// persisted with its revision AND mode before admit (the deterministic
-// `subagent:<id>:input:<rev>` requestId makes a re-submit return the
-// same admitted submission); terminal outcomes are committed to the
-// per-run Pi document inside the tool call BEFORE control returns —
-// settled submissions are classified from the doc, never from prose;
-// stop's intent is persisted before the abort lands so a late
-// settlement or a mid-admission step can never overwrite it. Input is
-// replay-unsafe; only observation and the terminal writes are
-// replay:"safe".
-
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -63,18 +43,8 @@ export { SubagentError };
 const ctx: Context = BACKGROUND_CONTEXT;
 const SCAN_MS = 30_000;
 
-// ---------- the crash-approval lease ----------
-
-// The lease and gate live in approval-gate.ts (design/subagents.md →
-// Owner decomposition): a task-scoped pi-durable doc decides whether a
-// replayed side-effecting call may run again — the correctness
-// boundary, moved verbatim. The type re-export and approvalLeaseDoc
-// stay here — crash tests and the public surface import them from
-// mod.ts.
 export type { SubagentApprovalDecision } from "../subagent-runs.ts";
 export { approvalLeaseDoc } from "./approval-gate.ts";
-
-// ---------- public surface ----------
 
 export interface SubagentsDeps {
 	config: SubagentsConfig;
@@ -82,21 +52,11 @@ export interface SubagentsDeps {
 	auth: Pick<AuthStore, "resolve">;
 	sandboxes: Sandboxes;
 	desktops: Desktops;
-	/** Pi Durable storage file — state/subagents.sqlite. */
 	storagePath: string;
-	/** Host-side staging dir for file imports (never model-addressed). */
 	transferRoot: string;
-	/** Wake the exact origin conversation — returns false to retry. */
 	wake(conversationId: string, text: string): boolean;
-	/** Opt-in experiment seam: per-kind explicit model profile. Absent
-	 *  per kind, the pinned GLM catalog policy applies unchanged. */
 	modelProfiles?: Partial<Record<SubagentKind, SubagentModelProfile>>;
-	/** Opt-in experiment seam: extra Pi Durable settings, merged over
-	 *  our defaults (tests shrink compaction windows or disable retry
-	 *  backoff; production passes nothing). */
 	harnessSettings?: Record<string, unknown>;
-	/** Test seam: base delay (ms) for admission-retry backoff, doubled
-	 *  per attempt. Production default 5s. */
 	admitRetryMs?: number;
 }
 
@@ -115,25 +75,9 @@ export interface Subagents {
 	status(id: number, conversationId: string): SubagentRun | null;
 	send(id: number, conversationId: string, message: string): Promise<SubagentRun>;
 	stop(id: number, conversationId: string): Promise<SubagentRun>;
-	/** Goblin's verdict on a run parked by the crash-approval gate —
-	 *  stamps the provenance constants, persists the decision and the
-	 *  crash-history record in one row write, and queues the
-	 *  continuation for scheduler admission (a global slot plus
-	 *  resource checks); the grant resolves the parked tool task. Only
-	 *  valid on a `needs_input` row carrying `pendingApproval`. */
 	decide(id: number, conversationId: string, decision: SubagentApprovalInput): Promise<SubagentRun>;
-	/** Retry pending notices and stops, then drain the queue — the
-	 *  scan timer calls. */
 	scan(): Promise<void>;
-	/** Ordered boot: finish persisted stops, reacquire desktops, attach
-	 *  monitors and re-admit pending intents BEFORE any scheduling or
-	 *  drain can run. Phase C settle wakes may already deliver to the
-	 *  origin conversation — they ride the origin's own admission, not
-	 *  the harness scheduler. Call once after every dep is bound. */
 	resume(): Promise<void>;
-	/** Pause admission and the ticker, join in-flight operations, then
-	 *  close the harness — pending runs persist; nothing is aborted on
-	 *  shutdown. */
 	close(): Promise<void>;
 }
 
@@ -141,8 +85,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	const config = deps.config;
 	const runs = deps.runs;
 
-	// ---------- providers (recipe: catalog model, per-kind provider,
-	// credential in-process through goblin's auth) ----------
 	const credentials: CredentialStore = new InMemoryCredentialStore();
 	const models = createModels({ credentials });
 	const kinds = (["worker", "computer"] as const).filter((k) => config[k] !== undefined);
@@ -171,12 +113,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		return spec;
 	};
 
-	// ---------- owner state ----------
-
-	// Owner lifecycle state — shared mutable flags so the hoisted
-	// owner methods can write them through the bindings object.
 	const lifecycle = { closing: false, resumed: false, harnessClosed: false };
-	// All run-mutating operations serialize on the run's lane.
 	const lanes = new Map<number, Promise<void>>();
 	function lane<T>(id: number, fn: () => Promise<T>): Promise<T> {
 		const prev = lanes.get(id) ?? Promise.resolve();
@@ -191,22 +128,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		lanes.set(id, tail);
 		return run;
 	}
-	// Rows mid-admission or mid-abort — they hold a global slot.
-	// (The inflight set lives in drain.ts, the cluster's only consumer.)
-	// Lease-conflicted rows retry no sooner than this — a blocked
-	// desktop never spins the drain loop.
 	const retryAfter = new Map<number, number>();
-	// Consecutive transient admission failures per run — past the bound
-	// the run settles terminal instead of re-queueing again.
 	const admitAttempts = new Map<number, number>();
 
-	// ---------- queue admission ----------
-
-	// lane is a hoisted declaration below and admission binds after
-	// the harness, so admit rides a lazy arrow; the flag getters
-	// resolve lazily so the drain reads live closing/harnessClosed/
-	// resumed. Constructed early — the approval gate's deps take
-	// scheduleDrain by value.
 	const { scheduleDrain, drain } = makeDrain({
 		runs,
 		desktops: deps.desktops,
@@ -217,18 +141,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		halted: () => lifecycle.closing || lifecycle.harnessClosed,
 		isResumed: () => lifecycle.resumed,
 	});
-	// In-flight monitors live in the settle unit — close joins them via
-	// pendingMonitors() so a paused run is left durable, never mutated
-	// after close.
 	const recoveryPending = new Set<number>();
-	// Consecutive recovery cycles per run that have not yet re-attached
-	// settlement — recovery is the only thing that re-attaches it, so
-	// past the bound the run settles failed and frees its slot instead
-	// of hanging forever. lastError keeps the newest failure text for
-	// the terminal notice.
 	const recoveryAttempts = new Map<number, { count: number; lastError: string }>();
-
-	// ---------- the run row behind a Pi conversation ----------
 
 	const access = makeRowAccess({
 		runs,
@@ -257,16 +171,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		return env;
 	}
 
-	// ---------- the crash-approval gate ----------
-
-	// The failed-park abort is the owner's dep: the harness binds only
-	// at buildHarness below, so the gate reaches it through this closure
-	// resolved at call time.
 	const gate = makeApprovalGate({
 		runs,
 		rowForConversation,
 		recordOutcome,
-		// settle binds below the gate — both callbacks resolve lazily.
 		notify: (row) => settle.notify(row),
 		releaseLeases: (row) => settle.releaseLeases(row),
 		scheduleDrain,
@@ -274,9 +182,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			if (row.piConversationId === null || lifecycle.harnessClosed) return;
 			try {
 				const conv = await harness.conversation(asConv(row.piConversationId), ctx);
-				// No waitForIdle here — this task IS the work being
-				// aborted; the throw below ends it and the scan's stop
-				// retry finishes the mark.
+				// No waitForIdle — this task IS the work being aborted;
+				// the throw ends it and the scan's stop retry marks it.
 				void conv?.abort(ctx, { background: true }).catch((e) => {
 					log.warn("abort after a failed park could not be fired", e, { run: row.id });
 				});
@@ -285,8 +192,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 		},
 	});
-
-	// ---------- harness and tool assembly ----------
 
 	const { harness, workerExtension, computerExtension } = await buildHarness({
 		deps,
@@ -302,16 +207,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		recordOutcome,
 		envFor,
 		persistClaimNote,
-		// recovery binds after the harness — the hook resolves lazily.
 		recoveryNudge: (rowId, inputRev, context) => recovery.nudge(rowId, inputRev, context),
 	});
-	// The Session's real close edge — only this pauses admission for a
-	// dead harness; durable rows still recover on the next boot.
 	harness.subscribeClose(() => {
 		lifecycle.harnessClosed = true;
 	});
-
-	// ---------- files in/out ----------
 
 	const { importFiles, exportOutcomeFiles } = buildTransfer({
 		transferRoot: deps.transferRoot,
@@ -322,10 +222,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		halted: () => lifecycle.closing || lifecycle.harnessClosed,
 	});
 
-	// ---------- settle / notices ----------
-
-	// The monitor task sets live inside the settle unit — close()
-	// joins them through pendingMonitors().
 	const settle = makeSettle({
 		runs,
 		lane,
@@ -343,10 +239,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		isClosing: () => lifecycle.closing,
 		isHarnessClosed: () => lifecycle.harnessClosed,
 	});
-	// ---------- admission ----------
 
-	// The settle unit binds just above; the harness bundle resolves per
-	// admit — it binds only at buildHarness.
 	const admission = makeAdmission({
 		runs,
 		desktops: deps.desktops,
@@ -370,10 +263,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		isHarnessClosed: () => lifecycle.harnessClosed,
 	});
 
-	// ---------- recovery ----------
-
-	// The settle unit binds above; admission is the unit just
-	// constructed — recovery drives its re-admit path.
 	const recovery = makeRecovery({
 		runs,
 		lane,
@@ -391,8 +280,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		isClosing: () => lifecycle.closing,
 		isHarnessClosed: () => lifecycle.harnessClosed,
 	});
-
-	// ---------- the owner ----------
 
 	const ticker = { id: null as ReturnType<typeof setInterval> | null };
 	const b: OwnerBindings = {
@@ -427,11 +314,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	return owner;
 }
 
-// A poisoned auth record or a resume refusal (e.g. a lowered
-// maxRuns) must not crash-loop the service — poison the feature,
-// never refuse boot (auth.ts). The pool stays constructed but
-// every subagent/desktop tool is gated on the owner, so a failed
-// open unmounts both for the run.
 export async function openSubagentsGuarded(
 	deps: SubagentsDeps,
 	closeBudgetMs: number,
@@ -439,19 +321,10 @@ export async function openSubagentsGuarded(
 	let subagents: Subagents | null = null;
 	try {
 		subagents = await openSubagents(deps);
-		// Recovery is explicit and ordered: persisted stops land,
-		// desktop leases re-verify and monitors reattach BEFORE the
-		// harness resumes scheduling — and before any inbound
-		// message can reach the tools.
 		await subagents.resume();
 	} catch (err) {
 		log.error("subagents startup failed — closing the owner before disabling", err);
 		if (subagents !== null) {
-			// close() on a half-open owner can itself throw, or wedge
-			// on a lane/monitor promise that never settles — either
-			// would turn the fail-open catch into the boot failure it
-			// exists to prevent. Same best-effort budget as the
-			// shutdown drain: join it if it lands, disable anyway.
 			const closed = subagents
 				.close()
 				.then(() => true)
@@ -475,12 +348,6 @@ export async function openSubagentsGuarded(
 	return subagents;
 }
 
-// ---------- owner methods ----------
-
-// The Subagents interface bodies — module functions over the
-// assembled bindings, not closures over the construction scope
-// (design/subagents.md → Owner decomposition: the owner validates
-// and delegates; lifecycle lives in the units).
 interface OwnerBindings {
 	config: SubagentsConfig;
 	deps: SubagentsDeps;
@@ -507,7 +374,7 @@ async function ownerStart(
 ): Promise<SubagentRun> {
 	if (b.lifecycle.closing) throw new SubagentError("subagents are closed");
 	const kind = input.kind;
-	b.refFor(kind); // unconfigured type refuses loudly
+	b.refFor(kind);
 	if (input.task.length === 0 || input.task.length > MAX_TASK_CHARS) {
 		throw new SubagentError(`task must be 1..${MAX_TASK_CHARS} chars`);
 	}
@@ -567,9 +434,6 @@ async function ownerSend(
 			throw new SubagentError(`run #${id} is ${row.status} — send needs running or needs_input`);
 		}
 		if (row.pendingApproval !== null) {
-			// A parked approval is not a question the model may
-			// answer — a queued/steered message would sit behind a
-			// tool task that only a decide verdict resolves.
 			throw new SubagentError(
 				`run #${id} awaits an approval decision on an interrupted ${row.pendingApproval.tool} call — use decide`,
 			);
@@ -579,8 +443,6 @@ async function ownerSend(
 		}
 		const rev = row.inputRev + 1;
 		if (row.status === "needs_input") {
-			// Requeue through the scheduler — the answer waits for a
-			// global slot like any other work; the sandbox lease stays.
 			b.runs.update(id, {
 				inputRev: rev,
 				inputIntent: message,
@@ -591,16 +453,13 @@ async function ownerSend(
 			b.scheduleDrain();
 			return b.runs.get(id)!;
 		}
-		// A persisted intent is the retry path's authority —
-		// overwriting its revision would break the deterministic
-		// requestId of a submission that may already have landed.
+		// A persisted intent owns the next submission — overwriting its
+		// revision breaks the requestId of a submission that may have landed.
 		if (row.inputIntent !== null) {
 			throw new SubagentError(
 				`run #${id} has a persisted input still retrying — it owns the next submission`,
 			);
 		}
-		// Steering a live run: persist the intent, then admit
-		// through the same lane so a crash at any gap recovers it.
 		const origRev = row.inputRev;
 		b.runs.update(id, {
 			inputRev: rev,
@@ -612,17 +471,13 @@ async function ownerSend(
 			throw new SubagentError(`run #${id} was stopped mid-send`);
 		}
 		if (outcome.kind === "blocked") {
-			// Blocked means the claim refused before any submit —
-			// this revision was never admitted, so rolling back
-			// reuses no deterministic requestId, and the original
-			// monitor still owns settlement of the in-flight input.
+			// Refused before any submit — rolling back reuses no requestId.
 			b.runs.update(id, { inputRev: origRev, inputIntent: null, inputMode: null });
 			throw new SubagentError(`run #${id} cannot be steered — ${outcome.reason}`);
 		}
 		if (outcome.kind === "requeued") {
-			// Past the claim, the admission may already have placed a
-			// submission — rolling back could orphan it. The intent
-			// stays persisted; the drain retries the idempotent path.
+			// Past the claim a submission may already be placed — the
+			// intent stays for the retry path rather than orphan it.
 			throw new SubagentError(
 				`run #${id} could not be steered — ${outcome.reason}; the steer stays persisted and retries`,
 			);
@@ -639,16 +494,11 @@ async function ownerStop(b: OwnerBindings, id: number, conv: string): Promise<Su
 	}
 	if (row.status === "done" || row.status === "failed") return row;
 	if (row.status === "stopped") return row;
-	// The intent lands outside the lane: a mid-admission step or
-	// a replayed tool sees it at its next boundary, before the
-	// abort could even be queued.
 	b.runs.update(id, { stopRequested: true });
 	log.info("subagent stop requested", { run: id, kind: row.kind });
 	try {
 		await b.settle.completeStop(id);
 	} catch (err) {
-		// Retryable — the intent stands and scan reattempts; the
-		// row is NOT claimed stopped while Pi work may still run.
 		log.warn("subagent abort failed — stop stays pending", err, { run: id });
 	}
 	return b.runs.get(id)!;
@@ -685,13 +535,8 @@ async function ownerDecide(
 			throw new SubagentError(`run #${id} has no Pi conversation — corrupt park`);
 		}
 		const pending = row.pendingApproval;
-		// The verdict lands ON the parked mirror — durable across a
-		// crash in the grant window — and the row queues for a
-		// global slot: the drain's admit() runs the same capacity
-		// and resource checks every resumed row passes before
-		// model work may continue. Marking running directly would
-		// let a parked run jump the queue while another run holds
-		// the only slot.
+		// Queued, not running: the drain's admit runs the same capacity
+		// checks, so a parked run cannot jump the queue.
 		const record: SubagentCrashDecision = {
 			piTaskId: pending.piTaskId,
 			callId: pending.callId,
@@ -744,7 +589,6 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 	if (b.lifecycle.resumed) return;
 	// Phase A — row decisions only, before ANY call that could
 	// enable Pi's scheduler (wait/abort submit progress).
-	// A lowered maxRuns never silently exceeds: fail loudly.
 	const running = b.runs.unfinished().filter((r) => r.status === "running");
 	if (running.length > b.config.maxRuns) {
 		b.lifecycle.resumed = false;
@@ -752,9 +596,6 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 			`${running.length} runs are executing but subagents.maxRuns is ${b.config.maxRuns} — raise the cap or stop runs`,
 		);
 	}
-	// Verify/reacquire desktop controllers first: a lost lease
-	// fails the run loudly — its pending Pi work is aborted in
-	// phase B, it gets no monitor and no further input.
 	const leaseFailedConvs: string[] = [];
 	for (const row of running) {
 		if (row.kind !== "computer" || row.desktop === null) continue;
@@ -785,8 +626,6 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 		}
 	}
 	const pendingStopRows = b.runs.pendingStops();
-	// A row tagged stopped by an older process can still have
-	// live Pi work (its abort never joined) — collect it now.
 	const live = await b.harness.inspect(ctx);
 	const liveConvs = new Set<string>();
 	for (const s of live.submissions) liveConvs.add(String(s.conversationId));
@@ -802,20 +641,16 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 			cancelConvs.add(convId);
 		}
 	}
-	// abort()/waitForIdle() enable Pi's scheduler. Durably mark ALL
-	// forbidden tasks first, including already-checkpointed compactions
-	// that bypass the generation request hook.
+	// abort()/waitForIdle() enable Pi's scheduler, so every row decision
+	// above is already persisted; abortTask does not resume scheduling.
 	for (const task of live.tasks) {
 		if (
 			task.record.conversationId === undefined ||
 			!cancelConvs.has(String(task.record.conversationId))
 		)
 			continue;
-		// Unlike Conversation.abort, abortTask does not resume scheduling.
 		await b.harness.abortTask(task.record.id, ctx);
 	}
-	// Phase B — aborts (each enables Pi's scheduler, so every
-	// row decision above is already persisted).
 	for (const convId of cancelConvs) {
 		try {
 			const conv = await b.harness.conversation(b.access.asConv(convId), ctx);
@@ -835,15 +670,11 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 			throw err;
 		}
 	}
-	// Phase C — every unfinished row recovers its durable half.
 	for (const row of b.runs.unfinished()) {
-		if (row.stopRequested) continue; // step 1 owns it
-		if (row.status === "queued") continue; // drain admits it
+		if (row.stopRequested) continue;
+		if (row.status === "queued") continue;
 		if (row.status === "needs_input") {
 			if (row.pendingApproval !== null) {
-				// Approval park: the parked tool task re-enters the
-				// gate under harness.resume() — attach the monitor
-				// first so a decided run's settle is observed.
 				try {
 					await b.recovery.recoverParked(row.id);
 				} catch (err) {
@@ -856,11 +687,9 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 				}
 				continue;
 			}
-			// A computer's controller was released at settle.
 			b.settle.releaseLeases(row);
 			continue;
 		}
-		// running
 		try {
 			await b.recovery.recoverRun(row);
 		} catch (err) {
@@ -870,10 +699,6 @@ async function ownerResume(b: OwnerBindings): Promise<void> {
 			b.recoveryPending.add(row.id);
 		}
 	}
-	// 5. Only now may scheduling and drains start. Phase C's
-	// settle wakes already ran — a finalize delivering its
-	// notice during recovery is the intended early signal, not
-	// a breach of the ordering.
 	b.lifecycle.resumed = true;
 	b.harness.resume();
 	b.ticker.id = setInterval(() => {
@@ -887,11 +712,6 @@ async function ownerClose(b: OwnerBindings): Promise<void> {
 	if (b.lifecycle.closing) return;
 	b.lifecycle.closing = true;
 	if (b.ticker.id !== null) clearInterval(b.ticker.id);
-	// Join in-flight admissions and monitors — a paused
-	// admission leaves the row queued with its intent
-	// persisted, never a post-close failed/notify mutation.
-	// Admissions first — sealing the harness settles the
-	// submission waits the monitors sit on.
 	await Promise.allSettled([...b.lanes.values()]);
 	await b.harness.close(ctx);
 	b.lifecycle.harnessClosed = true;

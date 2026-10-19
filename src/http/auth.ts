@@ -1,22 +1,15 @@
-// Telegram WebApp initData validation. The page is fetched by the client
-// device, so the query-string credentials Telegram appends are the only
-// proof of identity: HMAC-SHA256 over the sorted data-check-string, keyed
-// by HMAC("WebAppData", botToken), plus user-id allowlisting and auth_date
-// freshness.
-
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Small future tolerance for client clock skew; beyond that, reject.
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 export interface InitDataUser {
 	id: number;
 }
 
-// Refusal categories — the only thing logs may say about a rejected
-// request. initData fragments, the presented hash and the claimed user
-// id are credential material and never leave this function.
+// The refusal categories are all logs may say: initData fragments, the
+// presented hash and the claimed user id are credential material and
+// never leave this function.
 export type InitDataRefusal =
 	| "no-hash"
 	| "bad-hmac"

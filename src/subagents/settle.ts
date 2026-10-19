@@ -1,12 +1,3 @@
-// Settlement and monitoring (design/subagents.md → Owner
-// decomposition): the per-submission watcher, the one finalizer per
-// run, the stop path's confirmed-abort settle, the origin notice
-// cluster and the lease release. Every terminal write is idempotent
-// against the committed doc outcome; every boundary re-reads the row
-// so a stop or close landing mid-settle owns the transition.
-// Extracted verbatim from mod.ts — the factory owns the monitor
-// task sets and is otherwise pure assembly.
-
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -27,11 +18,8 @@ import type { buildTransfer } from "./transfer.ts";
 
 const ctx: Context = BACKGROUND_CONTEXT;
 
-/** Factory-owned monitor state — who is watching which run. */
 interface MonitorState {
-	/** Every live monitor task — close joins them all. */
 	tasks: Set<Promise<void>>;
-	/** Per-run watchers — admission's approval branch reads this. */
 	perRun: Map<number, Set<Promise<void>>>;
 }
 
@@ -45,7 +33,6 @@ export interface SettleDeps {
 	wake: (conversationId: string, message: string) => boolean;
 	gate: ApprovalGate;
 	scheduleDrain: () => void;
-	/** Shared run-scoped maps — stop clears every retry budget. */
 	admitAttempts: Map<number, number>;
 	retryAfter: Map<number, number>;
 	recoveryPending: Set<number>;
@@ -65,7 +52,6 @@ export interface Settle {
 	): Promise<void>;
 	monitor(rowId: number, rev: number, submission: Submission): void;
 	monitored(rowId: number): boolean;
-	/** Live monitor tasks — close joins them so rows stay durable. */
 	pendingMonitors(): Promise<void>[];
 }
 
@@ -82,10 +68,6 @@ export function makeSettle(deps: SettleDeps): Settle {
 	};
 }
 
-// One deterministic body per row state — the first delivery and
-// every retry carry the same fenced content: result, exported
-// paths, export refusals and the final screenshot all live inside
-// the event fence; only id/kind/status sit outside it.
 function noticeBody(row: SubagentRun): string {
 	let body = noticeResult(row);
 	if (row.lifecycleNote !== null) body += `\nLifecycle warning: ${row.lifecycleNote}`;
@@ -130,8 +112,6 @@ function notify(deps: SettleDeps, row: SubagentRun): void {
 		log.warn("subagent wake threw — notice stays pending", err, { run: fresh.id });
 	}
 	if (ok) {
-		// CAS: a reentrant send may have bumped the notice while the
-		// wake was in flight — only this rev's ack may clear it.
 		deps.runs.ackNotice(fresh.id, rev);
 	} else {
 		log.warn("subagent notice not admitted — will retry on scan", { run: fresh.id });
@@ -150,11 +130,9 @@ function releaseLeases(deps: SettleDeps, row: SubagentRun): void {
 	}
 }
 
-// Stop persists the intent first (outside the lane so a mid-flight
-// admission sees it at its next boundary), then the abort joins
-// through the lane; the row is only marked stopped once the Pi side
-// is actually idle. An abort failure leaves the intent standing —
-// scan retries it; the slot stays held meanwhile.
+// Stop persists the intent before the abort joins through the lane,
+// so a mid-flight admission sees it at its next boundary; an abort
+// failure leaves the intent for scan retry, with the slot held.
 async function completeStop(deps: SettleDeps, id: number): Promise<void> {
 	const { runs, lane, harness, gate, admitAttempts, retryAfter, recoveryAttempts } = deps;
 	const { asConv } = deps.access;
@@ -162,9 +140,8 @@ async function completeStop(deps: SettleDeps, id: number): Promise<void> {
 		const row = runs.get(id);
 		if (row === null || row.status === "stopped") return;
 		if (row.piConversationId !== null) {
-			// A closed harness can't confirm the abort — never claim
-			// stopped while Pi work may still be live; the intent
-			// stays persisted and the next boot finishes it.
+			// A closed harness can't confirm the abort: never claim
+			// stopped while Pi work may still be live.
 			if (deps.isHarnessClosed()) {
 				throw new SubagentError("harness closed — stop cannot be confirmed");
 			}
@@ -179,8 +156,6 @@ async function completeStop(deps: SettleDeps, id: number): Promise<void> {
 			pendingApproval: null,
 		});
 		if (row.piConversationId !== null) gate.dropForConversation(row.piConversationId);
-		// A stopped row is never re-admitted — its retry budgets and
-		// backoff entry are dead weight.
 		admitAttempts.delete(id);
 		retryAfter.delete(id);
 		recoveryAttempts.delete(id);
@@ -190,13 +165,9 @@ async function completeStop(deps: SettleDeps, id: number): Promise<void> {
 	});
 }
 
-// The one finalizer per run — every path (submission settled,
-// recovery, unanswered input) funnels here inside the run's lane.
-// The committed doc outcome is the authority: an unanswered
-// submission with a recorded finish still completes as done.
-// A "done" submission ended on a clean provider stop — the last
-// assistant's recorded stopReason is the only remaining witness for
-// why no terminal tool ran (length = truncation, not a refusal).
+// A failure with no terminal call still explains itself: on a clean
+// provider stop the last assistant's recorded stopReason (length =
+// truncation) is the only witness left.
 async function lastAssistantStopReason(
 	deps: SettleDeps,
 	piConversationId: string,
@@ -220,15 +191,10 @@ async function finalize(
 	const { runs, lane, harness, exportOutcomeFiles } = deps;
 	const { asConv } = deps.access;
 	await lane(rowId, async () => {
-		// A close landing anywhere past the first check leaves the
-		// row recoverable `running`: the doc outcome and any landed
-		// exportProgress are durable, the next boot's finalize
-		// resumes from them — never a partial done/failed notice.
+		// A close landing mid-finalize leaves the row recoverable
+		// `running`: the doc outcome and landed exports are durable,
+		// and the next boot's finalize resumes from them.
 		const closingNow = () => deps.isClosing() || deps.isHarnessClosed();
-		// Stop intent lands outside the lane — after every awaited
-		// step a fresh row read decides whether a terminal/question
-		// transition is still this path's to make; once stop intent
-		// is persisted the stop path owns them.
 		const preempted = (): boolean => {
 			if (closingNow()) return true;
 			const cur = runs.get(rowId);
@@ -237,8 +203,8 @@ async function finalize(
 		const row = runs.get(rowId);
 		if (row === null) return;
 		if (row.status === "stopped" || row.status === "done" || row.status === "failed") return;
-		if (row.stopRequested) return; // the stop path owns the transition
-		if (row.inputRev > rev || row.inputIntent !== null) return; // a newer input owns settlement
+		if (row.stopRequested) return;
+		if (row.inputRev > rev || row.inputIntent !== null) return;
 		if (closingNow()) return;
 		if (row.piConversationId === null) {
 			if (preempted()) return;
@@ -255,13 +221,11 @@ async function finalize(
 		const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
 		if (preempted()) return;
 		const recorded = doc?.outcome ?? null;
-		// An outcome only settles the input it answered — a stale one
-		// must never be attributed to a later submitted steer.
 		const outcome = recorded !== null && recorded.rev === rev ? recorded : null;
 		log.info("subagent settle", { run: rowId, outcome: outcome?.kind ?? null, unanswered });
 		if (outcome?.kind === "done") {
 			const { exported, errors } = await exportOutcomeFiles(row, outcome.files);
-			if (preempted()) return; // a close or stop during export starts no new screenshot
+			if (preempted()) return;
 			let finalScreenshot = row.finalScreenshot;
 			if (row.kind === "computer" && row.desktop !== null && finalScreenshot === null) {
 				try {
@@ -278,9 +242,6 @@ async function finalize(
 						runs.update(rowId, { finalScreenshot });
 					}
 				} catch (err) {
-					// Same contract as file exports: a typed refusal is an
-					// outcome; an unexpected host/storage error is a failed
-					// settle that must not mark the run done.
 					if (
 						err instanceof DesktopError ||
 						err instanceof SandboxError ||
@@ -292,7 +253,6 @@ async function finalize(
 					}
 				}
 			}
-			// Stop wins over a settlement that raced an export.
 			if (preempted()) return;
 			const done = runs.update(rowId, {
 				status: "done",
@@ -314,7 +274,6 @@ async function finalize(
 			releaseLeases(deps, waiting);
 			notify(deps, waiting);
 		} else if (outcome?.kind === "aborted") {
-			// The operator's abandon verdict, recorded by the gate.
 			if (preempted()) return;
 			const failed = runs.update(rowId, {
 				status: "failed",
@@ -389,18 +348,12 @@ function monitor(
 						}
 					: undefined,
 			);
-			// A monitor that observed its submission through is the
-			// only real recovery — this, not recoverRun returning,
-			// is what clears the retry count.
 			recoveryAttempts.delete(rowId);
 		} catch (err) {
 			if (deps.isClosing() || deps.isHarnessClosed()) return;
 			log.error("subagent monitor failed — the run stays owned for recovery", err, {
 				run: rowId,
 			});
-			// The wait's failure is the freshest evidence for an
-			// eventual exhaustion notice; the attempt count itself
-			// belongs to the scan.
 			recoveryAttempts.set(rowId, {
 				count: recoveryAttempts.get(rowId)?.count ?? 0,
 				lastError: err instanceof Error ? err.message : String(err),

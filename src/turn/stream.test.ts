@@ -1,11 +1,3 @@
-// Stream driver boundary tests (design/runtime-turn.md → Module map):
-// the membership seam — #96's regression home, now that claim+replay has
-// one home — plus the steer fold's mechanics, fan-out/wire-log
-// semantics, and the failed-outcome handoff. Landing decisions live in
-// state.test.ts; the sink contract (exactly one onDone) and
-// ownership-mark semantics stay
-// e2e in runtime.test.ts.
-
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -37,8 +29,6 @@ import {
 	type WireMember,
 } from "./stream.ts";
 
-// FIFO fixtures for parking an attachment conversion mid-await —
-// cleaned per test so a parked read never outlives the file.
 const fifoDirs: string[] = [];
 afterEach(() => {
 	for (const d of fifoDirs) rmSync(d, { recursive: true, force: true });
@@ -71,10 +61,6 @@ test("a failed attach subscriber is logged and detached without losing the share
 	}
 });
 
-// Fake the model at the provider edge (the suite's one fake): a script
-// per doStream call — parts stream verbatim, an Error throws (a
-// provider rejection the SDK surfaces as an error chunk). Every wire
-// prompt and toolChoice is captured.
 function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
 	const prompts: string[] = [];
 	const toolChoices: string[] = [];

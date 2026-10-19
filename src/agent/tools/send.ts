@@ -5,26 +5,15 @@ import { z } from "zod";
 import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
 
-// Telegram's local-mode ceiling — the self-hosted bot-api serves uploads
-// to 2GB. Cloud Bot API caps at 50MB; local mode is the deployment, so
-// the tool gates on the deployment's limit, not the cloud's.
 export const MAX_SEND_BYTES = 2 * 1024 * 1024 * 1024;
 
 export interface OutgoingFile {
 	path: string;
 	filename: string;
 	caption?: string;
-	// Forces the document path: sendPhoto re-encodes (lossy) and strips
-	// GIF animation — a document is byte-exact.
 	asFile?: boolean;
 }
 
-// Raised by the delivery sink when Telegram abandons a send at its
-// timeout: the request wasn't cancelled, so it may still land and the
-// outcome is unknown (design/telegram.md → Delivery). Lives next to
-// OutgoingFile because it is part of the deliver() contract — the sink
-// (tg/) throws it with the raw timeout as `cause`, the tool words its
-// result from it. Never an invitation to resend.
 export class DeliveryUncertainError extends Error {
 	constructor(original: unknown) {
 		super("delivery uncertain — the file may have arrived; check Telegram before retrying");
@@ -55,8 +44,6 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 		inputSchema: sendFileInputSchema,
 		execute: async ({ path, caption, as_file }) => {
 			const abs = resolvePath(cwd, path);
-			// Same twin rule as the other file tools: an NFC/NFD variant
-			// must resolve to the one file, never fork beside it.
 			const target = unicodeTwin(abs) ?? abs;
 			let st: ReturnType<typeof statSync>;
 			try {
@@ -89,8 +76,6 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 				await deliver(file);
 			} catch (err) {
 				if (err instanceof DeliveryUncertainError) {
-					// Ambiguous, not failed — the upload may have landed. Word it
-					// so the model checks instead of resending.
 					log.warn("send_file delivery uncertain", err);
 					return {
 						error:

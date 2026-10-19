@@ -1,8 +1,3 @@
-// The 🔊 inline button on a finished reply: one tap → the whole reply
-// spoken as voice notes. Extracted from mod.ts so its boundaries —
-// callback answering, double-tap guarding, failure surfacing — are
-// testable without a live bot.
-
 import { InputFile, type Api } from "grammy";
 import type { TtsConfig } from "../config.ts";
 import { speakable } from "../agent/tts.ts";
@@ -10,9 +5,6 @@ import { log } from "../log.ts";
 import { recentReplyText } from "./delivery.ts";
 import { withTimeout } from "./deadline.ts";
 
-// Structural subset of Telegram's CallbackQuery — the fields this flow
-// reads. grammy's full type is assignable to it, and importing raw wire
-// types would pull an undeclared dependency.
 export interface SpeakQuery {
 	id: string;
 	message?: {
@@ -23,14 +15,10 @@ export interface SpeakQuery {
 	};
 }
 
-// One in-flight rendering per message: a double-tap used to synthesize
-// and deliver the reply twice. Cross-tap singleton by design — each tap
-// is a fresh handler invocation, so only shared state can guard it.
 const inFlight = new Set<string>();
 
 export interface SpeakButtonDeps {
 	api: Api;
-	// Read per tap by the caller — a mini-app save applies without restart.
 	tts: TtsConfig | undefined;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 }
@@ -39,9 +27,6 @@ export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps
 	try {
 		await speak(query, deps);
 	} catch (err) {
-		// Outside the guarded boundaries below — a programming error, not
-		// an edge failure. The fire-and-forget registration can't surface
-		// it, so it lands here instead of unhandledRejection.
 		log.error("voice button handler failed", err, { query: query.id });
 		await withTimeout(
 			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
@@ -52,10 +37,6 @@ export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps
 
 async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 	const message = query.message;
-	// Answer the tap exactly once, immediately: Telegram expires callback
-	// queries in seconds, and an answer attempted after synthesis and
-	// uploads either fails ("query too old") or reads as a false failure
-	// while the voice notes arrive fine. Outcomes surface in the chat.
 	const answer = (text?: string) =>
 		withTimeout(
 			text === undefined
@@ -63,8 +44,6 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 				: deps.api.answerCallbackQuery(query.id, { text }),
 			"answerCallbackQuery",
 		).catch((err: unknown) => {
-			// Client already gave up waiting — cosmetic, and the real
-			// outcome rides the chat.
 			log.debug("answerCallbackQuery failed", { error: String(err) });
 		});
 
@@ -96,7 +75,6 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 			await answer("nothing speakable in this reply");
 			return;
 		}
-		// Spinner off before the slow part.
 		await answer();
 		const thread =
 			message.message_thread_id !== undefined
@@ -129,10 +107,6 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 				chat: message.chat.id,
 				message: message.message_id,
 			});
-			// The tap was already answered — no toast can carry this. The
-			// failure lands in the chat, where the operator is watching
-			// for voice notes that never came. Synthesis or delivery — the
-			// log line carries the which.
 			await withTimeout(
 				deps.api.sendMessage(message.chat.id, "⚠ speech failed — check the log", { ...thread }),
 				"sendMessage",

@@ -1,8 +1,3 @@
-// Shared test rig for the subagent suites: the fake OpenAI-completions
-// endpoint, in-memory guest-fs Sandboxes and fake Desktops, the
-// rig()/open()/until() owner driver with its cleanup afterEach, fault
-// arming, and the model-profile fixtures. Nothing here spawns a host
-// process; the owner under test is the production ./mod.ts.
 
 import { afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -18,13 +13,6 @@ import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { openSubagents, type Subagents } from "./mod.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";
 
-// ---------- process-log capture ----------
-
-// The harness's host-side report channel is wired to log.error("subagent
-// harness report"). A tool that declares a structured output schema
-// (bash) and answers without it lands there as a broken tool, so the
-// tests that pin a declared or refused answer capture the log and
-// assert the report is absent. stop() detaches in the test's cleanup.
 export function captureLog(): { lines: string[]; stop: () => void } {
 	const lines: string[] = [];
 	setLogFile("subagent-test.log");
@@ -41,8 +29,6 @@ export function captureLog(): { lines: string[]; stop: () => void } {
 export function harnessReports(lines: string[]): string[] {
 	return lines.filter((line) => line.includes("subagent harness report"));
 }
-
-// ---------- fake OpenAI-completions endpoint ----------
 
 type FakeUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 
@@ -65,8 +51,6 @@ export interface FakeModel {
 	seen: SeenRequest[];
 	push(reply: FakeReply): void;
 	close(): void;
-	// Consulted BEFORE the reply queue — request-dependent replies
-	// (compaction's summarization call) never consume a queued reply.
 	onRequest?: (body: unknown) => FakeReply | null;
 }
 
@@ -175,8 +159,6 @@ export function startFakeModel(): FakeModel {
 				return new Response(reply.body, { status: reply.status });
 			}
 			if (reply.kind === "abort") {
-				// One partial chunk, then the socket dies — no [DONE], no
-				// finish_reason.
 				const stream = new ReadableStream({
 					start(controller) {
 						controller.enqueue(
@@ -226,14 +208,6 @@ export function startFakeModel(): FakeModel {
 	return model;
 }
 
-// ---------- fake Sandboxes over an in-memory guest fs ----------
-
-// The env talks argv and bytes; the fake keeps a Map-backed filesystem
-// per conversation and interprets the commands the env (and scripted
-// test shell) issue — stat, cat, mkdir, mv, rm, test, realpath,
-// mktemp, wc, tail, the /bin/sh -c wrappers the env itself emits, and
-// a small /bin/sh subset for model-scripted bash commands. No argv
-// element ever reaches a host process.
 type ExecResult = {
 	stdout: string;
 	stderr: string;
@@ -241,7 +215,6 @@ type ExecResult = {
 	timedOut: boolean;
 	truncated: boolean;
 	killed: boolean;
-	/** Binary stdout for ops that carry bytes (dd, cat through execBytesArgv). */
 	stdoutBytes?: Uint8Array;
 };
 
@@ -355,22 +328,14 @@ class MemFS {
 
 export interface MemSandbox extends Sandboxes {
 	fs: MemFS;
-	/** A promise every execArgv awaits first — holds a gated bash call. */
 	execGate: Promise<void> | null;
-	/** The sandbox "died" — calls skip the gate entirely (SIGKILL model). */
 	sandboxDead: boolean;
 	execCalls: number;
-	/** Signal-bearing `env` dispatches — one per bash command run. */
 	dispatchCalls: number;
-	/** A promise every cpIn awaits first — holds a gated import. */
 	cpGate: Promise<void> | null;
 	cpCalls: number;
 }
 
-// A small /bin/sh subset for model-scripted bash commands: echo,
-// printf, cat, test, true/false, exit, sleep, mkdir, rm, mv, touch,
-// ls, pwd, cd, seq, head, tail, wc, basename, dirname. Connectors
-// ; && ||, redirection > >>, quoting. Unknown commands exit 127.
 function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: number } {
 	let cwd = cwd0;
 	let out = "";
@@ -548,8 +513,6 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 					const f = p(rest.at(-1) ?? "");
 					const data = fs.read(f);
 					const nl = data.filter((b) => b === 10).length;
-					// `wc -l -c f` prints two numbers then the name — the
-					// env's spill measurement parses exactly that shape.
 					emit(`${nl} ${data.length} ${f}\n`);
 					code = 0;
 					break;
@@ -603,7 +566,6 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 		out += local;
 	}
 
-	// Top-level split on ; && || with quote awareness.
 	const parts: { cmd: string; conn: string }[] = [];
 	let cur = "";
 	let q: string | null = null;
@@ -665,8 +627,6 @@ export function fakeSandboxes(): MemSandbox {
 		}),
 		execArgv: async (_conv, argv, opts) => {
 			fake.execCalls++;
-			// env is the bash command dispatch; cat/wc are its spill
-			// machinery — dispatchCalls isolates the dispatch itself.
 			if (argv[0] === "env") fake.dispatchCalls++;
 			await gateOrAbort(opts.abortSignal);
 			return { result: dispatchArgv(argv) };
@@ -684,9 +644,6 @@ export function fakeSandboxes(): MemSandbox {
 			fs.write(dest, new Uint8Array(readFileSync(hostPath)));
 			return {};
 		},
-		// Missing/non-file paths raise the typed refusal the export
-		// boundary persists — matching the real catFile contract, so an
-		// injected plain Error still exercises the unexpected-fault path.
 		catFile: async (_conv, path) => {
 			const p = fs.norm(path);
 			if (!fs.isFile(p)) throw new SandboxError(`${path} is not a regular file in the sandbox`);
@@ -697,9 +654,6 @@ export function fakeSandboxes(): MemSandbox {
 	};
 
 	async function gateOrAbort(signal: AbortSignal | undefined): Promise<void> {
-		// sandboxDead is the SIGKILL model: the gate held a dispatch at
-		// kill time and every later call — signal-less cleanup like
-		// guestRm — is bookkeeping the dead box would have dropped.
 		if (fake.execGate === null || fake.sandboxDead) return;
 		await Promise.race([
 			fake.execGate,
@@ -733,9 +687,6 @@ export function fakeSandboxes(): MemSandbox {
 	function dispatchArgv(argv: string[]): ExecResult {
 		try {
 			const [cmd, ...rest] = argv;
-			// The env wrapper's two forms, positional tail after $0:
-			//   goblin-sh   cwd out err rc command cap
-			//   goblin-argv cwd out err rc program cap args...
 			if (cmd === "env") {
 				const shIdx = rest.indexOf("/bin/sh");
 				if (shIdx < 0) return fail("env: unsupported", 127);
@@ -788,7 +739,6 @@ export function fakeSandboxes(): MemSandbox {
 					return fail("", fs.exists(target) ? 1 : 80);
 				}
 				if (tag === "env") {
-					// write/append: guest stage → dest, then remove the stage.
 					const guest = fs.norm(rest[3] ?? "");
 					const dest = fs.norm(rest[4] ?? "");
 					fs.mkdir(posix.dirname(dest), true);
@@ -825,7 +775,6 @@ export function fakeSandboxes(): MemSandbox {
 					};
 				}
 				if (tag === "tail-bytes") {
-					// tail -n "+K" file | head -c cap | wc -c
 					const keepFrom = Number(rest[3] ?? "1");
 					const data = fs.read(fs.norm(rest[4] ?? ""));
 					const headCap = Number(rest[5] ?? "0");
@@ -898,8 +847,6 @@ export function fakeSandboxes(): MemSandbox {
 					fs.mkdir(p(rest.at(-1)), rest.includes("-p"));
 					return okOut("");
 				case "mv": {
-					// `renameFile` emits `mv -- src dst`; skip the terminator
-					// so the operands land in order.
 					const operands = rest.filter((a) => a !== "--" && !a.startsWith("-"));
 					fs.mv(p(operands[0]), p(operands[1]));
 					return okOut("");
@@ -993,8 +940,6 @@ export function fakeSandboxes(): MemSandbox {
 	}
 	return fake;
 }
-
-// ---------- fake Desktops ----------
 
 export interface FakeDesktops extends Desktops {
 	actCalls: number;
@@ -1104,8 +1049,6 @@ export function fakeDesktops(): FakeDesktops {
 	return f;
 }
 
-// ---------- rig ----------
-
 export const WS = "conv:test";
 
 export let dirs: string[] = [];
@@ -1114,10 +1057,8 @@ export let owners: Subagents[] = [];
 let runStores: SubagentRuns[] = [];
 
 afterEach(async () => {
-	// Owner close is async — it joins in-flight admissions and
-	// monitors that may still write through the run stores and into
-	// the temp dirs. Deleting either under an in-flight close races
-	// the drain into removed paths.
+	// Owner close is async — deleting the temp dirs under an in-flight
+	// close races the drain into removed paths.
 	await Promise.allSettled(owners.map((o) => o.close()));
 	owners = [];
 	for (const r of runStores) r.close();
@@ -1128,14 +1069,10 @@ afterEach(async () => {
 	dirs = [];
 });
 
-// A test that closed its owner itself (the reuse/reopen cases) removes
-// it here so the afterEach above does not close it a second time.
 export function forgetOwner(o: Subagents): void {
 	owners = owners.filter((x) => x !== o);
 }
 
-// A second durable handle on a run store a test probes after its owner
-// closed — registered here so the afterEach above closes it too.
 export function openRunStore(dbPath: string): SubagentRuns {
 	const runs = openSubagentRuns(dbPath);
 	runStores.push(runs);
@@ -1286,13 +1223,6 @@ export async function until(
 	throw new Error(`timed out waiting for: ${what}`);
 }
 
-// Makes the NEXT conversation submit (one admission attempt) throw —
-// the transient-infra injection for admit's retry paths. Consumed on
-// first use; the retry submit (and any later one) awaits holdRetry
-// first when provided, so a test can observe the requeued row before
-// the retry lands. With loseAck the armed submit calls the REAL submit
-// first and throws after it landed — the lost-acknowledgement shape an
-// initial admission can leave behind. restore() unwraps Harness.open.
 export function armSubmitFault(
 	holdRetry?: Promise<void>,
 	loseAck = false,
@@ -1331,12 +1261,6 @@ export function armSubmitFault(
 	};
 }
 
-// Wraps every conversation handle the owner opens: submit throws while
-// submitArmed, abort holds on abortHold (when set) and throws while
-// abortArmed — the two seams that let a steer re-admission and a
-// cancellation-confirmation both fail on demand. abortEntered resolves
-// when an abort call is observed holding, so a test can land a stop
-// mid-confirmation. restore() unwraps Harness.open.
 export function armConversationFaults(): {
 	submitArmed: boolean;
 	abortArmed: boolean;
@@ -1409,11 +1333,6 @@ export function armConversationFaults(): {
 	};
 }
 
-// Arms submission.wait: every handle the owner sees — the one an
-// admission submits, the one recovery re-acquires — fails its wait
-// while armed. That is the "recovery attached a monitor but the
-// wait died" shape: recoverRun keeps re-attaching cleanly while
-// settlement is never observed. restore() unwraps Harness.open.
 export function armSubmissionWaitFault(): { armed: boolean; restore: () => void } {
 	const origOpen = Harness.open;
 	const state = { armed: true };
@@ -1466,8 +1385,6 @@ export function armSubmissionWaitFault(): { armed: boolean; restore: () => void 
 		},
 	};
 }
-
-// ---------- model-profile fixtures (shared by the owner suites) ----------
 
 export const HAIKU_PROFILE: SubagentModelProfile = subagentModelProfileSchema.parse({
 	id: "claude-haiku-5.5:free",

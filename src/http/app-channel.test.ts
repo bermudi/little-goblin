@@ -15,10 +15,6 @@ import { startHttp } from "./mod.ts";
 import type { OperatorDeps } from "./operator.ts";
 import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
 
-// End-to-end over the real HTTP listener with the model faked at the
-// provider edge (the suite's convention). The appApi closure mirrors
-// index.ts's wiring verbatim.
-
 describe("app channel http", () => {
 	test("boot resolution logs the auth mode — trust mode warns about funnel", () => {
 		const home = useHome("goblin-app-");
@@ -49,8 +45,6 @@ describe("app channel http", () => {
 	test("unset appToken is trust mode — /api/app/* serves unauthenticated", async () => {
 		const { http, call } = setup({ token: undefined });
 		try {
-			// No Authorization header at all — and a stray bearer is
-			// ignored too: there is nothing to check it against.
 			expect((await call("/api/app/conversations", {}, null)).status).toBe(200);
 			expect((await call("/api/app/conversations", {}, "bogus")).status).toBe(200);
 			const created = await call(
@@ -109,8 +103,6 @@ describe("app channel http", () => {
 		try {
 			expect((await call("/api/app/conversations")).status).toBe(200);
 			configRef.current = { ...configRef.current, appToken: undefined };
-			// Live config now says trust, but the mode resolved at boot
-			// owns the gate: bare requests stay refused until a restart.
 			expect((await call("/api/app/conversations", {}, null)).status).toBe(401);
 			expect((await call("/api/app/conversations")).status).toBe(200);
 		} finally {
@@ -118,13 +110,6 @@ describe("app channel http", () => {
 		}
 	});
 });
-
-// ---------- the operator surface ----------
-// The mini app's console routes under this door's auth — operator.ts
-// owns the handler logic (mod.test.ts pins it verbatim through the
-// initData door); these tests pin the mount points, the bearer/trust
-// boundary, and the app-actor differences (no requester id → the
-// schema's min(1) on operators is the lockout guard).
 
 function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
 	return {
@@ -146,11 +131,6 @@ function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
 }
 
 describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () => {
-	// These pin the MOUNT TABLES, not the handlers: every test below
-	// goes through startHttp + handleAppApi, the wiring verbatim from
-	// index.ts. handleOperatorRoute-level tests (operator.routes.test.ts)
-	// pass even when a tail is mounted nowhere — this block is the one
-	// that catches that.
 
 	test("all six tails answer through the real door wiring", async () => {
 		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
@@ -198,8 +178,6 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 			const list = await call("/api/app/attachments");
 			expect(list.status).toBe(200);
 			expect(((await list.json()) as { files: unknown[] }).files).toEqual([]);
-			// The dual mount is method-aware: the upload route's parse
-			// failure is the proof the viewer's 405 never took the POST.
 			const post = await call("/api/app/attachments", { method: "POST" });
 			expect(post.status).toBe(400);
 			expect(((await post.json()) as { error: string }).error).toBe("expected multipart form");
@@ -229,11 +207,7 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 			writeFileSync(join(home, "secret.txt"), "top secret");
 			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
 			mkdirSync(join(home, "workspace/skills"), { recursive: true });
-			// The escaped target must exist; a missing file's 404 proves
-			// nothing about containment.
 			writeFileSync(join(home, "workspace/SOUL.md"), "synthetic outside marker");
-			// A linked file and a linked skill dir, both resolving outside
-			// their bases — realpath containment refuses both.
 			symlinkSync(join(home, "secret.txt"), join(home, "workspace/attachments/evil.png"));
 			symlinkSync(join(home, "workspace"), join(home, "workspace/skills/evil"));
 			expect((await call("/api/app/attachments/file?name=evil.png")).status).toBe(404);
@@ -318,8 +292,6 @@ describe("app operator surface", () => {
 	test("operator routes are bearer-gated before the wire check, then 503 unwired", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {
-			// Auth precedes routing — a wrong token is 401 even with the
-			// surface absent, so an unwired deploy is no oracle.
 			expect((await call("/api/app/settings", {}, "wrong")).status).toBe(401);
 			expect((await call("/api/app/settings")).status).toBe(503);
 			expect((await call("/api/app/memory/status")).status).toBe(503);
@@ -356,15 +328,12 @@ describe("app operator surface", () => {
 				});
 			expect((await post(null, { logLevel: "debug" })).status).toBe(428);
 			expect((await post('"bogus"', { logLevel: "debug" })).status).toBe(409);
-			// The app door has no requester id — the schema's min(1) is the
-			// lockout guard (a save that empties operators is refused).
 			expect((await post(etag, { operators: [] })).status).toBe(422);
 			const sentinel = "SETTINGS_FAKE_SECRET_SENTINEL";
 			const refused = await post(etag, { model: sentinel });
 			expect(refused.status).toBe(422);
 			expect(await refused.text()).not.toContain(sentinel);
 			expect(configRef.current.operators).toEqual([42]);
-			// A JSON mutation must claim application/json (#75).
 			expect(
 				(
 					await call("/api/app/settings", {
@@ -385,10 +354,6 @@ describe("app operator surface", () => {
 		}
 	});
 
-	// Telegram's transport settings ride the same save. An absent apiRoot
-	// is a channel patch that keeps it; "" is the explicit clear. Before
-	// the clear had a wire form, JSON dropped `apiRoot: undefined` and the
-	// merge kept the old root while the save reported success.
 	test("a settings save clears the bot API root with '' and keeps it when the key is absent", async () => {
 		const { http, call, configRef } = setup({
 			token: APP_TOKEN_NAME,
@@ -452,7 +417,6 @@ describe("app operator surface", () => {
 			operator: { memory: stubMemory({ client }) },
 		});
 		try {
-			// Config carries no memory block — the gate reads "not configured".
 			const disabled = await call("/api/app/memory/status");
 			expect(disabled.status).toBe(200);
 			expect(((await disabled.json()) as { state: string }).state).toBe("disabled");
@@ -575,15 +539,12 @@ describe("app operator surface", () => {
 					bankId: "goblin",
 				}),
 			};
-			// Upstream supplies a superset; literal filtering stays in goblin.
 			const filtered = await call("/api/app/memory/documents?conversation=app%2F1");
 			expect(filtered.status).toBe(200);
 			expect(seenQ.at(-1)).toBe("exchange/");
 			const both = await call("/api/app/memory/documents?q=x&conversation=app%2F1");
 			expect(both.status).toBe(422);
 
-			// skills/from: provenance rows joined with live disk state.
-			// Absent wiring answers 503 — the status-gate pattern.
 			const unwired = await call("/api/app/skills/from?conversation=app%2F1");
 			expect(unwired.status).toBe(503);
 
@@ -699,7 +660,6 @@ describe("app operator surface", () => {
 				status: "starting",
 				appConversation: "app/spun1",
 			});
-			// The unwired surface still refuses loudly.
 			expect((await call("/api/app/delegations")).status).toBe(503);
 
 			const status = (await (await wired.call("/api/app/status")).json()) as {

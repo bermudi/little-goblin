@@ -1,29 +1,11 @@
-// Persistent-outage episodes for memory retention (DESIGN.md, Slice 2
-// ruling 5, 2026-09-24 amendment). The no-spam ruling covers per-retry
-// notifications; a retention chain that cannot drain for a full hour
-// earns exactly ONE notice per episode, addressed to the conversation
-// whose exchange is stuck in the outbox. Any successful advance ends
-// the episode silently. Episode state is SQLite, so a restart neither
-// forgets an unnotified outage nor repeats a sent one.
-//
-// "Continuous" is defined by failure cadence, not by row age: a live
-// outage produces a failure at least every ~5m10s (backoff cap + tick
-// interval), so an episode whose last failure is older than
-// STALE_AFTER_MS is over — typically because the outbox emptied through
-// cancellation (/memory off, /forget) without a success ever being
-// observed. The next failure starts a fresh episode; a weeks-old row
-// can never make a new outage notify instantly.
 import { type Database } from "bun:sqlite";
 import { log } from "../log.ts";
 
-// How long a continuous outage must last before the operator hears about
-// it. Retention is durable — an outage costs queue latency, never data —
-// so the threshold skews quiet on purpose.
 export const OUTAGE_NOTICE_AFTER_MS = 60 * 60 * 1000;
 
-// A gap between failures longer than this ends the episode (see above).
-// Generously above the ~5m10s worst-case cadence so a slow API restart
-// or a long migration window never splits one real outage in two.
+// Must exceed the worst-case live failure cadence (backoff cap + tick interval,
+// ~5m10s) or a continuous outage degrades into ever-resetting episodes and the
+// notice never fires.
 export const OUTAGE_STALE_AFTER_MS = 15 * 60 * 1000;
 
 type OutageRow = {
@@ -36,10 +18,6 @@ type OutageRow = {
 export interface OutageNotice {
 	conversation: string;
 	sinceMs: number;
-	// The episode's started_at — the identity markNotified() scopes to,
-	// so a send resolving after the episode was cleared and replaced can
-	// never silence its successor (review finding: unscoped marks let a
-	// late send mute a brand-new episode forever).
 	episode: number;
 }
 
@@ -54,7 +32,6 @@ export class OutageTracker {
 			conversation TEXT NOT NULL,
 			notified INTEGER NOT NULL DEFAULT 0
 		)`);
-		// Additive migration, the conversation.ts anchor_seq pattern.
 		const cols = new Set(
 			db
 				.query<{ name: string }, []>("PRAGMA table_info(memory_outage)")
@@ -66,14 +43,6 @@ export class OutageTracker {
 		}
 	}
 
-	// Every worker transport failure passes through here. Returns the
-	// notice to send once the threshold is crossed and no send for this
-	// episode is awaiting confirmation; null before the threshold, after
-	// a confirmed send, or while another caller's send is in flight (the
-	// caller-side latch makes that window process-local — see
-	// startMemoryWorker). recordFailure never marks the send itself; the
-	// caller does on delivery success, so a failed Telegram send retries
-	// on the next worker failure, never in a loop.
 	recordFailure(conversationId: string): OutageNotice | null {
 		const now = this.clock();
 		const row = this.row();
@@ -106,15 +75,10 @@ export class OutageTracker {
 		return { conversation: row.conversation, sinceMs, episode: row.started_at };
 	}
 
-	// Confirms the send for exactly this episode. A mark arriving after
-	// the episode was cleared and replaced is a no-op by design.
 	markNotified(episode: number): void {
 		this.db.run("UPDATE memory_outage SET notified = 1 WHERE id = 1 AND started_at = ?", [episode]);
 	}
 
-	// Any advance (submit acknowledged, operation completed) proves the
-	// whole chain — goblin, API, database — alive; the episode ends
-	// without a word. Idempotent: no episode, no event.
 	recordSuccess(): void {
 		const row = this.row();
 		if (!row) return;

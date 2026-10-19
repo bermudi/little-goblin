@@ -1,6 +1,3 @@
-// Attachment routes: the composer's multipart upload and the stored-file
-// read-back (image previews, full-file click-through).
-
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import {
@@ -15,9 +12,6 @@ import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttachmentResponse } from "./app-wire.ts";
 import { readBodyBytesCapped } from "./check.ts";
 
-// Multipart uploads buffer — cap before formData reads the body, so a
-// hostile content-length never reaches memory. 32 MiB covers phone-grade
-// photos/video clips; larger belongs to a real upload channel anyway.
 const UPLOAD_CAP = 32 * 1024 * 1024;
 
 export async function handleAttachmentsRoute(
@@ -31,18 +25,10 @@ export async function handleAttachmentsRoute(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		// Bound the wire BEFORE parsing: formData() buffers the whole
-		// body in memory, and a chunked upload carries no Content-Length
-		// at all — the header check alone would let an unbounded stream
-		// OOM the process (one process, the bot dies with it). Copy the
-		// stream into a capped buffer (check.ts's shared reader), then
-		// parse the form from the bounded copy.
 		const bytes = await readBodyBytesCapped(req, UPLOAD_CAP);
 		if (bytes === null) {
 			return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
 		}
-		// Drop the stale content-length so the rebuilt request's body and
-		// header agree; the bounded bytes are the truth now.
 		const headers = new Headers(req.headers);
 		headers.delete("content-length");
 		let form: Awaited<ReturnType<Request["formData"]>>;
@@ -61,10 +47,6 @@ export async function handleAttachmentsRoute(
 		if (file.size > UPLOAD_CAP) {
 			return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
 		}
-		// Same durable pipeline as telegram media — the saved path is what
-		// history's data-attachment part will reference. The declared
-		// part type is extension-sniffed (voice-note.webm lands as
-		// video/webm); normalization may hand back the honest type.
 		let mediaType = file.type || "application/octet-stream";
 		const saved = await persistAttachment(
 			`app-${randomUUID()}`,
@@ -72,10 +54,6 @@ export async function handleAttachmentsRoute(
 			"app",
 			async (temp) => {
 				await Bun.write(temp, file);
-				// MediaRecorder output is an unbounded stream — no
-				// Duration, and packet pts on the device's clock.
-				// Normalize before the durable rename; a failed fix
-				// keeps the verbatim bytes rather than failing the post.
 				try {
 					mediaType = (await normalizeRecordedAudio(temp, mediaType)).mediaType;
 				} catch (err) {
@@ -101,11 +79,6 @@ export async function handleAttachmentsRoute(
 		return Response.json(body, { status: 201, headers: NO_STORE });
 	}
 
-	// GET /api/app/attachments/<name> — read-back for stored files (image
-	// previews in the transcript, click-through to the full file). The
-	// segment must be a plain basename inside workspace/attachments/ —
-	// isStoredAttachmentPath is the same confinement check intake runs
-	// on client-supplied refs. Dotfiles are upload temps; never serve.
 	if (path.startsWith("/api/app/attachments/")) {
 		if (req.method !== "GET") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -129,12 +102,6 @@ export async function handleAttachmentsRoute(
 		if (!(await blob.exists())) {
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 		}
-		// Saved names carry a uuid stem — the bytes behind a name never
-		// change, so the response is immutable-cacheable (private: it's
-		// bearer-gated operator content). Uploads are arbitrary bytes —
-		// nosniff plus a sandboxed document context keeps them inert, and
-		// anything the client doesn't embed inline (non-media types)
-		// downloads rather than rendering same-origin.
 		const type = blob.type === "" ? "application/octet-stream" : blob.type;
 		return new Response(blob, {
 			headers: {

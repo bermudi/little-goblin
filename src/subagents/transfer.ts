@@ -1,8 +1,3 @@
-// Files across the run boundary (design/subagents.md → files in/out):
-// imports stage under the host transfer root, exports land numbered
-// under the origin workspace; every step is cancellation-gated and
-// export progress is persisted so a restart reuses landed artifacts.
-
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, posix } from "node:path";
 import { exportNamedBytes, readImport } from "../box-files.ts";
@@ -17,7 +12,6 @@ export interface TransferDeps {
 	sandboxes: Sandboxes;
 	desktops: Desktops;
 	runs: SubagentRuns;
-	/** Owner liveness gates — close state lives with the owner. */
 	throwIfHalted(rowId: number): void;
 	halted(): boolean;
 }
@@ -83,17 +77,12 @@ export function buildTransfer(deps: TransferDeps): {
 		return inbox;
 	}
 
-	// Deterministic numbered basenames under the run's own dir, progress
-	// persisted per source so a restart reuses landed artifacts instead
-	// of recopying box files that may have changed.
 	async function exportOutcomeFiles(
 		row: SubagentRun,
 		files: string[],
 	): Promise<{ exported: string[]; errors: string[] }> {
 		const relDir = join("subagents", String(row.id));
 		for (const [i, f] of files.entries()) {
-			// A stop mid-export lands between files — landed artifacts
-			// stay recorded, the rest are simply not copied.
 			const latest = runs.get(row.id);
 			if (halted() || latest === null || latest.stopRequested || latest.status === "stopped") {
 				break;
@@ -116,11 +105,6 @@ export function buildTransfer(deps: TransferDeps): {
 				const out = exportNamedBytes(row.workspace, relDir, name, data);
 				outcome = "error" in out ? { error: `${f}: ${out.error}` } : { rel: out.rel };
 			} catch (err) {
-				// Only the export boundary's own typed refusals are
-				// model-visible outcomes — an unexpected host/storage
-				// error is a failed settle, not a fabricated refusal: it
-				// propagates so the run stays owned and monitor recovery
-				// retries the durable export later.
 				if (
 					err instanceof DesktopError ||
 					err instanceof SandboxError ||

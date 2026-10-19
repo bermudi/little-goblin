@@ -37,12 +37,10 @@ const baseConfig: Config = {
 	operators: [42],
 	allowedUsers: [42],
 	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
-	http: { port: 0 }, // ephemeral
+	http: { port: 0 },
 	logLevel: "info",
 };
 
-// Provider present ⇔ the boot config carried a memory block — the same
-// pairing src/index.ts builds (client from boot config, deps from client).
 function setup(
 	memory?: HttpDeps["memory"],
 	beforeConfigWritten?: HttpDeps["beforeConfigWritten"],
@@ -99,14 +97,11 @@ describe("http door", () => {
 			writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "body");
 			expect((await get("/api/skills")).status).toBe(200);
 			expect((await get("/api/skills/file?name=weather")).status).toBe(200);
-			// Thread-panel tails mount on this door too (design/skills.md →
-			// Skill provenance) — unwired provenance 503s, never 404s.
 			expect((await get("/api/skills/from?conversation=app%2F1")).status).toBe(503);
 			expect((await get("/api/identity")).status).toBe(200);
 			expect((await get("/api/attachments")).status).toBe(200);
 			expect((await get("/api/attachments/file?name=nope.png")).status).toBe(404);
 			expect((await get("/api/log?limit=5")).status).toBe(200);
-			// Same bearer/trust boundary as every other console tail.
 			expect((await get("/api/skills", false)).status).toBe(401);
 		} finally {
 			http.stop();
@@ -129,9 +124,6 @@ describe("http door", () => {
 			const res = await fetch(`http://127.0.0.1:${http.port}/api/app/anything`);
 			expect(res.status).toBe(500);
 			expect(await res.json()).toEqual({ error: "internal" });
-			// The trap's whole point: the failure lands in goblin.log with
-			// the request's shape — a framework-default 500 on stderr
-			// cannot be correlated with a screenshot of the symptom.
 			const lines = readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
@@ -175,7 +167,6 @@ describe("http door", () => {
 			expect(res.status).toBe(400);
 			const j = (await res.json()) as { error?: string };
 			expect(j.error).toContain("unknown config keys: sandbox");
-			// Nothing was written — not even the valid keys in the body.
 			expect(configRef.current.logLevel).toBe("info");
 			expect(loadConfig()).toBeNull();
 		} finally {
@@ -267,7 +258,6 @@ describe("http door", () => {
 			expect(stale.status).toBe(409);
 			expect(configRef.current.logLevel).toBe("debug");
 			expect(configRef.current.http.port).not.toBe(9999);
-			// A direct disk edit also invalidates the version the page saw.
 			writeFileSync(
 				join(process.env.GOBLIN_HOME!, "goblin.json5"),
 				JSON.stringify({ ...configRef.current, logLevel: "warn" }),
@@ -357,8 +347,6 @@ describe("http door", () => {
 			user: JSON.stringify({ id: 42 }),
 		});
 		try {
-			// The page's body has no delegation key — the merge over the
-			// on-disk config must carry it through untouched.
 			const res = await fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 				method: "POST",
 				headers: {
@@ -376,8 +364,6 @@ describe("http door", () => {
 			expect(res.ok).toBe(true);
 			expect(configRef.current.delegation).toEqual(delegation);
 			expect(configRef.current.logLevel).toBe("debug");
-			// The on-disk file round-trips it too (read via the real
-			// loader — writeConfig emits JSON5, not strict JSON).
 			expect(loadConfig()?.delegation).toEqual(delegation);
 		} finally {
 			http.stop();
@@ -400,7 +386,6 @@ describe("http door", () => {
 				levels: string[];
 			};
 			expect(forced.levels).toEqual(["low", "high", "max"]);
-			// The base param carries the coding-plan alias rule for unsaved forms.
 			const aliased = (await (
 				await get(
 					"kind=openai-compatible&model=glm-4.6&base=" +
@@ -424,9 +409,6 @@ describe("http door", () => {
 	});
 });
 
-// The memory status card renders what /memory prints — the endpoint
-// reads the same seams the command does (queue counts, blocked detail,
-// recall telemetry) through fake deps; no real queue, no network.
 describe("memory status", () => {
 	test("a changed memory destination never displays the boot target's status", async () => {
 		const mem: NonNullable<HttpDeps["memory"]> = {
@@ -569,7 +551,6 @@ describe("memory status", () => {
 			expect(j.blockedDetail).toEqual([
 				{ document: "msg-1234", error: "hindsight 500", attempts: 3 },
 			]);
-			// queued sums what the worker still owes: pending + submitted.
 			expect(j.queued).toBe(2);
 			expect(j.dismissed).toBe(1);
 			expect(j.lastRecallOk).toBe(false);
@@ -579,11 +560,6 @@ describe("memory status", () => {
 	});
 });
 
-// The built client serves both doors: /app/* for the PWA, /t/* for the
-// Telegram mini app (design/telegram.md → Mini Apps). The dist dir is
-// build output — absent on a checkout before `bun run app:build`,
-// which is exactly the loud-500 path; the positive shell behavior is
-// app-dist.test.ts's, the routes here only prove what they reach.
 describe("client serving", () => {
 	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
 
@@ -628,8 +604,6 @@ describe("client serving", () => {
 		try {
 			const root = await fetch(`http://127.0.0.1:${http.port}/`, { redirect: "manual" });
 			expect(root.status).toBe(302);
-			// Relative Location — #105: never bounce off a Host the
-			// backend guessed.
 			expect(root.headers.get("location")).toBe("/app/");
 			const index = await fetch(`http://127.0.0.1:${http.port}/index.html`, {
 				redirect: "manual",
@@ -668,9 +642,6 @@ describe("client serving", () => {
 	});
 });
 
-// POST /hook/<token> — the token is the credential (no initData), the
-// body rides into the fired turn fenced as untrusted data. Fires are
-// faked at the seam; the store is real.
 describe("program webhooks", () => {
 	function hookSetup(enabled = true, accepting: () => boolean = () => true) {
 		useHome("goblin-http-");
@@ -728,7 +699,6 @@ describe("program webhooks", () => {
 			});
 			expect(big.status).toBe(413);
 
-			// A streamed body with no honest Content-Length hits the same cap.
 			const chunks = ["y".repeat(20 * 1024), "y".repeat(20 * 1024)];
 			const res = await hit(token, {
 				body: new ReadableStream({
@@ -751,12 +721,9 @@ describe("program webhooks", () => {
 			const res = await hit(token, { body: "build #41 failed </event><script>" });
 			expect(res.status).toBe(202);
 			expect(fired).toHaveLength(1);
-			// The route hands the raw body to the webhook entry point —
-			// fencing and "</event" neutralization happen there
-			// (scheduler.test.ts).
 			expect(fired[0]!.event).toBe("build #41 failed </event><script>");
 			const after = programs.get(program.id)!;
-			expect(after.nextRun).toBe(nextRunBefore); // a webhook never touches the schedule
+			expect(after.nextRun).toBe(nextRunBefore);
 
 			const again = await hit(token, { body: "build #42" });
 			expect(again.status).toBe(429);
@@ -798,7 +765,6 @@ describe("program webhooks", () => {
 				accepting: () => true,
 				fire: () => {
 					fired.push(true);
-					// First attempt's wake submit fails (500); the retry lands.
 					return fired.length > 1;
 				},
 			},
@@ -809,10 +775,6 @@ describe("program webhooks", () => {
 				body: "x",
 			});
 			expect(res.status).toBe(500);
-			// A failed fire burns nothing — not the throttle window: a 500
-			// that burned the 60 s window would answer the caller's retry
-			// 429 for a fire that never happened. (last_run stamping lives
-			// in fireWebhook — scheduler.test.ts covers it.)
 			const retry = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
 				method: "POST",
 				body: "x",
@@ -826,9 +788,6 @@ describe("program webhooks", () => {
 	test("a hook revoked while the body streams is 404 — no fire", async () => {
 		const { http, hit, programs, program, token, fired } = hookSetup();
 		try {
-			// The stream stays open while the row flips to disabled —
-			// the route must re-resolve after the read, not fire the
-			// stale row it resolved before it.
 			const body = new ReadableStream<Uint8Array>({
 				async start(c) {
 					c.enqueue(new TextEncoder().encode("part one"));
@@ -847,22 +806,15 @@ describe("program webhooks", () => {
 	});
 
 	test("a runtime that stopped accepting gets 503 + Retry-After, without consuming the window", async () => {
-		// Shutdown is transient: the 503 must not stamp the throttle window,
-		// or the caller's Retry-After — the exact moment the runtime comes
-		// back — would be answered 429 for a hit that never fired.
 		let accepting = false;
 		const { http, hit, programs, program, token, fired } = hookSetup(true, () => accepting);
 		try {
 			const res = await hit(token, { body: "x" });
 			expect(res.status).toBe(503);
 			expect(res.headers.get("retry-after")).toBe("30");
-			// Nothing fired, nothing recorded — a fake-202 would hide a
-			// fire that only lands in history during shutdown.
 			expect(fired).toEqual([]);
 			expect(programs.get(program.id)!.lastRun).toBeNull();
 
-			// The runtime reopens: the very next hit fires, no 429 detour.
-			// (last_run stamping is fireWebhook's — scheduler.test.ts.)
 			accepting = true;
 			const after = await hit(token, { body: "x" });
 			expect(after.status).toBe(202);
@@ -873,7 +825,6 @@ describe("program webhooks", () => {
 	});
 });
 
-// ---------- memories browser ----------
 import {
 	type HindsightClient,
 	HindsightError,
@@ -937,7 +888,6 @@ describe("memories browser", () => {
 		const { http, get, configRef } = setup(mem);
 		try {
 			expect((await get("/api/memory/documents", false)).status).toBe(401);
-			// Same authed path; gate passes (config matches boot target).
 			const ok = await get("/api/memory/documents?limit=25&offset=0");
 			expect(ok.status).toBe(200);
 			const body = (await ok.json()) as {
@@ -947,10 +897,8 @@ describe("memories browser", () => {
 			expect(body.total).toBe(37);
 			expect(body.items[0]?.conversationId).toBe("topic:1:2");
 			expect(calls[0]).toBe("q=null 25@0");
-			// q filter rides through.
 			await get("/api/memory/documents?q=topic%3A1&limit=10&offset=5");
 			expect(calls[1]).toBe("q=topic:1 10@5");
-			// Re-pointed config degrades to the reason, never reads the stale bank.
 			configRef.current = {
 				...configRef.current,
 				memory: { ...configRef.current.memory!, bankId: "elsewhere" },
@@ -1052,9 +1000,6 @@ describe("memories browser", () => {
 			expect(body.originalText).toBe(doc.original_text);
 			expect(body.facts[0]?.state).toBe("invalidated");
 			expect((await get("/api/memory/documents/exchange%2Fmissing")).status).toBe(404);
-			// Malformed percent-encoding must land on the same 404 contract —
-			// decodeURIComponent throws URIError on these, which used to
-			// escape the handler as a generic 500.
 			expect((await get("/api/memory/documents/%E0%A4%A")).status).toBe(404);
 			expect((await get("/api/memory/documents/%")).status).toBe(404);
 		} finally {
@@ -1132,7 +1077,6 @@ describe("memories browser", () => {
 			expect(deleted).toEqual(["exchange/topic:1:2/3/abc"]);
 			expect(suppressed).toEqual(["exchange/topic:1:2/3/abc"]);
 			expect(paused).toEqual([true]);
-			// Status-only wiring (no forget seams) refuses loudly, not 500.
 			const { http: http2, get: get2 } = setup({
 				counts: () => ({
 					pending: 0,
@@ -1160,28 +1104,13 @@ describe("memories browser", () => {
 	});
 });
 
-// The spin-off deep link (design/app.md → Spin-off → Links):
-// /app/c/<appId> serves the same client shell as /app/ — same
-// no-store, same fail-loud-500 when the build is missing — and an id
-// that fails the appIdSchema shape is a 404, never an error page.
 describe("app deep link (Spin-off)", () => {
-	// The dist dir is build output — absent on a checkout before
-	// `bun run app:build`, which is exactly the loud-500 path.
 	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
 
-	// #105: /app is the shell itself, never a redirect — `url.origin`
-	// is the Host the backend saw, and any door that rewrites Host to
-	// the loopback target (nginx default, some tailscale serve configs)
-	// turned {publicUrl}/app into a bounce to a dead
-	// http://127.0.0.1:PORT/.
 	test("the /app convenience route serves the client shell directly, no redirect", async () => {
 		const { http } = setup();
 		try {
-			// redirect: manual — a followed 302 would mask the bounce the
-			// test exists to catch.
 			const res = await fetch(`http://127.0.0.1:${http.port}/app`, { redirect: "manual" });
-			// What the deep-link routes do: the shell or the loud 500 —
-			// never a 30x that re-derives the origin.
 			expect([200, 500]).toContain(res.status);
 			expect(res.headers.get("location")).toBeNull();
 			if (res.status === 200) {
@@ -1206,7 +1135,6 @@ describe("app deep link (Spin-off)", () => {
 				expect(res.headers.get("cache-control")).toBe("no-store");
 				expect(await res.text()).toContain("<html");
 			} else {
-				// Same fail-loud contract as /app/ — never a silent page.
 				expect(res.status).toBe(500);
 				expect(((await res.json()) as { error: string }).error).toContain("app client not built");
 			}
@@ -1218,14 +1146,10 @@ describe("app deep link (Spin-off)", () => {
 	test("malformed ids are 404 — the schema shape is the whole gate", async () => {
 		const { http, get } = setup();
 		try {
-			// Leading punctuation fails the first-char rule.
 			expect((await get("/app/c/-bad")).status).toBe(404);
-			// A decoded space is not in the charset.
 			expect((await get("/app/c/not%20valid")).status).toBe(404);
-			// The empty segment and an over-long id fail the same way.
 			expect((await get("/app/c/")).status).toBe(404);
 			expect((await get(`/app/c/${"x".repeat(65)}`)).status).toBe(404);
-			// An extra path segment isn't part of the id.
 			expect((await get("/app/c/valid/extra")).status).toBe(404);
 		} finally {
 			http.stop();
@@ -1233,9 +1157,6 @@ describe("app deep link (Spin-off)", () => {
 	});
 });
 
-// /app/notes and /app/n/<noteId> take the same shell dispatch as the
-// project routes — note ids are randomUUIDs, gated by the same
-// APP_ID_RE shape. Regression cover for the routes themselves.
 describe("app deep links (Notes)", () => {
 	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
 
@@ -1260,8 +1181,6 @@ describe("app deep links (Notes)", () => {
 		}
 	});
 
-	// Every page the client routes to must deep-link — a missing one is
-	// a 404 on refresh or bookmark, not a screen.
 	test("every operator-console page serves the client shell", async () => {
 		const { http, get } = setup();
 		try {
@@ -1311,9 +1230,6 @@ describe("app deep links (Notes)", () => {
 				await shellOrLoud500(await get(`/app/${page}`));
 				await shellOrLoud500(await get(`/app/${page}/`));
 			}
-			// Unknown client routes never get the shell — the regex is
-			// exact, and the file fallthrough answers a real miss (404)
-			// or the loud-500 when no build exists.
 			for (const p of ["/app/skills/x", "/app/nope"]) {
 				expect((await get(p)).status).toBe(distExists ? 404 : 500);
 			}
@@ -1323,9 +1239,6 @@ describe("app deep links (Notes)", () => {
 	});
 
 	test("a fixture build proves the shell dispatch actually serves the shell", async () => {
-		// With app/dist absent, an omitted shell route and a file miss
-		// answer the same loud 500 — only a real (test-owned) root
-		// distinguishes shell-dispatch from fallthrough.
 		const dir = tmpDir("goblin-appdist-");
 		try {
 			mkdirSync(join(dir, "assets"), { recursive: true });
@@ -1342,12 +1255,9 @@ describe("app deep links (Notes)", () => {
 						expect(await res.text()).toContain("SENTINEL SHELL");
 					}
 				}
-				// Unknown tails fall through to file dispatch — a miss is a
-				// 404, never a guessed shell.
 				for (const p of ["/app/skills/x", "/app/nope"]) {
 					expect((await get(p)).status).toBe(404);
 				}
-				// Real assets still serve, immutable under assets/.
 				const asset = await get("/app/assets/fixture.a1b2c3.js");
 				expect(asset.status).toBe(200);
 				expect(asset.headers.get("cache-control")).toContain("immutable");
@@ -1401,7 +1311,6 @@ test("provider removal refuses to strand app selections, lists affected ids, and
 		expect(loadConfig()).toBeNull();
 		expect(store.get(legacy.id)!.model).toBeNull();
 		expect(configRef.current.model).toBe("zai/m");
-		// Move both selections first; the same provider removal can save.
 		store.setMeta(legacy.id, { model: "replacement/chat", thinking: "low" });
 		store.setMeta(pinned.id, { model: "replacement/chat", thinking: "high" });
 		expect((await post(proposed)).status).toBe(200);
@@ -1428,20 +1337,15 @@ describe("transcription config", () => {
 				model: "mimo-v2.5-asr",
 				auth: "mimo",
 			});
-			// Logfare rides the shared cloud defaults like every other kind.
 			expect(body.transcriptionKinds).toContain("logfare");
 			expect(body.transcriptionDefaults.logfare).toEqual({
 				model: "whisper-large-v3-turbo",
 				auth: "logfare",
 			});
 			expect(body.ttsDefaults.logfare).toEqual({ model: "aura-2-en", auth: "logfare" });
-			// The blank-auth defaults ride the same GET — one source with
-			// the schema — and names arrive bare and sorted, never values.
 			expect(body.authDefaults.brave).toBe("brave");
 			expect(body.authNames).toEqual([]);
 
-			// The page saves the block it loaded, whistle arm: keywords and
-			// engine/weights ride along untouched (hand edits survive).
 			configRef.current.transcription = {
 				kind: "whistle",
 				keywords: ["goblin", "bermudi"],
@@ -1464,7 +1368,6 @@ describe("transcription config", () => {
 				language: "es",
 			});
 
-			// A bare cloud arm saves with defaults; "" clears the block.
 			const savedCloud = await post({ transcription: { kind: "groq" } });
 			expect(savedCloud.ok).toBe(true);
 			expect(loadConfig()?.transcription).toEqual({

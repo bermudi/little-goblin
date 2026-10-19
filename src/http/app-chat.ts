@@ -1,6 +1,3 @@
-// The composer's turn routes: POST /api/app/chat submits on the shared
-// runtime and streams the reply; POST /api/app/tts synthesizes read-aloud.
-
 import { join } from "node:path";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
@@ -16,9 +13,6 @@ import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts"
 import { appStreamSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
 
-// The conversation id arrives as the full address — "app/<id>" — so a
-// telegram id can never be submitted through this surface. The shape
-// itself is the codec's (appIdOf parses and validates it).
 const conversationIdSchema = z
 	.string()
 	.refine((id): boolean => appIdOf(id) !== null, "expected an app/<id> conversation id");
@@ -26,9 +20,6 @@ const conversationIdSchema = z
 const chatBody = z
 	.object({
 		conversationId: conversationIdSchema,
-		// `retry` re-runs the newest user message — no append, the same
-		// event anchors the new answer (history stays append-only; the
-		// client prunes the stale answer locally).
 		retry: z.literal(true).optional(),
 		message: z
 			.looseObject({
@@ -37,17 +28,9 @@ const chatBody = z
 				parts: z
 					.array(z.looseObject({ type: z.string() }))
 					.min(1)
-					// A data-attachment ref is a client-supplied string pointing at
-					// a server path; materializeAttachments hands ref.path to
-					// readFile. Confine it to the directory persistAttachment
-					// writes, or the part is an arbitrary-file read. Parts that
-					// aren't attachments pass through — the runtime owns their
-					// semantics.
 					.superRefine((parts, ctx) => {
 						for (const [i, p] of parts.entries()) {
 							if (p.type === NOTE_PART) {
-								// The client names the note only — intake expands it;
-								// a body in the part would be self-attested text.
 								const id =
 									typeof p.data === "object" && p.data !== null
 										? (p.data as { id?: unknown }).id
@@ -84,8 +67,6 @@ const chatBody = z
 		}
 	});
 
-// Synthesis cost scales with input — 40k chars is well past any real
-// reply and still inside chunkSpeech's stride.
 const ttsBody = z.object({ text: z.string().min(1).max(40_000) });
 
 export async function handleChatRoute(
@@ -96,9 +77,6 @@ export async function handleChatRoute(
 	const path = url.pathname;
 	const { store, runtime } = deps;
 
-	// POST /api/app/tts — read-aloud: reply text → base64 ogg chunks the
-	// client plays back-to-back. 503 when speech is unconfigured or
-	// ffmpeg was down at boot (configRef.ttsDown), never mid-synthesis.
 	if (path === "/api/app/tts") {
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -178,10 +156,6 @@ export async function handleChatRoute(
 			);
 		}
 
-		// Retry re-runs the newest user message — the stored event rides
-		// along so the answer anchors to the same seq and nothing is
-		// appended twice. A live lane refuses: re-admitting the same user
-		// text mid-turn would read as steering input, not "again".
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {
 				return Response.json(
@@ -195,10 +169,6 @@ export async function handleChatRoute(
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
 			const { sink, body, dispose } = appStreamSink(convId);
-			// The submit can throw (history append, lane admission) — the
-			// Telegram lane wraps the same seam (admitBatch). The stream was
-			// never returned, so there is no wire to answer: log with the
-			// boundary's own line and hand back a plain 500.
 			try {
 				runtime.submitPersisted(conv, lastUser, sink);
 			} catch (err) {
@@ -217,10 +187,6 @@ export async function handleChatRoute(
 
 		const message = parsed.data.message!;
 
-		// Voice-note intake, the same seam tg runs: speech-flagged
-		// attachments get their transcript before submit, so a model that
-		// can't hear audio reads the words instead of a bare path. A
-		// failed transcription keeps the attachment — degrade, don't drop.
 		if (deps.transcribe !== undefined) {
 			for (const part of message.parts) {
 				if (part.type !== ATTACHMENT_PART) continue;
@@ -247,8 +213,6 @@ export async function handleChatRoute(
 						conversation: convId,
 						filename: ref.data.filename,
 					});
-					// The failure rides the part — a permanently-broken engine
-					// must name itself to the model, not just the log.
 					part.data = {
 						...ref.data,
 						transcriptionError: (err instanceof Error ? err.message : String(err)).slice(0, 500),
@@ -257,11 +221,6 @@ export async function handleChatRoute(
 			}
 		}
 
-		// Note attachments resolve HERE, server-side (design/projects.md
-		// → Attach): the client sends only {id}; what history stores and
-		// the model reads is the server's copy of the note at this
-		// instant — rev included, so a stale attach is legible later.
-		// Unknown/archived notes refuse before submit: no half-history.
 		for (const part of message.parts) {
 			if (part.type !== NOTE_PART) continue;
 			const id = (part.data as { id: string }).id;
@@ -290,11 +249,6 @@ export async function handleChatRoute(
 			});
 		}
 
-		// First-burst titling — the tg lane's implicit-topic rule applied
-		// to app conversations: the first real text burst names the row
-		// via titleModel. Fires beside the turn, not after — the
-		// title===null re-check keeps an operator PATCH the winner and a
-		// deleted row (mid-flight DELETE) is just skipped.
 		if (deps.titleFor !== undefined && conv.title === null) {
 			const firstText = message.parts
 				.map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
@@ -319,15 +273,8 @@ export async function handleChatRoute(
 			}
 		}
 
-		// Intake boundary: message → app address.
 		log.info("app intake", { conversation: convId, message: message.id });
 		const { sink, body, dispose } = appStreamSink(convId);
-		// Steering and /stop ride the existing lane — a second chat POST
-		// while a turn runs queues or steers exactly like Telegram. The
-		// submit can throw (history append, lane admission) — the Telegram
-		// lane wraps the same seam (admitBatch); here the stream was never
-		// returned so there is no wire to answer: log with the boundary's
-		// own line and hand back a plain 500.
 		try {
 			runtime.submit(conv, message as UIMessage, sink);
 		} catch (err) {

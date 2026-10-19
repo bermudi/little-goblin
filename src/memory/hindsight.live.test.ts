@@ -1,6 +1,4 @@
-// Read-only drift check: GET /openapi.json only, never banks, memories, auth
-// resolution, provider calls or writes. Run after a Hindsight upgrade:
-// GOBLIN_MEMORY_LIVE=1 bun test src/memory/hindsight.live.test.ts
+// Read-only: GET /openapi.json only — no banks, memories, auth resolution, calls, or writes.
 import { expect, test } from "bun:test";
 import { z } from "zod";
 import { hindsightConnectionSchema } from "./hindsight.ts";

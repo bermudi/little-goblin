@@ -1,15 +1,9 @@
-// Project routes (design/projects.md): the rail's Projects section and
-// the /app/p/<id> page.
-
 import { z } from "zod";
 import { log } from "../log.ts";
 import { type Project, ProjectInputError } from "../projects.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import type { AppProject, AppProjectList } from "./app-wire.ts";
 
-// Project creation: the linked-dir path goes through the domain's
-// resolveLinkedDir (ProjectInputError → 422) — here it's only a
-// non-empty string.
 const projectCreateBody = z.object({
 	name: z.string().trim().min(1).max(80),
 	instructions: z.string().max(20_000).optional(),
@@ -17,9 +11,6 @@ const projectCreateBody = z.object({
 	dir: z.string().min(1).optional(),
 });
 
-// The mutable fields; `.strict()` because unknown keys are caller bugs
-// (dir gets its own refusal first — its message names the immutability
-// ruling rather than "unrecognized key").
 const projectPatchBody = z
 	.object({
 		name: z.string().trim().min(1).max(80).optional(),
@@ -37,8 +28,6 @@ const projectPatchBody = z
 		{ message: "nothing to write" },
 	);
 
-// The wire shape — `home` is goblin-owned scratch the client never
-// addresses, so it doesn't cross the boundary.
 function appProject(p: Project): AppProject {
 	return {
 		id: p.id,
@@ -60,9 +49,6 @@ export async function handleProjectsRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 
-	// Projects (design/projects.md): the rail's Projects section and the
-	// /app/p/<id> page. Creation refuses bad linked dirs 422 via
-	// ProjectInputError; every other failure propagates to the 500 path.
 	if (path === "/api/app/projects") {
 		if (req.method === "GET") {
 			const body: AppProjectList = { projects: deps.projects.list().map(appProject) };
@@ -124,8 +110,6 @@ export async function handleProjectsRoute(
 		} catch {
 			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 		}
-		// dir is not a patchable field — a repoint would silently re-cwd
-		// every chat under it; new project, new binding instead.
 		if (typeof json === "object" && json !== null && "dir" in json) {
 			return Response.json(
 				{ error: "dir is immutable after creation" },

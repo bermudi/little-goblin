@@ -1,11 +1,3 @@
-// drain.ts boundary tests — the scheduler's eligibility and
-// coalescing invariants (design/subagents.md → Owner decomposition;
-// Scheduling). Real run store (unfinished()/workerLease() are real
-// queries); desktops is a stub lease table; admit is a spy. Pinned:
-// nothing drains before resume, the global slot cap counts running +
-// inflight, eligibility refuses stopped/backed-off/lease-blocked
-// rows, and a drain requested mid-flight re-runs after the lane
-// frees.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -44,7 +36,6 @@ function rig(
 	const flags = { halted: false, resumed: true };
 	const retryAfter = new Map<number, number>();
 	const admitted: number[] = [];
-	// A real serial lane — promise-chained per row id, like the owner's.
 	const lanes = new Map<number, Promise<unknown>>();
 	const lane = <T>(id: number, fn: () => Promise<T>): Promise<T> => {
 		const next = (lanes.get(id) ?? Promise.resolve()).then(fn);
@@ -64,8 +55,6 @@ function rig(
 		admit: async (row) => {
 			admitted.push(row.id);
 			await opts.admit?.(row);
-			// An admitted row runs — leaving it queued would re-admit
-			// it on the drain the finally schedules, forever.
 			runs.update(row.id, { status: "running" });
 		},
 		retryAfter,
@@ -81,8 +70,6 @@ function rig(
 		runs.update(
 			runs.create({
 				kind: kind as SubagentRun["kind"],
-				// Distinct conversations by default — the worker lease
-				// tests share one explicitly.
 				conversationId: conversationId ?? `dm:${++convSeq}`,
 				workspace: "/w",
 				task: "t",
@@ -93,7 +80,6 @@ function rig(
 	return { runs, drain, mkrow, admitted, retryAfter, flags };
 }
 
-// scheduleDrain runs the drain on a microtask — flush it.
 const flush = () => Bun.sleep(30);
 
 describe("the resume and halt gates", () => {
@@ -175,9 +161,6 @@ describe("eligibility", () => {
 
 describe("coalescing", () => {
 	test("a drain requested mid-flight re-runs when the lane frees", async () => {
-		// admit blocks on a manual gate — two rows go in-flight to the
-		// slot cap, a third waits for a free slot, and the admit
-		// finally's deferred drain picks it up when the lane frees.
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -191,14 +174,10 @@ describe("coalescing", () => {
 		const third = mkrow();
 		drain.scheduleDrain();
 		await flush();
-		// Both slots are mid-flight — the third row has nowhere to go.
 		expect(admitted).toEqual([first.id, second.id]);
 		release();
 		await flush();
-		// Both admitted rows now hold their slots running — still full.
 		expect(admitted).toEqual([first.id, second.id]);
-		// A run settling frees its slot; the deferred drain admits the
-		// waiting row into it.
 		runs.update(first.id, { status: "done", finishedAt: Date.now() });
 		drain.scheduleDrain();
 		await flush();

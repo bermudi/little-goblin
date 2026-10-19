@@ -5,242 +5,137 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Model layer
 
-Vercel AI SDK (`ai` package). `streamText` with tools and `stopWhen` for the
-agent loop.
-
-- **Provider registry** in config: name → AI SDK provider factory + auth
-  reference. v1 targets:
-  - `zai` — GLM via z.ai's OpenAI Responses endpoint (`/api/v1`, the
-    `responses` kind over `@ai-sdk/openai`) — the coding-plan door that
-    carries documents in tool results (see Web access). Daily driver.
-    The `openai-compatible` kind (chat completions) stays available for
-    any OpenAI-shaped relay — Logfare included (`logfare.ai/v1`, the same
-    `logfare` auth record that serves its speech/transcription/images
-    kinds in asr.md, telegram.md → TTS, and tools.md → generate_image;
-    its docs note requests may be PII-scrubbed and logged for eval).
-  - `openrouter` — `@openrouter/ai-sdk-provider`.
-  - `codex` — `ai-sdk-provider-codex-cli` wraps the CLI's own agent loop
-    (no caller tools), so it can't drive goblin's turn loop; ours is a
-    thin `LanguageModelV4` over
-    `chatgpt.com/backend-api/codex/responses` (`src/agent/codex/`): reads
-    `~/.codex/auth.json` per call (auth.ts), refreshes expired access
-    tokens against the OAuth endpoint, writes rotated refresh tokens back
-    — not writing back invalidates the CLI's own login.
-- **Selection scope (2026-10-06)**: Telegram uses one shared
-  `telegram.model`/`telegram.thinking` selection across all DMs/topics;
-  retired per-conversation columns never override it. Root `model`/`thinking`
-  are app defaults, snapshotted durably into each new app conversation.
-  Legacy config without Telegram keys normalizes them from root before
-  patches, and saves persist the explicit pin so app-default changes cannot
-  leak into Telegram; existing app rows initialize once (design/app.md).
-  Settings are captured at turn admission, including attachment/vision
-  capability gates, and stay fixed through overflow retry and automatic
-  compaction; edits apply to the next turn without fencing this one. Manual
-  `/compact` resolves the channel selection when it executes. Summaries use
-  that same model and thinking; reviewer fallback uses the conversation's
-  model, while explicit `reviewer.model` and `titleModel` remain independent.
-- **Thinking**: `off|low|medium|high|xhigh|max` is an operator vocabulary,
-  not a provider contract — `thinkingOptions` maps each family to the
-  nearest honest knob, writing the collapse down; `thinkingLevelsFor` reads
-  the same table the other way; the mini app offers only what the active
-  model can express. Family ladders follow the bare model id under
-  every kind — a `glm-5.3` is forced-thinking whether z.ai serves it
-  directly or via a relay. Stored values outside a model's set aren't
-  errors — defaults span models, so the mapping clamps to the nearest rung
-  at-or-above (GLM's own collapse direction). GLM (docs.z.ai): 5.3+ is
-  forced thinking with effort `low|high|max` (unlisted values silently
-  become `max`; `off`/`medium` clamp to `low`/`high`), 5.2 toggles plus
-  `high|max`, ≤4.6 toggles only. z.ai's coding plan
-  (`api.z.ai/api/coding/…`) serves only 5.3-gen models and aliases older
-  glm-* ids to them, so on that base URL every glm gets the 5.3 ladder and
-  wire map. GPT/codex takes `reasoning_effort` verbatim on a
-  `low|medium|high|xhigh` ladder (gpt-6 adds `max`); `off` isn't a rung
-  and clamps to the floor. OpenRouter's public `/models` catalog is fetched
-  + cached like models.dev: `supported_parameters` discriminates
-  `reasoning_effort` (native ladder → verbatim), `reasoning` only (toggle
-  → `off|low`), or neither (non-reasoner → `off`); a cold catalog passes
-  the level through — fail loud, never fake knowledge. `off` =
-  `enabled:false`. No `/think` command — the mini app owns the knob.
-- **History**: stored as AI SDK `UIMessage`-format JSON (the parts array —
-  text, reasoning, tool, file parts), wrapped in a versioned envelope
-  `{"v":1,"message":…}`: the SDK owns the part shapes, so every row stamps
-  the format that wrote it — a future shape change is a deliberate
-  `v1→v2` converter at open, never silent placeholder degradation of old
-  rows. `openStore` migrates bare (pre-envelope) rows once; the read is
-  envelope-only (a straggler that skips the wrap degrades to a placeholder,
-  never parses as speech).
-- **Causal view, arrival-order storage.** `events` appends in arrival seq —
-  that stays the truth. The model view interleaves replies by `anchor_seq`:
-  each assistant response is stamped with the seq of the last user message
-  of the burst it answers (steered submits included, bounded by the turn's
-  ownership mark) and sorts immediately after it — a reply never reads as
-  having seen later input. Input queued behind a finished turn coalesces
-  into one successor turn — a single model call answers it — and
-  consecutive user messages merge into one at conversion.
-- **Compaction**: history is unbounded on disk, bounded in the window by
-  pointer relocation, never deletion. A conversation whose completed turn
-  crosses **75% of its model's catalog context window** — or the operator's
-  `/compact` — compacts: the conversation's own model (a sloppy summary
-  silently degrades every future turn, and it runs rarely) summarizes
-  everything from the previous boundary (or the start) up to a cut chosen
-  at a **completed exchange** — the causal-view rule, so a response is
-  never orphaned from its user message — keeping a recent tail inside a
-  token budget (~25% of the window, estimated). An interleaved burst
-  (operator messages that arrived mid-turn) is atomic: the cut coarsens to
-  whole bursts rather than splitting them. The summarizer input is the
-  delta since the previous boundary plus the previous summary — never the
-  re-serialized whole past, so the call stays bounded by one compaction
-  interval, not total history. Within that bound it is chunked further:
-  sequential calls, each carrying the running summary forward, sized so
-  system + carried + span text fit half the window (32k when the window is
-  unknown); a single oversized event is truncated, never
-  allowed to stall the fold. Each call races a 3-minute timeout — a wedged
-  request must settle — and a timeout is an ordinary failure. The result
-  lands in a first-class `compactions` table (boundary seq, summary, tokens
-  before, model, timestamp); the latest row is the conversation's active
-  pointer, earlier rows the audit trail. The event stream is untouched; the
-  full record stays queryable forever. Recovery is named, not implied
-  (ruling 2026-10-14): the summary marker carries the conversation id and
-  boundary seq and says the folded span is pageable with `history_search`
-  action=context, which renders tool calls and results too and works on the
-  conversation's own id even when it is memory-excluded (design/tools.md →
-  Chat search). No folded-span dump file — the event stream already is the
-  record, and a copy would drift. The model view becomes [summary message] +
-  events whose causal position follows the boundary — `anchorSeq ?? seq`,
-  the same key the causal sort uses, so a late answer to a folded question
-  rides into the summary with it rather than stranding orphaned in the
-  tail. The summary is minted at read time as a user-role message framing
-  the carried context. The requestHash move is the sanctioned boundary (Cache
-  stability), logged as `history compacted` with the numbers. Failure is
-  loud and lossless: a failed call writes no boundary and warns; the next
-  crossing retries. `/stop` and shutdown abort an in-flight summary — no
-  pointer is written, the crossing retries. An epoch-bumping settings change
-  (the authority rule) fences the same commit: the compaction captures its
-  epoch at entry and re-checks before each summary chunk and before the
-  pointer lands, so a fence mid-summary
-  spends no further calls, writes no boundary, clears no frozen prompt
-  snapshot — the next crossing retries under the new settings.
-  Auto-compaction runs inside the conversation's serial lane after the
-  turn's sinks are notified — the reply lands first, a queued successor
-  waits out the summary call. `/compact` is the same compaction serialized
-  through that lane — a running turn completes (its response appended)
-  before the cut is chosen — and replies with the numbers; with the context
-  window unknown it still compacts (manual is a forced scrub). The ≥80%
-  utilization warn stays as the alarm that compaction didn't happen or
-  didn't keep up. A provider's **context-overflow error** mid-turn is a
-  recovery, not a failure (mechanism from pi, `~/build/pi-mono`
-  `agent-session._checkCompaction`): the failed attempt's partial reply is
-  held off the wire, one compaction runs with a halved tail budget (the
-  overflow proved the estimate optimistic), and the turn resumes on the
-  compacted view, continuing the partial as the same message so tools never
-  re-run. One attempt per turn: a second overflow, a failed compaction, or
-  nothing left to compact ends the turn with a plain operator message.
-  Ruling 2026-10-04: no deterministic fallback summary — the summarizer is
-  the conversation's own model, so when it can't summarize the turn can't
-  answer either, and a degraded summary silently harms every later turn.
+- **Provider facts.** z.ai's coding plan serves only 5.3-gen models, aliasing
+  older glm-* ids to them (Thinking). Logfare's docs note requests may be
+  PII-scrubbed and logged for eval. The Codex CLI-wrapper can't drive our
+  loop (no caller tools); our adapter must write the CLI's rotated refresh
+  tokens back, or it invalidates the CLI's own login.
+- **Selection scope (2026-10-06).** Telegram uses one shared selection across
+  all DMs/topics, and root-default changes must never leak into it. Admission
+  freezes a turn's settings (capability gates included) through overflow
+  retry and compaction. Summaries use the conversation's model and thinking;
+  reviewer fallback uses the conversation's model; explicit reviewer and
+  title models stay independent.
+- **Thinking.** `off|low|medium|high|xhigh|max` is an operator vocabulary, not
+  a provider contract; each family maps to the nearest honest knob, and the
+  ladder follows the bare model id under every kind — a `glm-5.3` is
+  forced-thinking whether z.ai serves it directly or via a relay. Stored
+  values outside a model's set aren't errors — defaults span models, so the
+  mapping clamps to the nearest rung at-or-above (GLM's own collapse
+  direction). GLM (docs.z.ai): 5.3+ forced thinking, effort `low|high|max`
+  (unlisted values silently become `max`); 5.2 toggles plus `high|max`, ≤4.6
+  toggles only; the coding-plan alias gives every glm the 5.3 ladder.
+  GPT/codex takes `reasoning_effort` verbatim on `low|medium|high|xhigh`
+  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor.
+  OpenRouter's cached `/models` catalog reads `supported_parameters`:
+  `reasoning_effort` → verbatim, `reasoning`-only → toggle, neither → off; a
+  cold catalog passes the level through — fail loud, never fake knowledge.
+- **History.** Rows stamp the format that wrote them — the SDK owns the part
+  shapes — so a future shape change is a deliberate converter at open, never
+  silent placeholder degradation of old rows; a straggler that skips the
+  envelope degrades to a placeholder, never parses as speech. Arrival seq
+  stays the truth; the model view anchors each reply so none reads as having
+  seen later input.
+- **Compaction.** History is unbounded on disk, bounded in the window by
+  pointer relocation, never deletion. A completed turn crossing most of its
+  model's catalog window — or `/compact` — compacts: the conversation's own
+  model summarizes (a sloppy summary silently degrades every future turn,
+  and it runs rarely) from the previous boundary to a completed-exchange cut
+  — the causal-view rule, so a response is never orphaned from its user
+  message — keeping a recent tail in budget. An interleaved burst is atomic,
+  so the cut coarsens to whole bursts. Summarizer input is the delta since
+  the previous boundary plus the previous summary, never the whole past, so
+  each call is bounded by one compaction interval; within it, chunks run
+  sequentially carrying the running summary, an oversized event truncated
+  rather than stalling the fold, each call racing a timeout — a wedged
+  request must settle, a timeout is ordinary. The summary lands as a row and
+  the event stream stays untouched and queryable forever. Recovery is named,
+  not implied (ruling 2026-10-14): the summary marker carries the
+  conversation id and boundary seq and points at `history_search`
+  action=context, so the folded span stays pageable; no folded-span dump
+  file — the event stream already is the record, and a copy would drift.
+  The model view is the summary plus events at their causal position, so a
+  late answer to a folded question rides into the summary; the requestHash
+  move is the sanctioned boundary (Cache stability). Failure is loud and
+  lossless: a failed call writes no boundary and warns, and the next
+  crossing retries — as does an abort by `/stop` or shutdown. An
+  epoch-bumping settings change (the authority rule) fences the same
+  commit: the re-check runs before each chunk and before the pointer lands,
+  so a fence spends no further calls and clears no frozen prompt snapshot —
+  the crossing retries under the new settings. Auto-compaction runs in the
+  serial lane after the turn's sinks are notified — the reply lands first;
+  `/compact` serializes through it and still compacts with the window
+  unknown (a forced scrub). The utilization warn stays as the alarm that
+  compaction didn't happen or didn't keep up.
+  A mid-turn **context-overflow error** is a recovery, not a failure
+  (mechanism from pi): the partial reply is held off the wire, one
+  compaction runs with a smaller tail (the overflow proved the estimate
+  optimistic), and the turn resumes on the compacted view, continuing the
+  partial as the same message so tools never re-run; one attempt per turn,
+  else a plain operator message. Ruling 2026-10-04: no deterministic
+  fallback summary — the summarizer is the conversation's own model, so
+  when it can't summarize the turn can't answer either, and a degraded
+  summary silently harms every later turn.
 - **Provider-filter recovery** (2026-10-05): one automatic retry per turn,
-  same model, unchanged request, no fallback. Only explicit signals qualify:
-  the SDK's `content-filter` finish reason or the verbatim provider warning
-  reported by the operator; ordinary assistant refusals are not inspected.
-  HTTP rejections and stream errors share the SDK's callback-directed step
-  retry (`streamRetries: 0`), preserving earlier tool results and buffering
-  the current attempt's tool parts until it ends cleanly; the
-  model-boundary adapter also discards filtered tool parts on exhaustion
-  (the SDK otherwise flushes them on terminal failure). Cancellation
-  cleanup errors are logged without replacing the original filter signal.
-  Never restart the turn or re-run completed actions. The retry budget
-  survives overflow compaction. The first error stays out of Telegram, app
-  streams, history and retention; a second filter ends the turn with a
-  plain explanation. Already-streamed partial text/reasoning cannot be
-  retracted and stays visible and in UI history; the SDK excludes it from
-  its recovered model-step result. While buffering tool-input parts, the
-  wrapper keeps pulling upstream until it can emit a part or finish:
-  returning from `pull()` without enqueueing can strand a pending read
-  forever (chunked-tool regression, 2026-10-05). Keep token streaming live
-  rather than buffering whole answers; no prompt rewriting or
-  cache-busting. Log retry, recovery and exhaustion. Recovered-step usage
-  excludes blocked attempts; log reported filtered-finish usage separately.
-  Unreported billing remains unknown; ordinary transport retries retain
-  their existing SDK policy; cache reuse and blocked-request charges are
-  provider-dependent. The pasted warning is real operator evidence; its
-  underlying HTTP/SSE envelope remains unverified.
-- **Capabilities**: no hand-maintained matrix. Use what the SDK exposes on
-  model objects (`supportedUrls`, unsupported-feature warnings) plus the
-  `models.dev` catalog for per-model input modalities (image/audio/document),
-  which is what other agent tools already do.
-- **Content**: AI SDK takes image, document, and audio parts. Telegram media
-  is saved to `attachments/` and stored in history as a `data-attachment`
-  part (path + metadata, no payload). Each part's representation — file
-  part vs text reference (transcript first for speech) — is a pure function
-  of the stored ref and the conversation's model **and provider pipe**: file
-  part when the model consumes the media type (catalog modalities), the
-  pipe can deliver it (`carriesMedia`, `src/agent/providers.ts` — the SDK
-  converter's expressible surface, per kind and position; user-message
-  content and tool results are different converter paths), and the payload
-  fits the per-item inline cap; reference otherwise. Two gates because
-  catalog and pipe disagree: models.dev listed glm-5.3-flash PDFs while
-  `@ai-sdk/openai-compatible` < v3 threw
-  `UnsupportedFunctionalityError` on any non-image file part. One carve-out:
-  audio only inlines when the ref is marked `speech` — a voice or video
-  note. Attached audio is data (Transcription, below); an mp3's bytes in
-  every request is the most expensive way to not listen to it. Pure means
-  stable: the same history under the same model materializes to the same
-  request bytes every turn (see Cache stability). A model switch recomputes
-  representations once — legitimate, because a model switch is already a
-  cold cache. Only disk failure (file gone) degrades an item that would
-  have inlined, with a warn.
+  same model, unchanged request, no fallback; only explicit signals qualify —
+  the SDK's `content-filter` finish reason or the operator-pasted provider
+  warning; ordinary refusals are not inspected. Never restart the turn or
+  re-run completed actions; the budget survives overflow compaction. The
+  first error stays out of Telegram, app streams, history and retention; a
+  second filter ends the turn with a plain explanation; already-streamed
+  partial text can't be retracted. The buffering wrapper must keep pulling
+  until it can emit or finish — a `pull()` that returns without enqueueing
+  strands a pending read forever (chunked-tool regression, 2026-10-05) — and
+  token streaming stays live: no whole-answer buffering, no prompt
+  rewriting, no cache-busting. Recovered-step usage excludes blocked
+  attempts; the pasted warning is real operator evidence, its HTTP/SSE
+  envelope unverified; unreported billing is unknown, and cache reuse and
+  blocked-request charges are provider-dependent.
+- **Capabilities**: no hand-maintained matrix — the SDK's model objects plus
+  the `models.dev` catalog for input modalities.
+- **Content**: each part's representation — file part vs text reference
+  (transcript first for speech) — is a pure function of the stored ref and
+  the conversation's model **and provider pipe**, so the same history
+  materializes to the same request bytes every turn (Cache stability); a
+  model switch recomputes once, legitimate because it is already a cold
+  cache. A file part takes all three: catalog modality, pipe deliverability,
+  per-item inline cap; otherwise a reference. Two gates because catalog and
+  pipe disagree: models.dev listed glm-5.3-flash PDFs while
+  `@ai-sdk/openai-compatible` < v3 threw `UnsupportedFunctionalityError` on
+  any non-image file part. One carve-out: audio inlines only when the ref is
+  marked `speech` — a voice or video note; an mp3's bytes in every request
+  is the most expensive way to not listen to it. Only disk failure (file
+  gone) degrades an item that would have inlined, with a warn.
 - **Cache stability** — moved to the core: DESIGN.md → Cache stability.
-- **Cache contracts** (`src/agent/cache-contracts.ts`, reviewed policy
-  data): each provider kind/base-URL family maps to a contract — cache mode
-  (implicit / explicit / route-dependent / unknown), a lifetime class, and
-  the public source(s) the mapping was reviewed against, stamped
-  `CACHE_CONTRACT_REVIEWED_AT` with a 30-day review window. The contracts
-  are honest about the gaps: z.ai publishes no retention, OpenRouter's
-  10-minute routing affinity is not cache expiry, the Codex backend's
-  retention is unverified, and an OpenAI-compatible relay establishes
-  nothing about its upstream. Doctor surfaces the mapping for the configured
-  models (`cache.contracts`; design/doctor.md) and warns on unpublished or
-  unknown durations and overdue review metadata. The bounded re-check is
-  manual: `bun scripts/check-cache-contracts.ts` fetches each pinned source
-  URL — public docs only, no credentials, 15 s per source, ≤1 MiB — and
-  reports `unchanged`/`changed`/`unavailable` per source (`unknown` where no
-  fragments are pinned, e.g. logfare). `changed`/`unavailable`/overdue
-  metadata exit 1; it never edits policy. Contracts plus the
-  `model_cache_calls` telemetry are inputs to drift diagnosis and to the
-  opt-in pruning gate (DESIGN.md → Cache stability): a `cachePruning`
-  profile's `evidence` label separates `documented-expiry` — valid only
-  where the registry records a rolling-expiry contract whose bound the
-  profile respects — from `empirical`, the operator's own measurement.
-  Z.AI-class unpublished lifetimes can carry empirical profiles only; an
-  empirical profile is a measurement, never a provider guarantee, and must
-  never be presented as one.
-- **Transcription**: voice notes and video notes are speech — the two media
-  kinds Telegram only produces by recording someone — and a model that
-  can't consume audio shouldn't lose them to a bare path. Attached audio
-  (`audio`, audio-mime `document`) is data, not speech: an mp3 meant for
-  `ffmpeg` shouldn't pay whisper for lyrics, so it is never transcribed
-  eagerly and never inlines (the `speech` marker above). On-demand
-  transcription of attached audio is the `transcribe` tool's job — same
-  engine, same segmentation, called deliberately. When `transcription` is
-  configured, intake transcribes the saved recording once and stores the
-  text inside the `data-attachment` part (the engine layer — whistle local
-  default plus eight cloud kinds behind one `SpeechEngine` interface — is
-  designed in [`asr.md`](asr.md)). Eager, not per-turn: the transcript is
-  durable history, and materialization prefers it over the path reference
-  whenever the file can't go inline — wrong modality or spent budget —
-  while audio-capable models still get the file part. The call rides the
-  per-conversation intake chain (off the update hot path), bounded per call
-  by each engine's own timeout (60 s multipart, 120 s chat/local). Files
-  over the provider's upload cap are segmented, not skipped: ffmpeg extracts
-  the audio track to mono opus — a video note's payload is mostly pixels —
-  and splits it into fixed chunks, transcribed sequentially and joined; the
-  local whistle engine converts everything to 16 kHz mono wav at its 30 s
-  ceiling. A partial result is kept and warn-logged rather than discarded.
-  ffmpeg presence is probed at boot when transcription is configured, and
-  install.sh warns when the config names it but PATH lacks it. A failed
-  transcription — provider down, ffmpeg missing, corrupt media — leaves the
-  attachment path-referenced and warn-logged: it must never eat a voice
-  message.
+- **Cache contracts.** Each provider kind/base-URL family maps to a reviewed
+  contract — cache mode, lifetime class, public sources — with its review
+  date; doctor surfaces the mapping; the bounded re-check is manual, public
+  docs only, never edits policy. The gaps are admitted: z.ai publishes no
+  retention, OpenRouter's 10-minute routing affinity is not cache expiry,
+  the Codex backend's retention is unverified, an OpenAI-compatible relay
+  establishes nothing about its upstream. Contracts plus cache-call
+  telemetry feed drift diagnosis and the opt-in pruning gate (DESIGN.md →
+  Cache stability): a `cachePruning` profile's `evidence` label separates
+  `documented-expiry` — valid only where the registry records a
+  rolling-expiry contract the profile respects — from `empirical`, the
+  operator's own measurement. Z.AI-class unpublished lifetimes carry
+  empirical profiles only; an empirical profile is a measurement, never a
+  provider guarantee, and must never be presented as one.
+- **Transcription**: voice and video notes are speech — Telegram produces
+  these only by recording someone — and a model that can't consume audio
+  shouldn't lose them to a bare path: with transcription configured, intake
+  transcribes once and stores the text with the attachment ref (eager, not
+  per-turn: the transcript is durable history; materialization prefers it
+  over the path whenever the file can't go inline, while audio-capable
+  models still get the file part). The call runs off the hot path, bounded
+  per call by the engine's timeout. Attached audio is data, not speech: an
+  mp3 meant for `ffmpeg` is never transcribed eagerly and never inlines;
+  on-demand transcription is the `transcribe` tool's deliberate job. Files
+  over the upload cap are segmented, not skipped; a partial result is kept
+  and warn-logged. A failed transcription — provider down, ffmpeg missing,
+  corrupt media — leaves the attachment path-referenced and warn-logged: it
+  must never eat a voice message. ffmpeg presence is probed at boot when
+  configured, and install warns when the config names it but PATH lacks it.
 
 ## No step budget — loops are caught, not capped
 
@@ -253,97 +148,76 @@ diffs, `finish=tool-calls`, zero prose).
 What bounds a turn, in order of who fires first:
 
 **1. The repeat detector (deterministic, always on).** Ported from
-openclaw's `src/agents/tool-loop-detection.ts` — the mechanism, not its
-eight detector kinds. Every completed tool call records
-`argsHash = sha256(tool + stable-JSON(input))` and
-`resultHash = sha256(stable-JSON(output | errorText))` (full values, not
-truncated). Over the turn's last 40 records, the count of records matching
-the newest `(argsHash, resultHash)` pair: **10 warns, 20 cuts.** Same call
-*and* same result is the definition — a re-run whose output changed is
-progress, and an A↔B edit/revert ping-pong with stable results trips it too
-(each side reaches 20 inside the 40-window). It needs no model and works
-when system1 is down. Deliberate polling with an unchanging result is the
-known false positive; the warning tells the model to wait longer between
-checks, and 20 identical answers is a genuinely stuck wait.
+openclaw's `tool-loop-detection.ts` — the mechanism, not its
+eight-detector taxonomy. Same call *and* same result is no progress (a
+changed result is progress; an A↔B ping-pong with stable results trips it
+too); it needs no model, so it works when system1 is down. Deliberate
+polling with an unchanging result is the known false positive — the
+warning says to wait longer between checks.
 
-**2. The loop watchdog (system1, for what a hash can't see).** Every 16
-completed tool calls, system1 scores one noul question (`stuck`,
-`src/loop-watchdog.ts`) over the operator's request plus the last 24 calls
-with args and results (300 chars each) — its own ring, independent of
-`reviewer.evidence` (prod caps that at 8). The question is worded for
-*non-convergence*: rephrased searches returning the same nothing, cosmetic
-retries of the same error, cycling approaches. **≥0.7 warns; a second
-consecutive ≥0.7 cuts; a sub-threshold check in between resets.** Async and
-fail-open (an unavailable system1 logs and skips; the detector still
-stands), one check in flight at a time, wired from the shared System One
-client (`design/system1.md`; its config coupling rules apply).
+**2. The loop watchdog (system1, for what a hash can't see).** system1
+periodically scores the operator's request plus the recent calls against
+a *non-convergence* question: rephrased searches returning the same
+nothing, cosmetic retries of the same error, cycling approaches. **A
+stuck score warns; a second consecutive stuck score cuts; a sub-threshold
+check in between resets.** Async and fail-open (an unavailable system1
+logs and skips; the detector still stands), one check in flight, wired
+from the shared System One client (design/system1.md); its ring is
+independent of the reviewer's shallower evidence ring.
 
-Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: the six longest
-stored tool turns plus six synthetic cases, three runs each —
-deterministic per input):
+Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: six longest stored
+tool turns + six synthetic cases, three runs each, deterministic per
+input):
 
 | | progress cases (max) | stuck cases (min) | MCPi flail @16 |
 |---|---|---|---|
 | `inception/mercury-decide:free` (prod) | 0.085 | 0.963 | 0.963 |
 | `typesafe/jev-1.13` (fallback) | 0.22 | 0.97 | 0.54 |
 
-0.7 sits in the gap for both. The MCPi turn (16 searches for variants of
-an unannounced project) scores stuck on the prod model — correctly: the
-warning ("stop searching, report what you know") was the right outcome.
-Small sample, no real turn over 28 calls: rerun when a long turn lands,
+The threshold sits in the gap for both; the MCPi turn (16 searches for an
+unannounced project) scores stuck on the prod model — correctly. Small
+sample, no real turn over 28 calls: rerun when a long turn lands,
 re-calibrate before changing either model.
 
-**3. The context landing.** When a step's reported input tokens reach 85%
-of the model's catalog context window, the next step is the tools-off
-landing. With no budget, an overflow is the one remaining way a long turn
-dies without an answer — the resume runs once per turn and the in-flight
-reply isn't compactable (compaction cuts stored history; the partial isn't
-stored until the turn ends). Landing at 85% ends the turn with prose and a
-"continue" handoff instead. Measured headroom today: ~700 input tokens per
-tool call (the 28-call Safari turn finished at 24k on a 1M window), so this
-is the physical bound on a turn, not a practical one. In-turn compaction of
-the partial is deliberately not built; revisit when a context landing shows
+**3. The context landing.** With no budget, an overflow is the one
+remaining way a long turn dies without an answer — the in-flight reply
+isn't stored until the turn ends, so it isn't compactable. A step whose
+reported input nears the catalog window lands tools-off — the turn ends in
+prose and a "continue" handoff. Measured headroom: ~700 input tokens per
+tool call (the 28-call Safari turn finished at 24k on a 1M window) — the
+physical bound on a turn, not a practical one. In-turn compaction of the
+partial is deliberately not built; revisit when a context landing shows
 up in the log.
 
 **4. The operator.** `/stop` is the backstop for everything above.
 
 **Escalation: warn, then cut.** A warning is a request-only user message
-appended once at the next step boundary, tools still on ("change approach,
-or stop and report what's blocking you"). The SDK carries a `prepareStep`
-message override forward, so the warning stays in context for the rest of
-the turn without being re-appended — appended at the tail, cache-neutral. A
-cut is the tools-off landing: `toolChoice: "none"` plus a kind-specific
-request-only nudge, and a stop condition that ends the loop after that one
-step (no step count; `stopWhen` otherwise is `isLoopFinished()`). Nudges
-never land in durable history. Every warn, cut, and verdict logs (`loop
-detector`, `loop watchdog`, `context landing`) with the counts and scores
-that explain it.
+appended once at the next step boundary, tools still on ("change
+approach, or stop and report what's blocking you"), carried forward by
+the step-messages override — tail-appended, cache-neutral. A cut is the
+tools-off landing with a kind-specific nudge; nudges never land in
+durable history. Every warn, cut, and verdict logs with the counts and
+scores behind it.
 
 The invariant stands: **a turn always ends in an answer**, and the log
 explains every early landing.
 
-**Forced answers are stamped, not passed off as natural.** A landing sets
-`forcedCompletion: "repeat" | "watchdog" | "context"` in the finish chunk's
-message metadata (the `TurnMetadata` wire type, shared with the app client),
-and the app's turn footer renders it ("loop detector — answer forced",
-"loop watchdog — answer forced", "context nearly full — answer forced"). An
-answer produced under "tools are disabled, answer now" is degraded goods —
-the stamp says so, on the message itself, live and on history reload.
+**Forced answers are stamped, not passed off as natural.** A landing
+stamps which bound fired into the finish metadata shared with the app
+client; the app footer renders it, live and on history reload — an
+answer produced under "tools are disabled, answer now" is degraded goods,
+and the stamp says so. Every reading surface carries it: Telegram
+appends it to the reply at completion, riding the status tail, never
+spoken by TTS; voice turns ship it as a notice line after the audio; the
+mini app has no chat, so no stamp there by design; the terminal done
+signal carries the same forced kind, so future surfaces inherit the
+contract.
 
-**Every reading surface carries the stamp.** The app channel reads it from
-turn metadata (footer line); Telegram has no footer, so the stamp joins the
-reply body at `onDone` — riding the status-tail mark, so the final flush
-publishes it on the last bubble (🫡 lands on the stamped message) and TTS
-never speaks it; voice turns ship it as its own notice line after the audio.
-The mini app is the settings surface, not a chat — no stamp there by design.
-`TurnDone` carries the same `forced?` kind so any future delivery surface
-inherits the contract.
-
-**Review-round rulings (2026-10-07).** Detector records and watchdog state
-ride `TurnRecovery` across an overflow resume — one logical turn, one loop
-history. A steer whose every conversion fails at the landing step does not
-eat the landing (the poison-pill return carries `toolChoice: "none"` +
-nudge). And a provider that defies `toolChoice: "none"` — still emitting
-tool calls on the forced step, or no prose at all — gets a synthetic
-plain-language answer per kind, appended to the stored message and the live
-delta path, warn-logged. The stamp never lies about a nothing.
+**Review-round rulings (2026-10-07).** Detector records and watchdog
+state ride the turn's recovery across an overflow resume — one logical
+turn, one loop history. A steer whose every conversion fails at the
+landing does not eat the landing (the poison-pill return keeps the
+tools-off landing). A provider that defies the tools-off step — still
+emitting tool calls, or no prose — gets a synthetic per-kind
+plain-language answer appended to the stored message and the live delta,
+warn-logged. The stamp never lies about a nothing.

@@ -7,161 +7,108 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 Scheduled jobs arrived on demand (2026-09-20); programs generalize them
 (2026-09-26, operator ask: "more proactive"). A program is **standing
-authority for one concern**, borrowed from openclaw's standing orders
-(`docs/automation/standing-orders.md`): a charter — scope, what needs
-the operator's OK, when to escalate, what not to do, steps — plus the
-triggers that wake it. "You own the weekly report; compile it Fridays,
-only escalate if something looks off." The `jobs` table and `schedule`
-tool are superseded, not kept alongside.
+authority for one concern**, borrowing openclaw's standing-orders shape
+(`docs/automation/standing-orders.md`): a charter plus the triggers that
+wake it. The `jobs` table and `schedule` tool are superseded, not kept
+alongside; the one-off legacy purge leaves no general migration
+framework behind: beside an existing programs table it never reactivates
+legacy rows (programs is the operator's truth, deletions included), and
+unparsable rows are preserved verbatim for recovery.
 
-The charter *shape* is openclaw's; its storage is not — openclaw injects
-standing orders through the always-injected AGENTS.md, the shared-file
-scope its HEARTBEAT.md leaked. Here the charter is the row: **a
-program's instructions are the program's state, never a workspace
-file.** Rulings:
+Its storage, though, is not openclaw's: there standing orders ride the
+always-injected AGENTS.md, the shared-file scope its HEARTBEAT.md
+leaked. Here the charter is the row — **a program's instructions are the
+program's state, never a workspace file** — cache stable by
+construction.
 
-- **State is rows, not files.** A `programs` table in `goblin.sqlite`
-  (own connection in `src/programs.ts`, same WAL file): name, charter,
-  optional 5-field cron, optional webhook token hash, the pinned
-  Telegram address, enabled, optional per-cron lateness grace,
-  last_run, next_run (null without a cron). A program needs at least
-  one trigger. Creating one changes nothing in the workspace or any
-  prompt — cache stable by construction. The legacy `jobs` table is
-  purged at open (W2.2): rows still in it copy in once — prompt
-  becomes charter, an id already in `programs` was copied before and
-  is ignored — then the table drops, all in one transaction; a re-run
-  is a no-op. Rows with unparsable schedules are not activated: their
-  complete original columns (including the prompt) are kept in
-  `legacy_jobs_recovery` in the same database for operator recovery. A
-  failed preservation write aborts the purge and leaves `jobs` intact.
-  No general migration framework.
-- **Firing is one path for every trigger.** Cron tick, webhook hit, or
-  anything later: `runtime.submit` of a user message
-  `[program: <name> · trigger: <schedule|webhook|mail>]` + the charter
-  (+ the event payload, below) into the pinned conversation. One shared
-  format-and-submit core — and one entry point per trigger beside it,
-  because the accounting is not shared:
-- **Post-submit accounting is trigger-owned** (2026-09-28). What a fire
-  costs when delivery fails is policy, living in the firing owner's
-  three entry points, never in a caller: cron advances past the
-  occurrence even on a failed submit (occurrences are synthetic and
-  infinite — holding one refires and re-delivers the error every tick);
-  a webhook stamps `last_run` only when the turn landed (the caller
-  owns retry — a failed hit leaves the stamp and the throttle window
-  open for it); mail holds its checkpoint on a failed fire (matches are
-  real events that cannot be regenerated — they retry next poll). The
-  route keeps its HTTP status and throttle clock, the watcher keeps
-  polling, but no caller writes program state.
-- **Schedule fires retry zero-call transient failures on a bounded
-  in-process ladder** (2026-10-13). The cron rule above never holds an
-  occurrence, leaving schedule the one trigger with no retry middle
-  ground (webhook has the caller, mail the checkpoint) — so a fire
-  whose turn died before any model call (a DNS blip) lost the day to
-  the next slot. When the runtime stamps a terminal failure `transient`
-  with zero completed model calls (transport/availability
-  classification in `agent/provider-errors`), the scheduler re-fires
-  the same occurrence after 5, 15, and 30 minutes — at most 3 retries,
-  never a held occurrence, and the ladder never re-runs `markRan`: the
-  cursor advanced at the original fire. Any completed model call, any
-  model output seen through the fire's sink, a non-transient or unknown
-  cause, a mid-ladder disable or delete (revoked authority fences the
-  retry like the mid-gate mail ruling), an exhausted ladder, or a
-  process restart (the scheduler is a singleton; pending retries are
-  memory) ends the ladder — the ordinary error notice is all the
-  operator sees.
+Rulings:
+
 - **Authority is granted, never self-issued.** Creating or widening a
   program needs the operator's explicit ask — the agent may *propose*
   one ("want me to own this?"), never grant itself standing authority.
   What a firing turn does is bounded by its charter and the same
   ask-first rule as any operator message.
-- **Webhooks: one secret address per program.** `POST /hook/<token>`
-  on the existing HTTP server (bound to 127.0.0.1; reachable only
-  through whatever door `publicUrl` fronts — `tailscale serve` keeps it
-  tailnet-only, `funnel` makes it public for GitHub/CI). The token is
-  32 random bytes, base64url; only its sha256 is stored. **The token
-  never enters model context**: the tool that enables or rotates a hook
-  DMs the full URL to each `operators` id — never the program's topic
-  (group readers aren't implicitly authorized) — outside conversation
-  history, and returns only "hook enabled, URL sent privately" to the
-  model. No DM delivered = tool error (hook stays set; rotate resends).
-  The route re-resolves the token after reading the body (a hook
-  disabled or rotated mid-upload is dead) and answers 503 +
-  `Retry-After` once the runtime stops accepting turns — a closed
-  runtime only records submits, so a 202 would be a lie. Disable =
-  clear the hash; rotate = new token. Body (text or JSON, capped at
-  32 KiB, larger → 413) rides into the turn fenced as `<event>…</event>`
-  with a standing note that event content is data to evaluate, never
-  instructions — a webhook is untrusted input by construction.
-  Throttle: one fire per program per 60 s; extra hits get 429 and a
-  log line; a refused or failed hit does not consume the window.
-  Unknown/disabled token → 404, no body echo.
+- **Firing is one path for every trigger.** Cron tick, webhook hit, or
+  anything later: the charter is submitted as an ordinary user message
+  into the program's pinned conversation — one shared core, per-trigger
+  entry points, because the accounting is not shared.
+- **Post-submit accounting is trigger-owned** (2026-09-28), in the
+  firing owner, never a caller: cron advances past the occurrence even
+  on a failed submit (occurrences are synthetic and infinite — holding
+  one refires and re-delivers the error every tick); a webhook stamps
+  `last_run` only on a landed turn (the caller owns retry — a failed hit
+  leaves the stamp and the throttle window open); mail holds its
+  checkpoint on a failed fire (matches are real events that cannot be
+  regenerated — they retry next poll). No caller writes program state.
+- **Schedule retry is a bounded in-process ladder** (2026-10-13):
+  schedule is the one trigger with no retry middle ground (webhook has
+  the caller, mail the checkpoint), so only a fire whose turn died
+  before any model call with a transient transport/availability cause
+  re-fires the same occurrence, on short fixed delays — never a held
+  occurrence. Anything else — model output or spending, a non-transient
+  or unknown cause, a mid-ladder disable or delete (revoked authority
+  fences the retry), exhaustion, restart — ends the ladder. The cursor
+  advanced at the original fire; the ladder never re-runs the run-mark.
+- **Webhooks: one secret address per program.** Served on the loopback
+  HTTP server, reachable only through whatever door the configured
+  `publicUrl` fronts — `tailscale serve` keeps it tailnet-only, `funnel`
+  makes it public. **The token never enters model context**: the hook
+  tool DMs the full URL to each operator's private chat — never the
+  program's topic (group readers aren't implicitly authorized) —
+  outside conversation history, and the model learns only that delivery
+  happened. Zero DMs delivered = tool error (hook stays set; rotate
+  resends). Unknown and disabled tokens read identically — no existence
+  oracle, no body echo. A hook disabled or rotated mid-upload is dead
+  (revoked authority fences in flight), and once the runtime stops
+  accepting turns the route refuses rather than fake-accepts — a closed
+  runtime only records submits. The body rides in fenced as untrusted
+  event data to evaluate, never instructions.
 - **Recurrence is cron, evaluated in the server's local timezone**
-  (operator = admin; `date` via bash agrees). The model translates
-  natural language → cron inside the tool call; `cron-parser` validates
-  it at the boundary — an invalid expression is rejected before a row
-  exists. No interval-plus-prose hybrids; prose recurrence is where
-  heartbeat bugs came from.
-- **A program belongs to the conversation where it was created**
-  (chat/topic address pinned by the tool from the live conversation —
-  the model never handles chat ids). The fired message gets a sink
-  built like any other (voice per conversation setting); replies land
-  in that chat/topic. A live turn steers the fire in at its next step
-  boundary; otherwise the lane queue orders it into a fresh turn — no
-  interleaving, no special execution path, epoch fencing applies either
-  way. A program born in the bot DM pins the DM's rolling address
-  (Telegram → Rolling DM, 2026-10-03): a fire within the gap joins the
-  current conversation; past it, the fire starts a fresh one without
+  (operator = admin; `date` via bash agrees): an invalid expression is
+  rejected before a row exists, and there are no interval-plus-prose
+  hybrids — prose recurrence is where heartbeat bugs came from.
+- **A program belongs to the conversation where it was created** — the
+  tool pins the chat/topic from the live conversation (the model never
+  handles chat ids); replies land there, and a fire is delivered like
+  any message — no interleaving, no special execution path, epoch
+  fencing applies. A program born in the bot DM pins the DM's rolling
+  address (Telegram → Rolling DM, 2026-10-03): a fire within the gap
+  joins the current conversation; past it, it starts a fresh one without
   the follow-up check — a fire is self-contained, never a follow-up.
-  Either way the operator can follow up on it in the DM.
-- **Management is the `program` tool** (list/create/update/delete/toggle/
-  hook), zod-validated, one tool not a CLI — state mutation belongs
-  behind validation and logging. `hook` takes `enable|rotate|disable`.
-  Firing turns may use the tool too (a program retiring itself when its
-  charter says it's done is fine); every mutation logs. Edits within an
-  existing charter's intent (reword, reschedule, toggle) need no
-  go-ahead; new programs and widened authority do (above).
-- **Ticker ownership and shutdown.** One scheduler may own a programs
-  store object at a time; duplicate starts throw. Stop is terminal for
-  that handle: later ticks are no-ops. A new owner after stop gets a
-  fresh retry generation, so late completions from the old owner cannot
-  arm retries in the new one.
-- **The scheduler is an in-process ticker** (30s) in the runtime
-  process; systemd covers crashes. A schedule's optional integer
-  `maxLatenessMinutes` is measured against the **latest missed cron
-  occurrence at or before the scan time** — "occurrence" meaning the
-  scheduler's own forward sequence: the same `nextFire` steps that
-  persist `next_run` and advance `markRan`, walked from the due row's
-  `next_run` (ruling 2026-10-12: a backward `.prev()` lookup is a
-  *different* sequence across DST transitions — it skips the
-  spring-forward landing hour (an on-time catch-up reads a day late; a
-  sparse annual cron, years) and admits the fall-back repeated hour (a
-  stale catch-up reads on-time)). `null` (the default) means unlimited
-  lateness and preserves fire-on-wake behavior. Missed occurrences
-  coalesce: if the latest occurrence is within the program's grace,
-  fire at most once on that scan and advance to the next future
-  occurrence — never replay each missed instance.
-  Beyond grace, skip every occurrence through that scan, advance to the
-  next future occurrence, and emit one structured skip log line. A skip
-  does not change `last_run` because no fire was submitted.
-  Schedule-only; webhook and mail accounting are unchanged. Occurrences
-  skipped while a program was disabled are skipped, not owed:
-  re-enabling recomputes `next_run` from now. Submit first, then
-  markRan: a message that landed is history even if the turn never ran.
-  A submit that throws never landed — release the sink with the error,
-  deliver it, then markRan anyway: one attempt per occurrence, so a
-  persistent failure cannot refire (and re-deliver) on every tick. If
-  that cursor write fails, an in-process occurrence fence suppresses
-  resubmission and each scan retries the write with the original fire
-  time. Deleting, disabling, or rescheduling the program drops its
-  stale fence; a restart loses the fence and may re-offer the still-due
-  row once.
+- **Management is the `program` tool** — zod-validated, one tool, not a
+  CLI: state mutation belongs behind validation and logging. Firing
+  turns may use it too (a program retiring itself when its charter says
+  it's done is fine). Edits within an existing charter's intent (reword,
+  reschedule, toggle) need no go-ahead; new programs and widened
+  authority do.
+- **The scheduler is an in-process ticker** — systemd covers crashes;
+  one owner per store, stop terminal, a restarted owner gets a fresh
+  retry generation (late completions from a dead one cannot arm retries
+  in it). A schedule's optional lateness grace is measured against the
+  latest missed occurrence at or before the scan — "occurrence" meaning
+  the scheduler's own forward sequence (ruling 2026-10-12: a backward
+  `.prev()` is a *different* sequence across DST — it skips the
+  spring-forward landing hour and admits the fall-back repeated hour,
+  so catch-up lateness would lie late and on-time respectively). `null`
+  (the default) means unlimited lateness: fire once on wake. Missed
+  occurrences coalesce — at most one fire per scan, advancing past
+  every missed instance to the next future occurrence. Beyond grace:
+  skip through the scan, advance, log once; a skip is not a run, and
+  occurrences skipped while disabled are skipped, not owed (re-enable
+  recomputes from now).
+  Submit first, then the run-mark — a landed message is history even if
+  the turn never ran; a throwing submit never landed: deliver the
+  error, mark anyway — one attempt per occurrence. A failed run-mark
+  write fences the occurrence in-process: the write retries with the
+  original fire time, never the submit; a restart may re-offer the row
+  once — at-least-once, never a duplicate storm.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
 agent that wakes itself to decide whether to check things; ruled out
 again 2026-09-26), cross-host schedulers, built-in file watchers (a
 script that curls the program's hook covers them), run history/audit
-tables beyond last_run and the log. Mail is the one watcher that
-returned (operator ask, 2026-09-26) — as a program trigger, see
-`Email`: a mail match is an event the operator's filter asked for, not
-the agent deciding to look.
+tables beyond `last_run` and the log. Mail is the one watcher that
+returned (operator ask, 2026-09-26) — as a program trigger, see `Email`:
+a mail match is an event the operator's filter asked for, not the agent
+deciding to look.

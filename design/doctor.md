@@ -7,10 +7,6 @@ onboarding asks what is missing before first boot, doctor what has broken
 since; the two share detection, not actions. See `design/setup.md` for
 installation and startup acceptance.
 
-```sh
-bun run doctor [--json] [--strict] [--phase preflight|installed]
-```
-
 Diagnosis does not initialize application state, resolve arbitrary auth
 commands, repair configuration, migrate/checkpoint databases, download,
 warm/unlock wallets, start/restart services or retain memory; it calls no
@@ -34,19 +30,15 @@ successful diagnosis grants no repair or deployment authority.
 - Installer: explicit preflight/installed phases and shared asset checks.
   It never parses human doctor output.
 
-`src/health.ts` owns detection, validated results and manual hints;
-`src/health-sqlite.ts` owns isolated read-only SQL inspection; `src/doctor.ts`
-owns the command watchdog, rendering and exits, each with colocated boundary
-tests. There is no check registry, plugin framework, health daemon, wizard
-or repair mode. Shared helper changes have one integration owner;
+There is no check registry, plugin framework, health daemon, wizard or
+repair mode. Shared helper changes have one integration owner;
 setup-specific scripts belong to onboarding.
 
 ## Target and phase policy
 
-Default phase is `installed`. The target home is explicitly the caller's
-`GOBLIN_HOME`, otherwise `~/goblin`; the diagnostic checkout is the one
-executing doctor. Never silently substitute production's home; every
-finding labels its scope.
+The target home is explicitly the caller's `GOBLIN_HOME`, otherwise
+`~/goblin`; the diagnostic checkout is the one executing doctor. Never
+silently substitute production's home; every finding labels its scope.
 
 Systemd `WorkingDirectory` supplies a separate installed-checkout scope:
 check client assets there when known. A differing or missing checkout
@@ -56,11 +48,9 @@ running-process readiness remain explicitly unverified.
 
 `preflight` runs after frozen dependencies and operator provisioning; it
 skips expected first-boot layout/database, not-yet-installed units and
-not-yet-built assets, not a pristine checkout's all-green mode. The
-installer supplies its checkout/home, builds and checks assets before
-publishing units, then performs invocation-specific startup acceptance and
-installed-phase checks; fresh setup refuses existing installations and
-updates use the separately approved deploy path.
+not-yet-built assets, not a pristine checkout's all-green mode. Fresh
+setup refuses existing installations and updates use the separately
+approved deploy path.
 
 Schema inspection requires structures for the diagnostic code revision, not
 exact schema equality: missing structures fail that compatibility check,
@@ -70,33 +60,33 @@ migration before boot has performed existing initialization.
 
 ## Checks and coverage
 
-| Family | Evidence and limits |
-| --- | --- |
-| Config | Existing schema and local model/provider reference validation; no provider construction, catalog refresh or generation |
-| Cache contracts | `cache.contracts` maps each configured model (root, Telegram, favorites, optional title/reviewer) to its reviewed contract from `src/agent/cache-contracts.ts` — mode and lifetime class only. Unpublished or unknown durations warn; review metadata older than its 30-day window warns. Never claims warmth/expiry verified, never resolves auth or builds a provider; the manual bounded re-check is `scripts/check-cache-contracts.ts` (design/model.md → Cache contracts) |
-| Auth | Permissions, safe record parsing, effective last-wins references including configured optional features; strict prohibited-command lint scans all records |
-| Keys | Referenced recognized `pass-keys get` profiles (a single direct command — bare or literal path-prefixed executable): metadata-only status, required key-name presence, snapshot age; installed refresh unit state |
-| Workspace | Required readable files/directories, explicit optional or preflight skips |
-| Storage | Available bytes and reported inodes for caller home and narrowly discovered local PostgreSQL volume; not a write/fsync guarantee |
-| SQLite | WAL-aware read-only open, bounded integrity inspection, required base schema and expected boot-created subsystem-table presence (warn-tier); lazy tables excluded; no state-owner constructors or migrations |
-| Installation | `goblin` and `goblin-herdr` user-unit state/checkout and readable client index/local asset references; the delegation host fails only while delegation is configured and its pane/wire stay unverified; not proof of successful boot or frontend execution |
-| Sandbox | Configured-only: podman answers `info` and the configured image is in the local store; never creates, pulls or executes |
-| Memory | Configured `/health/ready` returns 2xx; credentials, bank permissions and running queues remain unverified |
-| Embedding | Local installation/container binding/mount and allowlisted embedding settings match a host-local relay/model before synthetic embedding; vectors omitted |
+Optional subsystem checks run only when configured; every check is
+read-only: no provider construction, catalog refresh or generation, no
+credential resolution, no state write; sandbox inspection never creates,
+pulls or executes; the sole synthetic action is one bounded embedding
+request against an associated host-local relay, vectors omitted. Cache
+contracts verify published mode/lifetime metadata only and never claim
+warmth or expiry; the manual bounded re-check is
+`scripts/check-cache-contracts.ts` (`design/model.md` → Cache contracts).
+No finding claims more than measured: memory `/health/ready` 2xx is not
+bank or auth access — credentials, bank permissions and running queues stay
+unverified — and unit/asset findings are not proof of successful boot or
+frontend execution; delegation panes and herdr wire stay unverified, and
+the delegation host fails only while delegation is configured.
 
 Record recognition shares the installer's grammar (`src/auth.ts`): only a
-single direct `!pass-keys get <profile> <KEY>` counts — `pass-keys` bare or
-literal path-prefixed as the first word, two bare arguments, no operators,
-quotes, env prefixes, substitutions/globs or wrappers; every other command
-form stays a general, unverified command. Status parsing is pinned to the
-local pass-keys Go source, including vault keys beginning with digits and
-signed durations. No `get`, `warm`, owner-session command or arbitrary auth
-thunk is executed. Only verified status metadata supplies profile labels;
-malformed outputs/errors are not forwarded. Locked/missing/broken snapshots
-fail fresh-resolution readiness, without claiming the running bot already
-lost memoized credentials. Old usable snapshots warn rather than expire;
-future timestamps warn for clock skew. OAuth, generic auth commands and
-upstream validity are not verified by metadata availability.
+single direct `!pass-keys get <profile> <KEY>` record counts as a profile
+reference, and a strict prohibited-command lint scans all records; every
+other command form stays a general, unverified command. Status parsing is
+pinned to the local pass-keys Go source, including vault keys beginning
+with digits and signed durations. No `get`, `warm`, owner-session command
+or arbitrary auth thunk is executed. Only verified status metadata supplies
+profile labels; malformed outputs/errors are not forwarded.
+Locked/missing/broken snapshots fail fresh-resolution readiness, without
+claiming the running bot already lost memoized credentials. Old usable
+snapshots warn rather than expire; future timestamps warn for clock skew.
+OAuth, generic auth commands and upstream validity are not verified by
+metadata availability.
 
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base
@@ -106,32 +96,25 @@ settings do not establish the running process's loaded settings; readiness,
 embedding and application authorization are separate results.
 
 Keep measured capacity evidence when later mount-identity inspection fails.
-Missing inode accounting warns rather than inventing a healthy percentage.
-Defaults: snapshot-age warning after 24 hours; space warning below 5 GiB,
-failure below 1 GiB; inode warning below 10%, failure below 1%.
+Missing inode accounting warns rather than inventing a healthy percentage;
+capacity findings are not a write/fsync guarantee.
 
 SQLite may create/update shared-memory coordination sidecars: the accepted
 contract is no application-data mutation, not literally zero filesystem
-writes, verified by tests on uncheckpointed WAL visibility and unchanged
-main/WAL bytes. Do not use `immutable` to ignore WAL or copy a bare main
-database. Subsystem-table presence is checked against the diagnostic
-revision's boot-created set (config-gated tables only while their block
-exists; lazy tables unchecked); their columns, row contents and concurrent
-snapshot copying are not claimed verified. Absent tables warn as
-revision-scoped expectation drift — never a corruption or store-loss claim
-without evidence. The expected-table list is a validated argv contract of
-its own: a present-but-malformed list fails the worker (open-or-query)
-rather than silently checking nothing, and only an absent list skips the
-check. Quick-check's error count and busy-timeout do not bound query
-runtime; isolation supplies the deadline.
+writes. Do not use `immutable` to ignore WAL or copy a bare main database.
+Subsystem-table presence is checked against the diagnostic revision's
+boot-created set (config-gated tables only while their block exists; lazy
+tables unchecked); columns, row contents and concurrent snapshot copying
+are not claimed verified. Absent tables warn as revision-scoped expectation
+drift — never a corruption or store-loss claim without evidence. The
+expected-table list is a validated argv contract of its own: a
+present-but-malformed list fails the worker rather than silently checking
+nothing, and only an absent list skips the check.
 
 ## Reports, failures and execution
 
-A versioned Zod-validated report contains observation time, phase,
-caller-home/diagnostic-checkout target and deterministically ordered
-results; each result has an ID, `pass | warn | fail | skip`, scope, duration,
-safe evidence and optional manual next step. Warning/failure families
-supply safe manual hints; text derives summary counts from the results.
+The versioned report keeps results deterministically ordered even when
+probes run concurrently.
 
 - Disabled checks skip with reasons; blocked dependents name their blocker.
 - Configured, observed outages fail. Unknown coverage is explicit, not green.
@@ -154,26 +137,17 @@ errors from operation, errno/HTTP status and safe category; remedies contain
 no secrets. Internal parsing is not permission to expose credential values
 in agent context.
 
-Subprocesses use argv, output caps and per-boundary deadlines; HTTP reads
-are bounded/cancelled. The CLI has a 45-second outer watchdog; embedding
-gets at most 15 seconds. Its worker and nested probes share a process group
-owned by the outer collector, which cleans the group on timeout,
-cancellation and normal completion even after leader exit — cleanup never
-depends on a stalled worker's signal handler. Cancellation immediately
-kills the worker group before an enclosing bash caller's kill grace
-expires. Other process-helper and direct library callers retain their
-original detached probe groups.
+Subprocesses use argv with bounded output and per-boundary deadlines; HTTP
+reads are bounded and cancelled. Cancellation immediately kills the worker
+process group before an enclosing bash caller's kill grace expires, and
+cleanup is owned by the outer collector even after leader exit — never by a
+stalled worker's signal handler.
 
 ## Verification and deferred work
 
-Boundary tests cover invalid permissions/parsers and synthetic secret
-sentinels, effective/overridden auth records, stale/locked/missing snapshots,
-digit-leading keys, clock skew, disk/inode thresholds, WAL integrity/schema,
-asset/server URL parity, memory/relay association, stalled responses,
-command cancellation and descendants surviving a blocked or exited worker.
-Fresh reviewers reproduce group cleanup independently and protect caller/
-foreign groups. Tests, typecheck and touched-file comment audit are required.
-Source-pinned or synthetic interfaces do not prove real installation
+Tests, typecheck and a touched-file comment audit are required; fresh
+reviewers reproduce group cleanup independently and protect caller/foreign
+groups. Source-pinned or synthetic interfaces do not prove real installation
 readiness; keep unverified coverage explicit.
 
 A nightly authorized program may invoke doctor but cannot be the only alarm

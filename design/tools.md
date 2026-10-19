@@ -5,123 +5,57 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, twenty-four:
+`memory_reflect` is on-demand — not automatic recall or an autonomous turn
+loop — and stays out of the script tool's callable set because it invokes a
+model.
 
-`read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`vision` `generate_image` `program` `delegate` `herdr` `mail` `send_file`
-`memory_search` `memory_reflect` `search` `fetch` `history_search` `note`
-`sandbox` `script` `subagent` `desktop` `ui`
+Working outside the conversation's cwd is the agent's own business (`cd x &&
+…` inside `bash`). The bash description's doctor shim is diagnosis only —
+never repairs or restarts ([Doctor](doctor.md)).
 
-`memory_reflect` is an on-demand Hindsight investigation with synthesis and
-supporting evidence — not automatic recall or an autonomous turn loop. It
-obeys memory exclusion and cancellation, uses its own bounded timeout, and
-stays out of the script tool's callable set because it invokes a model.
+**Root schemas stay flat.** A root `discriminatedUnion` serializes to
+root-level oneOf that some providers cannot generate arguments against —
+every call arrives as `{}` and fails validation (it took out mail Sep 28);
+the per-action contract is a discriminated union enforced inside `execute`.
 
-Tools run in the conversation's cwd — `workspace/` by default, a project
-conversation's `dir` under projects (design/projects.md → cwd). Working
-elsewhere stays the agent's own business (`cd x && …` inside `bash`).
-
-The static bash description advertises `../doctor --json` for dependency
-diagnosis, not repairs or restarts — a discoverable workspace utility, not
-a new native tool or per-turn prompt injection; see [Doctor](doctor.md).
-
-Tool input schemas are flat objects at the root; the per-action contract is
-a discriminated union enforced inside `execute` — a root `discriminatedUnion`
-serializes to root-level oneOf that some providers cannot generate arguments
-against, so every call arrives as `{}` and fails validation (it took out
-mail Sep 28; program, delegate and history_search were flattened the same
-way). `programInputSchema` is the flattened-union pattern: a wide flat
-object + `superRefine` delegating to the per-action union.
-
-`speak` is the voice-out twin of intake transcription: it *synthesizes*,
-it does not send — it hands audio bytes to the turn's delivery sink
-(`sink.onVoiceNote`), which owns the Telegram call, so "Telegram send is
+`speak` synthesizes and hands the bytes to the turn's delivery sink — it
+does not send; the sink owns the Telegram call, so "Telegram send is
 delivery, not a tool" stays true and voice notes ride the same serialized
 chain and authority fencing as text (a `/stop`'d turn can't emit one).
-Input is `text` or a file `path` (plain text/markdown; richer formats are
-extracted with the agent's own tools first) — a path is synthesized
-straight from disk, so "read me this document" never re-types it as model
-output. Long input splits at sentence boundaries inside the tts
-module, never by the caller. TTS is default-on (Delivery, TTS), so the
-tool rides that block; `tts: ""` removes it.
 
-`transcribe` is the pair's other direction: a workspace audio or video file
-→ text, present only when `transcription` is configured and riding the same
-provider seam as intake. It exists because intake *doesn't* transcribe
-attached audio — "transcribe this podcast" is a tool call against the saved
-attachment path, not a re-send.
+`generate_image` files land in the attachment store — the saved path stays
+the durable artifact — and ride the turn's delivery sink; an uncertain
+delivery (`DeliveryUncertainError`) is reported, never retried. Guest
+channels exclude it like the other provider-calling tools.
 
-`generate_image` is the outbound twin of `vision`: present only when the
-`image` config block names a `<provider>/<model>` ref whose provider is
-`openai-compatible` or `responses` (the kinds that carry `baseUrl`; the
-call is the OpenAI images shape, `POST {baseUrl}/images/generations`, auth
-riding the provider's auth.jsonl ref). Generated files land in the
-attachment store like intake media — the returned path is a real file
-`vision` can inspect and `send_file` can resend — and each also hands to
-the turn's delivery sink (`sink.onFile`), so Telegram shows the photo
-inline while the saved path remains the durable artifact. Delivery rides
-the sink here too; a `DeliveryUncertainError` is reported, never retried.
-`size` defaults from the config block; `n` caps
-at 4 per call. Guest channels exclude it like the other provider-calling
-tools.
-
-`program` manages standing programs (list/create/update/delete/toggle/hook)
-— see `Programs`. `delegate` hands tasks to other harnesses — see
-`Delegation`. Both are bound per-turn to the running conversation, so what
-they create is pinned to the chat/topic it was born in; the model never
-handles chat ids. `herdr` inspects and prompts agents in the operator's
-own `default` session by pane ID (list/read/prompt, a kind check at send
-time) — see `Delegation`; it mounts for every personal conversation with no
-config gate, and guest surfaces lose it through the same hard filter as
-delegate.
+`program` and `delegate` are bound per-turn to the running conversation, so
+what they create is pinned to the chat/topic it was born in; the model never
+handles chat ids. `herdr` reaches the operator's own `default` session by
+pane ID; it mounts for every personal conversation with no config gate, and
+guest surfaces lose it like `delegate`.
 
 **Tool results are text — except where the pipe verifiably carries
-documents.** The SDK's `toModelOutput` media-parts hook exists, but
-openai-compatible stringifies tool-result content and the codex Responses
-shim filters it to text — an image sent as stringified JSON is garbage, not
-vision. The exceptions are probe-verified (Web access, above): z.ai's
-Responses endpoint parses `input_file` inside `function_call_output`, and
-OpenRouter's normalizer maps tool-result parts — hence `carriesMedia` is
-position-aware and fetch's `toModelOutput` may legitimately return a `file`
-part. The tool-side rule stands: no image bytes in results. `read_file`
-sniffs magic bytes and returns a structured note (type, dimensions when
-the header carries them, size) naming the working channels in preference
-order: the `vision` tool when its block is
-configured (the note knows because tool registration and the note share
-makeTools), the operator sending the image via Telegram otherwise (intake
-materializes it natively for vision models), and always `bash`/`ffmpeg`
-for metadata work.
+documents.** openai-compatible stringifies tool-result content and the
+codex Responses shim filters it to text; the exceptions are probe-verified
+(Web access, above): z.ai's Responses endpoint parses `input_file` inside
+`function_call_output`, and OpenRouter's normalizer maps tool-result parts.
+The rule stands: no image bytes in results.
 
-**Bounded, self-describing output.** Read tool: line window + byte ceiling
-+ per-line clamp — three ceilings because each catches a shape the others
-miss (long files, wide files, minified one-liners); output stops at
-complete numbered lines only, and every stop names its own recovery
-(`Use offset=N`, sed fallback for a giant line, did-you-mean on a miss,
-tail reads via negative offset). Bash offloads, never truncates (ruling
-2026-10-14 — Deep Agents' "large outputs are offloaded, not truncated";
-the spill-and-name rule fetch and script already follow): combined output
-over a 15k-char budget becomes a tail-heavy head+tail window (25/75, cut
-on line boundaries, visible `[…]` elision) and the full output lands
-content-addressed in `state/bashcache/<sha>.txt`, the footer naming the
-absolute path and the `read_file` call. The old tail cut dropped the head
-for good, and a command with side effects can't be re-run to see it.
-Capture stays capped — 4 MiB per stream, so the spill always fits
-`read_file`'s 8 MiB ceiling — and overflowing it still kills the process
-(the runaway guard); the output then says the saved file is incomplete.
-The spill file is a recovery aid, never replayed: the result string is
-fixed when the call returns (Cache stability); like webcache and
-scriptcache it is never pruned. `sandbox` keeps its tail cut for now —
-container output is a separate surface. Special files (devices, FIFOs,
-sockets) are refused before any I/O — `read_file` on `/dev/zero` is a
-hang, not a read; `bash` (timeouts + output caps) is the sanctioned
+**Bash offloads, never truncates** (ruling 2026-10-14 — Deep Agents'
+"large outputs are offloaded, not truncated"; the spill-and-name rule
+fetch and script already follow): over-budget output becomes a tail-heavy
+head+tail window and the full output lands content-addressed in the bash
+cache, the footer naming the file and the `read_file` call that pages
+through it. The old tail cut dropped the head for good, and a command with
+side effects can't be re-run to see it. Overflowing the capture cap still
+kills the process (the runaway guard); the output then says the saved file
+is incomplete. The spill file is a recovery aid,
+never replayed: the result string is fixed when the call returns (Cache
+stability); like webcache, it is never pruned. `sandbox` keeps its tail cut
+for now — container output is a separate surface. Special files (devices,
+FIFOs, sockets) are refused before any I/O — `read_file` on `/dev/zero` is
+a hang, not a read; `bash` (timeouts + output caps) is the sanctioned
 channel for those.
-
-External agents are `delegate` (see `Delegation`); MCP is a skill over
-goblin's own mcporter (see `Web access`). In-process subagents are
-`subagent` and `desktop` (see [Subagents & computer use](subagents.md)) —
-mounted only while the `subagents` config block produces a live owner, and
-deliberately outside the `script` callable set. `script` composes the other
-tools inside one call and is not a subagent — see `Scripting`.
 
 ## Scripting
 
@@ -130,10 +64,9 @@ JavaScript program that calls goblin's own tools in a loop and returns
 only the digest — a 30-fetch research sweep otherwise costs 30 tool
 results in context, and the only escape was `delegate`, a whole second
 harness. The cheap middle rung: context compression, not autonomy — still
-goblin, still one turn. Mechanism from hermes' `execute_code`
-(programmatic tool calling: allowlist ∩ enabled set, call cap, bounded
-stdout with spill) and pi's codemode (`@earendil-works/pi-codemode`: a
-QuickJS VM whose only capability is the injected tools). Not taken: hermes'
+goblin, still one turn. Mechanism from hermes' `execute_code` and pi's
+codemode (`@earendil-works/pi-codemode`: a QuickJS VM whose only
+capability is the injected tools). Not taken: hermes'
 persistent kernel and remote backends; pi's `store`/`load`, `models`,
 `searchTools`/deferred exposure, `mode: only`, and Cloudflare sandboxes.
 
@@ -150,8 +83,8 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
   included — an MCP broker in all but name. The QuickJS VM runs in a
   worker thread per call (~20 ms); it has no filesystem, network, timers
   or process, so its reach is exactly the injected tools. Its heap is
-  capped at 256 MiB (`memoryLimitBytes`; library default wasm32's 4 GiB —
-  a 2 GB accumulate loop ran unbounded in review): scripts are glue over
+  capped — the wasm32 default is 4 GiB, and a 2 GB accumulate
+  loop ran unbounded in review: scripts are glue over
   already-bounded tool results, and g7 shares RAM with ollama and the
   memory stack. Over-allocation fails inside the script as
   `out of memory`. Measured on g7 (Bun 1.4.2): 30 parallel nested calls
@@ -159,75 +92,38 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
   This also keeps scripts orthogonal to the container sandbox
   (`design/sandbox.md`): no port punches through it.
 - **Callable set = allowlist ∩ the turn's assembled set**, built after
-  guest filtering, so every per-turn gate carries over (no search block,
-  no `tools.search`; a personal guest turn's script can't reach
-  `memory_search`). Allowed: `read_file` `write_file` `edit_file`
-  `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
-  `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
-  sink), `mail` (per-send human approval), `delegate` `program`
-  `subagent` `desktop` (spawn agents / standing work), `herdr` (the
-  operator's panes — prompting them is deliberate per-call work, not
-  scriptable fan-out), `vision` `memory_reflect` (model calls). Excluding
+  guest filtering, so every per-turn gate carries over. Delivery rides the
+  sink, `mail` needs per-send human approval, agent-spawning and
+  model-calling tools are out, and prompting the operator's panes is
+  deliberate per-call work, not scriptable fan-out. Excluding
   writes would be theater — `bash` writes.
-- **Nested calls are real calls.** Each one is zod-validated against the
-  tool's own input schema (the SDK validates direct calls; nothing
-  validates inside the VM), runs the tool's live `execute` — looked up at
-  call time, so the runtime's authority fence wraps nested calls too —
-  under the turn's abort signal, with call id `<parent>/<n>`. A call
-  rejects inside the script when it throws, returns `{ error }`, or fails
-  validation; `bash` resolves on non-zero exits. Calls that completed
-  before a failure are not undone. Raw results, never `toModelOutput` — a
-  fetched PDF is its `{ pdf: { url, path, size } }` ref.
+- **Nested calls are real calls** — each runs the tool's live `execute`,
+  so the runtime's authority fence wraps it, under the turn's abort
+  signal. Calls that completed before a failure are not undone.
 - **The bounds live in the worker, before a call can post.** Upstream
   posts every call the VM makes; a cap checked only on the host would run
-  after the port flooded and every args blob parsed. The sandbox runs a
-  local worker entry (`src/agent/tools/script-worker.ts`, `workerUrl`)
-  wrapping the pinned upstream worker: it counts calls against `maxCalls`
-  (default 50), caps serialized arguments at 1 MiB per call, and keeps at
-  most 8 posted-outstanding — the rest queue inside the worker and flush
-  as results land. The first violation crashes the whole script
-  (`kind: sandbox`) and trips the shared interrupt: the bound is a
-  terminal contract, not a rejection a catch-and-retry loop can spin
-  against. Queued calls are dropped when the script settles — an
-  unawaited call can never execute afterwards. A host interrupt fences
-  calls and output without suppressing the worker's first terminal
-  message; a wrapper trip already sent its own. The pinned host settles
-  timeout/abort by interrupting and terminating the worker, without
-  waiting for a terminal message. The host's own cap and semaphore stay
-  as defense-in-depth; the worker's config reaches it as a private
-  one-line header the host prepends to `workerData.code` — stripped by
-  the wrapper before eval, so script line numbers are unchanged.
-- **Output is bounded, and tainted output rides fenced.** The result is a
-  goblin-authored status line (completed/failed, error kind, wall time,
-  call count) plus the script's `text()`/`console` items and return
-  value, in fetch's head+tail window (15k chars) with the full text
-  spilled to `state/scriptcache/<sha>.txt` and the footer naming the
-  `read_file` call. Unlike webcache spills, a scriptcache spill is
-  temporary — a later script's sweep may reclaim it, and the footer says
-  so. When any nested `fetch` or `search` completed, the body rides in
-  `fenceUntrusted("web", …)` — slicing a fenced result strips its fence,
-  and the script's output may quote the page verbatim. Untainted output
-  stays bare: fencing local data too would teach the model to ignore the
-  fence. `bash` and `sandbox` output stay unfenced, as they are directly.
-- **The description lists names, not declarations.** The callable tools
-  are declared directly and their arguments are identical inside the
-  script, so the description names them and states the result shapes that
-  differ from text (`bash`, `fetch`, `{ error }` rejection). It is a pure
-  function of the assembled set, moving only when the tool list does.
-  `script` sits before `ui` so the `Tools:` line's shared prefix holds.
-- **Evidence and logging.** The stored output carries a bounded call
-  record (tool, args ≤200 chars, ok, result ≤300 chars); the model sees
-  only the text (`toModelOutput`). The stream expands that record into
-  the reviewer's digest and tool-call list as `script.<tool>` entries.
-  Loop detection treats the script as one call. Every nested call logs
-  `tool call` / `tool execute failed` with `parent`; every script logs one
-  `script done` line (ok, error kind, calls, ms, output bytes, truncated,
-  fenced).
-- **Config.** `scripting: { maxCalls?: 50 }` — absent means no tool, the
-  same live per-turn gate as `vision`/`search`. Input: `code`, and
-  `timeout_ms` (default 120 s, capped at bash's 10 min). The dependency
-  is pinned exactly (`@earendil-works/pi-codemode` 1.0.4 — 1.0.1 and
-  1.0.4 fix two ways a script crashed the host process).
+  after the port flooded and every args blob parsed. A local worker entry
+  wraps the pinned upstream worker, bounding calls, argument sizes and
+  posting before anything reaches the host. The first violation crashes
+  the whole script (`kind: sandbox`) and trips the shared interrupt: the
+  bound is a terminal contract, not a rejection a catch-and-retry loop can
+  spin against. Queued calls are dropped when the script settles — an
+  unawaited call can never execute afterwards; the host's own bounds stay
+  as defense-in-depth.
+- **Output is bounded, and tainted output rides fenced.** The raw output
+  is windowed with the full text spilled and the footer naming the
+  `read_file` call. Unlike webcache
+  spills, a scriptcache spill is temporary — a later script's sweep may
+  reclaim it, and the footer says so. When any nested `fetch` or `search`
+  completed, the body rides in `fenceUntrusted("web", …)` — taint latches
+  at dispatch, not on success, because a failed fetch still carries
+  remotely shaped text where the script may quote it; slicing a fenced
+  result strips its fence, and the script's output may quote the page
+  verbatim. Untainted output stays bare: fencing local data too would
+  teach the model to ignore the fence. `bash` and `sandbox` output stay
+  unfenced, as they are directly.
+- **The pi-codemode dependency is pinned exactly** — earlier upstream
+  point releases each fixed a way a script crashed the host process.
 
 ## Vision
 
@@ -251,45 +147,32 @@ thread so a new model never "remembers" a predecessor's answers.
   The block's `mode` field defaults to `"auto"`: the tool joins the set
   only while the conversation's chat model can't consume images — the same
   two gates attachment materialization applies, catalog modality AND the
-  provider pipe (`inputModalitiesCached` + `carriesMedia`, user position).
-  A cold catalog counts as blind — a spare tool beats a blind agent.
-  `mode: "always"` registers for every conversation, because a file on
-  disk is invisible to a vision-capable chat model too — pi's read tool
-  could put an image in front of a vision model and goblin's cannot (tool
-  results are text, above).
-- **Config**: a `vision` block (`model` — a "<provider>/<model-id>" ref
-  through the same registry as the daily driver, so auth rides the
-  provider's own `auth.jsonl` ref; `maxTokens`, default 2000; `mode`,
-  default `"auto"`). Absent or `""` = the tool is not in the set. The
-  mini app gets a Vision row on the model-sheet pattern — the picker
-  chooses the answering model, Off clears to `""`; `mode` stays a hand
-  edit the page round-trips untouched. The ref is provider-validated in
-  config `superRefine` like `model` and `titleModel`; it is deliberately
-  not capability-gated at load time — input modalities are runtime
-  catalog knowledge, and the provider fails loud on a text-only model.
+  provider pipe. A cold catalog counts as blind — a spare tool beats a
+  blind agent. `mode: "always"` registers for every conversation, because
+  a file on disk is invisible to a vision-capable chat model too — pi's
+  read tool could put an image in front of a vision model and goblin's
+  cannot (tool results are text, above).
+- **Config**: the model ref is provider-validated in config `superRefine`
+  like `model` and `titleModel`, but deliberately not capability-gated at
+  load time — input modalities are runtime catalog knowledge, and the
+  provider fails loud on a text-only model.
 - **Thinking pinned off** for the Q&A calls — a forced-thinking vision
   model answers in prose anyway and burns a reasoning round-trip per
   question.
-- **The call**: one `generateText` per question — system prompt refuses
-  instructions embedded in the image, prior turns replay as plain text
-  with the image riding only the final user turn, `maxOutputTokens`
-  capped, 120s timeout racing the turn's abort signal, wrapped in
-  `observedModel` (purpose `vision`) and logged with the usage split (the
-  title-call rule).
-- **The answer rides fenced** — same rule as search results and delegate
-  screens: a vision model's reading of arbitrary image content is remotely
-  controlled text; the fence keeps it from quoting goblin's own framing.
-- **No resize.** Bytes go as-read under the shared 8 MiB per-item cap
-  (`INLINE_ITEM_MAX_BYTES` — parity with inline attachments); an over-cap
-  image errors with the ffmpeg downscale one-liner. Known limit, accepted:
-  resize machinery arrives when a real image flow needs it, not before.
+- The call's system prompt refuses instructions embedded in the image,
+  and **the answer rides fenced** — same rule as search results and
+  delegate screens: a vision model's reading of arbitrary image content
+  is remotely controlled text; the fence keeps it from quoting goblin's
+  own framing.
+- **No resize.** Bytes go as-read under the same per-item cap inline
+  attachments use; an over-cap image errors with the ffmpeg downscale
+  one-liner. Known limit, accepted: resize machinery arrives when a real
+  image flow needs it, not before.
 - **Threads are process-local, keyed by conversation + image**
-  (conversation id + absolute path + size + mtime — the tool is per-turn
-  bound to its conversation, delegate's rule): a follow-up never replays
+  (absolute path + size + mtime — the tool is per-turn bound to its
+  conversation, delegate's rule): a follow-up never replays
   another conversation's Q&A about the same image, and a rewritten file
-  starts clean. Capped (16 threads × 10 turns, LRU — per-conversation
-  keying doubles the resident set a single conversation could claim, so
-  the cap doubles with it; still O(1) memory), never persisted — a restart
+  starts clean. LRU-capped, never persisted — a restart
   forgets them and a follow-up starts fresh, which the tool contract
   permits ("may remember", not "will remember").
 
@@ -299,14 +182,8 @@ On demand (2026-09-26). A `history_search` tool: full-text search over
 goblin's own conversation history — "what did we decide about X last
 month?".
 
-- **SQLite FTS5** over the text of user and assistant events, a
-  contentless index kept by insert/delete/update triggers (an additive
-  schema change — in scope; deletes stay honest through the delete
-  trigger). Contentless, not external-content: events stores JSON
-  envelopes, so there is no plain-text content column to point at — the
-  indexed value is a text-parts projection. Tool-call payloads and system
-  events are not indexed. Queries are plain terms, each quoted into an
-  AND — no FTS syntax reaches MATCH.
+- Queries are plain terms, each quoted into an
+  AND — no FTS syntax ever reaches MATCH.
 - **Scope: every conversation except memory-excluded ones**, checked at
   query time against the live `memoryExcluded` flag — `/memory off` means
   off for search too, retroactively. Excluded topics also can't wield the
@@ -316,14 +193,11 @@ month?".
   recalls nothing from another topic, and without it a compacted excluded
   topic could never get its folded span back. Search and `context` on any
   other id stay refused.
-- Output: bounded list of topic title · date · role · snippet, plus the
-  address/event id to page context around a hit. `context` renders each
-  event with the compaction serializer's projection — text, attachment
-  refs, and bounded tool calls with their results — windowed to 3k chars
-  per event: the tool evidence a compaction folded is exactly what
-  recovery has to give back (Compaction, design/model.md). Each recovered
-  event is fenced as historical data after projection and windowing, which
-  may have removed a tool result's original untrusted fence. `context`
-  with `toolCallId` (and `offset`) switches to exact paging of one stored
-  tool result — 8000-char slices with a continuation footer — the recovery
-  path pruning markers print (DESIGN.md → Cache stability).
+- Recovered content is rendered with the compaction serializer's
+  projection — the tool evidence a compaction folded is exactly what
+  recovery has to give back (Compaction, design/model.md) — windowed per
+  event, then **fenced as historical data**: projection and windowing may
+  have removed a tool result's original untrusted fence. `context` with
+  `toolCallId` (and `offset`) switches to exact paging of one stored
+  tool result — the recovery path pruning markers print (DESIGN.md → Cache
+  stability).

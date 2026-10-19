@@ -1,10 +1,7 @@
-// The lifecycle owner's boundaries against a fake podman: every fake
-// sits at the argv seam of makePodman (the runner contract), keeping a
-// fake container/network store underneath. What the tests pin is the
-// reconcile contract — row is intent, podman is truth — plus the
-// fail-closed network rule and the idle-reap sweep. No real podman
-// runs here; the real-engine integration file is gated on
-// GOBLIN_TEST_PODMAN=1.
+// Fake podman at the argv seam of makePodman, holding a fake
+// container/network store. Pins the reconcile contract — row is
+// intent, podman is truth — plus fail-closed network and the
+// idle-reap sweep. No real podman runs here.
 
 import { describe, expect, test } from "bun:test";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
@@ -29,10 +26,9 @@ interface FakeContainer {
 	links: Set<string>;
 }
 
-// A fake podman engine: runner routes on argv shape, holding container
-// state the assertions read back. breakDisconnect simulates a
-// disconnect that reports success but never detaches, failDisconnect
-// one that exits nonzero — the two fail-closed triggers.
+// breakDisconnect = a disconnect that reports success but never
+// detaches; failDisconnect = one that exits nonzero — the two
+// fail-closed triggers.
 function fakeEngine(opts?: {
 	containers?: Array<{
 		name: string;
@@ -43,7 +39,6 @@ function fakeEngine(opts?: {
 	}>;
 	breakDisconnect?: boolean;
 	failDisconnect?: boolean;
-	/** Image refs the fake store holds beyond the default IMAGE. */
 	images?: string[];
 }) {
 	const images = new Set([IMAGE, ...(opts?.images ?? [])]);
@@ -61,8 +56,8 @@ function fakeEngine(opts?: {
 	const networks = new Set<string>();
 	const calls: string[][] = [];
 	const execCalls: string[][] = [];
-	// Mutable at call time — a test arms it after the container exists,
-	// since the create path's own disconnect would trip it too.
+	// Mutable at call time — a test arms them after create, whose own
+	// disconnect would trip them too.
 	const flags = {
 		breakDisconnect: opts?.breakDisconnect ?? false,
 		failDisconnect: opts?.failDisconnect ?? false,
@@ -503,7 +498,6 @@ describe("sandboxes lifecycle", () => {
 		engine.flags.failDisconnect = true;
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network disconnect failed/);
 		expect(engine.containers.has(name)).toBe(false);
-		// Fail-closed removes the container — and keeps the intent row.
 		expect(store.get(conv)).toMatchObject({ image: CUSTOM, network: true });
 		// The next call recreates FROM the row — not from config defaults.
 		engine.flags.failDisconnect = false;
@@ -702,7 +696,6 @@ describe("sandboxes lifecycle", () => {
 		await sandboxes.exec(conv, "true", execOpts);
 		expect(engine.containers.has(staleName)).toBe(false);
 		expect(store.get(staleConv)).toBeNull();
-		// The caller's own row survives and is refreshed.
 		expect(engine.containers.has(callerName)).toBe(true);
 		expect(store.get(conv)!.lastUsedAt).toBeGreaterThan(old);
 	});
@@ -747,8 +740,6 @@ describe("sandboxes lifecycle", () => {
 		await expect(sandboxes.reset(conv, "docker.io/library/ghost:latest")).rejects.toThrow(
 			"podman pull docker.io/library/ghost:latest",
 		);
-		// The old sandbox is untouched — no rm, no recreate, the row
-		// still points at the surviving container.
 		expect(engine.containers.has(name)).toBe(true);
 		expect(store.get(conv)!.container).toBe(name);
 		const after = engine.calls.slice(callsBefore);
@@ -758,9 +749,9 @@ describe("sandboxes lifecycle", () => {
 
 	test("a foreign sweep re-reads inside the row's lane — a fresh touch survives the reap", async () => {
 		// Two stale rows: whichever the snapshot processes first parks
-		// on its rm while the other's owner returns through a real call. The
-		// recheck inside the row's lane must see the fresh timestamp
-		// and skip — under the old snapshot-only reap it was destroyed.
+		// on its rm while the other's owner returns through a real call —
+		// the recheck inside the row's lane must see the fresh timestamp
+		// and skip.
 		const convX = "dm:race-x";
 		const convY = "dm:race-y";
 		const nameX = containerNameFor(convX, PREFIX);
@@ -1306,7 +1297,6 @@ describe("catFile", () => {
 		);
 		expect(err).toBeInstanceOf(DOMException);
 		expect((err as DOMException).name).toBe("AbortError");
-		// Only the probe ran — the export read never started.
 		expect(engine.execCalls).toHaveLength(1);
 		expect(engine.execCalls[0]).toContain("sb-check");
 	});

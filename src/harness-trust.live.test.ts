@@ -1,18 +1,11 @@
-// Live harness-trust drift check: the seeded key names are
-// upstream-owned config literals, and drift here is silent by
-// nature — upstream renaming a key means the seed still succeeds and
-// the launch shows the consent dialog anyway. harness-trust.test.ts
-// pins the write contract against fakes; this file is what catches a
-// codex/claude upgrade moving the keys underneath it: seed a temp
-// HOME through the real entry, then grep the INSTALLED binaries for
-// the exact literals (they are property/string literals in both
-// bundles — visible without launching anything). Gated OFF the
-// default suite, run deliberately:
-//
+// Live drift check: the seeded key names are upstream-owned literals,
+// and drift is silent — upstream renaming a key means the seed still
+// succeeds and the launch shows the consent dialog anyway. Seeds a
+// temp HOME through the real entry, then greps the INSTALLED binaries
+// for the literals (property/string literals in both bundles — visible
+// without launching anything).
 //     GOBLIN_HARNESS_TRUST_LIVE=1 bun test src/harness-trust.live.test.ts
-//
-// Nothing real is touched: the seed lands in a temp HOME, and no
-// harness is ever started — no cost, no auth, no panes.
+// Nothing real is touched: temp HOME only, no harness is ever started.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -23,7 +16,7 @@ import { boundedRun, spawnProc } from "./proc.ts";
 
 const LIVE = process.env.GOBLIN_HARNESS_TRUST_LIVE === "1";
 
-// The claude gates, top level and per-project, as the module writes them.
+// Must mirror the keys the module writes.
 const CLAUDE_KEYS = [
 	"bypassPermissionsModeAccepted",
 	"hasCompletedOnboarding",
@@ -58,8 +51,7 @@ async function binaryContains(key: string, file: string): Promise<boolean> {
 }
 
 // The launcher's `codex` is an npm shim; the config-reading binary is
-// the vendored platform package it spawns. Resolve that same layout,
-// and fail with the searched root named when it moves.
+// the vendored platform package it spawns.
 function codexBinary(): string {
 	const shim = Bun.which("codex");
 	if (shim === null) fail("codex not on PATH — is the codex delegation lane still real?");

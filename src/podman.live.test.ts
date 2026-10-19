@@ -1,22 +1,11 @@
-// Live sandbox-wall drift check: the wall IS the product here — a
-// sandboxed model can only be contained if uid mapping, the
-// capability floor, no-new-privileges, the empty mount table and the
-// network-off default actually hold on the installed podman, and
-// podman.test.ts fakes every one of them away at the argv seam. So
-// this file builds a REAL container through the adapter and reads the
-// wall back from inside it (/proc) and around it (inspect) — wall
-// verification, not envelope pinning: a podman upgrade that changed
-// how any of these properties land goes red here. Gated OFF the
-// default suite, run deliberately:
-//
+// Live wall drift check: reads the sandbox wall back from inside a
+// real container (/proc) and around it (inspect) — a podman upgrade
+// that changes how any of these properties land goes red here.
 //     GOBLIN_PODMAN_LIVE=1 bun test src/podman.live.test.ts
-//
-// Store safety: the memory stack shares this rootless store, so the
-// check touches only names it created — one `goblin-drift-wall`
-// container on a `goblin-drift-wall` network, labelled
+// The memory stack shares this rootless store — touch only names this
+// file creates: `goblin-drift-wall` container+network labelled
 // `goblin.drift=wall` (deliberately NOT `goblin.sandbox=1`, which the
-// running service adopts) — and removes exactly those by name. No
-// prune, anywhere, ever (src/podman.ts header).
+// running service adopts). No prune, anywhere, ever.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -30,8 +19,8 @@ const LIVE = process.env.GOBLIN_PODMAN_LIVE === "1";
 
 const NETWORK = "goblin-drift-wall";
 const CONTAINER = "goblin-drift-wall";
-// The config default image (config.ts); goblin never pulls, so a
-// missing image is a red check, not a pull.
+// The config default image; goblin never pulls — a missing image is a
+// red check, not a pull.
 const IMAGE = "docker.io/library/alpine:latest";
 // CHOWN(0) | DAC_OVERRIDE(1) | FOWNER(3) | SETGID(6) | SETUID(7).
 const WALL_CAPS = 0xcb;
@@ -42,8 +31,6 @@ let networkUp = false;
 let cameUp = false;
 
 async function execOut(argv: string[]): Promise<string> {
-	// The exec seam returns the settled, bounded result — no extra
-	// runner around it.
 	const r = await podman!.exec(CONTAINER, argv, { timeoutMs: 30_000, maxOutput: 1 << 20 });
 	if (r.exitCode !== 0) {
 		throw new Error(`exec ${JSON.stringify(argv)} exit ${r.exitCode}: ${r.stderr.slice(0, 200)}`);
@@ -73,8 +60,8 @@ describe.skipIf(!LIVE)("podman live wall drift (GOBLIN_PODMAN_LIVE=1)", () => {
 		cwd = mkdtempSync(join(tmpdir(), "goblin-podman-drift-"));
 		setLogFile(join(cwd, "drift.log"));
 		podman = makePodman();
-		// Also the live pin of the strict-isolate enforcement: an
-		// existing network without options.isolate=strict throws here.
+		// Live pin of strict-isolate enforcement: an existing network
+		// without options.isolate=strict throws here.
 		await podman.networkEnsure(NETWORK);
 		networkUp = true;
 	}, 60_000);
@@ -105,8 +92,8 @@ describe.skipIf(!LIVE)("podman live wall drift (GOBLIN_PODMAN_LIVE=1)", () => {
 	}, 60_000);
 
 	test("identity wall: container root maps 0→40000, size 8192", async () => {
-		// The kernel's own view inside the container — the strong form
-		// of the uidmap pin; inspect-side maps would restate the argv.
+		// The kernel's in-container view — the strong form of the
+		// uidmap pin; inspect-side maps would restate the argv.
 		const uidMap = (await execOut(["cat", "/proc/self/uid_map"])).trim().split(/\s+/);
 		expect(uidMap).toEqual(["0", "40000", "8192"]);
 		const gidMap = (await execOut(["cat", "/proc/self/gid_map"])).trim().split(/\s+/);
@@ -136,7 +123,7 @@ describe.skipIf(!LIVE)("podman live wall drift (GOBLIN_PODMAN_LIVE=1)", () => {
 			}
 		}
 		// The adapter exposes no network rm (product networks live
-		// forever); the drift network dies through the raw CLI.
+		// forever) — the drift network dies through the raw CLI.
 		if (networkUp) {
 			const r = await boundedRun(spawnProc(["podman", "network", "rm", NETWORK]), {
 				timeoutMs: 30_000,

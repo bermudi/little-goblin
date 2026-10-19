@@ -1,13 +1,8 @@
-// System One typed-decision injection checker on the mail read path
-// (DESIGN.md Email). Asks the gate two noul questions over inbound text
-// and maps the injection probability to clean / suspicious / malicious.
-//
-// Fail-open rule: a checker outage (any System1Error) never blocks reads — it
-// returns an "unavailable" verdict and logs, so the mail path proceeds. Only
-// the gate's own failures fall back; anything else propagates loud.
-//
-// The hard boundary is readonly Gmail scopes: the checker only scores text
-// already fetched, it never grants write authority.
+// Fail-open: a System1Error never blocks reads — it returns
+// "unavailable" and the mail path proceeds; anything else propagates
+// loud.
+// Hard boundary: readonly Gmail scopes — the checker only scores
+// already-fetched text, it never grants write authority.
 
 import { System1Error, type System1Client, type System1Question } from "./system1.ts";
 import { log } from "./log.ts";
@@ -77,8 +72,6 @@ export async function checkInjection(
 		log.info("injection check", { injection, severity, status, ms });
 		return { status, injection, severity, ms };
 	} catch (err) {
-		// Only the gate's own failures fall back — anything else is a bug
-		// and propagates, loud.
 		if (!(err instanceof System1Error)) throw err;
 		const ms = Date.now() - started;
 		log.warn("injection check unavailable", err, { ms });

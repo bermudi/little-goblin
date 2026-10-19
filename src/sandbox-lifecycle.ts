@@ -1,8 +1,6 @@
-// Container lifecycle — the podman-side create/network/drop layer
-// makeSandboxes reconciles through (design/sandbox.md). Extracted
-// verbatim from sandboxes.ts: the row store is intent and podman is
-// truth, and this module owns every truth-side mutation — network is
-// fail-closed (an unconfirmable off removes the container), creation
+// Podman-side create/network/drop layer makeSandboxes reconciles
+// through — this module owns every truth-side mutation. Network is
+// fail-closed (an unconfirmable off removes the container); creation
 // bumps the conversation's generation so a killed exec's queued
 // restart can never reap a newer container's work.
 
@@ -46,13 +44,13 @@ export function makeContainerLifecycle(deps: ContainerLifecycleDeps): ContainerL
 		}
 	}
 
-	// Reconcile actual network state with intent. Off is fail-closed:
-	// any failure to verify it removes the container — an unknown
-	// state is not usable. Keep the row for its image and intent; intended-on
-	// failures never trigger this cleanup. An abort is honored only
-	// before the connect/disconnect dispatch — once the toggle has
-	// begun, the verifying inspect (and fail-closed drop) runs to
-	// completion so the caller never gets an unverified state.
+	// Off is fail-closed: any failure to verify it removes the
+	// container — an unknown state is not usable. Keep the row for its
+	// image and intent; intended-on failures never trigger this
+	// cleanup. An abort is honored only before the connect/disconnect
+	// dispatch — once the toggle has begun, the verifying inspect (and
+	// fail-closed drop) runs to completion so the caller never gets an
+	// unverified state.
 	async function applyNetwork(
 		name: string,
 		want: boolean,
@@ -129,8 +127,8 @@ export function makeContainerLifecycle(deps: ContainerLifecycleDeps): ContainerL
 	}
 
 	// Everything a create needs that must be verified BEFORE reset can
-	// destroy the incumbent: the image in the local store, the isolated
-	// network, and the live config. Callers that already ran it pass the
+	// destroy the incumbent: image in the local store, isolated
+	// network, live config. Callers that already ran it pass the
 	// result through so post-destruction code never re-checks.
 	async function prepareContainer(
 		image: string,

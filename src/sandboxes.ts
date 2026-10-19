@@ -1,18 +1,10 @@
-// Sandboxed execution — the sandboxes table plus the lifecycle owner
-// (design/sandbox.md). One rootless-podman container per conversation;
-// the row is intent, podman is truth, and every call reconciles the
-// two: running → use (network re-applied from the row when drifted),
-// stopped → start + re-apply, missing → recreate (prior state gone),
-// labelled-but-rowless → adopt from inspect. Lifecycle ops are
-// single-flight per conversation so parallel tool calls can't
-// double-create; execs themselves run concurrently.
-//
-// Reaping is a sweep at the start of every sandbox call — rows idle
-// longer than idleHours lose their container then their row (the
-// caller's own row is exempt). No ticker, no boot hook, no shutdown
-// hook: a goblin restart must never kill an experiment mid-flight.
-// Network is fail-closed: an off state that can't be confirmed by
-// inspect removes the container rather than use it.
+// One rootless-podman container per conversation; the row is intent,
+// podman is truth, every call reconciles.
+// Reaping is a sweep at the start of every sandbox call — no ticker,
+// no boot/shutdown hook: a goblin restart must never kill an
+// experiment mid-flight. Network is fail-closed: an off state that
+// can't be confirmed by inspect removes the container rather than
+// use it.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -23,8 +15,8 @@ import type { ContainerInspect, Podman } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import { makeContainerLifecycle } from "./sandbox-lifecycle.ts";
 
-// Model/operator-actionable failures (missing image, bad path, a
-// fail-closed removal) — the tool maps these to {error} results.
+// Actionable failures (missing image, bad path, a fail-closed
+// removal) — the tool maps these to {error} results.
 export class SandboxError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
 		super(message, options);
@@ -50,7 +42,6 @@ export interface SandboxStore {
 	setNetwork(conversationId: string, enabled: boolean): void;
 	touch(conversationId: string, atMs: number): void;
 	delete(conversationId: string): void;
-	/** Rows idle since before cutoffMs, excluding one conversation. */
 	staleBefore(cutoffMs: number, excludeConversationId: string): SandboxRow[];
 	close(): void;
 }
@@ -127,11 +118,10 @@ export function openSandboxes(dbPath: string): SandboxStore {
 	};
 }
 
-// Removing or emptying the block turns the tool off but never the
-// containers — the idle sweep only rides sandbox calls, and a boot
-// sweep would break the "restarts never kill experiments" ruling
-// (design/sandbox.md). So a disable surfaces the stranded rows and
-// the manual rm line; the operator decides what the containers are.
+// The idle sweep only rides sandbox calls — no boot sweep (a restart
+// must never kill experiments). So a disable surfaces the stranded
+// rows and the manual rm line; the operator decides what the
+// containers are.
 export function warnIfStranded(store: SandboxStore): void {
 	const rows = store.list();
 	if (rows.length === 0) return;
@@ -160,15 +150,14 @@ export function containerNameFor(conversationId: string, prefix: string): string
 export interface SandboxesDeps {
 	podman: Podman;
 	store: SandboxStore;
-	/** Live read — absent = the schema defaults (calls only happen while
-	 *  the block is configured; the tool gate is the live check). */
+	/** Live read — absent = schema defaults. */
 	config(): SandboxConfig | undefined;
 	/** Test seams — prod leaves both at their defaults. */
 	containerPrefix?: string;
 	networkName?: string;
-	/** A live subagent run lease on this conversation's sandbox
-	 *  (queued/running/needs_input), or null. Read inside lifecycle
-	 *  ops: reset refuses while held; the reaper skips. */
+	/** A live subagent run lease (queued/running/needs_input) or null —
+	 *  read inside lifecycle ops: reset refuses while held, the reaper
+	 *  skips. */
 	runLease?(conversationId: string): { id: number; status: string } | null;
 	/** Destructive lifecycle events a worker run must learn about —
 	 *  recreate (prior state gone) and restart-after-killed-exec.
@@ -199,9 +188,8 @@ export interface Sandboxes {
 		command: string,
 		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
 	): Promise<SandboxExecOutcome>;
-	/** exec without the /bin/sh -c wrapper — argv filesystem ops and
-	 *  binary output for the worker subagent's execution env. Same
-	 *  ensure/reconcile/restart path as exec. */
+	/** exec without the /bin/sh -c wrapper — same
+	 *  ensure/reconcile/restart path. */
 	execArgv(
 		conversationId: string,
 		argv: string[],
@@ -263,7 +251,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	});
 	const { requireOurs, applyNetwork, prepareContainer, requireImage, createContainer } = lifecycle;
 
-	// The reconcile, inside the conversation's lane.
 	async function ensureLocked(
 		conv: string,
 		signal?: AbortSignal,
@@ -277,8 +264,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (ins.state !== "missing") {
 			requireOurs(name, ins);
 			if (row === null) {
-				// A labelled container with no row (row lost): adopt — the
-				// inspect tells us its image and actual network state.
+				// Labelled but rowless: adopt — inspect tells us its
+				// image and actual network.
 				const adopted: SandboxRow = {
 					conversationId: conv,
 					container: name,
@@ -309,9 +296,9 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				};
 			}
 			if (ins.state === "stopped") {
-				// E.g. a host reboot — filesystem intact, network re-applied
-				// from the row (the intent), not from whatever inspect saw,
-				// but anything background the worker left running is gone.
+				// Filesystem intact; network re-applied from the row's
+				// intent, not whatever inspect saw — background
+				// processes are gone.
 				signal?.throwIfAborted();
 				await podman.start(name, conv);
 				// Startup already dispatched: finish the safety reconciliation even on cancellation.
@@ -333,8 +320,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			return { container: name };
 		}
 		if (row !== null) {
-			// Missing with a row: recreate from the row — image and
-			// intended network — and say the prior filesystem is gone.
+			// Recreate from the row's image and intended network — the
+			// prior filesystem is gone.
 			await createContainer(name, row.image, row.network, conv, undefined, signal);
 			store.touch(conv, now);
 			const note = "sandbox container was gone — recreated fresh; its previous contents are lost";
@@ -359,11 +346,9 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		return { container: name, note: "created a new sandbox (network off)" };
 	}
 
-	// The killed-exec recovery, inside the lane: podman exec does not
-	// propagate the client kill, so a timed-out/aborted/capped exec
-	// leaves work running. The restart reaps it; the filesystem
-	// survives, network intent is re-applied from the row, and the
-	// note names the real kill cause.
+	// podman exec does not propagate the client kill — a killed exec
+	// leaves work running; the restart reaps it (filesystem survives,
+	// network re-applied from the row).
 	const restartEpochs = new Map<string, number>();
 	const restartEpochOf = (conv: string): number => restartEpochs.get(conv) ?? 0;
 	async function restartAfterKillLocked(name: string, conv: string, note: string): Promise<void> {
@@ -383,17 +368,16 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
 		for (const row of store.staleBefore(cutoff, conv)) {
-			// The idle/lease verdict is re-read inside the target's
-			// lane, immediately before removal — a touch or a fresh
-			// run lease landing between the listing and the rm must
-			// win the race.
+			// The idle/lease verdict is re-read inside the target's lane
+			// immediately before removal — a touch or fresh lease
+			// landing between listing and rm must win the race.
 			await lane(row.conversationId, async () => {
 				const fresh = store.get(row.conversationId);
 				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
 				if (deps.runLease?.(row.conversationId) != null) return;
 				try {
-					// The row's owner, not the sweeping conversation — the
-					// podman boundary line must name who the rm was for.
+					// The rm runs under the row's owner — the boundary
+					// line must name who it was for.
 					await podman.rm(fresh.container, fresh.conversationId);
 					bumpGeneration(row.conversationId);
 				} catch (err) {
@@ -457,9 +441,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		signal?.throwIfAborted();
 	}
 
-	// A run lease announces itself on every non-destructive result so
-	// goblin's own reach-ins stay honest (design/subagents.md → One
-	// sandbox, two users).
+	// A run lease announces itself on every non-destructive result.
 	function leaseNote(conv: string): string | undefined {
 		const lease = deps.runLease?.(conv);
 		return lease === null || lease === undefined
@@ -472,10 +454,9 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		return `${a}; ${b}`;
 	}
 
-	// Shared exec path: ensure in the lane, dispatch outside it, restart
-	// when the call's client was killed — deadline, abort, or cap
-	// (the note names which). execArgv variants feed the worker env's
-	// positional-argv filesystem ops.
+	// ensure inside the lane, dispatch outside it; restart when the
+	// client was killed — deadline, abort, or cap (the note names
+	// which).
 	async function execCommon<
 		T extends { timedOut: boolean; killed: boolean; outputCapped?: boolean },
 	>(

@@ -1,8 +1,3 @@
-// Trust seeding is the difference between a delegation that runs and
-// one parked on a first-run dialog — these guard the two recipes
-// (claude's .claude.json flags, codex's config.toml trust_level) and
-// the only-ever-set rule against the operator's own files.
-
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
@@ -98,7 +93,6 @@ describe("claude", () => {
 		const link = join(h, ".claude.json");
 		symlinkSync(target, link);
 		seedHarnessTrust("claude", "/work/task", h);
-		// the link is still a link, and the write landed on the target
 		expect(lstatSync(link).isSymbolicLink()).toBe(true);
 		const doc = JSON.parse(readFileSync(target, "utf8"));
 		expect(doc.machineID).toBe("m");
@@ -108,23 +102,20 @@ describe("claude", () => {
 	test("a dangling .claude.json refuses the launch and the link survives", () => {
 		const h = home();
 		const link = join(h, ".claude.json");
-		// Stitch shape: the link points into a dots checkout that hasn't
-		// landed this file yet — realpath ENOENTs, existsSync reads false.
+		// Stitch shape: a link into a dots checkout that hasn't landed
+		// the file — realpath ENOENTs, existsSync reads false.
 		symlinkSync(join(h, "dots", "claude.json"), link);
 		expect(() => seedHarnessTrust("claude", "/w", h)).toThrow(/dangling symlink/);
-		// The launch failed loudly, the link is still a link, and the
-		// target was not quietly created — the dots store keeps its
-		// authority once the file appears there.
+		// The target must not be quietly created — the dots store keeps
+		// its authority once the file appears there.
 		expect(lstatSync(link).isSymbolicLink()).toBe(true);
 		expect(existsSync(join(h, "dots", "claude.json"))).toBe(false);
 	});
 });
 
 describe("codex", () => {
-	// The write must be *semantically* right — a still-valid TOML file
-	// whose projects.<cwd>.trust_level reads "trusted" — and the
-	// operator's bytes must survive verbatim: the seeded file starts
-	// with the original text and adds exactly one line.
+	// Semantic AND verbatim: trust_level must read "trusted", and the
+	// seeded file starts with the original bytes plus exactly one line.
 	const codexTrust = (dir: string, cwd: string): unknown => {
 		const projects = (
 			Bun.TOML.parse(readFileSync(join(dir, ".codex", "config.toml"), "utf8")) as {
@@ -158,16 +149,13 @@ describe("codex", () => {
 		mkdirSync(join(h, ".codex"), { recursive: true });
 		const path = join(h, ".codex", "config.toml");
 		// Section-defined table with other keys, single-quoted keys,
-		// comments and whitespace — the shapes sed-style edits used to
-		// mangle.
+		// comments — the shapes sed-style edits would mangle.
 		const original =
 			'[projects."/work/task"]\nother = 1\n\n' +
 			"[projects.'/b'] # literal-quote form\ntrust_level = 'trusted'\n";
 		writeFileSync(path, original);
 		seedHarnessTrust("codex", "/work/task", h);
 		const text = readFileSync(path, "utf8");
-		// Exactly one line inserted, right inside the existing section —
-		// everything else byte-identical.
 		expect(text).toBe(
 			original.replace(
 				'[projects."/work/task"]\n',
@@ -194,10 +182,9 @@ describe("codex", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });
 		const path = join(h, ".codex", "config.toml");
-		// The root dotted key defines the entry, but the last matching
-		// dotted line sits below [other]: inserting after it would write
-		// other.projects."…".trust_level — file stays valid TOML, root
-		// trust stays unset, and the launch logs trust as seeded.
+		// The last matching dotted line sits under [other] — inserting
+		// after it writes other.projects."…".trust_level: still valid
+		// TOML, root trust unset, launch logs seeded.
 		const original =
 			'projects."/work/task".model = "gpt-5"\n' +
 			"[other]\n" +
@@ -234,8 +221,6 @@ describe("codex", () => {
 		const cwd = "/we\tr\ndi\x01r";
 		seedHarnessTrust("codex", cwd, h);
 		expect(codexTrust(h, cwd)).toBe("trusted");
-		// The escaped key round-trips: a second seed finds the entry and
-		// is a no-op.
 		expect(seedHarnessTrust("codex", cwd, h)).toEqual([]);
 	});
 
@@ -267,8 +252,8 @@ describe("codex", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });
 		const link = join(h, ".codex", "config.toml");
-		// Relative target, also dangling — existsSync reads false, and
-		// the error must name where the link points.
+		// existsSync reads false on a dangling link — the error must
+		// name where it points.
 		symlinkSync("../dots/codex.toml", link);
 		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow(
 			/dangling symlink.*\.\.\/dots\/codex\.toml/,

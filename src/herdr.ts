@@ -1,19 +1,15 @@
-// The only module that knows herdr (DESIGN.md, "Delegation") — a thin
-// adapter over the CLI: `herdr --session <name> …`, JSON results on
-// stdout, `{error:{code,message}}` JSON on stderr with exit 1 (syntax
-// errors exit 2). Reads are the exception: `agent read` / `pane read`
-// emit raw screen text, not the envelope. Every response is zod-parsed
-// at this boundary and every call logs verb, target, outcome, ms — the
-// log has to reconstruct what the multiplexer was told without a REPL.
-// The runner is the fake edge for tests.
+// Adapter over the herdr CLI: JSON results on stdout,
+// `{error:{code,message}}` on stderr with exit 1 (syntax errors exit
+// 2). `agent read` / `pane read` are the exception — raw screen text,
+// not the envelope. The runner is the fake edge for tests.
 
 import { z } from "zod";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 
-/** Where harnesses run: the local `--session <name>` server, or a
- *  saved-machine profile (`--machine <label>`) whose pinned remote
- *  session lives on another host (design/delegation.md). */
+/** `--session <name>` = local server; `--machine <label>` = a
+ *  saved-machine profile whose pinned remote session lives on another
+ *  host. */
 export type HerdrTarget = { session: string } | { machine: string };
 
 export interface HerdrRunResult {
@@ -21,38 +17,30 @@ export interface HerdrRunResult {
 	stdout: string;
 	stderr: string;
 }
-/** Per-call overrides: `signal` cancels the process (the caller's
- *  boundary checks run before and after the run); `timeoutMs` replaces
- *  the runner's default budget for calls whose own deadline is longer
- *  (the operator prompt's `--wait`). Runners may ignore both. */
+/** `signal` cancels the process; `timeoutMs` replaces the runner's
+ *  default budget for calls whose own deadline is longer (the operator
+ *  prompt's `--wait`). Runners may ignore both. */
 export interface HerdrCallOpts {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }
 export type HerdrRunner = (args: string[], opts?: HerdrCallOpts) => Promise<HerdrRunResult>;
 
-// CLI calls are local-socket round trips — fast. The budget sits above
-// `agent start`'s own 30 s startup wait so a timed-out start returns
-// herdr's `timeout` code rather than our kill; the cap covers the
-// largest payload in play (a couple hundred lines of screen text).
+// The budget sits above `agent start`'s own 30 s startup wait so a
+// timed-out start returns herdr's `timeout` code rather than our kill.
 const HERDR_TIMEOUT_MS = 45_000;
-// Forwarded machine calls ride ssh — give the round trip its own,
-// larger budget before we call it dead.
+// Forwarded machine calls ride ssh — the round trip gets its own,
+// larger budget.
 const HERDR_REMOTE_TIMEOUT_MS = 90_000;
 const HERDR_MAX_OUTPUT = 1 << 20;
-// Raw CLI text that misses the JSON error envelope is quoted, never
-// relayed — an excerpt this size explains a usage error to a human
-// without flooding the log or the model's error prose (#98).
+// Non-envelope CLI text is quoted as an excerpt this size — explains a
+// usage error without flooding the log or the model's error prose.
 const FALLBACK_EXCERPT = 200;
-// The read verbs put raw screen text on stdout — data, never an
-// error message (design/delegation.md: failure screens travel
-// fenced). A cap-killed read exits with empty stderr and up to 1 MiB
+// Read verbs put raw screen text on stdout — data, never an error
+// message. A cap-killed read exits with empty stderr and up to 1 MiB
 // of screen on stdout; the fallback must not quote it.
 const READ_VERBS = new Set(["agent read", "pane read"]);
 
-// The non-envelope fallback message: stderr when there is any, else
-// stdout for the verbs whose stdout isn't screen text, capped to an
-// excerpt.
 function cliFallbackMessage(verb: string, r: HerdrRunResult): string {
 	const raw = READ_VERBS.has(verb) ? r.stderr : r.stderr || r.stdout;
 	const text = raw.trim();
@@ -75,10 +63,9 @@ function makeRunner(timeoutMs: number): HerdrRunner {
 		return {
 			code: r.exitCode ?? -1,
 			stdout: r.stdout,
-			// A killed run's real story is the kill, not partial stderr:
-			// the deadline names the timeout, the output cap names itself
-			// (a real stderr envelope survives — only an empty one is
-			// replaced, so the JSON error path keeps its code+message).
+			// A killed run's real story is the kill, not partial stderr.
+			// Only an EMPTY stderr is replaced — a real JSON envelope
+			// keeps its code+message.
 			stderr: r.timedOut
 				? `herdr timed out after ${budget}ms`
 				: r.truncated && r.stderr === ""
@@ -88,9 +75,8 @@ function makeRunner(timeoutMs: number): HerdrRunner {
 	};
 }
 
-// An aborted signal throws the reason — an Error when there is one, a
-// plain abort Error otherwise (script.ts's rule for AbortSignal.reason
-// being `any`).
+// AbortSignal.reason is `any` — an Error reason is rethrown, else a
+// plain abort Error.
 function abortError(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("aborted");
 }
@@ -104,9 +90,8 @@ export class HerdrError extends Error {
 	}
 }
 
-// The agent record herdr reports (`agent get`, `agent start`,
-// `agent list`). Extra fields herdr adds (focused, terminal ids,
-// revision, …) are stripped — we model what delegation consumes.
+// Extra fields herdr adds (focused, terminal ids, revision, …) are
+// stripped.
 const agentSchema = z.object({
 	agent: z.string(), // the kind herdr launched (codex, pi, …)
 	agent_status: z.string(), // idle | working | blocked | done | unknown
@@ -134,8 +119,8 @@ const workspaceIdentitySchema = z.object({
 });
 const workspaceCreatedSchema = z.object({
 	result: z.object({
-		// PaneInfo may omit cwd. Trust seeding needs the expanded path,
-		// never the requested cwd, so its absence is a named refusal.
+		// root_pane may omit cwd; trust seeding needs the expanded path,
+		// never the requested cwd — its absence is a named refusal.
 		root_pane: z.object({ pane_id: z.string(), cwd: z.string().optional() }),
 	}),
 });
@@ -164,8 +149,8 @@ function parseJson(verb: string, stdout: string): unknown {
 	try {
 		return JSON.parse(stdout);
 	} catch {
-		// Parser diagnostics can quote a fragment of the CLI's stdout;
-		// don't put raw agent output into a log or error.
+		// Parser diagnostics can quote CLI stdout — don't put raw agent
+		// output into a log or error.
 		throw new Error(`herdr ${verb}: stdout is not JSON`);
 	}
 }
@@ -187,26 +172,21 @@ export interface Herdr {
 	sendKey(name: string, key: string): Promise<void>;
 	readAgent(name: string, lines: number): Promise<string>;
 	readPane(paneId: string, lines: number): Promise<string>;
-	/** Submit a shell command in a pane (text + Enter, one ordered
-	 *  submission). Used to seed remote trust stores in the
-	 *  delegation's own root pane before `agent start`. */
+	/** text + Enter, one ordered submission — used to seed remote trust
+	 *  stores in the delegation's root pane before `agent start`. */
 	paneRun(paneId: string, command: string): Promise<void>;
-	/** Poll a pane's recent snapshot until a literal substring shows
-	 *  (Rust-regex via --regex, but the seed only needs --match). */
+	/** --match is a literal substring (--regex is Rust-regex). */
 	paneWaitOutput(paneId: string, match: string, timeoutMs: number): Promise<void>;
 	interrupt(name: string): Promise<void>;
 	closeWorkspace(id: string): Promise<void>;
 }
 
-// The operator-facing attach path for a delegation target — used by
-// the delegate tool's results and the watcher's park notices (one
-// source: both surfaces must agree). Local sessions attach by name
-// (the own session is the unit's --session goblin). Machine targets
+// One attach-path source for the delegate tool's results and the
+// watcher's park notices — both surfaces must agree. Machine targets
 // have NO attachable command form: `--machine` is an API-command
-// prefix (bare `herdr --machine <label>` is a usage error) and
-// `session attach` is not machine-forwardable — the interactive TUI
-// over ssh (`--remote <ssh-target>`) is the remote attach path, and
-// the ssh target lives in herdr's machine registry, not our config.
+// prefix and `session attach` is not machine-forwardable — the
+// interactive TUI over ssh (`--remote <ssh-target>`) is the remote
+// attach path; the ssh target lives in herdr's machine registry.
 export function attachHintFor(
 	t: { machine?: string | undefined; session?: string | undefined } | null | undefined,
 ): string {
@@ -215,13 +195,11 @@ export function attachHintFor(
 	return `herdr session attach ${t.session ?? "goblin"}`;
 }
 
-// The one call path both adapters share — the delegation adapter's
-// --session/--machine prefix and the operator adapter's hard-coded
-// --session default. Log success only after this verb's result has
-// passed validation: runner rejection and invalid output each get
-// their own boundary line; neither can masquerade as a good call.
-// An aborting signal refuses the call before spawn and reports the
-// abort after a killed run — never a fake CLI error for our own cancel.
+// Log success only after the verb's result passes validation — runner
+// rejection and invalid output each get their own boundary line;
+// neither can masquerade as a good call. An aborting signal refuses
+// the call before spawn and reports the abort after a killed run —
+// never a fake CLI error for our own cancel.
 function makeCaller(prefix: string[], runner: HerdrRunner) {
 	return async function call<T>(
 		verb: string,
@@ -271,13 +249,12 @@ export function makeHerdr(
 	run: HerdrRunner = defaultRunner,
 	timeoutMs = "machine" in target ? HERDR_REMOTE_TIMEOUT_MS : HERDR_TIMEOUT_MS,
 ): Herdr {
-	// `--machine` and `--session` are mutually exclusive per herdr's CLI
-	// (the machine profile pins its own remote session); each call site
-	// logs through `call` below regardless of the target kind.
+	// `--machine` and `--session` are mutually exclusive — the machine
+	// profile pins its own remote session.
 	const prefix =
 		"session" in target ? ["--session", target.session] : ["--machine", target.machine];
 	// Forwarded calls are ssh round trips — machine adapters get the
-	// longer budget (design/delegation.md, "Targets").
+	// longer budget.
 	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
 	const call = makeCaller(prefix, runner);
 
@@ -356,9 +333,9 @@ export function makeHerdr(
 
 		async paneRun(paneId, command) {
 			await call("pane run", paneId, ["pane", "run", paneId, command], (stdout) => {
-				// The real CLI's success is silent — no envelope. Empty stdout
-				// is pane run's ok contract (pinned in herdr.live.test.ts); a
-				// JSON envelope still parses if a future build emits one.
+				// pane run's success is silent — empty stdout is the ok
+				// contract (pinned in herdr.live.test.ts); a JSON envelope
+				// still parses if a future build emits one.
 				if (stdout.trim() !== "") envelopeSchema.parse(parseJson("pane run", stdout));
 			});
 		},
@@ -394,9 +371,9 @@ export function makeHerdr(
 
 // ---------- the operator's session ----------
 
-// The narrow adapter for the operator's own `default` session
-// (design/delegation.md): read/list/prompt by pane ID only — no
-// creation, raw keys, or session/machine arguments.
+// The narrow adapter for the operator's own `default` session —
+// pane-ID read/list/prompt only; no creation, raw keys, or
+// session/machine args.
 
 const OPERATOR_SESSION = "default";
 // `agent prompt --wait` gets 120 s to observe a working/blocked state;
@@ -500,8 +477,8 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 			{ ...(signal !== undefined ? { signal } : {}) },
 		);
 		const workspaces = new Map<string, string>();
-		// Per-workspace tab list: the unscoped form covers all
-		// workspaces today, but the scoped form cannot regress.
+		// The unscoped tab list covers all workspaces today; the scoped
+		// form cannot regress.
 		const tabs = new Map<string, string>();
 		for (const w of ws.result.workspaces) {
 			try {

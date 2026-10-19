@@ -3,15 +3,15 @@
 // durable handover work event, idempotent on the handover key so a
 // duplicate handover never doubles attachments or initial actions.
 // dispatch() drives a managed prompt operation through its named
-// gates: validate → send edge → transition. The send edge is the
-// capability seam — Herdr protocol 23 cannot bind agent_session at
-// dispatch, so the production composition wires nothing unattended
-// until a capability-advertised guarded send exists; tests drive the
-// edge with fakes. A timeout/IO error after dispatch is 'uncertain',
-// never a resend.
+// gates: validate → send edge → transition. The production send edge
+// (makeManagedSendEdge) is the accepted-risk path: Herdr's own
+// preflight binds pane + kind, and the returned post-send identity is
+// compared to the bound agent_session — a mid-dispatch swap lands as
+// 'uncertain', loudly logged, never a resend. A timeout/IO error after
+// dispatch is 'uncertain' for the same reason.
 
 import type { Database } from "bun:sqlite";
-import { HerdrRefusal } from "./herdr.ts";
+import { HerdrRefusal, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
 import type {
 	Attachment,
@@ -75,6 +75,46 @@ function followupCharter(resp: Responsibility): string {
 		`if the outcome is evidenced, report and complete; if blocked, surface ` +
 		`the blocker; otherwise verify the next action is progressing.`
 	);
+}
+
+// The managed send edge, built on the real adapter. prompt's own
+// preflight refuses a missing/mismatched occupant (nothing sent); the
+// agent record it returns is the post-wait identity — comparing it to
+// the bound session is the observability the accepted-risk ruling
+// asked for. A mismatch throws: dispatch lands the op 'uncertain',
+// which is honest — the bytes may have crossed to a replacement and an
+// automatic resend would only double the exposure.
+export function makeManagedSendEdge(
+	herdr: Pick<OperatorHerdr, "prompt">,
+): (brief: string, target: AttachmentTarget) => Promise<unknown> {
+	return async (brief, target) => {
+		if (target.kind === null) {
+			throw new HerdrRefusal(
+				"kind_mismatch",
+				"attachment has no agent kind to verify at dispatch",
+			);
+		}
+		const reported = await herdr.prompt(target.paneId ?? target.agentName, target.kind, brief);
+		if (
+			target.agentSession !== null &&
+			reported.agent_session !== null &&
+			reported.agent_session !== target.agentSession
+		) {
+			log.error(
+				"managed send crossed an identity change — prompt may have landed on a replacement",
+				undefined,
+				{
+					pane: reported.pane_id,
+					bound: target.agentSession,
+					reported: reported.agent_session,
+				},
+			);
+			throw new Error(
+				`post-send identity mismatch: bound ${target.agentSession}, pane reported ${reported.agent_session}`,
+			);
+		}
+		return { reportedAgentSession: reported.agent_session };
+	};
 }
 
 export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityService {

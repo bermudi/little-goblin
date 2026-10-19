@@ -16,7 +16,11 @@ import {
 	type ResponsibilityStore,
 	type Understanding,
 } from "./responsibilities.ts";
-import { makeResponsibilityService } from "./responsibility-service.ts";
+import {
+	makeManagedSendEdge,
+	makeResponsibilityService,
+} from "./responsibility-service.ts";
+import { HerdrRefusal, type OperatorAgent } from "./herdr.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
@@ -84,6 +88,27 @@ const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
 	agentSession: "sess-abc",
 	kind: "pi",
 	cwd: "/w",
+	...over,
+});
+
+// The post-wait agent record prompt returns — default is the bound
+// session; override agent_session to simulate a mid-dispatch swap.
+const reported = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
+	pane_id: "pane-7",
+	workspace_id: "ws-1",
+	tab_id: "tab-1",
+	agent: "pi",
+	agent_status: "working",
+	name: "worker-1",
+	cwd: "/w",
+	terminal_title: null,
+	workspace_label: null,
+	tab_label: null,
+	terminal_id: "term-9",
+	agent_session: "sess-abc",
+	state_change_seq: 4,
+	completion_seq: null,
+	revision: 7,
 	...over,
 });
 
@@ -219,6 +244,133 @@ describe("responsibility service", () => {
 		const again = await r.svc.dispatch(prepared.operation.operationId, async () => ({}));
 		expect(again).toEqual({ refused: "already-terminal" });
 		expect(calls).toBe(1);
+		r.store.close();
+	});
+
+	test("the wired edge sends when the post-send session matches the bound one", async () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		});
+		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "ship it",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const calls: { pane: string; expect: string; text: string }[] = [];
+		const edge = makeManagedSendEdge({
+			prompt: async (pane, expect_, text) => {
+				calls.push({ pane, expect: expect_, text });
+				return reported({ agent_session: "sess-abc" });
+			},
+		});
+		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(out).toEqual({ sent: true });
+		expect(calls).toEqual([{ pane: "pane-7", expect: "pi", text: "ship it" }]);
+		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("acknowledged");
+		r.store.close();
+	});
+
+	test("a post-send session change lands uncertain — logged, terminal, never resent", async () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		});
+		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		let calls = 0;
+		const edge = makeManagedSendEdge({
+			prompt: async () => {
+				calls += 1;
+				return reported({ agent_session: "sess-NEW" });
+			},
+		});
+		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(calls).toBe(1);
+		expect(out).toEqual({ refused: "already-terminal" });
+		const op = r.resps.getOperation(prepared.operation.operationId)!;
+		expect(op.state).toBe("uncertain");
+		// And the same op can never dispatch again.
+		const again = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(again).toEqual({ refused: "already-terminal" });
+		expect(calls).toBe(1);
+		r.store.close();
+	});
+
+	test("an edge refusal is a named refusal — nothing was sent", async () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+			attachments: [{ target: target({ kind: null }), baseline: {} }],
+		});
+		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		let calls = 0;
+		const edge = makeManagedSendEdge({
+			prompt: async () => {
+				calls += 1;
+				return reported({});
+			},
+		});
+		// kind null → the edge refuses before prompt is ever invoked.
+		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(calls).toBe(0);
+		expect(out).toEqual({ refused: "already-terminal" });
+		const op = r.resps.getOperation(prepared.operation.operationId)!;
+		expect(op.state).toBe("refused");
+		expect(op.refusal).toBe("kind_mismatch");
+		r.store.close();
+	});
+
+	test("a prompt refusal from Herdr refuses the op by name", async () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		});
+		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const edge = makeManagedSendEdge({
+			prompt: async () => {
+				throw new HerdrRefusal("agent_not_found", "pane hosts no agent");
+			},
+		});
+		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(out).toEqual({ refused: "already-terminal" });
+		const op = r.resps.getOperation(prepared.operation.operationId)!;
+		expect(op.state).toBe("refused");
+		expect(op.refusal).toBe("agent_not_found");
 		r.store.close();
 	});
 

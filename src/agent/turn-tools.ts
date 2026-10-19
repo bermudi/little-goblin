@@ -33,7 +33,7 @@ import {
 import { withScript } from "./tools/script.ts";
 import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
-import type { ResponsibilityService } from "../responsibility-service.ts";
+import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
 // Boot-frozen or boot-bound values the per-turn function closes over.
 // Anything that decides "does this tool slot exist" is a dep here; the
@@ -258,6 +258,11 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							coordinationConversationId: conv.id,
 							handoverKey: `handover:${conv.id}`,
 							listFor: responsibilitySvc.listFor,
+							// The accepted-risk send edge (responsibility-service):
+							// preflight binds pane + kind; post-send identity is
+							// compared to the bound session — a crossed send lands
+							// as uncertain, loudly logged, never a resend.
+							guardedSend: makeManagedSendEdge(operatorHerdr),
 						}
 					: undefined,
 			// The interface tool mounts on app turns only — Telegram

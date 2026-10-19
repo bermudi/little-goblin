@@ -5,8 +5,9 @@
 // revision — stale prepared sends then refuse at dispatch. Lifecycle
 // verbs are durable events on the responsibility, not Herdr
 // operations: pause/detach/cancel/complete never touch a workspace.
-// Managed sends ride the service's persisted operations; without a
-// guarded-send edge every send refuses identity-unenforceable.
+// Managed sends ride the service's persisted operations; the wired
+// edge is preflight-bound + post-send identity compared, and absent an
+// edge every send refuses identity-unenforceable.
 
 import { tool } from "ai";
 import { z } from "zod";
@@ -101,8 +102,10 @@ export interface ResponsibilityToolDeps {
 	/** The operator session's read-only list — resolve targets, never
 	 *  guess them. */
 	listFor(): Promise<OperatorAgent[]>;
-	/** Guarded send edge — absent means every managed send refuses
-	 *  identity-unenforceable until the Herdr capability exists. */
+	/** The send edge — production wires operatorHerdr.prompt plus a
+	 *  post-send identity compare (accepted residual: an unobserved
+	 *  mid-dispatch swap lands as uncertain, loudly logged). Absent =
+	 *  every managed send refuses identity-unenforceable. */
 	guardedSend?: ((brief: string, target: AttachmentTarget) => Promise<unknown>) | undefined;
 }
 
@@ -305,7 +308,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						done({ outcome: "refused:identity-unenforceable" });
 						return {
 							refused: "identity-unenforceable",
-							note: "Herdr cannot bind agent_session at dispatch yet — the operation is recorded and refused, nothing was sent",
+							note: "No send edge is wired on this turn — the operation is recorded and refused, nothing was sent",
 						};
 					}
 					const out = await deps.service.dispatch(

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { installTelegramFallback } from "./telegram.ts";
 
-// The Desktop fallback (design/telegram.md → Mini Apps, ruling
-// 2026-10-13): Telegram Desktop never injects window.Telegram, so the
+// The Desktop fallback: Telegram Desktop never injects window.Telegram,
+// so the
 // shim must reconstruct the same surface the official SDK would —
 // initData byte-exact from the hash, ready/expand over the client
 // bridges — without ever clobbering an injected copy.

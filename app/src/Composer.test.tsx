@@ -1,11 +1,11 @@
 // Interactive Composer behavior — the staged-upload lifecycle that
 // static markup can't see. Mounted with happy-dom; the network edge
 // (api.ts) is faked at globalThis.fetch, the only place uploads and
-// config loads touch the wire. Pins issue #78: two staged files may
-// share a filename (pasted images all arrive "image.png"), so upload
-// completion must resolve by the entry's client key, never by name —
-// otherwise the first completion captures every same-named row and the
-// later one lands nowhere.
+// config loads touch the wire. Two staged files may share a filename
+// (pasted images all arrive "image.png"), so upload completion must
+// resolve by the entry's client key, never by name — otherwise the
+// first completion captures every same-named row and the later one
+// lands nowhere.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";

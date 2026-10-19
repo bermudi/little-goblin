@@ -23,9 +23,8 @@ describe("write_file", () => {
 });
 
 describe("write_file through leaf symlinks", () => {
-	// design/delegation.md: symlinked files are written through to the
-	// managed target, never replaced — tmp+rename over the link path
-	// silently forks the config and the dots store stops propagating.
+	// Symlinked files are written through to the managed target, never
+	// replaced — tmp+rename over the link path silently forks the config.
 	test("relative leaf symlink: write lands on the target, link survives", async () => {
 		const dir = tmpDir("goblin-write-");
 		writeFileSync(join(dir, "real.txt"), "old\n");

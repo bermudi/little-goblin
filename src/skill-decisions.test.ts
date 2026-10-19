@@ -1,8 +1,7 @@
-// The shared approve/discard mechanics every door runs
-// (design/skills.md → "It proposes, then tells"). The Telegram tap
-// handler's stamps/answers are covered in tg/skill-approval.test.ts;
-// these pin the disk moves' own contract plus resolveSkillProposal's
-// provenance → history flow that the operator doors ride.
+// The shared approve/discard mechanics every door runs. The Telegram
+// tap handler's stamps/answers live in tg/skill-approval.test.ts; these
+// pin the disk moves' own contract plus resolveSkillProposal's
+// provenance → history flow.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";

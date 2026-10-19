@@ -101,7 +101,7 @@ export function endLive(live: LiveChunks, done: WireEnd, convId: string): void {
 	live.subscribers.clear();
 }
 
-// ---------- the membership seam (#96) ----------
+// ---------- the membership seam ----------
 
 export interface WireMember extends AdmittedMember {
 	streamFailed?: boolean;

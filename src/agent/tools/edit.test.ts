@@ -82,9 +82,8 @@ describe("edit_file", () => {
 });
 
 describe("edit_file through leaf symlinks", () => {
-	// design/delegation.md: symlinked files are written through to the
-	// managed target, never replaced — tmp+rename over the link path
-	// silently forks the config and the dots store stops propagating.
+	// Symlinked files are written through to the managed target, never
+	// replaced — tmp+rename over the link path silently forks the config.
 	test("relative leaf symlink: edit lands on the target, link survives", async () => {
 		const dir = tmpDir("goblin-edit-");
 		writeFileSync(join(dir, "real.txt"), "one\ntwo\n");

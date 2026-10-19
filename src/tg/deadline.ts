@@ -1,13 +1,9 @@
 // Bounded Telegram API calls. Grammy's only knob is a client-wide
 // `timeoutSeconds` defaulting to 500s — long enough for a hung-but-alive
-// connection (dead proxy, wedged local bot-api) to stall whatever serial
-// path the call sits on: the delivery chain's `await chain` wedges the
-// conversation lane, `getFile` wedges the intake chain. Everything else
-// in the codebase is bounded tighter; these edges are too.
+// connection to stall whatever serial path the call sits on.
 //
 // A timed-out call is abandoned, not cancelled — the underlying fetch may
-// still complete. Callers must decide whether retry is safe: a send
-// timeout does not establish that Telegram failed to deliver it.
+// still complete: a send timeout never proves Telegram didn't deliver.
 
 export const API_CALL_TIMEOUT_MS = 30_000;
 

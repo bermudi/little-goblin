@@ -1,8 +1,7 @@
 // Shared memory-browser pieces: the Memories tab and the chat header's
 // thread-sources sheet render the same rows, the same detail sheet,
-// and the same forget affordance — one implementation, two surfaces
-// (design/app.md → Thread sources). The forget protocol itself is
-// server-owned; both surfaces only ask.
+// and the same forget affordance — one implementation, two surfaces.
+// The forget protocol itself is server-owned; both surfaces only ask.
 import { useRef, useState } from "react";
 import type { MemoryDocDetailResponse, MemoryDocListItem } from "../../src/http/operator-wire.ts";
 import { forgetMemoryDocument, getMemoryDocument } from "./api.ts";

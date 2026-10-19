@@ -1,5 +1,5 @@
 // The ui block renderers — one component per leaf type, plus the two
-// containers (design/app.md → Intelligent UI). Every rendered root
+// containers. Every rendered root
 // carries ui-<type>. Local state (the open tab, form values — read
 // from the DOM at submit, never stored server-side, and the picked
 // choice row) lives and dies here; actions are the only way out —
@@ -30,8 +30,8 @@ function actionsOff({ onAction, busy }: UiActionProps): boolean {
 	return busy === true || onAction === undefined;
 }
 
-// The picked-row highlight (design/app.md → Intelligent UI, local
-// state tier): a choices tap highlights the matching table row
+// The picked-row highlight (local state tier): a choices tap
+// highlights the matching table row
 // client-side AND posts [ui] <label> as usual. Cosmetic only — on
 // reload Surface re-derives the label from the transcript, so the
 // tap remains the single source of record. Context, not props: the

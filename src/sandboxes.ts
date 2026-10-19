@@ -640,8 +640,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				if (ins.state !== "missing") requireOurs(name, ins);
 				// Preflight the replacement BEFORE removing the incumbent —
 				// an unavailable image or network must never destroy the
-				// existing sandbox (design/sandbox.md). A cancelled
-				// preflight throws here and the incumbent survives.
+				// existing sandbox. A cancelled preflight throws here and the
+				// incumbent survives.
 				const prepared = await prepareContainer(target, conv, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
 				const currentLease = deps.runLease?.(conv);

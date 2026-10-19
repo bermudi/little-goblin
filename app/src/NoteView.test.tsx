@@ -569,9 +569,8 @@ describe("quiet harbor regressions", () => {
 		});
 	});
 
-	// The index's truncation contract (design/projects.md → HTTP surface):
-	// each list's own `truncated` bit decides the notice — the client
-	// never re-derives it from row counts.
+	// The index's truncation contract: each list's own `truncated` bit
+	// decides the notice — the client never re-derives it from row counts.
 	describe("NotesIndex", () => {
 		const SUMMARY: AppNoteSummary = {
 			id: "n1",

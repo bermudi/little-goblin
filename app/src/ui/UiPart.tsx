@@ -1,5 +1,5 @@
-// UiPart — the tool-part boundary for "ui" (design/app.md →
-// Intelligent UI). The part's input IS the interface: streaming input
+// UiPart — the tool-part boundary for "ui". The part's input IS the
+// interface: streaming input
 // renders every block that validates with a skeleton tail (html mounts
 // only once complete), complete input renders all-or-nothing — a bad
 // payload falls back to the generic tool row, never a blank.

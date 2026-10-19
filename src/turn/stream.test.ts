@@ -224,7 +224,7 @@ function rig(
 	};
 }
 
-// ---------- the membership seam (#96's regression home) ----------
+// ---------- the membership seam ----------
 
 describe("membership seam", () => {
 	test("a streaming member claimed by the resume sees the pre-overflow wire replayed (#96)", () => {
@@ -247,7 +247,7 @@ describe("membership seam", () => {
 		expect(members).toEqual([joiner]);
 		// Gapless: the joiner saw the same wire the head saw — the tool
 		// call the failed attempt emitted was REPLAYED to it, not
-		// mid-sentence (design/app.md → Join replay).
+		// mid-sentence.
 		expect(joiner.chunks).toEqual(before);
 	});
 

@@ -1,8 +1,8 @@
 // The picked-row highlight's transcript half: a choices tap posts
 // "[ui] <label>" as an ordinary user message, so the latest such
 // message whose label the surface itself offers IS the picked label —
-// the highlight re-derives on reload with nothing stored
-// (design/app.md → Intelligent UI: local state stays in React).
+// the highlight re-derives on reload with nothing stored — local state
+// stays in React.
 
 import type { UIMessage } from "ai";
 import type { UiBlock } from "../../../src/agent/tools/ui-schema.ts";

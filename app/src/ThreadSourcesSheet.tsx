@@ -1,5 +1,5 @@
-// The chat header's thread-sources sheet (design/app.md → Thread
-// sources): everything this conversation produced — its retained
+// The chat header's thread-sources sheet: everything this conversation
+// produced — its retained
 // exchanges and the skills generated from it — on the thread itself,
 // not in a global tab. Proposed skills decide right here (the same
 // skills/decide mechanics as the Telegram ✅/🚫 row and the Skills

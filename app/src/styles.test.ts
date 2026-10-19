@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Fold-arrow invariant (regression 2026-10-19): the ▸/▾ content
+// Fold-arrow invariant (regression): the ▸/▾ content
 // switchers lived on descendant selectors — `.worked[open] summary::before`
 // — so an open Worked row restyled EVERY nested tool-run/Thought summary
 // to the open arrow, whatever their own state. The switchers must pin the

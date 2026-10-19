@@ -1,4 +1,4 @@
-// State viewer (ruling 2026-10-11): views over prod state — skills
+// State viewer: views over prod state — skills
 // (installed + proposed) and workspace files (identity + attachments).
 // Everything here renders what the server already validated; the
 // containment wall lives in src/stateview.ts. Proposed skills are the

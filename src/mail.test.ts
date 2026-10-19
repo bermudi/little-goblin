@@ -1,7 +1,6 @@
 // The send client's boundaries: OAuth minting (SEND token only) and
 // MIME construction — all against fake Google servers, never the wire.
-// The read/poll surface moved to gws (mail-gws.ts + its test); the
-// multipart/attachment parsing left with it.
+// Reads/polls live in mail-gws.ts.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AuthStore } from "./auth.ts";
@@ -79,7 +78,7 @@ describe("gmail send", () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
 		// Shape drift: Google's contract owes { id, threadId } — a 200
 		// without them must fail loud so the outbox row stays pending,
-		// not record sentId: "" as a lie (audit #8).
+		// not record sentId: "" as a lie.
 		const gmail = serve(() => Response.json({ status: "done, trust me" }));
 		const sender = makeSender({
 			auth: fakeAuth,

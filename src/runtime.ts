@@ -1,5 +1,4 @@
-// Runtime — per-conversation serial queues and authority fencing.
-// Epoch checks gate turn effects and channel delivery; fenced turns still run
+// Per-conversation serial lanes and epoch fencing: fenced turns still run
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
@@ -38,8 +37,8 @@ import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 
 const LOOP_CHECK_EVERY = 16;
-// Completed turns at or above this threshold compact in-lane. The lane stays
-// occupied until the summary finishes so the next turn sees one whole view.
+// Completed turns at/above this compact in-lane — the lane stays occupied
+// until the summary finishes so the next turn sees one whole view.
 const COMPACT_AT_PCT = 75;
 
 export type { ForcedKind } from "./turn/state.ts";
@@ -52,9 +51,9 @@ export type TurnDone =
 	// consumers must treat unknown as not-retryable.
 	| { kind: "error"; message: string; modelCalls?: number; transient?: boolean };
 
-// Every submitted sink receives exactly one terminal notification, including
-// work dropped from the queue. This lets channel sinks release typing and
-// stream resources on completed, fenced, and failed turns alike.
+// Exactly one terminal notification per submitted sink, including work
+// dropped from the queue — channel sinks release typing and stream
+// resources on completed, fenced, and failed turns alike.
 export interface TurnSink {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
@@ -126,13 +125,12 @@ export interface RuntimeDeps {
 			signal: AbortSignal,
 		): Promise<string>;
 	};
-	// Between-turns persisted pruning (DESIGN.md → Cache stability): runs
-	// after the next batch is claimed and before runTurn builds its view,
-	// so committed markers are visible to the admission read. A throw is
-	// logged and the turn proceeds — the projection commit is atomic.
+	// Between-turns persisted pruning: runs after the next batch is
+	// claimed and before runTurn builds its view, so committed markers are
+	// visible to the admission read. A throw is logged and the turn
+	// proceeds — the projection commit is atomic.
 	pruneBetweenTurns?: (convId: string) => void;
-	// The crash journal (design/runtime-turn.md → The turn journal):
-	// each admitted attempt opens a run row before any tool side effect
+	// Each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
 }
@@ -146,12 +144,12 @@ export class FencedError extends Error {
 
 // An operator-resume admission's seed (turn-resume.ts builds it): the
 // interrupted run's carry-over minus the dead attempt's live wire and
-// recall — both re-derive at the fresh admission. `resumedFrom` links
-// the new run row to the source and arms the fence's replay map.
+// recall, both re-derived at the fresh admission. `resumedFrom` links the
+// new run row to the source and arms the fence's replay map.
 export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
-	// The message appended to history; a live predecessor may fold it into its
+	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
 	message: UIMessage;
 	sink: TurnSink;
@@ -188,13 +186,13 @@ interface Lane {
 	live: LiveChunks | null;
 }
 
-// Keep a streaming submit queued behind a headless turn so it can lead its own
-// attempt. A streaming head may claim all pending work; a headless head claims
-// only the leading non-streaming run. A resume seed leads only its own claim —
-// joining another turn as a member would drop its recovery. `headLeads`
-// distinguishes the two claim contexts: the drain's claim promotes pending[0]
-// to head (its seed rides along), while wire/steer claims take members only —
-// a seed at index 0 must stop them too.
+// A streaming submit stays queued behind a headless turn so it can lead its
+// own attempt. A streaming head may claim all pending work; a headless head
+// claims only the leading non-streaming run. A resume seed leads only its own
+// claim — joining another turn as a member would drop its recovery.
+// `headLeads` distinguishes the two claim contexts: the drain's claim
+// promotes pending[0] to head (its seed rides along), while wire/steer
+// claims take members only — a seed at index 0 must stop them too.
 function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
 	const start = headLeads ? 1 : 0;
 	const seeded = pending.findIndex((t, i) => i >= start && t.resumeSeed !== undefined);
@@ -219,10 +217,10 @@ export class Runtime {
 	private lanes = new Map<string, Lane>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
-	// Reviewer state is owned by Reviewer; the runtime only submits snapshots.
-	// The runtime supplies ordering and the prior-turn chain, not gate logic.
+	// The runtime supplies ordering and the prior-turn chain, not gate
+	// logic — Reviewer owns the rest.
 	private reviewer: Reviewer | undefined;
-	// Skill attribution — the stream records turn writes into the catalog.
+	// The stream records turn writes into the catalog.
 	private skillWatch: SkillWatch | undefined;
 	// Optional watchdog; repeat detection and context limits still apply when
 	// it is absent.
@@ -239,8 +237,7 @@ export class Runtime {
 		this.reviewer = reviewer;
 	}
 
-	// Skill attribution (design/skills.md → Skill provenance): the
-	// composition root owns the dirs and the recorder; the stream owns
+	// The composition root owns the dirs and the recorder; the stream owns
 	// the observation. Null unwires it (tests, provenance off).
 	setSkillWatch(watch: SkillWatch | null): void {
 		this.skillWatch = watch ?? undefined;
@@ -276,8 +273,8 @@ export class Runtime {
 
 	// Admission for an operator-resumed turn — turn-resume.ts owns the
 	// validation. The triggering message is already durable history, so
-	// nothing is re-appended; the seed restores what the interrupted
-	// attempt produced. Same lane and authority rules as submitPersisted.
+	// nothing re-appends; the seed restores what the interrupted attempt
+	// produced. Same lane and authority rules as submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
 		return this.admit(conv, message, sink, seed);
 	}

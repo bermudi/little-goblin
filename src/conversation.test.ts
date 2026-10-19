@@ -265,9 +265,9 @@ describe("history payload envelope", () => {
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("legacy")]);
-		// Forcibly age the row back to the pre-envelope format. The read
-		// no longer tolerates the bare shape (W2.2) — it placeholder-
-		// degrades until the next open wraps it.
+		// Forcibly age the row back to the pre-envelope format. The read is
+		// envelope-strict — it placeholder-degrades until the next open
+		// wraps it.
 		store.db.run("UPDATE events SET data = json_extract(data, '$.message')");
 		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
 			"[unreadable history row seq 1 — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]",
@@ -339,7 +339,7 @@ describe("compaction pointers", () => {
 		const marker = (view[0]!.message.parts[0] as { text: string }).text;
 		expect(marker).toContain("newer fold");
 		// The marker names the recovery path: this conversation's id and
-		// the boundary seq (design/model.md → Compaction).
+		// the boundary seq.
 		expect(marker).toContain(`conversation ${c.id}`);
 		expect(marker).toContain("before seq 2");
 		expect(marker).toContain('history_search action="context"');
@@ -385,10 +385,10 @@ describe("compaction pointers", () => {
 	});
 });
 
-// Spin-off (design/app.md → Spin-off): the fork copies the DM's model
-// view — events verbatim, only the latest compaction pointer, memory
-// contexts — into a fresh app conversation; the source never changes
-// and the memory queue never re-enqueues what was already retained.
+// Spin-off: the fork copies the DM's model view — events verbatim, only
+// the latest compaction pointer, memory contexts — into a fresh app
+// conversation; the source never changes and the memory queue never
+// re-enqueues what was already retained.
 describe("memory eligibility", () => {
 	test("eligibility is stamped at append time and survives re-enabling", () => {
 		const path = tmpDb("goblin-test-");

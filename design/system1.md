@@ -56,14 +56,16 @@ logged.
 
 ## Config
 
-The optional hand-edited `system1` block is the shared client's own switch
+The optional bootstrap-only `system1` block is the shared client's own switch
 (ruling 2026-10-12): set, the client exists and its non-reviewer consumers
 attach, `reviewer` block or not (the skill-review gate itself still needs
 `reviewer`); `reviewer` also implies the client, behaving identically.
 `auth` names the `auth.jsonl` record, resolved live per call, falling back
 to `reviewer.auth`; `model` is a bare decision-model id, never a
 `<provider>/<model>` chat ref (deliberately outside provider validation);
-`model`/`baseUrl` are boot-captured, so a hand edit applies on restart.
+`model`/`baseUrl` are boot-captured, so changes require an approved restart.
+This block has no Settings controls yet; file edits follow the bootstrap and
+recovery validation policy in `DESIGN.md` → Config.
 
 With neither block there is no client: the layer is off.
 

@@ -11,7 +11,7 @@ One Bun process, managed as a systemd user unit. It restarts on failure
 
 ```sh
 systemctl --user status goblin    # is it alive?
-systemctl --user restart goblin   # restart (e.g. after hand-editing config)
+systemctl --user restart goblin   # approved restart only; see Deploying
 journalctl --user -u goblin -f    # live logs
 ```
 
@@ -25,11 +25,20 @@ flip, which the approved rollout runs. Client publication and backend
 restart are one coordinated approved rollout;
 the plain Settings client is instead loaded once at backend startup.
 
-After changing `goblin.json5` **by hand**, use an approved restart. Settings
-mini-app saves apply live where supported; boot-pinned settings (such as
-`telegram.apiRoot` and `appToken`) still need a restart. A save patches the
-file in place — comments, key order, and keys the schema doesn't know
-survive; only entries whose parsed value changed are re-serialized.
+Use Settings for routine configuration. Direct `goblin.json5` edits are for
+bootstrap/recovery and advanced blocks without UI controls; validate them
+with [Doctor](#diagnostics-and-first-start-acceptance) from the intended
+checkout before an approved restart. Settings saves apply live where
+supported; boot-pinned settings (such as
+`telegram.apiRoot` and `appToken`) still need a restart. A save validates the
+result through the config schema, then rewrites the file as one canonical
+JSON5 object with defaults materialized: comments and key order do not
+survive, and a config with unknown keys (or malformed JSON5) is refused
+rather than overwritten. The mini app sends the version it loaded
+(`If-Match`); a stale page's save is refused, never merged over newer bytes.
+Before deploying a revision with stricter validation, run Doctor from that
+revision against the existing home: unknown fields must be corrected
+explicitly, not dropped during a save. Reopen Settings after any file edit.
 
 `scripts/install.sh` is **fresh-only**, not an update or repair command. It
 must refuse any existing installed Goblin target, even a stopped one, before
@@ -525,7 +534,7 @@ it only while the bot is stopped, if ever.
 | Key sync fails but the bot still works | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent |
 | Keys unavailable after reboot | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass |
 | Bot runs but never answers | your user id in `operators`? The log names refusals and drops with the id. DM `@userinfobot` to confirm yours |
-| Settings button missing/stale | `publicUrl` in config; mini-app saves apply it without restart, hand-edits need one |
+| Settings button missing/stale | Set `publicUrl` in Settings; saves apply it without restart. Bootstrap/recovery file edits need validation and an approved restart |
 | Mini app won't load / `load failed: 401` | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen |
 | `config would remove your own telegram user id` | the save you're attempting drops your id from `operators` — fix the field, save again |
 | Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |

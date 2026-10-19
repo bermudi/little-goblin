@@ -7,8 +7,10 @@ opt-in capability boundary.
 
 ## Product shape
 
-- **Two hand-edited inputs** — `goblin.json5` and `auth.jsonl` — plus a
-  non-interactive installer. No wizard: a general wizard needs an explicit
+- **Two bootstrap inputs** — `goblin.json5` and `auth.jsonl` — plus a
+  non-interactive installer. Settings owns routine configuration after
+  bootstrap; file edits are for bootstrap/recovery and advanced blocks
+  without UI controls. No wizard: a general wizard needs an explicit
   Product boundary ruling. (The memory installer's explicit model/cost
   prompts are a designed exception, not a precedent.)
 - **Fresh targets only.** The installer refuses an existing installed

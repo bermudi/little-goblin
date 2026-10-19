@@ -1,6 +1,12 @@
 // Copy to $GOBLIN_HOME/goblin.json5 and fill in. No secrets here — those
-// live in auth.jsonl. Editable at runtime via the Telegram mini app
-// (chat menu button when publicUrl is set); hand-editing always works.
+// live in auth.jsonl. Use Settings for routine changes (Telegram's chat
+// menu button when publicUrl is set, or the app). File edits are for
+// bootstrap/recovery and advanced blocks without Settings controls;
+// validate with Doctor before an approved restart.
+//
+// A settings save rewrites the file as the canonical parsed object:
+// comments and key order are not kept, defaults are materialized, and
+// unknown keys are refused at load (a typo fails loud, never stripped).
 //
 // auth.jsonl sits next to this file (mode 0600), one JSON record per line:
 //   {"name": "telegram", "value": "123456:ABC-your-bot-token"}

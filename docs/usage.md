@@ -82,10 +82,15 @@ Files up to 2 GB work if you're running the self-hosted Telegram bot API
 When `publicUrl` is set, the chat has a **Settings** menu button that opens
 a form for common settings: model, title model, favorites, thinking (the
 dropdown only offers levels the chosen model supports), speech,
-transcription, allowed users, URLs, providers, log level. Save applies
-immediately — no restart. It won't let you save a config that removes your
-own user id. Delegation, Gmail, and the skill reviewer still require editing
-`goblin.json5` by hand and restarting; saving in the app preserves them.
+transcription, allowed users, URLs, providers, log level. Use this editor for
+routine configuration. Supported settings apply live; boot-pinned settings
+still need an approved restart. The Telegram mini app won't let you save a
+config that removes your own Telegram user id. Advanced blocks such as
+delegation, Gmail, and the skill reviewer have no controls yet: configure
+them during bootstrap/recovery,
+validate with Doctor, and use an approved restart. Settings preserves their
+validated values. See [Configuration](configuration.md) for the save and
+recovery rules.
 
 Behind the scenes it's a page served by the bot on localhost, loaded by your
 Telegram client over HTTPS — which is why `publicUrl` (a tailnet serve,

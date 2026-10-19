@@ -189,7 +189,7 @@ Consequences:
   utilization warns as input approaches the catalog limit. Compaction is an
   explicit logged boundary starting a fresh stable prefix — never silent
   eviction (see Compaction).
-- Pruning old textual tool results is opt-in through the hand-edited
+- Pruning old textual tool results is opt-in through the bootstrap-only
   `cachePruning` config block (profiles of route key + settings hash). A
   committed projection is a sanctioned rewrite of the model-facing view
   only — the `events` row is never modified, and the marker replays
@@ -241,10 +241,20 @@ agent-lane snapshots) — see [Auth](design/auth.md#proton-pass-2026-09-26).
 capability off; each block's policy lives in its area doc). No secrets —
 `auth.jsonl` holds those.
 
-**Settings are operator-facing UI, not SSH.** The mini app is the
-configuration surface: the process reads and writes `goblin.json5` itself,
-and the operator changes settings from Telegram. Editing the file by hand
-always works; it is never required.
+**One canonical object.** A save parses settings through the schema and
+rewrites the file whole (tmp+fsync+rename, existing mode preserved) — text is
+never patched in place. Comments and key order are not configuration and are
+dropped by a save; unknown keys are rejected at load, not stripped, so a typo
+fails loud. Malformed JSON5 or a schema-invalid incumbent also fails loud — a
+save never resets it silently. Save freshness rides the mini app's `If-Match`
+version, so competing saves cannot silently overwrite each other.
+
+**Settings owns routine configuration.** The app and Telegram mini app share
+the supported settings editor; `goblin.json5` is its persisted state, not a
+parallel editing interface. Direct file edits are reserved for bootstrap and
+recovery, including advanced blocks not yet exposed in Settings. Validate
+those edits with Doctor before an approved restart; the next Settings save
+canonicalizes the file.
 
 ## Module map
 

@@ -167,6 +167,18 @@ describe("diagnostic boundary and phases", () => {
 		);
 		expect(JSON.stringify(await runHealth(f.options))).not.toContain(secret);
 	});
+	test("retired delegation keys don't fail the config check — the disk load strips them", async () => {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				...f.config,
+				delegation: { harnesses: { fixture: { kind: "fixture" } }, maxRunning: 2 },
+			}),
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "config").status).toBe("pass");
+	});
 	test("auth strict poison scan covers live records, mode and missing effective references; never executes refs", async () => {
 		const f = fixture(),
 			marker = join(f.root, "executed");

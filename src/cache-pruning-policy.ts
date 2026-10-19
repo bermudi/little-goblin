@@ -18,6 +18,7 @@ export const cachePruningProfileSchema = z
 		validUntil: z.iso.datetime(),
 		evidence: z.enum(["documented-expiry", "empirical"]),
 	})
+	.strict()
 	.superRefine((profile, ctx) => {
 		if (Date.parse(profile.validUntil) <= Date.parse(profile.reviewedAt))
 			ctx.addIssue({ code: "custom", message: "validUntil must follow reviewedAt" });
@@ -32,6 +33,7 @@ export const cachePruningSchema = z
 		retainTailChars: z.number().int().nonnegative(),
 		profiles: z.array(cachePruningProfileSchema).min(1),
 	})
+	.strict()
 	.superRefine((policy, ctx) => {
 		if (policy.retainHeadChars + policy.retainTailChars >= policy.minimumResultChars)
 			ctx.addIssue({

@@ -6,10 +6,29 @@ otherwise). Settings go in one, secrets in the other — never the twain.
 - `goblin.json5` — everything adjustable. No secrets here, ever.
 - `auth.jsonl` — secrets. Mode `0600`.
 
-You can edit `goblin.json5` by hand or from the Telegram Settings mini app —
-both write the same file. The mini app refuses to save a config that drops
-your own user id (that would lock you out), and it merges over what's
-currently on disk so a hand-edit you made doesn't get silently discarded.
+Use **Settings** in the app or Telegram mini app for routine changes.
+`goblin.json5` is the persisted configuration, not a parallel editing
+interface. The Telegram mini app refuses to save a config that drops your
+own Telegram user id (that would lock you out).
+A save validates the incoming settings, then rewrites the file whole, as
+one canonical JSON5 object with every default materialized. Comments and
+key order are not configuration and do not survive a save; unknown keys
+anywhere in the file are refused at load rather than silently stripped, so
+a typo fails loud. Save freshness is guarded: the mini app sends the
+version it loaded (`If-Match`), and a save from a stale page is refused
+instead of overwriting a newer one.
+
+Direct file edits are for bootstrap and recovery, including advanced blocks
+that do not yet have Settings controls. Start from `goblin.json5.example`,
+keep secrets in `auth.jsonl`, and validate with
+[Doctor](operations.md#diagnostics-and-first-start-acceptance) from the intended
+checkout before an approved restart. Reopen Settings afterward to load the
+current version. A malformed or schema-invalid existing file blocks saves;
+Settings will not silently reset it.
+
+When updating to strict unknown-key validation, check the existing file with
+Doctor from the new checkout before deployment. Unknown top-level or nested
+fields must be corrected explicitly; they are never silently discarded.
 
 ## `goblin.json5`
 
@@ -209,8 +228,9 @@ on, the container can reach the internet **and** your LAN/tailnet, so
 the safe pattern for untrusted code is enable → download → disable →
 run. See [Sandbox](../design/sandbox.md) for the measured wall.
 
-The block is hand-edited (the Settings app round-trips it untouched);
-a save mounts or unmounts the tool on the next turn. `image` must
+This advanced block has no Settings controls yet; configure it during
+bootstrap or recovery, validate it with Doctor, and use an approved restart.
+Settings preserves its validated values when saving other settings. `image` must
 already be pulled — the bot never pulls (`--pull=never`); a missing
 image errors with the exact `podman pull` line to run. Containers are
 kept until `reset` or the idle reap: every sandbox call sweeps
@@ -264,8 +284,8 @@ http: { port: 8787 },
   `/api/app/*` demands (the app prompts for the token value once, then
   stores it on the device). Unset = trust mode: every `/api/app/*` request
   passes unauthenticated — fine when the only door is tailnet, **wrong**
-  when `publicUrl` is a funnel address. Boot-pinned: changing it by hand
-  needs a restart.
+  when `publicUrl` is a funnel address. Boot-pinned: changes need an approved
+  restart.
 - `logLevel` — `debug` | `info` | `warn` | `error` (default `info`).
 
 ## `auth.jsonl`

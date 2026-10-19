@@ -12,6 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import JSON5 from "json5";
 import {
 	authReferences,
 	type Config,
@@ -590,16 +591,15 @@ describe("goblin.json5", () => {
 		expect(readFileSync(join(dir, "goblin.json5"), "utf8")).toContain("auth: 'brave'");
 	});
 
-	test("writeConfig patches in place — comments, order, and unknown keys survive", () => {
+	test("writeConfig rewrites the whole file as the canonical parsed object", () => {
 		const dir = useHome("goblin-cfg-");
 		const p = join(dir, "goblin.json5");
 		writeFileSync(
 			p,
 			`{
-  // never lose this
+  // operator note — comments are not configuration
   providers: { ${P_ZAI} },
   model: "zai/glm-4.6",
-  experimental: { notInSchema: true }, // the operator's own field
   operators: [7],
   thinking: "low",
 }
@@ -608,15 +608,13 @@ describe("goblin.json5", () => {
 		const cfg = loadConfig()!;
 		writeConfig({ ...cfg, thinking: "high" });
 		const out = readFileSync(p, "utf8");
-		expect(out).toContain("// never lose this");
-		expect(out).toContain("experimental: { notInSchema: true }, // the operator's own field");
-		expect(out).toContain("thinking: 'high'");
-		expect(out).toContain('model: "zai/glm-4.6",'); // untouched line verbatim
+		expect(out).toBe(`${JSON5.stringify(parseConfig({ ...cfg, thinking: "high" }), null, 2)}\n`);
+		expect(out).not.toContain("operator note");
 		expect(loadConfig()!.thinking).toBe("high");
 	});
 
 	for (const configured of [false, true]) {
-		test(`writeConfig clears optional integrations without losing comments (configured=${configured})`, () => {
+		test(`writeConfig clears optional integrations in the canonical object (configured=${configured})`, () => {
 			useHome("goblin-cfg-");
 			const original = parseConfig({
 				...valid,
@@ -628,17 +626,7 @@ describe("goblin.json5", () => {
 						}
 					: {}),
 			});
-			const { transcription, search, fetch, ...rest } = original;
-			const text = `// keep this comment\n${JSON.stringify(
-				{
-					...rest,
-					experimental: { keep: true },
-					...(configured ? { transcription, search, fetch } : {}),
-				},
-				null,
-				2,
-			)}\n`;
-			writeFileSync(paths.config(), text);
+			writeFileSync(paths.config(), `${JSON5.stringify(original, null, 2)}\n`);
 			const cleared = parseConfig({ ...original, transcription: "", search: "", fetch: "" });
 			expect(Object.hasOwn(cleared, "transcription")).toBe(true);
 			expect(cleared.transcription).toBeUndefined();
@@ -646,14 +634,12 @@ describe("goblin.json5", () => {
 			writeConfig(cleared);
 
 			const out = readFileSync(paths.config(), "utf8");
-			expect(out).toContain("// keep this comment");
-			expect(out).toContain('"experimental": {\n    "keep": true\n  }');
+			expect(out).toBe(`${JSON5.stringify(cleared, null, 2)}\n`);
 			const loaded = loadConfig()!;
 			for (const key of ["transcription", "search", "fetch"] as const) {
 				expect(loaded[key]).toBeUndefined();
-				expect(out).not.toContain(`"${key}":`);
+				expect(out).not.toContain(`${key}:`);
 			}
-			if (!configured) expect(out).toBe(text);
 		});
 	}
 
@@ -663,17 +649,34 @@ describe("goblin.json5", () => {
 		expect(loadConfig()).toEqual(parseConfig(valid));
 	});
 
-	test("writeConfig can enable an integration after a comma-less tail comment", () => {
+	test("unknown fields are rejected at load and preserved untouched on a refused save", () => {
+		const dir = useHome("goblin-cfg-");
+		const p = join(dir, "goblin.json5");
+		const text = `${JSON.stringify({ ...valid, experimental: { notInSchema: true } }, null, 2)}\n`;
+		writeFileSync(p, text);
+		expect(() => loadConfig()).toThrow("config: unrecognized_keys");
+		expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow("config: unrecognized_keys");
+		expect(readFileSync(p, "utf8")).toBe(text);
+	});
+
+	test("unknown fields inside a block are rejected too", () => {
+		const cases: [string, Record<string, unknown>][] = [
+			["telegram", { ...valid.telegram, typo: true }],
+			["providers", { zai: { kind: "codex", extra: true } }],
+		];
+		for (const [name, value] of cases) {
+			useHome("goblin-cfg-");
+			writeFileSync(paths.config(), JSON.stringify({ ...valid, [name]: value }));
+			expect(() => loadConfig()).toThrow(`${name}: unrecognized_keys`);
+		}
+	});
+
+	test("writeConfig refuses to reset a schema-invalid existing file", () => {
 		useHome("goblin-cfg-");
-		const original = parseConfig(valid);
-		const text = JSON.stringify({ ...original, experimental: true }, null, 2).replace(
-			/\n}$/,
-			" // tail note\n}",
-		);
+		const text = `${JSON.stringify({ model: "zai/glm-4.6" }, null, 2)}\n`;
 		writeFileSync(paths.config(), text);
-		writeConfig({ ...original, transcription: { kind: "whistle" } });
-		expect(loadConfig()!.transcription).toEqual({ kind: "whistle" });
-		expect(readFileSync(paths.config(), "utf8")).toContain('"experimental": true, // tail note');
+		expect(() => writeConfig(valid)).toThrow(`${paths.config()}: invalid config`);
+		expect(readFileSync(paths.config(), "utf8")).toBe(text);
 	});
 
 	test("writeConfig leaves malformed JSON5 intact", () => {
@@ -689,7 +692,7 @@ describe("goblin.json5", () => {
 		() => {
 			useHome("goblin-cfg-");
 			const p = paths.config();
-			const text = `// keep this comment\n${JSON.stringify({ ...valid, experimental: true })}\n`;
+			const text = `${JSON.stringify(valid)}\n`;
 			writeFileSync(p, text);
 			chmodSync(p, 0o000);
 			try {
@@ -707,13 +710,14 @@ describe("goblin.json5", () => {
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome("goblin-cfg-");
 		const p = join(dir, "goblin.json5");
-		writeFileSync(p, "{}");
+		writeFileSync(p, JSON.stringify(valid));
 		chmodSync(p, 0o600);
-		writeConfig(valid);
+		writeConfig({ ...valid, thinking: "high" });
 		expect(statSync(p).mode & 0o777).toBe(0o600);
 		// and it round-trips — including the explicit tts off
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
 		expect(loadConfig()!.tts).toBe(false);
+		expect(loadConfig()!.thinking).toBe("high");
 	});
 
 	test("subagents: absent block is off; block applies the design defaults", () => {
@@ -1211,11 +1215,12 @@ describe("transcriptionKinds", () => {
 	});
 
 	test("chains are depth-one and bounded — no nesting, max four links", () => {
-		const nested = transcriptionSchema.parse({
-			kind: "groq",
-			fallbacks: [{ kind: "whistle", fallbacks: [{ kind: "groq" }] }],
-		});
-		expect(nested.fallbacks?.[0]).not.toHaveProperty("fallbacks");
+		expect(() =>
+			transcriptionSchema.parse({
+				kind: "groq",
+				fallbacks: [{ kind: "whistle", fallbacks: [{ kind: "groq" }] }],
+			}),
+		).toThrow();
 		const five = Array.from({ length: 5 }, () => ({ kind: "whistle" }));
 		expect(transcriptionSchema.safeParse({ kind: "groq", fallbacks: five }).success).toBe(false);
 		expect(

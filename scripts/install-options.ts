@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
 import { parseAuthFile, parsePassKeysGet, passKeysCommandExecutable } from "../src/auth.ts";
-import { authReferences, parseConfig, paths } from "../src/config.ts";
-import JSON5 from "json5";
+import { authReferences, parseConfigFile, paths } from "../src/config.ts";
 
 try {
-	const config = parseConfig(JSON5.parse(readFileSync(paths.config(), "utf8")) as unknown);
+	const config = parseConfigFile(readFileSync(paths.config(), "utf8"));
 	const records = parseAuthFile(readFileSync(paths.auth(), "utf8"));
 	// Profile names are data, not installer constants — the warmer is
 	// rendered from these, so only the record shape is enforced here;

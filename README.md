@@ -7,13 +7,10 @@ running on your own machine. Talk to it in a chat; it answers, runs shell
 commands, reads and writes files, handles photos and voice notes, and can
 speak replies back as voice notes.
 
-This is a rewrite of the original `little-goblin` on the Vercel AI SDK
-(see `DESIGN.md` for why). v1 was retired at the cutover — nothing was
-shared between the versions (no code, no state, no specs). This codebase
-runs in one place: g7, this tree — prod since 2026-10-09 (lithium ran
-prod until then). `scripts/deploy.sh` gates, refreshes, and restarts locally;
-publishing to GitHub is separate
-(see [`docs/operations.md`](docs/operations.md)).
+Built on the Vercel AI SDK — `DESIGN.md` covers the why and the
+non-goals. It runs in one place: g7, this tree; `scripts/deploy.sh`
+gates, refreshes, and restarts locally, and publishing to GitHub is
+separate (see [`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph
 
@@ -108,6 +105,6 @@ systemctl --user restart goblin  # restart
 - [`docs/skills.md`](docs/skills.md) — teaching the bot repeatable tasks
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
 - [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
-- [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in, live since 2026-09-24
+- [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in
 - [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — the design spec (why it's built this way)
 - [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

@@ -331,9 +331,46 @@ async function transcribeOne(engine: SpeechEngine, file: SpeechFile): Promise<st
 	return text === "" ? null : text;
 }
 
+// One file against the configured chain: engines run in order, a
+// throw advances to the next — each gets the full orchestration (cap,
+// segmentation). null ("no speech") is a successful answer from the
+// engine that produced it, never a retry trigger. A whole failed
+// chain throws one error naming each engine — the recorded
+// transcriptionError stays readable (bounded per link).
+export async function transcribeChain(
+	engines: SpeechEngine[],
+	file: SpeechFile,
+	opts: TranscribeOptions = {},
+): Promise<string | null> {
+	if (engines.length === 0) return null;
+	if (engines.length === 1) {
+		return transcribeAudio(engines[0]!, file, opts);
+	}
+	const errors: string[] = [];
+	for (const [i, engine] of engines.entries()) {
+		try {
+			return await transcribeAudio(engine, file, opts);
+		} catch (err) {
+			errors.push(
+				`${engine.id}: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`,
+			);
+			const next = engines[i + 1];
+			if (next !== undefined) {
+				log.warn("transcription failed — trying fallback", err, {
+					engine: engine.id,
+					next: next.id,
+				});
+			}
+		}
+	}
+	throw new Error(errors.join(" | "));
+}
+
 // The intake/tool call seam — reads the live config per call so a
 // mini-app save applies to the next voice note; absent block answers
 // null. boot() builds it once and hands the closure to makeTools.
+// The block's own kind is the primary; `fallbacks` run in order —
+// whistle-last is the free safety net, cloud kinds bill per call.
 export function makeTranscriber(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;
@@ -341,7 +378,10 @@ export function makeTranscriber(deps: {
 	return (file) => {
 		const cfg = deps.configRef.current.transcription;
 		if (!cfg) return Promise.resolve(null);
-		return transcribeAudio(speechEngine(cfg, deps.auth), file);
+		return transcribeChain(
+			[cfg, ...(cfg.fallbacks ?? [])].map((e) => speechEngine(e, deps.auth)),
+			file,
+		);
 	};
 }
 
@@ -353,10 +393,10 @@ export function makeTranscriber(deps: {
 // probe fails on a configured tts block.
 export async function checkBootMedia(config: Config, configRef: ConfigRef): Promise<void> {
 	if (config.transcription || config.tts) {
-		const wavKind =
-			config.transcription?.kind === "whistle" || config.transcription?.kind === "mimo"
-				? config.transcription.kind
-				: undefined;
+		const chain = [config.transcription, ...(config.transcription?.fallbacks ?? [])].filter(
+			(c) => c !== undefined,
+		);
+		const wavKind = chain.find((c) => c.kind === "whistle" || c.kind === "mimo")?.kind;
 		const feature = config.tts
 			? "tts"
 			: wavKind !== undefined
@@ -380,9 +420,16 @@ export async function checkBootMedia(config: Config, configRef: ConfigRef): Prom
 	}
 	if (config.transcription) {
 		const tr = config.transcription;
+		const whistle = [tr, ...(tr.fallbacks ?? [])].find((e) => e.kind === "whistle");
 		log.info("transcription enabled", {
 			kind: tr.kind,
 			...(tr.kind === "whistle" ? whistleArtifactPresence(tr) : { model: tr.model, auth: tr.auth }),
+			...(tr.fallbacks?.length ? { fallbacks: tr.fallbacks.map((f) => f.kind) } : {}),
+			// A whistle fallback's artifacts matter too — first real use
+			// hits the digest-pinned fetch path, not a silent download.
+			...(whistle !== undefined && tr.kind !== "whistle"
+				? { whistle: whistleArtifactPresence(whistle) }
+				: {}),
 		});
 	}
 }

@@ -643,32 +643,65 @@ const cloudTranscriptionSchema = (
 		language: transcriptionLanguage.optional(),
 	});
 
+// One chain link — a fallback entry carries no fallbacks of its own,
+// so the chain is depth-one by construction.
+const whistleEntry = z.object({
+	kind: z.literal("whistle"),
+	engine: z.string().min(1).optional(),
+	weights: z.string().min(1).optional(),
+	keywords: z.array(z.string().min(1)).max(100).optional(),
+	language: z.enum(["en", "de", "fr", "es", "it", "nl", "pl"]).optional(),
+});
+const groqEntry = cloudTranscriptionSchema("groq");
+const openaiEntry = cloudTranscriptionSchema("openai");
+const openrouterEntry = cloudTranscriptionSchema("openrouter");
+const mistralEntry = cloudTranscriptionSchema("mistral");
+const elevenlabsEntry = cloudTranscriptionSchema("elevenlabs");
+const geminiEntry = cloudTranscriptionSchema("gemini");
+// MiMo first-party (api.xiaomimimo.com) — its asr_options.language
+// vocabulary is closed, so it gets the enum, not the ISO free string.
+const mimoEntry = z.object({
+	kind: z.literal("mimo"),
+	model: z.string().min(1).default(transcriptionDefaults.mimo.model),
+	auth: z.string().min(1).default(transcriptionDefaults.mimo.auth),
+	language: z.enum(["auto", "zh", "en"]).optional(),
+});
+const logfareEntry = cloudTranscriptionSchema("logfare");
+
+const transcriptionEntrySchema = z.union([
+	whistleEntry,
+	groqEntry,
+	openaiEntry,
+	openrouterEntry,
+	mistralEntry,
+	elevenlabsEntry,
+	geminiEntry,
+	mimoEntry,
+	logfareEntry,
+]);
+export type TranscriptionEntry = z.infer<typeof transcriptionEntrySchema>;
+
+// The retry chain (design/asr.md → Non-goals, chain ruling): the
+// block's own kind first, then `fallbacks` in order — an engine
+// failure tries the next entry; a produced transcript (or a genuine
+// "no speech" null) ends it. Cap keeps the failure path bounded.
+const fallbackField = {
+	fallbacks: z.array(transcriptionEntrySchema).max(4).optional(),
+};
+
 export const transcriptionSchema = z.union([
 	// Local engine — no model, no auth. engine/weights bypass the
 	// digest-pinned auto-fetch for managed installs; keywords bias the
 	// decoder toward names (the personal-assistant failure mode).
-	z.object({
-		kind: z.literal("whistle"),
-		engine: z.string().min(1).optional(),
-		weights: z.string().min(1).optional(),
-		keywords: z.array(z.string().min(1)).max(100).optional(),
-		language: z.enum(["en", "de", "fr", "es", "it", "nl", "pl"]).optional(),
-	}),
-	cloudTranscriptionSchema("groq"),
-	cloudTranscriptionSchema("openai"),
-	cloudTranscriptionSchema("openrouter"),
-	cloudTranscriptionSchema("mistral"),
-	cloudTranscriptionSchema("elevenlabs"),
-	cloudTranscriptionSchema("gemini"),
-	// MiMo first-party (api.xiaomimimo.com) — its asr_options.language
-	// vocabulary is closed, so it gets the enum, not the ISO free string.
-	z.object({
-		kind: z.literal("mimo"),
-		model: z.string().min(1).default(transcriptionDefaults.mimo.model),
-		auth: z.string().min(1).default(transcriptionDefaults.mimo.auth),
-		language: z.enum(["auto", "zh", "en"]).optional(),
-	}),
-	cloudTranscriptionSchema("logfare"),
+	whistleEntry.extend(fallbackField),
+	groqEntry.extend(fallbackField),
+	openaiEntry.extend(fallbackField),
+	openrouterEntry.extend(fallbackField),
+	mistralEntry.extend(fallbackField),
+	elevenlabsEntry.extend(fallbackField),
+	geminiEntry.extend(fallbackField),
+	mimoEntry.extend(fallbackField),
+	logfareEntry.extend(fallbackField),
 ]);
 
 // Chain-entry kinds for search/fetch builders — config.test.ts pins

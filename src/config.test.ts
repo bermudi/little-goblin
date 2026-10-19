@@ -1053,6 +1053,48 @@ describe("transcriptionKinds", () => {
 			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(100).fill("x") }).success,
 		).toBe(true);
 	});
+
+	test("fallbacks are ordered chain entries with kind-scoped validation", () => {
+		const parsed = transcriptionSchema.parse({
+			kind: "groq",
+			fallbacks: [{ kind: "openrouter" }, { kind: "whistle", keywords: ["goblin"] }],
+		});
+		expect(parsed.fallbacks).toHaveLength(2);
+		expect(parsed.fallbacks?.[0]).toMatchObject({
+			kind: "openrouter",
+			model: transcriptionDefaults.openrouter.model,
+			auth: transcriptionDefaults.openrouter.auth,
+		});
+		expect(parsed.fallbacks?.[1]).toMatchObject({ kind: "whistle" });
+	});
+
+	test("a fallback entry's own kind rules still apply — no free-for-all", () => {
+		expect(
+			transcriptionSchema.safeParse({ kind: "groq", fallbacks: [{ kind: "bogus" }] }).success,
+		).toBe(false);
+		expect(
+			transcriptionSchema.safeParse({ kind: "groq", fallbacks: [{ model: "x" }] }).success,
+		).toBe(false);
+		expect(
+			transcriptionSchema.safeParse({
+				kind: "groq",
+				fallbacks: [{ kind: "mimo", language: "es" }],
+			}).success,
+		).toBe(false);
+	});
+
+	test("chains are depth-one and bounded — no nesting, max four links", () => {
+		const nested = transcriptionSchema.parse({
+			kind: "groq",
+			fallbacks: [{ kind: "whistle", fallbacks: [{ kind: "groq" }] }],
+		});
+		expect(nested.fallbacks?.[0]).not.toHaveProperty("fallbacks");
+		const five = Array.from({ length: 5 }, () => ({ kind: "whistle" }));
+		expect(transcriptionSchema.safeParse({ kind: "groq", fallbacks: five }).success).toBe(false);
+		expect(
+			transcriptionSchema.safeParse({ kind: "groq", fallbacks: five.slice(0, 4) }).success,
+		).toBe(true);
+	});
 });
 
 const sentinel = "SYNTHETIC_CONFIG_INPUT_DO_NOT_ECHO";

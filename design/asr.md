@@ -62,6 +62,9 @@ transcription: {
   keywords: ["goblin", "bermudi"],  // optional — keyword bias (≤100)
   // cloud kinds carry model + auth; auth defaults to the kind name:
   // model: "whisper-large-v3-turbo", auth: "groq"
+  // ordered retry after the primary kind throws — each entry is a
+  // chain link (an entry cannot carry fallbacks of its own):
+  // fallbacks: [{ kind: "openrouter" }, { kind: "whistle" }],
 }
 ```
 
@@ -101,6 +104,14 @@ Kinds (`zod` discriminated union in `config.ts`):
 - Optional `language` passthrough on every kind (ISO-639-1; whistle's enum,
   elevenlabs also accepts 639-3, mimo its own closed enum). Omitted =
   detect everywhere.
+- `fallbacks` (≤4) turns the block into an ordered retry chain: the
+  block's own kind first, then each entry on engine failure only — a
+  produced transcript or a genuine "no speech" `null` ends the run.
+  Depth is one by construction (an entry carries no fallbacks of its
+  own), and a fully failed chain throws one error naming each engine,
+  so the recorded `transcriptionError` keeps every link's reason. Each
+  link gets the full orchestration — cap check, segmentation — so a
+  wav-profile fallback (whistle, mimo) still transcodes first.
 - **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are doc-pinned,
   not live-probed (no local key at implementation time). Logfare is an
   OpenAI-compatible relay — its docs note requests may be logged
@@ -224,10 +235,13 @@ anywhere, throw = failure. The size-cap decision generalizes:
 
 ## Non-goals
 
-- **No fallback chains** for transcription. Search/fetch chains exist
-  because lookups are cheap and failure-prone; a transcript is one
-  deliberate artifact. One kind, explicit. (The interface makes a chain a
-  config feature later if it's ever wanted.)
+- **Chains stay shallow.** Search/fetch chains exist because lookups
+  are cheap and failure-prone; a transcript is one deliberate artifact,
+  so the retry is the operator's explicit `fallbacks` list — ordered,
+  depth-one, capped at four — never a model-improvised engine hop
+  (2026-10-19: a groq quota failure once produced a bash-needle
+  "fallback"; whistle belongs last in a written chain, not in a tool
+  call).
 - **No whisper.cpp/sherpa/parakeet probing.** Whistle is the local engine.
   Candidate detection is openclaw's answer to shipping to unknown machines;
   goblin has two.

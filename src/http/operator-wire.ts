@@ -50,6 +50,9 @@ export interface ConfigPostBody {
 	// Absent/blank fields mean "the kind's default" (model, auth) or
 	// "detect" (language); keywords/engine/weights are whistle-only and
 	// round-tripped untouched so a page save never drops hand edits.
+	// `fallbacks` is the ordered retry chain — same entry shape minus a
+	// chain of its own; the form can't render it but carries it like
+	// the other hand-edit fields.
 	transcription:
 		| ""
 		| {
@@ -60,6 +63,15 @@ export interface ConfigPostBody {
 				keywords?: string[];
 				engine?: string;
 				weights?: string;
+				fallbacks?: {
+					kind: (typeof transcriptionKinds)[number];
+					model?: string | undefined;
+					auth?: string | undefined;
+					language?: string | undefined;
+					keywords?: string[] | undefined;
+					engine?: string | undefined;
+					weights?: string | undefined;
+				}[];
 		  };
 	// mode is a hand-edit escape hatch the form round-trips untouched.
 	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };

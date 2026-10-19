@@ -48,6 +48,22 @@ files are segmented automatically whatever the kind; openrouter warns
 of ~60 s upstream processing per request, so prefer whistle or groq
 for hour-long recordings.
 
+When the primary engine can fail in a way a retry fixes — a quota, an
+outage — `fallbacks` lists the backups, tried in order after the
+primary throws. A produced transcript (or genuine silence) ends the
+chain; nothing falls back implicitly, so whistle only runs where you
+place it — last, as the free keyless safety net:
+
+```json5
+transcription: {
+  kind: "groq",
+  fallbacks: [
+    { kind: "openrouter", model: "openai/whisper-large-v3" },
+    { kind: "whistle" }, // last resort — local, no key
+  ],
+},
+```
+
 With transcription set, every voice note and video note is transcribed
 once, when it arrives — before the model ever sees it. The transcript is
 stored with the message, permanently. Models that can hear audio get the

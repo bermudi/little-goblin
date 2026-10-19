@@ -10,6 +10,7 @@ import type {
 	MemoryConfig,
 	ProviderConfig,
 	ThinkingLevel,
+	TranscriptionEntry,
 	transcriptionKinds,
 } from "../../src/config.ts";
 import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
@@ -120,10 +121,23 @@ export interface TrDraft {
 	keywords: string[];
 	engine: string;
 	weights: string;
+	// Ordered retry chain — hand-edit-only like keywords/engine/weights,
+	// so the form carries it verbatim rather than dropping a configured
+	// chain on save.
+	fallbacks: TranscriptionEntry[] | undefined;
 }
 
 export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft {
-	return { kind, model: "", auth: "", language: "", keywords: [], engine: "", weights: "" };
+	return {
+		kind,
+		model: "",
+		auth: "",
+		language: "",
+		keywords: [],
+		engine: "",
+		weights: "",
+		fallbacks: undefined,
+	};
 }
 
 // The identity fields — model + auth — don't carry across kinds: a groq
@@ -190,6 +204,7 @@ function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
 		keywords?: string[] | undefined;
 		engine?: string | undefined;
 		weights?: string | undefined;
+		fallbacks?: TranscriptionEntry[] | undefined;
 	} = t;
 	return {
 		kind: w.kind,
@@ -199,11 +214,13 @@ function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {
 		keywords: [...(w.keywords ?? [])],
 		engine: w.engine || "",
 		weights: w.weights || "",
+		fallbacks: w.fallbacks ? [...w.fallbacks] : undefined,
 	};
 }
 
 function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcription"]> {
 	const language = t.language.trim();
+	const fallbacks = t.fallbacks !== undefined && t.fallbacks.length > 0 ? { fallbacks: [...t.fallbacks] } : {};
 	if (t.kind === "whistle") {
 		return {
 			kind: "whistle",
@@ -211,6 +228,7 @@ function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcriptio
 			...(t.keywords.length ? { keywords: [...t.keywords] } : {}),
 			...(t.engine.trim() ? { engine: t.engine.trim() } : {}),
 			...(t.weights.trim() ? { weights: t.weights.trim() } : {}),
+			...fallbacks,
 		};
 	}
 	// Blank cloud fields fall back to the kind's defaults on the server.
@@ -219,6 +237,7 @@ function transcriptionBody(t: TrDraft): NonNullable<ConfigPostBody["transcriptio
 		...(t.model.trim() ? { model: t.model.trim() } : {}),
 		...(t.auth.trim() ? { auth: t.auth.trim() } : {}),
 		...(language ? { language } : {}),
+		...fallbacks,
 	};
 }
 export interface VisDraft {

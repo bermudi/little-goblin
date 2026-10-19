@@ -418,6 +418,36 @@ describe("transcription block", () => {
 		});
 	});
 
+	test("a configured fallback chain survives a settings save verbatim", () => {
+		const c = baseConfig();
+		c.transcription = {
+			kind: "groq",
+			model: "whisper-large-v3-turbo",
+			auth: "groq",
+			language: "en",
+			fallbacks: [
+				{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
+				{ kind: "whistle", keywords: ["goblin"] },
+			],
+		};
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(validateDraft(d, providers)).toBeNull();
+		// The form can't render the chain, but a save must not destroy it.
+		const body = bodyFromDraft(d, providers, authDefaults);
+		expect(body.transcription).toEqual({
+			kind: "groq",
+			model: "whisper-large-v3-turbo",
+			auth: "groq",
+			language: "en",
+			fallbacks: [
+				{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
+				{ kind: "whistle", keywords: ["goblin"] },
+			],
+		});
+		const saved = parseConfig({ ...c, ...body });
+		expect(saved.transcription?.fallbacks?.map((f) => f.kind)).toEqual(["openrouter", "whistle"]);
+	});
+
 	test("a cloud save sends only the fields the operator filled, defaults left to the server", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		const body = bodyFromDraft(

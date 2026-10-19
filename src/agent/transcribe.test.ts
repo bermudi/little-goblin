@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { transcribeAudio, type EngineTranscript, type SpeechEngine } from "./transcribe.ts";
+import {
+	transcribeAudio,
+	transcribeChain,
+	type EngineTranscript,
+	type SpeechEngine,
+} from "./transcribe.ts";
 import { tmpDir } from "../testkit.ts";
 
 // Fake engine: returns canned transcripts and records what it was fed.
@@ -274,5 +279,105 @@ describe("transcribeAudio", () => {
 		await expect(
 			transcribeAudio(keepEngine("x"), file(join(tmpDir("goblin-tr-"), "gone.ogg"))),
 		).rejects.toThrow();
+	});
+});
+
+describe("transcribeChain", () => {
+	// A keep-profile engine with a distinct id — the chain's log line
+	// and combined error are keyed on it.
+	const idEngine = (
+		id: string,
+		run: (f: { path: string }) => Promise<EngineTranscript>,
+	): SpeechEngine => ({
+		id,
+		limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+		prep: { container: "keep" },
+		transcribe: run,
+	});
+
+	test("primary success never invokes the fallback", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		let fallbackCalls = 0;
+		const result = await transcribeChain(
+			[
+				idEngine("groq/x", async () => ({ text: "primary answer" })),
+				idEngine("whistle", async () => {
+					fallbackCalls += 1;
+					return { text: "fallback answer" };
+				}),
+			],
+			file(f),
+		);
+		expect(result).toBe("primary answer");
+		expect(fallbackCalls).toBe(0);
+	});
+
+	test("a thrown primary advances to the fallback's transcript", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		const result = await transcribeChain(
+			[
+				idEngine("groq/x", () => Promise.reject(new Error("HTTP 413"))),
+				idEngine("whistle", async () => ({ text: "rescued" })),
+			],
+			file(f),
+		);
+		expect(result).toBe("rescued");
+	});
+
+	test("no-speech null is an answer, not a retry trigger", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		let fallbackCalls = 0;
+		const result = await transcribeChain(
+			[
+				idEngine("groq/x", async () => ({ text: "   " })),
+				idEngine("whistle", async () => {
+					fallbackCalls += 1;
+					return { text: "hallucinated speech" };
+				}),
+			],
+			file(f),
+		);
+		// A second engine disagreeing would manufacture speech — the
+		// primary's null is definitive.
+		expect(result).toBeNull();
+		expect(fallbackCalls).toBe(0);
+	});
+
+	test("a fully failed chain throws one error naming each engine", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		await expect(
+			transcribeChain(
+				[
+					idEngine("groq/x", () => Promise.reject(new Error("HTTP 413"))),
+					idEngine("whistle", () => Promise.reject(new Error("engine binary missing"))),
+				],
+				file(f),
+			),
+		).rejects.toThrow("groq/x: HTTP 413 | whistle: engine binary missing");
+	});
+
+	test("a lone engine throws verbatim — no chain decoration", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		await expect(
+			transcribeChain(
+				[idEngine("groq/x", () => Promise.reject(new Error("HTTP 413")))],
+				file(f),
+			),
+		).rejects.toThrow("HTTP 413");
+	});
+
+	test("no engines configured answers null", async () => {
+		const f = join(tmpDir("goblin-tr-"), "v.ogg");
+		expect(await transcribeChain([], file(f))).toBeNull();
 	});
 });

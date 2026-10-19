@@ -118,6 +118,12 @@
   // transcription: { kind: "gemini" },    // gemini-flash-latest
   // transcription: { kind: "mimo" },      // mimo-v2.5-asr — Xiaomi first-party
   // transcription: { kind: "logfare" },   // whisper-large-v3-turbo (or nova-3)
+  // Ordered retry on engine failure — whistle last, as the free
+  // keyless safety net (up to four entries, no chains inside them):
+  // transcription: { kind: "groq", fallbacks: [
+  //   { kind: "openrouter", model: "openai/whisper-large-v3" },
+  //   { kind: "whistle" },
+  // ] },
 
   // --- Vision (image Q&A) ---
   // Unset = no vision tool. With it, the bot can ask a vision model

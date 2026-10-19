@@ -1,8 +1,8 @@
 # goblin v2 — design
 
-Rewrite of little-goblin — same product, ruthless scope. v1 ran on lithium
-until the 2026-10-09 cutover, then retired (its tree is gone); only this
-document and the lessons it encodes carry over — no code, no state, no specs.
+Rewrite of little-goblin — same product, ruthless scope. v1 retired at the
+2026-10-09 cutover; no code, no state, no specs carry over — only this
+document and the lessons it encodes.
 
 ## Why
 
@@ -15,19 +15,13 @@ and everything else is rebuilt only if it earns its place.
 
 ## Product boundary
 
-- One human operator (bermudi), one Bun process, homelab; a systemd user unit
-  (`deploy/goblin.service`, linger enabled): restart on failure, start on
-  boot, SIGTERM rides the graceful shutdown path. `scripts/install.sh` is
-  fresh-only and path-substituting — it refuses an existing installation,
-  validates provisioned config/auth before enabling units, builds client
-  assets, and checks the current boot rather than accepting an active restart
-  loop; that plus first-boot scaffolding (home layout, SOUL.md/AGENTS.md
-  stubs, fail-loud config pointer) is the entire setup story — no onboarding
-  wizard, ever. Prod is g7: this tree runs `goblin.service` plus the memory
-  stack directly. `scripts/deploy.sh` is the update path — gate (typecheck;
-  tests gate merges in CI, not deploys), rebuild the app client when it
-  moved, restart, verify — and never pushes or updates the remote review
-  baseline (docs/operations.md → Deploying).
+- One human operator (bermudi), one Bun process, homelab. Prod is g7: this
+  tree runs `goblin.service` (systemd user unit, linger) plus the memory
+  stack directly. Install is `scripts/install.sh` — fresh-only,
+  path-substituting, first-boot scaffolding; there is no onboarding wizard,
+  ever. `scripts/deploy.sh` is the update path (gate, rebuild the app client
+  when it moved, restart, verify); tests gate merges in CI, not deploys, and
+  it never pushes (docs/operations.md → Deploying).
 - Two channels. Telegram: long polling, topics, reactions, files, voice —
   **and Mini Apps, designed in from the start** (the process serves them over
   HTTP; see Telegram intake & delivery). The app: a React client, PWA while
@@ -48,22 +42,11 @@ and everything else is rebuilt only if it earns its place.
 
 ## Setup and diagnosis
 
-Setup is two operator-edited inputs plus a non-interactive installer, not a
-wizard; shared read-only checks distinguish start-ready preflight from an
-installed system. Onboarding owns actions and current-invocation startup
-acceptance; fresh setup never quietly updates an existing installation;
-production updates ride the separately approved deploy path. See
-[Setup](design/setup.md).
-
-Doctor is one bounded diagnostic pass, not a watchdog or repair service:
-`bun run doctor` reports configured failures, skipped/unknown coverage and
-manual next steps without initializing application state, resolving arbitrary
-auth commands or changing services. JSON stdout is a single report;
-operational messages go to stderr, separate from the runtime's JSONL log
-stream; only the two safe startup lifecycle signals bypass normal log
-filtering so acceptance can observe them. See [Doctor](design/doctor.md).
-
-A scheduled invocation requires explicit standing authority; no timer or
+Setup (installer + first boot) is ruled in [Setup](design/setup.md): no
+wizard ever; fresh setup never quietly updates an existing installation.
+Doctor ([Doctor](design/doctor.md)) is one bounded diagnostic pass that
+reports — it never repairs, initializes state, or changes services. A
+scheduled invocation requires explicit standing authority; no timer or
 resident self-waking behavior is introduced by this capability.
 
 ## Domain model
@@ -155,7 +138,7 @@ defaults for future conversations (ruling 2026-10-06). A turn captures its
 selection at admission; edits apply to its next turn without interrupting
 this one, including overflow recovery and automatic compaction. `/model` and
 `/think` stay retired. A turn captures `(conversationId, epoch)` at admission
-and calls `checkAuthority()` around every await. Fenced turns abort quietly
+and re-checks authority around every await. Fenced turns abort quietly
 and log it. No machines, no drain sets — one counter and one function.
 Delivery checks authority when each queued Telegram action executes, not only
 when it is queued. The sole post-fence exception is a cancellation edit: an
@@ -194,64 +177,34 @@ Consequences:
 - The system prompt carries no automatic per-turn variability — no clock;
   current time comes from `date` via bash when it matters. Operator edits
   (SOUL.md, AGENTS.md, USER.md, skills) load at conversation boundaries, not
-  mid-run: the system prompt is frozen per conversation (`prompt_snapshots`,
-  built at the first turn), so a live conversation's prefix cache is never
-  rewritten under it. Boundaries are a DM roll, a compaction (which clears
+  mid-run: the system prompt is frozen per conversation (built at the
+  first turn), so a live conversation's prefix cache is never rewritten under
+  it. Boundaries are a DM roll, a compaction (which clears
   the snapshot — the history rewrite busts the prefix anyway, so the refresh
   is free), and a spin-off/new conversation. Mid-conversation edits are
   visible to the agent via the read tools immediately; injection waits for
-  the boundary, logged by `noteSource` diffs and the `prompt snapshot built`
-  line.
-- Every model call logs usage with the cached split
-  (`cacheReadTokens`/`cacheWriteTokens` in the per-step line — spec v4 splits
-  reads from writes — null when the provider doesn't report) and the request
-  prefix hash — cache behavior and any drift are observable in goblin.log.
-  Window utilization warns as input approaches the catalog context limit.
-  History compaction is an explicit logged boundary that starts a fresh
-  stable prefix — never silent eviction (see Compaction).
-- Per-call telemetry lands in `model_cache_calls` (goblin.sqlite;
-  `src/cache-observation.ts` owns the table on the store's handle). The
-  `observedModel` middleware (agent/providers.ts) writes a `started` row
-  before invoking the provider — fresh call id, conversation/purpose, route
-  key (SHA-256 of the provider-config identity: config name, kind,
-  credential-free base, model ref; Codex/OpenRouter pin their constant
-  endpoints; config-less wrappers get an inferred provider/modelId+purpose
-  key, labelled as such), head/request/settings hashes, per-message prompt
-  hashes — then `completed` with the usage split on a provider finish, or
-  `failed` on rejection, stream error or cancellation. The log carries the
-  same correlation: `model call` opens a callId; `model call usage`/`model
-  call failed` close it, with `idleMs` and `prefixRelation` copied from the
-  start observation. Prefix relations (`first`/`same`/`append`/`rewrite` and
-  `shared_messages`) are structural facts about consecutive requests on one
-  conversation+route — never proof of cache warmth, expiry or a provider
-  bug. Pruning old textual tool results is opt-in through the hand-edited
-  `cachePruning` config block: each profile pins a route key + settings hash
-  pair (the hash of the SDK-normalized call settings, `turnCallSettings` — an
-  omitted `toolChoice` resolves to `{type:"auto"}` before the middleware
-  boundary, so telemetry-copied profiles and the gate hash identical
-  bytes), and a
-  committed `event_projections` row is a sanctioned rewrite of the
-  model-facing view only — the `events` row is never modified, and the
-  marker replays byte-identically on every later read and restart, even if
-  the policy becomes ineligible. The marker names the tool call and a
-  `history_search` context address (`toolCallId` + `offset`) that pages the
-  original result. New batches commit only between turns, and only when the
-  profile is unexpired, the route's observed idle time is at least
-  `idleAfterMs`, the last input size clears `minimumInputTokens`, and no
-  drift contradicts the presumed expiry — the drift check inspects every
-  completed receipt recorded since the profile's `reviewedAt` (a multi-call
-  turn can bury an earlier zero-read call under a later cache hit; receipts
-  the review already saw stay acknowledged). Three findings suspend new
-  batches — never committed rows: an unchanged-prefix call inside the
-  assumed window that reported zero cache reads, an expired profile, or a
-  `documented-expiry` profile the contract registry can't support.
-  `scripts/cache-report.ts` aggregates the receipts and
-  `scripts/check-cache-contracts.ts` re-checks the public contract sources
-  (design/model.md → Cache contracts). Cache-call evidence has no automatic
-  age-based deletion or prompt-hash stripping; retention changes require a
-  separate explicit decision.
+  the boundary.
+- Every model call logs usage with the cached split and a request prefix
+  hash — cache behavior and drift are observable in goblin.log; window
+  utilization warns as input approaches the catalog limit. Compaction is an
+  explicit logged boundary starting a fresh stable prefix — never silent
+  eviction (see Compaction).
+- Pruning old textual tool results is opt-in through the hand-edited
+  `cachePruning` config block (profiles of route key + settings hash). A
+  committed projection is a sanctioned rewrite of the model-facing view
+  only — the `events` row is never modified, and the marker replays
+  byte-identically on every later read and restart. New batches commit only
+  between turns, when the profile is unexpired and the observed receipts
+  don't contradict its presumed expiry; a contradiction suspends new batches
+  — never committed rows (an unchanged-prefix zero-cache-read call inside
+  the window, an expired profile, or a documented expiry the contract
+  registry can't support). Prefix relations (`first`/`same`/`append`/
+  `rewrite`) are structural facts about consecutive requests, never proof of
+  cache warmth, expiry or a provider bug. Cache-call evidence has no
+  automatic age-based deletion or prompt-hash stripping; retention changes
+  require a separate explicit decision.
 
-Sanctioned one-time rewrites, each visible as a requestHash move in the log:
+Sanctioned one-time rewrites, each visible as a request-hash move in the log:
 a model switch — or a catalog refresh that changes a model's listed
 modalities — recomputes attachment representations once (and re-renders
 stored PDF fetch refs through the same modalities-and-pipe gate); a fenced or
@@ -265,112 +218,28 @@ replays verbatim forever. Everything else that moves the hash is a bug.
 ## Design areas
 
 The core above holds what every change must respect. Each area's rulings
-live in its own file under `design/`. Code comments and docs cite design
-sections by name (`DESIGN.md, "Web access"`, `DESIGN.md → Proton Pass`);
-this index resolves a name to its file. A new ruling goes in its area's
-file; a change to the domain model, the authority rule, cache stability,
-or the non-goals goes here. And a superseded ruling is rewritten in
-place, not amended in place: state the surviving rule with its
-provenance anchor; narration of retired behavior belongs in git, not
-the spec.
-
-- this file — Why, Product boundary, Domain model, Conversation, Turn, The authority rule, Cache stability, Design areas, State layout, Config, Module map, Non-goals (v1 — return only on demand), Test posture — the real change
-- [`design/model.md`](design/model.md) — Model layer, Provider registry, Thinking, History, Causal view, arrival-order storage, Compaction, Capabilities, Content, Transcription
-- [`design/asr.md`](design/asr.md) — Speech recognition engines: whistle (local) default, eight kinds behind one interface, artifact auto-fetch, verbatim provider contracts
-- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (architecture ruling): the phase list, state ownership by lifetime, the attempt loop, what must not change, module map, the two text projections (#84/#111)
-- [`design/tools.md`](design/tools.md) — Tools (v1), Scripting (in-process tool composition, not a subagent), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
-- [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty with its own snapshot, Known limits, accepted
-- [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: System One on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
-- [`design/system1.md`](design/system1.md) — System One (typed-decision models): the shared client, retry policy, wire protocol, the four-consumer table, the loopback injection-check endpoint, config surface
-- [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
-- [`design/delegation.md`](design/delegation.md) — Delegation (other harnesses, via herdr), The herdr session is its own systemd user unit, Targets: the own local session plus configured machines, One protocol, target-agnostic, Only `src/herdr.ts` knows herdr, One lifecycle owner, Harnesses are config, never guessed, Agents run full-auto; goblin never answers approvals, State is rows, Watcher writes are compare-and-set; the notice lands first, Start, The watcher is an in-process ticker, Management is the `delegate` tool, The operator's session is reachable on ask, A `herdr` tool reaches the operator's session, Goblin may delegate on its own judgment
-- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, Every read injection-checked and fenced, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Reads ride the shared System One gate (design/system1.md), Logging
-- [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
-- [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
-- [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03), Shared model/thinking selection, Guest mode, Roles and permissions (ruling 2026-10-11), Formatted replies & draft streaming (ruling 2026-10-12)
-- [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03), Operator console in the PWA, Streaming members & resumable streams, Model/thinking scope, the SSE heartbeat rule, Archiving, Pinning, Intelligent UI
-- [`design/sandbox.md`](design/sandbox.md) — Sandbox (ruling 2026-10-10): a disposable rootless-podman container per conversation behind the `sandbox` tool — the wall, the lifetime, network off by default, images pulled only with operator permission
-- [`design/subagents.md`](design/subagents.md) — Subagents & computer use (ruling 2026-10-11): purpose-typed Pi Durable subagents in-process — `computer` and `worker`, no host bash, no recursion, 3 concurrent runs, durable resume, fenced results via wake; routing (projects → herdr, standalone code work → worker, screens → computer); the desktop pool (allocate/claim/share/reserve, one controller); the worker in the conversation's sandbox under a run lease; files in/out through the workspace; runc wall now and krun parked on its exec blocker; cua-driver in the guest; the `subagent` and `desktop` tools
-- [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
-- [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
-- [`design/setup.md`](design/setup.md) — Product shape, Install order, Phases, Phase-dependent expectations, Startup acceptance, Installer rules, Opt-in dependencies, Verification boundary
+live in its own file under `design/`; comments cite sections by name
+(`design/telegram.md → Roles and permissions`). A new ruling goes in its
+area's file; a change to the domain model, the authority rule, cache
+stability, or the non-goals goes here. A superseded ruling is rewritten in
+place, not amended: state the surviving rule with its provenance anchor;
+narration of retired behavior belongs in git, not the spec.
 
 ## State layout
 
-```text
-$GOBLIN_HOME/
-├── goblin.json5            # providers, models, defaults
-├── auth.jsonl              # secrets, mode 0600
-├── mcporter.json           # goblin's own MCP servers, seeded empty
-│                           # (placeholders only; imports [] — gated)
-├── mcp                     # symlink → repo scripts/mcp (refreshed boot)
-├── doctor                  # symlink → repo scripts/doctor (refreshed boot)
-├── workspace/              # the agent's home; every tool runs here
-│   ├── SOUL.md             # required, template-created on first boot
-│   ├── AGENTS.md           # stub-created on first boot, then agent-owned
-│   ├── USER.md             # operator model — directive entries (observed
-│   │                       # date, active/superseded), agent-grown;
-│   │                       # keep small deliberate preferences here
-│   ├── skills/             # the skill catalog — agent-authored, in cwd
-│   └── attachments/
-├── projects/<slug>/        # a project's home; its default cwd (notes are
-│                           # rows, not files — design/projects.md)
-└── state/
-    ├── goblin.sqlite       # Goblin state: conversation meta, event
-    │                       # history (UIMessage JSON rows), bindings,
-    │                       # memory outbox/contexts/suppressions,
-    │                       # programs, delegations, projects, notes
-    │                       # (+ versions, FTS)
-    ├── pass-cli/           # pass-cli session dir for background sync;
-    │                       # shared agent lane, not foreground resolution
-    ├── pass-cli-task/      # separate pass-cli session dir for the skill;
-    │                       # never interleave calls within one session
-    ├── mcporter/           # mcporter data/cache/daemon dirs (0700) —
-    │                       # OAuth tokens + schema caches, off ~/.mcporter
-    ├── subagents.sqlite    # Pi Durable storage: subagent transcripts
-    │                       # (routing rows stay in goblin.sqlite)
-    ├── desktops/<name>/shots/      # every computer-use frame (audit)
-    └── delegations/<id>/report.md  # a harness's final report
-```
-
-Pass-keys state is outside this tree: encrypted per-profile snapshots in
-Secret Service/KWallet, plus the dedicated agent's bootstrap PAT in the OS
-store under `goblin-dev` (shared by `goblin-dev` and `goblin-mcp-dev`). No
-PAT env file is part of the target layout. `auth.jsonl` uses
-`!pass-keys get goblin-dev NAME`; MCP uses local snapshot env injection via
-`pass-keys run goblin-mcp-dev -- …`. Only explicit background `warm` syncs
-reach Pass; failed syncs preserve last-good snapshots, and persistent wallets
-survive reboot if unlocked. Neither auto-unlock nor same-user isolation is
-assumed. See [Auth](design/auth.md#proton-pass-2026-09-26).
-
-SQLite durability = WAL + transactions (`synchronous=NORMAL` minimum), not
-tmp/fsync/rename — that ritual is for whole-file state only. Inspectability
-is an export/query command, not a format property.
+`$GOBLIN_HOME`: config (`goblin.json5`, `auth.jsonl`), `workspace/` (the
+agent's home — every tool runs there), `projects/<slug>/`, and `state/`
+(SQLite, tool-owned dirs). SQLite durability = WAL + transactions
+(`synchronous=NORMAL` minimum), not tmp/fsync/rename — that ritual is for
+whole-file state only. Inspectability is an export/query command, not a
+format property. Pass-keys state lives outside the tree (OS store,
+agent-lane snapshots) — see [Auth](design/auth.md#proton-pass-2026-09-26).
 
 ## Config
 
-`goblin.json5`: provider registry, root `model`/`thinking` app defaults for
-future conversations, independent shared `telegram.model`/`telegram.thinking`,
-optional `transcription` block, optional `vision` block (absent = vision tool
-absent; `model` + `maxTokens`), optional `search` block (absent = search tool
-absent), optional `memory` block (absent = memory disabled), optional
-`delegation` block (`harnesses`: name → `{ kind, args? }`, `machines`: label
-→ `{ machine|session, root?, harnesses? }` — absent = delegate tool absent;
-concurrency is uncapped, there is no `maxRunning` knob (design/delegation.md
-→ Targets); the herdr session name belongs to
-`deploy/goblin-herdr.service`, not config), optional `mail` block
-(`clientId`, `clientSecretAuth`, `sendAuth` — the send credential only; reads
-ride `gws auth login`; absent = no mail tool, no mail watcher), optional
-`guest` block (absent = no service for non-operators; `outputChars` default
-3500 — sandboxed turns and standing sandbox DMs for `allowedUsers`,
-`design/telegram.md` → Roles and permissions), optional `sandbox` block
-(absent or `""` = no sandbox tool; `image`, `idleHours`, `memory`, `cpus`,
-`pids` — `design/sandbox.md`), optional `subagents` block (absent = no
-`subagent`/`desktop` tools, no subagent harness; `maxRuns`, per-type
-`worker`/`computer` model refs, `desktops` pool knobs — boot-frozen,
-`design/subagents.md`), optional `reviewer` + `system1` blocks (the
-skill-review gate and the shared System One client's own switch —
-`design/system1.md`). No secrets — those live in `auth.jsonl`.
+`goblin.json5`: provider registry + per-capability blocks (absent =
+capability off; each block's policy lives in its area doc). No secrets —
+`auth.jsonl` holds those.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself,
@@ -379,170 +248,11 @@ always works; it is never required.
 
 ## Module map
 
-```text
-src/
-  index.ts          composition root: config → auth → conversations → bot →
-                    http — it wires, it never rules; a rule with no owning
-                    module gets one before it may live here
-  config.ts         goblin.json5, zod-validated
-  auth.ts           auth.jsonl reader + "!" command resolution +
-                    pass-cli-direct poisoning (resolve rejects, never spawns)
-  log.ts            structured log; no console.log anywhere else
-  health.ts         shared read-only diagnostic checks; no bootstrap
-  doctor.ts         bounded text/JSON CLI; preflight or installed policy
-  tg/               grammy: intake, buffer, delivery, commands, guest
-                    mode (only grammy-aware dir)
-  conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
-  memory/           the long-term memory family (design/memory.md):
-                    mod.ts (recall contexts, retention builders, status,
-                    worker timer), hindsight.ts (wire client), queue.ts
-                    (durable outbox), outage.ts (outage episodes),
-                    destinations.ts (destination history), forget.ts
-                    (the forget protocol), policy.ts (defaults and
-                    limits), screen.ts (screen-text check)
-  projects.ts       projects — rows + goblin-owned home scoping an app
-                    conversation's cwd, instructions and memory choice
-                    (design/projects.md → Projects)
-  notes.ts          notes — server-mediated markdown rows, versions and
-                    FTS; fenced append/attach behind the `note` tool
-                    (design/projects.md → Notes)
-  programs.ts       standing programs — rows in goblin.sqlite, cron
-                    validated at the boundary, webhook token hashes
-  scheduler.ts      ticker: due programs → turns in their pinned
-                    conversation; fire() is shared with the webhook route
-  herdr.ts          herdr CLI adapter (the only herdr-aware module)
-  delegations.ts    delegation rows (SQLite store)
-  delegation-lifecycle.ts   the delegation protocol: launch, send,
-                    stop, read + the watcher's verdicts and boot
-                    recovery — herdr state → turns in the pinned
-                    conversation; the ticker is a thin timer over
-                    the owner's scan; delegationWake owns the notice
-                    routing (never roll the DM; app-pinned rows wake
-                    their conversation)
-  wake.ts           the shared wake path: system messages submit into
-                    pinned conversations through the ordinary turn
-                    path over channel-neutral sink/marker ports
-  tg/wake.ts        makeWakeDeps wires Telegram delivery, live voice/rich
-                    settings and app bells without leaking grammy types
-  spinoff.ts        the spin-off fork and where a delegation launch
-                    pins its notices (launchPin — the Spin-off trigger
-                    map, design/app.md → Spin-off)
-  rolling.ts        the Rolling DM address and cadence — dm:<chat>:<n>
-                    routing, the current-row rule, the gap check
-                    (design/telegram.md → Rolling DM)
-  podman.ts         the podman CLI adapter (the only podman-aware
-                    module); argv seams for tests, every call logged —
-                    create/inspect/lifecycle/exec/cp/network ops only,
-                    no prune (design/sandbox.md)
-  sandboxes.ts      the sandboxes table + lifecycle owner: one
-                    container per conversation, row-vs-engine
-                    reconcile, fail-closed network, call-time idle
-                    reap — never boot/shutdown
-  desktops.ts       the desktop pool: rows + lifecycle owner (allocate,
-                    claim/renew/release leases, reserve, call-time
-                    reap), over podman.ts (design/subagents.md)
-  subagents/        the Pi Durable harness owner (the only
-                    pi-durable-aware directory): mod.ts (open, boot
-                    resume, run cap + queue, start/steer/stop,
-                    settle → wake) with env.ts, tools.ts,
-                    transfer.ts, models.ts, run-doc.ts, errors.ts
-                    satellites
-  subagent-runs.ts  the additive subagent_runs table in goblin.sqlite
-                    (routing rows: status, Pi conversation/submission
-                    ids, request ids, outcomes, notices)
-  box-files.ts      the shared host↔box file boundary helper: lexical
-                    + realpath workspace containment, regular-file
-                    import cap, tmp+fsync+rename export — one rule set
-                    for the sandbox tool, desktop tool and run files
-  mail-gws.ts       the watcher's poll surface over the gws CLI (raw
-                    Discovery calls, JSON out) — the only gws-aware
-                    module; runner injectable, gws owns its auth
-  mail-watcher.ts   the mail trigger's ticker: gws poll → the firing
-                    owner's mail entry point (never writes program state)
-  mail.ts           the send client (operator-gated) + shared mail shapes
-                    (MailHit, ThreadContext, HistoryExpiredError,
-                    MailPoller); the approval-gated queue is mail-outbox.ts
-  injection.ts      System One injection checker: shared System One gate →
-                    clean/suspicious/malicious/unavailable verdicts, fail-open
-  system1.ts        the System One boundary — the OpenRouter Decisions
-                    client shared by all four consumers
-                    (design/system1.md)
-  reviewer.ts       the skill reviewer — a System One gate on every
-                    completed turn, bounded digest → staged proposal
-                    (design/skills.md → Reviewer)
-  runtime.ts        per-conversation queue, lane drain, checkAuthority,
-                    stop/shutdown, the attempt loop — the turn's phases
-                    live in turn/ (design/runtime-turn.md)
-  turn/             the turn's phases (design/runtime-turn.md)
-    state.ts        TurnState: attempt-scoped state, the loop machinery
-                    (detector, watchdog cadence, warn/cut landings — no
-                    step budget), and the TurnRecovery whitelist
-                    projection
-    admission.ts    the admission snapshot: epoch, ownership filter
-                    (#82), anchor, steer-mark seed
-    view.ts         pure model-view assembly — byte-stable
-                    (cache stability)
-    stream.ts       the stream driver: SDK callbacks, steering fold,
-                    chunk fan-out, wire log, join replay
-    overflow.ts     overflow classify + compact-and-resume packaging
-    finish.ts       persist, retention hand-off, reviewer snapshot,
-                    forced-landing stamps
-  agent/
-    providers.ts    registry: name → AI SDK provider
-    catalog-fetch.ts  the cached-catalog skeleton: single-flight fetch,
-                    failure backoff, TTL, validated disk cache — a spec
-                    supplies wire/disk shapes and path
-    models-dev.ts   the two model catalogs (models.dev modalities +
-                    context limits; openrouter per-route params) as
-                    specs over catalog-fetch.ts
-    codex/          the codex provider: auth.ts (OAuth file lifecycle —
-                    expiry, single-flight refresh, durable write-back)
-                    and model.ts (LanguageModelV4 — prompt→responses
-                    conversion, SSE→stream parts)
-    attachments.ts  data-attachment parts + per-turn materialization
-    transcribe.ts   speech → text (groq whisper, more kinds later) —
-                    intake + transcribe tool share it
-    tts.ts          text or file → speech (edge read-aloud ws, opus out)
-    prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
-                    AGENTS.md/USER.md — capped at 20k chars each, USER.md
-                    at 4k; overage keeps head 70%/tail 20%, drops the
-                    middle — newest notes live at the end). Frozen per
-                    conversation (prompt_snapshots): edits load at
-                    boundaries (roll/compaction), never mid-run
-    skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the tools (read, write, edit, bash, speak,
-                    transcribe, vision, generate_image, program, delegate, mail
-                    (send-only; reads ride the goblin-mail wrapper via
-                    bash), send_file, memory_search, memory_reflect, search, fetch,
-                    history_search, note, sandbox, script, subagent,
-                    desktop, ui)
-  stateview.ts      read-only views over $GOBLIN_HOME for the operator
-                    console — skills, attachments, identity files, log
-                    tail; realpath containment re-verified
-                    (design/app.md → Operator console)
-  http/             the HTTP doors: /t/ and /app/ serve the built
-                    client (app/dist) — the Telegram mini app and the
-                    PWA are one client with two entries — plus the
-                    initData operator tails (/api/*), POST /hook/<token>,
-                    and loopback POST /api/check-injection (the wrapper's
-                    gate; value imports live in check.ts, never mod.ts);
-                    the app channel is its own family — app-channel.ts
-                    dispatcher + app-*.ts route modules
-                    (design/app.md → Files)
-```
-
-Flat modules, one job each, tests colocated. The map names rule owners;
-leaf plumbing sits below its line — durable writes (`durable.ts`),
-process boundaries (`proc.ts`), harness first-run trust
-(`harness-trust.ts`), the SQLite probe worker (`health-sqlite.ts`), loop
-detectors, tag markers, link helpers — covered by its owner's row or the
-area doc that rules it.
-
-The same discipline holds inside a module: state clusters by lifetime
-(harness-scoped, run-scoped, scan-scoped) live in their own units, and a
-subsystem returns an interface assembled from them — never one scope of
-closures. ~300 lines is the smell line; `scripts/function-size-audit.ts`
-lists what crosses it.
+Flat modules, one job each, tests colocated; the tree itself is the map,
+`scripts/function-size-audit.ts` lists units past the ~300-line smell line.
+`index.ts` wires and never rules: a rule with no owning module gets one
+before it may live here. Inside a module, state clusters by lifetime live in
+their own units — never one scope of closures.
 
 ## Non-goals (v1 — return only on demand)
 
@@ -568,34 +278,17 @@ the design conversation — have it before building.
 Read-only diagnosis returned on demand as Doctor; it does not return
 proactive monitoring or authorize repair.
 
-memory store (returned on demand — approved in `Long-term memory`) ·
-scheduler (returned on demand — generalized into `Programs`;
-heartbeat/proactive monitoring stays out) · web access (returned on demand —
-designed in `Web access`; a native browser tool stays out) · delegated work /
-external agents (returned on demand — designed in `Delegation`) · MCP
-(returned on demand as a skill over goblin's own mcporter — `Web access`; a
-native client stays out) · email (returned on demand — `Email`; reads
-migrated to gws 2026-09-29 — Workspace access is in scope exactly at
-gmail.readonly + drive.readonly + calendar rw + sheets rw, through the gws
-CLI and the goblin-mail wrapper, never raw in-process OAuth) · inner life
-(partly returned on demand — `Chat search`, `Skill reviewer`; self-waking,
-memory nudges, and self-grading skill machinery stay out) · conversation-
-lifecycle commands · subagents (returned on demand 2026-10-11 — `Subagents &
-computer use`; purpose-typed Pi Durable conversations, computer use first;
-generic agents, recursion and timeout-revive stay out) · ACP · project
-environments (returned on demand 2026-10-10 — `Projects & Notes`;
-app-channel projects with a cwd + instructions, notes as server-mediated
-rows; a second harness stays out) · onboarding wizard · state migrations
-(general framework; additive memory schema changes are in scope) ·
-in-process embeddings (delegated to Hindsight for memory) · app client
-(returned on demand 2026-09-30 — `App channel`; a third channel stays out) ·
-sandboxed execution (returned on demand 2026-10-10 — `Sandbox`; one podman
-backend, no backend registry) · multi-user (bounded slice returned on demand
-2026-10-06, widened 2026-10-11 — named `allowedUsers` get sandboxed turns and
-standing sandbox DMs: guest persona + `search` only, memory-excluded, no app
-doors (`design/telegram.md` → Roles and permissions; no sandbox `fetch` —
-Guest mode there); strangers get one refusal line and nothing else; full
-multi-user stays out)
+Still out (previously "returned on demand," each designed in its own area
+where it returned): proactive monitoring, self-waking and memory nudges; a
+native browser tool; a native MCP client; raw in-process OAuth; ACP;
+onboarding wizard; a state-migration framework (additive memory schema
+changes are in scope); in-process embeddings; a third channel; backend
+registries; generic agents, recursion and timeout-revive; a second harness
+for projects; self-grading skill machinery; conversation-lifecycle commands;
+full multi-user. The named `allowedUsers` slice stands fenced: sandboxed
+turns + standing sandbox DMs, guest persona + `search` only, memory-excluded,
+no app doors, no sandbox `fetch` (`design/telegram.md` → Roles and
+permissions).
 
 ## Test posture — the real change
 

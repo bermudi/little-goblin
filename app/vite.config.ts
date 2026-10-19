@@ -8,7 +8,9 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
 	base: "/app/",
 	plugins: [react()],
-	build: { outDir: "dist", emptyOutDir: true },
+	// Builds only stage: publish is the atomic dist-symlink swap in
+	// scripts/publish-app.sh, so a build alone never changes what is served.
+	build: { outDir: "dist.next", emptyOutDir: true },
 	server: {
 		proxy: {
 			"/api": {

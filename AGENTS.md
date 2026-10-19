@@ -45,13 +45,6 @@ any structural work. `docs/` is operator documentation, not spec.
   vendor's — `module-boundaries.test.ts` enforces the importable cases.
   (The Vercel AI SDK is the platform, not a boundary.)
 
-## Scope discipline
-
-The non-goals list in `DESIGN.md` is load-bearing. Do not add subagents,
-skills, MCP, projects, or inner-life machinery without an explicit ask —
-"it would be nice" is how v1 happened. When a dropped capability returns, it
-gets designed into the design docs first.
-
 ## Design inspiration
 
 When designing workspace layout, identity/memory files, prompt assembly, or
@@ -75,11 +68,11 @@ lists on our non-goals list. Cite what you took in the design docs.
 - Quadlet `HealthCmd` takes no shell metacharacters — podman's
   CMD-SHELL re-quoting mangles one-liners into restart-loops (lithium,
   podman 5.4). Healthchecks are mounted scripts; keep them that way.
-- **Exception: the built client is live per request.** `app/dist` is
-  read from disk per request by the running service, and serves both
-  doors — `/app/` (the PWA) and `/t/` (the Telegram mini app). Do not
-  build into `app/dist` to verify a backend-dependent client change:
-  use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
+- **The built client is live per request.** `app/dist` is a symlink to
+  the last published slot (`app/dist.a`/`app/dist.b`), resolved per
+  request for `/app/` (the PWA) and `/t/` (the Telegram mini app).
+  `bun run app:build` only stages `app/dist.next` — publishing is the
+  atomic flip in `scripts/publish-app.sh` (deploy.sh runs it).
   Publishing the client and restarting the backend are one coordinated
   rollout, requiring bermudi's OK.
 - Memory embeddings are local: ollama `embeddinggemma` on the system

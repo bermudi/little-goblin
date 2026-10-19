@@ -1,4 +1,4 @@
 node_modules/
 .env
 __pycache__/
-app/dist/
+app/dist*

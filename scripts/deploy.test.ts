@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -48,15 +49,18 @@ function fakeBin(dir: string, includePodman = true): string {
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	for (const name of [
+		"bash",
 		"cat",
 		"cp",
 		"date",
 		"dirname",
 		"flock",
 		"grep",
+		"ln",
 		"mkdir",
 		"mktemp",
 		"mv",
+		"readlink",
 		"rm",
 		"seq",
 		"tail",
@@ -94,7 +98,7 @@ esac
 if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi
 case "$failure" in
 install) mkdir -p node_modules && cp package.json node_modules/installed.txt ;;
-build) mkdir -p app/dist && cp app/src/App.tsx app/dist/bundle.txt ;;
+build) mkdir -p app/dist.next && cp app/src/App.tsx app/dist.next/bundle.txt && cp app/index.html app/dist.next/index.html ;;
 esac`,
 	);
 	stub(
@@ -177,11 +181,13 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 		git(main, "config", "core.hooksPath", "/dev/null");
 		mkdirSync(join(main, "scripts"));
 		copyFileSync(deploySh, join(main, "scripts", "deploy.sh"));
+		copyFileSync(join(import.meta.dir, "publish-app.sh"), join(main, "scripts", "publish-app.sh"));
 		// Ignored artifact locations so a stub refresh never dirties the
-		// tree, plus the two sources the stub refresh copies verbatim.
-		writeFileSync(join(main, ".gitignore"), "node_modules/\napp/dist/\n");
+		// tree, plus the sources the stub refresh copies verbatim.
+		writeFileSync(join(main, ".gitignore"), "node_modules/\napp/dist*\n");
 		writeFileSync(join(main, "package.json"), "deps-A\n");
 		mkdirSync(join(main, "app", "src"), { recursive: true });
+		writeFileSync(join(main, "app", "index.html"), "<html>fixture</html>\n");
 		writeFileSync(join(main, "app", "src", "App.tsx"), "app-A\n");
 		git(main, "add", ".");
 		git(main, "commit", "-qm", "previous deployment");
@@ -298,6 +304,18 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 				existsSync(marker) && options.marker !== "directory"
 					? readFileSync(marker, "utf8").trim()
 					: null,
+			// Published client state — app/dist is a symlink to a slot dir.
+			distTarget: (() => {
+				try {
+					return readlinkSync(join(repo, "app", "dist"));
+				} catch {
+					return null;
+				}
+			})(),
+			distBundle: existsSync(join(repo, "app", "dist", "bundle.txt"))
+				? readFileSync(join(repo, "app", "dist", "bundle.txt"), "utf8")
+				: null,
+			stagedExists: existsSync(join(repo, "app", "dist.next")),
 		};
 	} finally {
 		if (markerDir) chmodSync(markerDir, 0o755);
@@ -459,12 +477,21 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.markerValue).toBe(result.newRev);
 	});
 
+	test("a client build publishes through the atomic slot swap", () => {
+		const result = runDeploy(["app/src/App.tsx"]);
+		expect(result.status).toBe(0);
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.distTarget).toMatch(/^dist\.[ab]$/);
+		expect(result.distBundle).toBe("fixture change\n");
+		expect(result.stagedExists).toBe(false);
+	});
+
 	test("rollback restores revision, ignored dependencies/client and marker in order", () => {
 		const result = runDeploy(["src/index.ts"]);
 		expect(result.status).toBe(0);
 		const line = result.stdout.split("\n").find((value) => value.startsWith("deploy: rollback:"));
 		expect(line).toBe(
-			`deploy: rollback: git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo ${result.oldRev} > .git/GOBLIN_DEPLOYED_REV && sync .git/GOBLIN_DEPLOYED_REV`,
+			`deploy: rollback: git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && bash scripts/publish-app.sh && systemctl --user restart goblin && echo ${result.oldRev} > .git/GOBLIN_DEPLOYED_REV && sync .git/GOBLIN_DEPLOYED_REV`,
 		);
 	});
 
@@ -506,7 +533,7 @@ describe("local deployment failures and memory probe", () => {
 			// clearing the attempt marker.
 			expect(result.stderr).toContain("FAILED — the attempt marker stays");
 			expect(result.stderr).toContain(
-				`git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin`,
+				`git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && bash scripts/publish-app.sh && systemctl --user restart goblin`,
 			);
 			expect(result.attemptExists).toBe(true);
 			if (["typecheck", "install", "build", "restart", "floor"].includes(mode))
@@ -637,8 +664,10 @@ function deploySequence() {
 	mkdirSync(join(repo, "app", "src"), { recursive: true });
 	mkdirSync(join(repo, "src"), { recursive: true });
 	copyFileSync(deploySh, join(repo, "scripts", "deploy.sh"));
-	writeFileSync(join(repo, ".gitignore"), "node_modules/\napp/dist/\n");
+	copyFileSync(join(import.meta.dir, "publish-app.sh"), join(repo, "scripts", "publish-app.sh"));
+	writeFileSync(join(repo, ".gitignore"), "node_modules/\napp/dist*\n");
 	writeFileSync(join(repo, "package.json"), "deps-A\n");
+	writeFileSync(join(repo, "app", "index.html"), "<html>fixture</html>\n");
 	writeFileSync(join(repo, "app", "src", "App.tsx"), "app-A\n");
 	writeFileSync(join(repo, "src", "index.ts"), "backend-A\n");
 	git(repo, "add", ".");

@@ -18,10 +18,11 @@ journalctl --user -u goblin -f    # live logs
 On prod, restarting/deploying Goblin, installing/reloading units, or
 publishing `app/dist` requires bermudi's OK. The commands here are an
 operator runbook, not permission to run them during source verification.
-`app/dist` is read from disk on every request: building there publishes live
-assets even without a restart. For verification use
-`bun run vite build app --outDir /tmp/<unique-dir>`, never live `app/dist`.
-Client publication and backend restart are one coordinated approved rollout;
+`app/dist` is a symlink to the last published slot, resolved from disk on
+every request. `bun run app:build` only stages `app/dist.next` and changes
+nothing served; publishing is `scripts/publish-app.sh`'s atomic symlink
+flip, which the approved rollout runs. Client publication and backend
+restart are one coordinated approved rollout;
 the plain Settings client is instead loaded once at backend startup.
 
 After changing `goblin.json5` **by hand**, use an approved restart. Settings
@@ -212,9 +213,10 @@ within the budget — a bare is-active poll closes before slow boot
 failures (e.g. a timed-out provider handshake) show. It then scans the
 fresh journal for error lines, and prints the old→new
 hashes plus a one-line rollback (`git reset --hard <old>`, then
-`bun install` and `bun run app:build` — dist and node_modules are
-gitignored, so the old revision needs its own deps and client — then
-restart, and reset the marker). A gate failure stops everything
+`bun install`, `bun run app:build` and `scripts/publish-app.sh` — the
+client slots and node_modules are gitignored, so the old revision needs
+its own deps and client — then restart, and reset the marker). A gate
+failure stops everything
 before the service is touched.
 
 After a state-viewer rollout, verify data access in the authenticated PWA:
@@ -503,7 +505,7 @@ Goblin's SQLite conversation state; include the separate
 
 The checkout itself (`little-goblin/`) holds no conversation state — it is
 re-cloneable, but installed units and home shims still refer to its path, and
-`app/dist` must be rebuilt through an approved rollout.
+`app/dist` must be rebuilt and published through an approved rollout.
 
 Peeking at history directly is fine (read-only!): the `conversations` table
 holds one row per topic/chat, `events` holds the messages as JSON. But
@@ -526,7 +528,7 @@ it only while the bot is stopped, if ever.
 | `config would remove your own telegram user id` | the save you're attempting drops your id from `operators` — fix the field, save again |
 | Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |
 | `/memory` says degraded — blocked retention(s) | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked |
-| `/app/` answers 500 / "app client not built" | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. Build/check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved live `app/dist` build |
+| `/app/` answers 500 / "app client not built" | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. `app:build` + `publish-app.sh`, then check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved publish |
 | `/app/` asks for a token you didn't expect | the server is in bearer mode — `appToken` is set in `goblin.json5`; paste the value of the `auth.jsonl` record it names. Never had a token? `appToken` was probably just added — it's boot-pinned, so a running process ignores the change until restart |
 | `/app/` shows "The stored token stopped working" | the `auth.jsonl` record's value rotated (rotation needs a goblin restart to take) — the app's own "Paste a new token" door clears it |
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |

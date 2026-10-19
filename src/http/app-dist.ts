@@ -1,6 +1,8 @@
-// Serving the app channel's built client (app/dist) under /app/.
-// Files resolve per request so a rebuild lands without a restart; a
-// missing build answers 500 with a log line — never a silent empty page.
+// Serving the app channel's built client under /app/ — app/dist is a
+// symlink to the last published slot, flipped atomically by
+// scripts/publish-app.sh. Files resolve per request so a republish
+// lands without a restart; a missing build answers 500 with a log
+// line — never a silent empty page.
 // The page itself is public like the mini app's; every byte of real
 // state rides behind /api/app/* bearer auth.
 

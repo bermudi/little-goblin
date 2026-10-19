@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Local deployment: gate → refresh deps/client → restart → verify.
 # Never push, fetch or pull: origin/main remains the separate review baseline.
-# The client is served from disk, so building it and restarting the backend
-# are one approved rollout. Memory assets are never auto-applied.
+# The client is served from disk per request: the build only stages into
+# app/dist.next and the publish step flips the app/dist symlink atomically,
+# so the served tree is never half-written. Publishing the client and
+# restarting the backend are one approved rollout. Memory assets are never
+# auto-applied.
 # Rollback must restore ignored deps/client as well as the tracked revision;
 # when the previous revision is known, its recipe prints on success and on
 # any failure after the attempt marker — otherwise failures print manual
@@ -159,7 +162,7 @@ sync "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 rollback_cmd=""
 if [ "$rollback_available" = true ]; then
 	printf -v rollback_marker '%q' "$marker"
-	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker && sync $rollback_marker"
+	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && bash scripts/publish-app.sh && systemctl --user restart goblin && echo $old_rev > $rollback_marker && sync $rollback_marker"
 fi
 on_exit() {
 	rc=$?
@@ -205,7 +208,9 @@ bun run typecheck
 if [ "$interrupted" = true ] ||
 	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
 	# The bundle inlines dependencies and the shared UI schema, not just app/.
+	# Build stages into app/dist.next; publish flips the app/dist symlink.
 	bun run app:build
+	bash scripts/publish-app.sh
 fi
 if grep -qE '^deploy/memory/' <<< "$changed_paths"; then
 	echo "deploy: NOTE — deploy/memory/ changed; the podman stack is installed"

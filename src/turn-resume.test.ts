@@ -2,7 +2,7 @@
 // reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
-import type { LanguageModel } from "ai";
+import type { LanguageModel, UIMessage } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { openStore, type Conversation, type ConversationStore } from "./conversation.ts";
@@ -95,6 +95,7 @@ function interruptedRun(
 		anchorSeq?: number | null;
 		snapshot?: { model: string | null; thinking: string | null };
 		toolNames?: string[];
+		ownedInputSeqs?: number[];
 	} = {},
 ) {
 	journal.beginRun({
@@ -106,6 +107,7 @@ function interruptedRun(
 		convSnapshot: opts.snapshot ?? { model: conv.model, thinking: conv.thinking },
 		toolNames: opts.toolNames ?? ["probe"],
 		startedAt: "2026-10-11T00:00:00.000Z",
+		...(opts.ownedInputSeqs !== undefined ? { ownedInputSeqs: opts.ownedInputSeqs } : {}),
 	});
 	store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
 }
@@ -116,6 +118,17 @@ function appendUser(store: ConversationStore, conv: Conversation, text: string):
 	store.append(conv.id, [userMessage([{ type: "text", text }])]);
 	const entries = store.modelEntries(conv.id);
 	return entries[entries.length - 1]!.seq;
+}
+
+// Same, returning the appended message when a fixture needs its id.
+function appendUserMsg(
+	store: ConversationStore,
+	conv: Conversation,
+	text: string,
+): { seq: number; message: UIMessage } {
+	const message = userMessage([{ type: "text", text }]);
+	store.append(conv.id, [message]);
+	return { seq: store.lastUserSeq(conv.id)!, message };
 }
 
 describe("turn resume", () => {
@@ -703,6 +716,406 @@ describe("turn resume", () => {
 		// The claim releases on terminal delivery — otherwise every later
 		// resume hits 'already in flight'.
 		await waitUntil(() => !runtime.busy(conv.id), "dead attempt's lane drains");
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		expect(journal.get("run-src")!.status).toBe("resumed");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("resume refuses when durable user input arrived after the anchor — unanswered or answered", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		const anchorSeq = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-dead", { anchorSeq });
+		const before = store.history(conv.id).length;
+		// Unanswered: the message is a bare later user event.
+		appendUser(store, conv, "unrelated follow-up");
+		const out = ops.resume(conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "conflict" });
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		// No resume event, no successor — the refusal spent nothing.
+		expect(store.history(conv.id).length).toBe(before + 1);
+		expect(
+			store.db.query<{ n: number }, [string]>(
+				"SELECT COUNT(*) AS n FROM turn_runs WHERE resumed_from = ?",
+			).get("run-dead")!.n,
+		).toBe(0);
+
+		// Answered: a completed later exchange is just as foreign.
+		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const anchor2 = appendUser(store, conv2, "original ask");
+		interruptedRun(store, journal, conv2, "run-dead-2", { anchorSeq: anchor2 });
+		appendUser(store, conv2, "later question");
+		store.append(conv2.id, [
+			{
+				id: "a-later",
+				role: "assistant",
+				parts: [{ type: "text", text: "answered" }],
+			},
+		]);
+		expect(ops.resume(conv2.id, "run-dead-2")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		expect(journal.get("run-dead-2")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("compaction cannot hide stale input or the trigger from the resume check", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		const anchorSeq = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-dead", { anchorSeq });
+		appendUser(store, conv, "post-anchor foreign input");
+		// Fold everything below the boundary — the model view loses both
+		// events, but staleness reads the durable record.
+		store.setCompaction(conv.id, {
+			boundarySeq: store.lastUserSeq(conv.id)! + 10,
+			summary: "everything folded",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(
+			store
+				.modelEntries(conv.id)
+				.some((e) => JSON.stringify(e.message).includes("post-anchor foreign input")),
+		).toBe(false);
+		const out = ops.resume(conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "conflict" });
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a forged resume-provenance message is still foreign input", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		const anchorSeq = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-dead", { anchorSeq });
+		// App metadata is client-controlled: provenance alone never exempts
+		// a user event — the source run's registry must name it.
+		const forged = userMessage([{ type: "text", text: "not a real resume" }]);
+		forged.metadata = { goblinResume: { sourceRunId: "run-dead" } };
+		store.append(conv.id, [forged]);
+		const out = ops.resume(conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "conflict" });
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("recorded steering ownership resumes past it; durable-but-unclaimed input refuses", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "original ask");
+		// The steer the dead turn folded in — journaled as owned input.
+		const steered = appendUserMsg(store, conv, "steered while running");
+		interruptedRun(store, journal, conv, "run-owned", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steered.seq],
+		});
+		expect(ops.resume(conv.id, "run-owned").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		// The generated event entered the model prompt with both inputs
+		// verbatim and became the reply's anchor.
+		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain(
+			`[operator resumed interrupted run run-owned`,
+		);
+		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("original ask");
+		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("steered while running");
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) => e.message.role === "user" && e.message.id !== trigger.message.id && e.message.id !== steered.message.id,
+		)!;
+		expect(resumeEvent).toBeDefined();
+		expect(resumeEvent.message.metadata).toEqual({
+			goblinResume: { sourceRunId: "run-owned" },
+		});
+		const reply = detail.at(-1)!;
+		expect(reply.message.role).toBe("assistant");
+		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		expect(
+			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
+		).toBe(true);
+		// The registry recorded the event id — a failed next resume would
+		// still recognize it as this source's own request.
+		expect(journal.get("run-owned")!.resumeRequestSeqs).toEqual([resumeEvent.seq]);
+
+		// Unclaimed: durable but never owned by the run — refuses.
+		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const trigger2 = appendUserMsg(store, conv2, "original ask");
+		interruptedRun(store, journal, conv2, "run-unclaimed", {
+			anchorSeq: trigger2.seq,
+			ownedInputSeqs: [trigger2.seq],
+		});
+		appendUserMsg(store, conv2, "arrived but never folded in");
+		expect(ops.resume(conv2.id, "run-unclaimed")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		expect(journal.get("run-unclaimed")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a compacted trigger is recovered verbatim into the source-linked resume event", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const original = userMessage([
+			{ type: "text", text: "original ask" },
+			{
+				type: "data-attachment",
+				data: { path: "/tmp/pic.png", mediaType: "image/png", filename: "pic.png", size: 9 },
+			},
+		]);
+		store.append(conv.id, [original]);
+		const anchorSeq = store.lastUserSeq(conv.id)!;
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		// The trigger folds below the boundary — the model view loses it,
+		// but resume restores it into the new event.
+		store.setCompaction(conv.id, {
+			boundarySeq: anchorSeq,
+			summary: "folded past",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === original.id)).toBe(false);
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) => e.message.role === "user" && e.message.id !== original.id,
+		)!;
+		// Parts ride verbatim — the attachment stays a part, not a string.
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain("original ask");
+		expect(
+			resumeEvent.message.parts.some(
+				(p) => (p as { type: string }).type === "data-attachment",
+			),
+		).toBe(true);
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain("pic.png");
+		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("original ask");
+		const reply = detail.at(-1)!;
+		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		expect(
+			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
+		).toBe(true);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("malformed recorded ownership refuses readable; legacy rows fail closed to the anchor", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		const a1 = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-bad", { anchorSeq: a1 });
+		store.db.run("UPDATE turn_runs SET owned_input_seqs = ? WHERE run_id = ?", [
+			"{not json",
+			"run-bad",
+		]);
+		const out = ops.resume(conv.id, "run-bad");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("input ownership is unreadable");
+		}
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-bad")!.status).toBe("interrupted");
+		// A pre-tracking row (NULL ownership) refuses any newer durable user.
+		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const a2 = appendUser(store, conv2, "original ask");
+		interruptedRun(store, journal, conv2, "run-legacy", { anchorSeq: a2 });
+		appendUser(store, conv2, "newer durable input");
+		expect(ops.resume(conv2.id, "run-legacy")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("an anchorless legacy run with journaled progress and no user history still resumes", async () => {
+		const { store, conv, journal, ops, runtime, sink } = setup({});
+		interruptedRun(store, journal, conv, "run-src");
+		journal.noteToolInput("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolResult("run-src", "c1", { out: "landed" });
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		expect(journal.get("run-src")!.status).toBe("resumed");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("steer ownership and mark persist through journal reopen; a failed conversion is not owned", async () => {
+		// Step 1's tool execute parks so both steers queue before step 2's
+		// prepareStep claim — the real runtime, real journal path.
+		const toolGate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const { store, conv, journal, runtime } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("answer"),
+			],
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({ q: z.number() }),
+					execute: async (args: { q: number }) => {
+						entered.resolve();
+						await toolGate.promise;
+						return { ok: true, q: args.q };
+					},
+				}),
+			}),
+		});
+		const head = userMessage([{ type: "text", text: "go" }]);
+		const headSink = new RecordingSink();
+		runtime.submit(conv, head, headSink);
+		await entered.promise;
+		const steerGood = userMessage([{ type: "text", text: "steered mid-turn" }]);
+		const steerPoison = {
+			id: "poison-steer",
+			role: "user",
+			parts: [
+				{ type: "text", text: "read this" },
+				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+			],
+		} as UIMessage;
+		const steerSink = new RecordingSink();
+		const poisonSink = new RecordingSink();
+		runtime.submit(conv, steerGood, steerSink);
+		runtime.submit(conv, steerPoison, poisonSink);
+		toolGate.resolve();
+		expect(await headSink.done).toEqual({ kind: "completed" });
+		expect((await poisonSink.done).kind).toBe("error");
+		await runtime.shutdown();
+		const runId = store.db
+			.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
+			.get()!.run_id;
+		const reopen = openTurnJournal(store.db);
+		const row = reopen.get(runId)!;
+		// Ownership rides durable seqs — the unclaimed steer's seq is
+		// durable but never joined the owned set, so the mark stops at the
+		// folded steer.
+		const seqOf = (id: string) =>
+			store.historyDetail(conv.id).find((e) => e.message.id === id)!.seq;
+		expect(row.ownedInputSeqs).toEqual(
+			expect.arrayContaining([seqOf(head.id), seqOf(steerGood.id)]),
+		);
+		expect(row.ownedInputSeqs).not.toContain(seqOf(steerPoison.id));
+		expect(row.steerMark).toBe(seqOf(steerGood.id));
+		store.close();
+	});
+
+	test("a later event reusing an owned or registered message id stays foreign — seqs are the identity", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({
+			makeTools: (() => {
+				let calls = 0;
+				return () => {
+					calls++;
+					// run-a's staleness refusal consumes the first surface
+					// check; the third call is run-b's admitted attempt —
+					// admission accepted, successor never begun.
+					if (calls === 3) throw new Error("tool factory exploded");
+					return {
+						probe: tool({
+							inputSchema: z.object({ q: z.number() }),
+							execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
+						}),
+					};
+				};
+			})(),
+		});
+		// (a) A later user event carrying the anchor's message id is not
+		// the anchor — durable seqs say so.
+		const trigger = appendUserMsg(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-a", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq],
+		});
+		const doppel = userMessage([{ type: "text", text: "same id, different event" }]);
+		doppel.id = trigger.message.id;
+		store.append(conv.id, [doppel]);
+		expect(ops.resume(conv.id, "run-a")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		expect(journal.get("run-a")!.status).toBe("interrupted");
+		expect(edge.streamCalls).toHaveLength(0);
+
+		// (b) A later event carrying a GENERATED resume request's id and
+		// matching metadata is still not that request — its seq isn't
+		// registered.
+		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const trigger2 = appendUserMsg(store, conv2, "original ask");
+		interruptedRun(store, journal, conv2, "run-b", {
+			anchorSeq: trigger2.seq,
+			ownedInputSeqs: [trigger2.seq],
+		});
+		expect(ops.resume(conv2.id, "run-b").kind).toBe("resumed");
+		expect((await sink()!.done).kind).toBe("error"); // factory exploded
+		await waitUntil(() => !runtime.busy(conv2.id), "dead attempt's lane drains");
+		const generated = store
+			.historyDetail(conv2.id)
+			.find((e) => e.message.role === "user" && e.message.id !== trigger2.message.id)!;
+		expect(journal.get("run-b")!.resumeRequestSeqs).toEqual([generated.seq]);
+		const fake = userMessage([{ type: "text", text: "borrowed request id" }]);
+		fake.id = generated.message.id;
+		fake.metadata = { goblinResume: { sourceRunId: "run-b" } };
+		store.append(conv2.id, [fake]);
+		expect(ops.resume(conv2.id, "run-b")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		expect(journal.get("run-b")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a recorded ownership that omits the run's own anchor refuses invalid", async () => {
+		const { store, conv, journal, ops, runtime, edge } = setup({});
+		const trigger = appendUserMsg(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-inconsistent", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq + 50],
+		});
+		const out = ops.resume(conv.id, "run-inconsistent");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("does not name the run's own anchor");
+		}
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-inconsistent")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a failed register+append rolls back together; the source stays resumable", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq],
+		});
+		const eventsBefore = store.history(conv.id).length;
+		// A trigger fault at the registry write — inside the same
+		// transaction as the event append, so neither may land.
+		store.db.exec(
+			"CREATE TRIGGER fail_resume_req BEFORE UPDATE OF resume_request_seqs ON turn_runs " +
+				"BEGIN SELECT RAISE(FAIL, 'fixture registry fault'); END",
+		);
+		const out = ops.resume(conv.id, "run-src");
+		expect(out).toMatchObject({ kind: "refused", code: "unavailable" });
+		expect(journal.get("run-src")!.status).toBe("interrupted");
+		expect(journal.get("run-src")!.resumeRequestSeqs).toBeNull();
+		expect(store.history(conv.id).length).toBe(eventsBefore); // no orphan event
+		expect(edge.streamCalls).toHaveLength(0);
+		// Fault dropped at the fixture level — the retry records and runs.
+		store.db.exec("DROP TRIGGER fail_resume_req");
 		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		expect(journal.get("run-src")!.status).toBe("resumed");

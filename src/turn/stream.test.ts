@@ -198,6 +198,7 @@ function rig(
 		settle: (m, done) => settlements.push({ m, done }),
 		modelEntries: () => entries,
 		steerMarkSeed: 0,
+		ownedInputSeqs: [],
 		partial: null,
 		seenText: false,
 		toolCalls: [],

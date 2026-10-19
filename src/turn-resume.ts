@@ -227,27 +227,86 @@ function seedLoop(run: TurnRun, calls: TurnToolCall[]): LoopTurnState | "unreada
 	};
 }
 
-function triggerMessage(
+// The generated resume event's provenance marker — explanatory only.
+// Message metadata is client-controlled (the app channel), so it never
+// exempts a user event by itself: the stale check trusts an event only
+// when the source run's journaled registry names its id AND this marker
+// points back at the source.
+const resumeMetaSchema = z.object({
+	goblinResume: z.object({ sourceRunId: z.string() }),
+});
+
+function resumeEventSource(message: UIMessage): string | null {
+	const meta = resumeMetaSchema.safeParse(message.metadata);
+	return meta.success ? meta.data.goblinResume.sourceRunId : null;
+}
+
+type DetailEntry = { seq: number; anchorSeq: number | null; message: UIMessage };
+
+function isOwnResumeRequest(e: DetailEntry, run: TurnRun): boolean {
+	return (
+		(run.resumeRequestSeqs?.includes(e.seq) ?? false) &&
+		resumeEventSource(e.message) === run.runId
+	);
+}
+
+// Tail-only ownership: every durable user event after the run's anchor
+// must be one the attempt recorded as its own input (admission entries
+// plus folded-in steers) or a generated resume request the source
+// registered. Both are journaled as durable event SEQS — message ids
+// are app-controlled and carry no uniqueness guarantee, so they never
+// authorize anything. The durable record (historyDetail) is read — the
+// model view's compaction filter would hide both stale input and the
+// trigger. Legacy rows (NULL ownership) fail closed to anchor-only; a
+// malformed column is a readable refusal, never a silent policy change.
+function stalenessRefusal(
 	store: ConversationStore,
 	convId: string,
 	run: TurnRun,
-): { message: UIMessage; found: boolean } {
-	const entry =
-		run.anchorSeq === null
-			? undefined
-			: store.modelEntries(convId).find((e) => e.seq === run.anchorSeq);
-	if (entry !== undefined) return { message: entry.message, found: true };
-	log.debug("resume trigger message not in history — using placeholder", {
-		conversation: convId,
-		run: run.runId,
-		anchorSeq: run.anchorSeq,
-	});
-	return {
-		message: userMessage([
-			{ type: "text", text: `(resumed interrupted turn ${run.runId.slice(0, 8)})` },
-		]),
-		found: false,
-	};
+): { refuse: string; code: ResumeRefusalCode } | { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
+	if (run.ownedInputSeqsUnreadable) {
+		return {
+			code: "invalid",
+			refuse: "the recorded input ownership is unreadable — not resumed",
+		};
+	}
+	const detail = store.historyDetail(convId);
+	const owned = new Set(run.ownedInputSeqs ?? []);
+	let anchor: DetailEntry | undefined;
+	if (run.anchorSeq !== null) {
+		anchor = detail.find((e) => e.seq === run.anchorSeq);
+		if (anchor === undefined || anchor.message.role !== "user") {
+			return {
+				code: "invalid",
+				refuse: "the original request is gone or no longer a user message — not resumed",
+			};
+		}
+		// A modern row that recorded ownership must name its own anchor —
+		// anything else is an inconsistent source row, not a policy choice.
+		if (run.ownedInputSeqs !== null && !owned.has(run.anchorSeq)) {
+			return {
+				code: "invalid",
+				refuse: "the recorded input ownership does not name the run's own anchor — not resumed",
+			};
+		}
+	}
+	const postAnchorOwned: DetailEntry[] = [];
+	for (const e of detail) {
+		if (e.message.role !== "user") continue;
+		if (isOwnResumeRequest(e, run)) continue;
+		if (run.anchorSeq !== null && e.seq <= run.anchorSeq) continue;
+		if (run.ownedInputSeqs !== null && owned.has(e.seq)) {
+			postAnchorOwned.push(e);
+			continue;
+		}
+		return {
+			code: "conflict",
+			refuse:
+				"newer input arrived after the interruption that this run never owned — not resumed; " +
+				"continue from the current conversation as a new request or abandon the interrupted run",
+		};
+	}
+	return { anchor, owned: postAnchorOwned };
 }
 
 export function makeResumeOps(deps: ResumeDeps): ResumeOps {
@@ -432,18 +491,40 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					"a turn is running or queued — stop it or wait for it to finish",
 				);
 			}
+			// Tail-only staleness: a durable user event the dead turn never
+			// owned — anything input after its anchor that is not recorded
+			// steering or its own registered resume request — refuses.
+			const stale = stalenessRefusal(store, convId, run);
+			if ("refuse" in stale) {
+				return refused(stale.code, stale.refuse);
+			}
 			const loop = seedLoop(run, calls);
 			if (loop === "unreadable") {
 				return refused("invalid", "the journaled loop checkpoint is unreadable — not resumed");
 			}
 			const partial = seedPartial(run, calls);
-			const trigger = triggerMessage(store, convId, run);
-			if (!trigger.found && partial === null) {
+			// The resume is a NEW source-linked user event: the provenance
+			// prefix, then the original request and the owned post-anchor
+			// inputs verbatim — attachments and notes ride as parts, so a
+			// compacted trigger reaches the model again.
+			const parts: UIMessage["parts"] = [
+				{
+					type: "text",
+					text: `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`,
+				},
+				...(stale.anchor?.message.parts ?? []),
+				...stale.owned.flatMap((e) => e.message.parts),
+			];
+			if (parts.length === 1 && partial === null) {
 				return refused(
 					"invalid",
 					"the trigger message and the journaled progress are both gone — nothing to resume",
 				);
 			}
+			const resumeMessage: UIMessage = {
+				...userMessage(parts),
+				metadata: { goblinResume: { sourceRunId: run.runId } },
+			};
 			const seed: ResumeSeed = {
 				conversation: captured,
 				partial,
@@ -482,9 +563,21 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				},
 			});
 			claimed.add(run.runId);
-			if (!runtime.resume(conv, trigger.message, sink, seed)) {
+			try {
+				if (!runtime.resume(conv, resumeMessage, sink, seed)) {
+					claimed.delete(run.runId);
+					return refused("unavailable", "the runtime is shut down");
+				}
+			} catch (err) {
 				claimed.delete(run.runId);
-				return refused("unavailable", "the runtime is shut down");
+				log.error("resume event could not be recorded", err, {
+					conversation: convId,
+					run: run.runId,
+				});
+				return refused(
+					"unavailable",
+					`resume could not be recorded: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 			log.info("interrupted turn admitted for resume", {
 				conversation: convId,

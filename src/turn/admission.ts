@@ -35,6 +35,9 @@ export interface AdmissionSnapshot {
 	entries: { seq: number; message: UIMessage }[];
 	anchorSeq: number | null;
 	steerMarkSeed: number;
+	// The durable user-input seqs this attempt owns — the post-queuedIds
+	// admission set, so resume can tell its inputs from foreign later ones.
+	ownedInputSeqs: number[];
 	turnStartMs: number;
 }
 
@@ -71,6 +74,9 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 	}
 	let steerMarkSeed = 0;
 	for (const e of entries) steerMarkSeed = Math.max(steerMarkSeed, e.seq);
+	const ownedInputSeqs = entries
+		.filter((e) => e.message.role === "user")
+		.map((e) => e.seq);
 	log.info("turn started", { conversation: deps.convId, epoch, history: entries.length });
 	return {
 		kind: "admitted",
@@ -80,6 +86,7 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 			entries,
 			anchorSeq,
 			steerMarkSeed,
+			ownedInputSeqs,
 			turnStartMs: recovery?.startedAt ?? deps.now(),
 		},
 	};

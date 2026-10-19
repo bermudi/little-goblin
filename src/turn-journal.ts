@@ -43,6 +43,17 @@ export interface TurnRun {
 	delivery: JournalDelivery;
 	partial: unknown | null;
 	loopState: unknown | null;
+	// The durable user-input ids this attempt owned at admission plus every
+	// steer it folded in — resume reads it to tell the run's own inputs
+	// from foreign later ones. NULL = the row predates ownership tracking.
+	ownedInputSeqs: number[] | null;
+	// True when the column held non-NULL garbage — resume refuses that
+	// rather than silently applying the legacy policy.
+	ownedInputSeqsUnreadable: boolean;
+	// Generated resume-request event ids registered on this (interrupted)
+	// run — the journal-owned trust root for the stale-check exemption;
+	// message metadata alone is forgeable. NULL = none registered.
+	resumeRequestSeqs: number[] | null;
 	filterRetryUsed: boolean;
 	createdAt: string;
 	resumedFrom: string | null;
@@ -81,6 +92,9 @@ export interface TurnJournal {
 		convSnapshot: unknown;
 		toolNames: string[];
 		startedAt: string;
+		// The admitted user-entry ids — real runtime passes them all;
+		// undefined keeps backward fixtures at legacy NULL ownership.
+		ownedInputSeqs?: number[] | undefined;
 		resumedFrom?: string | undefined;
 		inheritFrom?: string[] | undefined;
 	}): void;
@@ -95,8 +109,18 @@ export interface TurnJournal {
 	noteToolError(runId: string, callId: string, error: unknown): void;
 	checkpoint(
 		runId: string,
-		patch: { partial?: unknown; loopState?: unknown; filterRetryUsed?: boolean },
+		patch: {
+			partial?: unknown;
+			loopState?: unknown;
+			filterRetryUsed?: boolean;
+			ownedInputSeqs?: number[];
+			steerMark?: number;
+		},
 	): void;
+	// Registers a generated resume-request event on an interrupted source —
+	// the same transaction that appends it to history. Refuses a source
+	// that is not interrupted and a registry that does not decode.
+	noteResumeRequest(runId: string, eventSeq: number): void;
 	finishRun(
 		runId: string,
 		status: "fenced" | "completed" | "error",
@@ -135,6 +159,8 @@ const runRowSchema = z.object({
 	delivery: z.enum(["pending", "delivered", "undelivered", "failed"]),
 	partial: z.string().nullable(),
 	loop_state: z.string().nullable(),
+	owned_input_seqs: z.string().nullable(),
+	resume_request_seqs: z.string().nullable(),
 	filter_retry_used: z.number(),
 	created_at: z.string(),
 	resumed_from: z.string().nullable(),
@@ -225,6 +251,25 @@ function tryParseJson(text: string, ctx?: { run: string; field: string }): unkno
 	}
 }
 
+// A JSON seq[] column: absent (NULL), valid, or malformed — the third
+// case must stay distinguishable; legacy NULL and corruption are
+// different policies at resume. Sequences are durable event seqs —
+// positive safe integers — never message ids (those are forgeable).
+function decodeSeqList(text: string | null, runId: string, field: string): number[] | "malformed" | null {
+	if (text === null) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		log.warn("turn run row field unreadable", { run: runId, field });
+		return "malformed";
+	}
+	const valid = z.array(z.number().int().positive()).safeParse(parsed);
+	if (valid.success) return valid.data;
+	log.warn("turn run row field unreadable", { run: runId, field });
+	return "malformed";
+}
+
 function decodeToolNames(text: string, runId: string): string[] | null {
 	let parsed: unknown;
 	try {
@@ -241,6 +286,8 @@ function decodeToolNames(text: string, runId: string): string[] | null {
 
 function decodeRun(raw: unknown): TurnRun {
 	const r = runRowSchema.parse(raw);
+	const owned = decodeSeqList(r.owned_input_seqs, r.run_id, "owned_input_seqs");
+	const resumeRequests = decodeSeqList(r.resume_request_seqs, r.run_id, "resume_request_seqs");
 	return {
 		runId: r.run_id,
 		conversationId: r.conversation_id,
@@ -258,6 +305,9 @@ function decodeRun(raw: unknown): TurnRun {
 			r.loop_state === null
 				? null
 				: tryParseJson(r.loop_state, { run: r.run_id, field: "loop_state" }),
+		ownedInputSeqs: owned === "malformed" ? null : owned,
+		ownedInputSeqsUnreadable: owned === "malformed",
+		resumeRequestSeqs: resumeRequests === "malformed" ? null : resumeRequests,
 		filterRetryUsed: r.filter_retry_used !== 0,
 		createdAt: r.created_at,
 		resumedFrom: r.resumed_from,
@@ -339,6 +389,12 @@ export function openTurnJournal(db: Database): TurnJournal {
 	if (!runCols.has("resumed_from")) {
 		db.exec("ALTER TABLE turn_runs ADD COLUMN resumed_from TEXT");
 	}
+	if (!runCols.has("owned_input_seqs")) {
+		db.exec("ALTER TABLE turn_runs ADD COLUMN owned_input_seqs TEXT");
+	}
+	if (!runCols.has("resume_request_seqs")) {
+		db.exec("ALTER TABLE turn_runs ADD COLUMN resume_request_seqs TEXT");
+	}
 	const callCols = new Set(
 		(db.query("PRAGMA table_info(turn_tool_calls)").all() as { name: string }[]).map((c) => c.name),
 	);
@@ -368,8 +424,14 @@ export function openTurnJournal(db: Database): TurnJournal {
 
 	const qBegin = db.query(`INSERT INTO turn_runs (
 		run_id, conversation_id, epoch, anchor_seq, steer_mark,
-		conv_snapshot, tool_names, started_ms, status, created_at, resumed_from
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`);
+		conv_snapshot, tool_names, started_ms, status, created_at, resumed_from,
+		owned_input_seqs
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`);
+	// The registry lives on the interrupted source row — a generated
+	// resume event is trusted only when the source named it.
+	const qNoteResume = db.query(
+		"UPDATE turn_runs SET resume_request_seqs = ? WHERE run_id = ? AND status = 'interrupted'",
+	);
 	// The chunk seam (planned) and the fence seam (dispatch/result) ride different SDK pipelines — either can commit first, so every write upserts; the only invariant held is that terminal states never move.
 	const qInput = db.query(`INSERT INTO turn_tool_calls
 		(run_id, tool_call_id, name, args, args_hash, state)
@@ -447,6 +509,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 					Date.parse(input.startedAt),
 					input.startedAt,
 					input.resumedFrom ?? null,
+					input.ownedInputSeqs === undefined ? null : JSON.stringify(input.ownedInputSeqs),
 				);
 			};
 			if (input.resumedFrom === undefined && (input.inheritFrom?.length ?? 0) === 0) {
@@ -521,8 +584,38 @@ export function openTurnJournal(db: Database): TurnJournal {
 				sets.push("filter_retry_used = ?");
 				vals.push(patch.filterRetryUsed ? 1 : 0);
 			}
+			if (patch.ownedInputSeqs !== undefined) {
+				sets.push("owned_input_seqs = ?");
+				vals.push(JSON.stringify(patch.ownedInputSeqs));
+			}
+			if (patch.steerMark !== undefined) {
+				sets.push("steer_mark = ?");
+				vals.push(patch.steerMark);
+			}
 			if (sets.length === 0) return;
 			db.run(`UPDATE turn_runs SET ${sets.join(", ")} WHERE run_id = ?`, [...vals, runId]);
+		},
+		noteResumeRequest(runId, eventSeq) {
+			const row = db
+				.query<{ status: string; resume_request_seqs: string | null }, [string]>(
+					"SELECT status, resume_request_seqs FROM turn_runs WHERE run_id = ?",
+				)
+				.get(runId);
+			if (row === null) throw new Error(`no turn run ${runId}`);
+			if (row.status !== "interrupted") {
+				throw new Error(
+					`run ${runId} is '${row.status}' — only 'interrupted' runs take resume requests`,
+				);
+			}
+			const decoded = decodeSeqList(row.resume_request_seqs, runId, "resume_request_seqs");
+			if (decoded === "malformed") {
+				throw new Error(`run ${runId} resume request registry is unreadable`);
+			}
+			qNoteResume.run(JSON.stringify([...(decoded ?? []), eventSeq]), runId);
+			log.info("resume request registered on interrupted run", {
+				run: runId,
+				seq: eventSeq,
+			});
 		},
 		finishRun(runId, status, delivery) {
 			qFinish.run(status, delivery, Date.now(), runId);

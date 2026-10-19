@@ -277,10 +277,22 @@ export class Runtime {
 	}
 
 	// Admission for an operator-resumed turn — turn-resume.ts owns the
-	// validation. The triggering message is already durable history, so
-	// nothing re-appends; the seed restores what the interrupted attempt
-	// produced. Same lane and authority rules as submitPersisted.
+	// validation and builds the source-linked resume event. Registering the
+	// event on the source run and appending it to history are one
+	// transaction: a partial write must not leave an unregistered event the
+	// next resume would read as foreign input. The seed restores what the
+	// interrupted attempt produced. Same lane and authority rules as
+	// submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
+		const journal = this.deps.turnJournal;
+		if (journal !== undefined && seed.resumedFrom !== undefined) {
+			this.deps.store.db.transaction(() => {
+				this.deps.store.append(conv.id, [message]);
+				journal.noteResumeRequest(seed.resumedFrom!, this.deps.store.lastUserSeq(conv.id)!);
+			})();
+		} else {
+			this.deps.store.append(conv.id, [message]);
+		}
 		return this.admit(conv, message, sink, seed);
 	}
 
@@ -908,6 +920,7 @@ export class Runtime {
 				convSnapshot: { model: conv.model, thinking: conv.thinking },
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
+				ownedInputSeqs: snapshot.ownedInputSeqs,
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
@@ -974,6 +987,7 @@ export class Runtime {
 				settle: (m, done) => void this.notifyDone(m, done),
 				modelEntries: () => store.modelEntries(convId),
 				steerMarkSeed: snapshot.steerMarkSeed,
+				ownedInputSeqs: snapshot.ownedInputSeqs,
 				partial: recovery?.partial ?? null,
 				seenText: recovery?.seenText ?? false,
 				toolCalls: recovery ? [...recovery.toolCalls] : [],

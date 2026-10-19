@@ -111,6 +111,32 @@ operator's decline, never the side effect. The model sees only what the
 journal says happened. A headless resumed turn notifies operators on
 terminal `onDone`.
 
+**Operator resume is a new source-linked exchange, not a retroactive
+attach** (ruling 2026-10-19). `/resume` admits a fresh attempt whose
+input is a NEW durable user event — a provenance prefix plus the
+original anchor's and the owned post-anchor inputs' parts verbatim —
+never the original event re-appended. The event rides the admission
+anchor, so the recovered instruction survives compaction and the reply
+anchors to the resume event itself; the prefix change is tail-only.
+Ownership is journaled as durable event seqs — never message ids, which
+are app-controlled and carry no uniqueness guarantee: `owned_input_seqs`
+records the admitted user seqs plus every successfully folded steer (one
+checkpoint write with the steer mark, after conversion and the
+post-await authority check), and `resume_request_seqs` on the
+interrupted source names the generated events that are this run's own —
+the same store transaction as the event append, so a partial write can
+never leave an unregistered event reading as foreign. Stale-check reads
+the durable record (`historyDetail`), never the compaction-filtered
+view, and refuses a newer user event the run never owned; only an event
+BOTH registered on the source AND carrying matching `goblinResume`
+metadata is exempt — metadata alone is client-controlled and never
+exempts, and a different event reusing an owned or registered id stays
+foreign. A modern row whose ownership omits its own anchor is
+inconsistent and refuses readable. Legacy NULL
+ownership fails closed to anchor-only (anchorless runs with no durable
+users stay resumable); a malformed column is a readable refusal, never
+a silent policy change.
+
 ## What must not change
 
 Invariants a refactor can still break silently — the audit list for any

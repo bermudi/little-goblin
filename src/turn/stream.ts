@@ -211,6 +211,9 @@ export interface StreamDeps<M extends WireMember> {
 	settle(m: M, done: MemberSettlement): void;
 	modelEntries(): { seq: number; message: UIMessage }[];
 	steerMarkSeed: number;
+	// The durable user-input seqs owned at admission; successfully folded
+	// steers advance it and persist with the steer mark.
+	ownedInputSeqs: number[];
 	partial: UIMessage | null;
 	seenText: boolean;
 	toolCalls: string[];
@@ -265,6 +268,7 @@ export async function driveStream<M extends WireMember>(
 	let filterRetryUsed = deps.filterRetryUsed;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
+	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
@@ -358,9 +362,17 @@ export async function driveStream<M extends WireMember>(
 				notePrompt(stepMessages);
 				return undefined;
 			}
+			// Ownership and the mark persist together — a crash after the
+			// fold must still name these steered inputs the attempt's own.
 			for (const e of deps.modelEntries()) {
-				if (e.seq > steerMark && claimedIds.has(e.message.id)) steerMark = e.seq;
+				if (!claimedIds.has(e.message.id)) continue;
+				if (e.seq > steerMark) steerMark = e.seq;
+				ownedInputSeqs.add(e.seq);
 			}
+			deps.journal?.checkpoint(deps.runId, {
+				ownedInputSeqs: [...ownedInputSeqs],
+				steerMark,
+			});
 			log.info("steered into turn", {
 				conversation: convId,
 				submits: admittedCount,

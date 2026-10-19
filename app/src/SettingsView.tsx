@@ -127,12 +127,10 @@ function Switch({
 	);
 }
 
-// Every secret-name input shares one datalist — auth.jsonl's record
-// names as loaded at boot — and one warning shape. A name that isn't in
-// the list never blocks a save (config-before-key is legitimate order);
-// it only flags typos against what the running process can resolve.
-// openrouter is required because providers materialize blank auth from
-// it; the rest are read by kind lookup.
+// One datalist of auth.jsonl's record names as loaded at boot. An
+// unknown name never blocks a save (config-before-key is legitimate
+// order) — it only flags typos. openrouter is required because
+// providers materialize blank auth from it.
 export type AuthDefaults = Record<string, string> & { openrouter: string };
 const AUTH_DL = "goblin-auth-names";
 const authWarn = (name: string, known: readonly string[]): string | undefined => {
@@ -284,11 +282,10 @@ function ChipsEditor({
 	);
 }
 
-// The "+ key" affordance every secret-name field carries: a pasted key
-// lands in auth.jsonl under the field's effective name (the typed name,
-// else the kind's default record) and resolves on the running process —
-// no shell, no restart. Command records stay hand-managed; the server
-// refuses those names and the error lands here.
+// A pasted key lands in auth.jsonl under the field's effective name
+// (the typed name, else the kind's default record) and resolves on the
+// running process — no shell, no restart. The server refuses command
+// record names; the error lands here.
 function SecretEntry({
 	token,
 	name,
@@ -373,8 +370,6 @@ function SecretEntry({
 	);
 }
 
-// The model picker: favorites, the current ref, and a custom
-// provider/model-id pair — the mini app's sheet, verbatim semantics.
 function ModelSheet({
 	title,
 	current,
@@ -505,8 +500,7 @@ function ChainEditor({
 				const effective = e.auth.trim() || def;
 				// Warn on any effective name the process can't resolve —
 				// including a typed name on keyless-capable kinds; hint
-				// "Blank uses X" only while the field is blank (mini-app
-				// parity).
+				// "Blank uses X" only while the field is blank.
 				const hint =
 					authWarn(effective, authNames) ??
 					(e.auth.trim() === "" && def !== "" ? `Blank uses ${def}.` : undefined);
@@ -618,8 +612,8 @@ function ChainEditor({
 
 // The transcription retry chain — same per-link field rules as the
 // primary (whistle keyless; cloud links carry model + secret name +
-// language), plus ordering controls. Depth is one by construction:
-// entries are plain TrEntryDrafts and carry no chain of their own.
+// language). Depth is one by construction: entries are plain
+// TrEntryDrafts and carry no chain of their own.
 function TrFallbackEditor({
 	entries,
 	kinds,
@@ -812,19 +806,20 @@ function ProviderCard({
 	onNameDirtyChange: (dirty: boolean) => void;
 }) {
 	// Name edits commit on blur — a half-typed name would break model
-	// refs while the operator is mid-word (the mini app's rule).
+	// refs while the operator is mid-word.
 	const [nameDraft, setNameDraft] = useState(prov.name);
 	const [nameErr, setNameErr] = useState<string | null>(null);
 	// Per-kind auth memory — a kind switch clears the field (it must
 	// never leak across kinds) and a switch back restores it.
 	const authStash = useRef<Record<string, string>>({});
 	useEffect(() => setNameDraft(prov.name), [prov.name]);
-	// The uncommitted name is departure hazard the serialized diff can't
-	// see: report divergence on every change, and clear on unmount —
-	// section switches unmount the card and the draft dies with it, so
-	// the pending flag must not outlive it. The callback rides a ref:
-	// the parent's inline wrapper changes identity every render and a
-	// cleanup bound to it would clear the flag on each re-render.
+	// The uncommitted name is a departure hazard the serialized diff
+	// can't see: report divergence on every change, and clear on
+	// unmount — section switches unmount the card and the draft dies
+	// with it, so the pending flag must not outlive it. The callback
+	// rides a ref: the parent's inline wrapper changes identity every
+	// render and a cleanup bound to it would clear the flag on each
+	// re-render.
 	const reportName = useRef(onNameDirtyChange);
 	reportName.current = onNameDirtyChange;
 	useEffect(() => {
@@ -991,7 +986,7 @@ export function SettingsView({
 	const [saving, setSaving] = useState(false);
 	const [loadErr, setLoadErr] = useState<string | null>(null);
 	// Turned-off blocks keep their last content — toggling back on
-	// restores it (the mini app's last* locals).
+	// restores it.
 	const last = useRef<{
 		tts: TtsDraft | null;
 		transcription: TrDraft | null;
@@ -1021,9 +1016,9 @@ export function SettingsView({
 	const patchTts = (p: Partial<TtsDraft>) =>
 		setDraft((d) => (d.tts === null ? d : { ...d, tts: { ...d.tts, ...p } }));
 
-	// Provider ids whose card is holding an uncommitted name draft —
-	// typed but not blurred. That text is in no serialized field, so it
-	// joins the dirty flag as a second, independent departure hazard.
+	// Provider ids whose card holds an uncommitted name draft — typed
+	// but not blurred. That text is in no serialized field, so it joins
+	// the dirty flag as a second, independent departure hazard.
 	const [pendingNames, setPendingNames] = useState<ReadonlySet<number>>(new Set());
 	const reportNameDirty = (id: number, dirty: boolean) =>
 		setPendingNames((s) => {
@@ -1041,8 +1036,8 @@ export function SettingsView({
 	const departureDirty = dirty || namePending;
 	useEffect(() => onDirtyChange?.(departureDirty), [departureDirty, onDirtyChange]);
 
-	// Which top-level fields differ — serialized both sides so the
-	// comparison sees exactly what dirty sees (provs minus ids).
+	// Serialized both sides so the comparison sees exactly what dirty
+	// sees (provs minus ids).
 	const { dirtyFields, stagedDirty } = (() => {
 		const none = { dirtyFields: [] as string[], stagedDirty: false };
 		if (!dirty || baseline === null) return none;
@@ -1108,8 +1103,7 @@ export function SettingsView({
 	}, [token]);
 
 	// Thinking-level capability lookups — kind/base/model from the
-	// form's own provider state, debounced like the mini app's
-	// refreshThinkingSoon.
+	// form's own provider state, debounced.
 	const provsSig = provs.map((p) => `${p.name.trim()}|${p.kind}|${p.baseUrl.trim()}`).join(",");
 	useEffect(() => {
 		if (kinds === null) return;
@@ -1156,8 +1150,8 @@ export function SettingsView({
 		return null;
 	};
 
-	// Which draft fields still name a provider — the mini app's
-	// providerRefs(), shown under the card and repeated on remove.
+	// Which draft fields still name a provider — shown under the card
+	// and repeated on remove.
 	const providerRefs = (name: string): string[] => {
 		const refs: string[] = [];
 		const pfx = `${name}/`;

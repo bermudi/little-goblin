@@ -1,8 +1,3 @@
-// The notes surfaces (design/projects.md → Notes): /app/notes index
-// with search/filter/pinned/archived, and /app/n/<id> — title, the
-// lazy Milkdown editor, project pin/archive/delete, versions, and
-// "Chat with this note".
-
 import {
 	lazy,
 	Suspense,
@@ -123,7 +118,7 @@ export function NotesIndex({
 			);
 		};
 		// Debounced on input; immediate on window focus — refresh
-		// without push (design → Refresh).
+		// without push.
 		const t = setTimeout(run, 200);
 		const onFocus = () => {
 			clearTimeout(t);
@@ -440,10 +435,9 @@ function ArchivedDraft({ noteId }: { noteId: string }) {
 	);
 }
 
-// /app/n/<id> — one note. The editor autosaves on a debounce with
-// If-Match; this page owns the flags (pin/archive/move/delete), the
-// title, versions, and the conflict bar when the server-side rev moved
-// under the editor.
+// The editor autosaves on a debounce with If-Match; this page owns the
+// flags, the title, versions, and the conflict bar when the server-side
+// rev moved under the editor.
 export function NoteView({
 	token,
 	noteId,
@@ -655,12 +649,11 @@ export function NoteView({
 		};
 	}, [token, noteId]);
 
-	// Refetch on window focus — refresh without push (design →
-	// Refresh). stateRev orders the check: a flag flip moves it without
-	// touching rev/updatedAt, so an archive arriving under a dirty
-	// buffer raises the same conflict a remote write does, and a clean
-	// page swaps to the readonly view — while a delayed same-state
-	// response is ignored entirely.
+	// Refetch on window focus — refresh without push. stateRev orders
+	// the check: a flag flip moves it without touching rev/updatedAt, so
+	// an archive arriving under a dirty buffer raises the same conflict
+	// a remote write does, and a clean page swaps to the readonly view —
+	// while a delayed same-state response is ignored entirely.
 	useEffect(() => {
 		let live = true;
 		const check = () => {

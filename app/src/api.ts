@@ -1,12 +1,12 @@
-// The /api/app/* client. Wire types come from the server source
-// (src/http/app-wire.ts) — never redeclared here.
+// Wire types come from the server source (src/http/app-wire.ts) —
+// never redeclared here.
 //
-// One client, two doors (design/telegram.md → Mini Apps): served under
-// /t/ it is the Telegram mini app and operator requests ride the
-// initData-authed /api/* tails; everywhere else it is the PWA on the
-// app channel's /api/app/* (bearer/trust). The chat routes exist only
-// on the app door — a bug that mounts them in telegram mode fails
-// loudly with 404, never silently.
+// One client, two doors: served under /t/ it is the Telegram mini app
+// and operator requests ride the initData-authed /api/* tails;
+// everywhere else it is the PWA on the app channel's /api/app/*
+// (bearer/trust). The chat routes exist only on the app door — a bug
+// that mounts them in telegram mode fails loudly with 404, never
+// silently.
 
 import type {
 	AppAttachmentResponse,
@@ -64,12 +64,11 @@ import { z } from "zod";
 // the win is only that the credential dies with the tab.
 const TOKEN_KEY = "goblin.appToken";
 
-// Upgraded installs may still carry the same key in localStorage —
-// the tab-scoped move never deleted it, so without an eviction the
-// credential would stay persistently stored forever. Every credential
-// touch removes the local copy; a read with no session value adopts it
-// into this tab's session first, so the migration keeps the operator
-// logged in instead of dropping them at the gate.
+// Upgraded installs may still carry the key in localStorage — without
+// an eviction the credential would stay persistently stored forever.
+// Every credential touch removes the local copy; a read with no session
+// value adopts it into this tab's session first, so the migration keeps
+// the operator logged in instead of dropping them at the gate.
 function evictLocalToken(): string | null {
 	const legacy = localStorage.getItem(TOKEN_KEY);
 	if (legacy !== null) localStorage.removeItem(TOKEN_KEY);
@@ -313,7 +312,7 @@ export function appendNote(token: string | null, id: string, text: string): Prom
 }
 
 // The rewrite POST generates only — the proposal returns through the
-// guarded PATCH with source 'rewrite' (design/projects.md → AI rewrite).
+// guarded PATCH with source 'rewrite'.
 export function rewriteNote(
 	token: string | null,
 	id: string,
@@ -560,18 +559,15 @@ export function synthesize(token: string | null, text: string): Promise<AppTtsRe
 }
 
 // ---------- operator surface ----------
-// The settings editor + memories browser + read-only lists — the mini
-// app's /api/* console under this door's auth. `/api/app/config` is the
-// composer's app-defaults route; the full editor rides /api/app/settings.
+// `/api/app/config` is the composer's app-defaults route; the full
+// editor rides /api/app/settings.
 
-/** GET /api/app/settings — the config, the kind lists, and its etag. */
 export function getOperatorConfig(
 	token: string | null,
 ): Promise<{ data: ConfigResponse; etag: string | null }> {
 	return requestMeta(token, "/api/app/settings");
 }
 
-/** POST /api/app/settings — the full form body, guarded by If-Match. */
 export function saveOperatorConfig(
 	token: string | null,
 	body: ConfigPostBody,
@@ -584,8 +580,7 @@ export function saveOperatorConfig(
 	});
 }
 
-/** POST /api/app/secrets — store a key as an auth.jsonl record. The
- *  record resolves on the running process immediately (no restart). */
+// The record resolves on the running process — no restart.
 export function storeSecret(
 	token: string | null,
 	body: { name: string; value: string },
@@ -597,7 +592,6 @@ export function storeSecret(
 	});
 }
 
-/** The rungs a model can express — kind + base from the form's own state. */
 export function getThinkingLevels(
 	token: string | null,
 	kind: string,
@@ -620,8 +614,8 @@ export function listMemoryDocuments(
 ): Promise<MemoriesListResponse> {
 	const params = new URLSearchParams();
 	if (opts.q !== undefined && opts.q !== "") params.set("q", opts.q);
-	// The thread panel's filter — server-side translation into the
-	// bank's id-substring filter (design/memory.md → Memories browser).
+	// The thread panel's filter — translated server-side into the
+	// bank's id-substring filter.
 	if (opts.conversation !== undefined) params.set("conversation", opts.conversation);
 	if (opts.limit !== undefined) params.set("limit", String(opts.limit));
 	if (opts.offset !== undefined) params.set("offset", String(opts.offset));
@@ -629,7 +623,6 @@ export function listMemoryDocuments(
 	return request(token, `/api/app/memory/documents${q === "" ? "" : `?${q}`}`);
 }
 
-/** GET skills/from — the thread's generated skills (provenance join). */
 export function listThreadSkills(
 	token: string | null,
 	conversation: string,
@@ -669,8 +662,7 @@ export function listSkills(token: string | null): Promise<SkillsResponse> {
 	return request(token, "/api/app/skills");
 }
 
-/** POST skills/decide — install or discard a proposed skill. The same
- *  mechanical decision the Telegram ✅/🚫 row runs. */
+// The same mechanical decision the Telegram ✅/🚫 row runs.
 export function decideSkill(
 	token: string | null,
 	name: string,

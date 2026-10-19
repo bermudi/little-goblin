@@ -80,8 +80,8 @@ async function command(argv: string[], label: string, timeoutMs = 30_000): Promi
 			abortSignal: commandAbort.signal,
 		});
 	} catch (error) {
-		// boundedRun's promise always settles; only spawnProc throws here, and
-		// its errno (ENOENT vs EACCES) is the diagnosable part.
+		// boundedRun's promise always settles; only spawnProc throws here,
+		// and its errno (ENOENT vs EACCES) is the diagnosable part.
 		const code =
 			typeof error === "object" &&
 			error !== null &&
@@ -93,7 +93,8 @@ async function command(argv: string[], label: string, timeoutMs = 30_000): Promi
 	} finally {
 		cancellation.signal.removeEventListener("abort", stop);
 		if (escalation) clearTimeout(escalation);
-		// Reclaim descendants even when a leader exits before its deadline with pipes already closed.
+		// Reclaim descendants even when a leader exits before its deadline
+		// with pipes already closed.
 		if (proc) {
 			try {
 				process.kill(-proc.pid, "SIGKILL");

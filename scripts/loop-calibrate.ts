@@ -1,14 +1,13 @@
-// Loop-watchdog calibration (design/model.md → "No step budget"): replays
-// the longest stored tool turns (auto-selected from the events table)
-// plus synthetic loops through system1 and prints each checkpoint's
-// "stuck" score, so the cut threshold is set from observed separation,
-// not a guess.
+// Replays the longest stored tool turns (auto-selected from the events
+// table) plus synthetic loops through system1 and prints each
+// checkpoint's "stuck" score — the watchdog's cut threshold is set from
+// observed separation, not a guess.
 //
 //   bun scripts/loop-calibrate.ts [--top N] [model ...]
 //
-// Read-only over goblin.sqlite. Defaults to the configured system1 model
-// and the 10 longest turns. Prints via process.stdout.write (CLI
-// convention, see check-auth.ts).
+// Read-only over goblin.sqlite. Defaults to the configured system1
+// model and the 10 longest turns. Prints via process.stdout.write (CLI
+// convention).
 
 import { Database } from "bun:sqlite";
 import { loadAuth } from "../src/auth.ts";

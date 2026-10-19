@@ -5,9 +5,8 @@
 # tree. The previous slot stays, so a client-only rollback is a symlink
 # flip.
 #
-# app/dist used to be vite's outDir: building WAS publishing (and a
-# mid-build tree is what got served). Now `bun run app:build` only
-# stages dist.next; nothing else writes the served path.
+# `bun run app:build` only stages dist.next — nothing else writes the
+# served path.
 #
 # One-time migration: a legacy real-dir app/dist moves aside into slot
 # dist.a and stays served until the flip (a sub-second gap between that

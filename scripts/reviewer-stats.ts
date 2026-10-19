@@ -1,16 +1,8 @@
-// Reviewer calibration report (DESIGN.md, "Skill reviewer" →
-// instrumentation): reads goblin.log JSONL and answers, from the log
-// alone, the questions the gate experiment needs — how often the gate
-// fires and on what, what reviews cost, and what became of each
-// proposal (validated, proposed, skipped, rejected, cancelled,
-// dropped, and where the skill sits now: still proposed (undecided),
-// installed (the operator approved — it reached skills/), or gone).
-//
 //   bun scripts/reviewer-stats.ts [logfile]
 //
-// Defaults to $GOBLIN_HOME/state/goblin.log. Prints a human report via
-// process.stdout.write (same convention as check-auth.ts — this is a
-// CLI, not a goblin process; `log` is for the daemon).
+// Defaults to $GOBLIN_HOME/state/goblin.log. Prints via
+// process.stdout.write — a CLI, not a goblin process (`log` is for the
+// daemon).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

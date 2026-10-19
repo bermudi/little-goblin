@@ -41,7 +41,7 @@ type Options = {
 };
 
 // Fake only external command boundaries: PATH contains approved
-// utilities and fakes; nothing here can reach a production service,
+// utilities and fakes — nothing here can reach a production service,
 // publication, build or SSH. The bun refresh stubs write real artifact
 // bytes from the checkout's own sources, so an interrupted deploy's
 // half-written artifacts are distinguishable from a clean refresh.
@@ -151,9 +151,10 @@ esac`,
 	return bin;
 }
 
-// Run the whole shipped script in a real scratch Git checkout. PATH contains
-// only approved utilities and fakes: no production service, publication, build or SSH
-// can escape the fixture, including on the missing-Podman path.
+// Run the whole shipped script in a real scratch Git checkout. PATH
+// contains only approved utilities and fakes — no production service,
+// publication, build or SSH can escape the fixture, including on the
+// missing-Podman path.
 function runDeploy(changed: string[] = [], options: Options = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-deploy-test-"));
 	const mode = options.mode ?? "healthy";
@@ -638,8 +639,8 @@ describe("deployment attempt marker", () => {
 });
 
 // A→B→C on ONE scratch checkout: markers and artifacts persist between
-// runs, so the interrupted middle deploy's leftover marker — never the
-// source diff — is what forces the retry's dependency and client refresh.
+// runs — the interrupted middle deploy's leftover marker, never the
+// source diff, is what forces the retry's dependency and client refresh.
 function deploySequence() {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-deploy-seq-"));
 	const home = join(dir, "home");

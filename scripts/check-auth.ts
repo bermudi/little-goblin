@@ -1,14 +1,13 @@
-// Install-time gate (DESIGN.md: Auth → "Proton Pass"): a `!` record
-// whose command invokes pass-cli directly would resolve as the owner
-// session — full account, no audit trail. loadAuth only poisons it (the
-// unit must never crash-loop), so install.sh refuses it here instead.
+// Install-time gate: a `!` record whose command invokes pass-cli
+// directly would resolve as the owner session — full account, no audit
+// trail. loadAuth only poisons it (the unit must never crash-loop), so
+// the installer refuses it here instead.
 //
 // Prints ONLY the offending records' names, one per line, and exits 2
-// when any exist — a dedicated code so install.sh can tell "offenders
+// when any exist — a dedicated code so the caller can tell "offenders
 // found" apart from the check itself failing (any other nonzero).
-// Values are secret material and never print — stdout is written
-// through process.stdout.write, not `log`, precisely so the output
-// stays bare names.
+// Values are secret material and never print — process.stdout.write,
+// not `log`, keeps the output bare names.
 import { readFileSync } from "node:fs";
 import { invokesPassCliDirectly, parseAuthFile } from "../src/auth.ts";
 import { paths } from "../src/config.ts";

@@ -17,9 +17,7 @@ describe("main branch regressions", () => {
 	// The pending provider-name departure guard: a half-typed name sits in
 	// the card's blur-commit field, outside every serialized field, so the
 	// serialized diff can't see it — it must still arm onDirtyChange and
-	// hold the autosave. Mounted with happy-dom like StateViews.test.tsx;
-	// the wire is faked at globalThis.fetch with the same config fixture
-	// shape App.test.tsx uses.
+	// hold the autosave. happy-dom mount, fetch faked at globalThis.fetch.
 
 	let win: Window;
 	let container: HTMLElement;
@@ -434,8 +432,7 @@ describe("quiet harbor regressions", () => {
 	// faked fetch): an edit debounces into one POST; success rebaselines; a
 	// 422 surfaces the server's message with a retry button; a 409 (stale
 	// etag) refuses retry — only reload helps; and a failed signature is
-	// never re-fired by the debounce. Mounted with happy-dom, like
-	// ChatView.test.tsx.
+	// never re-fired by the debounce.
 
 	// GET /api/app/settings payload — no providers keeps the thinking-level
 	// lookups away (a "p/m" model with no matching provider resolves to the

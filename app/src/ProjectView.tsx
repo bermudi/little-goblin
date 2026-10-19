@@ -1,16 +1,11 @@
-// The project surfaces (design/projects.md): the rail's create dialog,
-// the /app/projects index, and the /app/p/<id> page — rename,
-// instructions, memory, archive, and the project's chat list with its
-// own new-chat composer.
-
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
 
 type Summary = AppConversationList["conversations"][number];
 
-// The rail's modal. The slug is minted server-side — nothing here
-// precomputes it; a refused path comes back 422 and shows inline.
+// The slug is minted server-side — nothing here precomputes it; a
+// refused path comes back 422 and shows inline.
 export function NewProjectDialog({
 	token,
 	onClose,
@@ -176,7 +171,6 @@ export function NewProjectDialog({
 	);
 }
 
-// One project row — name over its directory, the managed/linked badge.
 function ProjectIndexRow({
 	project,
 	onOpen,
@@ -196,8 +190,8 @@ function ProjectIndexRow({
 	);
 }
 
-// /app/projects — every project; archived ones wait behind the same
-// collapsed-section pattern the rail's archived chats use.
+// Archived projects wait behind the same collapsed-section pattern the
+// rail's archived chats use.
 export function ProjectsIndex({
 	projects,
 	onOpen,
@@ -244,8 +238,8 @@ export function ProjectsIndex({
 	);
 }
 
-// The project's notes — fetched per page visit; "New note" is bound
-// here from birth (design/projects.md → Notes).
+// The project's notes — fetched per page visit; a new note is bound
+// here from birth.
 function ProjectNotes({
 	token,
 	project,
@@ -287,8 +281,8 @@ function ProjectNotes({
 			);
 		};
 		run();
-		// Refresh without push — same as the notes index (design →
-		// Refresh).
+		// Refetch on focus — refresh without push, same as the notes
+		// index.
 		window.addEventListener("focus", run);
 		return () => {
 			live = false;
@@ -355,10 +349,8 @@ function ProjectNotes({
 	);
 }
 
-// /app/p/<id> — the project's own page: settings up top, then its chats
-// (archived collapsed), then a composer that starts a bound
-// conversation through the same createConversation → seed → select
-// flow the empty state uses.
+// The composer starts a bound conversation through the same create →
+// seed → select flow the empty state uses.
 export function ProjectView({
 	token,
 	project,

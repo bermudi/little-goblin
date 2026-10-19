@@ -153,6 +153,7 @@ const runtime = new Runtime({
 		? {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: async () => "the folded era",
 				},
 			}

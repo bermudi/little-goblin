@@ -39,9 +39,12 @@ import {
 	recordingModel,
 	sleep,
 	tmpDb,
+	useHome,
 	waitUntil,
 	tmpDir,
 } from "./testkit.ts";
+import { systemPromptFor } from "./agent/prompt.ts";
+import { toolNames } from "./agent/tools/mod.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -894,6 +897,7 @@ describe("context overflow recovery", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaries.push(prompt);
 						return "the folded era";
@@ -949,7 +953,13 @@ describe("context overflow recovery", () => {
 					},
 				}),
 			},
-			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded past" } },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded past",
+				},
+			},
 		});
 		seedExchanges(r.store, r.conv.id);
 		const sink = submit(r, "run the probe");
@@ -992,6 +1002,7 @@ describe("context overflow recovery", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: async () => {
 						summarizeCalls++;
 						return "folded";
@@ -1022,6 +1033,7 @@ describe("context overflow recovery", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: async () => {
 						summarizeCalls++;
 						return "folded past";
@@ -1053,7 +1065,13 @@ describe("context overflow recovery", () => {
 		const r = rig({
 			model: s.model,
 			step: { contextWindow: 1000 },
-			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded",
+				},
+			},
 		});
 		seedExchanges(r.store, r.conv.id);
 		const sink = submit(r, "hi");
@@ -1097,6 +1115,7 @@ describe("context overflow recovery", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: (_conv, _system, _prompt, signal) => {
 						started.resolve();
 						return signal.aborted
@@ -1144,6 +1163,7 @@ describe("context overflow recovery", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "fixture",
+					contextWindow: () => 1000,
 					summarize: async () => {
 						started.resolve();
 						await gate.promise;
@@ -1343,6 +1363,7 @@ describe("cache stability", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "zai/glm-5.3",
+					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaries.push(prompt);
 						return "the folded era";
@@ -1391,6 +1412,7 @@ describe("cache stability", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: async () => {
 						throw new Error("must not compact");
 					},
@@ -1407,7 +1429,13 @@ describe("cache stability", () => {
 			deltas: ["slow ", "reply"],
 			delayMs: 40,
 			step: { contextWindow: 1000 },
-			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded",
+				},
+			},
 		});
 		seedExchanges(r.store, r.conv.id);
 		const sink = submit(r, "live question");
@@ -1439,7 +1467,13 @@ describe("cache stability", () => {
 			deltas: ["slow ", "reply"],
 			delayMs: 40,
 			step: { contextWindow: 1000 },
-			deps: { compaction: { modelRef: () => "m", summarize: async () => "folded" } },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded",
+				},
+			},
 		});
 		const sink = submit(r, "hi");
 		await sink.firstDelta; // mid-stream: the compact queues behind the turn
@@ -1454,21 +1488,16 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
-	test("/stop during a pending buildStep aborts the compaction — no pointer written", async () => {
-		// buildStep hangs until the stop has landed: the abort controller
-		// must be registered BEFORE this await, or the stop aborts a null
-		// controller and the compaction runs on despite it.
-		const buildGate = deferred<void>();
+	test("/stop during a pending contextWindow lookup aborts the compaction — no pointer written", async () => {
+		// The window lookup hangs until the stop has landed: the abort
+		// controller must be registered BEFORE this await, or the stop
+		// aborts a null controller and the compaction runs on despite it.
+		const windowGate = deferred<void>();
 		const r = rig({
-			buildStep: () =>
-				buildGate.promise.then(() => ({
-					model: fakeModel(["reply"], 5),
-					system: "test",
-					contextWindow: 1000,
-				})),
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => windowGate.promise.then(() => 1000),
 					// Fails fast on an already-aborted signal, as a real model call
 					// does — the summary must never run past a stop.
 					summarize: (_conv, _system, _prompt, signal) =>
@@ -1480,11 +1509,11 @@ describe("cache stability", () => {
 		});
 		seedExchanges(r.store, r.conv.id);
 		const compacted = r.runtime.compact(r.conv);
-		// The compaction is now suspended inside buildStep with its
+		// The compaction is now suspended inside the window lookup with its
 		// controller registered — stop must see (and abort) it.
 		const { stopped } = stop(r);
 		expect(stopped).toBe(true);
-		buildGate.resolve();
+		windowGate.resolve();
 		// /stop carries two fences — the epoch bump and the abort — and the
 		// authority check lands first now: the compaction rejects as fenced
 		// before the (pre-aborted) summary call could even start.
@@ -1511,6 +1540,7 @@ describe("cache stability", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: (_conv, _system, _prompt, signal) => {
 						if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
 						summarizeCalls++;
@@ -1561,6 +1591,7 @@ describe("cache stability", () => {
 			deps: {
 				compaction: {
 					modelRef: () => "m",
+					contextWindow: () => 1000,
 					summarize: (_conv, _system, _prompt, signal) => {
 						if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
 						started.resolve();
@@ -1593,7 +1624,13 @@ describe("cache stability", () => {
 				builds++;
 				return { model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
 			},
-			deps: { compaction: { modelRef: () => "m", summarize: async () => "should not run" } },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1,
+					summarize: async () => "should not run",
+				},
+			},
 		});
 		const sink = new RecordingSink();
 		const delivered = sink.onDone.bind(sink);
@@ -1613,6 +1650,90 @@ describe("cache stability", () => {
 		expect(builds).toBe(1);
 		expect(r.store.getCompaction(r.conv.id)).toBeNull();
 		r.store.close();
+	});
+
+	test("compaction metadata never mints or rewrites the frozen prompt", async () => {
+		// The real systemPromptFor at the buildStep edge — the fake model
+		// only ever reads what it froze. A /compact pass reads window
+		// metadata only: it must not build a snapshot, and nothing but a
+		// landed boundary may clear one.
+		useHome("goblin-rt-prompt-");
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const summarizeStarted = deferred<void>();
+		let summarizeImpl: (signal: AbortSignal) => Promise<string> = async () => "folded";
+		const runtime = new Runtime({
+			store,
+			buildStep: (c, toolset) => ({
+				model: fakeModel(["ok"], 1),
+				system: systemPromptFor(store, c, toolNames(toolset)).text,
+			}),
+			makeTools: () => ({
+				memory_search: tool({
+					inputSchema: z.object({ q: z.string() }),
+					execute: async () => "no memory",
+				}),
+			}),
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => 1000,
+				summarize: (_c, _system, _prompt, signal) => summarizeImpl(signal),
+			},
+		});
+		try {
+			// Fresh conversation — nothing to fold. The metadata pass must
+			// not have built a prompt for it.
+			expect(await runtime.compact(conv)).toEqual({
+				kind: "noop",
+				reason: "nothing worth compacting",
+			});
+			expect(store.promptSnapshot(conv.id)).toBeNull();
+
+			// The first real turn freezes the real prompt: the deployment's
+			// tool names and the memory framing they unlock.
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const frozen = store.promptSnapshot(conv.id);
+			expect(frozen).not.toBeNull();
+			expect(frozen!.text).toContain("memory_search");
+			expect(frozen!.text).toContain("Long-term memory is on");
+
+			// A no-op compact leaves the frozen bytes untouched.
+			expect((await runtime.compact(conv)).kind).toBe("noop");
+			expect(store.promptSnapshot(conv.id)).toEqual(frozen);
+
+			seedExchanges(store, conv.id);
+			// A failed summary leaves them too.
+			summarizeImpl = async () => {
+				throw new Error("summarizer exploded");
+			};
+			await expect(runtime.compact(conv)).rejects.toThrow("summarizer exploded");
+			expect(store.promptSnapshot(conv.id)).toEqual(frozen);
+
+			// As does a stop that lands mid-summary.
+			summarizeImpl = (signal) => {
+				summarizeStarted.resolve();
+				return new Promise<string>((_, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("summarize aborted")), {
+						once: true,
+					});
+				});
+			};
+			const stopped = runtime.compact(conv);
+			await summarizeStarted.promise;
+			runtime.stop(conv.id);
+			await expect(stopped).rejects.toThrow();
+			expect(store.promptSnapshot(conv.id)).toEqual(frozen);
+
+			// Only a landed boundary clears it for the rebuild.
+			summarizeImpl = async () => "the folded era";
+			expect((await runtime.compact(conv)).kind).toBe("compacted");
+			expect(store.promptSnapshot(conv.id)).toBeNull();
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
 	});
 
 	test("provider warnings are logged, not dropped", async () => {
@@ -2612,6 +2733,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		makeTools: () => ({}),
 		compaction: {
 			modelRef: (conv) => conv.model!,
+			contextWindow: () => null,
 			summarize: async (conv) => {
 				summaries.push(`${conv.model}:${conv.thinking}`);
 				return "summary";
@@ -2684,6 +2806,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		makeTools: () => ({}),
 		compaction: {
 			modelRef: (row) => row.model!,
+			contextWindow: () => 1000,
 			summarize: async (row) => {
 				store.setMeta(row.id, { model: "test/changed", thinking: "low" });
 				summarySelections.push(`${row.model}:${row.thinking}`);
@@ -2696,7 +2819,9 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		runtime.submit(conv, userMessage([{ type: "text", text: "recover" }]), first);
 		expect((await first.done).kind).toBe("completed");
 		expect(first.text).toBe("recovered");
-		expect(selections).toEqual(["test/original:high", "test/original:high", "test/original:high"]);
+		// buildStep counts model attempts only — the overflow recovery's
+		// compaction reads window metadata, not a step.
+		expect(selections).toEqual(["test/original:high", "test/original:high"]);
 		expect(summarySelections).toEqual(["test/original:high"]);
 		expect(store.getCompaction(conv.id)!.model).toBe("test/original");
 		const next = new RecordingSink();

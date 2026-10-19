@@ -118,6 +118,11 @@ export interface RuntimeDeps {
 	// leaves the event stream and compaction pointer untouched.
 	compaction?: {
 		modelRef(conv: Conversation): string;
+		// Catalog window lookup — metadata only, never a model step: no
+		// auth resolution and no prompt build, so a compaction pass can
+		// never mint or rewrite the frozen prompt snapshot. Null means
+		// unknown; budgets fall back to the defaults.
+		contextWindow(conv: Conversation): number | null | Promise<number | null>;
 		summarize(
 			conv: Conversation,
 			system: string,
@@ -417,20 +422,28 @@ export class Runtime {
 		// Threshold/overflow use the admitted epoch; manual jobs resolve a fresh
 		// conversation before taking authority.
 		const epoch = conv.epoch;
-		// Register before the first await so /stop can cancel a pending buildStep.
+		// Register before the first await so /stop can cancel a pending
+		// contextWindow lookup.
 		const lane = this.lane(conv.id);
 		const controller = new AbortController();
 		lane.compactController = controller;
 		try {
-			const step = await this.deps.buildStep(conv, {});
+			// Metadata only — never buildStep: resolving a model and building
+			// a system prompt here would freeze a snapshot no turn asked for.
+			const contextWindow = await compaction.contextWindow(conv);
+			// The authority check precedes the abort check so a /stop (epoch
+			// bump + abort) still reports as a fence, matching the commit-time
+			// assertAuthority inside runCompaction.
+			this.checkAuthority(conv.id, epoch);
+			controller.signal.throwIfAborted();
 			const tailTokenBudget =
-				step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
+				contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
 			// Overflow recovery uses a smaller tail to stay below the provider's
 			// observed limit.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 			// Keep summarizer input below half the window to leave answer headroom.
 			const inputTokenBudget =
-				step.contextWindow !== undefined ? Math.floor(step.contextWindow * 0.5) : 32_000;
+				contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
 			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,

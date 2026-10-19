@@ -84,6 +84,13 @@ export function makeStepBuilder(
 		},
 		compaction: {
 			modelRef: (conv) => conv.model!,
+			// Metadata only — a catalog read. Resolving auth or building the
+			// prompt here would let a compaction pass mint a snapshot; the
+			// frozen prompt belongs to buildStep alone.
+			contextWindow: (conv) => {
+				const { provider, modelId } = splitModelRef(conv.model!);
+				return contextLimit(provider, modelId);
+			},
 			summarize: async (conv, system, prompt, signal) => {
 				const cfg = configRef.current;
 				const modelRef = conv.model!;

@@ -96,7 +96,11 @@ describe("app conversations", () => {
 	test("compact folds history through the lane — the manual lever", async () => {
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
-			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => null,
+				summarize: async () => "folded",
+			},
 		});
 		try {
 			await call("/api/app/conversations", {

@@ -65,7 +65,12 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   the crossing retries under the new settings. Auto-compaction runs in the
   serial lane after the turn's sinks are notified — the reply lands first;
   `/compact` serializes through it and still compacts with the window
-  unknown (a forced scrub). The utilization warn stays as the alarm that
+  unknown (a forced scrub). Ruling 2026-10-19: the window lookup is
+  metadata, not a model step — `compaction.contextWindow` reads the
+  catalog only, so a compaction pass resolves no auth, builds no model
+  step, and can never mint or rewrite a frozen prompt snapshot;
+  `buildStep` alone builds prompts and only a landed boundary clears
+  the snapshot. The utilization warn stays as the alarm that
   compaction didn't happen or didn't keep up.
   A mid-turn **context-overflow error** is a recovery, not a failure
   (mechanism from pi): the partial reply is held off the wire, one

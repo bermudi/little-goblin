@@ -55,9 +55,9 @@ const fullSystem = [
 describe("splitSystemPrompt", () => {
 	test("sections account for every character of the text", () => {
 		const s = splitSystemPrompt(fullSystem);
-		expect(
-			s.identity + s.environment + s.project + s.agentsMd + s.userMd + s.skills,
-		).toBe(fullSystem.length);
+		expect(s.identity + s.environment + s.project + s.agentsMd + s.userMd + s.skills).toBe(
+			fullSystem.length,
+		);
 	});
 
 	test("each chunk lands on the section that opened it", () => {
@@ -69,9 +69,9 @@ describe("splitSystemPrompt", () => {
 			`\n${PROMPT_SECTIONS.skills}\n\nskills catalog`,
 		);
 		expect(fullSystem.slice(s.identity, s.identity + s.environment)).toContain("- Tools: bash.");
-		expect(fullSystem.slice(fullSystem.length - s.skills - s.userMd, fullSystem.length - s.skills)).toContain(
-			"operator model",
-		);
+		expect(
+			fullSystem.slice(fullSystem.length - s.skills - s.userMd, fullSystem.length - s.skills),
+		).toContain("operator model");
 	});
 
 	test("absent sections read zero and their would-be content joins the previous section", () => {
@@ -153,10 +153,7 @@ describe("measurePrompt", () => {
 		expect(s.history).toBeGreaterThan(s.toolResults);
 		expect(s.toolResults).toBe(JSON.stringify({ cmd: "ls" }).length + "file.txt".length);
 		expect(s.history).toBe(
-			"hello".length +
-				"running".length +
-				JSON.stringify({ cmd: "ls" }).length +
-				"file.txt".length,
+			"hello".length + "running".length + JSON.stringify({ cmd: "ls" }).length + "file.txt".length,
 		);
 	});
 
@@ -172,6 +169,38 @@ describe("measurePrompt", () => {
 		];
 		const s = measurePrompt("sys", {}, messages);
 		expect(s.history).toBe("look".length + Math.ceil((30 * 4) / 3));
+	});
+
+	test("cyclic tool inputs fail instead of counting as zero characters", () => {
+		const input: Record<string, unknown> = {};
+		input.self = input;
+		expect(() =>
+			measurePrompt("sys", {}, [
+				{
+					role: "assistant",
+					content: [{ type: "tool-call", toolCallId: "c1", toolName: "probe", input }],
+				},
+			]),
+		).toThrow(TypeError);
+	});
+
+	test("bigint tool inputs fail instead of counting as zero characters", () => {
+		expect(() =>
+			measurePrompt("sys", {}, [
+				{
+					role: "assistant",
+					content: [{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: { n: 1n } }],
+				},
+			]),
+		).toThrow(TypeError);
+	});
+
+	test("tool schema conversion failures propagate", () => {
+		const invalid = tool({
+			inputSchema: z.object({ date: z.date() }),
+			execute: async () => "unused",
+		});
+		expect(() => measurePrompt("sys", { invalid }, [])).toThrow();
 	});
 
 	test("segments compose: system split + tools + history", () => {

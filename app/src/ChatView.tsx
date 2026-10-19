@@ -381,6 +381,9 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 	if (typeof o.model !== "string" || typeof o.durationMs !== "number") return null;
 	const usage = (o.usage ?? {}) as Record<string, unknown>;
 	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	// Fall back as a pair only for legacy metadata; explicit null or
+	// a missing companion final-step field means unavailable.
+	const hasFinalUsage = "lastInput" in usage || "lastCacheRead" in usage;
 	return {
 		model: o.model,
 		finishReason: typeof o.finishReason === "string" ? o.finishReason : "",
@@ -396,8 +399,8 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 			output: num(usage.output),
 			cacheRead: num(usage.cacheRead),
 			cacheWrite: num(usage.cacheWrite),
-			lastInput: num(usage.lastInput),
-			lastCacheRead: num(usage.lastCacheRead),
+			lastInput: num(hasFinalUsage ? usage.lastInput : usage.input),
+			lastCacheRead: num(hasFinalUsage ? usage.lastCacheRead : usage.cacheRead),
 		},
 	};
 }
@@ -424,8 +427,8 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
 	// The window number is the final step's prompt — not the billed sum
 	// across the tool loop's re-sent prompts; the gauge and this line agree.
-	const input = meta.usage.lastInput ?? meta.usage.input;
-	const cacheRead = meta.usage.lastCacheRead ?? meta.usage.cacheRead;
+	const input = meta.usage.lastInput;
+	const cacheRead = meta.usage.lastCacheRead;
 	const { output } = meta.usage;
 	if (input !== null || output !== null) {
 		let tok = `${input === null ? "?" : kfmt(input)}→${output === null ? "?" : kfmt(output)} tok`;

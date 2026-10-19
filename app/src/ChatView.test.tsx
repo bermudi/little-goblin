@@ -224,6 +224,88 @@ function mountDom() {
 	return dom;
 }
 
+describe("turn metadata usage", () => {
+	const dom = mountDom();
+
+	test.each([
+		{ name: "legacy", final: {}, expected: "900→10 tok (800 cached)" },
+		{
+			name: "final step",
+			final: { lastInput: 300, lastCacheRead: 280 },
+			expected: "300→10 tok (280 cached)",
+		},
+		{
+			name: "explicit null",
+			final: { lastInput: null, lastCacheRead: null },
+			expected: "?→10 tok",
+		},
+		{ name: "missing final cache", final: { lastInput: 300 }, expected: "300→10 tok" },
+		{
+			name: "null final cache",
+			final: { lastInput: 300, lastCacheRead: null },
+			expected: "300→10 tok",
+		},
+		{
+			name: "missing final input",
+			final: { lastCacheRead: 280 },
+			expected: "?→10 tok (280 cached)",
+		},
+		{
+			name: "null final input",
+			final: { lastInput: null, lastCacheRead: 280 },
+			expected: "?→10 tok (280 cached)",
+		},
+	])("$name", async ({ final, expected }) => {
+		const json = (body: unknown) =>
+			new Response(JSON.stringify(body), {
+				headers: { "content-type": "application/json" },
+			});
+		globalThis.fetch = (async (request: RequestInfo | URL) => {
+			const url =
+				typeof request === "string" ? request : request instanceof URL ? request.href : request.url;
+			if (url.endsWith("/messages"))
+				return json({
+					messages: [
+						{
+							id: "a1",
+							role: "assistant",
+							parts: [{ type: "text", text: "done" }],
+							metadata: {
+								model: "prov/model",
+								durationMs: 10,
+								usage: { input: 900, output: 10, cacheRead: 800, ...final },
+							},
+						},
+					],
+				});
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return json({ runs: [] });
+			return json({ model: "prov/model", thinking: "off", favorites: [], thinkingLevels: ["off"] });
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			);
+		});
+		await act(async () => {});
+		expect(dom.container.querySelector(".msg-meta")?.textContent).toBe(
+			`prov/model · 0.0s · ${expected}`,
+		);
+	});
+});
+
 // The reload window: history is fetched once on mount, then the SDK's
 // resume reconnects to a live turn. A reply that completes between
 // those two operations makes the reconnect answer 204 — and the SDK

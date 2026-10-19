@@ -65,6 +65,9 @@ function contextUsageOf(m: UIMessage): {
 	if (typeof usage !== "object" || usage === null) return null;
 	const u = usage as Record<string, unknown>;
 	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	// Only legacy metadata lacks both fields. Never mix final-step
+	// counts with whole-turn billing, even if one final field is missing.
+	const hasFinalUsage = "lastInput" in u || "lastCacheRead" in u;
 	const promptChars = (md as { promptChars?: unknown }).promptChars;
 	let chars: Record<string, number> | null = null;
 	if (typeof promptChars === "object" && promptChars !== null) {
@@ -78,26 +81,10 @@ function contextUsageOf(m: UIMessage): {
 		output: num(u.output),
 		cacheRead: num(u.cacheRead),
 		cacheWrite: num(u.cacheWrite),
-		lastInput: num(u.lastInput),
-		lastCacheRead: num(u.lastCacheRead),
+		lastInput: num(hasFinalUsage ? u.lastInput : u.input),
+		lastCacheRead: num(hasFinalUsage ? u.lastCacheRead : u.cacheRead),
 		promptChars: chars,
 	};
-}
-
-// Window occupancy is the final step's prompt; turns stored before
-// lastInput existed only carry the whole turn's billed sum.
-function windowInputOf(u: {
-	lastInput: number | null;
-	input: number | null;
-}): number | null {
-	return u.lastInput ?? u.input;
-}
-
-function windowCacheReadOf(u: {
-	lastCacheRead: number | null;
-	cacheRead: number | null;
-}): number | null {
-	return u.lastCacheRead ?? u.cacheRead;
 }
 
 // Segment keys the itemizer can produce, minus `toolResults` — a subset
@@ -356,8 +343,8 @@ export async function handleConversationsRoute(
 		const last = found.at(-1) ?? null;
 		const rates: number[] = [];
 		for (const u of found) {
-			const turnInput = windowInputOf(u);
-			const turnCacheRead = windowCacheReadOf(u);
+			const turnInput = u.lastInput;
+			const turnCacheRead = u.lastCacheRead;
 			if (turnInput !== null && turnInput > 0 && turnCacheRead !== null) {
 				rates.push(turnCacheRead / turnInput);
 			}
@@ -369,23 +356,22 @@ export async function handleConversationsRoute(
 		} catch {
 			limit = null;
 		}
-		const input = last === null ? null : windowInputOf(last);
-		const cacheRead = last === null ? null : windowCacheReadOf(last);
+		const input = last?.lastInput ?? null;
+		const cacheRead = last?.lastCacheRead ?? null;
 		const body: AppContextView = {
 			model,
 			input,
 			output: last?.output ?? null,
 			cacheRead,
 			cacheWrite: last?.cacheWrite ?? null,
-			cacheHitRate:
-				input !== null && input > 0 && cacheRead !== null ? cacheRead / input : null,
+			cacheHitRate: input !== null && input > 0 && cacheRead !== null ? cacheRead / input : null,
 			avgCacheHitRate: rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : null,
 			limit,
 			pct:
 				input !== null && limit !== null && limit > 0
 					? Math.round((input / limit) * 1000) / 10
 					: null,
-			turns: found.filter((u) => windowInputOf(u) !== null).length,
+			turns: found.length,
 			segments: segmentsOf(last?.promptChars ?? null, input),
 		};
 		log.debug("app context served", {

@@ -649,6 +649,74 @@ test("context prefers the final step's input and itemizes the window", async () 
 	}
 });
 
+test.each([
+	{ name: "legacy", final: {}, input: 900, cacheRead: 800 },
+	{
+		name: "explicit null",
+		final: { lastInput: null, lastCacheRead: null },
+		input: null,
+		cacheRead: null,
+	},
+	{
+		name: "missing final cache",
+		final: { lastInput: 300 },
+		input: 300,
+		cacheRead: null,
+	},
+	{
+		name: "null final cache",
+		final: { lastInput: 300, lastCacheRead: null },
+		input: 300,
+		cacheRead: null,
+	},
+	{
+		name: "missing final input",
+		final: { lastCacheRead: 280 },
+		input: null,
+		cacheRead: 280,
+	},
+	{
+		name: "null final input",
+		final: { lastInput: null, lastCacheRead: 280 },
+		input: null,
+		cacheRead: 280,
+	},
+])("context preserves final-step availability: $name", async ({ final, input, cacheRead }) => {
+	const { http, call, store } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ctx-availability" }),
+		});
+		store.append("app/ctx-availability", [
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [{ type: "text", text: "done" }],
+				metadata: {
+					usage: { input: 900, output: 10, cacheRead: 800, ...final },
+					promptChars: { identity: 100 },
+				},
+			},
+		]);
+		const body = await (await call("/api/app/conversations/ctx-availability/context")).json();
+		expect(body).toMatchObject({
+			input,
+			cacheRead,
+			turns: 1,
+			pct: input === null ? null : input / 10,
+			cacheHitRate: input === null || cacheRead === null ? null : cacheRead / input,
+			avgCacheHitRate: input === null || cacheRead === null ? null : cacheRead / input,
+			segments: input === null ? null : [{ key: "identity", tokens: input }],
+		});
+	} finally {
+		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
 test("conversation PATCH rechecks the live registry and row after awaiting its request body", async () => {
 	const { http, store, configRef, appDeps } = setup();
 	const row = store.resolve(appAddress("held-config"), "/work", configRef.current);

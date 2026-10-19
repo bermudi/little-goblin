@@ -143,7 +143,9 @@ turn-structure change.
   prompt measured in serialized characters, split by `turn/itemize.ts`
   on the code-owned headings `prompt.ts` exports — the /context gauge
   scales those chars to `lastInput`, so its per-segment figures are
-  estimates, exact in aggregate only.
+  estimates, exact in aggregate only. Serialization and tool-schema
+  conversion failures are programming errors: itemization propagates
+  them to the turn's error boundary rather than counting them as zero.
 - **Admission semantics.** Snapshot-at-admission (a `/compact` landing
   mid-turn can't rewrite what the turn sees); recall is admission-time
   and never re-runs for steered input; the reply's anchor, retention

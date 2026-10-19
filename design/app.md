@@ -29,7 +29,11 @@ gauge reads the final step's prompt (`usage.lastInput`), never the turn's
 billed sum across the tool loop (ruling 2026-10-19: the two differ by the
 step count, and the sum once read as a 223k window on a 37k one); its
 itemization scales `promptChars` to that number — per-segment figures are
-estimates, exact in aggregate only. The gauge's denominator never stalls
+estimates, exact in aggregate only.
+Final-step counts fall back to billed totals only on legacy metadata with
+neither final-step field. Explicit nulls (or a missing companion field) stay
+unavailable, including cache-hit ratios and segment estimates.
+The gauge's denominator never stalls
 on the network: a cold models.dev memory falls back to a one-time
 disk-cache parse (`contextLimitCached`), memory wins once a turn warms it.
 

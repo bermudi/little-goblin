@@ -35,12 +35,14 @@ const SYSTEM_ORDER = [
 	{ segment: "agentsMd", heading: "agents" },
 	{ segment: "userMd", heading: "user" },
 	{ segment: "skills", heading: "skills" },
-] as const satisfies readonly { segment: keyof PromptSegments; heading: keyof typeof PROMPT_SECTIONS }[];
+] as const satisfies readonly {
+	segment: keyof PromptSegments;
+	heading: keyof typeof PROMPT_SECTIONS;
+}[];
 
-export function splitSystemPrompt(text: string): Pick<
-	PromptSegments,
-	"identity" | "environment" | "project" | "agentsMd" | "userMd" | "skills"
-> {
+export function splitSystemPrompt(
+	text: string,
+): Pick<PromptSegments, "identity" | "environment" | "project" | "agentsMd" | "userMd" | "skills"> {
 	const segments = { identity: 0, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0 };
 	const markers = SYSTEM_ORDER.map(({ segment, heading }) => ({
 		key: segment,
@@ -72,17 +74,11 @@ export function splitSystemPrompt(text: string): Pick<
 	return segments;
 }
 
-// JSON.stringify can only throw on cycles/host objects; the AI SDK
-// contracts here promise JSON-serializable values, so a 0 is an honest
-// "unmeasurable sliver", not a swallowed failure — it keeps one weird
-// part from costing the whole itemization.
+// The SDK contract promises JSON-serializable values. Violations are
+// programming errors and must reach the turn's error boundary.
 function jsonLen(value: unknown): number {
 	if (value === undefined) return 0;
-	try {
-		return JSON.stringify(value).length;
-	} catch {
-		return 0;
-	}
+	return JSON.stringify(value).length;
 }
 
 // Media rides the wire base64'd (~4/3 of raw bytes); a URL only sends
@@ -143,14 +139,10 @@ function toolDefsChars(tools: ToolSet): number {
 	for (const [name, t] of Object.entries(tools)) {
 		let size = name.length;
 		if (typeof t.description === "string") size += t.description.length;
-		try {
-			const js = asSchema(t.inputSchema).jsonSchema;
-			// An async schema converter can't be measured synchronously —
-			// the name+description floor still counts.
-			if (typeof (js as { then?: unknown }).then !== "function") size += jsonLen(js);
-		} catch {
-			// Estimator only — the definition still occupies the window.
-		}
+		const js = asSchema(t.inputSchema).jsonSchema;
+		// An async schema converter can't be measured synchronously —
+		// the name+description floor still counts.
+		if (typeof (js as { then?: unknown }).then !== "function") size += jsonLen(js);
 		total += size + 16; // envelope: role markers, name field, nesting
 	}
 	return total;

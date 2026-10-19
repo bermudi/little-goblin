@@ -305,3 +305,115 @@ export interface AppResumeBlocked {
 	error: string;
 	calls: AppRunCall[];
 }
+
+// ---------- responsibilities (design/work.md — the project feed) ----------
+
+export interface AppResponsibilityUnderstanding {
+	outcome: string;
+	situation: string;
+	nextAction: string;
+	checkpoints: string[];
+	completionEvidence: string[];
+}
+
+export interface AppResponsibility {
+	responsibilityId: string;
+	projectId: string;
+	status:
+		| "active"
+		| "waiting_for_operator"
+		| "blocked"
+		| "paused"
+		| "completed"
+		| "cancelled";
+	revision: number;
+	understanding: AppResponsibilityUnderstanding;
+	outcome: string;
+	coordinationConversationId: string;
+	handoverKey: string | null;
+	followupProgramId: string | null;
+	armed: boolean;
+	notArmedReason: string | null;
+	createdAt: string;
+	updatedAt: string;
+	closedAt: string | null;
+}
+
+export interface AppAttachmentTarget {
+	server: string;
+	session: string;
+	agentName: string;
+	paneId: string | null;
+	terminalId: string | null;
+	agentSession: string | null;
+	kind: string | null;
+	cwd: string | null;
+}
+
+export interface AppResponsibilityAttachment {
+	attachmentId: number;
+	responsibilityId: string;
+	generation: number;
+	target: AppAttachmentTarget;
+	baseline: unknown;
+	health: "attached" | "missing" | "identity_changed" | "detached";
+	cursor: unknown;
+	createdAt: string;
+	detachedAt: string | null;
+}
+
+export interface AppPromptOperation {
+	operationId: string;
+	responsibilityId: string;
+	attachmentId: number;
+	attachmentGeneration: number;
+	responsibilityRevision: number;
+	brief: string;
+	state: string;
+	refusal: string | null;
+	journalRunId: string | null;
+	toolCallId: string | null;
+	sentAt: string | null;
+	outcome: unknown;
+	createdAt: string;
+}
+
+export interface AppFeedEvent {
+	eventId: number;
+	sourceKey: string;
+	kind: string;
+	text: string;
+	facts: unknown;
+	origin: string;
+	createdAt: string;
+	conversationId: string;
+	wake: {
+		wakeId: number;
+		state: string;
+		lastError: string | null;
+		settledAt: string | null;
+		runId: string | null;
+	} | null;
+}
+
+/** One feed row — GET /api/app/responsibilities (open, all projects)
+ * and GET /api/app/projects/<id>/responsibilities (the project feed). */
+export interface AppFeedItem {
+	responsibility: AppResponsibility;
+	attachments: AppResponsibilityAttachment[];
+	operations: AppPromptOperation[];
+	events: AppFeedEvent[];
+	nextCheckinAt: string | null;
+	lastActivityAt: string | null;
+}
+
+export interface AppResponsibilityFeed {
+	items: AppFeedItem[];
+}
+
+/** POST /api/app/responsibilities/<id>/correct — a comment becomes a
+ * durable operator event; an understanding patch bumps revision. */
+export interface AppCorrectRequest {
+	text?: string;
+	understanding?: AppResponsibilityUnderstanding;
+}

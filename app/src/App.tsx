@@ -1412,6 +1412,7 @@ function AppShell() {
 				{page === "log" && <LogView token={token} />}
 				{page === "projects" && (
 					<ProjectsIndex
+						token={token}
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}

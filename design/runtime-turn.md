@@ -2,15 +2,15 @@
 
 Part of the goblin design spec. The core — domain model, authority rule,
 cache stability — is [`DESIGN.md`](../DESIGN.md); the turn's loop bounds
-are `design/model.md` → "No step budget", its streaming contract is
+are `design/model.md` → "No step budget", the streaming contract is
 `design/app.md` → "Streaming members & resumable streams". This file
-rules how `runTurn` decomposes: the phase cut, state ownership, the
+rules `runTurn`'s decomposition: the phase cut, state ownership, the
 attempt loop, and the module map under `src/turn/`.
 
 Provenance: written as the W3.0 decomposition ruling while `runTurn`
-was one ~1,180-line recursive function with all turn state in rebound
-locals; the decomposition landed 2026-10 and this is now the
-architecture law, not a plan — deviations come back here first.
+was one ~1,180-line recursive function; the decomposition landed
+2026-10 — architecture law now, not a plan; deviations come back here
+first.
 
 ## The turn, phase by phase
 
@@ -30,15 +30,15 @@ attempts (overflow resume, below). Phases of an attempt:
 | 7 | overflow resume | `ContextOverflowError` | compaction + `TurnRecovery` → next attempt |
 
 Error rails around them: fenced (quiet abort + fenced onDone) and
-generic (abort + error onDone). Both are terminal — they belong to the
-attempt loop, not to a phase module.
+generic (abort + error onDone). Both are terminal — attempt-loop
+machinery, not phase modules.
 
 Seam rulings that bind the phases:
 
 - Phase 0/1's resume claim must invoke the stream driver's membership
   seam — claim + `live.chunks` replay — through the same
-  runtime-injected queue function the steer path uses, with `live`
-  passed in. Never splice `lane.pending` directly. (#96)
+  runtime-injected queue function the steer path uses, `live` passed
+  in; never splice `lane.pending`. (#96)
 - Phase 1's admission fix (ownership filter, anchor) is distinct from
   lane/controller pinning, which is runtime-owned, not admission's.
 - Phase 2's recall body lives in `memory/mod.ts` — its whole surface is
@@ -49,49 +49,47 @@ Seam rulings that bind the phases:
 
 ## State ownership, by lifetime
 
-The rule that keeps `TurnState` from being the giant function in an
-object costume: **state is classified by who survives it.**
+**State is classified by who survives it** — the rule that keeps
+`TurnState` from becoming the giant function in an object costume.
 
 1. **Conversation-scoped** — owned by the Runtime (or its `Lane`),
    survives turns: `lanes` (pending/compacts/running/controller/
    compactController/draining/live), `closed`, `reviewer`,
    `loopWatchdog`, `turnCounter`, `lastTurns`. None of it is turn
    state; modules receive it only as injected dependencies or callback
-   seams (e.g. the driver steers through a runtime-provided function,
-   never touching the lane).
+   seams.
 2. **Recovery-carried** — exactly what `TurnRecovery` serializes:
    `conversation`, `partial`, `memory`, `seenText`, `toolCalls`,
    `digest`, `loop` (`detector`, `watchdogRing`, `watchdogStrikes`,
    `completedCalls`, `warnings`, `cutKind`, `forcedKind`), `startedAt`,
    `live`, `filterRetryUsed` — plus the membership array `turns`,
    which rides the resume decision. **This list is the exhaustive
-   whitelist: anything not on it dies with the attempt.** That is a
-   feature — an in-flight watchdog verdict (`watchdogInFlight`) or a
-   half-set display seam (`lastTextPartId`, `callById`) must not leak
-   into the resumed attempt. Other deliberate deaths: `warnCursor`
-   (restored warnings re-send once per attempt), `landingIssued` (the
-   landing re-issues in the resume attempt — `stopWhen` reads it), and
-   `steerMark` (the ownership mark is *not* carried — the resume's fresh
-   snapshot contains the steered rows as durable history, so it
-   re-derives). `partialResponse` is the one borderline: attempt output
-   while the attempt lives, recovery payload the moment it overflows —
-   it rides the `ContextOverflowError`, which is correct.
+   whitelist: anything not on it dies with the attempt** — a feature:
+   an in-flight watchdog verdict (`watchdogInFlight`) or a half-set
+   display seam (`lastTextPartId`, `callById`) must not leak into the
+   resumed attempt. Other deliberate deaths: `warnCursor` (restored
+   warnings re-send once per attempt), `landingIssued` (re-issues in
+   the resume attempt — `stopWhen` reads it), `steerMark` (the
+   ownership mark is *not* carried — the resume's fresh snapshot
+   contains the steered rows as durable history, so it re-derives).
+   `partialResponse` is the one borderline: attempt output while the
+   attempt lives, recovery payload on overflow; it rides the
+   `ContextOverflowError`, which is correct.
 3. **Attempt-scoped** — everything else. Owned by one `TurnState`
    object per attempt, mutated only through narrow methods; callbacks
    call methods, they never rebind locals. `TurnState.snapshot()`
    projects the loop slice of `TurnRecovery` — the whitelist's `loop`
    entry is literally the projection's field list.
 4. **Not state** — the admission snapshot (conv, epoch, entries,
-   anchorSeq, queuedIds) is immutable input to the attempt, and
-   everything derived from it per attempt (view, messages, merged) is a
-   value. Inputs and values get no setters and no methods.
+   anchorSeq, queuedIds) is immutable input to the attempt; everything
+   derived from it per attempt (view, messages, merged) is a value.
+   Inputs and values get no setters and no methods.
 
 ## The attempt loop
 
-The recursion is a returned decision consumed by a loop. `runTurn`
-remains the logical-turn entry `drain` calls; it creates the `live`
-wire log once at logical-turn scope and hands it to each attempt, then
-loops:
+The recursion is a returned decision consumed by a loop: `runTurn`
+remains the logical-turn entry `drain` calls, creates the `live` wire
+log once at logical-turn scope and hands it to each attempt, then loops:
 
 - `runAttempt` returns `done` or `resume{recovery, turns}`.
 - `TurnRecovery` is the wire format between attempts — the loop adds
@@ -110,37 +108,36 @@ loops:
 ## The turn journal
 
 `src/turn-journal.ts` is the crash journal: two tables on the
-conversation store's handle (`turn_runs`, `turn_tool_calls`) that
-durably record what an admitted turn owned — epoch, anchor, settings
+conversation store's handle (`turn_runs`, `turn_tool_calls`) durably
+recording what an admitted turn owned — epoch, anchor, settings
 snapshot, tool surface — and how far each tool call got
 (`planned → dispatched → completed|failed`). The run row lands before
-any tool side effect can execute; `dispatched` without a result is
-the ambiguous state — the side effect may or may not have happened.
-A graceful shutdown fences its live rows first, so a row still
-`running` at open means the process died mid-turn: open reclassifies
-it `interrupted` and boot sends each operator one terse notice per
-run (counts by state, never the partial itself). Nothing replays
-automatically — boot is notice-only, and an `interrupted` turn
-resumes ONLY by explicit operator decision, into a FRESH admission
-(new epoch, new run row linked by `resumed_from`). Each attempt gets
-its own run row, so an overflow resume leaves the failed attempt's
-record intact — and the continuation's row INHERITS the failed
-attempt's settled calls (as a fresh admission inherits its source's),
-so a crash of the continuation still resumes with every side effect
-the logical turn already recorded. Evidence handoff is one
-transaction: the successor row's creation, the inheritance of settled
-calls, and the source's consumption commit together — a crash between
-the writes can never leave two interrupted runs where the successor
-re-executes recorded effects. A call the fence answered from recorded
-evidence journals with replay provenance (`replayed`); replay credits
-count executions only, so one execution keeps exactly one replay
-across any number of resumes.
+any tool side effect can execute; `dispatched` without a result is the
+ambiguous state — the side effect may or may not have happened. A
+graceful shutdown fences its live rows first, so a row still `running`
+at open means the process died mid-turn: open reclassifies it
+`interrupted` and boot sends each operator one terse notice per run
+(counts by state, never the partial itself). Nothing replays
+automatically — boot is notice-only, and an `interrupted` turn resumes
+ONLY by explicit operator decision, into a FRESH admission (new epoch,
+new run row linked by `resumed_from`). Each attempt gets its own run
+row, so an overflow resume leaves the failed attempt's record intact —
+and the continuation's row INHERITS the failed attempt's settled calls
+(as a fresh admission inherits its source's), so a crash of the
+continuation still resumes with every side effect the logical turn
+already recorded. Evidence handoff is one transaction — successor
+creation, call inheritance, and source consumption commit together —
+so no crash between the writes can leave two interrupted runs where
+the successor re-executes recorded effects. A call the fence answered
+from recorded evidence journals with replay provenance (`replayed`);
+replay credits count executions only, so one execution keeps exactly
+one replay across any number of resumes.
 
-Stored `args` is a **preview**, never the identity: the column holds
-at most 8000 chars TOTAL of the canonical JSON — oversized text is
-cut so the `[truncated]` marker fits inside that bound, and readers
-bound legacy oversized rows the same way on decode. Values under the
-cap decode back to their parsed objects exactly as before; only a cut
+Stored `args` is a **preview**, never the identity: the column holds at
+most 8000 chars TOTAL of the canonical JSON — oversized text is cut so
+the `[truncated]` marker fits inside that bound, and readers bound
+legacy oversized rows the same way on decode. Values under the cap
+decode back to their parsed objects exactly as before; only a cut
 document comes back as its raw preview string, so the surfaces (model
 seeds, the app's decision list) can never leak an oversized body.
 `args_hash` — and therefore every `replayKey`/`skippedMap` lookup —
@@ -158,23 +155,23 @@ reason.
 interrupted runs, take per-call decisions, abandon, resume. Both
 surfaces — Telegram `/resume` `/decide` `/abandon` and the app's
 `/interrupted` `/decide` `/resume` routes — drive the same `ResumeOps`.
-The preconditions resume refuses on: undecided `dispatched` calls
-(each needs `record-result` | `authorize-retry` | `skip`), model or
-thinking drift against the run's recorded snapshot, any recorded tool
-missing from the rebuilt surface, a busy lane, and a source that is
-not `interrupted`. In the resumed attempt the fence replays recorded
-outputs for `completed`/`resolved-done` calls (the tool never runs),
+Resume refuses on: undecided `dispatched` calls (each needs
+`record-result` | `authorize-retry` | `skip`), model or thinking drift
+against the run's recorded snapshot, any recorded tool missing from the
+rebuilt surface, a busy lane, and a source that is not `interrupted`.
+In the resumed attempt the fence replays recorded outputs for
+`completed`/`resolved-done` calls (the tool never runs),
 `resolved-retry` and `planned` calls execute normally, and
 `resolved-skip` calls carry a refusal map — a re-ask gets the
-operator's decline as the result, never the side effect. The model
-sees only what the journal says happened. The source row flips to
-`resumed` only inside the successor row's creation transaction; a
-headless resumed turn notifies operators on terminal `onDone`.
+operator's decline as the result, never the side effect. The model sees
+only what the journal says happened. The source row flips to `resumed`
+only inside the successor row's creation transaction; a headless
+resumed turn notifies operators on terminal `onDone`.
 
 ## What must not change
 
-These are the invariants a refactor can still break silently; they are
-the audit list for any turn-structure change.
+Invariants a refactor can still break silently — the audit list for any
+turn-structure change.
 
 - **The authority rule** (DESIGN.md). `checkAuthority` around every
   await, plus the epoch-compare guards in `prepareStep` and the steer
@@ -219,16 +216,15 @@ the audit list for any turn-structure change.
   used by both call sites (`prepareStep` steering and the overflow
   resume claim). **Ruling (#114): registration rides the same seam** —
   a claimed member enters the attempt's membership list at the splice,
-  never when admission returns. The gap between claim and return is
-  where a store read failure orphaned a joiner (claimed, untracked,
-  stream hanging forever); with registration at the splice, every
-  exception path — including drain's crash guard — settles it.
+  never when admission returns. The claim→return gap is where a store
+  read failure once orphaned a joiner (claimed, untracked, stream
+  hanging forever); with registration at the splice, every exception
+  path — including drain's crash guard — settles it.
 
 ## Module map
 
-`src/turn/` holds the phases; `runtime.ts` keeps the queue, the
-attempt loop, and `checkAuthority`. Flat files, one job each, tests
-colocated.
+`src/turn/` holds the phases; the rest stays in `runtime.ts` (below).
+Flat files, one job each, tests colocated.
 
 | Module | One job |
 |---|---|
@@ -241,11 +237,9 @@ colocated.
 
 Two turn-adjacent bodies live in existing modules, by surface:
 
-- `recallMemory` lives in `memory/mod.ts` (client, contexts, `noteRecall`
-  are all memory's surface). The runtime calls it between authority
-  checks.
-- `retentionSourceFrom` + `RetentionSource` live in `memory/mod.ts`, per
-  the two-projections ruling below.
+- `recallMemory` in `memory/mod.ts` (the recall seam ruling above).
+- `retentionSourceFrom` + `RetentionSource` in `memory/mod.ts`, per the
+  two-projections ruling below.
 
 Stays in `runtime.ts`: the `Lane` map and queue (`submit`/`admit`/
 `drain`/`claimableCount`), `stop`/`shutdown`/`cancelFenced`,
@@ -267,21 +261,21 @@ Known tension, ruled so a dedup sweep cannot unify it blindly:
 compaction's serialization (`agent/compaction.ts` `messageText`)
 embeds stored voice/video-note transcripts — durable operator speech,
 #84 — and memory's retention projection (`memory/mod.ts` `messageText`)
-embeds them too: `design/memory.md` → Retain rules a stored transcript
-is the text of the exchange, not attachment ingestion. The two jobs
-still differ in what else rides: compaction folds **model-context
-continuity** (losing a spoken instruction there degrades every future
-turn), so bare attachment path references and bounded tool evidence
-stay; retention builds **operator memory**, so transcript-less
-attachments and raw tool output stay out.
+embeds them too (`design/memory.md` → Retain: a stored transcript is
+the text of the exchange, not attachment ingestion). The jobs diverge
+on what else rides: compaction folds **model-context continuity**
+(losing a spoken instruction there degrades every future turn), so bare
+attachment path references and bounded tool evidence stay; retention
+builds **operator memory**, so transcript-less attachments and raw tool
+output stay out.
 
 The divergence lives as **two files, two design docs, one seam each.**
 Compaction's projection stays in `agent/compaction.ts` (cited by
 DESIGN.md → Compaction); the retention projection — `messageText`,
 `buildRetentionDocument`, and `retentionSourceFrom` — consolidates in
-`memory/mod.ts` (cited by `design/memory.md` → Retain). `retentionSourceFrom`
-sits in `memory/mod.ts`, not in `turn/view.ts` or `turn/finish.ts`:
-co-locating it with the model-view builder is how the projections would
-silently fuse. The transcript mechanics may be shared between the two;
-the content divergence above stays decided per file, and "which
-projection am I in" remains answerable by file alone.
+`memory/mod.ts` (cited by `design/memory.md` → Retain).
+`retentionSourceFrom` sits in `memory/mod.ts`, not by the model-view
+builder in `turn/view.ts`/`turn/finish.ts` — co-location is how the
+projections would silently fuse. Transcript mechanics may be shared;
+the content divergence stays decided per file, and "which projection am
+I in" remains answerable by file alone.

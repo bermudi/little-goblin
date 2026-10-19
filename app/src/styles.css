@@ -878,13 +878,16 @@ h6.md-h {
 .reasoning-fold summary::-webkit-details-marker {
 	display: none;
 }
-.reasoning-fold summary::before {
+/* Arrow rules pin the fold's OWN summary (child combinator) — a
+   descendant selector leaks into nested folds: an open Worked row
+   restyled every tool\/Thought summary inside it to the open arrow. */
+.reasoning-fold > summary::before {
 	content: "▸";
 	font-size: 0.75em;
 	color: var(--app-fg-subtle);
 	margin-right: 0.35rem;
 }
-.reasoning-fold[open] summary::before {
+.reasoning-fold[open] > summary::before {
 	content: "▾";
 }
 .reasoning-fold summary:hover {
@@ -1043,12 +1046,12 @@ h6.md-h {
 .worked summary::-webkit-details-marker {
 	display: none;
 }
-.worked summary::before {
+.worked > summary::before {
 	content: "▸";
 	font-size: 0.75em;
 	color: var(--app-fg-subtle);
 }
-.worked[open] summary::before {
+.worked[open] > summary::before {
 	content: "▾";
 }
 .worked summary:hover {

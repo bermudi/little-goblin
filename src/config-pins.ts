@@ -1,16 +1,14 @@
-// Boot-pinned config keys (DESIGN.md → Config): these blocks
-// bind at boot — adapters, endpoints, auth refs and pool limits are
-// one snapshot — so a mid-run change is a warn + restart, never a
-// hot-apply. One comparison serves the config-write log warns and the
-// operator status card's restart hints; callers map the bare key to
-// their own label.
+// Boot-pinned config keys: these blocks bind at boot — adapters,
+// endpoints, auth refs and pool limits are one snapshot — so a mid-run
+// change is a warn + restart, never a hot-apply. One comparison serves
+// the config-write log warns and the status card's restart hints.
 
 import type { Config, ConfigRef } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 
 export interface BootPins {
 	memory: Config["memory"];
-	/** Resolved auth name — the appToken name, not the secret. */
+	// Resolved auth name — the appToken name, not the secret.
 	appToken: string | undefined;
 	apiRoot: Config["telegram"]["apiRoot"];
 	delegation: Config["delegation"];
@@ -38,32 +36,28 @@ const PIN_LABEL: Record<string, string> = {
 	subagents: "subagents config",
 };
 
-/** The sandbox block counts as configured only as an object — a bare
- *  `false` disables without counting. */
+// Counts as configured only as an object — a bare `false` disables
+// without counting.
 export const sandboxConfigured = (c: Config): boolean => typeof c.sandbox === "object";
 
 // ---------- the post-write reconcile ----------
 
 // One post-write path for every config door: hot-apply what's live,
 // warn on what's boot-pinned. Search/transcription flips redraw the
-// registered tool set — a cache boundary (DESIGN.md → Web access) — so
-// each flip gets its own log line; the sandbox flip warns about
-// stranded containers (a removed block can't reap them).
+// registered tool set — a cache boundary — so each flip gets its own
+// log line; the sandbox flip warns about stranded containers (a removed
+// block can't reap them).
 export interface ConfigWriteDeps {
 	configRef: ConfigRef;
-	/** Boot snapshot — the flip baselines and the pin diffs read against it. */
+	// Boot snapshot — the flip baselines and the pin diffs read against it.
 	boot: Config;
 	pins: BootPins;
-	/** Re-render the Telegram menu button — operator-editable publicUrl
-	 *  hot-applies without a restart. tg-owned, injected. */
 	syncMenuButton(): void;
 	warnStrandedSandboxes(): void;
 }
 
 export interface ConfigWrite {
-	/** The one post-write reconcile: hot-apply + flip logs + pin warns. */
 	onConfigWritten(): void;
-	/** The same pin diffs as bare keys — the status card's restart hints. */
 	restartHints(): string[];
 }
 

@@ -36,8 +36,6 @@ import { setLogFile } from "./log.ts";
 import { useHome } from "./testkit.ts";
 
 // ----- parseConfig (object input): value/throw tables -----
-// One row per case keeps every original assertion; the loop is the
-// only boilerplate. Bespoke multi-step cases stay as plain tests.
 
 const objBase = {
 	providers: { test: { kind: "codex" } },
@@ -202,9 +200,7 @@ describe("goblin.json5", () => {
 		}
 	});
 
-	// Per-block tables: [case name, extra fragment, expected] — the
-	// field under test is the call's pick. Every row keeps the exact
-	// value/error its bespoke test asserted.
+	// Per-block tables: [case name, extra fragment, expected].
 	const valueRows = (
 		block: string,
 		providers: string,
@@ -719,23 +715,23 @@ describe("ensureHomeLayout", () => {
 		ensureHomeLayout();
 		const skill = readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8");
 		// The compatibility line is what the system prompt's catalog
-		// renders — the recovery command must ride it, so a missing CLI is
-		// never a dead-end invitation (DESIGN.md, "Web access").
+		// renders — the recovery command must ride it, so a missing CLI
+		// is never a dead-end invitation.
 		expect(skill).toContain(
 			"compatibility: Requires the agent-browser CLI and a Chrome/Chromium binary",
 		);
 		expect(skill).toContain("npm i -g agent-browser && agent-browser install");
 		// Frontmatter name must match the directory or the catalog skips it.
 		expect(skill).toContain("name: browser");
-		// The pass-cli skill seeds the same way (DESIGN.md, "Proton
-		// Pass") — its compatibility line names the dependency (goblin's
-		// own agent token), which the catalog renders every turn.
+		// The pass-cli skill seeds the same way — its compatibility line
+		// names the dependency (goblin's own agent token), which the
+		// catalog renders every turn.
 		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
-		// The herdr skill seeds the same way (delegation.md): a rebuilt
-		// box must regain the pane-targeting contract — operator-pointed
-		// panes go through the `herdr` tool, never the raw CLI.
+		// The herdr skill seeds the same way: a rebuilt box must regain
+		// the pane-targeting contract — operator-pointed panes go through
+		// the `herdr` tool, never the raw CLI.
 		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
 		expect(herdr).toContain("name: herdr");
 		expect(herdr).toContain("the `herdr` tool, never the CLI from bash");
@@ -768,8 +764,7 @@ describe("ensureHomeLayout", () => {
 		expect(skill).toContain("name: mcp");
 		expect(skill).toContain("compatibility:");
 		// The seed is the isolation default: no servers, and imports []
-		// so mcporter never merges the operator's editor setups
-		// (DESIGN.md, "Web access" → "MCP").
+		// so mcporter never merges the operator's editor setups.
 		const mcporter = readFileSync(join(dir, "mcporter.json"), "utf8");
 		expect(mcporter).toContain('"mcpServers": {}');
 		expect(mcporter).toContain('"imports": []');

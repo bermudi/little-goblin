@@ -208,8 +208,8 @@ const prior = (over: Partial<PriorTurnContext> = {}): PriorTurnContext => ({
 	...over,
 });
 
-// The fake model records its serialized prompt (a provider-format
-// message array); pull the text back out for substring assertions.
+// The fake model records its serialized prompt; pull the text back out
+// for substring assertions.
 function promptText(recorded: string): string {
 	const parsed = JSON.parse(recorded) as unknown;
 	if (!Array.isArray(parsed)) return String(parsed);
@@ -952,10 +952,9 @@ describe("review run — staging and publication", () => {
 		deps.reviewModel = async () => {
 			throw new Error("review model auth rejected");
 		};
-		// The most likely real-world review failure (model resolve/auth)
-		// must not escape to the runtime backstop's uncorrelatable
-		// {conversation}-only line — it answers to its review id like
-		// every other review line (#107).
+		// Model resolve/auth failure must not escape to the runtime
+		// backstop's uncorrelatable {conversation}-only line — it answers
+		// to its review id like every other review line.
 		await new Reviewer(deps).considerTurn(turn());
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
@@ -1506,8 +1505,8 @@ describe("review queue", () => {
 			if (resolves === 1) throw new Error("model resolve failed");
 			return inner(conv);
 		};
-		// The rejection is contained now (#107) — it must not escape to
-		// the caller, and the settled review must not hold the queue.
+		// The rejection is contained — it must not escape to the caller,
+		// and the settled review must not hold the queue.
 		const reviewer = new Reviewer(deps);
 		await reviewer.considerTurn(turn());
 		expect(readdirSync(h.staging)).toEqual([]);

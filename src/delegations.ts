@@ -1,10 +1,5 @@
-// The delegations table (DESIGN.md, "Delegation"). State is rows in
-// goblin.sqlite, own connection, same WAL file as the programs and
-// conversation stores — rows survive goblin restarts while the herdr
-// unit keeps the panes alive. Pure rows: the watcher that polls them
-// lives in delegation-lifecycle.ts, and the delegate tool reaches the
-// table only through it — this module is the durable store both write
-// through.
+// Rows survive goblin restarts in the shared WAL file while the herdr
+// unit keeps the panes alive; the watcher lives in delegation-lifecycle.ts.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -24,30 +19,27 @@ export interface Delegation {
 	harness: string;
 	cwd: string;
 	task: string;
-	/** Pinned Telegram address — notices land where it was delegated. */
+	// Pinned Telegram address — notices land where it was delegated.
 	chatId: number;
 	threadId: number | null;
-	/** Pinned app conversation instead — a spin-off (or an app-native
-	 *  delegation) wakes its own background turn; chat_id/thread_id
-	 *  are the 0/NULL fillers then (design/app.md → Spin-off). */
+	// Pinned app conversation instead — a spin-off wakes its own
+	// background turn; chat_id/thread_id are the 0/NULL fillers then.
 	appConversation: string | null;
 	agentName: string;
 	workspaceId: string;
 	paneId: string;
 	status: DelegationStatus;
-	/** herdr target label (config `delegation.machines` key) — null =
-	 *  goblin's own local session, the default target. IDs and agent
-	 *  names are scoped per server, so every herdr call resolves its
-	 *  adapter through this. */
+	// herdr target label (config `delegation.machines` key) — null =
+	// goblin's own local session; every herdr call resolves its adapter
+	// through this.
 	target: string | null;
-	/** state_change_seq observed right after the last prompt — null
-	 *  while pending (the post-prompt read failed; the watcher captures
-	 *  the current seq before applying any verdict, #95). */
+	// state_change_seq observed right after the last prompt — null while
+	// pending: the post-prompt read failed and the watcher captures the
+	// current seq before applying any verdict.
 	baselineSeq: number | null;
 	promptedAt: string;
-	/** The task text was never delivered — the launch parked on a
-	 *  startup dialog before `agent prompt` could run. The watcher
-	 *  delivers it on the first seq advance past the park. */
+	// The task text was never delivered — the launch parked on a startup
+	// dialog; the watcher delivers it on the first seq advance past the park.
 	promptPending: boolean;
 	createdAt: string;
 	finishedAt: string | null;
@@ -59,52 +51,38 @@ export interface CreateDelegation {
 	cwd: string;
 	task: string;
 	address: { chatId: number; threadId: number | null };
-	/** Set by a spin-off launch — the row pins the app conversation
-	 *  and address carries the 0/NULL fillers. */
 	appConversation?: string;
-	/** Target label; omitted/null = own local session. */
 	target?: string | null;
 }
 
 export interface DelegationsStore {
-	/** Inserts status "starting" with empty launch ids — the watcher
-	 *  never touches it; the row goes running via markRunning only
-	 *  once the prompt has landed. */
+	// Inserts status "starting" with empty launch ids — the row goes
+	// running via markRunning only once the prompt has landed.
 	create(input: CreateDelegation, now?: Date): Delegation;
 	bindLaunch(
 		id: number,
 		launch: { agentName: string; workspaceId: string; paneId: string },
 	): Delegation | null;
-	/** Launch completed: baseline + prompt timestamp + status running
-	 *  in one UPDATE — also clears a pending task prompt (the deliverer
-	 *  writes prompted_at exactly once). A null baseline records the
-	 *  pending posture (#95): the post-prompt read failed and the
-	 *  watcher captures on its next scan. Returns the row, or null when
-	 *  a `stop` won the race while herdr was launching. */
+	// A null baseline records the pending posture: the post-prompt read
+	// failed and the watcher captures on its next scan. Null return means
+	// a `stop` won the race while herdr was launching.
 	markRunning(id: number, baselineSeq: number | null, promptedAt: Date): Delegation | null;
-	/** The launch parked on a startup dialog before the task could be
-	 *  prompted: needs_input + prompt_pending + the park-time seq
-	 *  baseline, atomically — the watcher owes the prompt only on an
-	 *  advance past that point. Null = the park-time read failed; the
-	 *  next scan captures before delivering anything (#95). */
+	// needs_input + prompt_pending + the park-time seq baseline,
+	// atomically — the watcher owes the prompt only on an advance past
+	// that point. Null = the park-time read failed; the next scan
+	// captures before delivering anything.
 	markParked(id: number, baselineSeq: number | null): void;
-	/** Baseline-pending capture (#95): record the seq the scan finally
-	 *  observes, under the same compare-and-set as every watcher write
-	 *  — a send/stop that landed mid-get wins and its own baseline
-	 *  stands (the UPDATE also refuses any row that already carries a
-	 *  baseline, so even a same-millisecond prompted_at collision
-	 *  cannot clobber a send). False means superseded: the row is no
-	 *  longer what the scan read, and this scan owes it nothing. */
+	// Record the seq the scan finally observes, under the same CAS as
+	// every watcher write — a send/stop that landed mid-get wins and its
+	// own baseline stands. False means superseded.
 	captureBaseline(
 		id: number,
 		expect: { status: DelegationStatus; promptedAt: string },
 		seq: number,
 	): boolean;
-	/** Watcher-side compare-and-set: apply the transition only if the
-	 *  row is still exactly what the scan read (same status and
-	 *  prompted_at) — a tool-side send/stop that landed while the
-	 *  notice was in flight wins and is never overwritten. baseline,
-	 *  when given, folds a park-time re-baseline into the same UPDATE. */
+	// Compare-and-set: apply the transition only if the row is still
+	// exactly what the scan read — a tool-side send/stop that landed
+	// mid-notice wins and is never overwritten.
 	transitionIf(
 		id: number,
 		expect: { status: DelegationStatus; promptedAt: string },
@@ -115,10 +93,9 @@ export interface DelegationsStore {
 	setStatus(id: number, status: DelegationStatus, now?: Date): void;
 	get(id: number): Delegation | null;
 	list(): Delegation[];
-	/** Rows the watcher still owes a verdict: running + needs_input. */
+	// Rows the watcher still owes a verdict: running + needs_input.
 	active(): Delegation[];
-	/** Rows stuck mid-launch — only meaningful to a fresh watcher:
-	 *  a `starting` row across a restart means goblin died mid-start. */
+	// A `starting` row across a restart means goblin died mid-start.
 	starting(): Delegation[];
 	close(): void;
 }
@@ -180,7 +157,7 @@ export function agentNameFor(id: number, name: string): string {
 }
 
 // One column list for the fresh-table CREATE and the NOT NULL → nullable
-// rebuild below (#95): NULL baseline_seq is the baseline-pending posture.
+// rebuild below: NULL baseline_seq is the baseline-pending posture.
 const DELEGATIONS_COLUMNS = `
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
@@ -206,8 +183,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
-	// Existing DBs predate the spin-off pin — additive column, no rebuild
-	// (design/app.md → Spin-off). NULL = Telegram-pinned like always.
+	// Rows predating the app-conversation pin — additive column, no
+	// rebuild. NULL = Telegram-pinned like always.
 	const cols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(delegations)")
@@ -222,17 +199,15 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	if (!cols.has("prompt_pending")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN prompt_pending INTEGER NOT NULL DEFAULT 0");
 	}
-	// Predates machine targets: rows always meant the own local session.
-	// NULL = own local session (design/delegation.md, "Targets").
+	// Predates machine targets: NULL = own local session.
 	if (!cols.has("target")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN target TEXT");
 	}
-	// Predates the baseline-pending posture (#95): baseline_seq was NOT
-	// NULL, so a failed post-prompt read had to record some pre-prompt
-	// number — a stale comparison the next poll could turn into a
-	// spurious done. NULL now means pending; ALTER TABLE cannot drop a
-	// NOT NULL, so this is the one rebuild migration (small personal
-	// table, single transaction, all columns carried).
+	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
+	// a failed post-prompt read had to record some pre-prompt number — a
+	// stale comparison the next poll could turn into a spurious done. NULL
+	// now means pending; ALTER TABLE cannot drop a NOT NULL, so this is
+	// the one rebuild migration.
 	const baselineCol = db
 		.query<{ name: string; notnull: number }, []>("PRAGMA table_info(delegations)")
 		.all()
@@ -272,10 +247,9 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	const qParked = db.query(
 		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
 	);
-	// The #95 capture: same CAS shape as qTransition, baseline only —
-	// plus the pending guard (baseline_seq IS NULL), so a send that
-	// landed mid-get in the same millisecond (prompted_at collision)
-	// still keeps its own baseline.
+	// Same CAS shape as qTransition, baseline only — plus the pending
+	// guard (baseline_seq IS NULL), so a send that landed mid-get in the
+	// same millisecond still keeps its own baseline.
 	const qCaptureBaseline = db.query(
 		"UPDATE delegations SET baseline_seq = ? WHERE id = ? AND status = ? AND prompted_at = ? AND baseline_seq IS NULL",
 	);

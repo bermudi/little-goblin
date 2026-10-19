@@ -1,9 +1,3 @@
-// The note editor's autosave loop under happy-dom (design/projects.md
-// → Notes): the baseline is the serializer's own output, so loading a
-// body Milkdown normalizes (`-` → `*`) must not autosave a rewrite the
-// operator never typed; a save requested mid-flight reruns on settle;
-// pagehide flushes the pending save through fetch keepalive.
-//
 // Document edits go through the real editor via handle.editor() —
 // Milkdown's listener plugin debounces doc updates ~200ms, so tests
 // wait LISTENER_MS after each edit before expecting the debounce
@@ -41,7 +35,6 @@ interface PatchCall {
 	init: RequestInit;
 }
 const patches: PatchCall[] = [];
-// The generation POST — recorded, answerable, holdable.
 interface RewriteCall {
 	body: { selection: string; instruction: string };
 	signal: AbortSignal | null;
@@ -367,7 +360,7 @@ async function typeInstruction(text: string): Promise<void> {
 	const ta = container.querySelector<HTMLTextAreaElement>(".note-rewrite-field textarea")!;
 	await act(async () => {
 		// Focus + keyup too — React's text-input fallback needs it in
-		// this environment (MemoryView.test's ruling).
+		// this environment.
 		ta.focus();
 		Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
 			ta,
@@ -380,8 +373,8 @@ async function typeInstruction(text: string): Promise<void> {
 	});
 }
 
-// The full open path: select in the doc, open the toolbar flow, wait
-// out the (no-op or real) pre-flush into the instruction phase.
+// Open the flow: select in the doc, toolbar click, wait out the
+// pre-flush into the instruction phase.
 async function openFlow(
 	ref: { current: NoteEditorHandle | null },
 	from: number,
@@ -494,7 +487,6 @@ describe("NoteEditor save loop", () => {
 		await notice();
 		await settle();
 		expect(patches).toHaveLength(1);
-		// Dirty again while PATCH #1 is held, then leave.
 		await edit(ref, "v3");
 		await act(async () => root!.unmount());
 		releasePatch();
@@ -643,14 +635,12 @@ describe("NoteEditor save loop", () => {
 		expect(patches).toHaveLength(1);
 		expect(conflicts).toHaveLength(1);
 		expect(container.querySelector(".note-save-status")!.textContent).toBe("Conflict");
-		// More typing, the debounce, and an explicit flush — all blocked.
 		await edit(ref, "mine two");
 		await notice();
 		await act(async () => ref.current?.flush());
 		await settle();
 		expect(patches).toHaveLength(1);
 		expect(ref.current?.dirty()).toBe(true);
-		// Keep mine: one forced write at theirs.rev clears the block.
 		await act(async () => ref.current?.resolve("mine", conflicts[0]!));
 		await settle();
 		expect(patches).toHaveLength(2);
@@ -689,7 +679,6 @@ describe("NoteEditor save loop", () => {
 		await act(async () => ref.current?.adoptRev(theirs({ body: "agent wrote", rev: 4 })));
 		expect(conflicts).toHaveLength(1);
 		expect(ref.current?.dirty()).toBe(true);
-		// Clean: the moved body is adopted wholesale.
 		conflicts.length = 0;
 		await act(async () => ref.current?.reload(note));
 		await act(async () => ref.current?.adoptRev(theirs({ body: "agent wrote", rev: 4 })));
@@ -926,11 +915,11 @@ describe("NoteEditor save loop", () => {
 	});
 });
 
-// The leave guard's confirmed "Discard" (design/app.md → the guard):
-// the disclaimed serialization must not reach the wire — not via the
-// armed debounce, not a queued trailing save, not the unmount drain.
-// A PATCH already in flight still lands; an edit after a discard whose
-// navigation never committed is an ordinary dirty buffer again.
+// The leave guard's confirmed "Discard": the disclaimed serialization
+// must not reach the wire — not via the armed debounce, not a queued
+// trailing save, not the unmount drain. A PATCH already in flight
+// still lands; an edit after a discard whose navigation never
+// committed is an ordinary dirty buffer again.
 describe("NoteEditor discard", () => {
 	test("a disclaimed buffer never reaches the wire — debounce, flush, drain", async () => {
 		root = createRoot(container);
@@ -1046,11 +1035,9 @@ describe("NoteEditor discard", () => {
 	});
 });
 
-// Selection rewrite (design/projects.md → AI rewrite): a real PM
-// TextSelection drives the toolbar; generation is preview-only until
-// Apply, whose PATCH rides the same If-Match guard with source
-// "rewrite". Positions below are doc positions — paragraph text
-// starts at 1.
+// Generation is preview-only until Apply, whose PATCH rides the same
+// If-Match guard with source "rewrite". Positions below are doc
+// positions — paragraph text starts at 1.
 describe("NoteEditor selection rewrite", () => {
 	test("a real TextSelection enables the toolbar and captures the range", async () => {
 		root = createRoot(container);
@@ -1063,7 +1050,6 @@ describe("NoteEditor selection rewrite", () => {
 		await settle();
 		expect(panelText(".note-rewrite-sel")).toBe("beta\n");
 		expect(busies).toEqual([true]);
-		// The editor is locked — the doc can't change under the flow.
 		let editable: boolean | undefined;
 		await act(async () => {
 			ref.current?.editor()?.action((ctx) => {
@@ -1072,7 +1058,6 @@ describe("NoteEditor selection rewrite", () => {
 			});
 		});
 		expect(editable).toBe(false);
-		// Cancel releases the page and the editor.
 		await clickBtn("Cancel");
 		await settle();
 		expect(busies).toEqual([true, false]);
@@ -1143,7 +1128,6 @@ describe("NoteEditor selection rewrite", () => {
 		expect(patches).toHaveLength(1);
 		expect(patches[0]!.body.source).toBe("rewrite");
 		expect((patches[0]!.init.headers as Record<string, string>)["if-match"]).toBe('"1"');
-		// Surrounding text survives; the span is replaced.
 		expect(patches[0]!.body.body).toBe("alpha delta gamma\n");
 		await notice();
 		await settle();
@@ -1185,7 +1169,6 @@ describe("NoteEditor selection rewrite", () => {
 		expect(panelText(".note-rewrite-error")).toContain("Couldn't generate");
 		expect(container.querySelector(".note-rewrite")).not.toBeNull();
 		expect(patches).toHaveLength(0);
-		// Retry against the same capture succeeds.
 		await clickBtn("Generate rewrite");
 		await settle();
 		expect(rewrites).toHaveLength(2);
@@ -1403,13 +1386,12 @@ describe("NoteEditor selection rewrite", () => {
 	});
 });
 
-// Durable draft (design/projects.md → Notes): a synchronous plugin
-// capture persists every doc change to same-origin storage, so a
-// typed-then-gone body survives the listener window. The record's base
-// decides the revisit: same base → guarded autosave, stale base → the
-// buffer restores behind the conflict bar, and while a conflict stands
-// captures keep the ORIGINAL base — a revisit can never silently
-// rebase stale local text over the newer remote.
+// A synchronous plugin capture persists every doc change to
+// same-origin storage, so a typed-then-gone body survives the
+// listener window. The record's base decides the revisit: same base →
+// guarded autosave, stale base → restore behind the conflict bar;
+// while a conflict stands captures keep the ORIGINAL base — a revisit
+// can never silently rebase stale local text over the newer remote.
 describe("NoteEditor durable draft", () => {
 	test("pristine mount writes no draft and no autosave — normalization is not an edit", async () => {
 		root = createRoot(container);

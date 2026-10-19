@@ -61,13 +61,11 @@ describe("deepLinkConv", () => {
 });
 
 // The empty-state send creates the conversation and unmounts that
-// composer (#118): an upload still in flight resolves after the
-// unmount, and its chip must still be there in the new conversation's
-// composer — staged uploads belong to the operator's composer, not to
-// whichever instance happens to be mounted. Full App mount in
-// happy-dom like ChatView.test.tsx; the wire (api.ts + the SDK's
-// transport) is faked at globalThis.fetch, with the upload POSTs held
-// back so the test owns when each one finishes.
+// composer: an upload still in flight resolves after the unmount, and
+// its chip must still be there in the new conversation's composer —
+// staged uploads belong to the operator's composer, not whichever
+// instance is mounted. The upload POSTs are held back so the test
+// owns when each one finishes.
 interface Deferred {
 	promise: Promise<Response>;
 	settle: {
@@ -222,11 +220,11 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 				size: 1,
 			});
 		});
-		// The still-uploading chip is part of the composer before the send.
+		// The uploading chip is part of the composer before the send.
 		expect(container.textContent).toContain("pending.jpg");
 
-		// Send: the ready attachment creates the conversation — the
-		// empty-state composer unmounts, ChatView mounts with the seed.
+		// The send creates the conversation — the empty-state composer
+		// unmounts, ChatView mounts with the seed.
 		await act(async () => {
 			container
 				.querySelector("form")
@@ -239,8 +237,6 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		});
 		expect(created).toBe(true);
 
-		// The second upload finishes after the unmount — its chip must
-		// still be there in the new conversation's composer.
 		await act(async () => {
 			uploads[1]?.settle.ok({
 				path: "attachments/pending",
@@ -253,14 +249,12 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 	});
 });
 
-// The rail rows: three icon actions per row (aria-labeled glyphs) — pin
-// · rename · archive on active rows, rename · unarchive · delete on
-// archived ones — and a pinned row floating above the activity order
-// (design/app.md → Pinning). Same happy-dom mount as above; the fetch
-// fake keeps mutable pin/archive stamps so the list reflects each
-// PATCH. The payload arrives in activity order (fresh first) so the
-// client's own pinned-first partition is what puts the pinned row on
-// top.
+// Three icon actions per row (aria-labeled glyphs) — pin · rename ·
+// archive on active rows, rename · unarchive · delete on archived —
+// and a pinned row floating above activity order. The fetch fake
+// keeps mutable pin/archive stamps; the payload arrives in activity
+// order (fresh first) so the client's own pinned-first partition is
+// what puts the pinned row on top.
 describe("rail row actions and the pinned pool", () => {
 	let win: Window;
 	let container: HTMLElement;
@@ -400,17 +394,15 @@ describe("rail row actions and the pinned pool", () => {
 		});
 		await settle();
 
-		// fresh is newer by activity, the pinned row is older — the pin
-		// wins the top slot.
 		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
 		expect(container.querySelector(".conv-pin")).not.toBeNull();
 
-		// Three labeled buttons per row, label reflecting the state.
+		// Labeled buttons per row, label reflecting the state.
 		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
 		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 
-		// Pinning the fresh row PATCHes and pulls it into the pinned
-		// group, keeping its activity lead inside the group.
+		// The pin PATCH pulls it into the pinned group, keeping its
+		// activity lead inside the group.
 		await click(
 			[...container.querySelectorAll(".conv")]
 				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
@@ -420,7 +412,7 @@ describe("rail row actions and the pinned pool", () => {
 		expect(domOrder()).toEqual(["fresh chat", "pinned chat"]);
 		expect(rowActions("fresh chat")).toEqual(["Unpin", "Rename", "Archive"]);
 
-		// Unpin drops it back below the remaining pin.
+		// Unpin drops it below the remaining pin.
 		await click(
 			[...container.querySelectorAll(".conv")]
 				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
@@ -454,7 +446,7 @@ describe("rail row actions and the pinned pool", () => {
 				?.querySelectorAll(".conv-actions button")[2],
 		);
 		expect(patches).toEqual([{ id: "fresh", body: { archived: true } }]);
-		// Only the fresh row shelves — the pinned row stays on the rail.
+		// Only the fresh row shelves — the pinned row stays.
 		expect(rowActions("fresh chat")).toEqual([]);
 		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
 		const toggle = container.querySelector(".rail-archived");
@@ -491,7 +483,7 @@ describe("rail row actions and the pinned pool", () => {
 		const alert = container.querySelector('p.error[role="alert"]');
 		expect(alert?.textContent).toContain('Couldn\'t pin "fresh chat"');
 		expect(alert?.textContent).toContain("db is locked");
-		// The row didn't move — the list reflects the unchanged server.
+		// The list reflects the unchanged server.
 		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
 	});
 });
@@ -738,7 +730,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
 			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment (the create-dialog test's ruling).
+			// this environment.
 			(el as HTMLElement).focus();
 			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
@@ -967,8 +959,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(credentials()).toEqual(["", "search-fallback", "fetch-key", "fetch-fallback"]);
 		await change(2, "jina");
 		expect(credentials()).toEqual(["", "search-fallback", "", "fetch-fallback"]);
-		// Edits write themselves — the last posted body must carry the
-		// final state.
+		// The last posted body must carry the final state.
 		await waitFor(() => savedBodies.length > 0, "the edits to write themselves");
 		expect(savedBodies.at(-1)?.search).toEqual([
 			{ kind: "jina" },
@@ -1116,7 +1107,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// The notice itself says only a reload fixes it — a retry button
 		// here would re-run the same stale-etag write and fail again.
 		expect(retry()).toBeUndefined();
-		// A transient failure keeps the affordance — and it works.
+		// A transient failure keeps the affordance.
 		saveStatus = 500;
 		await click(level("warn"));
 		await waitFor(() => savedBodies.length > 1, "the second edit to post");
@@ -1166,7 +1157,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		);
 		for (let i = 0; i < 40; i++) await settle();
 		expect(savedBodies).toHaveLength(0);
-		// The explicit Save writes everything at once.
+		// The explicit Save commits everything at once.
 		await click(container.querySelector(".savebar-save"));
 		await waitFor(() => savedBodies.length > 0, "the explicit save");
 		expect(savedBodies.at(-1)?.publicUrl).toBe("");
@@ -1414,9 +1405,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	});
 });
 
-// The Telegram mini app door (design/telegram.md → Mini Apps): /t/
-// renders the operator surface only, over initData, and never touches
-// the app channel — no token gate, no rail, no conversations.
+// The Telegram mini app door: /t/ renders the operator surface only,
+// over initData, and never touches the app channel — no token gate,
+// no rail, no conversations.
 describe("App telegram door", () => {
 	let win: Window;
 	let container: HTMLElement;
@@ -1537,9 +1528,9 @@ describe("App telegram door", () => {
 
 	test("settings render over initData; the app door is never touched", async () => {
 		await renderDoor();
-		expect(container.querySelector('input[type="password"]')).toBeNull(); // no token gate
-		expect(container.textContent).not.toContain("New conversation"); // no rail
-		expect(container.textContent).not.toContain("Pick a conversation"); // no chat
+		expect(container.querySelector('input[type="password"]')).toBeNull();
+		expect(container.textContent).not.toContain("New conversation");
+		expect(container.textContent).not.toContain("Pick a conversation");
 		expect(appDoorHits).toEqual([]);
 	});
 
@@ -1573,7 +1564,7 @@ describe("App telegram door", () => {
 
 	// The close guard is the draft's webview-level twin of the in-door
 	// confirm: armed while a draft exists, disarmed on save, discard,
-	// or unmount (design/telegram.md → Mini Apps).
+	// or unmount.
 	const sdkCalls: string[] = [];
 	const stubClosingConfirmation = () => {
 		sdkCalls.length = 0;
@@ -1638,13 +1629,12 @@ describe("App telegram door", () => {
 		await renderDoor();
 		await dirtyTheForm();
 		expect(sdkCalls.at(-1)).toBe("enable");
-		// A declined navigation keeps the draft — and the armed guard.
+		// A declined navigation keeps the draft and the armed guard.
 		await click(memoriesButton());
 		expect(confirmCalls).toBe(1);
 		expect(container.textContent).toContain("unsaved");
 		expect(sdkCalls.at(-1)).toBe("enable");
-		// An accepted navigation throws the draft away: ref cleared,
-		// guard disarmed, page switched.
+		// An accepted navigation throws the draft away — guard disarmed.
 		confirmAnswer = true;
 		await click(memoriesButton());
 		expect(confirmCalls).toBe(2);
@@ -1691,10 +1681,7 @@ describe("App telegram door", () => {
 	});
 });
 
-// Projects (design/projects.md): the rail's Projects section above the
-// chat list, bound chats living only on their project's page, the
-// create dialog's wire shape, and the project composer's creation-time
-// binding. Same happy-dom mount + fetch-at-the-edge fake as above.
+// Projects: same happy-dom mount + fetch-at-the-edge fake as above.
 describe("app projects surface", () => {
 	let win: Window;
 	let container: HTMLElement;
@@ -1836,7 +1823,7 @@ describe("app projects surface", () => {
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		// The note page lazy-mounts Milkdown — its ctx signals readiness
 		// with bare dispatchEvent/addEventListener, which must ride the
-		// happy-dom realm, not Bun's (noteMarkdown.test.ts's ruling).
+		// happy-dom realm, not Bun's.
 		installGlobal("dispatchEvent", win.dispatchEvent.bind(win));
 		installGlobal("addEventListener", win.addEventListener.bind(win));
 		installGlobal("removeEventListener", win.removeEventListener.bind(win));
@@ -2156,7 +2143,7 @@ describe("app projects surface", () => {
 	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
 			// Focus + keyup too — React's text-input fallback needs it in
-			// this environment (MemoryView.test's ruling).
+			// this environment.
 			(el as HTMLElement).focus();
 			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
@@ -2179,7 +2166,7 @@ describe("app projects surface", () => {
 		expect(section).not.toBeNull();
 		expect(section!.textContent).toContain("Goblin Work");
 		expect(section!.textContent).toContain("New project");
-		// Archived projects stay off the rail — they wait on the index.
+		// Archived projects wait on the index.
 		expect(section!.textContent).not.toContain("Old Stuff");
 
 		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
@@ -2188,7 +2175,7 @@ describe("app projects surface", () => {
 		expect(railTitles).toContain("loose chat");
 		expect(railTitles).not.toContain("inside chat");
 
-		// The project page is where bound chats live.
+		// Bound chats live on the project page.
 		await click(
 			[...section!.querySelectorAll(".proj")].find((b) => b.textContent === "Goblin Work"),
 		);
@@ -2440,7 +2427,7 @@ describe("app projects surface", () => {
 		expect(draft.value).toBe("keep me");
 		expect(container.querySelector(".composer-pick")).not.toBeNull();
 
-		// Escape closes the picker without touching the draft.
+		// Escape must not touch the draft.
 		const escape = new win.KeyboardEvent("keydown", {
 			bubbles: true,
 			cancelable: true,
@@ -2519,7 +2506,6 @@ describe("app projects surface", () => {
 		);
 		const card = container.querySelector(".note-card");
 		expect(card).not.toBeNull();
-		// The inner triple fence survives inside the card's body.
 		expect(card!.textContent).toContain("inner()");
 		await click(
 			[...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"),
@@ -2661,8 +2647,8 @@ describe("app projects surface", () => {
 		notes = [noteRow("Shopping")];
 		win.history.replaceState(null, "", "/app/n/n-shopping");
 		await mount();
-		// The remote moved forward while we were away — clean page,
-		// so the new title lands and flags follow.
+		// The remote moved forward while we were away — clean page, so
+		// the new title lands.
 		noteGetOverride = {
 			...noteFull(notes[0]!),
 			title: "Groceries",
@@ -2700,7 +2686,7 @@ describe("app projects surface", () => {
 		await settle();
 		const bar = container.querySelector(".note-conflict");
 		expect(bar).not.toBeNull();
-		// The local draft is untouched.
+		// The local draft stands.
 		expect((title as HTMLInputElement).value).toBe("Shopping 2");
 	});
 
@@ -2744,7 +2730,7 @@ describe("app projects surface", () => {
 		await settle();
 		expect(container.querySelector(".note-conflict")).not.toBeNull();
 		expect(patchCalls).toBe(1);
-		// A blur while the bar is up must not send the draft.
+		// A blur under the bar must not send the draft.
 		await typeInto(title, "Shopping 3", win.HTMLInputElement.prototype);
 		await act(async () => {
 			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
@@ -2924,7 +2910,7 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".ProseMirror")).toBe(pm);
 		expect(pm.textContent).toContain("milkx");
 		expect(container.querySelector(".note-readonly")).toBeNull();
-		// No autosave may slip past the bar.
+		// Nothing may PATCH under the bar.
 		await settleLong();
 		expect(notePatches).toHaveLength(0);
 	});
@@ -2976,7 +2962,7 @@ describe("app projects surface", () => {
 			win.dispatchEvent(new win.Event("focus"));
 		});
 		await settle();
-		// Before the click the buffer is still there.
+		// The buffer is still there.
 		expect(pm.textContent).toContain("milkx");
 		expect(notePatches).toHaveLength(0);
 		await click(
@@ -3087,7 +3073,7 @@ describe("app projects surface", () => {
 			expect(container.querySelector(".note-conflict")).not.toBeNull();
 			expect(title.value).toBe(draft);
 			expect(container.querySelector(".ProseMirror")).toBe(pm);
-			// The bar holds the autosave — nothing may PATCH under it.
+			// Nothing may PATCH under the bar.
 			await settleLong();
 			expect(notePatches).toHaveLength(0);
 		});
@@ -3198,7 +3184,7 @@ describe("app projects surface", () => {
 		await settle();
 		expect(title.value).toBe("Shopping");
 		expect(container.querySelector(".note-conflict")).toBeNull();
-		// The revert commits on the next blur like an ordinary edit.
+		// The revert commits on the next blur like any edit.
 		await act(async () => {
 			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
 		});
@@ -3262,16 +3248,16 @@ describe("app projects surface", () => {
 		await editBody("x");
 		gate.resolve();
 		await settle();
-		// The edit wins the swap decision — bar up, buffer kept.
+		// The edit wins the swap — bar up, buffer kept.
 		expect(container.querySelector(".note-conflict")).not.toBeNull();
 		expect(container.querySelector(".ProseMirror")!.textContent).toContain("currentx");
 		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
 			"Shopping",
 		);
-		// No autosave may overwrite while the bar stands.
+		// No autosave may overwrite under the bar.
 		await settleLong();
 		expect(notePatches).toHaveLength(0);
-		// Keep mine saves the local buffer at the restore's rev.
+		// Keep mine writes the local buffer at the restore's rev.
 		await click(
 			[...container.querySelectorAll("button")].find((b) => b.textContent === "Keep mine"),
 		);
@@ -3293,7 +3279,7 @@ describe("app projects surface", () => {
 		gate.resolve();
 		await settle();
 		expect(container.querySelector(".note-conflict")).not.toBeNull();
-		// The draft survives — the returned title is not stamped over it.
+		// The returned title must not stamp over the draft.
 		expect(title.value).toBe("Local title");
 		expect(container.querySelector(".ProseMirror")!.textContent).toContain("current");
 	});
@@ -3362,7 +3348,7 @@ describe("app projects surface", () => {
 		// top of it are unsaved work, not a divergence to resolve.
 		expect(container.querySelector(".note-conflict")).toBeNull();
 		expect(container.querySelector(".ProseMirror")!.textContent).toContain("oldx");
-		// Autosave proceeds against the adopted rev — nothing was held.
+		// Autosave proceeds against the adopted rev.
 		await settleLong();
 		expect(notePatches).toHaveLength(1);
 		expect(notePatches[0]!.ifMatch).toBe('"6"');
@@ -3494,7 +3480,7 @@ describe("app projects surface", () => {
 				"Couldn't start a conversation — check the tailnet, then resend.",
 			);
 
-			// A retry after the mint recovers navigates and clears the alert.
+			// A retry after the mint recovers navigates and clears.
 			failCreate = false;
 			await click(
 				[...container.querySelectorAll("button")].find(
@@ -3565,7 +3551,7 @@ describe("app projects surface", () => {
 		gate.resolve();
 		await settle();
 		await settleSlow();
-		// The body write went out after the title landed, on its rev.
+		// The body write rode the title's landed rev.
 		expect(notePatches).toHaveLength(2);
 		expect((notePatches[0]!.body as { title?: string }).title).toBe("Shopping 2");
 		expect(notePatches[0]!.ifMatch).toBe('"1"');
@@ -3919,15 +3905,14 @@ describe("app projects surface", () => {
 			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
 		);
 		expect(win.location.pathname).toBe("/app/p/p-beta");
-		// B's own fresh state: its instructions, no rename box, a clean
-		// (disabled) Save — and nothing of A's on the wire.
+		// B's own fresh state — and nothing of A's on the wire.
 		expect(instr().value).toBe("inst B");
 		expect(container.querySelector(".proj-rename")).toBeNull();
 		expect(container.querySelector(".proj-name")!.textContent).toBe("Beta");
 		expect(saveBtn().disabled).toBe(true);
 		expect(projectPatches).toEqual([]);
 
-		// A save from B's page lands at B's id with B's draft.
+		// B's save lands at B's id with B's draft.
 		await typeInto(instr(), "inst B v2", win.HTMLTextAreaElement.prototype);
 		await click(saveBtn());
 		expect(projectPatches).toEqual([{ id: "p-beta", body: { instructions: "inst B v2" } }]);
@@ -3950,7 +3935,7 @@ describe("app projects surface", () => {
 		});
 		expect(win.location.pathname).toBe("/app/n/n-beta");
 
-		// A fresh editor for B — its own body and title, not A's.
+		// A fresh editor for B — its own body and title.
 		let pm: Element | null = null;
 		for (let i = 0; i < 30; i++) {
 			const cand = container.querySelector(".ProseMirror");

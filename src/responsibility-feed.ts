@@ -105,16 +105,31 @@ function feedEvents(db: Database, responsibilityId: string): FeedEvent[] {
 
 function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 	const events = feedEvents(deps.db, responsibility.responsibilityId);
-	const followup =
+	const linked =
 		responsibility.followupProgramId === null || deps.programs === undefined
 			? null
 			: deps.programs.get(Number(responsibility.followupProgramId));
+	const followup =
+		linked !== null && linked.responsibilityId === responsibility.responsibilityId ? linked : null;
+	const armed = followup !== null && followup.enabled && responsibility.status === "active";
 	return {
-		responsibility,
+		responsibility: {
+			...responsibility,
+			armed,
+			notArmedReason: armed
+				? null
+				: followup !== null
+					? !followup.enabled
+						? "follow-up program disabled"
+						: `responsibility ${responsibility.status}`
+					: responsibility.followupProgramId !== null
+						? "follow-up program missing"
+						: (responsibility.notArmedReason ?? "follow-up program not linked"),
+		},
 		attachments: deps.resps.attachmentsFor(responsibility.responsibilityId),
 		operations: deps.resps.operationsFor(responsibility.responsibilityId),
 		events,
-		nextCheckinAt: followup?.nextRun ?? null,
+		nextCheckinAt: armed ? followup!.nextRun : null,
 		lastActivityAt: events.length === 0 ? null : events[events.length - 1]!.createdAt,
 	};
 }

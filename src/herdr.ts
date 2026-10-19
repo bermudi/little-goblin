@@ -492,7 +492,16 @@ export interface OperatorHerdr {
 	 *  not a new turn, and never task completion. HerdrRefusal =
 	 *  nothing was sent; HerdrError from the send leaves delivery
 	 *  uncertain. Returns the identity the response reported. */
-	prompt(pane: string, expect: string, text: string, signal?: AbortSignal): Promise<OperatorAgent>;
+	prompt(
+		pane: string,
+		expect: string,
+		text: string,
+		signal?: AbortSignal,
+		guard?: {
+			identity?: { terminalId: string | null; agentSession: string };
+			beforeSend?: () => void;
+		},
+	): Promise<OperatorAgent>;
 }
 
 export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHerdr {
@@ -579,7 +588,7 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 			);
 		},
 
-		async prompt(pane, expect, text, signal) {
+		async prompt(pane, expect, text, signal, guard) {
 			// Labels first; `agent get` is the LAST read before the send
 			// and nothing is read after it — post-submit churn must not
 			// turn a delivered prompt into an error.
@@ -639,7 +648,37 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 					`pane ${pane} hosts ${record.agent ?? "no recognized agent kind"} — expected ${expect}`,
 				);
 			}
+			if (guard?.identity !== undefined) {
+				const observed = {
+					terminalId: record.terminal_id ?? null,
+					agentSession: record.agent_session?.value ?? null,
+				};
+				const mismatch =
+					observed.agentSession !== guard.identity.agentSession ||
+					(guard.identity.terminalId !== null && observed.terminalId !== guard.identity.terminalId);
+				if (mismatch) {
+					log.info("herdr prompt identity", {
+						pane,
+						session: OPERATOR_SESSION,
+						bound: guard.identity,
+						observed,
+						outcome: "refuse:identity_mismatch",
+					});
+					throw new HerdrRefusal(
+						"identity_mismatch",
+						`pane ${pane} identity changed — bound ${JSON.stringify(guard.identity)}, observed ${JSON.stringify(observed)}`,
+					);
+				}
+				log.info("herdr prompt identity", {
+					pane,
+					session: OPERATOR_SESSION,
+					bound: guard.identity,
+					observed,
+					outcome: "allow",
+				});
+			}
 			log.info("herdr prompt preflight", { ...preflight, outcome: "allow" });
+			guard?.beforeSend?.();
 			// Flags precede `--` so a leading-dash prompt body stays a
 			// literal positional, never a parsed flag.
 			return viewAgent(

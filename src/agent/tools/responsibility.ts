@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { OperatorAgent } from "../../herdr.ts";
 import { log } from "../../log.ts";
 import type {
+	Attachment,
 	AttachmentTarget,
 	Responsibility,
 	ResponsibilityStore,
@@ -98,7 +99,7 @@ export interface ResponsibilityToolDeps {
 	projectId: string;
 	coordinationConversationId: string;
 	/** Stable identity for this handover — the operator's message. */
-	handoverKey: string;
+	handoverKey: string | (() => string);
 	/** The operator session's read-only list — resolve targets, never
 	 *  guess them. */
 	listFor(): Promise<OperatorAgent[]>;
@@ -148,7 +149,12 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 			// reports, never a pane+kind guess.
 			const targetFor = async (
 				sel: z.infer<typeof attachSelectorSchema>,
-			): Promise<{ target?: AttachmentTarget; baseline?: unknown; cursor?: unknown; error?: string }> => {
+			): Promise<{
+				target?: AttachmentTarget;
+				baseline?: unknown;
+				cursor?: unknown;
+				error?: string;
+			}> => {
 				const agents = await deps.listFor();
 				const matches = agents.filter((a) =>
 					sel.pane !== undefined ? a.pane_id === sel.pane : a.name === sel.name,
@@ -191,6 +197,19 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 				};
 			};
 
+			const ownerFor = (att: Attachment): { resp?: Responsibility; error?: string } => {
+				const owner = deps.resps.get(att.responsibilityId);
+				if (owner === null || owner.projectId !== deps.projectId) {
+					return { error: `attachment ${att.attachmentId} is not bound in this project` };
+				}
+				if (input.responsibility !== undefined && att.responsibilityId !== input.responsibility) {
+					return {
+						error: `attachment ${att.attachmentId} belongs to ${att.responsibilityId}, not ${input.responsibility}`,
+					};
+				}
+				return { resp: owner };
+			};
+
 			switch (input.action) {
 				case "status": {
 					const all = deps.resps.forProject(deps.projectId);
@@ -216,7 +235,8 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					const { responsibility, created } = deps.service.accept({
 						projectId: deps.projectId,
 						coordinationConversationId: deps.coordinationConversationId,
-						handoverKey: deps.handoverKey,
+						handoverKey:
+							typeof deps.handoverKey === "function" ? deps.handoverKey() : deps.handoverKey,
 						understanding: input.understanding!,
 						attachments: resolved,
 					});
@@ -233,7 +253,11 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					const { resp, error } = resolve();
 					if (resp === undefined) return { error };
 					const revised = deps.resps.revise(resp.responsibilityId, input.understanding!);
-					done({ responsibility: resp.responsibilityId, revision: revised.revision, outcome: "ok" });
+					done({
+						responsibility: resp.responsibilityId,
+						revision: revised.revision,
+						outcome: "ok",
+					});
 					return { responsibility: revised };
 				}
 				case "attach": {
@@ -253,6 +277,11 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 				case "detach": {
 					const att = deps.resps.getAttachment(input.attachment!);
 					if (att === null) return { error: `attachment ${input.attachment} not found` };
+					const owner = ownerFor(att);
+					if (owner.error !== undefined) {
+						done({ outcome: "error:scope" });
+						return { error: owner.error };
+					}
 					deps.resps.detach(att.attachmentId);
 					done({ attachment: att.attachmentId, outcome: "ok" });
 					return { detached: att.attachmentId };
@@ -260,8 +289,15 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 				case "reattach": {
 					const att = deps.resps.getAttachment(input.attachment!);
 					if (att === null) return { error: `attachment ${input.attachment} not found` };
+					const owner = ownerFor(att);
+					if (owner.error !== undefined) {
+						done({ outcome: "error:scope" });
+						return { error: owner.error };
+					}
 					const sel =
-						att.target.paneId !== null ? { pane: att.target.paneId } : { name: att.target.agentName };
+						att.target.paneId !== null
+							? { pane: att.target.paneId }
+							: { name: att.target.agentName };
 					const t = await targetFor(sel);
 					if (t.error !== undefined) return { error: t.error };
 					const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline);
@@ -283,6 +319,14 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 									? "completed"
 									: "cancelled";
 					deps.resps.setStatus(resp.responsibilityId, status);
+					deps.service.ensureFollowup(
+						resp.responsibilityId,
+						input.action === "resume"
+							? { enable: true }
+							: input.action === "cancel"
+								? { enable: false }
+								: undefined,
+					);
 					done({ responsibility: resp.responsibilityId, status, outcome: "ok" });
 					return {
 						responsibility: deps.resps.get(resp.responsibilityId),
@@ -311,11 +355,11 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 							note: "No send edge is wired on this turn — the operation is recorded and refused, nothing was sent",
 						};
 					}
-					const out = await deps.service.dispatch(
-						prepared.operation.operationId,
-						deps.guardedSend,
-					);
-					done({ operation: prepared.operation.operationId, outcome: "sent" in out ? "ok" : `refused:${out.refused}` });
+					const out = await deps.service.dispatch(prepared.operation.operationId, deps.guardedSend);
+					done({
+						operation: prepared.operation.operationId,
+						outcome: "sent" in out ? "ok" : `refused:${out.refused}`,
+					});
 					return out;
 				}
 			}

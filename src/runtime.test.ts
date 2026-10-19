@@ -60,7 +60,10 @@ function rig(
 		step?: Partial<Omit<ModelStep, "model">>;
 		buildStep?: RuntimeDeps["buildStep"];
 		tools?: ToolSet;
-		deps?: Partial<Pick<RuntimeDeps, "compaction" | "captureConversation" | "memory">>;
+		makeTools?: RuntimeDeps["makeTools"];
+		deps?: Partial<
+			Pick<RuntimeDeps, "compaction" | "captureConversation" | "memory" | "turnJournal">
+		>;
 		addr?: Parameters<Store["resolve"]>[0];
 		store?: Store;
 	} = {},
@@ -76,7 +79,7 @@ function rig(
 				system: "test",
 				...opts.step,
 			})),
-		makeTools: () => opts.tools ?? {},
+		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...opts.deps,
 	});
 	return { store, conv, runtime };
@@ -2899,5 +2902,83 @@ describe("turn journal", () => {
 			await runtime.shutdown();
 			store.close();
 		}
+	});
+});
+
+describe("tool context", () => {
+	test("makeTools receives runId and a sourceMessageId bound to owned membership", async () => {
+		const store = openStore(tmpDb("goblin-rt-ctx-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const seen: { runId: string; source: string }[] = [];
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			makeTools: (_c, _v, _r, _f, _a, context) => {
+				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
+				return {};
+			},
+		});
+		const s = new RecordingSink();
+		const msg = userMessage([{ type: "text", text: "hi" }]);
+		runtime.submit(conv, msg, s);
+		await s.done;
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.runId).not.toBe("");
+		expect(seen[0]!.source).toBe(msg.id);
+		store.close();
+	});
+
+	test("sourceMessageId follows a joined steer, never a queued stream; runId is the journal run", async () => {
+		const store = openStore(tmpDb("goblin-rt-ctx2-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const gate = deferred<void>();
+		const entered = deferred<void>();
+		const contexts: { runId: string; sourceMessageId(): string }[] = [];
+		const edge = scriptedEdge([
+			[toolCallPart("c1", "probe"), finishPart("tool-calls")],
+			[...textParts("done"), finishPart("stop", 10)],
+			[...textParts("again"), finishPart("stop", 10)],
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: (_c, _v, _r, _f, _a, context) => {
+				contexts.push(context!);
+				return {
+					probe: tool({
+						inputSchema: z.object({}),
+						execute: async () => {
+							entered.resolve();
+							await gate.promise;
+							return { ok: true };
+						},
+					}),
+				};
+			},
+		});
+		const msg1 = userMessage([{ type: "text", text: "one" }]);
+		const head = new HeadlessSink();
+		runtime.submit(conv, msg1, head);
+		await entered.promise;
+		expect(contexts).toHaveLength(1);
+		expect(contexts[0]!.sourceMessageId()).toBe(msg1.id);
+		const msg2 = userMessage([{ type: "text", text: "steer" }]);
+		const steer = new HeadlessSink();
+		runtime.submit(conv, msg2, steer);
+		const msg3 = userMessage([{ type: "text", text: "queued stream" }]);
+		const queued = new RecordingSink();
+		runtime.submit(conv, msg3, queued);
+		gate.resolve();
+		await waitUntil(() => contexts[0]!.sourceMessageId() === msg2.id, "steer joins the turn");
+		expect(contexts[0]!.sourceMessageId()).not.toBe(msg3.id);
+		expect(await head.done).toEqual({ kind: "completed" });
+		expect(journal.get(contexts[0]!.runId)).not.toBeNull();
+		await queued.done;
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]!.sourceMessageId()).toBe(msg3.id);
+		expect(contexts[1]!.runId).not.toBe(contexts[0]!.runId);
+		store.close();
 	});
 });

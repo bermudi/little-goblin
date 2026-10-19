@@ -248,3 +248,68 @@ describe("responsibility store", () => {
 		r.store.close();
 	});
 });
+
+describe("attachment scoping", () => {
+	test("prepare refuses an attachment bound to a different responsibility", () => {
+		const r = rig();
+		const a = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "ka",
+			understanding: understanding(),
+		}).responsibility;
+		const b = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "kb",
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: a.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const out = r.resps.prepareOperation({
+			responsibilityId: b.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		expect(out).toEqual({ refused: "attachment-mismatch" });
+		r.store.close();
+	});
+
+	test("a legacy mismatched operation row refuses at validateForSend", () => {
+		const r = rig();
+		const a = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "ka",
+			understanding: understanding(),
+		}).responsibility;
+		const b = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "kb",
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: a.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: a.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected a prepared operation");
+		r.store.db.run("UPDATE prompt_operations SET responsibility_id = ? WHERE operation_id = ?", [
+			b.responsibilityId,
+			prepared.operation.operationId,
+		]);
+		expect(r.resps.validateForSend(prepared.operation.operationId)).toEqual({
+			refused: "attachment-mismatch",
+		});
+		r.store.close();
+	});
+});

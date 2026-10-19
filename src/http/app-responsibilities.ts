@@ -9,28 +9,20 @@
 import { z } from "zod";
 import { log } from "../log.ts";
 import type { OperatorAgent } from "../herdr.ts";
-import type { ProgramsStore } from "../programs.ts";
-import {
-	feedForProject,
-	feedOpen,
-	type FeedDeps,
-} from "../responsibility-feed.ts";
+import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.ts";
 import {
 	understandingSchema,
 	type AttachmentTarget,
 	type ResponsibilityStore,
 } from "../responsibilities.ts";
 import type { ResponsibilityService } from "../responsibility-service.ts";
-import type { DevelopmentInput } from "../wake-store.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 
 export interface AppResponsibilityDeps {
 	feed: FeedDeps;
 	resps: ResponsibilityStore;
-	service: Pick<ResponsibilityService, "ensureFollowup">;
-	programs: Pick<ProgramsStore, "get" | "update">;
 	/** Record + pump — the correction lands durable, then wakes. */
-	record(input: DevelopmentInput): void;
+	service: Pick<ResponsibilityService, "ensureFollowup" | "correct">;
 	/** The live operator read reattach binds fresh identity from. */
 	listAgents(): Promise<OperatorAgent[]>;
 }
@@ -121,45 +113,26 @@ export async function handleResponsibilitiesRoute(
 						{ status: 422, headers: NO_STORE },
 					);
 				}
-				if (parsed.data.understanding !== undefined) {
-					respsDeps.resps.revise(id, parsed.data.understanding);
-				}
-				if (parsed.data.text !== undefined) {
-					// The correction is a durable operator development — it
-					// steers the conversation's next wake like any other
-					// intake, and it is itself feed-visible.
-					respsDeps.record({
-						sourceKey: `correction:${id}:${crypto.randomUUID()}`,
-						conversationId: resp.coordinationConversationId,
-						kind: "operator-correction",
-						text: parsed.data.text,
-						facts: { responsibilityId: id },
-						origin: "operator",
-						responsibilityId: id,
-					});
-				}
-				log.info("responsibility correction", {
-					responsibility: id,
-					revised: parsed.data.understanding !== undefined,
-					comment: parsed.data.text !== undefined,
-				});
+				// The correction is a durable operator development — it
+				// steers the conversation's next wake like any other
+				// intake, and it is itself feed-visible.
+				respsDeps.service.correct(id, parsed.data);
 				return Response.json({ ok: true }, { headers: NO_STORE });
 			}
 			case "pause":
 				respsDeps.resps.setStatus(id, "paused");
+				respsDeps.service.ensureFollowup(id);
 				return Response.json({ ok: true }, { headers: NO_STORE });
 			case "resume": {
 				respsDeps.resps.setStatus(id, "active");
-				respsDeps.service.ensureFollowup(id);
+				respsDeps.service.ensureFollowup(id, { enable: true });
 				return Response.json({ ok: true }, { headers: NO_STORE });
 			}
 			case "cancel": {
 				respsDeps.resps.setStatus(id, "cancelled");
 				// The follow-up goes quiet by disabling it — skip rules
 				// would consume occurrences anyway, this is explicit.
-				if (resp.followupProgramId !== null) {
-					respsDeps.programs.update(Number(resp.followupProgramId), { enabled: false });
-				}
+				respsDeps.service.ensureFollowup(id, { enable: false });
 				return Response.json({ ok: true }, { headers: NO_STORE });
 			}
 			default:

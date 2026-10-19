@@ -44,6 +44,7 @@ interface Rig {
 	convId: string;
 	execute(input: unknown): Promise<Record<string, unknown>>;
 	agents: OperatorAgent[];
+	listCalls: number;
 }
 
 function rig(over: { guardedSend?: boolean } = {}): Rig {
@@ -65,6 +66,7 @@ function rig(over: { guardedSend?: boolean } = {}): Rig {
 		projectId: project.id,
 		convId: conv.id,
 		agents: [agent()],
+		listCalls: 0,
 		execute: async () => ({}),
 	};
 	const service = makeResponsibilityService({
@@ -79,7 +81,10 @@ function rig(over: { guardedSend?: boolean } = {}): Rig {
 		projectId: project.id,
 		coordinationConversationId: conv.id,
 		handoverKey: "handover:test",
-		listFor: async () => r.agents,
+		listFor: async () => {
+			r.listCalls += 1;
+			return r.agents;
+		},
 		...(over.guardedSend === true ? { guardedSend: async () => ({ ok: true }) } : {}),
 	});
 	r.execute = (input) =>
@@ -191,6 +196,143 @@ describe("responsibility tool", () => {
 		expect(out).toEqual({ sent: true }); // a fresh op at the new revision sends
 		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("prepared");
 		expect(sent).toHaveLength(0);
+		r.store.close();
+	});
+});
+
+describe("attachment scoping", () => {
+	test("detach/reattach refuse an attachment owned by another project", async () => {
+		const r = rig();
+		const other = openProjects(r.store).create({ name: "other" });
+		const foreign = r.resps.create({
+			projectId: other.id,
+			coordinationConversationId: r.convId,
+			handoverKey: "kf",
+			understanding: {
+				outcome: "o",
+				situation: "s",
+				nextAction: "n",
+				checkpoints: [],
+				completionEvidence: [],
+			},
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: foreign.responsibilityId,
+			target: {
+				server: "local",
+				session: "default",
+				agentName: "w1:p1",
+				paneId: "w1:p1",
+				terminalId: "term-9",
+				agentSession: "sess-1",
+				kind: "pi",
+				cwd: "/w",
+			},
+			baseline: {},
+		});
+		const det = await r.execute({ action: "detach", attachment: att.attachmentId });
+		expect(det.error).toContain("not bound in this project");
+		const re = await r.execute({ action: "reattach", attachment: att.attachmentId });
+		expect(re.error).toContain("not bound in this project");
+		expect(r.resps.getAttachment(att.attachmentId)!.health).toBe("attached");
+		expect(r.listCalls).toBe(0);
+		r.store.close();
+	});
+
+	test("detach with an explicit responsibility id refuses a same-project mismatch", async () => {
+		const r = rig();
+		const mk = (k: string) =>
+			r.resps.create({
+				projectId: r.projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: k,
+				understanding: {
+					outcome: "o",
+					situation: "s",
+					nextAction: "n",
+					checkpoints: [],
+					completionEvidence: [],
+				},
+			}).responsibility;
+		const a = mk("ka");
+		const b = mk("kb");
+		const att = r.resps.attach({
+			responsibilityId: b.responsibilityId,
+			target: {
+				server: "local",
+				session: "default",
+				agentName: "w1:p1",
+				paneId: "w1:p1",
+				terminalId: "term-9",
+				agentSession: "sess-1",
+				kind: "pi",
+				cwd: "/w",
+			},
+			baseline: {},
+		});
+		const det = await r.execute({
+			action: "detach",
+			responsibility: a.responsibilityId,
+			attachment: att.attachmentId,
+		});
+		expect(det.error).toContain(`belongs to ${b.responsibilityId}`);
+		const re = await r.execute({
+			action: "reattach",
+			responsibility: a.responsibilityId,
+			attachment: att.attachmentId,
+		});
+		expect(re.error).toContain(`belongs to ${b.responsibilityId}`);
+		expect(r.resps.getAttachment(att.attachmentId)!.health).toBe("attached");
+		expect(r.resps.getAttachment(att.attachmentId)!.generation).toBe(1);
+		expect(r.listCalls).toBe(0);
+		const ok = await r.execute({ action: "detach", attachment: att.attachmentId });
+		expect(ok.detached).toBe(att.attachmentId);
+		r.store.close();
+	});
+});
+
+describe("send scoping", () => {
+	test("send refuses an attachment owned by another project's responsibility", async () => {
+		const r = rig();
+		const other = openProjects(r.store).create({ name: "other" });
+		const mk = (projectId: string, key: string) =>
+			r.resps.create({
+				projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: key,
+				understanding: {
+					outcome: "o",
+					situation: "s",
+					nextAction: "n",
+					checkpoints: [],
+					completionEvidence: [],
+				},
+			}).responsibility;
+		const foreign = mk(other.id, "kf");
+		const ours = mk(r.projectId, "ko");
+		const att = r.resps.attach({
+			responsibilityId: foreign.responsibilityId,
+			target: {
+				server: "local",
+				session: "default",
+				agentName: "w1:p1",
+				paneId: "w1:p1",
+				terminalId: "term-9",
+				agentSession: "sess-1",
+				kind: "pi",
+				cwd: "/w",
+			},
+			baseline: {},
+		});
+		const out = await r.execute({
+			action: "send",
+			responsibility: ours.responsibilityId,
+			attachment: att.attachmentId,
+			brief: "hi",
+		});
+		expect(out.refused).toBe("attachment-mismatch");
+		expect(r.resps.operationsFor(ours.responsibilityId)).toHaveLength(0);
+		expect(r.listCalls).toBe(0);
 		r.store.close();
 	});
 });

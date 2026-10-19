@@ -108,6 +108,7 @@ export interface RuntimeDeps {
 		// Filled after buildStep so fetch can render stored PDF references with
 		// this turn's media capabilities.
 		accepts?: { current: AcceptsMedia },
+		context?: { runId: string; sourceMessageId(): string },
 	): ToolSet;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
@@ -936,7 +937,10 @@ export class Runtime {
 			// them must never leave a successor that re-executes recorded
 			// side effects.
 			runId = randomUUID();
-			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts);
+			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
+				runId,
+				sourceMessageId: () => turns[turns.length - 1]!.message.id,
+			});
 			journal?.beginRun({
 				runId,
 				conversationId: convId,

@@ -11,6 +11,7 @@
 // dispatch is 'uncertain' for the same reason.
 
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
 import type {
@@ -32,7 +33,7 @@ export interface ServiceDeps {
 	pump(): void;
 	/** Programs owns the check-in's time; the service owns its purpose.
 	 *  Absent = the responsibility stays honestly unarmed. */
-	programs?: Pick<ProgramsStore, "create" | "get"> | undefined;
+	programs?: Pick<ProgramsStore, "create" | "get" | "update"> | undefined;
 }
 
 export interface HandoverInput {
@@ -50,18 +51,25 @@ export interface HandoverInput {
 	}[];
 }
 
+export type ManagedSend = (
+	brief: string,
+	target: AttachmentTarget,
+	beforeSend?: () => void,
+) => Promise<unknown>;
+
 export interface ResponsibilityService {
 	accept(input: HandoverInput): { responsibility: Responsibility; created: boolean };
+	correct(
+		responsibilityId: string,
+		input: { text?: string | undefined; understanding?: Understanding | undefined },
+	): Responsibility;
 	/** One linked follow-up Program per responsibility — create-once,
 	 *  relink if the row vanished. Returns null while programs is
 	 *  unwired (the responsibility stays unarmed with the reason). */
-	ensureFollowup(responsibilityId: string): Program | null;
+	ensureFollowup(responsibilityId: string, opts?: { enable?: boolean }): Program | null;
 	/** Dispatch a prepared operation. The send edge resolves to the
 	 *  wire's post-send record; a refusal means nothing was sent. */
-	dispatch(
-		operationId: string,
-		send: (brief: string, target: AttachmentTarget) => Promise<unknown>,
-	): Promise<{ sent: true } | { refused: SendRefusal | "identity-unenforceable" }>;
+	dispatch(operationId: string, send: ManagedSend): Promise<{ sent: true } | { refused: string }>;
 }
 
 // The follow-up's charter: time is the cron's job; this is the purpose
@@ -84,10 +92,8 @@ function followupCharter(resp: Responsibility): string {
 // asked for. A mismatch throws: dispatch lands the op 'uncertain',
 // which is honest — the bytes may have crossed to a replacement and an
 // automatic resend would only double the exposure.
-export function makeManagedSendEdge(
-	herdr: Pick<OperatorHerdr, "prompt">,
-): (brief: string, target: AttachmentTarget) => Promise<unknown> {
-	return async (brief, target) => {
+export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): ManagedSend {
+	return async (brief, target, beforeSend) => {
 		// The adapter is the operator session on the local server — a
 		// target outside that scope would misroute, so it refuses.
 		if (target.server !== "local" || target.session !== OPERATOR_SESSION) {
@@ -97,24 +103,38 @@ export function makeManagedSendEdge(
 			);
 		}
 		if (target.kind === null) {
+			throw new HerdrRefusal("kind_mismatch", "attachment has no agent kind to verify at dispatch");
+		}
+		if (target.agentSession === null) {
 			throw new HerdrRefusal(
-				"kind_mismatch",
-				"attachment has no agent kind to verify at dispatch",
+				"identity-unenforceable",
+				"attachment has no harness session identity to bind",
 			);
 		}
-		const reported = await herdr.prompt(target.paneId ?? target.agentName, target.kind, brief);
+		const reported = await herdr.prompt(
+			target.paneId ?? target.agentName,
+			target.kind,
+			brief,
+			undefined,
+			{
+				identity: { terminalId: target.terminalId, agentSession: target.agentSession },
+				...(beforeSend !== undefined ? { beforeSend } : {}),
+			},
+		);
 		if (
-			target.agentSession !== null &&
-			reported.agent_session !== null &&
-			reported.agent_session !== target.agentSession
+			reported.agent_session !== target.agentSession ||
+			(target.terminalId !== null && reported.terminal_id !== target.terminalId)
 		) {
 			log.error(
 				"managed send crossed an identity change — prompt may have landed on a replacement",
 				undefined,
 				{
 					pane: reported.pane_id,
-					bound: target.agentSession,
-					reported: reported.agent_session,
+					bound: { terminalId: target.terminalId, agentSession: target.agentSession },
+					reported: {
+						terminalId: reported.terminal_id,
+						agentSession: reported.agent_session,
+					},
 				},
 			);
 			throw new Error(
@@ -129,7 +149,41 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 	const { db, resps, wakes, pump } = deps;
 
 	const svc: ResponsibilityService = {
-		ensureFollowup(responsibilityId) {
+		correct(responsibilityId, input) {
+			if (input.text === undefined && input.understanding === undefined) {
+				throw new Error("nothing to correct");
+			}
+			let revised!: Responsibility;
+			db.transaction(() => {
+				const current = resps.get(responsibilityId);
+				if (current === null) throw new Error(`responsibility ${responsibilityId} not found`);
+				revised = resps.revise(responsibilityId, input.understanding ?? current.understanding);
+				wakes.record({
+					sourceKey: `correction:${responsibilityId}:${randomUUID()}`,
+					conversationId: current.coordinationConversationId,
+					kind: "operator-correction",
+					text:
+						input.text ??
+						`Responsibility understanding corrected:\n${JSON.stringify(revised.understanding)}`,
+					facts: {
+						responsibilityId,
+						revision: revised.revision,
+						understanding: revised.understanding,
+					},
+					origin: "operator",
+					responsibilityId,
+				});
+			})();
+			pump();
+			log.info("responsibility correction", {
+				responsibility: responsibilityId,
+				revised: input.understanding !== undefined,
+				comment: input.text !== undefined,
+			});
+			return revised;
+		},
+
+		ensureFollowup(responsibilityId, opts) {
 			const resp = resps.get(responsibilityId);
 			if (resp === null) return null;
 			const programs = deps.programs;
@@ -137,14 +191,43 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				resps.setArmed(responsibilityId, false, "programs store unavailable");
 				return null;
 			}
+			const arm = (program: Program): Program => {
+				const armed = program.enabled && resp.status === "active";
+				resps.setArmed(
+					responsibilityId,
+					armed,
+					armed
+						? null
+						: !program.enabled
+							? "follow-up program disabled"
+							: `responsibility ${resp.status}`,
+				);
+				return program;
+			};
 			// Idempotent: a linked row that still exists is reused; a
 			// dangling link (program deleted) recreates under a new id.
 			if (resp.followupProgramId !== null) {
 				const existing = programs.get(Number(resp.followupProgramId));
-				if (existing !== null) {
-					resps.setArmed(responsibilityId, true, null);
-					return existing;
+				if (existing !== null && existing.responsibilityId === resp.responsibilityId) {
+					if (opts?.enable !== undefined && existing.enabled !== opts.enable) {
+						const updated = programs.update(existing.id, { enabled: opts.enable });
+						if (updated === null) {
+							throw new Error(
+								`follow-up program ${existing.id} update failed for responsibility ${responsibilityId}`,
+							);
+						}
+						return arm(updated);
+					}
+					return arm(existing);
 				}
+			}
+			if (opts?.enable === false || resp.status !== "active") {
+				resps.setArmed(
+					responsibilityId,
+					false,
+					resp.status === "active" ? "follow-up program disabled" : `responsibility ${resp.status}`,
+				);
+				return null;
 			}
 			const program = programs.create({
 				name: `followup:${resp.responsibilityId}`,
@@ -153,7 +236,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				responsibilityId: resp.responsibilityId,
 			});
 			resps.setFollowup(responsibilityId, String(program.id));
-			resps.setArmed(responsibilityId, true, null);
+			arm(program);
 			log.info("responsibility follow-up program linked", {
 				responsibility: responsibilityId,
 				program: program.id,
@@ -247,8 +330,15 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				});
 				return { refused: "identity-unenforceable" };
 			}
+			const recheck = () => {
+				const again = resps.validateForSend(operationId);
+				if ("refused" in again) {
+					throw new HerdrRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
+				}
+			};
 			try {
-				const outcome = await send(op.brief, att.target);
+				recheck();
+				const outcome = await send(op.brief, att.target, recheck);
 				resps.transitionOperation(operationId, "sent", { outcome });
 				resps.transitionOperation(operationId, "acknowledged", { outcome });
 				return { sent: true };
@@ -260,7 +350,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						operation: operationId,
 						refusal: err.code,
 					});
-					return { refused: "already-terminal" };
+					return { refused: err.code };
 				}
 				// Any other post-dispatch error: the send may have landed —
 				// uncertain delivery is evidence to reconcile, never

@@ -755,3 +755,88 @@ describe("operator herdr adapter — post-send response checks", () => {
 		}
 	});
 });
+
+describe("operator herdr prompt identity guard", () => {
+	const guarded = (over: Record<string, unknown> = {}) =>
+		opRunner([
+			opOk({ result: { workspaces: [] } }),
+			opOk({
+				result: {
+					agent: {
+						...OP_AGENT,
+						agent_status: "working",
+						terminal_id: "term-9",
+						agent_session: { value: "sess-1" },
+						...over,
+					},
+				},
+			}),
+			opOk({
+				result: {
+					agent: {
+						...OP_AGENT,
+						agent_status: "working",
+						terminal_id: "term-9",
+						agent_session: { value: "sess-1" },
+						...over,
+					},
+				},
+			}),
+		]);
+	const identity = { terminalId: "term-9", agentSession: "sess-1" };
+
+	test("matching bound identity sends and reports back", async () => {
+		const f = guarded();
+		const h = makeOperatorHerdr(f.run);
+		const out = await h.prompt("w1:p1", "pi", "hello", undefined, { identity });
+		expect(out.agent_session).toBe("sess-1");
+		expect(verbOf(f.calls[f.calls.length - 1]!.args)).toBe("agent prompt");
+	});
+
+	test("mismatched agent_session refuses before the send", async () => {
+		const f = guarded({ agent_session: { value: "sess-2" } });
+		const h = makeOperatorHerdr(f.run);
+		await expect(h.prompt("w1:p1", "pi", "t", undefined, { identity })).rejects.toMatchObject({
+			name: "HerdrRefusal",
+			code: "identity_mismatch",
+		});
+		expect(prompts(f.calls)).toHaveLength(0);
+	});
+
+	test("mismatched terminal_id refuses; missing observed identity refuses", async () => {
+		const f = guarded({ terminal_id: "term-OTHER" });
+		const h = makeOperatorHerdr(f.run);
+		await expect(h.prompt("w1:p1", "pi", "t", undefined, { identity })).rejects.toMatchObject({
+			code: "identity_mismatch",
+		});
+		const f2 = guarded({ agent_session: undefined });
+		const h2 = makeOperatorHerdr(f2.run);
+		await expect(h2.prompt("w1:p1", "pi", "t", undefined, { identity })).rejects.toMatchObject({
+			code: "identity_mismatch",
+		});
+		expect(prompts(f.calls).length + prompts(f2.calls).length).toBe(0);
+	});
+
+	test("beforeSend runs after identity checks and before the send", async () => {
+		const f = guarded();
+		const h = makeOperatorHerdr(f.run);
+		const order: string[] = [];
+		await h.prompt("w1:p1", "pi", "hello", undefined, {
+			identity,
+			beforeSend: () => order.push("guard"),
+		});
+		expect(order).toEqual(["guard"]);
+		const f2 = guarded({ agent_session: { value: "sess-X" } });
+		const h2 = makeOperatorHerdr(f2.run);
+		let ran = false;
+		await expect(
+			h2.prompt("w1:p1", "pi", "t", undefined, {
+				identity,
+				beforeSend: () => {
+					ran = true;
+				},
+			}),
+		).rejects.toMatchObject({ code: "identity_mismatch" });
+		expect(ran).toBe(false);
+	});
+});

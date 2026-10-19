@@ -24,7 +24,7 @@ import type { ProjectStore } from "../projects.ts";
 interface Rig {
 	resps: ResponsibilityStore;
 	programs: ReturnType<typeof openPrograms>;
-	recorded: string[];
+	store: ConversationStore;
 	responsibilities: AppResponsibilityDeps;
 }
 
@@ -35,7 +35,6 @@ function depsFor(
 	const resps = openResponsibilities(ctx.store.db);
 	const wakes = openWakeStore(ctx.store.db);
 	const programs = openPrograms(join(ctx.home, "programs.sqlite"));
-	const recorded: string[] = [];
 	const responsibilities: AppResponsibilityDeps = {
 		feed: { db: ctx.store.db, resps, programs },
 		resps,
@@ -46,14 +45,9 @@ function depsFor(
 			programs,
 			pump: () => {},
 		}),
-		programs,
-		record: (input) => {
-			wakes.record(input);
-			recorded.push(input.kind);
-		},
 		listAgents: () => Promise.resolve(opts.agents ?? []),
 	};
-	return { resps, programs, recorded, responsibilities };
+	return { resps, programs, store: ctx.store, responsibilities };
 }
 
 const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
@@ -112,6 +106,18 @@ describe("app responsibilities", () => {
 			const homeFeed = await call("/api/app/responsibilities");
 			expect(((await homeFeed.json()) as { items: unknown[] }).items).toHaveLength(1);
 
+			const att = rig.resps.attach({
+				responsibilityId: id,
+				target: target(),
+				baseline: {},
+			});
+			const prepared = rig.resps.prepareOperation({
+				responsibilityId: id,
+				attachmentId: att.attachmentId,
+				brief: "b",
+			});
+			if (!("operation" in prepared)) throw new Error("expected prepared");
+
 			// Correct — a comment lands as a durable operator event.
 			const corrected = await call(`/api/app/responsibilities/${id}/correct`, {
 				method: "POST",
@@ -119,7 +125,15 @@ describe("app responsibilities", () => {
 				body: JSON.stringify({ text: "watch the flaky test instead" }),
 			});
 			expect(corrected.status).toBe(200);
-			expect(rig.recorded).toEqual(["operator-correction"]);
+			expect(
+				(rig.store.db.query("SELECT kind FROM work_events").all() as { kind: string }[]).map(
+					(row) => row.kind,
+				),
+			).toEqual(["operator-correction"]);
+			expect(rig.resps.get(id)!.revision).toBe(responsibility.revision + 1);
+			expect(rig.resps.validateForSend(prepared.operation.operationId)).toEqual({
+				refused: "stale-revision",
+			});
 
 			// Pause → status; cancel → status + disabled follow-up.
 			expect(
@@ -138,6 +152,15 @@ describe("app responsibilities", () => {
 			).toBe(200);
 			expect(rig.resps.get(id)!.status).toBe("cancelled");
 			expect(rig.programs.get(p.id)!.enabled).toBe(false);
+			expect(rig.resps.get(id)!.armed).toBe(false);
+			expect(
+				(await call(`/api/app/responsibilities/${id}/resume`, { method: "POST" })).status,
+			).toBe(200);
+			expect(rig.resps.get(id)!.status).toBe("active");
+			expect(rig.resps.get(id)!.followupProgramId).toBe(String(p.id));
+			expect(rig.programs.get(p.id)!.enabled).toBe(true);
+			expect(rig.programs.get(p.id)!.nextRun).not.toBeNull();
+			expect(rig.resps.get(id)!.armed).toBe(true);
 		} finally {
 			http.stop();
 		}

@@ -112,6 +112,7 @@ export type SendRefusal =
 	| "responsibility-missing"
 	| "responsibility-inactive"
 	| "attachment-detached"
+	| "attachment-mismatch"
 	| "stale-generation"
 	| "stale-revision"
 	| "already-terminal";
@@ -442,9 +443,11 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		att: Attachment | null,
 	): SendRefusal | null {
 		if (resp === null) return "responsibility-missing";
-		if (!OPEN_STATUSES.has(resp.status) || resp.status === "paused") return "responsibility-inactive";
+		if (!OPEN_STATUSES.has(resp.status) || resp.status === "paused")
+			return "responsibility-inactive";
 		if (att === null || att.health === "detached") return "attachment-detached";
 		if (att.health === "missing" || att.health === "identity_changed") return "attachment-detached";
+		if (att.responsibilityId !== resp.responsibilityId) return "attachment-mismatch";
 		return null;
 	}
 

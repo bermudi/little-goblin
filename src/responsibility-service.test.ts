@@ -16,13 +16,16 @@ import {
 	type ResponsibilityStore,
 	type Understanding,
 } from "./responsibilities.ts";
+import { makeManagedSendEdge, makeResponsibilityService } from "./responsibility-service.ts";
 import {
-	makeManagedSendEdge,
-	makeResponsibilityService,
-} from "./responsibility-service.ts";
-import { HerdrRefusal, type OperatorAgent } from "./herdr.ts";
+	HerdrRefusal,
+	makeOperatorHerdr,
+	type HerdrRunResult,
+	type OperatorAgent,
+} from "./herdr.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
-import { tmpDir, useHome } from "./testkit.ts";
+import { tmpDir, useHome, waitUntil } from "./testkit.ts";
+import { feedForProject } from "./responsibility-feed.ts";
 import { openWakeStore } from "./wake-store.ts";
 
 setLogFile(null);
@@ -338,7 +341,7 @@ describe("responsibility service", () => {
 		// kind null → the edge refuses before prompt is ever invoked.
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
 		expect(calls).toBe(0);
-		expect(out).toEqual({ refused: "already-terminal" });
+		expect(out).toEqual({ refused: "kind_mismatch" });
 		const op = r.resps.getOperation(prepared.operation.operationId)!;
 		expect(op.state).toBe("refused");
 		expect(op.refusal).toBe("kind_mismatch");
@@ -367,7 +370,7 @@ describe("responsibility service", () => {
 			},
 		});
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
-		expect(out).toEqual({ refused: "already-terminal" });
+		expect(out).toEqual({ refused: "agent_not_found" });
 		const op = r.resps.getOperation(prepared.operation.operationId)!;
 		expect(op.state).toBe("refused");
 		expect(op.refusal).toBe("agent_not_found");
@@ -398,6 +401,439 @@ describe("responsibility service", () => {
 		expect(out).toEqual({ refused: "identity-unenforceable" });
 		expect(calls).toBe(0);
 		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("refused");
+		r.store.close();
+	});
+});
+
+describe("correct", () => {
+	const acceptRig = (r: ReturnType<typeof rig>) =>
+		r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+
+	test("text and understanding together bump revision once and emit one event", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const revised = r.svc.correct(resp.responsibilityId, {
+			text: "watch the flaky test",
+			understanding: { ...understanding(), nextAction: "rerun it" },
+		});
+		expect(revised.revision).toBe(resp.revision + 1);
+		const rows = r.store.db
+			.query<{ kind: string; text: string; facts_json: string }, []>(
+				"SELECT kind, text, facts_json FROM work_events WHERE kind = 'operator-correction'",
+			)
+			.all();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.kind).toBe("operator-correction");
+		expect(rows[0]!.text).toBe("watch the flaky test");
+		const facts = JSON.parse(rows[0]!.facts_json) as {
+			responsibilityId: string;
+			revision: number;
+			understanding: { nextAction: string };
+		};
+		expect(facts.responsibilityId).toBe(resp.responsibilityId);
+		expect(facts.revision).toBe(resp.revision + 1);
+		expect(facts.understanding.nextAction).toBe("rerun it");
+		expect(r.pumps).toBeGreaterThanOrEqual(1);
+		r.store.close();
+	});
+
+	test("text-only still bumps revision; understanding-only emits the exact composed text", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const r1 = r.svc.correct(resp.responsibilityId, { text: "comment" });
+		expect(r1.revision).toBe(resp.revision + 1);
+		const r2 = r.svc.correct(resp.responsibilityId, {
+			understanding: { ...understanding(), outcome: "new outcome" },
+		});
+		expect(r2.revision).toBe(resp.revision + 2);
+		const texts = r.store.db
+			.query<{ text: string }, []>(
+				"SELECT text FROM work_events WHERE kind = 'operator-correction' ORDER BY event_id",
+			)
+			.all();
+		expect(texts).toHaveLength(2);
+		expect(texts[0]!.text).toBe("comment");
+		expect(texts[1]!.text).toBe(
+			`Responsibility understanding corrected:\n${JSON.stringify(r2.understanding)}`,
+		);
+		r.store.close();
+	});
+
+	test("an empty correction is rejected", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		expect(() => r.svc.correct(resp.responsibilityId, {})).toThrow(/nothing to correct/);
+		r.store.close();
+	});
+
+	test("a failed event insert rolls the revision back atomically", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const before = r.pumps;
+		r.store.db.exec(
+			"CREATE TEMP TRIGGER no_events BEFORE INSERT ON work_events BEGIN SELECT RAISE(ABORT,'blocked'); END",
+		);
+		expect(() => r.svc.correct(resp.responsibilityId, { text: "never" })).toThrow();
+		r.store.db.exec("DROP TRIGGER no_events");
+		expect(r.resps.get(resp.responsibilityId)!.revision).toBe(resp.revision);
+		expect(
+			r.store.db
+				.query("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'operator-correction'")
+				.get(),
+		).toEqual({ n: 0 });
+		expect(r.pumps).toBe(before);
+		r.store.close();
+	});
+});
+
+describe("dispatch pre-send revalidation", () => {
+	const prepRig = () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [
+				{
+					target: {
+						server: "local",
+						session: "default",
+						agentName: "w1:p1",
+						paneId: "w1:p1",
+						terminalId: "term-9",
+						agentSession: "sess-1",
+						kind: "pi",
+						cwd: "/w",
+					},
+					baseline: {},
+				},
+			],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		return { r, resp, att, op: prepared.operation };
+	};
+
+	test("a mid-preflight correction refuses with the named refusal", async () => {
+		const { r, resp, op } = prepRig();
+		const send = async (_b: string, _t: unknown, beforeSend?: () => void) => {
+			r.resps.revise(resp.responsibilityId, understanding());
+			beforeSend?.();
+			return {};
+		};
+		const out = await r.svc.dispatch(op.operationId, send as never);
+		expect(out).toEqual({ refused: "stale-revision" });
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("refused");
+		expect(r.resps.getOperation(op.operationId)!.refusal).toBe("stale-revision");
+		r.store.close();
+	});
+
+	test("a mid-preflight detach refuses attachment-detached", async () => {
+		const { r, att, op } = prepRig();
+		const out = await r.svc.dispatch(op.operationId, (async (
+			_b: string,
+			_t: unknown,
+			bs?: () => void,
+		) => {
+			r.resps.detach(att.attachmentId);
+			bs?.();
+		}) as never);
+		expect(out).toEqual({ refused: "attachment-detached" });
+		r.store.close();
+	});
+
+	test("an edge refusal lands under its own name, not already-terminal", async () => {
+		const { r, op } = prepRig();
+		const out = await r.svc.dispatch(op.operationId, (async () => {
+			throw new HerdrRefusal("identity_mismatch", "swapped");
+		}) as never);
+		expect(out).toEqual({ refused: "identity_mismatch" });
+		expect(r.resps.getOperation(op.operationId)!.refusal).toBe("identity_mismatch");
+		r.store.close();
+	});
+});
+
+describe("managed send edge", () => {
+	const target = (over: Record<string, unknown> = {}) =>
+		({
+			server: "local",
+			session: "default",
+			agentName: "w1:p1",
+			paneId: "w1:p1",
+			terminalId: "term-9",
+			agentSession: "sess-1",
+			kind: "pi",
+			cwd: "/w",
+			...over,
+		}) as unknown as AttachmentTarget;
+	const reported = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
+		pane_id: "w1:p1",
+		workspace_id: "w1",
+		tab_id: "t1",
+		agent: "pi",
+		agent_status: "working",
+		cwd: "/w",
+		terminal_title: null,
+		workspace_label: null,
+		tab_label: null,
+		terminal_id: "term-9",
+		agent_session: "sess-1",
+		state_change_seq: 2,
+		completion_seq: null,
+		revision: 1,
+		...over,
+	});
+
+	test("the bound identity and beforeSend reach the prompt guard", async () => {
+		const calls: unknown[] = [];
+		const edge = makeManagedSendEdge({
+			prompt: async (_p, _k, _t, _s, guard) => {
+				calls.push(guard);
+				guard?.beforeSend?.();
+				return reported();
+			},
+		});
+		const out = await edge("brief", target(), () => calls.push("beforeSend"));
+		expect(out).toEqual({ reportedAgentSession: "sess-1" });
+		expect(calls).toEqual([
+			{
+				identity: { terminalId: "term-9", agentSession: "sess-1" },
+				beforeSend: expect.any(Function),
+			},
+			"beforeSend",
+		]);
+	});
+
+	test("absent bound session refuses; post-send session or terminal swap is uncertain", async () => {
+		const edge = makeManagedSendEdge({ prompt: async () => reported() });
+		await expect(edge("b", target({ agentSession: null }))).rejects.toMatchObject({
+			code: "identity-unenforceable",
+		});
+		const swap = makeManagedSendEdge({ prompt: async () => reported({ agent_session: "sess-2" }) });
+		await expect(swap("b", target())).rejects.toThrow(/post-send identity mismatch/);
+		const missing = makeManagedSendEdge({ prompt: async () => reported({ agent_session: null }) });
+		await expect(missing("b", target())).rejects.toThrow(/post-send identity mismatch/);
+		const termSwap = makeManagedSendEdge({
+			prompt: async () => reported({ terminal_id: "term-X" }),
+		});
+		await expect(termSwap("b", target())).rejects.toThrow(/post-send identity mismatch/);
+	});
+});
+
+describe("ensureFollowup enable semantics", () => {
+	const acceptRig = (r: ReturnType<typeof rig>) =>
+		r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+
+	test("a manually disabled program stays disabled on a normal ensure; enable:true re-arms the same row", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		r.programs.update(program.id, { enabled: false });
+		const again = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(again.id).toBe(program.id);
+		expect(again.enabled).toBe(false);
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(false);
+		expect(r.resps.get(resp.responsibilityId)!.notArmedReason).toBe("follow-up program disabled");
+		const re = r.svc.ensureFollowup(resp.responsibilityId, { enable: true })!;
+		expect(re.id).toBe(program.id);
+		expect(re.enabled).toBe(true);
+		expect(re.nextRun).not.toBeNull();
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(true);
+		r.store.close();
+	});
+
+	test("an inactive responsibility reports not armed without touching the program", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		r.resps.setStatus(resp.responsibilityId, "paused");
+		r.svc.ensureFollowup(resp.responsibilityId);
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(false);
+		expect(r.resps.get(resp.responsibilityId)!.notArmedReason).toBe("responsibility paused");
+		expect(r.programs.get(program.id)!.enabled).toBe(true);
+		r.store.close();
+	});
+
+	test("a link to another responsibility's program is not reused", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		const foreign = r.programs.create({
+			name: "foreign",
+			charter: "c",
+			cron: "* * * * *",
+			responsibilityId: "resp-other",
+		});
+		r.resps.setFollowup(resp.responsibilityId, String(foreign.id));
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(program.id).not.toBe(foreign.id);
+		expect(program.responsibilityId).toBe(resp.responsibilityId);
+		r.store.close();
+	});
+});
+
+describe("beforeSend at the real wire surface", () => {
+	test("a correction landing during agent-get preflight refuses before any send", async () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [
+				{
+					target: {
+						server: "local",
+						session: "default",
+						agentName: "w1:p1",
+						paneId: "w1:p1",
+						terminalId: "term-9",
+						agentSession: "sess-1",
+						kind: "pi",
+						cwd: "/w",
+					},
+					baseline: {},
+				},
+			],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const calls: string[] = [];
+		let releaseGet!: () => void;
+		const gate = new Promise<void>((res) => {
+			releaseGet = res;
+		});
+		const agent = {
+			agent: "pi",
+			agent_status: "working",
+			pane_id: "w1:p1",
+			workspace_id: "w1",
+			tab_id: "w1:t1",
+			terminal_id: "term-9",
+			agent_session: { value: "sess-1" },
+		};
+		const wire = (body: unknown): HerdrRunResult => ({
+			code: 0,
+			stdout: JSON.stringify(body),
+			stderr: "",
+		});
+		const run = async (args: string[]): Promise<HerdrRunResult> => {
+			const verb = args.slice(2, 4).join(" ");
+			calls.push(verb);
+			if (verb === "workspace list") return wire({ result: { workspaces: [] } });
+			if (verb === "agent get") {
+				await gate;
+				return wire({ result: { agent } });
+			}
+			if (verb === "agent prompt") return wire({ result: { agent } });
+			throw new Error(`unexpected herdr call: ${verb}`);
+		};
+		const edge = makeManagedSendEdge(makeOperatorHerdr(run));
+		const dispatch = r.svc.dispatch(prepared.operation.operationId, edge);
+		await waitUntil(() => calls.includes("agent get"), "agent get in flight");
+		r.svc.correct(resp.responsibilityId, { text: "stop — direction changed" });
+		releaseGet();
+		await expect(dispatch).resolves.toEqual({ refused: "stale-revision" });
+		expect(calls).not.toContain("agent prompt");
+		r.store.close();
+	});
+});
+
+describe("ensureFollowup without a link", () => {
+	const acceptRig2 = (r: ReturnType<typeof rig>) =>
+		r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+
+	test("cancel or pause with a dangling link creates no program and reports not armed", () => {
+		const r = rig();
+		const resp = acceptRig2(r);
+		r.resps.setFollowup(resp.responsibilityId, "99999");
+		r.resps.setStatus(resp.responsibilityId, "cancelled");
+		expect(r.svc.ensureFollowup(resp.responsibilityId, { enable: false })).toBeNull();
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(false);
+		expect(r.resps.get(resp.responsibilityId)!.notArmedReason).toBe("responsibility cancelled");
+		const resp2 = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k2",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+		r.resps.setFollowup(resp2.responsibilityId, "99999");
+		r.resps.setStatus(resp2.responsibilityId, "paused");
+		expect(r.svc.ensureFollowup(resp2.responsibilityId)).toBeNull();
+		expect(r.resps.get(resp2.responsibilityId)!.armed).toBe(false);
+		expect(r.resps.get(resp2.responsibilityId)!.notArmedReason).toBe("responsibility paused");
+		expect(r.resps.get(resp2.responsibilityId)!.followupProgramId).toBe("99999");
+		r.store.close();
+	});
+
+	test("an explicit re-enable on a dangling link creates the row fresh", () => {
+		const r = rig();
+		const resp = acceptRig2(r);
+		r.resps.setFollowup(resp.responsibilityId, "99999");
+		const program = r.svc.ensureFollowup(resp.responsibilityId, { enable: true })!;
+		expect(program.responsibilityId).toBe(resp.responsibilityId);
+		expect(program.enabled).toBe(true);
+		expect(String(program.id)).not.toBe("99999");
+		r.store.close();
+	});
+});
+
+describe("feed armed derivation", () => {
+	test("a directly disabled program reports unarmed with no nextCheckinAt; paused with an enabled row reports none either", () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		const feed = () =>
+			feedForProject({ db: r.store.db, resps: r.resps, programs: r.programs }, r.projectId)[0]!;
+		let item = feed();
+		expect(item.responsibility.armed).toBe(true);
+		expect(item.nextCheckinAt).toBe(program.nextRun);
+		r.programs.update(program.id, { enabled: false });
+		item = feed();
+		expect(item.responsibility.armed).toBe(false);
+		expect(item.responsibility.notArmedReason).toBe("follow-up program disabled");
+		expect(item.nextCheckinAt).toBeNull();
+		r.programs.update(program.id, { enabled: true });
+		r.resps.setStatus(resp.responsibilityId, "paused");
+		item = feed();
+		expect(item.responsibility.armed).toBe(false);
+		expect(item.responsibility.notArmedReason).toBe("responsibility paused");
+		expect(item.nextCheckinAt).toBeNull();
 		r.store.close();
 	});
 });

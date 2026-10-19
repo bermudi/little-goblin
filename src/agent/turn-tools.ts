@@ -95,7 +95,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile, accepts) => {
+	return (conv, deliverVoice, recording, deliverFile, accepts, context) => {
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
 		const subagents = deps.subagents();
@@ -246,7 +246,12 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							service: responsibilitySvc.service,
 							projectId: conv.projectId,
 							coordinationConversationId: conv.id,
-							handoverKey: `handover:${conv.id}`,
+							handoverKey: () => {
+								if (context === undefined) {
+									throw new Error("responsibility accept needs a turn run context");
+								}
+								return `handover:${conv.id}:${context.sourceMessageId()}`;
+							},
 							listFor: responsibilitySvc.listFor,
 							// The accepted-risk send edge (responsibility-service):
 							// preflight binds pane + kind; post-send identity is

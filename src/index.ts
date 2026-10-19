@@ -690,8 +690,6 @@ async function boot() {
 					feed: { db: store.db, resps: responsibilities, programs },
 					resps: responsibilities,
 					service: responsibilityService,
-					programs,
-					record: (input) => wakeDispatcher!.record(input),
 					listAgents: () => operatorHerdr.list(),
 				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.

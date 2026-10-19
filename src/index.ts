@@ -698,6 +698,17 @@ async function boot() {
 				// them under /api/app/* with the bearer/trust gate.
 				operator: operatorSeams,
 				resumeOps: () => resumeOps,
+				// The project feed + controls — the same stores the
+				// coordination tool drives; record pumps through the
+				// dispatcher so a correction steers the next wake.
+				responsibilities: {
+					feed: { db: store.db, resps: responsibilities, programs },
+					resps: responsibilities,
+					service: responsibilityService,
+					programs,
+					record: (input) => wakeDispatcher!.record(input),
+					listAgents: () => operatorHerdr.list(),
+				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

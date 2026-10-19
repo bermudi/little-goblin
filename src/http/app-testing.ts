@@ -5,9 +5,9 @@
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef } from "../config.ts";
-import { openStore } from "../conversation.ts";
+import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
-import { openProjects, projectWorkdir } from "../projects.ts";
+import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
@@ -33,6 +33,15 @@ export function setup(
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
 		resumeOps?: AppChannelDeps["resumeOps"];
+		// The responsibility bag needs this setup's own stores — a
+		// factory form receives them after construction.
+		responsibilities?:
+			| AppChannelDeps["responsibilities"]
+			| ((ctx: {
+					store: ConversationStore;
+					projects: ProjectStore;
+					home: string;
+			  }) => AppChannelDeps["responsibilities"]);
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -102,6 +111,14 @@ export function setup(
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
 		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
+		...((): { responsibilities?: import("./app-responsibilities.ts").AppResponsibilityDeps } => {
+			if (opts.responsibilities === undefined) return {};
+			const resolved =
+				typeof opts.responsibilities === "function"
+					? opts.responsibilities({ store, projects, home })
+					: opts.responsibilities;
+			return resolved === undefined ? {} : { responsibilities: resolved };
+		})(),
 	};
 	const http = startHttp({
 		configRef,

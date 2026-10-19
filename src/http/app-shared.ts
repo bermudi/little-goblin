@@ -74,6 +74,9 @@ export interface AppChannelDeps {
 	// Resolved per request — the ops are built after the listener starts,
 	// so a route hit in the boot window reads undefined, not a TDZ throw.
 	resumeOps?: () => ResumeOps | undefined;
+	// The responsibility feed + controls (app-responsibilities.ts).
+	// Absent = those routes refuse 503.
+	responsibilities?: import("./app-responsibilities.ts").AppResponsibilityDeps;
 }
 
 // The composer's two knobs. A patch with neither is a client bug —

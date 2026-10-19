@@ -18,9 +18,8 @@ interface SeenRequest {
 	body: string;
 }
 
-// A fetch fake that records the request and answers canned bytes — the
-// pinned shapes below are OpenRouter's documented TTS contract: JSON
-// in, raw audio bytes out, {"error": {code, message}} on failure.
+// The pinned shapes are OpenRouter's documented TTS contract: JSON in,
+// raw audio bytes out, {"error": {code, message}} on failure.
 const fakeFetch = (status: number, body: Uint8Array | string) => {
 	const seen: SeenRequest[] = [];
 	const fn = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -112,10 +111,10 @@ describe("openrouterSpeech", () => {
 	});
 });
 
-// Logfare documents the same OpenAI speech wire minus response_format —
-// its /audio/speech table lists only model/input/voice
-// (https://logfare.ai/docs). Pinned from the docs, unverified live until
-// an operator provisions a logfare auth record.
+// Logfare documents the same wire minus response_format — its
+// /audio/speech table lists only model/input/voice
+// (https://logfare.ai/docs). Doc-pinned, unverified live until an
+// operator provisions a logfare auth record.
 describe("logfareSpeech", () => {
 	const logfareCfg = {
 		kind: "logfare" as const,
@@ -201,10 +200,9 @@ describe("synthesizeSpeech openrouter dispatch", () => {
 	});
 });
 
-// MiMo's chat-completions speech wire — doc-pinned
-// (api.xiaomimimo.com/v1/chat/completions, api-key auth, assistant
-// message carries the target text, audio comes back base64), unverified
-// live until an operator provisions a mimo auth record.
+// Doc-pinned wire (api-key auth, assistant message carries the target
+// text, audio comes back base64), unverified live until an operator
+// provisions a mimo auth record.
 describe("mimoSpeech", () => {
 	const mimoCfg = { kind: "mimo" as const, model: "mimo-v2.5-tts", auth: "mimo" };
 	const mimoBody = JSON.stringify({

@@ -1,15 +1,10 @@
-// Magic-byte image sniffing — the one bytes-level classifier behind
-// both consumers: file-side sniffing (tools/read.ts's sniffImage, which
-// powers read_file's image note and Telegram's photo-vs-document pick)
-// and generated-image naming (agent/image.ts). One core so the
-// extension a generated file is saved under can never disagree with the
-// media type delivery sniffs back off the same bytes. Only the head is
-// read: every format's magic — and its dimensions, where the header
-// carries them — lives in the first few KB. JPEG needs the headroom:
-// APP0/EXIF/DQT segments routinely push the SOF frame past 64 bytes.
+// The one bytes-level classifier behind both consumers — file-side
+// sniffing (tools/read.ts) and generated-image naming (agent/image.ts)
+// — so a saved extension can never disagree with the sniffed media
+// type. JPEG needs the headroom: APP0/EXIF/DQT segments routinely push
+// the SOF frame past 64 bytes.
 
-/** How much of the head the classifier needs — file-side callers read
- *  exactly this window. */
+/** Read window file-side callers must use. */
 export const SNIFF_HEAD = 4096;
 
 export interface SniffedImage {

@@ -1,8 +1,6 @@
-// The cached-catalog skeleton shared by the model catalogs in
-// models-dev.ts: single-flight fetch, backoff on failure, TTL on success,
-// validated disk cache under the backoff. A spec supplies the wire/disk
-// shapes and the path; this module owns the fetch/cache/backoff timing so
-// a third catalog can't fork it (DESIGN.md, catalog-fetch entry).
+// Shared skeleton for the model catalogs (models-dev.ts) — one
+// implementation so a third catalog can't fork the fetch/cache/backoff
+// timing.
 
 import { readFileSync } from "node:fs";
 import { durableWriteFile } from "../durable.ts";
@@ -48,17 +46,15 @@ export interface CachedCatalog<T> {
 
 export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 	let value: T | null = null;
-	// Don't hit the network before this time. A successful fetch sets it a
-	// day out; any failure leaves the backoff armed.
+	// A successful fetch arms this a day out; any failure leaves the
+	// backoff armed.
 	let nextFetchAt = 0;
-	// Concurrent callers share one fetch.
 	let inflight: Promise<T | null> | null = null;
 
-	// Disk state is a boundary — validated on read, never trusted. ENOENT
-	// just means no cache; a wrong-shape file (hand edit, partial write,
-	// future format change) degrades to null with a warn line, not a
-	// silent null or a blind cast (the old openrouter cast happily built
-	// Sets of characters out of a params string).
+	// A wrong-shape file (hand edit, partial write, future format
+	// change) degrades to null with a warn — never a blind cast (the
+	// old openrouter cast built Sets of characters out of a params
+	// string).
 	function readDisk(): T | null {
 		let raw: string;
 		try {
@@ -72,8 +68,7 @@ export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 		try {
 			return spec.parseDisk(JSON.parse(raw) as unknown);
 		} catch (err) {
-			// Wrong shape degrades with a line — the log bar: a symptom
-			// here must not need a REPL to explain.
+			// A symptom here must not need a REPL to explain.
 			log.warn(`${spec.name} cache invalid — ignoring`, err);
 			return null;
 		}

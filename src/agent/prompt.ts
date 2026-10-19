@@ -1,16 +1,9 @@
-// System prompt assembly: shell + tool list + SOUL.md + optional
-// AGENTS.md/USER.md (each capped — see readCapped). Frozen per
-// conversation (systemPromptFor, DESIGN.md → Cache stability): built
-// once at the conversation's first turn and served byte-identical
-// every turn after — file edits load at conversation boundaries (a
-// DM roll, a compaction, a spin-off), never mid-run. The tool list
-// comes from the caller (tools/mod.ts's toolNames): availability is
-// deployment-config state, frozen into the snapshot with the rest.
-//
-// Cache stability: nothing here may vary turn-to-turn on its own (no
-// clock, no counters) — the prompt is the head of the provider prefix
-// cache, and any automatic change invalidates the whole thing. Edits
-// are fine: they load at the next boundary, logged by noteSource.
+// Frozen per conversation (systemPromptFor): built once at the first
+// turn, served byte-identical after — file edits load at conversation
+// boundaries (DM roll, compaction, spin-off), never mid-run. Nothing
+// here may vary turn-to-turn on its own (no clock, no counters): the
+// prompt heads the provider prefix cache, and any automatic change
+// invalidates it.
 
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -22,12 +15,9 @@ import { channelOf, type Conversation, type ConversationStore, flatLine } from "
 import type { Project } from "../projects.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
-// Last-seen content hash per prompt source, process-wide. An operator
-// edit is a sanctioned cache boundary (DESIGN.md, Cache stability) — but
-// it must be attributable: a "prompt source changed" line is what
-// separates "the operator edited SOUL.md" from "a bug moved the head
-// hash" when reading goblin.log. First sight primes silently; sources
-// are global (not per conversation), so one edit logs once.
+// "prompt source changed" separates an operator's edit (a sanctioned
+// cache boundary) from a bug moving the head hash. Sources are global,
+// not per conversation — one edit logs once; first sight primes silently.
 const lastSeen = new Map<string, string>();
 
 function noteSource(source: string, content: string | null): void {
@@ -39,40 +29,31 @@ function noteSource(source: string, content: string | null): void {
 	log.info("prompt source changed", { source, from: prev, to: digest });
 }
 
-// Test hook: forget the seen-source hashes — module state persists
-// across tests; production never resets.
+// Test hook — module state persists across tests; production never resets.
 export function _resetPromptSourcesForTest(): void {
 	lastSeen.clear();
 }
 
-// First-boot ceiling on any injected workspace file. The files are
-// meant to stay small; a runaway AGENTS.md must not silently eat the
-// prompt head (and the cache) every turn — it truncates with an
-// in-prompt notice and a warn line instead.
-// Cap is the safety net, not the budget: AGENTS.md is goblin's own
-// operating memory (appends land at the end), SOUL.md its identity —
-// 20k matches both mature neighbors' converged floor. USER.md stays
-// directive-sized at 4k (openclaw's rule: profile guidance must not
-// balloon into per-turn dead weight). Over the cap the head and tail
-// are kept and the middle drops — never the tail, where the newest
-// notes live (hermes' 8k head-chop silently ate a file's tail for
-// months; both neighbors keep head+tail for exactly this reason).
+// A runaway file must not silently eat the prompt head: over the cap,
+// keep head and tail and drop the middle — never the tail, where the
+// newest notes live (hermes' head-chop silently ate tails; both
+// neighbors keep head+tail). 20k matches the neighbors' converged
+// floor; USER.md stays directive-sized at 4k (openclaw's rule:
+// profile guidance must not balloon into per-turn dead weight).
 const MAX_PROMPT_FILE_CHARS = 20_000;
 const USER_PROMPT_FILE_CHARS = 4_000;
 
-// Byte ceiling for the bounded read: producing cap+1 chars never needs
-// more than 3 bytes per char (3-byte UTF-8 sequences are the worst case
-// per UTF-16 unit), so cap+1 extra chars are always detectable without
-// reading past this — a runaway multi-gigabyte file is cut at ~24KB of
-// disk, never loaded whole and decoded just to be sliced back down.
+// cap+1 chars never needs more than 3 bytes/char (3-byte UTF-8 is the
+// worst case per UTF-16 unit), so an over-cap file is always detected
+// within this bound — a multi-gigabyte file is never read whole just
+// to be sliced back down.
 const MAX_PROMPT_FILE_BYTES = 3 * (MAX_PROMPT_FILE_CHARS + 1);
 
 interface PromptFile {
 	content: string;
 	truncated: boolean;
 	bytes: number;
-	// Decoded from the file's real end — null when the bounded read
-	// reached EOF (content is then the whole file).
+	// Decoded from the file's real end — null when the bounded read reached EOF.
 	tail: string | null;
 }
 
@@ -93,17 +74,14 @@ function readOptional(path: string, cap: number): PromptFile | null {
 			if (read === 0) break;
 			n += read;
 		}
-		// StringDecoder holds partial trailing sequences back instead of
-		// mangling them; end() flushes one only at true EOF, matching
-		// readFileSync's handling of a file that ends mid-sequence.
+		// StringDecoder holds a partial trailing sequence back; end()
+		// flushes it only at true EOF, matching readFileSync.
 		const decoder = new StringDecoder("utf8");
 		let text = decoder.write(buf.subarray(0, n));
 		if (n === bytes) text += decoder.end();
-		// A file past the byte bound is read only at its head — but the
-		// kept tail must come from the real end, where the newest notes
-		// live. The window is sized to always yield the tail share (3
-		// bytes/UTF-16 unit worst case, +4 absorbs a partial lead
-		// sequence).
+		// The kept tail must come from the file's real end (newest notes).
+		// The window always yields the tail share: 3 bytes/UTF-16 unit
+		// worst case, +4 absorbs a partial lead sequence.
 		let tail: string | null = null;
 		if (n < bytes) {
 			const window = Math.min(bytes, 3 * Math.floor(cap * 0.2) + 4);
@@ -114,8 +92,7 @@ function readOptional(path: string, cap: number): PromptFile | null {
 				if (r === 0) break;
 				tn += r;
 			}
-			// A window starting mid-character decodes to a leading U+FFFD —
-			// drop it; the file's real end can't be mid-sequence.
+			// A window starting mid-character decodes a leading U+FFFD — drop it.
 			let decoded = new StringDecoder("utf8").write(tbuf.subarray(0, tn));
 			while (decoded.charCodeAt(0) === 0xfffd) decoded = decoded.slice(1);
 			tail = decoded;
@@ -127,8 +104,7 @@ function readOptional(path: string, cap: number): PromptFile | null {
 	}
 }
 
-// Read a workspace file for injection, capped. Truncation is a warn —
-// "why does the bot ignore half my notes" must not need a REPL.
+// Truncation warns — "why does the bot ignore half my notes" must not need a REPL.
 function readCapped(source: string, path: string, cap: number): string | null {
 	const file = readOptional(path, cap);
 	if (file === null) return null;
@@ -136,11 +112,9 @@ function readCapped(source: string, path: string, cap: number): string | null {
 	const headLen = Math.min(file.content.length, Math.floor(cap * 0.7));
 	const head = file.content.slice(0, headLen);
 	if (file.tail !== null) {
-		// Past the read bound: content is only the head window, so the
-		// kept tail comes from the file's real end (readOptional). The
-		// middle's char count is unknowable without decoding the whole
-		// file — the notice reports bytes, marked as an estimate (exact
-		// for valid UTF-8).
+		// The middle's char count is unknowable without decoding the
+		// whole file — the notice reports bytes, an estimate (exact for
+		// valid UTF-8).
 		const tailLen = Math.min(file.tail.length, Math.floor(cap * 0.2));
 		const tail = tailLen > 0 ? file.tail.slice(-tailLen) : "";
 		const droppedBytes = file.bytes - Buffer.byteLength(head) - Buffer.byteLength(tail);
@@ -161,18 +135,16 @@ function readCapped(source: string, path: string, cap: number): string | null {
 		dropped,
 	});
 	if (dropped <= 0) {
-		// Everything read is kept, the notice points on. (Unreachable
-		// today: over-bound files take the tail branch above, and a fully
-		// read file only truncates when over cap — always dropped > 0.)
+		// Unreachable today: over-bound files take the tail branch, and a
+		// fully read file only truncates when over cap — always dropped > 0.
 		return `${file.content}\n\n… (${source} longer than the read bound — read the file for the rest)`;
 	}
 	const tail = tailLen > 0 ? file.content.slice(-tailLen) : "";
 	return `${head}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — read the file for the rest) …\n${tail}`;
 }
 
-// Project instructions are operator text like the injected files — the
-// same ceiling and in-prompt notice apply; only the source is a DB
-// field, so the notice points at the project page, not a path.
+// Same ceiling as the injected files; the notice points at the project
+// page, not a path (the source is a DB field).
 function capPromptText(source: string, text: string, cap: number): string {
 	if (text.length <= cap) return text;
 	const headLen = Math.floor(cap * 0.7);
@@ -188,29 +160,22 @@ function capPromptText(source: string, text: string, cap: number): string {
 	return `${text.slice(0, headLen)}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — the project page holds the rest) …\n${tail}`;
 }
 
-// A bound conversation gets its project's own prompt: the working-
-// directory line names project.dir, the identity files point at the
-// workspace absolutely (a relative edit from the project cwd would
-// land in the project), the skill catalog renders absolute paths for
-// the same reason, and a `## project` section carries the instructions
-// plus a linked dir's own AGENTS.md. `project === undefined` (or null)
-// produces byte-identical output to the pre-projects builder — frozen
-// snapshots of unbound conversations must not churn.
+// A bound conversation's identity and skill paths render absolute — a
+// relative edit from the project cwd would land in the project.
+// project == null produces byte-identical output to the pre-projects
+// builder: frozen snapshots of unbound conversations must not churn.
 export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
 	project?: Project | null,
 	notesIndex?: { id: string; title: string }[] | undefined,
 ): { text: string; sources: string[] } {
-	// Guest persona (design/telegram.md → Guest mode): a third-party
-	// summons never reads the operator's files — no SOUL.md, no
-	// USER.md, no skills, nothing private in, nothing about the
-	// operator out. Built before any file read so a sandbox build
-	// touches nothing on disk.
+	// A guest persona reads no operator files — nothing private in,
+	// nothing about the operator out — and is built before any file
+	// read: a sandbox build touches nothing on disk.
 	if (conv.persona === "guest") {
-		// Standing lane (Roles and permissions, 2026-10-11): an allowed
-		// user's own DM is a multi-turn sandbox; on the guest surface the
-		// one-reply-per-summons physics still applies.
+		// An allowed user's own DM is a multi-turn sandbox; on the guest
+		// surface the one-reply-per-summons physics still applies.
 		const standing = channelOf(conv.id) !== "guest";
 		const text = [
 			"You are goblin, a helpful assistant.",
@@ -235,8 +200,7 @@ export function buildSystemPrompt(
 	}
 	const soul = readCapped("SOUL.md", paths.soul(), MAX_PROMPT_FILE_CHARS);
 	if (soul === null) {
-		// Not a reason to fail the turn — but a deleted SOUL.md silently
-		// swaps the bot's personality, and the log must explain that.
+		// A deleted SOUL.md silently swaps the bot's personality — warn, don't fail the turn.
 		log.warn("SOUL.md missing — default identity in use", {
 			conversation: conv.id,
 			path: paths.soul(),
@@ -244,22 +208,18 @@ export function buildSystemPrompt(
 	}
 	const agents = readCapped("AGENTS.md", paths.agents(), MAX_PROMPT_FILE_CHARS);
 	const user = readCapped("USER.md", paths.user(), USER_PROMPT_FILE_CHARS);
-	// Scanned at snapshot build (conversation start / compaction refresh)
-	// — a skill written mid-conversation appears when the next
-	// conversation starts; its SKILL.md is read fresh on use regardless.
-	// Proposals ride the same section and the same boundary.
+	// Scanned at snapshot build — a skill written mid-conversation
+	// appears next conversation; SKILL.md is read fresh on use.
 	const catalog = loadCatalog(paths.skills());
 	const proposals = loadCatalog(paths.skillsProposed());
-	// Project prompts render catalog links absolute: from a project cwd
-	// the relative `skills/…` path resolves inside the project.
+	// Absolute links: from a project cwd a relative skills/… resolves inside the project.
 	const skillsSection = formatSkillsSection(
 		catalog,
 		proposals,
 		project === null || project === undefined ? undefined : paths.workspace(),
 	);
-	// A linked dir's own AGENTS.md is prompt source like the workspace's,
-	// read fresh at each snapshot build. Managed homes never carry one —
-	// goblin's own AGENTS.md section above is the managed project's too.
+	// Managed homes never carry a project AGENTS.md — goblin's own
+	// section below is the managed project's too.
 	const projectAgents =
 		project !== null && project !== undefined && !project.managed
 			? readCapped("project AGENTS.md", join(project.dir, "AGENTS.md"), MAX_PROMPT_FILE_CHARS)
@@ -273,8 +233,8 @@ export function buildSystemPrompt(
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
 	noteSource("skills", skillsSection.join("\n"));
-	// Keyed per project — the map is process-wide, so an unkeyed entry
-	// would log "changed" every time two projects alternate.
+	// Keyed per project — an unkeyed entry would log "changed" every
+	// time two projects alternate.
 	if (project !== null && project !== undefined) {
 		noteSource(`project:${project.id}`, project.instructions);
 		if (!project.managed) {
@@ -283,10 +243,8 @@ export function buildSystemPrompt(
 		noteSource(`notes-index:${project.id}`, (notesIndex ?? []).map((n) => n.title).join("\n"));
 	}
 
-	// The project's scope statement, ahead of goblin's own operating
-	// notes: name, its instructions, the notes index (current text is a
-	// `note read` away — the index stays a pointer, never the body),
-	// and a linked dir's AGENTS.md.
+	// The notes index stays a pointer, never the body — current text is
+	// a `note read` away.
 	const projectSection: string[] = [];
 	if (project !== null && project !== undefined) {
 		projectSection.push("", `## project — ${project.name}`);
@@ -294,8 +252,7 @@ export function buildSystemPrompt(
 		if (projectInstructions !== "") parts.push(projectInstructions);
 		if (notesIndex !== undefined && notesIndex.length > 0) {
 			// Model-authored titles are arbitrary text — a newline would
-			// restructure the section, so they render as one flat line
-			// (same rule the app's list titles follow).
+			// restructure the section; flat-lining mirrors the app's list titles.
 			parts.push(
 				`### notes\n\n${notesIndex.map((n) => `- ${flatLine(n.title).slice(0, 200)} (id ${n.id})`).join("\n")}`,
 			);
@@ -306,12 +263,10 @@ export function buildSystemPrompt(
 		if (parts.length > 0) projectSection.push("", parts.join("\n\n"));
 	}
 
-	// The channel's name is the only prompt line the address flips —
-	// everything else is shared machinery (DESIGN.md, App channel).
 	const onApp = channelOf(conv.id) === "app";
 	const channel = onApp ? "the goblin app" : "Telegram";
-	// A personal turn summoned as a guest (operator, non-member chat):
-	// full persona, but the one-message physics still applies.
+	// A personal turn on a guest channel keeps the full persona — the
+	// one-message physics still applies.
 	const guestOf = channelOf(conv.id) === "guest";
 
 	const text = [
@@ -431,7 +386,7 @@ export function buildSystemPrompt(
 				]
 			: [
 					// Absolute — a relative edit from the project cwd would land
-					// in the project, not the workspace (design/projects.md).
+					// in the project, not the workspace.
 					`- SOUL.md, AGENTS.md and USER.md in ${paths.workspace()} are your`,
 					`  identity, your operating notes and your model of the operator. You own all`,
 				]),
@@ -474,13 +429,10 @@ export function buildSystemPrompt(
 	return { text, sources };
 }
 
-// The frozen-per-conversation entry point (DESIGN.md → Cache
-// stability): build once at the conversation's first turn, serve the
-// same bytes every turn after. File edits load at conversation
-// boundaries — a DM roll, a compaction, a spin-off — never mid-run:
+// Frozen per conversation: edits load at boundaries, never mid-run —
 // a live conversation's prefix cache is never rewritten under it.
-// Compaction clears the snapshot (runtime.ts) because the history
-// rewrite busts the prefix anyway — the refresh there is free.
+// Compaction clears the snapshot (runtime.ts): the history rewrite
+// busts the prefix anyway, so the refresh there is free.
 export function systemPromptFor(
 	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot">,
 	conv: Conversation,
@@ -492,9 +444,8 @@ export function systemPromptFor(
 	if (frozen !== null) return frozen;
 	const built = buildSystemPrompt(conv, tools, project, notesIndex);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
-	// The boundary line: the snapshot's birth is a cache write, and
-	// noteSource diffs above explain any source change since the last
-	// build process-wide.
+	// The snapshot's birth is a cache write; the noteSource diffs above
+	// explain any source change since the last build.
 	log.info("prompt snapshot built", {
 		conversation: conv.id,
 		sources: built.sources.join("+"),

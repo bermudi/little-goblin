@@ -8,11 +8,10 @@ import {
 	ProviderContentFilterError,
 } from "./provider-errors.ts";
 
-// Every positive pins a real provider string to its source so the
-// phrase list stays evidence, not vibes. None of these errors were
+// Every positive pins a real provider string to its source. None were
 // observed by goblin itself — the z.ai code is documented at
 // docs.z.ai/api-reference/api-code; the rest come from the
-// openclaw/hermes field corpora of provider errors seen in the wild.
+// openclaw/hermes field corpora.
 
 describe("isContextOverflow — positives", () => {
 	test("z.ai body code 1261 (documented at docs.z.ai/api-reference/api-code)", () => {
@@ -177,10 +176,9 @@ describe("isContentFilter", () => {
 	});
 });
 
-// Like the overflow pins: one synthetic per transport family, wrapped
-// the way Node and undici actually nest them. No string was observed by
-// goblin itself — these are the node/undici error codes and fetch
-// failure surfaces a provider call can die on.
+// Wrapped the way Node and undici actually nest them — none observed
+// by goblin; these are the node/undici error codes and fetch failure
+// surfaces a provider call can die on.
 describe("isTransientTurnFailure", () => {
 	test.each([
 		["econnrefused", new Error("connect ECONNREFUSED 127.0.0.1:443")],

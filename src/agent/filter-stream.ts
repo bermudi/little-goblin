@@ -1,7 +1,7 @@
-// Normalize explicit filter failures into stream errors so streamText's
-// step-local retry can handle HTTP rejections and finish-reason filters
-// as well as SSE error chunks. No retries here: the runtime owns the
-// one-per-turn budget. Ordinary assistant refusal text is never inspected.
+// Normalized into stream errors so streamText's step-local retry sees
+// HTTP rejections and finish-reason filters as well as SSE error
+// chunks. No retries here — the runtime owns the one-per-turn budget.
+// Ordinary assistant refusal text is never inspected.
 
 import type { LanguageModelV4StreamPart, LanguageModelV4StreamResult } from "@ai-sdk/provider";
 import { wrapLanguageModel, type LanguageModel } from "ai";
@@ -29,9 +29,9 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 					};
 				}
 				const reader = result.stream.getReader();
-				// The SDK drops tools when it retries, but flushes them on a
-				// terminal error. Keep this attempt's tools here until a clean
-				// finish, so even an exhausted filter cannot execute them.
+				// The SDK drops tools on retry but flushes them on a terminal
+				// error — buffer this attempt's tools until a clean finish so
+				// an exhausted filter cannot execute them.
 				const buffered: LanguageModelV4StreamPart[] = [];
 				let cancelled = false;
 				return {
@@ -43,10 +43,10 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 								buffered.length = 0;
 							};
 							try {
-								// A buffered part produces no output. Keep reading until
-								// there is something to enqueue or the stream ends:
-								// ReadableStream won't call pull again just because this
-								// invocation returned without satisfying its pending read.
+								// ReadableStream won't call pull again just because
+								// this invocation returned without satisfying its
+								// pending read — keep reading until there is
+								// something to enqueue or the stream ends.
 								while (!cancelled) {
 									const { done, value } = await reader.read();
 									if (cancelled) return;

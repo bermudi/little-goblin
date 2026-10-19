@@ -1,7 +1,6 @@
-// The system prompt is the head of the provider prefix cache — these tests
-// guard the invariant from DESIGN.md (Cache stability): nothing in the
-// prompt varies turn-to-turn on its own. A test failing here usually means
-// someone added a clock, counter, or random value to the prompt.
+// Nothing in the prompt may vary turn-to-turn — it heads the provider
+// prefix cache. A failure here usually means someone added a clock,
+// counter, or random value to the prompt.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -107,7 +106,6 @@ describe("buildSystemPrompt", () => {
 		setLogFile(logFile);
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
-			// No SOUL.md — deleted mid-run, never recreated.
 			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("You are goblin, a personal AI agent.");
 			const warned = readFileSync(logFile, "utf8")
@@ -227,9 +225,7 @@ describe("workspace file injection", () => {
 			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("SOUL.md truncated at 20000 chars");
 			expect(text).toContain("dropped");
-			// The tail — the newest notes — survives the truncation.
 			expect(text).toContain("FINAL-STANDING-RULE: never drop the tail");
-			// And the log explains it — no REPL needed.
 			const warned = readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
@@ -256,12 +252,10 @@ describe("workspace file injection", () => {
 				`You are goblin. ${"x".repeat(59_500)}WINDOW-END-MARKER${"y".repeat(40_000)}\nFINAL-STANDING-RULE`,
 			);
 			const { text } = buildSystemPrompt(conv, tools);
-			// The file's true end — the newest notes — survives.
 			expect(text).toContain("FINAL-STANDING-RULE");
-			// The head window's tail (last ~430 bytes of the read) does not.
 			expect(text).not.toContain("WINDOW-END-MARKER");
-			// The dropped middle is bytes, marked an estimate — the char
-			// count is unknowable without decoding the whole file.
+			// The dropped middle reports bytes, marked an estimate — the
+			// char count is unknowable without decoding the whole file.
 			expect(text).toMatch(/dropped ~\d+ bytes from the middle/);
 			const warned = readFileSync(logFile, "utf8")
 				.trim()
@@ -287,8 +281,8 @@ describe("workspace file injection", () => {
 			);
 			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("USER.md truncated at 4000 chars");
-			// Openclaw's rule: profile guidance must not balloon into
-			// per-turn dead weight — 4k, and the newest lines survive.
+			// 4k is openclaw's rule — profile guidance must not balloon
+			// into per-turn dead weight; the newest lines survive.
 			expect(text).toContain("- prefers plain language");
 		} finally {
 			delete process.env.GOBLIN_HOME;
@@ -314,7 +308,6 @@ describe("workspace file injection", () => {
 			// the next build picks the edit up.
 			store.clearPromptSnapshot(live.id);
 			expect(systemPromptFor(store, live, tools).text).toContain("You are goblin, v2.");
-			// And freezes again from there.
 			writeFileSync(paths.soul(), "You are goblin, v3.");
 			expect(systemPromptFor(store, live, tools).text).not.toContain("You are goblin, v3.");
 		} finally {
@@ -334,9 +327,8 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
-	// The sandbox boundary (design/telegram.md → Guest mode): a guest
-	// persona build touches no operator file — SOUL, USER, skills, none
-	// of it — and says so in its own words.
+	// A guest persona build touches no operator file — SOUL, USER,
+	// skills, none of it.
 	test("a guest persona prompt reads nothing private", () => {
 		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
@@ -353,7 +345,7 @@ describe("workspace file injection", () => {
 		}
 	});
 	// The operator's own guest summons keep the personal persona but
-	// must know the room has readers (design/telegram.md → Guest mode).
+	// must know the room has readers.
 	test("a personal guest-channel prompt says who can read it", () => {
 		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
@@ -366,10 +358,9 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
-	// Pending proposals must ride the ## skills section (ruling
-	// 2026-10-10): this pins the prompt wiring itself — without the
-	// skills-proposed scan, an approve request in a fresh conversation
-	// meets a model that has never heard of the drafts.
+	// Pins the prompt wiring: without the skills-proposed scan, an
+	// approve request in a fresh conversation meets a model that has
+	// never heard of the drafts.
 	test("pending proposals ride the skills section and count as a skills source", () => {
 		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;
@@ -394,10 +385,6 @@ describe("workspace file injection", () => {
 	});
 });
 
-// Project prompts (design/projects.md): a bound conversation gets its
-// project's own environment — dir, instructions, absolute identity and
-// skill paths, and a linked dir's AGENTS.md. The unbound build is
-// untouched above.
 describe("project prompts", () => {
 	const project = (dir: string, over: Partial<import("../projects.ts").Project> = {}) => ({
 		id: "proj-1",
@@ -440,17 +427,12 @@ describe("project prompts", () => {
 			// Identity files anchor at the workspace absolutely — a
 			// relative edit from the project cwd would land in the project.
 			expect(text).toContain(`in ${paths.workspace()} are your`);
-			// The catalog renders absolute paths.
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
-			// The write/validation paths go absolute too — a relative
-			// `skills/…` resolves inside the project cwd, not the
-			// workspace.
 			expect(text).toContain(`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
 			);
-			// Managed homes never carry an AGENTS.md subsection.
 			expect(text).not.toContain("### AGENTS.md in");
 			expect(sources).toContain("project");
 			expect(sources).not.toContain("project-AGENTS.md");
@@ -478,7 +460,6 @@ describe("project prompts", () => {
 			expect(sources).toContain("project");
 			expect(sources).toContain("project-AGENTS.md");
 
-			// No file, no subsection, no source.
 			const bare = project(join(home, "elsewhere", "empty"), { managed: false });
 			mkdirSync(bare.dir, { recursive: true });
 			const second = buildSystemPrompt(
@@ -530,7 +511,6 @@ describe("project prompts", () => {
 			expect(text).toContain("- reading list (id n-1)");
 			expect(text).toContain("- ideas (id n-2)");
 			expect(sources).toContain("notes-index");
-			// An empty index omits the subsection and the source.
 			const empty = buildSystemPrompt(c, tools, p, []);
 			expect(empty.text).not.toContain("### notes");
 			expect(empty.sources).not.toContain("notes-index");
@@ -550,8 +530,8 @@ describe("the app fence convention", () => {
 			const withNote = buildSystemPrompt(appConv, [...tools, "note"]);
 			expect(withNote.text).toContain('note title="…"');
 			expect(withNote.text).toContain("append-to-note");
-			// No tool, no bullet — Telegram carries it nowhere either
-			// (the fenced card is an app-UI affordance only).
+			// The fenced card is an app-UI affordance only — Telegram
+			// carries it nowhere either.
 			const noTool = buildSystemPrompt(appConv, tools);
 			expect(noTool.text).not.toContain("append-to-note");
 			const tg = buildSystemPrompt(conv, [...tools, "note"]);

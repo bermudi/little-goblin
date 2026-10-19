@@ -1,7 +1,7 @@
-// The codex OAuth boundary: refresh must write rotated refresh tokens
-// back (not writing back invalidates the CLI's login), single-use tokens
-// must never be POSTed twice, and a lost race adopts the sibling's pair
-// instead of demanding a pointless re-login.
+// Refresh tokens are single-use: a rotated pair must be written back
+// (losing it invalidates the CLI's login), never POSTed twice, and a
+// lost race adopts the sibling's pair instead of demanding a pointless
+// re-login.
 
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

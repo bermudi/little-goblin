@@ -1,9 +1,7 @@
-// thinkingOptions is a boundary contract: the operator vocabulary must
-// land on knobs each provider family actually has. GLM's per-generation
-// semantics (docs.z.ai/guides) motivated this test — send glm-5.3 an
-// effort it doesn't list and the API silently upgrades to max.
-// thinkingLevelsFor is the same table read the other way: what the app
-// and the mini app may offer.
+// Send glm-5.3 an effort it doesn't list and the API silently upgrades
+// to max (docs.z.ai/guides) — the operator vocabulary must land on
+// knobs each provider family has. thinkingLevelsFor is the same table
+// read the other way: what the app may offer.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -28,13 +26,12 @@ import {
 const cfg: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/coding/paas/v4", auth: "zai" },
-		// The Responses door (devpack endpoint table) — probe-verified
-		// 2026-09-27: documents ride in user messages AND tool outputs.
+		// Probe-verified 2026-09-27: on the Responses door, documents
+		// ride in user messages AND tool outputs.
 		zai_responses: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
 		relay_responses: { kind: "responses", baseUrl: "https://relay.example/v1", auth: "other" },
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
-		// Free-form name with a dot — the exact shape the SDK's lookup
-		// key rule (first dot-separated segment) exists for.
+		// Dotted name — the shape the SDK's first-segment lookup rule exists for.
 		"z.ai": { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
 		openrouter: { kind: "openrouter", auth: "openrouter" },
 		codex: { kind: "codex" },
@@ -132,8 +129,8 @@ describe("thinkingOptions — glm-5.3+ (forced thinking, effort low|high|max)", 
 });
 
 describe("thinkingOptions — glm-5.2 (toggle + effort high|max)", () => {
-	// "other" is a generic openai-compatible endpoint serving real
-	// generations — on z.ai's coding-plan URL these ids alias to 5.3-gen.
+	// "other" serves real generations — on z.ai's coding-plan URL these
+	// ids would alias to 5.3-gen.
 	test("off sends the disabled toggle, never an effort", () => {
 		expect(thinkingOptions(cfg, "other/glm-5.2", "off")).toEqual({
 			other: { thinking: { type: "disabled" } },
@@ -163,9 +160,9 @@ describe("thinkingOptions — older glm (toggle only)", () => {
 });
 
 describe("z.ai coding plan — older glm ids alias to 5.3-gen", () => {
-	// docs.z.ai/devpack: the plan only serves glm-5.3/5.3-flash and routes
-	// glm-5.2/5.1→5.3, glm-4.7→5.3-flash. An "older" id on that endpoint
-	// runs a forced-thinking model, so levels and the wire map follow the
+	// docs.z.ai/devpack: the plan only serves glm-5.3/5.3-flash and
+	// routes glm-5.2/5.1→5.3, glm-4.7→5.3-flash — an "older" id on that
+	// endpoint runs forced thinking, so the wire map follows the
 	// endpoint, not the id. cfg.zai's baseUrl is the coding-plan URL.
 	test("offered set is the 5.3 ladder for any glm id", () => {
 		expect(
@@ -215,9 +212,8 @@ describe("thinkingOptions — codex and gpt (reasoning_effort ladder)", () => {
 });
 
 describe("thinkingOptions — provider options key", () => {
-	// The openai-compatible provider resolves options under
-	// name.split(".")[0] — keying under the full name silently drops
-	// them. Every model family must follow the rule.
+	// openai-compatible resolves options under name.split(".")[0] —
+	// keying under the full name silently drops them.
 	test("a dotted provider name keys options under its first segment", () => {
 		expect(thinkingOptions(cfg, "z.ai/glm-5.2", "high")).toEqual({
 			z: { thinking: { type: "enabled" }, reasoningEffort: "high" },

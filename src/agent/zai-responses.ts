@@ -1,22 +1,11 @@
 // api.z.ai's Responses endpoint streams chain-of-thought as
-// `response.reasoning_text.*` events inside `reasoning_text` content
-// parts — the spec's raw-CoT arm (OpenAI added reasoning_text for
-// gpt-oss). @ai-sdk/openai's stream schema only models the summary arm
-// (`response.reasoning_summary_*`, which hosted OpenAI models emit);
-// reasoning_text isn't in its zod union as of 4.0.83, so unmodeled
-// events fall through the catchall and reasoning parts land with empty
-// text (probe-verified 2026-10-01 — 426 reasoning_text deltas per turn,
-// all dropped; stored part carried text:"").
-//
-// This fetch shim rewrites raw-CoT events into summary events on the
-// way in, so reasoning text streams (and persists) verbatim. Scoped to
-// api.z.ai hosts — hosted OpenAI emits summaries, not reasoning_text.
-//
-//   z.ai event                                   →  spec event
-//   content_part.added  (part: reasoning_text)   →  reasoning_summary_part.added
-//   reasoning_text.delta                         →  reasoning_summary_text.delta
-//   reasoning_text.done                          →  reasoning_summary_part.done
-//   content_part.done   (part: reasoning_text)   →  reasoning_summary_part.done
+// `response.reasoning_text.*` events — the spec's raw-CoT arm (OpenAI
+// added reasoning_text for gpt-oss). @ai-sdk/openai's stream schema
+// only models the summary arm (`response.reasoning_summary_*`, which
+// hosted OpenAI emits) as of 4.0.83, so reasoning_text events fall
+// through the catchall and reasoning parts persist with empty text
+// (probe-verified 2026-10-01). Scoped to api.z.ai hosts — hosted
+// OpenAI emits summaries, not reasoning_text.
 //
 // z.ai's `content_index` becomes `summary_index` (0 in practice — the
 // SDK pre-creates index 0 on output_item.added, so ids join up).
@@ -73,9 +62,8 @@ function translate(data: SseData): Record<string, unknown> | null {
 	}
 }
 
-// One SSE event block → (possibly rewritten) wire text. A null return
-// means "pass through verbatim". Parse failures pass through — a line
-// we can't read is the provider's problem, not ours to mangle further.
+// Parse failures pass through verbatim — a line we can't read is the
+// provider's problem, not ours to mangle.
 function rewriteEvent(block: string): string {
 	const dataLines: string[] = [];
 	for (const line of block.split("\n")) {
@@ -128,11 +116,8 @@ export function isZaiHost(baseUrl?: string): boolean {
 	}
 }
 
-// Fetch middleware for createOpenAI's `fetch` option: taps only
-// text/event-stream responses; JSON and errors pass through untouched.
-// `typeof fetch` here is Bun's — it carries a `preconnect` member the
-// SDK's FetchFunction type demands, so the wrapper delegates it rather
-// than casting it away.
+// Bun's fetch carries a `preconnect` member the SDK's FetchFunction
+// type demands — the wrapper delegates it rather than casting it away.
 export function zaiReasoningFetch(
 	baseFetch: (...args: Parameters<typeof fetch>) => Promise<Response> = fetch,
 ): typeof fetch {

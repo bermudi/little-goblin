@@ -1,12 +1,5 @@
-// Codex provider kind: OpenAI's ChatGPT-subscription Codex backend
-// (chatgpt.com/backend-api/codex/responses) as a LanguageModelV4 — the
-// "thin custom provider over OAuth + the responses endpoint" DESIGN.md
-// called for. ai-sdk-provider-codex-cli wraps the CLI's own agent loop
-// (no caller tools), which can't drive goblin's turn loop.
-//
-// Credentials come from codex/auth.ts (codexCredentials per request).
-// Effort mapping lives in providers.ts (thinkingOptions →
-// providerOptions.codex.reasoningEffort).
+// ai-sdk-provider-codex-cli is unusable here — it wraps the CLI's own
+// agent loop (no caller tools) and can't drive goblin's turn loop.
 
 import type {
 	LanguageModelV4,
@@ -29,8 +22,7 @@ export const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 type ResponsesInputItem = Record<string, unknown>;
 
 function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
-	// Spec v4 tags the payload — no more guessing whether a string is a
-	// URL, base64, or an inline data URL.
+	// Spec v4 tags the payload type — no guessing URL vs base64 vs data URL.
 	if (data.type === "url") {
 		return data.originalUrl ?? data.url.toString();
 	}
@@ -38,13 +30,12 @@ function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
 		throw new Error("codex: provider file references are not supported");
 	}
 	// "image" alone is a wildcard, not a data-URL media type — pin a
-	// concrete subtype. URL payloads returned above keep it untouched.
+	// concrete subtype.
 	const mime = mediaType === "image" ? "image/png" : mediaType;
 	if (data.type === "text") {
 		return `data:${mime};base64,${Buffer.from(data.text, "utf8").toString("base64")}`;
 	}
-	// 'data': raw bytes or base64 string. A data: string rides through
-	// untouched rather than double-encoding a middleware's gift.
+	// A data: string rides through untouched rather than double-encoding.
 	if (typeof data.data === "string") {
 		return data.data.startsWith("data:") ? data.data : `data:${mime};base64,${data.data}`;
 	}
@@ -72,9 +63,8 @@ function toolResultText(output: { type: string; value?: unknown; reason?: unknow
 	return JSON.stringify(output.value ?? null);
 }
 
-// LanguageModelV4Prompt → responses `input` items + instructions.
-// Assistant reasoning parts are dropped — the backend accepts no reasoning
-// echo without the encrypted content we don't persist.
+// Assistant reasoning parts are dropped — the backend accepts no
+// reasoning echo without the encrypted content we don't persist.
 function convertPrompt(prompt: LanguageModelV4Prompt): {
 	instructions: string | undefined;
 	input: ResponsesInputItem[];
@@ -136,22 +126,18 @@ function convertPrompt(prompt: LanguageModelV4Prompt): {
 							arguments: part.input,
 						});
 					}
-					// reasoning/file/tool-result parts on assistant messages are
-					// dropped — see the note above.
-					//
-					// (Spec v4 also allows tool-result parts on assistant messages
-					// for provider-executed tools — codex never requests any, so
-					// dropping is the honest mapping.)
+					// Spec v4 also allows tool-result parts on assistant
+					// messages for provider-executed tools — codex never
+					// requests any, so dropping is the honest mapping.
 				}
 				if (content.length) input.push({ type: "message", role: "assistant", content });
 				break;
 			}
 			case "tool":
 				for (const part of msg.content) {
-					// Spec v4 unions approval responses into tool messages.
-					// Codex never requests approvals, so a response part can't
-					// legitimately arrive — skipping (not throwing) keeps a
-					// midflight SDK change from killing the turn.
+					// Codex never requests approvals, so an approval-response
+					// part can't legitimately arrive — skipping (not throwing)
+					// keeps a midflight SDK change from killing the turn.
 					if (part.type !== "tool-result") continue;
 					input.push({
 						type: "function_call_output",
@@ -167,7 +153,6 @@ function convertPrompt(prompt: LanguageModelV4Prompt): {
 
 // ---------- SSE parsing ----------
 
-// One parsed SSE frame: the joined `data:` lines of an event block.
 async function* sseEvents(
 	body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Record<string, unknown>> {
@@ -177,16 +162,16 @@ async function* sseEvents(
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		// Normalize CRLF — a proxy folding line endings must not wedge the
-		// frame scan (every event would sit buffered until the body ended).
-		// Whole-buffer replace so a \r\n split across chunks still folds.
+		// A proxy folding line endings would wedge the frame scan (every
+		// event sits buffered until the body ends). Whole-buffer replace
+		// so a \r\n split across chunks still folds.
 		buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
 		let idx: number;
 		while ((idx = buf.indexOf("\n\n")) !== -1) {
 			const frame = buf.slice(0, idx);
 			buf = buf.slice(idx + 2);
-			// A frame may carry several data: lines — join per the SSE spec.
-			// event:/id:/comment lines drop.
+			// A frame may carry several data: lines (join per the SSE
+			// spec); event:/id:/comment lines drop.
 			const data = frame
 				.split("\n")
 				.filter((l) => l.startsWith("data:"))
@@ -319,9 +304,8 @@ function mapEvent(
 		}
 		case "response.failed":
 		case "error": {
-			// Terminal: mark it, or the loop-end guard pushes a second error
-			// part ("ended before a terminal response") that masks this one —
-			// the real failure (audit #16).
+			// Mark terminal or the loop-end guard pushes a second error
+			// ("ended before a terminal response") that masks the real failure.
 			state.sawTerminal = true;
 			const resp = event.response as Record<string, unknown> | undefined;
 			push({
@@ -335,8 +319,8 @@ function mapEvent(
 	}
 }
 
-// Text payload of a completed item — message.content[] output_text or
-// reasoning.summary[] summary_text. Wire-shaped, so fish out what's there.
+// message.content[] output_text or reasoning.summary[] summary_text —
+// wire-shaped, so fish out what's there.
 function itemText(
 	item: Record<string, unknown>,
 	field: "content" | "summary",

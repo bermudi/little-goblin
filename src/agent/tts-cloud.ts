@@ -1,15 +1,10 @@
-// Cloud speech synthesis — hand-rolled HTTP like transcription
-// (transcribe-cloud.ts), no provider SDK. openrouter/logfare take
-// OpenAI's speech POST — {model, input, voice?, response_format} —
-// except logfare, whose documented speech table stops at `voice`, so
+// Hand-rolled HTTP like transcription (transcribe-cloud.ts), no
+// provider SDK. logfare's documented speech table stops at `voice`, so
 // its arm omits response_format (mp3 is the endpoint default either
-// way). Raw audio bytes out — never JSON on success; errors are the
-// usual {"error": {code, message}} envelope. The wire contract is
-// pinned verbatim in tts-cloud.test.ts against the OpenRouter TTS
-// docs (mp3 is the self-describing container — pcm needs
-// rate/channels parsed out of Content-Type to be usable); the
-// logfare and mimo arms pin the documented shape and are unverified
-// live until a key is provisioned. Resolved keys never enter logs.
+// way). mp3 is the self-describing container — pcm needs rate/channels
+// parsed out of Content-Type to be usable. The logfare and mimo arms
+// pin the documented shape, unverified live until a key is
+// provisioned. Resolved keys never enter logs.
 
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
@@ -26,9 +21,9 @@ const MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1/chat/completions";
 // guards a misbehaving gateway streaming garbage into memory.
 const RESPONSE_CAP = 32 * 1024 * 1024;
 const ERROR_BODY_CAP = 64 * 1024;
-// Same budget shape as edge (tts.ts): audio lands only at request end,
-// so the timeout must cover the whole synthesis — scaled by input
-// length, capped so a wedged request can't hold the voice lane.
+// Audio lands only at request end, so the timeout must cover the
+// whole synthesis — scaled by input length, capped so a wedged
+// request can't hold the voice lane.
 const TIMEOUT_BASE_MS = 30_000;
 const TIMEOUT_PER_CHAR_MS = 40;
 const TIMEOUT_MAX_MS = 300_000;
@@ -52,17 +47,15 @@ export function logfareSpeech(
 	auth: AuthStore,
 	deps: { fetchFn?: typeof fetch | undefined } = {},
 ): ChunkSynthesizer {
-	// Doc-pinned means matching the doc: logfare's /audio/speech table
-	// lists only model/input/voice, so response_format stays off the
-	// wire rather than betting the relay ignores unknown fields.
+	// Logfare's /audio/speech table lists only model/input/voice —
+	// response_format stays off the wire rather than betting the relay
+	// ignores unknown fields.
 	return openaiShapeSpeech("logfare", LOGFARE_SPEECH_URL, cfg, auth, deps, {
 		responseFormat: false,
 	});
 }
 
-// One wire, two gateways: {model, input, voice?, response_format} →
-// raw audio. Both answers are a byte stream; error envelopes share the
-// renderError flavors already parsed for transcription.
+// Error envelopes share the renderError flavors already parsed for transcription.
 function openaiShapeSpeech(
 	kind: string,
 	url: string,
@@ -119,11 +112,10 @@ function openaiShapeSpeech(
 // ---------- mimo (chat-completions speech) ----------
 
 // MiMo speaks through chat completions, not the /audio/speech shape:
-// the target text rides an assistant message, an optional user message
-// carries style direction (unused — read-aloud stays neutral), and the
-// synthesized audio comes back base64 in choices[0].message.audio.data.
-// Voice is a built-in id (mimo_default, Mia, …) — blank omits the field
-// for the model default. format is the caller's outputFormat (mp3).
+// the target text rides an assistant message (an optional user message
+// carries style direction — unused), and audio comes back base64 in
+// choices[0].message.audio.data. Voice is a built-in id (mimo_default,
+// Mia, …) — blank omits the field for the model default.
 const mimoChatResponse = z.object({
 	choices: z
 		.array(

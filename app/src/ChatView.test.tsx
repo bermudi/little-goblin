@@ -423,6 +423,7 @@ describe("ChatView reload window (issue #79)", () => {
 							error: null,
 							resolutionNote: null,
 							resolvedMs: null,
+							canAuthorizeRetry: false,
 						},
 					],
 				},

@@ -179,7 +179,9 @@ Consequences:
   (SOUL.md, AGENTS.md, USER.md, skills) load at conversation boundaries, not
   mid-run: the system prompt is frozen per conversation (built at the
   first turn), so a live conversation's prefix cache is never rewritten under
-  it. Boundaries are a DM roll, a compaction (which clears
+  it. Boundaries are a DM roll, a persona/memory-exclusion switch
+  (which clears the snapshot — the prompt differs across personas), a
+  compaction (which clears
   the snapshot — the history rewrite busts the prefix anyway, so the refresh
   is free), and a spin-off/new conversation. Mid-conversation edits are
   visible to the agent via the read tools immediately; injection waits for

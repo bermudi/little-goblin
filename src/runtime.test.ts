@@ -1524,6 +1524,34 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
+	test("a settings fence during the window lookup rejects a manual /compact — never a noop", async () => {
+		// Nothing to fold: before the early authority check this returned
+		// "nothing worth compacting". The fence now wins over the noop —
+		// the pass genuinely lost authority, so the operator sees the
+		// rejection, not a false all-clear.
+		const windowGate = deferred<void>();
+		const lookupStarted = deferred<void>();
+		const r = rig({
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => {
+						lookupStarted.resolve();
+						return windowGate.promise.then(() => 1000);
+					},
+					summarize: async () => "must not summarize",
+				},
+			},
+		});
+		const compacted = r.runtime.compact(r.conv);
+		await lookupStarted.promise;
+		r.store.bumpEpoch(r.conv.id); // settings change — no abort, only the epoch
+		windowGate.resolve();
+		await expect(compacted).rejects.toThrow("turn fenced");
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
+	});
+
 	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
 		// Gate the summary call so the settings change lands mid-compaction.
 		// /memory bumps the epoch without touching the abort signal — unlike

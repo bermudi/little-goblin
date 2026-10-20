@@ -444,11 +444,12 @@ export class Runtime {
 			// Metadata only — never buildStep: resolving a model and building
 			// a system prompt here would freeze a snapshot no turn asked for.
 			const contextWindow = await compaction.contextWindow(conv);
-			// The authority check precedes the abort check so a /stop (epoch
-			// bump + abort) still reports as a fence, matching the commit-time
-			// assertAuthority inside runCompaction.
+			// The authority check doubles as the abort check: compactController
+			// is only aborted by cancelFenced after the epoch commits, so a
+			// /stop during the lookup already reports as a fence. runCompaction
+			// reverses the order after each call — a provider may resolve under
+			// abort, so there the signal check must land first.
 			this.checkAuthority(conv.id, epoch);
-			controller.signal.throwIfAborted();
 			const tailTokenBudget =
 				contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
 			// Overflow recovery uses a smaller tail to stay below the provider's
@@ -457,10 +458,19 @@ export class Runtime {
 			// Keep summarizer input below half the window to leave answer headroom.
 			const inputTokenBudget =
 				contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const modelRef = compaction.modelRef(conv);
+			log.info("compaction window", {
+				conversation: conv.id,
+				model: modelRef,
+				contextWindow,
+				tailTokenBudget: tail,
+				inputTokenBudget,
+				reason,
+			});
 			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,
-				compaction.modelRef(conv),
+				modelRef,
 				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
 				{
 					tailTokenBudget: tail,

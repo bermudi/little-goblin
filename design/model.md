@@ -67,11 +67,17 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   `/compact` serializes through it and still compacts with the window
   unknown (a forced scrub). Ruling 2026-10-19: the window lookup is
   metadata, not a model step — `compaction.contextWindow` reads the
-  catalog only, so a compaction pass resolves no auth, builds no model
-  step, and can never mint or rewrite a frozen prompt snapshot;
-  `buildStep` alone builds prompts and only a landed boundary clears
-  the snapshot. The utilization warn stays as the alarm that
-  compaction didn't happen or didn't keep up.
+  catalog only, resolving no auth and building no model step, so the
+  lookup can never mint or rewrite a frozen prompt snapshot (the
+  summary call itself still resolves auth and runs the
+  conversation's model; `buildStep` alone builds prompts). The
+  snapshot clears only at a boundary that rewrites what the prompt
+  must say: a landed compaction, or a persona/memory-exclusion
+  switch. A `/compact` fenced mid-lookup — a `/stop` or
+  epoch-bumping settings change landing during the read — rejects
+  fenced rather than reporting "nothing to compact": the pass
+  genuinely lost authority. The utilization warn stays as the alarm
+  that compaction didn't happen or didn't keep up.
   A mid-turn **context-overflow error** is a recovery, not a failure
   (mechanism from pi): the partial reply is held off the wire, one
   compaction runs with a smaller tail (the overflow proved the estimate

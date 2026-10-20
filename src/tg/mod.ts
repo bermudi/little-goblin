@@ -47,6 +47,7 @@ import {
 	routeMemberGuestMessage,
 } from "./guest.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
+import { PROGRAM_CALLBACK_RE, type ProgramApproval } from "./program-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "./ratings.ts";
@@ -122,6 +123,7 @@ export interface BotDeps {
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	memory?: CommandMemoryDeps;
 	mail?: () => MailApproval;
+	programApproval?: () => ProgramApproval | undefined;
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 	resumeOps?: () => ResumeOps | undefined;
 }
@@ -1127,6 +1129,45 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			return;
 		}
 		void approval.handleTap(ctx.callbackQuery);
+	});
+
+	bot.callbackQuery(PROGRAM_CALLBACK_RE, (ctx) => {
+		const q = ctx.callbackQuery;
+		// Same demotion guard as mail/skills: the live operators list,
+		// not the list that admitted the chat.
+		if (!deps.configRef.current.operators.includes(q.from.id)) {
+			log.warn("program approval tap refused — not operator", { userId: q.from.id });
+			void withTimeout(
+				bot.api.answerCallbackQuery(q.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
+		const approval = deps.programApproval?.();
+		if (!approval) {
+			void withTimeout(
+				bot.api.answerCallbackQuery(q.id, { text: "program approvals are not configured" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
+		void approval.handleTap({
+			id: q.id,
+			data: q.data,
+			from: { id: q.from.id },
+			...(q.message !== undefined
+				? {
+						message: {
+							message_id: q.message.message_id,
+							chat: { id: q.message.chat.id },
+						},
+					}
+				: {}),
+		});
 	});
 
 	bot.catch((err) => {

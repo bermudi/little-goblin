@@ -548,6 +548,7 @@ function expectedTables(config: Config | undefined): string[] {
 		"memory_suppressions",
 		"memory_destinations",
 		"programs",
+		"program_proposals",
 		"mail_outbox",
 		"sandboxes",
 		"tg_pings",

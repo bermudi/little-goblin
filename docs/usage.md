@@ -144,26 +144,42 @@ URL — see [Security](security.md#the-app-channels-auth).
 ## Programs
 
 Ask in the chat where you want the replies: "every weekday at 8:30,
-brief me on the news" creates a program pinned to that chat (or topic).
-A program is standing authority for one concern — a charter plus a
-schedule. The bot writes crons it can restate; anything vaguer it will
-confirm with you first. Replies arrive as ordinary messages in the same
-place. Programs survive restarts; missed occurrences coalesce into at
-most one fire, judged by the latest missed occurrence. By default
-there is no lateness limit; set a program's `maxLatenessMinutes` when
-a stale reminder should be skipped. If the latest missed occurrence
-exceeds that limit, the scheduler advances past the overdue
-occurrences and records one skip warning; skips do not update
-`last_run`. Tell the bot "list my programs" / "delete the news brief"
-to manage them.
+brief me on the news" stages a program proposal pinned to that chat
+(or topic). A program is standing authority for one concern — a
+charter plus a schedule — so creating one never happens on the bot's
+own say-so: you get an approval card showing the complete candidate
+(charter, triggers, lateness) and the program activates only when you
+tap **Approve**. The same card appears for changes that widen
+authority — a rewritten charter, a new trigger kind (a schedule on a
+program that had none, a new or changed mail filter, a hook where
+none existed). Everyday adjustments — moving the time, renaming,
+toggling, deleting, removing a trigger, rotating a hook — apply
+directly. If a program changed since its proposal was staged the tap
+refuses and explains; a newer proposal supersedes an older pending
+one for the same program. Replies arrive as ordinary messages in the
+same place. Programs survive restarts; missed occurrences coalesce
+into at most one fire, judged by the latest missed occurrence. By
+default there is no lateness limit; set a program's
+`maxLatenessMinutes` when a stale reminder should be skipped. If the
+latest missed occurrence exceeds that limit, the scheduler advances
+past the overdue occurrences and records one skip warning; skips do
+not update `last_run`. Tell the bot "list my programs" / "delete the
+news brief" to manage them — the list shows pending proposals beside
+active programs.
 
 ### Webhooks
 
 A program can also wake on demand: ask for a hook ("give the build
-watcher a webhook") and the bot sends you a secret URL — anyone who
-POSTs to it fires the program with the request body as the event. The
-URL reaches the outside through the same door as the mini app: with
-`tailscale serve` it's tailnet-only; `funnel` (or any public proxy)
-makes it reachable by GitHub, CI, etc. POSTs over 32 KiB are refused
-and a program fires at most once per minute. Ask the bot to rotate the
-URL if it leaks, or to disable the hook entirely.
+watcher a webhook") and, once you approve the proposal, the bot DMs
+you a secret URL — anyone who POSTs to it fires the program with the
+request body as the event. The credential doesn't exist before your
+tap, and it travels only in private messages — never in the group,
+never to the model. Approving a hook request while `publicUrl` is
+unset refuses with the reason; set it in the mini app and tap again.
+If the DM itself fails after approval, the program is still active —
+ask the bot to rotate the hook to resend the URL. The URL reaches the
+outside through the same door as the mini app: with `tailscale serve`
+it's tailnet-only; `funnel` (or any public proxy) makes it reachable
+by GitHub, CI, etc. POSTs over 32 KiB are refused and a program fires
+at most once per minute. Ask the bot to rotate the URL if it leaks, or
+to disable the hook entirely.

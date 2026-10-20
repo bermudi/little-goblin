@@ -652,7 +652,14 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		const report = await runHealth({ ...f.options, phase: "installed" });
 		const subsystems = finding(report, "sqlite.subsystems");
 		expect(subsystems.status).toBe("warn");
-		for (const table of ["programs", "mail_outbox", "sandboxes", "tg_inbox", "guest_dedup"])
+		for (const table of [
+			"programs",
+			"program_proposals",
+			"mail_outbox",
+			"sandboxes",
+			"tg_inbox",
+			"guest_dedup",
+		])
 			expect(subsystems.detail).toContain(table);
 		// Wording is revision-scoped expectation drift, never a
 		// corruption or store-loss claim without evidence.

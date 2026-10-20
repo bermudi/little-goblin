@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hookTokenHash } from "../agent/tools/program.ts";
+import { hookTokenHash } from "../program-hook.ts";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";

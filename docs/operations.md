@@ -322,6 +322,50 @@ installed file in `~/.config/containers/systemd/`, then
 `systemctl --user restart goblin-memory-api` — the `podman rm` is what
 recreates the container under the new spec.
 
+## Program proposals
+
+Programs are standing authority, so goblin never activates one on its own
+say-so. Grant-shaped tool calls — `create`, any charter text change, a new
+trigger kind (a cron where none existed, a new or changed mail filter, a
+hook where none existed) — write a durable `program_proposals` row and post
+an approval card to the requesting chat. The card carries the *complete*
+candidate — for a create, the whole draft; for an update, the resulting
+configuration merged onto the live row — chunked but never truncated, with
+the buttons on the last chunk: **you approve exactly what you saw**. Direct
+edits stay direct: rescheduling an existing cron, renaming, lateness,
+toggling, deleting, removing a trigger (the last one still refuses),
+rotating an existing hook.
+
+Tapping **Approve** is one SQLite transaction: the proposal re-validates
+against the live program's immutable base fingerprint (id, address,
+charter, triggers, enabled — *not* run or mail-cursor accounting, so a
+landed fire never stales a proposal), activates through the store's own
+create/update, and stamps the decision. A tap on a stale, superseded,
+deleted-target or already-decided proposal refuses with the reason and
+changes nothing; a repeated tap can never activate twice. **Reject** stamps
+the proposal dead — proposal history is append-only and never deleted.
+
+Failure modes are deliberately loud, never silently retried:
+
+- **The card couldn't post** (Telegram down): the proposal stays pending
+  and the bot reports it — ask goblin to *review* the proposal (or say
+  "re-send the approval") and the same proposal id re-posts.
+- **`publicUrl` unset on a hook request**: the approve tap refuses and the
+  proposal stays pending — set `publicUrl` in the mini app, tap again.
+- **Hook URL DM fails after approval**: the grant already landed — the card
+  says so; ask goblin to rotate the hook to resend the URL.
+- **The program changed mid-review**: the tap refuses "changed since this
+  proposal" — reject it and ask again so the new card shows the real base.
+- **A newer proposal exists**: the older pending proposal for the same
+  program reads superseded; only the newest can activate.
+
+Programs that predate proposals are grandfathered: they activate nothing,
+ask nothing, and need no reauthorization — a health check counts
+`program_proposals` among expected boot tables, and the table appearing is
+the only upgrade artifact. Inspect pending state straight in SQLite:
+`sqlite3 ~/goblin/state/goblin.sqlite "select id, kind, state, created_at
+from program_proposals where state = 'pending'"`.
+
 ## Logs
 
 Keep raw logs private. Prefer safe Doctor findings when sharing diagnostics;

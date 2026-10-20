@@ -250,8 +250,12 @@ describe("programs store", () => {
 				address: ADDRESS,
 			}),
 		).toThrow("requires a cron trigger");
-		expect(() => s.update(p.id, { cron: null })).toThrow("requires a cron trigger");
-		expect(s.get(p.id)!.cron).toBe("30 8 * * *");
+		// Removing the cron leaves a stored lateness inert — trigger
+		// removal isn't refused over a field that no longer applies;
+		// the requires-cron rule binds writes that SET lateness only.
+		expect(s.update(p.id, { cron: null })!.cron).toBeNull();
+		expect(s.get(p.id)!.maxLatenessMinutes).toBe(15);
+		expect(() => s.update(p.id, { maxLatenessMinutes: 30 })).toThrow("requires a cron trigger");
 		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("positive");
 		expect(() => s.update(p.id, { maxLatenessMinutes: 0 })).toThrow("positive");
 		expect(() => s.update(p.id, { maxLatenessMinutes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(

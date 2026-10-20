@@ -162,4 +162,48 @@ describe("approval callbacks", () => {
 			{ callback_query_id: "cb-1", text: "mail is not configured" },
 		]);
 	});
+
+	test("an allowed user's program tap is acked 'operator only' — the store is never read", async () => {
+		const fake = await withRealBot(async (running) => {
+			await running.bot.handleUpdate(callbackUpdate(2, "program:approve:1"));
+		});
+		await settle();
+		expect(fake.callbackAnswers).toEqual([{ callback_query_id: "cb-2", text: "operator only" }]);
+	});
+
+	test("an operator's program tap reaches the approval lookup, not the refusal", async () => {
+		const fake = await withRealBot(async (running) => {
+			await running.bot.handleUpdate(callbackUpdate(1, "program:approve:1"));
+		});
+		await settle();
+		expect(fake.callbackAnswers).toEqual([
+			{ callback_query_id: "cb-1", text: "program approvals are not configured" },
+		]);
+	});
+
+	test("a demoted operator's program tap decides nothing — the gate reads live config", async () => {
+		const fake = startFakeTelegram();
+		cleanups.push(fake.stop);
+		const configRef: ConfigRef = { current: testConfig(fake.apiRoot), ttsDown: false };
+		let taps = 0;
+		const running = await createBot({
+			...testDeps(configRef),
+			programApproval: () => ({
+				requestApproval: async () => {},
+				handleTap: async () => {
+					taps++;
+				},
+			}),
+		});
+		await running.bot.handleUpdate(callbackUpdate(1, "program:approve:1"));
+		await settle();
+		expect(taps).toBe(1);
+		configRef.current = { ...configRef.current, operators: [] };
+		await running.bot.handleUpdate(callbackUpdate(1, "program:reject:1"));
+		await settle();
+		expect(taps).toBe(1);
+		// The only wire answer is the demoted tap's refusal — the
+		// fake's handleTap never answers its own query.
+		expect(fake.callbackAnswers).toEqual([{ callback_query_id: "cb-1", text: "operator only" }]);
+	});
 });

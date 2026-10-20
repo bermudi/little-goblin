@@ -18,6 +18,7 @@ import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
 import type { Subagents } from "../subagents/mod.ts";
 import type { MailApproval } from "../tg/mail-approval.ts";
+import type { ProgramApproval } from "../tg/program-approval.ts";
 import { synthesizeSpeech } from "./tts.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";
 import {
@@ -56,6 +57,11 @@ export interface TurnToolsDeps {
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
 	mail(): Pick<MailApproval, "requestDraft">;
+	// Same late binding as mail — the adapter starts after the bot, so
+	// the getter may be absent for a turn that somehow runs first; the
+	// request closure then throws and the tool reports the pending
+	// proposal rather than losing it.
+	programApproval(): Pick<ProgramApproval, "requestApproval"> | undefined;
 	visionDepsFor(conv: Conversation): VisionToolDeps | undefined;
 	sandboxes: Sandboxes;
 	// Late-bound: the subagent owner awaits past Runtime's construction,
@@ -131,6 +137,11 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						threadId: conv.threadId,
 						publicUrl: () => configRef.current.publicUrl,
 						sendPrivate,
+						requestApproval: async (proposal) => {
+							const gate = deps.programApproval();
+							if (gate === undefined) throw new Error("program approvals are not wired yet");
+							await gate.requestApproval(proposal);
+						},
 					}
 				: undefined,
 			file: deliverFile ? { deliver: deliverFile } : undefined,

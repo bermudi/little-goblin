@@ -27,7 +27,32 @@ Rulings:
   program needs the operator's explicit ask — the agent may *propose*
   one ("want me to own this?"), never grant itself standing authority.
   What a firing turn does is bounded by its charter and the same
-  ask-first rule as any operator message.
+  ask-first rule as any operator message. **The ask is now a durable
+  approval, not a conversational one** (2026-10-20): a grant-shaped
+  change — `create`, any nonidentical charter text, a new trigger kind
+  (a cron where none existed, a hook on a program that lacks one), a
+  new or changed non-null mail filter — is staged as a
+  `program_proposals` row, and only the operator's Telegram tap
+  activates it. Deliberate conservative tightening of the earlier
+  "reword within intent" rule: the model never classifies whether its
+  own authority is widening — identical text is the only free charter
+  write. What stays direct inside granted authority: rescheduling an
+  existing cron, name and lateness edits, toggling, deleting,
+  removing a trigger (the last one still refuses), rotating an
+  existing hook. Any approval-required component stages the *entire*
+  requested patch — no partial application. Approval binds an
+  immutable base fingerprint (id, pinned address, charter, triggers,
+  enabled — run/checkpoint/cursor accounting deliberately excluded),
+  so a landed fire or mail checkpoint never stales a proposal, but any
+  real configuration change does; a newer pending update for the same
+  target supersedes older ones, and the decision — activation through
+  the store's own create/update plus the stamp — is one immediate
+  SQLite transaction, so a repeated tap or a crash can never grant
+  twice. A hook the proposal requests is minted only at approval and
+  travels only to operator DMs — no credential exists to leak before
+  the grant, and without `publicUrl` the tap refuses pending. Existing
+  programs were never proposals: grandfathered rows activate nothing,
+  ask nothing, migrate nothing.
 - **Firing is one path for every trigger.** Cron tick, webhook hit, or
   anything later: the charter is submitted as an ordinary user message
   into the program's pinned conversation — one shared core, per-trigger
@@ -78,9 +103,10 @@ Rulings:
 - **Management is the `program` tool** — zod-validated, one tool, not a
   CLI: state mutation belongs behind validation and logging. Firing
   turns may use it too (a program retiring itself when its charter says
-  it's done is fine). Edits within an existing charter's intent (reword,
-  reschedule, toggle) need no go-ahead; new programs and widened
-  authority do.
+  it's done is fine). The direct/staged split above governs every
+  action: `list` also surfaces pending proposals, and `review` re-posts
+  a pending proposal's approval after a delivery failure — there is no
+  model-side approve.
 - **The scheduler is an in-process ticker** — systemd covers crashes;
   one owner per store, stop terminal, a restarted owner gets a fresh
   retry generation (late completions from a dead one cannot arm retries

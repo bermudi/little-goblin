@@ -63,6 +63,7 @@ import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
+import { type ProgramApproval, startProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
@@ -275,6 +276,17 @@ async function boot() {
 	// The mount policy (which slots exist per channel/config/boot pin)
 	// lives in turn-tools.ts; boot binds the seams and the late-bound
 	// getters (subagents/mail/desktop bind past Runtime construction).
+	// The one operator-DM lane — the program tool's hook rotation and the
+	// proposal approval's grant-time hook delivery share it (a secret URL
+	// never enters history). Reads tg.bot.api at call time.
+	const sendPrivate = makePrivateSender(
+		(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
+		() => configRef.current.operators,
+	);
+	// Late-bound like mailApproval: the adapter starts after the bot, so
+	// the getter answers undefined to anything earlier rather than a
+	// half-wired gate.
+	let programApproval: ProgramApproval | undefined;
 	const makeTurnTools = makeTurnToolsFactory({
 		configRef,
 		auth,
@@ -284,10 +296,7 @@ async function boot() {
 		programs,
 		// The one send composed outside tg/ — same deadline as every tg/
 		// sender, or a wedged API stalls the program turn's tool call.
-		sendPrivate: makePrivateSender(
-			(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
-			() => configRef.current.operators,
-		),
+		sendPrivate,
 		memory:
 			memoryClient && memoryBootConfig
 				? { client: memoryClient, config: memoryBootConfig, noteRecall }
@@ -296,6 +305,7 @@ async function boot() {
 		delegateDeps,
 		operatorHerdr,
 		mail: () => mailApproval,
+		programApproval: () => programApproval,
 		visionDepsFor,
 		sandboxes,
 		subagents: () => subagents,
@@ -359,6 +369,7 @@ async function boot() {
 		transcribe: transcribeFile,
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
 		mail: () => mailApproval,
+		programApproval: () => programApproval,
 		followUpGate: () => system1Gate ?? undefined,
 		resumeOps: () => resumeOps,
 	});
@@ -370,6 +381,16 @@ async function boot() {
 		outbox,
 		sender: mailSender,
 		reader: mailPoller,
+	});
+
+	// The program approval gate — proposals activate only through the
+	// operator's tap. It mints approved hook credentials and DMs them
+	// privately; always started so pending proposals stay decidable.
+	programApproval = startProgramApproval({
+		api: tg.bot.api,
+		programs,
+		publicUrl: () => configRef.current.publicUrl || undefined,
+		sendPrivate,
 	});
 
 	// The retention worker runs after the bot — outage and blocked

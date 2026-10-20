@@ -13,6 +13,13 @@ import { Database } from "bun:sqlite";
 import { CronExpression, CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 import { log } from "./log.ts";
+import {
+	openProgramProposals,
+	type ProgramDraft,
+	type ProgramPatchRequest,
+	type ProgramProposals,
+	type ProposalCore,
+} from "./program-proposals.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
 export interface Program {
@@ -120,6 +127,10 @@ export interface ProgramsStore {
 	 *  replies land in the main chat. Group topics and already-bare
 	 *  pins are untouched. Idempotent, logged per program. */
 	rePinDmTopics(): number;
+	/** Staged standing authority — proposals are never active rows;
+	 *  only an operator decision activates them through this store's
+	 *  own create/update. Same connection, same WAL file. */
+	proposals: ProgramProposals;
 	close(): void;
 }
 
@@ -427,7 +438,11 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		const hookHash = patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
 		const mailFilter = patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
 		requireTrigger(cron, hookHash, mailFilter);
-		validateLateness(cron, maxLatenessMinutes);
+		// A stored lateness is inert once the cron is gone — removing a
+		// trigger must not trip on it. The requires-cron rule binds a
+		// write that SETS the field; the merged value is checked whenever
+		// the patch touches lateness at all.
+		validateLateness(cron, patch.maxLatenessMinutes !== undefined ? maxLatenessMinutes : null);
 		const enabled = patch.enabled ?? before.enabled;
 		// Recompute from `now` whenever anything recurrence-shaped moved —
 		// a new cron, or a re-enable: occurrences skipped while disabled
@@ -473,7 +488,14 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		return rowToProgram(qGet.get(id));
 	});
 
-	return {
+	// The one create path — fixtures, the proposal store's activation,
+	// and any trusted caller all land here so the same validation
+	// holds; the model-facing tool no longer reaches it directly.
+	const core: ProposalCore = {
+		get(id) {
+			const row = qGet.get(id);
+			return row === null ? null : rowToProgram(row);
+		},
 		create(
 			{
 				name,
@@ -503,16 +525,36 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			);
 			return rowToProgram(qGet.get(Number(res.lastInsertRowid)));
 		},
-		update(id, patch, now = new Date()) {
-			return update.immediate(id, patch, now);
+		update(id, patch, now) {
+			return update.immediate(id, patch, now ?? new Date());
 		},
+	};
+	const proposals = openProgramProposals(db, {
+		core,
+		validateCreate(draft: ProgramDraft) {
+			requireTrigger(draft.cron, draft.hook ? "proposed" : null, draft.mailFilter);
+			validateLateness(draft.cron, draft.maxLatenessMinutes);
+			if (draft.cron !== null) nextFire(draft.cron, new Date());
+		},
+		validateUpdate(current: Program, patch: ProgramPatchRequest) {
+			const cron = patch.cron !== undefined ? patch.cron : current.cron;
+			const hook = patch.hook === true || current.hookHash !== null;
+			const mailFilter = patch.mailFilter !== undefined ? patch.mailFilter : current.mailFilter;
+			requireTrigger(cron, hook ? "proposed" : null, mailFilter);
+			// Same inert-lateness rule as update(): only a patch that sets
+			// the field must still have a cron.
+			if (patch.maxLatenessMinutes !== undefined) validateLateness(cron, patch.maxLatenessMinutes);
+			if (typeof patch.cron === "string") nextFire(patch.cron, new Date());
+		},
+	});
+
+	return {
+		create: core.create,
+		update: core.update,
 		remove(id) {
 			return qDelete.run(id).changes > 0;
 		},
-		get(id) {
-			const row = qGet.get(id);
-			return row === null ? null : rowToProgram(row);
-		},
+		get: core.get,
 		list() {
 			return qList.all().map(rowToProgram);
 		},
@@ -592,6 +634,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			}
 			return rows.length;
 		},
+		proposals,
 		close() {
 			db.close();
 		},

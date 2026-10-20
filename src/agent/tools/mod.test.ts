@@ -93,6 +93,7 @@ describe("toolNames ↔ makeTools", () => {
 													threadId: null,
 													publicUrl: () => "https://g.ts.net",
 													sendPrivate: async () => {},
+													requestApproval: async () => {},
 												}
 											: undefined,
 										file: file ? { deliver: async () => {} } : undefined,
@@ -150,6 +151,7 @@ describe("toolNames ↔ makeTools", () => {
 				threadId: null,
 				publicUrl: () => "https://g.ts.net",
 				sendPrivate: async () => {},
+				requestApproval: async () => {},
 			},
 			file: { deliver: async () => {} },
 			memory: {

@@ -118,6 +118,26 @@ The size-cap decision generalizes:
   verbatim — a broken note still transcribes and plays, and upload never
   fails over normalization.
 
+## TTS (text → speech)
+
+Server side, `tts.ts` is hand-rolled like ASR: sentence chunks (10k chars),
+one synth + ffmpeg ogg remux per chunk — each chunk is a complete standalone
+ogg file on the wire (`/api/app/tts`, base64).
+
+**The app player never chains the ogg parts into one blob (ruling
+2026-10-19).** Chained ogg has no usable timeline in any engine — Chromium
+stops dead at the first segment's end and Firefox reports
+`duration=Infinity` with a seek that never completes (both verified
+headless). Each part keeps its own `Audio` element; metadata for every part
+preloads before playback and a cumulative duration map translates global
+position ⇄ (element, offset), which is what makes the player's seek bar and
+±10s steps cross part boundaries. Speed rides `playbackRate` +
+`preservesPitch`. An element `error` with sound behind it advances like
+`ended` — engines fire `error` instead of `ended` on mildly malformed
+stream tails, and audio the operator already heard is not a failed read
+(the old per-chunk sequencer printed "playback failed" over a working
+playback, 2026-10-19); an error before any sound names its MediaError code.
+
 ## Non-goals
 
 - **Chains stay shallow.** Search/fetch chains exist because lookups

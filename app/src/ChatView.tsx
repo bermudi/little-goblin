@@ -30,12 +30,12 @@ import {
 	patchConfig,
 	patchConversationConfig,
 	stopConversation,
-	synthesize,
 	uploadAttachment,
 } from "./api.ts";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
+import { SpeechPlayer, useSpeech } from "./speech.tsx";
 import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
@@ -438,77 +438,6 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
-// Read-aloud: fetch the speech chunks once, then toggle play/stop.
-// Ogg/opus arrives base64'd — the Audio element owns the sequence.
-function useSpeech(token: string | null) {
-	const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
-	// The API's error string (e.g. "speech is unavailable") shows next
-	// to the button until the next attempt — a silent failure reads as
-	// a dead button.
-	const [err, setErr] = useState<string | null>(null);
-	const audio = useRef<HTMLAudioElement | null>(null);
-	const cancelled = useRef(false);
-	// pause() settles no event — without this a stopped chunk's promise
-	// hangs forever, leaking the loop's frame and that chunk's object
-	// URL. stop resolves it as "played"; the cancelled flag ends the
-	// loop before the failure branch can run.
-	const releaseChunk = useRef<(() => void) | null>(null);
-	const cancel = useCallback(() => {
-		cancelled.current = true;
-		releaseChunk.current?.();
-		releaseChunk.current = null;
-		audio.current?.pause();
-		audio.current = null;
-	}, []);
-	useEffect(() => cancel, [cancel]);
-	const stop = useCallback(() => {
-		cancel();
-		setState("idle");
-	}, [cancel]);
-	const play = useCallback(
-		async (text: string) => {
-			if (state === "playing" || state === "loading") {
-				stop();
-				return;
-			}
-			setState("loading");
-			setErr(null);
-			cancelled.current = false;
-			try {
-				const r = await synthesize(token, text);
-				if (cancelled.current) return;
-				setState("playing");
-				let played = true;
-				for (const b64 of r.chunks) {
-					if (cancelled.current) break;
-					const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-					const url = URL.createObjectURL(
-						new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }),
-					);
-					played = await new Promise<boolean>((resolve) => {
-						const a = new Audio(url);
-						audio.current = a;
-						releaseChunk.current = () => resolve(true);
-						a.onended = () => resolve(true);
-						// Decode/playback failures are per-browser, not
-						// per-chunk — one failure means the rest will too.
-						a.onerror = () => resolve(false);
-						void a.play().catch(() => resolve(false));
-					});
-					URL.revokeObjectURL(url);
-					if (!played) break;
-				}
-				if (!played) setErr("playback failed — this browser may not support ogg audio");
-			} catch (e) {
-				setErr(e instanceof Error ? e.message : "speech failed");
-			}
-			if (!cancelled.current) setState("idle");
-		},
-		[token, state, stop],
-	);
-	return { speech: state, play, err };
-}
-
 function ActionBar({
 	message,
 	isLastAssistant,
@@ -524,34 +453,50 @@ function ActionBar({
 }) {
 	const text = messageText(message);
 	const { copied, failed, copy } = useCopy();
-	const { speech, play, err: speechErr } = useSpeech(token);
+	const speech = useSpeech(token);
+	const open = speech.phase !== "closed";
 	return (
-		<div className="msg-actions">
-			<button
-				type="button"
-				onClick={() => copy(text)}
-				aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
-				aria-live="polite"
-			>
-				{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
-			</button>
-			{text !== "" && (
+		<>
+			<div className="msg-actions">
 				<button
 					type="button"
-					onClick={() => void play(text)}
-					aria-label="Read aloud"
-					disabled={speech === "loading"}
+					onClick={() => copy(text)}
+					aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
+					aria-live="polite"
 				>
-					{speech === "playing" ? "■ stop" : speech === "loading" ? "…" : "▶ read"}
+					{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
 				</button>
+				{text !== "" && (
+					<button
+						type="button"
+						onClick={() => (open ? speech.stop() : void speech.start(text))}
+						aria-label="Read aloud"
+						disabled={speech.phase === "loading"}
+					>
+						{open ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
+					</button>
+				)}
+				{speech.err !== null && <span className="msg-err">{speech.err}</span>}
+				{isLastAssistant && !busy && (
+					<button type="button" onClick={onRetry} aria-label="Retry">
+						↻ retry
+					</button>
+				)}
+			</div>
+			{speech.phase === "open" && (
+				<SpeechPlayer
+					playing={speech.playing}
+					rate={speech.rate}
+					position={speech.position}
+					duration={speech.duration}
+					onToggle={speech.toggle}
+					onSeekBy={speech.seekBy}
+					onSeekTo={speech.seekTo}
+					onRate={speech.cycleRate}
+					onStop={speech.stop}
+				/>
 			)}
-			{speechErr !== null && <span className="msg-err">{speechErr}</span>}
-			{isLastAssistant && !busy && (
-				<button type="button" onClick={onRetry} aria-label="Retry">
-					↻ retry
-				</button>
-			)}
-		</div>
+		</>
 	);
 }
 

@@ -841,6 +841,38 @@ h6.md-h {
 	color: var(--app-fg-subtle);
 }
 
+/* Read-aloud player — a sibling row below .msg-actions (that row hides
+   until hover; a player you drive must not). Shares the actions row's
+   quiet button treatment. */
+.speech-player {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-top: 0.25rem;
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.speech-player button {
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+	padding: 0.1rem 0.25rem;
+	border-radius: 4px;
+}
+.speech-player button:hover {
+	color: var(--app-fg);
+	background: var(--app-hover);
+}
+.speech-player .speech-bar {
+	flex: 1;
+	min-width: 80px;
+	accent-color: var(--app-fg-subtle);
+	height: 1rem;
+}
+.speech-player .speech-time {
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
 /* Select-to-quote pill — floats at the selection's rect while it's
    live; the only element allowed a fixed overlay position (under the
    scrim's z-9 so a drawer still covers it). */

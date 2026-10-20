@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { AppInterruptedList, AppInterruptedRun, AppRunCall } from "../../src/http/app-wire.ts";
+import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 
 function mountDom() {
@@ -58,7 +59,7 @@ const call = (
 	extra: Partial<AppRunCall> = {},
 ): AppRunCall => ({
 	toolCallId: id,
-	canAuthorizeRetry: state !== "planned" && state !== "resolved-retry" && state !== "resolved-skip",
+	canAuthorizeRetry: canAuthorizeRetry({ state, replayed: false }),
 	name: "probe",
 	args: { q: 1 },
 	state,

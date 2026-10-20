@@ -124,6 +124,16 @@ Server side, `tts.ts` is hand-rolled like ASR: sentence chunks (10k chars),
 one synth + ffmpeg ogg remux per chunk — each chunk is a complete standalone
 ogg file on the wire (`/api/app/tts`, base64).
 
+**Every door strips reply markdown to spoken text before its speaker
+(ruling 2026-10-19).** The tg doors did this from the start (`speakable`,
+`speechContent`); the app `/api/app/tts` route now strips too — the client
+sends raw reply markdown, and the voice was reading "asterisk asterisk"
+through bold text. `stripMarkdown` also speaks shapes, not symbols: table
+rows become comma lists (separator rows vanish), horizontal rules drop,
+common HTML entities decode, and snake_case splits at its underscores. A
+reply that strips to nothing (a pure code block) answers 422 "nothing
+speakable in this reply", not silence.
+
 **The app player never chains the ogg parts into one blob (ruling
 2026-10-19).** Chained ogg has no usable timeline in any engine — Chromium
 stops dead at the first segment's end and Firefox reports

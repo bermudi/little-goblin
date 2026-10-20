@@ -143,6 +143,43 @@ describe("app chat", () => {
 		}
 	});
 
+	test("tts speaks the stripped spoken content, refusing what has none", async () => {
+		const heard: string[] = [];
+		const spoken = new Uint8Array([1]);
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			speak: async (text) => {
+				heard.push(text);
+				return [spoken];
+			},
+		});
+		try {
+			const res = await call("/api/app/tts", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					text: "## Errand\n\n**buy** milk — see [docs](https://example.com/x)\n\n```js\ncode()\n```",
+				}),
+			});
+			expect(res.status).toBe(200);
+			// The client sends raw reply markdown; the voice never hears
+			// the furniture ("the voice keeps reading asterisk asterisk").
+			expect(heard).toEqual(["Errand\n\nbuy milk — see docs"]);
+			const mute = await call("/api/app/tts", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ text: "```\ncode()\n```" }),
+			});
+			expect(mute.status).toBe(422);
+			expect(((await mute.json()) as { error: string }).error).toBe(
+				"nothing speakable in this reply",
+			);
+			expect(heard).toHaveLength(1);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("tts serves base64 chunks when speech is wired, 503s otherwise", async () => {
 		const { http: h1, call: c1 } = setup({ token: APP_TOKEN_NAME });
 		try {

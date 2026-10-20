@@ -7,6 +7,7 @@ import {
 	isStoredAttachmentPath,
 } from "../agent/attachments.ts";
 import { appIdOf } from "../conversation.ts";
+import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
@@ -103,14 +104,26 @@ export async function handleChatRoute(
 			);
 		}
 		try {
-			const chunks = await deps.speak(parsed.data.text);
+			// The client sends raw reply markdown; the voice speaks the
+			// spoken content only — same strip the tg doors run before
+			// their speaker (2026-10-19: "the voice keeps reading
+			// asterisk asterisk"). A reply that strips to nothing (pure
+			// code block) is a refusal, not silence with a 500.
+			const { spoken } = speechContent(parsed.data.text);
+			if (spoken === "") {
+				return Response.json(
+					{ error: "nothing speakable in this reply" },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			const chunks = await deps.speak(spoken);
 			if (chunks === null) {
 				return Response.json(
 					{ error: "speech is unavailable" },
 					{ status: 503, headers: NO_STORE },
 				);
 			}
-			log.info("app tts served", { chars: parsed.data.text.length, chunks: chunks.length });
+			log.info("app tts served", { chars: spoken.length, chunks: chunks.length });
 			const body: AppTtsResponse = {
 				chunks: chunks.map((c) => Buffer.from(c).toString("base64")),
 				mediaType: "audio/ogg",

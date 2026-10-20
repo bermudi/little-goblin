@@ -71,6 +71,20 @@ describe("tts", () => {
 		).toBe("Hello there\n\nRead the guide.");
 	});
 
+	test("symbols that would read aloud become speech-shaped text", () => {
+		// The voice says "asterisk", "bar", "minus" — markdown furniture
+		// must leave the text, not just hide from the renderer.
+		expect(
+			speakable(
+				"## Rules\n\n---\n\n| name | value |\n| --- | :-: |\n| alpha | 1 |\n| beta | 2 |\n\nsnake_case_name and `_ital_`",
+			),
+		).toBe("Rules\n\nname, value\n\nalpha, 1\nbeta, 2\n\nsnake case name and ital");
+		expect(speakable("Tom &amp; Jerry &quot;quoted&quot;")).toBe(`Tom & Jerry "quoted"`);
+		// Idempotent — tg callers pre-strip, the speaker boundary strips again.
+		const once = speakable("| a | b |\n| --- | --- |\n| c | d |");
+		expect(speakable(once)).toBe(once);
+	});
+
 	test("voice mode keeps code blocks and long urls as supplemental text", () => {
 		const url = `https://example.com/${"a".repeat(80)}`;
 		const content = speechContent(`Start.\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${url}\n\nDone.`);

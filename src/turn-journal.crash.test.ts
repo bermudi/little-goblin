@@ -174,7 +174,7 @@ describe("turn journal — a real killed process", () => {
 		}
 	}, 60_000);
 
-	test("a killed overflow continuation carries the failed attempt's calls — resume replays, never re-executes", async () => {
+	test("a killed overflow continuation carries the failed attempt's calls — resume conflicts, never re-executes", async () => {
 		const { child, dbPath, marker } = spawn("overflow-stall", "overflow");
 		// Wait for both: the overflowed attempt stamps error/undelivered
 		// and the continuation opens its own row before stalling.
@@ -233,7 +233,7 @@ describe("turn journal — a real killed process", () => {
 			expect(await sink.done).toEqual({ kind: "completed" });
 			await waitUntil(() => !runtime.busy(conv.id), "resumed lane drains");
 			await runtime.shutdown();
-			expect(executed).toEqual([]); // replayed, never re-executed
+			expect(executed).toEqual([]); // fenced as a conflict, never re-executed
 			const successor = store.db
 				.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 				.get(continuation.runId)!.run_id;
@@ -241,6 +241,8 @@ describe("turn journal — a real killed process", () => {
 			const reask = successorCalls.find((c) => c.toolCallId === "call-reask")!;
 			expect(reask.state).toBe("completed");
 			expect(reask.replayed).toBe(true);
+			expect(reask.result).toContain("[turn-journal conflict]");
+			expect(reask.result).toContain("call-1");
 			expect(journal.get(continuation.runId)!.status).toBe("resumed");
 		} finally {
 			store.close();

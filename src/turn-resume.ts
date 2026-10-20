@@ -12,6 +12,7 @@ import {
 	userMessage,
 } from "./runtime.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
 import type { WakeDeps } from "./wake.ts";
 import {
@@ -113,7 +114,14 @@ function refused(code: ResumeRefusalCode, reason: string) {
 }
 
 export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
-	return calls.filter((c) => c.state === "dispatched" || c.state.startsWith("resolved-"));
+	// A resolved-retry granted on a formerly-KNOWN row stays unnumbered —
+	// the row held no ordinal before its grant, so counting it now would
+	// shift every ambiguous call's number. Grants on ambiguous rows and
+	// recorded outcomes keep theirs.
+	return calls.filter(
+		(c) =>
+			(c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
+	);
 }
 
 const convSnapshotSchema = z.object({
@@ -175,8 +183,39 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 				input: c.args,
 				output: recordedOutput(c),
 			} as UIMessage["parts"][number]);
+		} else if (c.state === "failed") {
+			// A recorded failure is historical evidence too — the model sees
+			// what the interrupted attempt already learned.
+			parts.push({
+				type: `tool-${c.name}`,
+				toolCallId: c.toolCallId,
+				state: "output-error",
+				input: c.args,
+				errorText: c.error ?? "failed",
+			} as UIMessage["parts"][number]);
 		} else if (c.state === "resolved-retry" || c.state === "resolved-skip") {
-			const note = c.state === "resolved-retry" ? RESOLVED_RETRY_NOTE : RESOLVED_SKIP_NOTE;
+			let note: string;
+			if (c.state === "resolved-skip") {
+				note = RESOLVED_SKIP_NOTE;
+			} else {
+				// A spent grant is evidence of what was authorized and
+				// consumed — never fresh permission. Only an unconsumed
+				// grant authorizes exactly one more execution.
+				const grant = c.retryConsumed
+					? "operator authorized re-running this call and that grant is spent — it does not permit another execution"
+					: "operator authorized re-running this call";
+				if (c.result !== null) {
+					// The grant concerns one more EXECUTION — the recorded
+					// outcome stays visible as evidence, never as the answer.
+					note = `[turn-journal decision: ${grant} — its recorded result stays evidence: ${c.result}]`;
+				} else if (c.error !== null) {
+					note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
+				} else {
+					note = c.retryConsumed
+						? `[turn-journal decision: ${grant}]`
+						: RESOLVED_RETRY_NOTE;
+				}
+			}
 			parts.push({
 				type: `tool-${c.name}`,
 				toolCallId: c.toolCallId,
@@ -230,7 +269,7 @@ function seedLoop(run: TurnRun, calls: TurnToolCall[]): LoopTurnState | "unreada
 // The generated resume event's provenance marker — explanatory only.
 // Message metadata is client-controlled (the app channel), so it never
 // exempts a user event by itself: the stale check trusts an event only
-// when the source run's journaled registry names its id AND this marker
+// when the source run's journaled registry names its seq AND this marker
 // points back at the source.
 const resumeMetaSchema = z.object({
 	goblinResume: z.object({ sourceRunId: z.string() }),
@@ -311,7 +350,7 @@ function stalenessRefusal(
 
 export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 	const { store, journal, runtime } = deps;
-	// Between admission and markRun the source still reads 'interrupted', so this process-local claim stops a second resume from queueing a replay; it releases on terminal onDone so a resume that dies early stays re-resumable.
+	// Between admission and markRun the source still reads 'interrupted', so this process-local claim stops a second resume from double-admitting it; it releases on terminal onDone so a resume that dies early stays re-resumable.
 	const claimed = new Set<string>();
 
 	return {
@@ -330,6 +369,12 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					found.kind === "ambiguous"
 						? `run id '${runRef}' matches more than one interrupted run — give more of it`
 						: `no interrupted run matching '${runRef}' in this conversation`,
+				);
+			}
+			if (claimed.has(found.run.runId)) {
+				return refused(
+					"conflict",
+					`run ${found.run.runId.slice(0, 8)} has a resume in flight — decisions wait for it to settle`,
 				);
 			}
 			const all = journal.callsFor(found.run.runId);
@@ -366,7 +411,19 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (call === undefined) {
 				return refused("not-found", `no undecided call matching '${callRef}'`);
 			}
-			if (call.state !== "dispatched") {
+			if (decision === "authorize-retry") {
+				// Retry is the one decision that also reaches KNOWN calls —
+				// completed/failed/resolved-done rows keep their recorded
+				// outcome as evidence and grant one more execution.
+				if (!canAuthorizeRetry(call)) {
+					return refused(
+						"conflict",
+						call.replayed
+							? `call ${call.toolCallId.slice(0, 8)} is a journaled recovery row — it cannot take a decision`
+							: `call ${call.toolCallId.slice(0, 8)} is already '${call.state}' — no retry to authorize`,
+					);
+				}
+			} else if (call.state !== "dispatched") {
 				return refused(
 					"conflict",
 					`call ${call.toolCallId.slice(0, 8)} is already '${call.state}' — no decision to take`,

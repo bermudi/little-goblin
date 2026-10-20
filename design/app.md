@@ -265,9 +265,12 @@ mirroring the Telegram `/decide` / `/resume` surface:
 
 - **Decisions are explicit.** Each `dispatched` call shows its tool name, a
   bounded args preview, and three buttons — Record result (asserts an
-  outcome the operator already knows; it becomes the replayable result),
-  Authorize retry (re-executes; effects may repeat), Skip (never runs; a
-  re-ask reads the refusal) — plus an optional note; settled calls render
+  outcome the operator already knows; it becomes the journaled outcome the
+  resumed attempt sees as evidence), Authorize retry (re-executes; effects
+  may repeat), Skip (never runs; a re-ask reads the refusal) — plus an
+  optional note. Settled calls show their recorded outcome and one more
+  button — Authorize another execution — granting a single deliberate
+  re-run of a known effect by call id; granted or skipped calls render
   read-only.
 - **Resume is gated server-side.** Disabled while any call is `dispatched`;
   a refusal names the undecided calls and the client refetches rather than

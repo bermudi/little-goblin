@@ -204,6 +204,9 @@ export interface AppRunCall {
 	error: string | null;
 	resolutionNote: string | null;
 	resolvedMs: number | null;
+	/** Server-derived: this call may take authorize-retry (a dispatched
+	 *  ambiguity or a known completed/failed/resolved-done execution). */
+	canAuthorizeRetry: boolean;
 }
 
 export interface AppInterruptedRun {

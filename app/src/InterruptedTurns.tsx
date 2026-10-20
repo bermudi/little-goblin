@@ -240,6 +240,17 @@ export function InterruptedTurns({
 								{call.resolutionNote !== null && (
 									<div className="interrupted-note">decision note: {call.resolutionNote}</div>
 								)}
+								{call.state !== "dispatched" && call.canAuthorizeRetry && (
+									<div className="interrupted-actions">
+										<button
+											type="button"
+											disabled={busy || pending !== null}
+											onClick={() => void decide(run.runId, call, "authorize-retry")}
+										>
+											Authorize another execution
+										</button>
+									</div>
+								)}
 								{call.state === "dispatched" && (
 									<div className="interrupted-decide">
 										<label className="interrupted-note-label">

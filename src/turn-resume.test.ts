@@ -2,10 +2,16 @@
 // reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { APICallError } from "@ai-sdk/provider";
 import type { LanguageModel, UIMessage } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { openStore, type Conversation, type ConversationStore } from "./conversation.ts";
+import { withScript } from "./agent/tools/script.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, type RuntimeDeps, type TurnDone, userMessage } from "./runtime.ts";
 import {
@@ -16,7 +22,7 @@ import {
 	type StreamAttempt,
 } from "./testkit/fake-model.ts";
 import { pauseFakeModelAtDelta, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
-import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
+import { openTurnJournal, RESOLVED_RETRY_NOTE, type TurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
 setLogFile(null);
@@ -31,6 +37,9 @@ function setup(opts: {
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
 	makeTools?: RuntimeDeps["makeTools"];
 	sinkFactory?: () => RecordingSink;
+	// Overflow-recovery tests wire a small window and a fold stub.
+	contextWindow?: number;
+	compaction?: RuntimeDeps["compaction"];
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -53,8 +62,13 @@ function setup(opts: {
 	const runtime = new Runtime({
 		store,
 		turnJournal: journal,
-		buildStep: () => ({ model: opts.model ?? edge.model, system: "test" }),
+		buildStep: () => ({
+			model: opts.model ?? edge.model,
+			system: "test",
+			...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
+		}),
 		makeTools,
+		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
 	const notices: { convId: string; sourceRunId: string; done: TurnDone }[] = [];
 	let sink: RecordingSink | undefined;
@@ -129,6 +143,39 @@ function appendUserMsg(
 	const message = userMessage([{ type: "text", text }]);
 	store.append(conv.id, [message]);
 	return { seq: store.lastUserSeq(conv.id)!, message };
+}
+
+// The successor run id minted by a resume (first match) — or by an
+// overflow continuation when the test wires a second one.
+function successorRunId(store: ConversationStore, sourceRunId: string): string {
+	return store.db
+		.query<{ run_id: string }, [string]>(
+			"SELECT run_id FROM turn_runs WHERE resumed_from = ? ORDER BY rowid",
+		)
+		.get(sourceRunId)!.run_id;
+}
+
+// Enough completed exchanges that the overflow compaction has a span to fold.
+function seedExchanges(store: ConversationStore, convId: string): void {
+	const big = "x".repeat(600);
+	for (let i = 0; i < 3; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}
+
+function overflowError(): APICallError {
+	return new APICallError({
+		message:
+			"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+		url: "https://api.openai.com/v1/chat/completions",
+		requestBodyValues: {},
+		statusCode: 400,
+	});
 }
 
 describe("turn resume", () => {
@@ -223,6 +270,38 @@ describe("turn resume", () => {
 		store.close();
 	});
 
+	test("a grant on a known call mints no ordinal — ambiguous numbers never shift", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		interruptedRun(store, journal, conv, "run-dead");
+		// The known execution precedes both ambiguous rows — if its grant
+		// joined the numbering, "1" would retarget it.
+		journal.noteToolInput("run-dead", "c-known", "probe", { q: 0 });
+		journal.noteToolDispatch("run-dead", "c-known", "probe", { q: 0 });
+		journal.noteToolResult("run-dead", "c-known", { out: "old" });
+		journal.noteToolInput("run-dead", "c-amb1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-dead", "c-amb1", "probe", { q: 1 });
+		journal.noteToolInput("run-dead", "c-amb2", "probe", { q: 2 });
+		journal.noteToolDispatch("run-dead", "c-amb2", "probe", { q: 2 });
+
+		expect(ops.decide(conv.id, "run-dead", "c-known", "authorize-retry").kind).toBe("ok");
+		const granted = journal.callsFor("run-dead").find((c) => c.toolCallId === "c-known")!;
+		expect(granted.state).toBe("resolved-retry");
+		expect(granted.retryFromKnown).toBe(true);
+		// "1" still names the first ambiguous row, not the granted known one.
+		expect(ops.decide(conv.id, "run-dead", "1", "skip").kind).toBe("ok");
+		expect(journal.callsFor("run-dead").find((c) => c.toolCallId === "c-amb1")!.state).toBe(
+			"resolved-skip",
+		);
+		// And "2" still names the second after the first decision landed —
+		// its resolved-skip keeps its own ordinal.
+		expect(ops.decide(conv.id, "run-dead", "2", "record-result", "saw it").kind).toBe("ok");
+		expect(journal.callsFor("run-dead").find((c) => c.toolCallId === "c-amb2")!.state).toBe(
+			"resolved-done",
+		);
+		await runtime.shutdown();
+		store.close();
+	});
+
 	test("resume refuses while ambiguous calls stay undecided", async () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		const anchorSeq = appendUser(store, conv, "run the tool");
@@ -245,7 +324,7 @@ describe("turn resume", () => {
 		store.close();
 	});
 
-	test("a resumed turn replays recorded results, re-executes retry, runs planned", async () => {
+	test("a resumed turn conflicts recorded results, re-executes granted retry, runs planned", async () => {
 		const { store, conv, journal, ops, runtime, executed, notices, sink } = setup({
 			attempts: [
 				[
@@ -259,7 +338,7 @@ describe("turn resume", () => {
 		});
 		const anchorSeq = appendUser(store, conv, "do the three things");
 		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
-		// completed — recorded, replays without executing.
+		// completed — recorded evidence; a re-ask conflicts, never re-executes.
 		journal.noteToolInput("run-src", "c-done", "probe", { q: 1 });
 		journal.noteToolDispatch("run-src", "c-done", "probe", { q: 1 });
 		journal.noteToolResult("run-src", "c-done", { out: "landed" });
@@ -279,6 +358,10 @@ describe("turn resume", () => {
 
 		expect(executed.map((e) => e.args)).toEqual([{ q: 2 }, { q: 3 }]);
 		expect(journal.get("run-src")!.status).toBe("resumed");
+		// Consumption lives on the successor's inherited copy — the
+		// source's own row stays unconsumed but unreachable.
+		const sourceCalls = journal.callsFor("run-src");
+		expect(sourceCalls.find((c) => c.toolCallId === "c-amb")!.retryConsumed).toBe(false);
 		const rows = store.db
 			.query<{ run_id: string; resumed_from: string | null; status: string }, [string]>(
 				"SELECT run_id, resumed_from, status FROM turn_runs WHERE resumed_from = ?",
@@ -298,19 +381,26 @@ describe("turn resume", () => {
 		// 'dispatched' stays un-inherited — ambiguity remains owned by the
 		// row that ran.
 		expect(newCalls.find((c) => c.toolCallId === "c-done")!.state).toBe("completed");
-		expect(newCalls.find((c) => c.toolCallId === "c-amb")!.state).toBe("resolved-retry");
+		const granted = newCalls.find((c) => c.toolCallId === "c-amb")!;
+		expect(granted.state).toBe("resolved-retry");
+		expect(granted.retryConsumed).toBe(true);
 		expect(newCalls.find((c) => c.toolCallId === "c-plan")!.state).toBe("planned");
 		expect(
 			newCalls.filter((c) => c.toolCallId.startsWith("n")).every((c) => c.state === "completed"),
 		).toBe(true);
-		expect(newCalls.find((c) => c.toolCallId === "n1")!.result).toBe('{"out":"landed"}');
+		// n1 collides with c-done's recorded execution — a labeled
+		// conflict, never the old result and never a second run.
+		const reasked = newCalls.find((c) => c.toolCallId === "n1")!;
+		expect(reasked.replayed).toBe(true);
+		expect(reasked.result).toContain("[turn-journal conflict]");
+		expect(reasked.result).toContain("c-done");
 		await waitUntil(() => notices.length === 1, "done notice");
 		expect(notices[0]!.sourceRunId).toBe("run-src");
 		expect(notices[0]!.done.kind).toBe("completed");
 		store.close();
 	});
 
-	test("record-result replays the operator's asserted outcome verbatim", async () => {
+	test("record-result keeps the asserted outcome as evidence — the re-ask conflicts", async () => {
 		const { store, conv, journal, ops, runtime, executed, sink } = setup({
 			attempts: [
 				[toolCallPart("n1", "probe", '{"q":7}'), finishPart("tool-calls")],
@@ -331,9 +421,15 @@ describe("turn resume", () => {
 		const newRun = store.db
 			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 			.get("run-src")!;
-		const replayed = journal.callsFor(newRun.run_id).find((c) => c.toolCallId === "n1")!;
-		expect(replayed.state).toBe("completed");
-		expect(replayed.result).toBe('"operator saw it land"');
+		const reask = journal.callsFor(newRun.run_id).find((c) => c.toolCallId === "n1")!;
+		expect(reask.state).toBe("completed");
+		expect(reask.replayed).toBe(true);
+		expect(reask.result).toContain("[turn-journal conflict]");
+		expect(reask.result).toContain("c1");
+		// The recorded outcome stayed on the source row as evidence.
+		expect(journal.callsFor("run-src").find((c) => c.toolCallId === "c1")!.result).toBe(
+			'"operator saw it land"',
+		);
 		store.close();
 	});
 
@@ -559,7 +655,7 @@ describe("turn resume", () => {
 		store.close();
 	});
 
-	test("a resumed turn replays a huge-args call by full hash; the seeded prompt stays bounded", async () => {
+	test("a resumed turn fences a huge-args re-ask by full hash; the seeded prompt stays bounded", async () => {
 		const huge = { content: "x".repeat(1_000_000) };
 		const { store, conv, journal, ops, runtime, executed, sink, edge } = setup({
 			attempts: [
@@ -597,10 +693,11 @@ describe("turn resume", () => {
 		const newRun = store.db
 			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 			.get("run-src")!;
-		const replayed = journal.callsFor(newRun.run_id).find((c) => c.toolCallId === "n1")!;
-		expect(replayed.state).toBe("completed");
-		expect(replayed.replayed).toBe(true);
-		expect(replayed.result).toBe('{"out":"landed"}');
+		const fenced = journal.callsFor(newRun.run_id).find((c) => c.toolCallId === "n1")!;
+		expect(fenced.state).toBe("completed");
+		expect(fenced.replayed).toBe(true);
+		expect(fenced.result).toContain("[turn-journal conflict]");
+		expect(fenced.result).toContain("c1");
 		store.close();
 	});
 
@@ -1120,6 +1217,369 @@ describe("turn resume", () => {
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		expect(journal.get("run-src")!.status).toBe("resumed");
 		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a matching historical read does not answer a new call — it executes afresh", async () => {
+		// The interrupted run read the file at "A"; between runs the file
+		// became "B". A resumed turn re-asking read_file(path) must see B —
+		// a recorded result is evidence, never a cached answer.
+		const file = join(mkdtempSync(join(tmpdir(), "goblin-sr-")), "doc.txt");
+		writeFileSync(file, "A");
+		const reads: string[] = [];
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			attempts: [
+				[toolCallPart("n1", "read_file", JSON.stringify({ path: file })), finishPart("tool-calls")],
+				textParts("done"),
+			],
+			makeTools: () => ({
+				read_file: tool({
+					inputSchema: z.object({ path: z.string() }),
+					execute: async (args: { path: string }) => {
+						reads.push(args.path);
+						return readFileSync(args.path, "utf8");
+					},
+				}),
+				probe: tool({
+					inputSchema: z.object({ q: z.number() }),
+					execute: async () => ({ ok: true }),
+				}),
+			}),
+		});
+		const trigger = appendUserMsg(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq],
+			toolNames: ["read_file", "probe"],
+		});
+		journal.noteToolInput("run-src", "c-read", "read_file", { path: file });
+		journal.noteToolDispatch("run-src", "c-read", "read_file", { path: file });
+		journal.noteToolResult("run-src", "c-read", "A");
+		writeFileSync(file, "B");
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(reads).toEqual([file]); // executed fresh, not replayed
+		const successor = store.db
+			.query<{ run_id: string }, [string]>(
+				"SELECT run_id FROM turn_runs WHERE resumed_from = ?",
+			)
+			.get("run-src")!.run_id;
+		const reask = journal
+			.callsFor(successor)
+			.find((c) => c.toolCallId === "n1")!;
+		expect(reask.state).toBe("completed");
+		expect(reask.replayed).toBe(false);
+		expect(reask.result).toBe('"B"');
+		store.close();
+	});
+
+	test("identical recorded effects each label the re-ask a conflict — never a FIFO of stale outputs", async () => {
+		const { store, conv, journal, ops, runtime, executed, sink } = setup({
+			attempts: [
+				[
+					toolCallPart("n1", "probe", '{"q":1}'),
+					toolCallPart("n2", "probe", '{"q":1}'),
+					toolCallPart("n3", "probe", '{"q":1}'),
+					finishPart("tool-calls"),
+				],
+				textParts("done"),
+			],
+		});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		for (const [id, out] of [
+			["c-a", "first"],
+			["c-b", "second"],
+		] as const) {
+			journal.noteToolInput("run-src", id, "probe", { q: 1 });
+			journal.noteToolDispatch("run-src", id, "probe", { q: 1 });
+			journal.noteToolResult("run-src", id, { out });
+		}
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(executed).toEqual([]);
+		const calls = journal.callsFor(successorRunId(store, "run-src"));
+		for (const id of ["n1", "n2", "n3"]) {
+			const reask = calls.find((c) => c.toolCallId === id)!;
+			expect(reask.replayed).toBe(true);
+			// Each refusal names both recorded executions as evidence —
+			// the old results are never dealt back in row order.
+			expect(reask.result).toContain("[turn-journal conflict]");
+			expect(reask.result).toContain("c-a");
+			expect(reask.result).toContain("c-b");
+			expect(reask.result).not.toContain('"first"');
+			expect(reask.result).not.toContain('"second"');
+		}
+		store.close();
+	});
+
+	test("a grant on a known call executes exactly once — the second re-ask conflicts", async () => {
+		const { store, conv, journal, ops, runtime, executed, sink } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				[toolCallPart("n2", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+		});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		journal.noteToolInput("run-src", "c-done", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c-done", "probe", { q: 1 });
+		journal.noteToolResult("run-src", "c-done", { out: "landed" });
+		// The operator re-runs a KNOWN call by id — the journal marks
+		// the grant so it can never claim an ambiguous ordinal.
+		expect(ops.decide(conv.id, "run-src", "c-done", "authorize-retry").kind).toBe("ok");
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(executed).toEqual([{ name: "probe", args: { q: 1 } }]);
+		const calls = journal.callsFor(successorRunId(store, "run-src"));
+		const first = calls.find((c) => c.toolCallId === "n1")!;
+		expect(first.state).toBe("completed");
+		expect(first.replayed).toBe(false);
+		// The grant spent durably on the successor's inherited copy.
+		expect(calls.find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(true);
+		const second = calls.find((c) => c.toolCallId === "n2")!;
+		expect(second.replayed).toBe(true);
+		expect(second.result).toContain("[turn-journal conflict]");
+		expect(second.result).toContain("c-done");
+		store.close();
+	});
+
+	test("two grants run two re-asks — the third meets the skipped sibling's refusal", async () => {
+		const { store, conv, journal, ops, runtime, executed, sink, edge } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				[toolCallPart("n2", "probe", '{"q":1}'), finishPart("tool-calls")],
+				[toolCallPart("n3", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+		});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		// Same signature three times: an ambiguous call and a known
+		// execution each granted, a third sibling skipped.
+		journal.noteToolInput("run-src", "g-amb", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "g-amb", "probe", { q: 1 });
+		journal.noteToolInput("run-src", "g-known", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "g-known", "probe", { q: 1 });
+		journal.noteToolResult("run-src", "g-known", { out: "landed" });
+		journal.noteToolInput("run-src", "s-skip", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "s-skip", "probe", { q: 1 });
+		expect(ops.decide(conv.id, "run-src", "g-amb", "authorize-retry").kind).toBe("ok");
+		expect(ops.decide(conv.id, "run-src", "g-known", "authorize-retry").kind).toBe("ok");
+		expect(ops.decide(conv.id, "run-src", "s-skip", "skip", "do not repeat").kind).toBe("ok");
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		// Exactly two executions — one per grant, oldest first.
+		expect(executed).toEqual([
+			{ name: "probe", args: { q: 1 } },
+			{ name: "probe", args: { q: 1 } },
+		]);
+		const calls = journal.callsFor(successorRunId(store, "run-src"));
+		expect(calls.find((c) => c.toolCallId === "g-amb")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "g-known")!.retryConsumed).toBe(true);
+		const third = calls.find((c) => c.toolCallId === "n3")!;
+		expect(third.replayed).toBe(true);
+		expect(third.result).toContain("operator skipped re-running");
+		// The seeded partial carries the evidence: the known grant's
+		// recorded result and its authorization note — never a re-usable
+		// answer.
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt).toContain("landed");
+		expect(prompt).toContain("authorized re-running");
+		store.close();
+	});
+
+	test("a crashed retry keeps the grant spent — its own dispatch gates the next resume", async () => {
+		const { store, conv, journal, ops, runtime, executed, sink, edge } = setup({
+			attempts: [
+				[toolCallPart("re-1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+		});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		journal.noteToolInput("run-src", "c-grant", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c-grant", "probe", { q: 1 });
+		expect(ops.decide(conv.id, "run-src", "c-grant", "authorize-retry").kind).toBe("ok");
+
+		// The first successor claimed the grant and dispatched the
+		// re-execution — then died before the outcome landed. Stamped
+		// the way openTurnJournal's reclassify leaves a kill.
+		journal.beginRun({
+			runId: "run-r1",
+			conversationId: conv.id,
+			epoch: conv.epoch,
+			anchorSeq,
+			steerMark: null,
+			convSnapshot: { model: conv.model, thinking: conv.thinking },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:01:00.000Z",
+			resumedFrom: "run-src",
+		});
+		journal.noteToolDispatch("run-r1", "n1", "probe", { q: 1 }, { retryCallId: "c-grant" });
+		store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = 'run-r1'");
+
+		// The ambiguous dispatch owns the fence — no resume until the
+		// operator says what happened to it.
+		expect(ops.resume(conv.id, "run-r1").kind).toBe("needs-decisions");
+		expect(ops.decide(conv.id, "run-r1", "n1", "record-result", "it landed").kind).toBe("ok");
+
+		expect(ops.resume(conv.id, "run-r1").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		// The grant stayed spent across the second inheritance — the
+		// same-signature re-ask conflicts, nothing runs again.
+		expect(executed).toEqual([]);
+		const calls = journal.callsFor(successorRunId(store, "run-r1"));
+		expect(calls.find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(true);
+		const reask = calls.find((c) => c.toolCallId === "re-1")!;
+		expect(reask.replayed).toBe(true);
+		expect(reask.result).toContain("[turn-journal conflict]");
+		expect(reask.result).toContain("c-grant");
+		// The seeded partial carries the spent grant as evidence — never
+		// as available permission for another execution.
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt).toContain("grant is spent");
+		expect(prompt).not.toContain(RESOLVED_RETRY_NOTE);
+		store.close();
+	});
+
+	test("an overflow continuation inherits the spent grant — the source's stale copy loses", async () => {
+		const { store, conv, journal, ops, runtime, executed, sink } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				overflowError(),
+				[toolCallPart("re-1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+			contextWindow: 1000,
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => 1000,
+				summarize: async () => "folded past",
+			},
+		});
+		seedExchanges(store, conv.id);
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		journal.noteToolInput("run-src", "c-grant", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c-grant", "probe", { q: 1 });
+		expect(ops.decide(conv.id, "run-src", "c-grant", "authorize-retry").kind).toBe("ok");
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		// The granted re-ask ran once; the overflowed attempt minted a
+		// continuation that re-inherits from BOTH runs.
+		expect(executed).toEqual([{ name: "probe", args: { q: 1 } }]);
+		const rows = store.db
+			.query<{ run_id: string }, [string]>(
+				"SELECT run_id FROM turn_runs WHERE resumed_from = ? ORDER BY rowid",
+			)
+			.all("run-src");
+		expect(rows).toHaveLength(2);
+		const continuation = journal.callsFor(rows[1]!.run_id);
+		// The predecessor's spent copy was inherited first — INSERT OR
+		// IGNORE keeps it over the source's still-open copy.
+		expect(continuation.find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(true);
+		const reask = continuation.find((c) => c.toolCallId === "re-1")!;
+		expect(reask.replayed).toBe(true);
+		expect(reask.result).toContain("[turn-journal conflict]");
+		// The source's own row still reads unconsumed — unreachable, but
+		// honest evidence of what was granted.
+		expect(
+			journal.callsFor("run-src").find((c) => c.toolCallId === "c-grant")!.retryConsumed,
+		).toBe(false);
+		store.close();
+	});
+
+	test("a nested script call hits the same recovery fence — the recorded write never replays", async () => {
+		// The script tool's nested calls resolve through the same
+		// fenced tool objects — a recorded nested effect conflicts the
+		// same as a top-level one, and the sandbox sees a refusal, not
+		// the old bytes.
+		const dir = mkdtempSync(join(tmpdir(), "goblin-script-fence-"));
+		const target = join(dir, "out.txt");
+		writeFileSync(target, "before");
+		const writes: string[] = [];
+		const code = [
+			"try {",
+			` await tools.write_file(${JSON.stringify({ path: target, content: "new" })});`,
+			' return "wrote";',
+			'} catch (e) { return "blocked: " + e.message; }',
+		].join("\n");
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			attempts: [
+				[toolCallPart("n-script", "script", JSON.stringify({ code })), finishPart("tool-calls")],
+				textParts("done"),
+			],
+			makeTools: (conv) =>
+				withScript(
+					{
+						write_file: tool({
+							inputSchema: z.object({ path: z.string(), content: z.string() }),
+							execute: async (args: { path: string; content: string }) => {
+								writes.push(args.path);
+								writeFileSync(args.path, args.content);
+								return { path: args.path, bytes: args.content.length };
+							},
+						}),
+					},
+					{ conversation: conv.id, maxCalls: 8 },
+				),
+		});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			toolNames: ["write_file", "script"],
+		});
+		// The interrupted run's script journaled its nested write under
+		// the parent's own child id — the changed script source mints a
+		// fresh signature, the nested write does not.
+		journal.noteToolInput("run-src", "c-script", "script", {
+			code: "return 'old version';",
+		});
+		journal.noteToolDispatch("run-src", "c-script", "script", {
+			code: "return 'old version';",
+		});
+		journal.noteToolResult("run-src", "c-script", {
+			text: "Script completed in 0.1s · 1 tool calls",
+			calls: [],
+		});
+		journal.noteToolInput("run-src", "c-script/1", "write_file", { path: target, content: "new" });
+		journal.noteToolDispatch("run-src", "c-script/1", "write_file", {
+			path: target,
+			content: "new",
+		});
+		journal.noteToolResult("run-src", "c-script/1", { path: target, bytes: 3 });
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		// The nested write never ran — the file keeps its bytes.
+		expect(writes).toEqual([]);
+		expect(readFileSync(target, "utf8")).toBe("before");
+		const calls = journal.callsFor(successorRunId(store, "run-src"));
+		// A changed code signature is a new call — the parent script ran.
+		const parent = calls.find((c) => c.toolCallId === "n-script")!;
+		expect(parent.state).toBe("completed");
+		expect(parent.replayed).toBe(false);
+		// The nested refusal journaled under the new script's own child
+		// id as a synthetic replayed result carrying the conflict.
+		const nested = calls.find((c) => c.toolCallId === "n-script/1")!;
+		expect(nested.replayed).toBe(true);
+		expect(nested.result).toContain("[turn-journal conflict]");
+		expect(nested.result).toContain("c-script/1");
+		// …and the script's own record carries the same refusal.
+		expect(parent.result).toContain("[turn-journal conflict]");
 		store.close();
 	});
 

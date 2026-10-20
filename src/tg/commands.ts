@@ -9,6 +9,7 @@ import { type MemoryContexts, type MemoryWorker, memoryStatus } from "../memory/
 import type { MemoryQueue } from "../memory/queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { numberedCalls, type ResumeOps } from "../turn-resume.ts";
+import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import { withTimeout } from "./deadline.ts";
 import { type ForgetItem, ForgetListings, renderNumberedListing } from "./forget-listings.ts";
 
@@ -188,6 +189,18 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					if (numbered.some((c) => c.state === "dispatched")) {
 						lines.push(
 							`  decide first: /decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
+						);
+					}
+					// Known calls take one decision only — authorize another
+					// execution — and only by explicit call id, never ordinals.
+					const known = calls.filter(
+						(c) => c.state !== "dispatched" && canAuthorizeRetry(c),
+					);
+					for (const c of known) {
+						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
+						lines.push(
+							`  known: ${c.name} ${args.slice(0, 80)} — ${c.state}` +
+								`  · re-run: /decide ${id} ${c.toolCallId.slice(0, 8)} authorize-retry`,
 						);
 					}
 					lines.push(`  /resume ${id} · /abandon ${id}`);

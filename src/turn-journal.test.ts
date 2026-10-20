@@ -6,7 +6,8 @@ import { createHash } from "node:crypto";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { tmpDb } from "./testkit.ts";
-import { openTurnJournal, replayKey, RESOLVED_DONE_EMPTY } from "./turn-journal.ts";
+import { openTurnJournal, replayKey } from "./turn-journal.ts";
+import { buildRetryGuard } from "./turn/retry-guard.ts";
 
 setLogFile(null);
 
@@ -22,6 +23,12 @@ function begunRun(journal: ReturnType<typeof openTurnJournal>, convId: string, r
 		startedAt: "2026-10-11T00:00:00.000Z",
 	});
 	return runId;
+}
+
+// Decisions only land on interrupted runs; fixtures stamp the way
+// openTurnJournal's reclassify leaves a killed 'running' row.
+function interruptRun(store: ReturnType<typeof openStore>, runId: string) {
+	store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
 }
 
 describe("turn journal", () => {
@@ -236,6 +243,222 @@ describe("turn journal", () => {
 		store.close();
 	});
 
+	test("authorize-retry reaches known calls and preserves their recorded outcome", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		// completed keeps its result as evidence
+		journal.noteToolInput(runId, "c-done", "probe", { q: 1 });
+		journal.noteToolDispatch(runId, "c-done", "probe", { q: 1 });
+		journal.noteToolResult(runId, "c-done", { out: "landed" });
+		// failed keeps its error
+		journal.noteToolInput(runId, "c-fail", "probe", { q: 2 });
+		journal.noteToolDispatch(runId, "c-fail", "probe", { q: 2 });
+		journal.noteToolError(runId, "c-fail", new Error("blew up"));
+		// resolved-done likewise
+		journal.noteToolInput(runId, "c-asserted", "probe", { q: 3 });
+		journal.noteToolDispatch(runId, "c-asserted", "probe", { q: 3 });
+		// a synthetic journaled row never grants
+		journal.noteToolInput(runId, "c-synth", "probe", { q: 4 });
+		journal.noteToolResult(runId, "c-synth", { error: "refused" }, { replayed: true });
+
+		interruptRun(store, runId);
+		journal.resolveCall(runId, "c-asserted", "record-result", "saw it");
+		for (const id of ["c-done", "c-fail", "c-asserted"]) {
+			journal.resolveCall(runId, id, "authorize-retry", "run it again");
+		}
+		const calls = journal.callsFor(runId);
+		expect(calls.find((c) => c.toolCallId === "c-done")!.state).toBe("resolved-retry");
+		expect(calls.find((c) => c.toolCallId === "c-done")!.result).toBe('{"out":"landed"}');
+		expect(calls.find((c) => c.toolCallId === "c-fail")!.state).toBe("resolved-retry");
+		expect(calls.find((c) => c.toolCallId === "c-fail")!.error).toContain("blew up");
+		expect(calls.find((c) => c.toolCallId === "c-asserted")!.state).toBe("resolved-retry");
+		// record-result/skip stay dispatched-only on known rows
+		expect(() => journal.resolveCall(runId, "c-done", "record-result")).toThrow(/only 'dispatched'/);
+		expect(() => journal.resolveCall(runId, "c-synth", "authorize-retry")).toThrow(/journaled recovery row/);
+		// a resolved-retry row takes no second in-place decision
+		expect(() => journal.resolveCall(runId, "c-done", "authorize-retry")).toThrow(
+			/authorize-retry needs/,
+		);
+		store.close();
+	});
+
+	test("a retry dispatch CAS-consumes its grant; a fault rolls both back", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolInput(runId, "c-amb", "probe", { q: 1 });
+		journal.noteToolDispatch(runId, "c-amb", "probe", { q: 1 });
+		interruptRun(store, runId);
+		journal.resolveCall(runId, "c-amb", "authorize-retry");
+
+		// Happy path: consume + dispatch atomically.
+		journal.noteToolInput(runId, "n1", "probe", { q: 1 });
+		journal.noteToolDispatch(runId, "n1", "probe", { q: 1 }, { retryCallId: "c-amb" });
+		const calls = journal.callsFor(runId);
+		expect(calls.find((c) => c.toolCallId === "c-amb")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "n1")!.state).toBe("dispatched");
+
+		// A second consumption of the spent grant is a loud fault.
+		journal.noteToolInput(runId, "n2", "probe", { q: 1 });
+		expect(() =>
+			journal.noteToolDispatch(runId, "n2", "probe", { q: 1 }, { retryCallId: "c-amb" }),
+		).toThrow(/not an unconsumed matching/);
+		expect(journal.callsFor(runId).find((c) => c.toolCallId === "n2")!.state).toBe("planned");
+
+		// A signature that doesn't match the grant refuses too.
+		journal.noteToolInput(runId, "n3", "probe", { q: 9 });
+		expect(() =>
+			journal.noteToolDispatch(runId, "n3", "probe", { q: 9 }, { retryCallId: "c-amb" }),
+		).toThrow(/not an unconsumed matching/);
+
+		// Fault between CAS and dispatch rolls back consumption.
+		store.db.exec(
+			"CREATE TRIGGER fail_dispatch BEFORE INSERT ON turn_tool_calls WHEN NEW.state = 'dispatched' " +
+				"BEGIN SELECT RAISE(FAIL, 'fixture dispatch fault'); END",
+		);
+		journal.noteToolInput(runId, "c-amb2", "probe", { q: 2 });
+		// input→dispatch path must bypass the trigger: use direct resolve route
+		store.db.exec("DROP TRIGGER fail_dispatch");
+		journal.noteToolDispatch(runId, "c-amb2", "probe", { q: 2 });
+		journal.resolveCall(runId, "c-amb2", "authorize-retry");
+		store.db.exec(
+			"CREATE TRIGGER fail_dispatch BEFORE UPDATE ON turn_tool_calls WHEN NEW.state = 'dispatched' AND OLD.state = 'planned' AND NEW.tool_call_id = 'n4' " +
+				"BEGIN SELECT RAISE(FAIL, 'fixture dispatch fault'); END",
+		);
+		journal.noteToolInput(runId, "n4", "probe", { q: 2 });
+		expect(() =>
+			journal.noteToolDispatch(runId, "n4", "probe", { q: 2 }, { retryCallId: "c-amb2" }),
+		).toThrow(/fixture dispatch fault/);
+		expect(journal.callsFor(runId).find((c) => c.toolCallId === "c-amb2")!.retryConsumed).toBe(
+			false,
+		);
+		expect(journal.callsFor(runId).find((c) => c.toolCallId === "n4")!.state).toBe("planned");
+		store.db.exec("DROP TRIGGER fail_dispatch");
+		store.close();
+	});
+
+	test("a real pre-column DB migrates every grant spent; a NEW authorize re-arms a migrated known row", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// The schema as it existed before either retry column — written by
+		// hand so openTurnJournal's ALTER runs as the real migration.
+		store.db.exec(`CREATE TABLE turn_runs (
+			run_id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			epoch INTEGER NOT NULL,
+			anchor_seq INTEGER,
+			steer_mark INTEGER,
+			conv_snapshot TEXT NOT NULL,
+			tool_names TEXT NOT NULL,
+			started_ms INTEGER NOT NULL,
+			finished_ms INTEGER,
+			status TEXT NOT NULL,
+			delivery TEXT NOT NULL DEFAULT 'pending',
+			partial TEXT,
+			loop_state TEXT,
+			filter_retry_used INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			resumed_from TEXT
+		)`);
+		store.db.exec(`CREATE TABLE turn_tool_calls (
+			run_id TEXT NOT NULL REFERENCES turn_runs(run_id) ON DELETE CASCADE,
+			tool_call_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			args TEXT NOT NULL,
+			args_hash TEXT NOT NULL,
+			state TEXT NOT NULL,
+			replayed INTEGER NOT NULL DEFAULT 0,
+			result TEXT,
+			error TEXT,
+			began_ms INTEGER,
+			settled_ms INTEGER,
+			resolution_note TEXT,
+			resolved_ms INTEGER,
+			PRIMARY KEY (run_id, tool_call_id)
+		)`);
+		const hash = (args: unknown) =>
+			createHash("sha256").update(JSON.stringify(args)).digest("hex");
+		store.db.run(
+			`INSERT INTO turn_runs (run_id, conversation_id, epoch, conv_snapshot, tool_names,
+				started_ms, status, delivery, created_at)
+			 VALUES ('run-1', ?, 3, '{}', '["probe"]', 1, 'interrupted', 'pending', '2026-10-11T00:00:00.000Z')`,
+			[conv.id],
+		);
+		store.db.run(
+			`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, replayed, result, began_ms, settled_ms)
+			 VALUES ('run-1', 'c-done', 'probe', ?, ?, 'completed', 0, '{"out":"landed"}', 1, 2)`,
+			[JSON.stringify({ q: 1 }), hash({ q: 1 })],
+		);
+		store.db.run(
+			`INSERT INTO turn_tool_calls (run_id, tool_call_id, name, args, args_hash, state, replayed, began_ms)
+			 VALUES ('run-1', 'c-legacy', 'probe', ?, ?, 'resolved-retry', 0, 1)`,
+			[JSON.stringify({ q: 2 }), hash({ q: 2 })],
+		);
+
+		const journal = openTurnJournal(store.db); // the ALTERs fire here
+		const migrated = journal.callsFor("run-1");
+		// Whether a pre-column grant was spent is unknowable — every
+		// migrated row reads consumed and fails closed.
+		expect(migrated.find((c) => c.toolCallId === "c-legacy")!.retryConsumed).toBe(true);
+		expect(migrated.find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(true);
+		expect(migrated.find((c) => c.toolCallId === "c-legacy")!.retryFromKnown).toBe(false);
+		// The legacy grant is terminal: no second authorization, no
+		// consumption — a fresh request is the recovery.
+		expect(() => journal.resolveCall("run-1", "c-legacy", "authorize-retry")).toThrow(
+			/authorize-retry needs/,
+		);
+		expect(() =>
+			journal.noteToolDispatch("run-1", "n0", "probe", { q: 2 }, { retryCallId: "c-legacy" }),
+		).toThrow(/not an unconsumed matching/);
+		// The regression this guards: a NEW grant on a migrated known row
+		// must clear the migrated-consumed bit or it can never execute.
+		journal.resolveCall("run-1", "c-done", "authorize-retry");
+		const granted = journal.callsFor("run-1").find((c) => c.toolCallId === "c-done")!;
+		expect(granted.state).toBe("resolved-retry");
+		expect(granted.retryConsumed).toBe(false);
+		expect(granted.retryFromKnown).toBe(true);
+		journal.noteToolDispatch("run-1", "n1", "probe", { q: 1 }, { retryCallId: "c-done" });
+		expect(journal.callsFor("run-1").find((c) => c.toolCallId === "n1")!.state).toBe(
+			"dispatched",
+		);
+		expect(journal.callsFor("run-1").find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(
+			true,
+		);
+		store.close();
+	});
+
+	test("a grant lands only while the run is interrupted — decided rows on live or consumed runs refuse", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const live = begunRun(journal, conv.id, "run-live");
+		journal.noteToolInput(live, "c1", "probe", { q: 1 });
+		journal.noteToolDispatch(live, "c1", "probe", { q: 1 });
+		expect(() => journal.resolveCall(live, "c1", "authorize-retry")).toThrow(
+			/only 'interrupted' runs take decisions/,
+		);
+		expect(journal.callsFor(live).find((c) => c.toolCallId === "c1")!.state).toBe(
+			"dispatched",
+		);
+
+		const dead = begunRun(journal, conv.id, "run-dead");
+		journal.noteToolInput(dead, "c1", "probe", { q: 1 });
+		journal.noteToolDispatch(dead, "c1", "probe", { q: 1 });
+		interruptRun(store, dead);
+		journal.markRun(dead, "abandoned");
+		expect(() => journal.resolveCall(dead, "c1", "authorize-retry")).toThrow(
+			/only 'interrupted' runs take decisions/,
+		);
+		expect(journal.callsFor(dead).find((c) => c.toolCallId === "c1")!.state).toBe(
+			"dispatched",
+		);
+		store.close();
+	});
+
 	test("resolveCall lands the operator decision on a dispatched call only", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -251,6 +474,7 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "c-settled", "probe", { q: 5 });
 		journal.noteToolResult(runId, "c-settled", "ok");
 
+		interruptRun(store, runId);
 		journal.resolveCall(runId, "c-done", "record-result", "the file was written");
 		journal.resolveCall(runId, "c-retry", "authorize-retry", "rm is idempotent");
 		journal.resolveCall(runId, "c-skip", "skip");
@@ -307,7 +531,7 @@ describe("turn journal", () => {
 		expect(call.name).toBe("probe");
 		expect(call.argsHash).not.toBe("");
 		journal.resolveCall(runId, "c1", "skip", "not again");
-		expect([...journal.skippedMap(runId).keys()]).toHaveLength(1);
+		expect(journal.callsFor(runId)[0]!.state).toBe("resolved-skip");
 		store.close();
 	});
 
@@ -330,7 +554,6 @@ describe("turn journal", () => {
 		expect(calls.map((c) => c.toolCallId).sort()).toEqual(["amb", "done", "plan"]);
 		expect(calls.find((c) => c.toolCallId === "done")!.result).toBe('{"out":"landed"}');
 		expect(calls.find((c) => c.toolCallId === "amb")!.state).toBe("resolved-skip");
-		expect(journal.replayMap(next).size).toBe(1);
 		journal.inheritCalls(src, next);
 		expect(journal.callsFor(next)).toHaveLength(3);
 		store.close();
@@ -524,9 +747,6 @@ describe("turn journal", () => {
 			expect(journal.callsFor("successor-run")).toMatchObject([
 				{ toolCallId: "c-1", name: "probe", state: "completed" },
 			]);
-			expect(journal.replayMap("successor-run").get(replayKey("probe", { q: 1 }))).toEqual([
-				{ out: "landed" },
-			]);
 		} finally {
 			reopened.close();
 		}
@@ -555,9 +775,9 @@ describe("turn journal", () => {
 			inheritFrom: [pred],
 		});
 		expect(journal.callsFor(next).map((c) => c.toolCallId)).toEqual(["done"]);
-		expect(journal.replayMap(next).get(replayKey("probe", { q: 1 }))).toEqual([
-			{ out: "pred-ran" },
-		]);
+		expect(journal.callsFor(next).find((c) => c.toolCallId === "done")!.result).toBe(
+			'{"out":"pred-ran"}',
+		);
 		// The evidence link is part of the row's creation — a gone
 		// predecessor refuses, never a best-effort copy.
 		expect(() =>
@@ -577,7 +797,7 @@ describe("turn journal", () => {
 		store.close();
 	});
 
-	test("a replayed result journals with provenance and adds no replay credit", () => {
+	test("a replayed result journals with provenance and buys no execution credit", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
@@ -586,8 +806,8 @@ describe("turn journal", () => {
 		journal.noteToolDispatch(runId, "c-exec", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-exec", { out: "real" });
 		// The re-ask rides the same chunk/dispatch seams as the real call,
-		// so the row must carry full identity — without it the replayMap
-		// credit skip could pass on the row's empty name.
+		// so the row must carry full identity — without it the guard's
+		// synthetic-row skip could pass on the row's empty name.
 		journal.noteToolInput(runId, "c-replay", "probe", { q: 1 });
 		journal.noteToolDispatch(runId, "c-replay", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-replay", { out: "real" }, { replayed: true });
@@ -596,29 +816,34 @@ describe("turn journal", () => {
 		const replayed = calls.find((c) => c.toolCallId === "c-replay")!;
 		expect(replayed.replayed).toBe(true);
 		expect(executed.replayed).toBe(false);
-		// The credit skip must come from the replayed flag, not a missing
+		// The guard's skip must come from the replayed flag, not a missing
 		// name or hash.
 		expect(replayed.state).toBe("completed");
 		expect(replayed.name).toBe("probe");
 		expect(replayed.argsHash).toBe(executed.argsHash);
-		expect(journal.replayMap(runId).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(runId, next);
 		expect(journal.callsFor(next).find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
-		expect(journal.replayMap(next).get(replayKey("probe", { q: 1 }))).toEqual([{ out: "real" }]);
+		// The recovery guard ignores synthetic replayed rows as history —
+		// they are journaled answers, never executions.
+		const entries = buildRetryGuard(journal.callsFor(next)).get(
+			`${replayed.name}:${replayed.argsHash}`,
+		)!;
+		expect(entries.map((e) => e.toolCallId)).toEqual(["c-exec"]);
 		store.close();
 	});
 
-	test("replayMap carries completed and resolved-done outputs, FIFO per call", () => {
+	test("the guard sees executions and decisions by signature, FIFO in row order", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
 		const runId = begunRun(journal, conv.id);
-		// completed — replays its recorded result.
+		// completed — a recorded execution.
 		journal.noteToolInput(runId, "c-done", "probe", { q: 1 });
 		journal.noteToolDispatch(runId, "c-done", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-done", { out: "first" });
-		// resolved-done — the operator's note is the result.
+		interruptRun(store, runId);
+		// resolved-done — the operator's note is the recorded outcome.
 		journal.noteToolInput(runId, "c-asserted", "probe", { q: 2 });
 		journal.noteToolDispatch(runId, "c-asserted", "probe", { q: 2 });
 		journal.resolveCall(runId, "c-asserted", "record-result", "asserted output");
@@ -626,7 +851,8 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "c-nonote", "probe", { q: 3 });
 		journal.noteToolDispatch(runId, "c-nonote", "probe", { q: 3 });
 		journal.resolveCall(runId, "c-nonote", "record-result");
-		// retry and skip never replay; neither does failed/planned.
+		// A grant, a decline, a failure, and bare intent — each reads
+		// differently to the fence.
 		journal.noteToolInput(runId, "c-retry", "probe", { q: 4 });
 		journal.noteToolDispatch(runId, "c-retry", "probe", { q: 4 });
 		journal.resolveCall(runId, "c-retry", "authorize-retry");
@@ -640,16 +866,19 @@ describe("turn journal", () => {
 		journal.noteToolInput(runId, "c-done2", "probe", { q: 1 });
 		journal.noteToolResult(runId, "c-done2", { out: "second" });
 
-		const map = journal.replayMap(runId);
-		expect(map.size).toBe(3);
-		const sameKey = replayKey("probe", { q: 1 });
-		expect(map.get(sameKey)).toEqual([{ out: "first" }, { out: "second" }]);
-		expect(map.get(replayKey("probe", { q: 2 }))).toEqual(["asserted output"]);
-		expect(map.get(replayKey("probe", { q: 3 }))).toEqual([RESOLVED_DONE_EMPTY]);
-		expect(map.has(replayKey("probe", { q: 4 }))).toBe(false);
-		expect(map.has(replayKey("probe", { q: 5 }))).toBe(false);
-		expect(map.has(replayKey("probe", { q: 6 }))).toBe(false);
-		expect(map.has(replayKey("probe", { q: 7 }))).toBe(false);
+		const guard = buildRetryGuard(journal.callsFor(runId));
+		expect(guard.size).toBe(6);
+		// Same-signature executions keep row order — the FIFO of evidence.
+		expect(guard.get(replayKey("probe", { q: 1 }))!.map((e) => e.toolCallId)).toEqual([
+			"c-done",
+			"c-done2",
+		]);
+		expect(guard.get(replayKey("probe", { q: 4 }))![0]!.state).toBe("resolved-retry");
+		expect(guard.get(replayKey("probe", { q: 4 }))![0]!.retryConsumed).toBe(false);
+		expect(guard.get(replayKey("probe", { q: 5 }))![0]!.state).toBe("resolved-skip");
+		expect(guard.get(replayKey("probe", { q: 6 }))![0]!.state).toBe("failed");
+		// planned is intent, not execution — invisible to the fence.
+		expect(guard.get(replayKey("probe", { q: 7 }))).toBeUndefined();
 		store.close();
 	});
 
@@ -696,7 +925,6 @@ describe("turn journal", () => {
 		expect(pa.args).toEqual(pb.args);
 
 		journal.noteToolResult(runId, "big-in", { out: "landed" });
-		expect(journal.replayMap(runId).get(replayKey("probe", huge))).toEqual([{ out: "landed" }]);
 
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(runId, next);

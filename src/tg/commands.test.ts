@@ -1084,6 +1084,8 @@ describe("recovery commands", () => {
 		argsHash: "h",
 		state: "dispatched",
 		replayed: false,
+		retryConsumed: false,
+		retryFromKnown: false,
 		result: null,
 		error: null,
 		beganMs: 1,
@@ -1118,6 +1120,48 @@ describe("recovery commands", () => {
 		expect(sent[0]).toContain("probe");
 		expect(sent[0]).toContain("/decide abcdef01");
 		expect(sent[0]).toContain("/abandon abcdef01");
+		store.close();
+	});
+
+	test("/resume lists known calls with their call-id retry path — no ordinal", async () => {
+		const calls = [
+			{ ...call, toolCallId: "call-xyz789", state: "completed" as const, result: '{"out":1}' },
+			{ ...call, toolCallId: "amb-one", state: "dispatched" as const },
+		];
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
+		});
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("known: probe {\"q\":1} — completed");
+		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz authorize-retry");
+		// The known row never occupies a numbered slot — ordinals stay
+		// pinned to the ambiguous list.
+		const numbered = sent[0]!.split("\n").filter((l) => /^\s*\d+\./.test(l));
+		expect(numbered).toEqual([`  1. probe {"q":1}`]);
+		store.close();
+	});
+
+	test("/resume keeps ordinals on ambiguous calls — a granted known call mints none", async () => {
+		// The granted row precedes the ambiguous ones in journal order;
+		// numberedCalls skips it, so "1" still names the first ambiguous.
+		const calls = [
+			{
+				...call,
+				toolCallId: "known-abc",
+				state: "resolved-retry" as const,
+				retryFromKnown: true,
+			},
+			{ ...call, toolCallId: "amb-one", args: { q: 1 } },
+			{ ...call, toolCallId: "amb-two", args: { q: 2 } },
+		];
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
+		});
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		const numbered = sent[0]!.split("\n").filter((l) => /^\s*\d+\./.test(l));
+		expect(numbered).toEqual([`  1. probe {"q":1}`, `  2. probe {"q":2}`]);
 		store.close();
 	});
 

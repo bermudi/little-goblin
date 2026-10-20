@@ -58,6 +58,7 @@ const call = (
 	extra: Partial<AppRunCall> = {},
 ): AppRunCall => ({
 	toolCallId: id,
+	canAuthorizeRetry: state !== "planned" && state !== "resolved-retry" && state !== "resolved-skip",
 	name: "probe",
 	args: { q: 1 },
 	state,
@@ -241,6 +242,35 @@ describe("InterruptedTurns", () => {
 		expect(text).toContain("skipped");
 		expect(dom.container.querySelectorAll(".interrupted-decide")).toHaveLength(0);
 		expect(button("Resume turn")!.disabled).toBe(false);
+	});
+
+	test("a known call's 'Authorize another execution' posts the same authorize-retry decision", async () => {
+		// Settled calls keep their recorded outcome — the button grants
+		// one more execution, identical wire shape to the uncertain path.
+		onRequest = (req) => {
+			const path = new URL(req.url).pathname;
+			if (path.endsWith("/interrupted"))
+				return json({
+					runs: [
+						run("run-deadbeef", [
+							call("c-done", "completed", { result: '{"out":"landed"}' }),
+							call("c-fail", "failed", { error: "blew up" }),
+							call("c-plan", "planned"),
+						]),
+					],
+				});
+			if (path.endsWith("/decide")) return json({ ok: true });
+			return json({ error: "unhandled" }, 500);
+		};
+		await render();
+		expect(button("Authorize another execution")).toBeDefined();
+		await click(button("Authorize another execution")!);
+		await flush();
+		expect(decides()).toHaveLength(1);
+		expect(await decides()[0]!.json()).toEqual({
+			callId: "c-done",
+			decision: "authorize-retry",
+		});
 	});
 
 	test("the note rides record-result verbatim — whitespace preserved, empty omitted", async () => {

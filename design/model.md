@@ -76,7 +76,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   (mechanism from pi): the partial reply is held off the wire, one
   compaction runs with a smaller tail (the overflow proved the estimate
   optimistic), and the turn resumes on the compacted view, continuing the
-  partial as the same message so tools never re-run; one attempt per turn,
+  partial as the same message while the journaled calls ride the recovery
+  guard — a colliding effectful re-ask refuses, safe reads re-observe,
+  operator grants spend once; one attempt per turn,
   else a plain operator message. Ruling 2026-10-04: no deterministic
   fallback summary — the summarizer is the conversation's own model, so
   when it can't summarize the turn can't answer either, and a degraded

@@ -88,9 +88,25 @@ inherits its source's), so a crash of the continuation still resumes
 with every side effect the logical turn already recorded. Evidence
 handoff is one transaction — successor creation, call inheritance,
 source consumption — so no crash window exists where the successor
-re-executes recorded effects. A fence-answered call journals as
-replayed; replay credits count executions only — one execution keeps
-exactly one replay across any number of resumes.
+re-executes recorded effects. A fence-refused call journals as a
+synthetic `replayed` result — proof of what the model saw, never a
+second execution.
+
+**Historical evidence is not automatic tool replay** (ruling
+2026-10-19). A resumed/continued attempt builds a recovery guard once
+from its inherited calls: a new tool invocation colliding with a
+recorded EXECUTION (completed, failed, resolved-done, resolved-retry —
+planned intent and synthetic replayed rows never count) gets a labeled
+conflict naming the historical call ids, not the stale result and not a
+silent re-run. Fresh-observation reads (`read_file`, `history_search`,
+`memory_search`) execute afresh unless an explicit skip names them;
+everything else is conservative. A `resolved-retry` grant is a FIFO of
+source call ids, each consumed exactly once — the grant's
+`retry_consumed` CAS flips inside the same transaction as the new
+dispatch write, so a fault can never book an execution without spending
+the grant, and a crashed-after-consume ambiguity stays owned by the new
+dispatched row. Legacy rows migrate `retry_consumed = 1` — a
+pre-migration grant is denied rather than guessed.
 
 Stored `args` is a **preview**, never the identity: oversized JSON is
 cut to a bounded total, so no consumer can ever receive an oversized
@@ -104,12 +120,14 @@ refusal at resume.
 Resume refuses on undecided dispatched calls (each needs an explicit
 operator decision, never an automatic one), on drift from the run's
 recorded model/thinking, and on a source that is not `interrupted`. The
-resumed attempt's fence then replays recorded outputs for calls that
-have them (the tool never runs again); planned calls and
-operator-authorized retries execute; a skipped call's re-ask gets the
-operator's decline, never the side effect. The model sees only what the
-journal says happened. A headless resumed turn notifies operators on
-terminal `onDone`.
+resumed attempt's fence then refuses re-asked recorded executions with
+a labeled conflict (the recorded output stays evidence in the seeded
+partial, never the answer); planned calls, same-signature safe reads,
+and calls holding an UNCONSUMED operator retry grant execute — the
+grant is spent by the dispatch that runs under it; a skipped call's
+re-ask gets the operator's decline, never the side effect. The model
+sees only what the journal says happened. A headless resumed turn
+notifies operators on terminal `onDone`.
 
 **Operator resume is a new source-linked exchange, not a retroactive
 attach** (ruling 2026-10-19). `/resume` admits a fresh attempt whose

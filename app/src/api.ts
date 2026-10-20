@@ -467,6 +467,7 @@ const runCallSchema: z.ZodType<AppRunCall> = z.object({
 	error: z.string().nullable(),
 	resolutionNote: z.string().nullable(),
 	resolvedMs: z.number().nullable(),
+	canAuthorizeRetry: z.boolean(),
 });
 
 const interruptedRunSchema: z.ZodType<AppInterruptedRun> = z.object({

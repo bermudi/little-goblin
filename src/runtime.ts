@@ -35,6 +35,7 @@ import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
+import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
 
 const LOOP_CHECK_EVERY = 16;
 // Completed turns at/above this compact in-lane — the lane stays occupied
@@ -150,7 +151,7 @@ export class FencedError extends Error {
 // An operator-resume admission's seed (turn-resume.ts builds it): the
 // interrupted run's carry-over minus the dead attempt's live wire and
 // recall, both re-derived at the fresh admission. `resumedFrom` links the
-// new run row to the source and arms the fence's replay map.
+// new run row to the source and arms the fence's recovery guard.
 export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
@@ -536,8 +537,7 @@ export class Runtime {
 		convId: string,
 		epoch: number,
 		runId?: string,
-		replay?: ReadonlyMap<string, unknown[]>,
-		skipped?: ReadonlyMap<string, string>,
+		guard?: RetryGuard,
 		journalFault?: { current: unknown },
 		onJournalFault?: () => void,
 	): ToolSet {
@@ -560,50 +560,40 @@ export class Runtime {
 				this.checkAuthority(convId, epoch);
 				if (journalFault?.current !== undefined) throw journalFault.current;
 				if (journal !== undefined && runId !== undefined) {
-					note(() => journal.noteToolDispatch(runId, options.toolCallId, name, input));
-				}
-				// An operator-resumed turn's recorded results answer here —
-				// the side effect already ran (or the operator asserted it
-				// did), so the call never reaches execute. The dispatch and
-				// result still journal under this run's own row, flagged as
-				// replayed: proof of what the model saw, never a second
-				// replay credit for the one execution behind it.
-				const recorded = replay?.get(replayKey(name, input));
-				if (recorded !== undefined && recorded.length > 0) {
-					const value = recorded.shift();
-					if (journal !== undefined && runId !== undefined) {
+					// Recovery fence: a signature that collides with the
+					// interrupted attempt's own history is evidence, never an
+					// answer. An operator's grant CAS-consumes in the same
+					// transaction as the dispatch; a refusal journals as a
+					// synthetic replayed result — it never reads as execution.
+					const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
+					if (verdict.kind === "refuse") {
+						const value = { error: verdict.error };
 						note(() =>
 							journal.noteToolResult(runId, options.toolCallId, value, {
 								replayed: true,
 							}),
 						);
+						log.info("tool call refused by the recovery fence", {
+							conversation: convId,
+							tool: name,
+							toolCallId: options.toolCallId,
+						});
+						return value;
 					}
-					log.info("replaying recorded tool result", {
-						conversation: convId,
-						tool: name,
-						toolCallId: options.toolCallId,
-					});
-					return value;
-				}
-				// A re-ask for a call the operator skipped gets the recorded
-				// refusal, not the side effect — 'skip' means never execute.
-				// Journaled with replay provenance for the same reason.
-				const refusal = skipped?.get(replayKey(name, input));
-				if (refusal !== undefined) {
-					const value = { error: refusal };
-					if (journal !== undefined && runId !== undefined) {
-						note(() =>
-							journal.noteToolResult(runId, options.toolCallId, value, {
-								replayed: true,
-							}),
-						);
+					note(() =>
+						journal.noteToolDispatch(
+							runId,
+							options.toolCallId,
+							name,
+							input,
+							verdict.kind === "execute-grant"
+								? { retryCallId: verdict.grant.toolCallId }
+								: undefined,
+						),
+					);
+					if (verdict.kind === "execute-grant") {
+						verdict.grant.retryConsumed = true;
 					}
-					log.info("declined tool call answered with the operator's skip", {
-						conversation: convId,
-						tool: name,
-						toolCallId: options.toolCallId,
-					});
-					return value;
 				}
 				let result: ReturnType<typeof execute>;
 				try {
@@ -781,7 +771,9 @@ export class Runtime {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// Preserve loop history across overflow, while attempt-scoped state resets.
-		// Completed tool calls stay in the recovery package rather than replaying.
+		// Completed tool calls stay in the recovery package as evidence —
+		// they are never re-entered from this list; the journal's recovery
+		// guard owns what a fresh invocation may do.
 		const state = new TurnState(
 			{
 				convId,
@@ -844,7 +836,8 @@ export class Runtime {
 		const journal = this.deps.turnJournal;
 		// An operator-resume admission carries the interrupted run it
 		// continues — every attempt of this turn links its run row to it
-		// and replays its recorded results instead of re-executing.
+		// and inherits its calls as evidence: a re-asked effect conflicts
+		// unless an operator grant names it.
 		const sourceRunId = recovery?.resumedFrom;
 		let runId: string | null = null;
 		// A thrown journal write anywhere in the fence lands here — the
@@ -924,19 +917,19 @@ export class Runtime {
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
-			// The fence's evidence reads the fresh row after inheritance:
-			// it already carries the source's decisions and every
-			// predecessor attempt's recorded results, so a replay answers
-			// from this run's own durable history.
-			const replay = journal === undefined ? undefined : journal.replayMap(runId);
-			const skipped = journal === undefined ? undefined : journal.skippedMap(runId);
+			// The recovery guard reads the fresh row once, after
+			// inheritance: it already carries the source's decisions and
+			// every predecessor attempt's recorded executions. Calls this
+			// attempt then makes never join the set — same-run intentional
+			// repetition is a live-turn matter, not recovery's.
+			const recoveryGuard =
+				journal === undefined ? undefined : buildRetryGuard(journal.callsFor(runId));
 			const tools = this.fenceTools(
 				rawTools,
 				convId,
 				epoch,
 				runId,
-				replay,
-				skipped,
+				recoveryGuard,
 				journalFault,
 				() => controller.abort(),
 			);
@@ -1083,7 +1076,7 @@ export class Runtime {
 				// The crash journal is the only record of what the turn's
 				// tools did — when it cannot write, the turn dies as an
 				// error (never 'fenced', never completed) so no reported
-				// failure can invite a replay of an unjournaled effect.
+				// failure can invite a repeat of an unjournaled effect.
 				controller.abort();
 				const fault = journalFault.current;
 				log.error("turn aborted — the turn journal cannot write", fault, {

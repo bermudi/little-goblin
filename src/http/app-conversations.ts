@@ -8,6 +8,7 @@ import { log } from "../log.ts";
 import type { Project } from "../projects.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
+import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import {
 	type AppChannelDeps,
 	configPatchBody,
@@ -149,6 +150,7 @@ function appRunCall(c: TurnToolCall): AppRunCall {
 		error: c.error,
 		resolutionNote: c.resolutionNote,
 		resolvedMs: c.resolvedMs,
+		canAuthorizeRetry: canAuthorizeRetry(c),
 	};
 }
 

@@ -248,6 +248,149 @@ describe("responsibility-destination programs", () => {
 		h.store.close();
 	});
 
+	test("a failed durable enqueue keeps the occurrence due — retry records once", () => {
+		const h = harness();
+		const projects = openProjects(h.store);
+		const project = projects.create({ name: "rig" });
+		const conv = h.store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		const resps = openResponsibilities(h.store.db);
+		const { responsibility } = resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding: {
+				outcome: "land the fix",
+				situation: "mid-task",
+				nextAction: "check diff",
+				checkpoints: [],
+				completionEvidence: ["ci green"],
+			},
+		});
+		resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: {
+				server: "local",
+				session: "default",
+				agentName: "worker-1",
+				paneId: "w1:p1",
+				terminalId: "term-9",
+				agentSession: "sess-1",
+				kind: "pi",
+				cwd: "/w",
+			},
+			baseline: {},
+		});
+		const wakes = openWakeStore(h.store.db);
+		const events = () =>
+			h.store.db
+				.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events")
+				.get()!.c;
+		const program = h.deps.programs.create({
+			name: `followup:${responsibility.responsibilityId}`,
+			charter: "check in",
+			cron: "* * * * *",
+			responsibilityId: responsibility.responsibilityId,
+		});
+		let fail = true;
+		const recorded: DevelopmentInput[] = [];
+		const deps: SchedulerDeps = {
+			...h.deps,
+			responsibilities: resps,
+			recordDevelopment: (i) => {
+				if (fail) throw new Error("temporary outbox failure");
+				// The wake store dedupes the occurrence key — only a real
+				// new event counts.
+				if (wakes.record(i).created) recorded.push(i);
+			},
+		};
+		const at = new Date(program.nextRun!);
+		// The enqueue throws before any durable event — the occurrence is
+		// not consumed: no cursor advance, no last_run, still due.
+		expect(() => fireScheduled(deps, program, at)).toThrow("temporary outbox failure");
+		let cur = h.deps.programs.get(program.id)!;
+		expect(cur.nextRun).toBe(program.nextRun);
+		expect(cur.lastRun).toBeNull();
+		expect(events()).toBe(0);
+		expect(h.deps.programs.due(at).map((p) => p.id)).toContain(program.id);
+		// The retry records the same occurrence key once and advances.
+		fail = false;
+		fireScheduled(deps, cur, at);
+		cur = h.deps.programs.get(program.id)!;
+		expect(cur.nextRun).not.toBe(program.nextRun);
+		expect(cur.lastRun).toBe(at.toISOString());
+		expect(events()).toBe(1);
+		expect(recorded).toHaveLength(1);
+		// Replaying the same occurrence dedupes onto the same work event.
+		fireScheduled(deps, program, at);
+		expect(events()).toBe(1);
+		expect(recorded).toHaveLength(1);
+		h.store.close();
+	});
+
+	test("a markRan write failure after a successful enqueue refires no event", () => {
+		const h = harness();
+		const projects = openProjects(h.store);
+		const project = projects.create({ name: "rig" });
+		const conv = h.store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		const resps = openResponsibilities(h.store.db);
+		const { responsibility } = resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding: {
+				outcome: "land the fix",
+				situation: "mid-task",
+				nextAction: "check diff",
+				checkpoints: [],
+				completionEvidence: ["ci green"],
+			},
+		});
+		const wakes = openWakeStore(h.store.db);
+		const events = () =>
+			h.store.db
+				.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events")
+				.get()!.c;
+		const program = h.deps.programs.create({
+			name: `followup:${responsibility.responsibilityId}`,
+			charter: "check in",
+			cron: "* * * * *",
+			responsibilityId: responsibility.responsibilityId,
+		});
+		let markCalls = 0;
+		const deps: SchedulerDeps = {
+			...h.deps,
+			responsibilities: resps,
+			recordDevelopment: (i) => {
+				wakes.record(i);
+			},
+			programs: {
+				...h.deps.programs,
+				markRan: (id: number, now: Date) => {
+					markCalls += 1;
+					if (markCalls === 1) throw new Error("disk wedged");
+					h.deps.programs.markRan(id, now);
+				},
+			} as ProgramsStore,
+		};
+		const at = new Date(program.nextRun!);
+		// The event lands; the cursor write fails — the row stays due but
+		// the fence means the retry only rewrites the mark.
+		fireScheduled(deps, program, at);
+		expect(events()).toBe(1);
+		expect(h.deps.programs.get(program.id)!.nextRun).toBe(program.nextRun);
+		fireScheduled(deps, h.deps.programs.get(program.id)!, at);
+		expect(markCalls).toBe(2);
+		expect(events()).toBe(1);
+		expect(h.deps.programs.get(program.id)!.nextRun).not.toBe(program.nextRun);
+		h.store.close();
+	});
+
 	test("create validates the destination union", () => {
 		const h = harness();
 		expect(() =>

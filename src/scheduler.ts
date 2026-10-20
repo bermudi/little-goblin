@@ -246,26 +246,35 @@ export function fireScheduled(
 		fireFailed = true;
 		fireErr = err;
 	} finally {
-		try {
-			deps.programs.markRan(program.id, now);
-		} catch (err) {
-			let pending = pendingCursorWrites.get(deps.programs);
-			if (pending === undefined) {
-				pending = new Map();
-				pendingCursorWrites.set(deps.programs, pending);
-			}
-			pending.set(program.id, { nextRun: program.nextRun, at: now });
-			log.error(
-				"program run-mark write failed — occurrence fenced until the store accepts it",
-				err,
-				{ program: program.id, name: program.name, nextRun: program.nextRun },
-			);
-			if (fireFailed) {
-				log.error("program fire failed", fireErr, {
-					program: program.id,
-					name: program.name,
-				});
-				throw err;
+		// A responsibility-destination throw means the durable enqueue
+		// never landed — no inference ran, nothing is owed the cursor.
+		// Leave next_run due so the next scan retries the same
+		// occurrence source key onto the same work event. Generic
+		// Telegram fires keep attempt-once: the cursor advances even on
+		// a failed submit so occurrences can't refire forever.
+		const occurrenceConsumed = !fireFailed || program.responsibilityId === null;
+		if (occurrenceConsumed) {
+			try {
+				deps.programs.markRan(program.id, now);
+			} catch (err) {
+				let pending = pendingCursorWrites.get(deps.programs);
+				if (pending === undefined) {
+					pending = new Map();
+					pendingCursorWrites.set(deps.programs, pending);
+				}
+				pending.set(program.id, { nextRun: program.nextRun, at: now });
+				log.error(
+					"program run-mark write failed — occurrence fenced until the store accepts it",
+					err,
+					{ program: program.id, name: program.name, nextRun: program.nextRun },
+				);
+				if (fireFailed) {
+					log.error("program fire failed", fireErr, {
+						program: program.id,
+						name: program.name,
+					});
+					throw err;
+				}
 			}
 		}
 	}

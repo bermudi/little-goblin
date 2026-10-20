@@ -495,8 +495,21 @@ async function boot() {
 		db: store.db,
 		resps: responsibilities,
 		wakes: wakeStore,
+		conversations: store,
 		pump: () => wakeDispatcher!.pump(),
 		programs,
+		// The committed epoch fence cancels the live turn before the
+		// correction wake is admitted — a stale model stream, queued
+		// tool call, or parked preflight can no longer act.
+		onCorrectionCommitted: (conversationId, epoch) => {
+			const { settled } = runtime.cancelFenced(conversationId, epoch);
+			settled.catch((err) =>
+				log.error("correction cancel settle failed", err, {
+					conversation: conversationId,
+					epoch,
+				}),
+			);
+		},
 	});
 	responsibilitySvc = {
 		resps: responsibilities,

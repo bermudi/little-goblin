@@ -26,9 +26,9 @@ import {
 } from "./herdr.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { Database } from "bun:sqlite";
-import { tmpDir, useHome, waitUntil } from "./testkit.ts";
+import { deferred, tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { feedForProject } from "./responsibility-feed.ts";
-import { openWakeStore } from "./wake-store.ts";
+import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
 
 setLogFile(null);
@@ -72,6 +72,7 @@ function rig(): Rig {
 			resps,
 			wakes,
 			programs,
+			conversations: store,
 			pump: () => {
 				r.pumps += 1;
 			},
@@ -166,6 +167,7 @@ describe("responsibility service", () => {
 				resps: r.resps,
 				wakes: openWakeStore(r.store.db),
 				programs: sameFile,
+				conversations: r.store,
 				pump: () => {},
 			});
 			const { responsibility, created } = svc.accept({
@@ -522,12 +524,20 @@ describe("correct", () => {
 		const r = rig();
 		const resp = acceptRig(r);
 		const before = r.pumps;
+		const epochBefore = r.store.get(r.convId)!.epoch;
+		const conv2 = r.store.resolve({ kind: "app", appId: "rig-2", chatId: 0, threadId: 0 }, "/w2");
+		r.store.bindProject(conv2.id, r.projectId);
+		const epoch2Before = r.store.get(conv2.id)!.epoch;
 		r.store.db.exec(
 			"CREATE TEMP TRIGGER no_events BEFORE INSERT ON work_events BEGIN SELECT RAISE(ABORT,'blocked'); END",
 		);
 		expect(() => r.svc.correct(resp.responsibilityId, { text: "never" })).toThrow();
 		r.store.db.exec("DROP TRIGGER no_events");
 		expect(r.resps.get(resp.responsibilityId)!.revision).toBe(resp.revision);
+		// The epoch fence lives in the same commit — it rolls back too,
+		// on every bound lane.
+		expect(r.store.get(r.convId)!.epoch).toBe(epochBefore);
+		expect(r.store.get(conv2.id)!.epoch).toBe(epoch2Before);
 		expect(
 			r.store.db
 				.query("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'operator-correction'")
@@ -536,6 +546,139 @@ describe("correct", () => {
 		expect(r.pumps).toBe(before);
 		r.store.close();
 	});
+
+	test("the epoch fence commits with the correction — the hook sees it before the pump", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		// A second conversation bound to the same project gets fenced too
+		// — it holds the same coordination authority.
+		const conv2 = r.store.resolve({ kind: "app", appId: "rig-2", chatId: 0, threadId: 0 }, "/w2");
+		r.store.bindProject(conv2.id, r.projectId);
+		const order: string[] = [];
+		const seen = new Map<string, number>();
+		const epochsInHook = new Map<string, number>();
+		const svc = makeResponsibilityService({
+			db: r.store.db,
+			resps: r.resps,
+			wakes: openWakeStore(r.store.db),
+			conversations: r.store,
+			pump: () => order.push("pump"),
+			onCorrectionCommitted: (convId, epoch) => {
+				order.push(`hook:${convId}`);
+				seen.set(convId, epoch);
+				epochsInHook.set(convId, r.store.get(convId)!.epoch);
+			},
+		});
+		const before1 = r.store.get(r.convId)!.epoch;
+		const before2 = r.store.get(conv2.id)!.epoch;
+		const unrelated = r.store.resolve({ kind: "dm", chatId: 99 }, "/w");
+		const beforeOther = r.store.get(unrelated.id)!.epoch;
+		const revised = svc.correct(resp.responsibilityId, { text: "stop" });
+		expect(revised.revision).toBe(resp.revision + 1);
+		// Every bound lane — coordinator included — carries the fence in
+		// the same commit; an unbound conversation is untouched.
+		expect(r.store.get(r.convId)!.epoch).toBe(before1 + 1);
+		expect(r.store.get(conv2.id)!.epoch).toBe(before2 + 1);
+		expect(r.store.get(unrelated.id)!.epoch).toBe(beforeOther);
+		expect(seen.get(r.convId)).toBe(before1 + 1);
+		expect(seen.get(conv2.id)).toBe(before2 + 1);
+		expect(epochsInHook.get(r.convId)).toBe(before1 + 1);
+		expect(epochsInHook.get(conv2.id)).toBe(before2 + 1);
+		expect([...order].sort()).toEqual([`hook:${conv2.id}`, `hook:${r.convId}`, "pump"].sort());
+		expect(order[order.length - 1]).toBe("pump");
+		r.store.close();
+	});
+
+	test("a commit hook failure surfaces but never undoes the committed correction", () => {
+		const r = rig();
+		const resp = acceptRig(r);
+		let pumps = 0;
+		const svc = makeResponsibilityService({
+			db: r.store.db,
+			resps: r.resps,
+			wakes: openWakeStore(r.store.db),
+			conversations: r.store,
+			pump: () => {
+				pumps += 1;
+			},
+			onCorrectionCommitted: () => {
+				throw new Error("runtime gone");
+			},
+		});
+		const before = r.store.get(r.convId)!.epoch;
+		expect(() => svc.correct(resp.responsibilityId, { text: "x" })).toThrow(/runtime gone/);
+		// Commit stands: revision + epoch + event all durable, pump ran.
+		expect(r.resps.get(resp.responsibilityId)!.revision).toBe(resp.revision + 1);
+		expect(r.store.get(r.convId)!.epoch).toBe(before + 1);
+		expect(pumps).toBe(1);
+		// One lane's hook failure must not skip the others.
+		const conv2 = r.store.resolve({ kind: "app", appId: "rig-2", chatId: 0, threadId: 0 }, "/w2");
+		r.store.bindProject(conv2.id, r.projectId);
+		const hooked: string[] = [];
+		const svc2 = makeResponsibilityService({
+			db: r.store.db,
+			resps: r.resps,
+			wakes: openWakeStore(r.store.db),
+			conversations: r.store,
+			pump: () => {
+				pumps += 1;
+			},
+			onCorrectionCommitted: (convId) => {
+				hooked.push(convId);
+				throw new Error(`lane ${convId} dead`);
+			},
+		});
+		expect(() => svc2.correct(resp.responsibilityId, { text: "y" })).toThrow(/lane .* dead/);
+		expect(hooked.sort()).toEqual([conv2.id, r.convId].sort());
+		expect(pumps).toBe(2);
+		expect(
+			r.store.db
+				.query("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'operator-correction'")
+				.get(),
+		).toEqual({ n: 2 });
+		r.store.close();
+	});
+
+	test.each([undefined, null])(
+		"a hook throwing %s still rethrows after every lane + pump",
+		(thrown) => {
+			const r = rig();
+			const resp = acceptRig(r);
+			const conv2 = r.store.resolve(
+				{ kind: "app", appId: "rig-2", chatId: 0, threadId: 0 },
+				"/w2",
+			);
+			r.store.bindProject(conv2.id, r.projectId);
+			const hooked: string[] = [];
+			let pumps = 0;
+			let didThrow = false;
+			let caught: unknown = "sentinel";
+			const svc = makeResponsibilityService({
+				db: r.store.db,
+				resps: r.resps,
+				wakes: openWakeStore(r.store.db),
+				conversations: r.store,
+				pump: () => {
+					pumps += 1;
+				},
+				onCorrectionCommitted: (convId) => {
+					hooked.push(convId);
+					throw thrown;
+				},
+			});
+			try {
+				svc.correct(resp.responsibilityId, { text: "x" });
+			} catch (err) {
+				didThrow = true;
+				caught = err;
+			}
+			expect(didThrow).toBe(true);
+			expect(caught).toBe(thrown);
+			expect(hooked.sort()).toEqual([conv2.id, r.convId].sort());
+			expect(pumps).toBe(1);
+			r.store.close();
+		},
+	);
 });
 
 describe("dispatch pre-send revalidation", () => {
@@ -970,6 +1113,7 @@ describe("atomic dispatch claim", () => {
 			db: store2.db,
 			resps: resps2,
 			wakes: openWakeStore(store2.db),
+			conversations: store2,
 			pump: () => {},
 		});
 		const reopened = resps2.getOperation(op.operationId)!;
@@ -1095,4 +1239,89 @@ describe("managed prompt authority after Herdr preflight", () => {
 			r.store.close();
 		},
 	);
+});
+
+describe("operation reconciliation at the service edge", () => {
+	const sentRig = async (r: Rig) => {
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [
+				{
+					target: {
+						server: "local",
+						session: "default",
+						agentName: "w1:p1",
+						paneId: "w1:p1",
+						terminalId: "term-9",
+						agentSession: "sess-1",
+						kind: "pi",
+						cwd: "/w",
+					},
+					baseline: {},
+				},
+			],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		return { resp, op: prepared.operation };
+	};
+
+	test("a live in-process dispatch refuses reconcile; the settled row reconciles normally", async () => {
+		const r = rig();
+		const { op } = await sentRig(r);
+		const gate = deferred<void>();
+		const dispatch = r.svc.dispatch(op.operationId, async () => {
+			await gate.promise;
+			return {};
+		});
+		await waitUntil(
+			() => r.resps.getOperation(op.operationId)!.state === "sent",
+			"op claimed",
+		);
+		expect(r.svc.reconcile(op.operationId, "not_delivered", "pane shows nothing")).toEqual({
+			refused: "dispatch-in-flight",
+		});
+		gate.resolve();
+		await expect(dispatch).resolves.toEqual({ sent: true });
+		// Settled and acknowledged: a late not_delivered verdict conflicts —
+		// the recorded outcome is never overwritten.
+		expect(r.svc.reconcile(op.operationId, "not_delivered", "pane shows nothing")).toEqual({
+			refused: "reconcile-conflict",
+			error: `prompt operation ${op.operationId} is acknowledged — only sent/uncertain operations reconcile`,
+		});
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("acknowledged");
+		r.store.close();
+	});
+
+	test("a cross-process reconciliation mid-dispatch stands — the settling edge reports it", async () => {
+		const r = rig();
+		const { op } = await sentRig(r);
+		const db2 = new Database(r.dbPath);
+		const resps2 = openResponsibilities(db2);
+		const out = await r.svc.dispatch(op.operationId, async () => {
+			// Another process reconciles against evidence while our edge is
+			// still on the wire — its verdict must not be overwritten.
+			resps2.reconcileOperation(op.operationId, "not_delivered", "pane shows no prompt");
+			return { wire: "ok" };
+		});
+		expect(out).toEqual({ refused: "not-delivered" });
+		const row = r.resps.getOperation(op.operationId)!;
+		expect(row.state).toBe("refused");
+		expect(row.outcome).toMatchObject({
+			reconciliation: {
+				delivery: "not_delivered",
+				evidence: "pane shows no prompt",
+			},
+		});
+		db2.close();
+		r.store.close();
+	});
 });

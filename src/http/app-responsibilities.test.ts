@@ -43,6 +43,7 @@ function depsFor(
 			resps,
 			wakes,
 			programs,
+			conversations: ctx.store,
 			pump: () => {},
 		}),
 		listAgents: () => Promise.resolve(opts.agents ?? []),
@@ -376,3 +377,74 @@ for (const scenario of [
 		}
 	});
 }
+
+test("reattach to the same agent with an unresolved delivery is a 409, not a crash", async () => {
+	// The live agent still reports the bound identity — same dispatch
+	// target — so a generation bump would silently skip reconciliation.
+	const live: OperatorAgent = {
+		pane_id: "pane-7",
+		workspace_id: "w",
+		tab_id: "t",
+		agent: "pi",
+		agent_status: "idle",
+		name: "worker-1",
+		cwd: "/w",
+		terminal_title: null,
+		workspace_label: null,
+		tab_label: null,
+		terminal_id: "term-9",
+		agent_session: "sess-abc",
+		state_change_seq: 9,
+		completion_seq: 2,
+		revision: 4,
+	};
+	let rig!: Rig;
+	const { http, call, store, projects } = setup({
+		token: APP_TOKEN_NAME,
+		responsibilities: (ctx) => {
+			rig = depsFor(ctx, { agents: [live] });
+			return rig.responsibilities;
+		},
+	});
+	try {
+		const project = projects.create({ name: "rig" });
+		const conv = store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		const { responsibility } = rig.resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding,
+		});
+		const att = rig.resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = rig.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		rig.resps.claimForSend(prepared.operation.operationId);
+		rig.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		rig.resps.detach(att.attachmentId);
+		const response = await call(
+			`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
+			{ method: "POST" },
+		);
+		expect(response.status).toBe(409);
+		const body = (await response.json()) as { error: string; operation?: { operationId: string } };
+		expect(body.operation?.operationId).toBe(prepared.operation.operationId);
+		expect(body.error).toContain(prepared.operation.operationId);
+		expect(rig.resps.getAttachment(att.attachmentId)!.generation).toBe(1);
+	} finally {
+		http.stop();
+	}
+});

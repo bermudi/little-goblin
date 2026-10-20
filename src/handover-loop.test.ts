@@ -73,6 +73,7 @@ describe("the handover loop, end to end", () => {
 			resps,
 			wakes,
 			programs,
+			conversations: store,
 			pump: () => {
 				pumps += 1;
 			},

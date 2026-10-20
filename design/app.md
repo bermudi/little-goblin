@@ -418,3 +418,35 @@ injected.
 prefix per live app conversation. Frozen prompt snapshots keep the old
 "Tools:" line until the next boundary (roll, compaction); the description
 carries the guidance meanwhile.
+
+## Coordination fences & delivery evidence (ruling 2026-10-20)
+
+- **Corrections fence the whole project, not one lane.** Every
+  conversation bound to the project can reach the coordination tools,
+  so `service.correct()` bumps the epoch of every bound lane plus the
+  coordination conversation inside the same commit as the revision and
+  the durable event — one commit, one rollback unit. The commit hook
+  (`onCorrectionCommitted`, wired to `runtime.cancelFenced`) then
+  cancels each fenced lane before the correction wake is pumped; a hook
+  failure on one lane never skips the rest and never undoes the commit.
+- **Unresolved delivery fences the attachment generation.** While any
+  operation on an attachment generation is `sent`/`uncertain`, no new
+  operation prepares (check+insert atomic) and no sibling prepared op
+  can claim — regardless of brief, revision, tool-call id, or restart.
+  The only way out is `reconcile {operation, delivery, evidence}`:
+  inspected evidence closes the op `acknowledged`/`refused`, records
+  verdict+evidence+prior outcome, is idempotent on identical replay,
+  and conflicts by name. A live in-process dispatch refuses reconcile;
+  a crashed `sent` row reconciles freely. Settlements CAS from `sent`
+  so a reconciled row is never overwritten.
+- **Same-identity reattach skips reconciliation — refused.** A reattach
+  whose target equals the bound dispatch identity (server, session,
+  terminal, agent_session, kind) while a delivery is unresolved throws
+  `ReconciliationConflict` naming the op (tool: `delivery-uncertain`;
+  HTTP: 409). A genuinely changed identity is a deliberate adoption and
+  bumps generation normally.
+- **Responsibility-destination programs are durable enqueues.** If the
+  `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
+  the occurrence stays due and the next scan retries the same source
+  key onto the same work event. Generic Telegram fires keep
+  attempt-once.

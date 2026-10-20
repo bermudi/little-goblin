@@ -12,15 +12,17 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import type { ConversationStore } from "./conversation.ts";
 import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
-import type {
-	Attachment,
-	AttachmentTarget,
-	Responsibility,
-	ResponsibilityStore,
-	SendRefusal,
-	Understanding,
+import {
+	ReconciliationConflict,
+	type Attachment,
+	type AttachmentTarget,
+	type PromptOperation,
+	type Responsibility,
+	type ResponsibilityStore,
+	type Understanding,
 } from "./responsibilities.ts";
 import type { WakeStore } from "./wake-store.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
@@ -29,11 +31,22 @@ export interface ServiceDeps {
 	db: Database;
 	resps: ResponsibilityStore;
 	wakes: WakeStore;
+	/** The same db handle's conversation store — correct() bumps the
+	 *  epoch of every conversation bound to the project inside the
+	 *  commit so a rollback undoes revision + fences + event together. */
+	conversations: Pick<ConversationStore, "bumpEpoch" | "listProjectConversationIds">;
 	/** Called after every commit so the durable wake reaches its lane. */
 	pump(): void;
 	/** Programs owns the check-in's time; the service owns its purpose.
 	 *  Absent = the responsibility stays honestly unarmed. */
 	programs?: Pick<ProgramsStore, "create" | "get" | "update"> | undefined;
+	/** Invoked after the correction commits — the committed epoch in
+	 *  hand — and before pump, so the composition fences the live turn
+	 *  before the correction wake is admitted. The commit stands either
+	 *  way; a hook error surfaces and the wake still pumps. */
+	onCorrectionCommitted?:
+		| ((conversationId: string, epoch: number) => void)
+		| undefined;
 }
 
 export interface HandoverInput {
@@ -71,6 +84,15 @@ export interface ResponsibilityService {
 	/** Dispatch a prepared operation. The send edge resolves to the
 	 *  wire's post-send record; a refusal means nothing was sent. */
 	dispatch(operationId: string, send: ManagedSend): Promise<{ sent: true } | { refused: string }>;
+	/** Close a sent/uncertain operation against inspected delivery
+	 *  evidence — the escape hatch the unresolved-delivery fence names.
+	 *  A live in-process dispatch refuses: its settlement owns the row
+	 *  until it lands. */
+	reconcile(
+		operationId: string,
+		delivery: "delivered" | "not_delivered",
+		evidence: string,
+	): { operation: PromptOperation } | { refused: string; error?: string };
 }
 
 // The follow-up's charter: time is the cron's job; this is the purpose
@@ -154,6 +176,9 @@ export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): Manag
 
 export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityService {
 	const { db, resps, wakes, pump } = deps;
+	// Operations with a live in-process dispatch — reconcile refuses
+	// them while their settlement is still owed.
+	const inflight = new Set<string>();
 
 	const svc: ResponsibilityService = {
 		correct(responsibilityId, input) {
@@ -161,10 +186,22 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				throw new Error("nothing to correct");
 			}
 			let revised!: Responsibility;
+			const epochs = new Map<string, number>();
 			db.transaction(() => {
 				const current = resps.get(responsibilityId);
 				if (current === null) throw new Error(`responsibility ${responsibilityId} not found`);
 				revised = resps.revise(responsibilityId, input.understanding ?? current.understanding);
+				// The operator's word outranks anything in flight — in ANY
+				// lane of this project, since every bound conversation can
+				// reach the coordination tools. Bump them all in the same
+				// commit: a rollback undoes revision + fences + event.
+				const lanes = new Set(
+					deps.conversations.listProjectConversationIds(current.projectId),
+				);
+				lanes.add(current.coordinationConversationId);
+				for (const id of lanes) {
+					epochs.set(id, deps.conversations.bumpEpoch(id));
+				}
 				wakes.record({
 					sourceKey: `correction:${responsibilityId}:${randomUUID()}`,
 					conversationId: current.coordinationConversationId,
@@ -181,7 +218,23 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 					responsibilityId,
 				});
 			})();
+			// Every fenced lane gets its cancellation before the wake
+			// pumps — a hook failure on one lane never skips the rest.
+			let firstHookError: { error: unknown } | null = null;
+			for (const [convId, epoch] of epochs) {
+				try {
+					deps.onCorrectionCommitted?.(convId, epoch);
+				} catch (err) {
+					firstHookError ??= { error: err };
+					log.error("correction commit hook failed", err, {
+						responsibility: responsibilityId,
+						conversation: convId,
+						epoch,
+					});
+				}
+			}
 			pump();
+			if (firstHookError !== null) throw firstHookError.error;
 			log.info("responsibility correction", {
 				responsibility: responsibilityId,
 				revised: input.understanding !== undefined,
@@ -362,45 +415,108 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				});
 				return { refused: "identity-unenforceable" };
 			}
-			const claim = resps.claimForSend(operationId);
-			if ("refused" in claim) {
-				const current = resps.getOperation(operationId);
-				if (current !== null && current.state !== "prepared") {
-					return current.state === "sent" || current.state === "uncertain"
-						? { refused: "delivery-uncertain" }
-						: { refused: "already-terminal" };
-				}
-				return { refused: claim.refused };
-			}
-			const recheck = () => {
-				const again = resps.validateForSend(operationId, "sent");
-				if ("refused" in again) {
-					throw new HerdrRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
-				}
+			// The recorded disposition beats whatever this in-flight edge
+			// reports: a reconciliation landed by another process CAS-fences
+			// our settlement to 'sent' and stands.
+			const disposition = (fallback: string): { sent: true } | { refused: string } => {
+				const cur = resps.getOperation(operationId);
+				if (cur === null) return { refused: "operation-missing" };
+				if (cur.state === "acknowledged") return { sent: true };
+				if (cur.state === "refused") return { refused: cur.refusal ?? fallback };
+				return { refused: fallback };
 			};
+			inflight.add(operationId);
 			try {
-				recheck();
-				const outcome = await send(op.brief, att.target, recheck);
-				resps.transitionOperation(operationId, "acknowledged", { outcome });
-				return { sent: true };
-			} catch (err) {
-				// A refusal is a pre-send verdict — nothing left this host.
-				if (err instanceof HerdrRefusal) {
-					resps.transitionOperation(operationId, "refused", { refusal: err.code });
-					log.info("managed send refused by the edge", {
-						operation: operationId,
-						refusal: err.code,
-					});
-					return { refused: err.code };
+				const claim = resps.claimForSend(operationId);
+				if ("refused" in claim) {
+					const current = resps.getOperation(operationId);
+					if (current !== null && current.state !== "prepared") {
+						return current.state === "sent" || current.state === "uncertain"
+							? { refused: "delivery-uncertain" }
+							: { refused: "already-terminal" };
+					}
+					return { refused: claim.refused };
 				}
-				// Any other post-dispatch error: the send may have landed —
-				// uncertain delivery is evidence to reconcile, never
-				// permission to send again.
-				resps.transitionOperation(operationId, "uncertain", {
-					outcome: { error: err instanceof Error ? err.message : String(err) },
+				const recheck = () => {
+					const again = resps.validateForSend(operationId, "sent");
+					if ("refused" in again) {
+						throw new HerdrRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
+					}
+				};
+				try {
+					recheck();
+					const outcome = await send(op.brief, att.target, recheck);
+					resps.transitionOperation(operationId, "acknowledged", {
+						outcome,
+						from: "sent",
+					});
+					const cur = resps.getOperation(operationId);
+					if (cur !== null && cur.state !== "acknowledged") {
+						log.warn("managed send settlement superseded by reconciliation", {
+							operation: operationId,
+							state: cur.state,
+						});
+					}
+					return disposition("delivery-uncertain");
+				} catch (err) {
+					// A refusal is a pre-send verdict — nothing left this host.
+					if (err instanceof HerdrRefusal) {
+						resps.transitionOperation(operationId, "refused", {
+							refusal: err.code,
+							from: "sent",
+						});
+						log.info("managed send refused by the edge", {
+							operation: operationId,
+							refusal: err.code,
+						});
+						return disposition(err.code);
+					}
+					// Any other post-dispatch error: the send may have landed —
+					// uncertain delivery is evidence to reconcile, never
+					// permission to send again.
+					resps.transitionOperation(operationId, "uncertain", {
+						outcome: { error: err instanceof Error ? err.message : String(err) },
+						from: "sent",
+					});
+					const cur = resps.getOperation(operationId);
+					if (cur !== null && cur.state !== "uncertain") {
+						log.warn("managed send outcome superseded by reconciliation", {
+							operation: operationId,
+							state: cur.state,
+						});
+					}
+					log.error("managed send outcome uncertain", err, {
+						operation: operationId,
+					});
+					return disposition("delivery-uncertain");
+				}
+			} finally {
+				inflight.delete(operationId);
+			}
+		},
+
+		reconcile(operationId, delivery, evidence) {
+			// A live in-process dispatch owns the row's settlement — a late
+			// send callback could otherwise land the very action the
+			// reconciliation says never happened. Crashed 'sent' rows are
+			// reconcilable: the in-flight set is process-local and empty.
+			if (inflight.has(operationId)) {
+				log.warn("operation reconciliation refused — dispatch in flight", {
+					operation: operationId,
 				});
-				log.error("managed send outcome uncertain", err, { operation: operationId });
-				return { refused: "delivery-uncertain" };
+				return { refused: "dispatch-in-flight" };
+			}
+			try {
+				return { operation: resps.reconcileOperation(operationId, delivery, evidence) };
+			} catch (err) {
+				if (err instanceof ReconciliationConflict) {
+					log.info("operation reconciliation refused", {
+						operation: operationId,
+						error: err.message,
+					});
+					return { refused: "reconcile-conflict", error: err.message };
+				}
+				throw err;
 			}
 		},
 	};

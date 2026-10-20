@@ -11,7 +11,9 @@ import { setLogFile } from "./log.ts";
 import { openProjects, type ProjectStore } from "./projects.ts";
 import {
 	openResponsibilities,
+	ReconciliationConflict,
 	type AttachmentTarget,
+	type Responsibility,
 	type ResponsibilityStore,
 	type Understanding,
 } from "./responsibilities.ts";
@@ -25,18 +27,20 @@ interface Rig {
 	resps: ResponsibilityStore;
 	projectId: string;
 	convId: string;
+	dbPath: string;
 }
 
 function rig(): Rig {
 	const home = useHome(`goblin-resps-${tmpDir().slice(-6)}-`);
 	mkdirSync(join(home, "state"), { recursive: true });
-	const store = openStore(join(home, "state", "goblin.sqlite"));
+	const dbPath = join(home, "state", "goblin.sqlite");
+	const store = openStore(dbPath);
 	const projects = openProjects(store);
 	const project = projects.create({ name: "rig" });
 	const conv = store.resolve({ kind: "app", appId: project.slug, chatId: 0, threadId: 0 }, project.dir);
 	store.bindProject(conv.id, project.id);
 	const resps = openResponsibilities(store.db);
-	return { store, projects, resps, projectId: project.id, convId: conv.id };
+	return { store, projects, resps, projectId: project.id, convId: conv.id, dbPath };
 }
 
 const understanding = (over: Partial<Understanding> = {}): Understanding => ({
@@ -387,9 +391,13 @@ describe("operation state machine and atomic claim", () => {
 		const { op: op2 } = prep(r);
 		r.resps.transitionOperation(op2.operationId, "sent");
 		r.resps.transitionOperation(op2.operationId, "uncertain", { outcome: { error: "io" } });
-		expect(() =>
-			r.resps.transitionOperation(op2.operationId, "acknowledged", { outcome: {} }),
-		).toThrow(/not a legal operation transition/);
+		// Uncertain closes only through reconcileOperation's evidence —
+		// every terminal move off it is forbidden to the public API.
+		for (const to of ["acknowledged", "refused", "sent", "prepared"] as const) {
+			expect(() => r.resps.transitionOperation(op2.operationId, to)).toThrow(
+				/not a legal operation transition/,
+			);
+		}
 		expect(r.resps.getOperation(op2.operationId)!.state).toBe("uncertain");
 		r.store.close();
 	});
@@ -439,6 +447,275 @@ describe("operation state machine and atomic claim", () => {
 		const free = r.store.resolve({ kind: "dm", chatId: 4 }, "/w");
 		r.store.deleteConversation(free.id);
 		expect(r.store.get(free.id)).toBeNull();
+		r.store.close();
+	});
+});
+
+describe("unresolved delivery fence", () => {
+	const setup = (r: Rig): { resp: Responsibility; attId: number } => {
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		return { resp, attId: att.attachmentId };
+	};
+	const prep = (r: Rig, resp: Responsibility, attId: number, brief = "b") =>
+		r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: attId,
+			brief,
+		});
+
+	test("a sent/uncertain sibling blocks every new send — any brief, any revision, any process", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const first = prep(r, resp, attId, "original brief");
+		if (!("operation" in first)) throw new Error("expected prepared");
+		r.resps.claimForSend(first.operation.operationId); // -> sent
+		r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		// Identical retry, new revision, different brief — all blocked by
+		// the unresolved sibling, which the refusal names for reconcile.
+		for (const [brief, revise] of [
+			["original brief", false],
+			["a different brief", false],
+			["after the correction", true],
+		] as const) {
+			if (revise) r.resps.revise(resp.responsibilityId, understanding());
+			const again = prep(r, resp, attId, brief);
+			if (!("refused" in again)) throw new Error(`expected refusal for ${brief}`);
+			expect(again.refused).toBe("delivery-uncertain");
+			expect(again.unresolved!.operationId).toBe(first.operation.operationId);
+		}
+		expect(r.resps.operationsFor(resp.responsibilityId)).toHaveLength(1);
+		// Durable across process restart — a fresh store on the same file.
+		const store2 = openStore(r.dbPath);
+		const resps2 = openResponsibilities(store2.db);
+		const reopened = resps2.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: attId,
+			brief: "post-restart",
+		});
+		if (!("refused" in reopened)) throw new Error("expected refusal after reopen");
+		expect(reopened.refused).toBe("delivery-uncertain");
+		// Reconciliation is the documented escape: not_delivered unblocks.
+		resps2.reconcileOperation(
+			first.operation.operationId,
+			"not_delivered",
+			"operator checked pane — no prompt arrived",
+		);
+		const after = resps2.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: attId,
+			brief: "genuinely new send",
+		});
+		expect("operation" in after).toBe(true);
+		store2.close();
+		r.store.close();
+	});
+
+	test("two prepared ops on one attachment — the claim fences the second", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const a = prep(r, resp, attId, "a");
+		const b = prep(r, resp, attId, "b");
+		if (!("operation" in a) || !("operation" in b))
+			throw new Error("both prepare — the fence is claim-time");
+		expect("operation" in r.resps.claimForSend(a.operation.operationId)).toBe(true);
+		expect(r.resps.claimForSend(b.operation.operationId)).toEqual({
+			refused: "delivery-uncertain",
+		});
+		expect(r.resps.getOperation(b.operation.operationId)!.state).toBe("prepared");
+		r.store.close();
+	});
+});
+
+describe("operation reconciliation", () => {
+	const uncertainOp = (r: Rig) => {
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const id = prepared.operation.operationId;
+		r.resps.claimForSend(id);
+		r.resps.transitionOperation(id, "uncertain", { outcome: { error: "io" }, from: "sent" });
+		return r.resps.getOperation(id)!;
+	};
+
+	test("delivered acknowledges with the prior outcome preserved; identical replay is idempotent", () => {
+		const r = rig();
+		const op = uncertainOp(r);
+		const closed = r.resps.reconcileOperation(
+			op.operationId,
+			"delivered",
+			"pane tail shows the prompt and the reply",
+		);
+		expect(closed.state).toBe("acknowledged");
+		expect(closed.outcome).toMatchObject({
+			prior: { error: "io" },
+			reconciliation: { delivery: "delivered", evidence: "pane tail shows the prompt and the reply" },
+		});
+		const replayed = r.resps.reconcileOperation(
+			op.operationId,
+			"delivered",
+			"pane tail shows the prompt and the reply",
+		);
+		expect(replayed).toEqual(closed);
+		r.store.close();
+	});
+
+	test("not_delivered refuses the op; a conflicting reconciliation is a named conflict", () => {
+		const r = rig();
+		const op = uncertainOp(r);
+		const closed = r.resps.reconcileOperation(
+			op.operationId,
+			"not_delivered",
+			"pane shows no prompt",
+		);
+		expect(closed.state).toBe("refused");
+		expect(closed.refusal).toBe("not-delivered");
+		expect(closed.outcome).toMatchObject({
+			prior: { error: "io" },
+			reconciliation: { delivery: "not_delivered", evidence: "pane shows no prompt" },
+		});
+		expect(() =>
+			r.resps.reconcileOperation(op.operationId, "delivered", "actually it did land"),
+		).toThrow(ReconciliationConflict);
+		expect(() =>
+			r.resps.reconcileOperation(op.operationId, "not_delivered", "different evidence"),
+		).toThrow(ReconciliationConflict);
+		// Never overwritten — the recorded verdict stands.
+		expect(r.resps.getOperation(op.operationId)!.outcome).toEqual(closed.outcome);
+		r.store.close();
+	});
+
+	test("reconcile requires evidence and a sent/uncertain operation", () => {
+		const r = rig();
+		const op = uncertainOp(r);
+		expect(() => r.resps.reconcileOperation(op.operationId, "delivered", "  ")).toThrow(
+			/evidence/,
+		);
+		expect(() => r.resps.reconcileOperation("op-nope", "delivered", "x")).toThrow(/not found/);
+		// 'prepared' never reached the wire — nothing to reconcile.
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		expect(() =>
+			r.resps.reconcileOperation(prepared.operation.operationId, "delivered", "x"),
+		).toThrow(ReconciliationConflict);
+		r.store.close();
+	});
+});
+
+describe("reattach identity guard", () => {
+	const bind = (r: Rig) => {
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		return r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+	};
+	const uncertainOp = (r: Rig, att: { attachmentId: number; responsibilityId: string }) => {
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: att.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId);
+		r.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		return r.resps.getOperation(prepared.operation.operationId)!;
+	};
+
+	test("reattach to the same dispatch identity refuses while a delivery is unresolved", () => {
+		const r = rig();
+		const att = bind(r);
+		const op = uncertainOp(r, att);
+		r.resps.detach(att.attachmentId);
+		// Identical server/session/terminal/session-kind — a generation
+		// bump would let the ambiguous delivery slip.
+		expect(() => r.resps.reattach(att.attachmentId, target(), {})).toThrow(
+			ReconciliationConflict,
+		);
+		expect(r.resps.getAttachment(att.attachmentId)!.generation).toBe(1);
+		expect(r.resps.getAttachment(att.attachmentId)!.health).toBe("detached");
+		// The conflict names the op to reconcile; reconciling unblocks it.
+		try {
+			r.resps.reattach(att.attachmentId, target(), {});
+			throw new Error("unreachable");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ReconciliationConflict);
+			expect((err as ReconciliationConflict).unresolved?.operationId).toBe(
+				op.operationId,
+			);
+		}
+		r.resps.reconcileOperation(op.operationId, "not_delivered", "pane shows no prompt");
+		const again = r.resps.reattach(att.attachmentId, target(), {});
+		expect(again.generation).toBe(2);
+		r.store.close();
+	});
+
+	test("a live 'sent' op blocks too; a genuinely changed identity reattaches freely", () => {
+		const r = rig();
+		const att = bind(r);
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: att.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId); // -> sent, still in flight
+		expect(() => r.resps.reattach(att.attachmentId, target(), {})).toThrow(
+			ReconciliationConflict,
+		);
+		// A new agent_session is a replacement adoption — generation bumps.
+		const again = r.resps.reattach(att.attachmentId, target({ agentSession: "sess-new" }), {});
+		expect(again.generation).toBe(2);
 		r.store.close();
 	});
 });

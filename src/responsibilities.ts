@@ -116,7 +116,22 @@ export type SendRefusal =
 	| "stale-generation"
 	| "stale-revision"
 	| "already-terminal"
-	| "operation-missing";
+	| "operation-missing"
+	| "delivery-uncertain";
+
+// Reconcile-vs-record collision: the operation already carries a
+// terminal disposition (or a recorded reconciliation) that disagrees
+// with the one being asserted. Never overwrite evidence — refuse by
+// name and let the caller inspect the record. `unresolved` carries the
+// blocking operation when the conflict is an unfenced delivery.
+export class ReconciliationConflict extends Error {
+	constructor(
+		message: string,
+		readonly unresolved?: PromptOperation,
+	) {
+		super(message);
+	}
+}
 
 export interface ResponsibilityStore {
 	/** Idempotent on handoverKey: a duplicate handover returns the
@@ -154,14 +169,18 @@ export interface ResponsibilityStore {
 	reattach(attachmentId: number, target: AttachmentTarget, baseline: unknown): Attachment;
 
 	/** Prepare a managed send: validates the live responsibility and
-	 *  attachment, snapshots generation + revision, or refuses by name. */
+	 *  attachment, snapshots generation + revision, or refuses by name.
+	 *  While ANY operation on this attachment generation sits in 'sent'
+	 *  or 'uncertain', a fresh prepare refuses 'delivery-uncertain' and
+	 *  hands back the unresolved op — delivery was never confirmed, so
+	 *  nothing may dispatch again until that op is reconciled. */
 	prepareOperation(input: {
 		responsibilityId: string;
 		attachmentId: number;
 		brief: string;
 		journalRunId?: string | undefined;
 		toolCallId?: string | undefined;
-	}): { operation: PromptOperation } | { refused: SendRefusal };
+	}): { operation: PromptOperation } | { refused: SendRefusal; unresolved?: PromptOperation };
 	getOperation(operationId: string): PromptOperation | null;
 	operationsFor(responsibilityId: string): PromptOperation[];
 	/** Re-check right before dispatch — the race the refusal names. */
@@ -181,6 +200,17 @@ export interface ResponsibilityStore {
 			from?: OperationState;
 		},
 	): void;
+	/** Evidence-based close of a sent/uncertain operation: 'delivered'
+	 *  acknowledges, 'not_delivered' refuses — the prior outcome is
+	 *  preserved under `prior` and the verdict/evidence/at recorded
+	 *  under `reconciliation`. Replaying the identical verdict+evidence
+	 *  is idempotent; any other resolution path or a conflicting
+	 *  reconciliation throws ReconciliationConflict. */
+	reconcileOperation(
+		operationId: string,
+		delivery: "delivered" | "not_delivered",
+		evidence: string,
+	): PromptOperation;
 }
 
 const respRowSchema = z.object({
@@ -305,6 +335,9 @@ function toOperation(r: OpRow): PromptOperation {
 	};
 }
 
+// Uncertain has NO public terminal transitions: only
+// reconcileOperation's evidence-gated CAS (a private write, not an
+// edge) may close an ambiguous delivery.
 const OP_EDGES: Readonly<Record<OperationState, ReadonlySet<OperationState>>> = {
 	prepared: new Set(["sent", "refused", "superseded"]),
 	sent: new Set(["acknowledged", "uncertain", "refused"]),
@@ -456,6 +489,12 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	const qOpsFor = db.query<OpRow, [string]>(
 		"SELECT * FROM prompt_operations WHERE responsibility_id = ? ORDER BY created_at",
 	);
+	// The unresolved-delivery guard: an operation that reached the wire
+	// (sent) or lost its outcome (uncertain) blocks every new send to
+	// the same attachment generation until reconciled.
+	const qUnresolved = db.query<OpRow, [number, number]>(
+		"SELECT * FROM prompt_operations WHERE attachment_id = ? AND attachment_generation = ? AND state IN ('sent','uncertain') ORDER BY created_at LIMIT 1",
+	);
 	const qOpClaim = db.prepare(
 		`UPDATE prompt_operations SET state = 'sent', sent_at = ? WHERE operation_id = ? AND state = 'prepared'`,
 	);
@@ -591,26 +630,49 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			log.info("attachment detached", { attachment: attachmentId });
 		},
 		reattach(attachmentId, target, baseline) {
-			qAttReattach.run(
-				target.server,
-				target.session,
-				target.agentName,
-				target.paneId,
-				target.terminalId,
-				target.agentSession,
-				target.kind,
-				target.cwd,
-				JSON.stringify(baseline ?? null),
-				attachmentId,
-			);
-			const att = requireAtt(attachmentId);
+			// A reattach to the SAME dispatch identity is not a replacement —
+			// it must not mint a fresh generation past an unresolved
+			// delivery. A genuinely changed identity (new agent_session,
+			// terminal, server…) is a deliberate adoption and proceeds.
+			let out!: Attachment;
+			db.transaction(() => {
+				const current = requireAtt(attachmentId);
+				const sameIdentity =
+					current.target.server === target.server &&
+					current.target.session === target.session &&
+					current.target.terminalId === target.terminalId &&
+					current.target.agentSession === target.agentSession &&
+					current.target.kind === target.kind;
+				if (sameIdentity) {
+					const blocked = qUnresolved.get(attachmentId, current.generation);
+					if (blocked !== null) {
+						throw new ReconciliationConflict(
+							`attachment ${attachmentId} reattach to the same dispatch identity skips reconciliation of ${blocked.operation_id}`,
+							toOperation(opRowSchema.parse(blocked)),
+						);
+					}
+				}
+				qAttReattach.run(
+					target.server,
+					target.session,
+					target.agentName,
+					target.paneId,
+					target.terminalId,
+					target.agentSession,
+					target.kind,
+					target.cwd,
+					JSON.stringify(baseline ?? null),
+					attachmentId,
+				);
+				out = requireAtt(attachmentId);
+			})();
 			log.info("attachment reattached", {
 				attachment: attachmentId,
-				generation: att.generation,
+				generation: out.generation,
 				agent: target.agentName,
 				agentSession: target.agentSession,
 			});
-			return att;
+			return out;
 		},
 
 		prepareOperation(input) {
@@ -618,27 +680,52 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			const att = store.getAttachment(input.attachmentId);
 			const refusal = checkSendable(resp, att);
 			if (refusal !== null) return { refused: refusal };
-			const operationId = `op-${randomUUID()}`;
-			qInsertOp.run(
-				operationId,
-				input.responsibilityId,
-				input.attachmentId,
-				att!.generation,
-				resp!.revision,
-				input.brief,
-				input.journalRunId ?? null,
-				input.toolCallId ?? null,
-				now(),
-			);
-			const op = store.getOperation(operationId)!;
+			// Check-and-insert in one transaction: the unresolved-op read
+			// and the new row are one atomic step, so a racing claim can
+			// never interleave a dispatch between them.
+			let prepared:
+				| { operation: PromptOperation }
+				| { refused: SendRefusal; unresolved: PromptOperation };
+			db.transaction(() => {
+				const blocked = qUnresolved.get(att!.attachmentId, att!.generation);
+				if (blocked !== null) {
+					prepared = {
+						refused: "delivery-uncertain",
+						unresolved: toOperation(opRowSchema.parse(blocked)),
+					};
+					return;
+				}
+				const operationId = `op-${randomUUID()}`;
+				qInsertOp.run(
+					operationId,
+					input.responsibilityId,
+					input.attachmentId,
+					att!.generation,
+					resp!.revision,
+					input.brief,
+					input.journalRunId ?? null,
+					input.toolCallId ?? null,
+					now(),
+				);
+				prepared = { operation: store.getOperation(operationId)! };
+			})();
+			if ("refused" in prepared!) {
+				log.warn("prompt operation refused — unresolved delivery on this attachment", {
+					responsibility: input.responsibilityId,
+					attachment: input.attachmentId,
+					unresolved: prepared!.unresolved.operationId,
+				});
+				return prepared!;
+			}
+			const op = prepared!.operation;
 			log.info("prompt operation prepared", {
-				operation: operationId,
+				operation: op.operationId,
 				responsibility: input.responsibilityId,
 				attachment: input.attachmentId,
 				generation: op.attachmentGeneration,
 				revision: op.responsibilityRevision,
 			});
-			return { operation: op };
+			return prepared!;
 		},
 		getOperation: (operationId) => {
 			const row = qOp.get(operationId);
@@ -671,6 +758,16 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				const check = store.validateForSend(operationId);
 				if ("refused" in check) {
 					out = check;
+					return;
+				}
+				// Two ops prepared before the first claim both validated —
+				// the claim is the second fence: once a sibling is sent or
+				// uncertain, this prepared op can never dispatch.
+				const op = store.getOperation(operationId)!;
+				if (
+					qUnresolved.get(op.attachmentId, op.attachmentGeneration) !== null
+				) {
+					out = { refused: "delivery-uncertain" };
 					return;
 				}
 				const res = qOpClaim.run(now(), operationId);
@@ -728,6 +825,78 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				state: to,
 				refusal: opts?.refusal ?? null,
 			});
+		},
+
+		reconcileOperation(operationId, delivery, evidence) {
+			const trimmed = evidence.trim();
+			if (trimmed === "") {
+				throw new Error("reconciliation requires inspected evidence");
+			}
+			let out!: PromptOperation;
+			db.transaction(() => {
+				const row = qOp.get(operationId);
+				if (row === null) {
+					throw new Error(`prompt operation ${operationId} not found`);
+				}
+				const op = toOperation(opRowSchema.parse(row));
+				const prior =
+					typeof op.outcome === "object" && op.outcome !== null
+						? (op.outcome as Record<string, unknown>)
+						: null;
+				const existing =
+					prior !== null &&
+					typeof prior.reconciliation === "object" &&
+					prior.reconciliation !== null
+						? (prior.reconciliation as Record<string, unknown>)
+						: null;
+				if (existing !== null) {
+					// The recorded verdict is the evidence trail — replaying
+					// it verbatim is the idempotent no-op; anything else is a
+					// conflict the operator resolves, never an overwrite.
+					if (existing.delivery === delivery && existing.evidence === trimmed) {
+						out = op;
+						return;
+					}
+					throw new ReconciliationConflict(
+						`prompt operation ${operationId} already reconciled as ${String(existing.delivery)}`,
+					);
+				}
+				if (op.state !== "sent" && op.state !== "uncertain") {
+					throw new ReconciliationConflict(
+						`prompt operation ${operationId} is ${op.state} — only sent/uncertain operations reconcile`,
+					);
+				}
+				const to: OperationState = delivery === "delivered" ? "acknowledged" : "refused";
+				// Private CAS — uncertain deliberately has no public edge
+				// to a terminal state; only this evidence-gated write may
+				// close an ambiguous delivery.
+				const res = qOpTransition.run(
+					to,
+					to === "refused" ? "not-delivered" : null,
+					null,
+					null,
+					null,
+					JSON.stringify({
+						prior: op.outcome,
+						reconciliation: { delivery, evidence: trimmed, at: now() },
+					}),
+					operationId,
+					op.state,
+				);
+				if (res.changes !== 1) {
+					throw new ReconciliationConflict(
+						`prompt operation ${operationId} reconciliation raced a settlement`,
+						op,
+					);
+				}
+				out = store.getOperation(operationId)!;
+			})();
+			log.info("prompt operation reconciled", {
+				operation: operationId,
+				delivery,
+				state: out.state,
+			});
+			return out;
 		},
 	};
 	return store;

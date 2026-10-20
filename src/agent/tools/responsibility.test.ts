@@ -43,7 +43,12 @@ interface Rig {
 	resps: ResponsibilityStore;
 	projectId: string;
 	convId: string;
-	execute(input: unknown, abortSignal?: AbortSignal): Promise<Record<string, unknown>>;
+	dbPath: string;
+	execute(
+		input: unknown,
+		abortSignal?: AbortSignal,
+		toolCallId?: string,
+	): Promise<Record<string, unknown>>;
 	agents: OperatorAgent[];
 	listCalls: number;
 }
@@ -72,6 +77,7 @@ function rig(
 		resps,
 		projectId: project.id,
 		convId: conv.id,
+		dbPath: join(home, "state", "goblin.sqlite"),
 		agents: [agent()],
 		listCalls: 0,
 		execute: async () => ({}),
@@ -80,6 +86,7 @@ function rig(
 		db: store.db,
 		resps,
 		wakes,
+		conversations: store,
 		pump: () => {},
 	});
 	const t = responsibilityTool({
@@ -99,9 +106,9 @@ function rig(
 				? { guardedSend: async () => ({ ok: true }) }
 				: {}),
 	});
-	r.execute = (input, abortSignal) =>
+	r.execute = (input, abortSignal, toolCallId = "tc-resp") =>
 		(t.execute as unknown as (i: unknown, o: unknown) => Promise<Record<string, unknown>>)(input, {
-			toolCallId: "tc-resp",
+			toolCallId,
 			messages: [],
 			context: {},
 			abortSignal,
@@ -495,3 +502,221 @@ test.each(["acknowledged", "uncertain"] as const)(
 		r.store.close();
 	},
 );
+
+describe("unresolved delivery fence", () => {
+	test("an uncertain send retried under a new tool-call id refuses — and names the op to reconcile", async () => {
+		let sends = 0;
+		let failSend = true;
+		const r = rig({
+			guardedSend: async () => {
+				sends += 1;
+				if (failSend) throw new Error("possible delivery");
+				return { ok: true };
+			},
+		});
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const args = { action: "send", attachment: att.attachmentId, brief: "OLD-BRIEF" };
+
+		const first = await r.execute(args, undefined, "tc-1");
+		expect(first.refused).toBe("delivery-uncertain");
+		expect(sends).toBe(1);
+
+		// Identical retry under a new tool-call id: no second dispatch,
+		// no second op row — the refusal names the unresolved operation.
+		const second = await r.execute(args, undefined, "tc-2");
+		expect(second.refused).toBe("delivery-uncertain");
+		expect(String(second.operation)).toContain(
+			r.resps.operationsFor(resp.responsibilityId)[0]!.operationId,
+		);
+		expect(sends).toBe(1);
+		expect(r.resps.operationsFor(resp.responsibilityId)).toHaveLength(1);
+
+		// A changed brief or a fresh revision doesn't bypass the fence.
+		await r.execute({ action: "revise", understanding });
+		const third = await r.execute(
+			{ action: "send", attachment: att.attachmentId, brief: "NEW-BRIEF" },
+			undefined,
+			"tc-3",
+		);
+		expect(third.refused).toBe("delivery-uncertain");
+		expect(sends).toBe(1);
+		expect(r.resps.operationsFor(resp.responsibilityId)).toHaveLength(1);
+
+		// Durable across a reopened store.
+		const store2 = openStore(r.dbPath);
+		const resps2 = openResponsibilities(store2.db);
+		const reopened = resps2.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "post-restart",
+		});
+		expect("refused" in reopened && reopened.refused).toBe("delivery-uncertain");
+		store2.close();
+
+		// Evidence-based reconcile unblocks genuinely new work — and the
+		// fenced op itself can never dispatch again.
+		const opId = r.resps.operationsFor(resp.responsibilityId)[0]!.operationId;
+		const rec = await r.execute({
+			action: "reconcile",
+			operation: opId,
+			delivery: "not_delivered",
+			evidence: "operator checked the pane — no prompt arrived",
+		});
+		expect(rec.refused).toBeUndefined();
+		expect(String(rec.operation)).toContain('"state":"refused"');
+		failSend = false;
+		const fresh = await r.execute(
+			{ action: "send", attachment: att.attachmentId, brief: "new work" },
+			undefined,
+			"tc-4",
+		);
+		expect(fresh.sent).toBe(true);
+		expect(sends).toBe(2);
+		r.store.close();
+	});
+});
+
+describe("reconcile action", () => {
+	// Build a project-scoped uncertain op to reconcile against.
+	const staged = async (r: Rig) => {
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId);
+		r.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		return { resp, op: prepared.operation };
+	};
+
+	test("delivered acknowledges with evidence recorded; identical replay is idempotent", async () => {
+		const r = rig();
+		const { op } = await staged(r);
+		const out = await r.execute({
+			action: "reconcile",
+			responsibility: op.responsibilityId,
+			operation: op.operationId,
+			delivery: "delivered",
+			evidence: "pane tail shows the prompt",
+		});
+		expect(String(out.operation)).toContain('"state":"acknowledged"');
+		expect(String(out.operation)).toContain("pane tail shows the prompt");
+		const again = await r.execute({
+			action: "reconcile",
+			operation: op.operationId,
+			delivery: "delivered",
+			evidence: "pane tail shows the prompt",
+		});
+		expect(again.refused).toBeUndefined();
+		r.store.close();
+	});
+
+	test("a conflicting verdict refuses; empty evidence and foreign scope never reach the store", async () => {
+		const r = rig();
+		const { resp, op } = await staged(r);
+		await r.execute({
+			action: "reconcile",
+			operation: op.operationId,
+			delivery: "not_delivered",
+			evidence: "pane shows no prompt",
+		});
+		const conflict = await r.execute({
+			action: "reconcile",
+			operation: op.operationId,
+			delivery: "delivered",
+			evidence: "actually it did land",
+		});
+		expect(conflict.refused).toBe("reconcile-conflict");
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("refused");
+		const scopedOut = await r.execute({
+			action: "reconcile",
+			responsibility: "resp-other",
+			operation: op.operationId,
+			delivery: "delivered",
+			evidence: "x",
+		});
+		expect(String(scopedOut.error)).toContain(`belongs to ${resp.responsibilityId}`);
+		const missing = await r.execute({
+			action: "reconcile",
+			operation: "op-nope",
+			delivery: "delivered",
+			evidence: "x",
+		});
+		expect(String(missing.error)).toContain("not found");
+		await expect(
+			r.execute({
+				action: "reconcile",
+				operation: op.operationId,
+				delivery: "delivered",
+				evidence: "   ",
+			}),
+		).rejects.toThrow();
+		r.store.close();
+	});
+
+	test("an operation owned by another project cannot be reconciled", async () => {
+		const r = rig();
+		const { op } = await staged(r);
+		const other = openProjects(r.store).create({ name: "other" });
+		const foreign = r.resps.create({
+			projectId: other.id,
+			coordinationConversationId: r.convId,
+			handoverKey: "kf",
+			understanding,
+		}).responsibility;
+		// Rebind the op to the foreign responsibility — the row surgery
+		// models exactly what cross-project targeting would reach for.
+		r.store.db.run("UPDATE prompt_operations SET responsibility_id = ? WHERE operation_id = ?", [
+			foreign.responsibilityId,
+			op.operationId,
+		]);
+		const out = await r.execute({
+			action: "reconcile",
+			operation: op.operationId,
+			delivery: "delivered",
+			evidence: "x",
+		});
+		expect(String(out.error)).toContain("not bound in this project");
+		expect(r.resps.getOperation(op.operationId)!.state).toBe("uncertain");
+		r.store.close();
+	});
+});
+
+describe("reattach same-identity guard (tool)", () => {
+	test("reattach to the same agent with an unresolved send returns a named refusal", async () => {
+		const r = rig({ guardedSend: true });
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId);
+		r.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		await r.execute({ action: "detach", attachment: att.attachmentId });
+		const out = await r.execute({ action: "reattach", attachment: att.attachmentId });
+		expect(out.refused).toBe("delivery-uncertain");
+		expect(String(out.operation)).toContain(prepared.operation.operationId);
+		expect(r.resps.getAttachment(att.attachmentId)!.generation).toBe(1);
+		// A changed harness session is a genuine replacement — allowed.
+		r.agents = [agent({ agent_session: "sess-new" })];
+		const again = await r.execute({ action: "reattach", attachment: att.attachmentId });
+		expect(again.refused).toBeUndefined();
+		r.store.close();
+	});
+});

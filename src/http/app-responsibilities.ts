@@ -11,7 +11,9 @@ import { log } from "../log.ts";
 import type { OperatorAgent } from "../herdr.ts";
 import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.ts";
 import {
+	ReconciliationConflict,
 	understandingSchema,
+	type Attachment,
 	type AttachmentTarget,
 	type ResponsibilityStore,
 } from "../responsibilities.ts";
@@ -217,7 +219,25 @@ export async function handleResponsibilitiesRoute(
 			kind: live.agent ?? att.target.kind,
 			cwd: live.cwd,
 		};
-		const rebound = respsDeps.resps.reattach(attachmentId, target, live);
+		let rebound: Attachment;
+		try {
+			rebound = respsDeps.resps.reattach(attachmentId, target, live);
+		} catch (err) {
+			if (err instanceof ReconciliationConflict) {
+				log.warn("app attachment reattach refused — unresolved delivery", {
+					attachment: attachmentId,
+					unresolved: err.unresolved?.operationId,
+				});
+				return Response.json(
+					{
+						error: `reattach to the same agent is blocked by an unresolved delivery — reconcile ${err.unresolved?.operationId ?? "the pending operation"} first`,
+						operation: err.unresolved,
+					},
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			throw err;
+		}
 		log.info("attachment reattached via app", {
 			attachment: attachmentId,
 			generation: rebound.generation,

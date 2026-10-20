@@ -19,7 +19,7 @@ import type {
 	Responsibility,
 	ResponsibilityStore,
 } from "../../responsibilities.ts";
-import { understandingSchema } from "../../responsibilities.ts";
+import { ReconciliationConflict, understandingSchema } from "../../responsibilities.ts";
 import type { ManagedSend, ResponsibilityService } from "../../responsibility-service.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -42,12 +42,16 @@ const inputSchema = z
 			"complete",
 			"cancel",
 			"send",
+			"reconcile",
 		]),
 		responsibility: z.string().optional(),
 		understanding: understandingSchema.optional(),
 		attachments: z.array(attachSelectorSchema).max(8).optional(),
 		attachment: z.number().int().optional(),
 		brief: z.string().min(1).optional(),
+		operation: z.string().min(1).optional(),
+		delivery: z.enum(["delivered", "not_delivered"]).optional(),
+		evidence: z.string().trim().min(1).optional(),
 	})
 	.superRefine((value, ctx) => {
 		const need = (cond: boolean, path: string[], msg: string) => {
@@ -88,6 +92,11 @@ const inputSchema = z
 				need(value.attachment !== undefined, ["attachment"], "attachment id required");
 				need(value.brief !== undefined, ["brief"], "brief required");
 				break;
+			case "reconcile":
+				need(value.operation !== undefined, ["operation"], "operation id required");
+				need(value.delivery !== undefined, ["delivery"], "delivery verdict required");
+				need(value.evidence !== undefined, ["evidence"], "inspected evidence required");
+				break;
 			default:
 				break;
 		}
@@ -120,7 +129,7 @@ const fenceMetadata = (record: unknown) =>
 export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 	tool({
 		description:
-			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/complete/cancel {}; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
+			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/complete/cancel {}; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
 		inputSchema,
 		execute: async (raw, options) => {
 			const input = inputSchema.parse(raw);
@@ -319,9 +328,22 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					const t = await targetFor(sel);
 					checkAuthority();
 					if (t.error !== undefined) return { error: t.error };
-					const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline);
-					done({ attachment: att.attachmentId, generation: again.generation, outcome: "ok" });
-					return { attachment: fenceMetadata(again) };
+					try {
+						const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline);
+						done({ attachment: att.attachmentId, generation: again.generation, outcome: "ok" });
+						return { attachment: fenceMetadata(again) };
+					} catch (err) {
+						if (err instanceof ReconciliationConflict) {
+							done({ attachment: att.attachmentId, outcome: "refused:delivery-uncertain" });
+							return {
+								refused: "delivery-uncertain",
+								...(err.unresolved !== undefined
+									? { operation: fenceMetadata(err.unresolved) }
+									: {}),
+							};
+						}
+						throw err;
+					}
 				}
 				case "pause":
 				case "resume":
@@ -364,7 +386,14 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					});
 					if ("refused" in prepared) {
 						done({ outcome: `refused:${prepared.refused}` });
-						return { refused: prepared.refused };
+						return {
+							refused: prepared.refused,
+							// An unresolved op is the record to reconcile — the
+							// fence names it so the model can't mint a fresh one.
+							...(prepared.unresolved !== undefined
+								? { operation: fenceMetadata(prepared.unresolved) }
+								: {}),
+						};
 					}
 					if (deps.guardedSend === undefined) {
 						deps.resps.transitionOperation(prepared.operation.operationId, "refused", {
@@ -399,6 +428,43 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						...out,
 						operation: fenceMetadata(deps.resps.getOperation(prepared.operation.operationId)),
 					};
+				}
+				case "reconcile": {
+					const op = deps.resps.getOperation(input.operation!);
+					if (op === null) {
+						return { error: `operation ${input.operation} not found` };
+					}
+					const owner = deps.resps.get(op.responsibilityId);
+					if (owner === null || owner.projectId !== deps.projectId) {
+						done({ outcome: "error:scope" });
+						return { error: `operation ${input.operation} is not bound in this project` };
+					}
+					if (
+						input.responsibility !== undefined &&
+						op.responsibilityId !== input.responsibility
+					) {
+						done({ outcome: "error:scope" });
+						return {
+							error: `operation ${input.operation} belongs to ${op.responsibilityId}, not ${input.responsibility}`,
+						};
+					}
+					checkAuthority();
+					const out = deps.service.reconcile(
+						input.operation!,
+						input.delivery!,
+						input.evidence!,
+					);
+					done({
+						operation: input.operation,
+						outcome: "operation" in out ? "ok" : `refused:${out.refused}`,
+					});
+					if ("refused" in out) {
+						return {
+							refused: out.refused,
+							...(out.error !== undefined ? { error: out.error } : {}),
+						};
+					}
+					return { operation: fenceMetadata(out.operation) };
 				}
 			}
 		},

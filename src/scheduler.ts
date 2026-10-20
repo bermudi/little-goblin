@@ -1,5 +1,10 @@
 // One entry point per trigger owns its post-submit accounting — what
 // a failed fire costs is trigger-specific policy, never a caller's.
+// Telegram fires are attempt-once: the cursor advances even on a
+// failed submit. Responsibility-destination fires are a durable
+// enqueue instead — a recordDevelopment throw means nothing was
+// consumed, the occurrence stays due, and the next scan retries the
+// same occurrence source key.
 
 import { checkInjection, verdictLine } from "./injection.ts";
 import type { System1Client } from "./system1.ts";

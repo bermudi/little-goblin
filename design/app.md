@@ -309,6 +309,14 @@ surgery only — the FK chain and the sweep keep them together) exactly
 like a ghost run link: that wake fails loudly and terminally;
 classification continues for every other wake.
 
+The feed consequence (2026-10-19): unprunable history means the wire,
+not the table, carries the bound. `feedEvents` serves each
+responsibility's newest `FEED_EVENT_WINDOW` (50) developments ascending
+plus `eventsTruncated` — the count of older durable rows omitted —
+while the app polls the read model every 15s. Durable rows are never
+pruned by the feed; `work_events (responsibility_id, event_id DESC)`
+is the index the window walks.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

@@ -115,7 +115,8 @@ export type SendRefusal =
 	| "attachment-mismatch"
 	| "stale-generation"
 	| "stale-revision"
-	| "already-terminal";
+	| "already-terminal"
+	| "operation-missing";
 
 export interface ResponsibilityStore {
 	/** Idempotent on handoverKey: a duplicate handover returns the
@@ -648,7 +649,9 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 
 		validateForSend(operationId, expectedState = "prepared") {
 			const row = qOp.get(operationId);
-			if (row === null) return { refused: "responsibility-missing" as const };
+			// A vanished operation row is row-level corruption or a foreign
+			// id — its own refusal, never the responsibility's.
+			if (row === null) return { refused: "operation-missing" as const };
 			const op = toOperation(opRowSchema.parse(row));
 			// Operations that must never dispatch — their outcome is already on
 			// the record or someone refused them by name.

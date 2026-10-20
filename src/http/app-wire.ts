@@ -339,6 +339,8 @@ export interface AppFeedItem {
 	attachments: AppResponsibilityAttachment[];
 	operations: AppPromptOperation[];
 	events: AppFeedEvent[];
+	/** Older durable events the feed window omitted — the rows remain. */
+	eventsTruncated: number;
 	nextCheckinAt: string | null;
 	lastActivityAt: string | null;
 }

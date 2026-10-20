@@ -312,6 +312,14 @@ describe("attachment scoping", () => {
 		});
 		r.store.close();
 	});
+
+	test("a missing operation row refuses by its own name, not the responsibility's", () => {
+		const r = rig();
+		expect(r.resps.validateForSend("op-nonexistent")).toEqual({
+			refused: "operation-missing",
+		});
+		r.store.close();
+	});
 });
 
 describe("operation state machine and atomic claim", () => {

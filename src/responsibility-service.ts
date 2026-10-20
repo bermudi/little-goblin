@@ -328,7 +328,9 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 
 		async dispatch(operationId, send) {
 			const op = resps.getOperation(operationId);
-			if (op === null) return { refused: "responsibility-missing" };
+			// Row-level corruption or a foreign id — its own refusal, never
+			// the responsibility's.
+			if (op === null) return { refused: "operation-missing" };
 			if (op.state === "sent" || op.state === "uncertain") {
 				return { refused: "delivery-uncertain" };
 			}

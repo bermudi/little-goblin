@@ -226,6 +226,12 @@ function FeedRow({
 				{item.events.length > 0 && (
 					<div className="resp-section">
 						<h4>History</h4>
+						{item.eventsTruncated > 0 && (
+							<p className="resp-events-older">
+								{item.eventsTruncated} older event{item.eventsTruncated === 1 ? "" : "s"} on
+								the record — showing the newest {item.events.length}
+							</p>
+						)}
 						{item.events.map((e) => (
 							<div key={e.eventId} className="resp-event">
 								<span className="resp-event-kind">{e.kind}</span>

@@ -228,6 +228,13 @@ describe("responsibility service", () => {
 		r.store.close();
 	});
 
+	test("a missing operation row refuses by its own name at dispatch", async () => {
+		const r = rig();
+		const out = await r.svc.dispatch("op-nonexistent", async () => ({}));
+		expect(out).toEqual({ refused: "operation-missing" });
+		r.store.close();
+	});
+
 	test("dispatch sends a validated operation once and marks it acknowledged", async () => {
 		const r = rig();
 		const { responsibility } = r.svc.accept({

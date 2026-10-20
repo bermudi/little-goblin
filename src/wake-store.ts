@@ -203,8 +203,13 @@ export function ensureWakeSchema(db: Database): void {
 			event_id INTEGER NOT NULL REFERENCES work_events(event_id),
 			PRIMARY KEY (wake_id, event_id)
 		)`);
-	db.run(
+		db.run(
 		"CREATE INDEX IF NOT EXISTS wake_deliveries_state ON wake_deliveries (state, conversation_id)",
+	);
+	// The feed's newest-N window walks this; without it every feed read
+	// (a 15s poll per open page) full-scans work_events.
+	db.run(
+		"CREATE INDEX IF NOT EXISTS work_events_resp ON work_events (responsibility_id, event_id DESC)",
 	);
 }
 

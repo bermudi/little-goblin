@@ -38,6 +38,8 @@ export interface FeedItem {
 	attachments: Attachment[];
 	operations: PromptOperation[];
 	events: FeedEvent[];
+	/** Older durable events the window omitted — the rows remain. */
+	eventsTruncated: number;
 	/** The linked follow-up Program's next fire — null without one. */
 	nextCheckinAt: string | null;
 	/** Newest development timestamp — the pill's freshness. */
@@ -67,9 +69,19 @@ interface EventRow {
 	wake_run_id: string | null;
 }
 
-function feedEvents(db: Database, responsibilityId: string): FeedEvent[] {
+// The wire carries each responsibility's newest developments, not all
+// of them: an anchored coordination conversation can never be deleted
+// (its history is unprunable by ruling) and each active follow-up mints
+// ~96 events/day, while the app refetches this read model every 15s —
+// so the payload is bounded by this window, never by the work.
+export const FEED_EVENT_WINDOW = 50;
+
+function feedEvents(
+	db: Database,
+	responsibilityId: string,
+): { events: FeedEvent[]; truncated: number } {
 	const rows = db
-		.query<EventRow, [string]>(
+		.query<EventRow, [string, number]>(
 			`SELECT e.event_id, e.source_key, e.conversation_id, e.kind, e.text,
 				e.facts_json, e.origin, e.created_at,
 				w.wake_id, w.state AS wake_state, w.last_error AS wake_error,
@@ -77,34 +89,47 @@ function feedEvents(db: Database, responsibilityId: string): FeedEvent[] {
 			FROM work_events e
 			LEFT JOIN wake_events we ON we.event_id = e.event_id
 			LEFT JOIN wake_deliveries w ON w.wake_id = we.wake_id
-			WHERE e.responsibility_id = ?
+			WHERE e.event_id IN (
+				SELECT event_id FROM work_events
+				WHERE responsibility_id = ?
+				ORDER BY event_id DESC
+				LIMIT ?
+			)
 			ORDER BY e.event_id`,
 		)
-		.all(responsibilityId);
-	return rows.map((r) => ({
-		eventId: r.event_id,
-		sourceKey: r.source_key,
-		kind: r.kind,
-		text: r.text,
-		facts: JSON.parse(r.facts_json) as unknown,
-		origin: r.origin,
-		createdAt: r.created_at,
-		conversationId: r.conversation_id,
-		wake:
-			r.wake_id === null
-				? null
-				: {
-						wakeId: r.wake_id,
-						state: r.wake_state!,
-						lastError: r.wake_error,
-						settledAt: r.wake_settled_at,
-						runId: r.wake_run_id,
-					},
-	}));
+		.all(responsibilityId, FEED_EVENT_WINDOW);
+	const total = db
+		.query<{ n: number }, [string]>(
+			"SELECT COUNT(*) AS n FROM work_events WHERE responsibility_id = ?",
+		)
+		.get(responsibilityId)!.n;
+	return {
+		events: rows.map((r) => ({
+			eventId: r.event_id,
+			sourceKey: r.source_key,
+			kind: r.kind,
+			text: r.text,
+			facts: JSON.parse(r.facts_json) as unknown,
+			origin: r.origin,
+			createdAt: r.created_at,
+			conversationId: r.conversation_id,
+			wake:
+				r.wake_id === null
+					? null
+					: {
+							wakeId: r.wake_id,
+							state: r.wake_state!,
+							lastError: r.wake_error,
+							settledAt: r.wake_settled_at,
+							runId: r.wake_run_id,
+						},
+		})),
+		truncated: total - rows.length,
+	};
 }
 
 function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
-	const events = feedEvents(deps.db, responsibility.responsibilityId);
+	const { events, truncated } = feedEvents(deps.db, responsibility.responsibilityId);
 	const linked =
 		responsibility.followupProgramId === null || deps.programs === undefined
 			? null
@@ -129,6 +154,7 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 		attachments: deps.resps.attachmentsFor(responsibility.responsibilityId),
 		operations: deps.resps.operationsFor(responsibility.responsibilityId),
 		events,
+		eventsTruncated: truncated,
 		nextCheckinAt: armed ? followup!.nextRun : null,
 		lastActivityAt: events.length === 0 ? null : events[events.length - 1]!.createdAt,
 	};

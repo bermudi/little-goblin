@@ -88,6 +88,7 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 		],
 		operations: [],
 		events: [],
+		eventsTruncated: 0,
 		nextCheckinAt: null,
 		lastActivityAt: at,
 	};
@@ -98,6 +99,37 @@ function button(label: string): HTMLButtonElement {
 	if (result === undefined) throw new Error(`missing button ${label}`);
 	return result;
 }
+
+test("a truncated history names the older events still on the record", async () => {
+	const item = {
+		...feed(false, false),
+		events: [
+			{
+				eventId: 1,
+				sourceKey: "s1",
+				kind: "scheduled-checkin",
+				text: "still on it",
+				facts: null,
+				origin: "program",
+				createdAt: "2026-10-19T00:00:00Z",
+				conversationId: "c1",
+				wake: null,
+			},
+		],
+		eventsTruncated: 3,
+	};
+	globalThis.fetch = Object.assign(
+		(input: string | URL | Request, init?: RequestInit) =>
+			Promise.resolve(Response.json({ items: [item] })),
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	container.querySelector("details")!.open = true;
+	expect(container.querySelector(".resp-events-older")?.textContent).toContain(
+		"3 older events on the record",
+	);
+});
 
 for (const [label, action] of [
 	["Pause", "pause"],

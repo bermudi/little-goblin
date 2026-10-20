@@ -4040,6 +4040,7 @@ button.link:hover {
 .resp-agents, .resp-fresh, .resp-next { font-size: 0.8rem; opacity: 0.75; }
 .resp-detail { padding: 0 10px 10px; border-top: 1px solid var(--app-divider); }
 .resp-warn { color: #ca4; font-size: 0.85rem; }
+.resp-events-older { margin: 2px 0; font-size: 0.75rem; opacity: 0.5; }
 .resp-understanding p { margin: 4px 0; font-size: 0.85rem; }
 .resp-rev { opacity: 0.5; font-size: 0.75rem; }
 .resp-section h4 { margin: 10px 0 4px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; }

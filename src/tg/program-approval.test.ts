@@ -51,7 +51,11 @@ interface Harness {
 }
 
 function harness(
-	opts: { publicUrl?: string; sendPrivate?: (text: string) => Promise<void> } = {},
+	opts: {
+		publicUrl?: string;
+		sendPrivate?: (text: string) => Promise<void>;
+		editMessageText?: (text: string) => Promise<unknown>;
+	} = {},
 ): Harness {
 	const programs = openPrograms(tmpDb("goblin-program-approval-"));
 	const dms: string[] = [];
@@ -69,6 +73,7 @@ function harness(
 				return true;
 			},
 			editMessageText: async (_c: number, _m: number, text: string) => {
+				if (opts.editMessageText !== undefined) return opts.editMessageText(text);
 				stamps.push(text);
 				return true;
 			},
@@ -328,6 +333,54 @@ describe("program approval taps", () => {
 			h.cleanup();
 		}
 	});
+
+	test("the tap is acknowledged before the card edit — a held stamp can't stall it", async () => {
+		let releaseEdit!: () => void;
+		const edits: string[] = [];
+		const h = harness({
+			editMessageText: (text) => {
+				edits.push(text);
+				return new Promise<boolean>((resolve) => {
+					releaseEdit = () => resolve(true);
+				});
+			},
+		});
+		try {
+			const proposal = h.programs.proposals.proposeCreate(draft(), ADDRESS, NOW);
+			const pending = h.tap(1, approveData(proposal.id));
+			await new Promise((r) => setImmediate(r));
+			expect(h.answers).toEqual(["approved"]);
+			expect(edits).toHaveLength(1);
+			expect(h.programs.list()).toHaveLength(1);
+			releaseEdit();
+			await pending;
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	test("approving a change to a disabled program reports it remains disabled", async () => {
+		const h = harness();
+		try {
+			const program = h.programs.create(
+				{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+				NOW,
+			);
+			h.programs.update(program.id, { enabled: false });
+			const proposal = h.programs.proposals.proposeUpdate(
+				program.id,
+				{ charter: "wider" },
+				ADDRESS,
+			);
+			await h.tap(1, approveData(proposal.id));
+			expect(h.programs.get(program.id)!.enabled).toBe(false);
+			expect(h.answers).toEqual(["approved"]);
+			expect(h.stamps[0]).toContain('"p" remains disabled');
+			expect(h.stamps[0]).not.toContain("is active");
+		} finally {
+			h.cleanup();
+		}
+	});
 });
 
 describe("program approval — hook grant", () => {
@@ -382,7 +435,27 @@ describe("program approval — hook grant", () => {
 			expect(h.programs.list()[0]!.hookHash).not.toBeNull();
 			expect(h.stamps[0]).toContain("is active");
 			expect(h.stamps[0]).toContain("could not be delivered");
-			expect(h.answers[0]).toContain("delivery failed");
+			expect(h.answers).toEqual(["approved"]);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	test("a webhook granted to a disabled program reports disabled — the URL won't answer yet", async () => {
+		const h = harness({ publicUrl: "https://g.ts.net" });
+		try {
+			const program = h.programs.create(
+				{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+				NOW,
+			);
+			h.programs.update(program.id, { enabled: false });
+			const proposal = h.programs.proposals.proposeUpdate(program.id, { hook: true }, ADDRESS);
+			await h.tap(1, approveData(proposal.id));
+			expect(h.programs.get(program.id)!.enabled).toBe(false);
+			expect(h.programs.get(program.id)!.hookHash).not.toBeNull();
+			expect(h.dms).toHaveLength(1);
+			expect(h.stamps[0]).toContain('"p" remains disabled');
+			expect(h.stamps[0]).toContain("sent privately");
 		} finally {
 			h.cleanup();
 		}

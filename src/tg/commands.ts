@@ -193,14 +193,12 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					}
 					// Known calls take one decision only — authorize another
 					// execution — and only by explicit call id, never ordinals.
-					const known = calls.filter(
-						(c) => c.state !== "dispatched" && canAuthorizeRetry(c),
-					);
+					const known = calls.filter((c) => c.state !== "dispatched" && canAuthorizeRetry(c));
 					for (const c of known) {
 						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
 						lines.push(
 							`  known: ${c.name} ${args.slice(0, 80)} — ${c.state}` +
-								`  · re-run: /decide ${id} ${c.toolCallId.slice(0, 8)} authorize-retry`,
+								`  · re-run: /decide ${id} ${c.toolCallId} authorize-retry`,
 						);
 					}
 					lines.push(`  /resume ${id} · /abandon ${id}`);
@@ -220,7 +218,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					...outcome.numbered.flatMap((c, i) => {
 						if (c.state !== "dispatched") return [];
 						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						return [`  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId.slice(0, 8)})`];
+						return [`  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId})`];
 					}),
 					`/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
 				];

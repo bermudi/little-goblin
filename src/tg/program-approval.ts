@@ -124,8 +124,8 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 			return;
 		}
 		if (proposal.state !== "pending") {
-			await stripButtons(deps.api, proposal, query);
 			await answer(`already ${proposal.state}`);
+			await stripButtons(deps.api, proposal, query);
 			return;
 		}
 
@@ -135,13 +135,15 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 				await answer(refusalText(outcome.refusal));
 				return;
 			}
+			// The decision is committed — acknowledge before the card edit,
+			// which can sit out a flood wait longer than the tap lives.
+			await answer("rejected");
 			await stamp(
 				deps.api,
 				proposal,
 				query,
 				`🚫 Proposal #${proposalId} rejected — nothing was granted.`,
 			);
-			await answer("rejected");
 			return;
 		}
 
@@ -168,10 +170,15 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 			return;
 		}
 		const program = outcome.program;
+		// The grant already landed — acknowledge before delivery and the
+		// card edit, either of which can sit out a flood wait longer than
+		// the tap lives. A callback answers once, so anything later rides
+		// the stamped card, never a second toast.
+		await answer("approved");
+		const status = program.enabled ? "is active" : "remains disabled";
 		if (token !== undefined) {
-			// The grant already landed — a delivery failure reports
-			// granted-but-undelivered with rotation guidance, never a
-			// pretended rollback.
+			// A delivery failure reports granted-but-undelivered with
+			// rotation guidance, never a pretended rollback.
 			try {
 				await deps.sendPrivate(
 					`Webhook for program ${program.name}: ${hookUrl(base!, token)}\nKeep it secret; rotate via goblin if it leaks.`,
@@ -185,9 +192,8 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 					deps.api,
 					proposal,
 					query,
-					`✅ Proposal #${proposalId} approved — "${program.name}" is active, but the webhook URL could not be delivered (${err instanceof Error ? err.message : String(err)}). Ask goblin to rotate the hook to resend it.`,
+					`✅ Proposal #${proposalId} approved — "${program.name}" ${status}, but the webhook URL could not be delivered (${err instanceof Error ? err.message : String(err)}). Ask goblin to rotate the hook to resend it.`,
 				);
-				await answer("approved — webhook URL delivery failed; rotate to resend");
 				return;
 			}
 		}
@@ -195,9 +201,8 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 			deps.api,
 			proposal,
 			query,
-			`✅ Proposal #${proposalId} approved — "${program.name}" is active${token !== undefined ? "; the webhook URL was sent privately" : ""}.`,
+			`✅ Proposal #${proposalId} approved — "${program.name}" ${status}${token !== undefined ? "; the webhook URL was sent privately" : ""}.`,
 		);
-		await answer("approved");
 	};
 
 	return { requestApproval, handleTap };

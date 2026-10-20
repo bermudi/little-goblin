@@ -152,6 +152,39 @@ describe("responsibility service", () => {
 		r.store.close();
 	});
 
+	test("handover completes with the programs store on a second connection to the same file", () => {
+		const r = rig();
+		// Production wiring — openPrograms(paths.db()): the programs
+		// store is its own connection to the SAME file, not the rig's
+		// separate programs.sqlite. A follow-up link inside accept's
+		// transaction is a nested cross-connection write (SQLITE_BUSY);
+		// post-commit it lands and the responsibility arms.
+		const sameFile = openPrograms(r.dbPath);
+		try {
+			const svc = makeResponsibilityService({
+				db: r.store.db,
+				resps: r.resps,
+				wakes: openWakeStore(r.store.db),
+				programs: sameFile,
+				pump: () => {},
+			});
+			const { responsibility, created } = svc.accept({
+				projectId: r.projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: "handover:same-file",
+				understanding: understanding(),
+				attachments: [{ target: target(), baseline: {} }],
+			});
+			expect(created).toBe(true);
+			expect(responsibility.armed).toBe(true);
+			const followup = sameFile.get(Number(responsibility.followupProgramId));
+			expect(followup?.responsibilityId).toBe(responsibility.responsibilityId);
+		} finally {
+			sameFile.close();
+			r.store.close();
+		}
+	});
+
 	test("a duplicate handover returns the same responsibility — no doubled attachments", () => {
 		const r = rig();
 		const input = {

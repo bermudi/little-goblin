@@ -281,6 +281,26 @@ describe("responsibility observer", () => {
 		});
 	}
 
+	test("a null cursor baselines the first poll — a pre-existing completion is not a candidate", async () => {
+		const r = rig();
+		const att = r.resps.getAttachment(r.attId)!;
+		r.resps.reattach(r.attId, att.target, {});
+		expect(r.resps.getAttachment(r.attId)!.cursor).toBeNull();
+		r.agents = [agent({ completion_seq: 3, state_change_seq: 9 })];
+		await r.observe();
+		expect(r.eventsFor()).toHaveLength(0);
+		const cursor = r.resps.getAttachment(r.attId)!.cursor as {
+			seq: number;
+			completionSeq: number;
+		};
+		expect(cursor).toMatchObject({ seq: 9, completionSeq: 3 });
+		// A tick past the baseline reports normally.
+		r.agents = [agent({ completion_seq: 4, state_change_seq: 10 })];
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["done-candidate"]);
+		r.store.close();
+	});
+
 	test("paused responsibilities neither poll nor develop; resume can observe completion", async () => {
 		const r = rig();
 		const att = r.resps.getAttachment(r.attId);

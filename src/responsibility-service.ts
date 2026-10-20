@@ -290,21 +290,36 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						origin: "operator",
 						responsibilityId: responsibility.responsibilityId,
 					});
-					// Observation arms itself from the attachment rows;
-					// ensureFollowup links the follow-up Program and arms —
-					// or leaves a named reason when it can't.
+					// The unarmed baseline — durable inside the commit so a
+					// post-commit link failure (or a crash between them)
+					// still names why follow-through is off. ensureFollowup
+					// upgrades this row or rewrites the reason.
 					resps.setArmed(
 						responsibility.responsibilityId,
 						false,
 						"follow-up program not yet linked",
 					);
-					svc.ensureFollowup(responsibility.responsibilityId);
 				}
 				outcome = { responsibility, created };
 			})();
+			// ensureFollowup writes through the programs store's own
+			// connection to this same file — inside the transaction that
+			// nested write is a guaranteed SQLITE_BUSY and would roll the
+			// handover back with it. Post-commit, a link failure only
+			// leaves the responsibility unarmed; the boot relink sweep
+			// retries it.
+			if (outcome!.created) {
+				try {
+					svc.ensureFollowup(outcome!.responsibility.responsibilityId);
+				} catch (err) {
+					log.error("responsibility follow-up link failed", err, {
+						responsibility: outcome!.responsibility.responsibilityId,
+					});
+				}
+			}
 			pump();
-			// Re-read — setArmed inside the transaction postdates the
-			// create snapshot.
+			// Re-read — the armed/follow-up writes postdate the create
+			// snapshot.
 			return {
 				responsibility: resps.get(outcome!.responsibility.responsibilityId)!,
 				created: outcome!.created,

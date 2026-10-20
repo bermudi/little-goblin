@@ -25,9 +25,11 @@ export interface ProgramToolDeps {
 	 *  responsibility destination instead. */
 	chatId?: number;
 	threadId?: number | null;
-	/** The app/project arm — a create may bind a program to a
-	 *  responsibility in this project (validated to belong to it).
-	 *  Absent = creates pin the Telegram address as before. */
+	/** The app/project arm — scopes every verb to programs bound to a
+	 *  responsibility in this project (create validates the binding;
+	 *  the by-id actions enforce it against the row's responsibility).
+	 *  Absent = the Telegram arm: global authority, creates pin the
+	 *  Telegram address as before. */
 	project?: {
 		projectId: string;
 		resps: { get(id: string): { projectId: string } | null };
@@ -134,16 +136,30 @@ export const programInputSchema = z
 			}
 	});
 
-export const programTool = (deps: ProgramToolDeps) =>
-	tool({
+export const programTool = (deps: ProgramToolDeps) => {
+	// The project arm's boundary: only programs whose responsibility
+	// belongs to this project. A Telegram-pinned row or another
+	// project's lane is unreachable here — the same line create
+	// validates for its responsibilityId. A deleted responsibility
+	// drops its programs out of scope too (fail closed).
+	const inScope = (program: Program): boolean =>
+		deps.project === undefined ||
+		(program.responsibilityId !== null &&
+			deps.project.resps.get(program.responsibilityId)?.projectId === deps.project.projectId);
+	// Get + scope in one step: out-of-scope reads identical to absent.
+	const scopedGet = (id: number): Program | null => {
+		const program = deps.programs.get(id);
+		return program !== null && inScope(program) ? program : null;
+	};
+	return tool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead. On project turns the tool only reaches programs bound to this project's responsibilities.",
 		inputSchema: programInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "list":
-					return { programs: deps.programs.list().map(programView) };
+					return { programs: deps.programs.list().filter(inScope).map(programView) };
 				case "create": {
 					if (input.cron !== undefined) {
 						try {
@@ -241,6 +257,10 @@ export const programTool = (deps: ProgramToolDeps) =>
 					if (input.maxLatenessMinutes !== undefined)
 						patch.maxLatenessMinutes = input.maxLatenessMinutes;
 					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
+					// Scope check only on the project arm — the update's own
+					// null answer already covers missing ids elsewhere.
+					if (deps.project !== undefined && scopedGet(input.id) === null)
+						return { error: `no program ${input.id}` };
 					try {
 						const program = deps.programs.update(input.id, patch);
 						if (program === null) return { error: `no program ${input.id}` };
@@ -258,19 +278,21 @@ export const programTool = (deps: ProgramToolDeps) =>
 					}
 				}
 				case "delete": {
+					if (deps.project !== undefined && scopedGet(input.id) === null)
+						return { error: `no program ${input.id}` };
 					const ok = deps.programs.remove(input.id);
 					log.info("program deleted", { program: input.id, existed: ok });
 					return ok ? { deleted: input.id } : { error: `no program ${input.id}` };
 				}
 				case "toggle": {
-					const current = deps.programs.get(input.id);
+					const current = scopedGet(input.id);
 					if (current === null) return { error: `no program ${input.id}` };
 					const program = deps.programs.update(input.id, { enabled: !current.enabled })!;
 					log.info("program toggled", { program: program.id, enabled: program.enabled });
 					return { program: programView(program) };
 				}
 				case "hook": {
-					const current = deps.programs.get(input.id);
+					const current = scopedGet(input.id);
 					if (current === null) return { error: `no program ${input.id}` };
 					if (input.op === "disable") {
 						try {
@@ -300,6 +322,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 			}
 		},
 	});
+};
 
 function isProgramRuleError(err: unknown): err is ProgramRuleError {
 	return err instanceof ProgramRuleError;

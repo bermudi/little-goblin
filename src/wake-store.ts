@@ -480,7 +480,16 @@ export function openWakeStore(db: Database): WakeStore {
 				}
 				const status = runStatus(rec.runId);
 				if (status === null) {
-					throw new Error(`wake ${rec.wakeId} links missing run ${rec.runId}`);
+					// The link can't be resolved — a missing run row or a
+					// resume-chain cycle. Corruption fails this wake, loudly
+					// and terminally; it must not abort classification and
+					// stall every other wake's delivery.
+					log.error("wake links a run the journal cannot resolve", undefined, {
+						wake: rec.wakeId,
+						run: rec.runId,
+					});
+					plan.toFail.push(rec);
+					continue;
 				}
 				if (status === "completed") plan.toSettle.push(rec);
 				else if (status === "error" || status === "fenced" || status === "abandoned") {

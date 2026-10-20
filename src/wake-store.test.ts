@@ -354,7 +354,7 @@ describe("wake store", () => {
 		expect(plan.toSettle[0]!.runId).toBe("run-done");
 	});
 
-	test("a wake linking a run the journal does not know refuses to reconcile", () => {
+	test("a wake linking a run the journal does not know fails itself, not the pass", () => {
 		const { store, conv, wakes } = setup();
 		const rec = wakes.record({
 			sourceKey: "poll:1",
@@ -367,7 +367,19 @@ describe("wake store", () => {
 		const { append } = appendInto(store, conv.id);
 		wakes.commit(rec.wakeId, append);
 		wakes.linkRun(rec.wakeId, "run-ghost");
-		expect(() => wakes.reconcile(new Date().toISOString(), () => null)).toThrow(/missing run/);
+		// The corrupt wake classifies failed; classification continues —
+		// the conversation's next pending wake still owes an append.
+		const healthy = wakes.record({
+			sourceKey: "poll:2",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line two",
+			facts: {},
+			origin: "observer",
+		});
+		const plan = wakes.reconcile(new Date().toISOString(), () => null);
+		expect(plan.toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
+		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
 	});
 
 	test("settled work does not block the next development; a repeated key stays a no-op", () => {

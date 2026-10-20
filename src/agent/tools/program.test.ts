@@ -479,4 +479,72 @@ describe("responsibility destinations", () => {
 			"hook URLs deliver to the operator DM — not available on project turns",
 		);
 	});
+
+	test("the project arm only reaches programs bound to the project's responsibilities", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		// One program in scope (r1 belongs to p1), one in another
+		// project's lane (r2/p2), one Telegram-pinned.
+		const own = programs.create({
+			name: "own",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		});
+		const foreign = programs.create({
+			name: "foreign",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r2",
+		});
+		const telegram = programs.create({
+			name: "tg",
+			charter: "c",
+			cron: "*/20 * * * *",
+			address: { chatId: -100, threadId: 7 },
+		});
+		const resps = {
+			get: (id: string) =>
+				id === "r1" ? { projectId: "p1" } : id === "r2" ? { projectId: "p2" } : null,
+		};
+		const tool = programTool({
+			programs,
+			project: { projectId: "p1", resps },
+			publicUrl: () => "https://example.test",
+			sendPrivate: async () => {},
+		});
+		const list = (await exec(tool, { action: "list" })) as {
+			programs: { id: number }[];
+		};
+		expect(list.programs.map((p) => p.id)).toEqual([own.id]);
+		// In-scope verbs work; out-of-scope ids read as absent everywhere.
+		const toggled = (await exec(tool, { action: "toggle", id: own.id })) as {
+			program: { enabled: boolean };
+		};
+		expect(toggled.program.enabled).toBe(false);
+		for (const id of [foreign.id, telegram.id]) {
+			for (const action of [
+				{ action: "update", id, name: "nope" },
+				{ action: "delete", id },
+				{ action: "toggle", id },
+				{ action: "hook", id, op: "rotate" },
+			]) {
+				const out = (await exec(tool, action)) as { error?: string };
+				expect(out.error).toBe(`no program ${id}`);
+			}
+		}
+		expect(programs.get(foreign.id)!.name).toBe("foreign");
+		expect(programs.get(telegram.id)!.name).toBe("tg");
+		// The Telegram arm is untouched — same rows, full authority.
+		const tgTool = programTool({
+			programs,
+			chatId: -100,
+			threadId: 7,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		const tgList = (await exec(tgTool, { action: "list" })) as { programs: { id: number }[] };
+		expect(tgList.programs).toHaveLength(3);
+	});
 });

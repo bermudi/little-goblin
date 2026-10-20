@@ -220,10 +220,19 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			});
 			return;
 		}
+		// First durable sighting — a fresh attach without a cursor, or
+		// the cleared one reattach leaves. What this poll sees IS the
+		// baseline: a completion or blocked state already on the wire
+		// predates observation and is not a development. Diffs start
+		// on the next poll.
+		if (prev === null) {
+			commit(att, conversationId, cur, null, null);
+			return;
+		}
 		// A completion tick the cursor hasn't seen.
 		if (
 			cur.completionSeq !== null &&
-			(prev === null || prev.completionSeq === null || cur.completionSeq > prev.completionSeq)
+			(prev.completionSeq === null || cur.completionSeq > prev.completionSeq)
 		) {
 			commit(att, conversationId, cur, null, {
 				sourceKey: key("done", cur.completionSeq),

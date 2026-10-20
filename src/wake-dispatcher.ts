@@ -92,7 +92,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 	}
 
 	// The live end of the wake's resume chain — null when the link row
-	// itself is gone (reconcile's missing-run error owns that report).
+	// itself is gone (reconcile already classified that wake failed;
+	// a null here only declines the retarget).
 	function chainEnd(runId: string): string | null {
 		const seen = new Set<string>();
 		let cur: string | null = runId;
@@ -116,6 +117,17 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		} catch (err) {
 			log.error(`wake dispatch ${what} failed`, err);
 		}
+	}
+
+	// The durable reason a classified wake fails — admission authority
+	// lost, the run's terminal state, or a link the journal can't
+	// resolve at all (missing row, resume-chain cycle).
+	function failReason(rec: WakeRecord): string {
+		if (rec.runId === null) return "wake admission authority expired or is unknown";
+		const status = runStatus(rec.runId);
+		return status === null
+			? `turn run ${rec.runId} is missing or its resume chain is corrupt`
+			: `turn run ${rec.runId} ended ${status}`;
 	}
 
 	function triggerOf(rec: WakeRecord): UIMessage {
@@ -213,14 +225,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				guard("settle", () => wakes.settle(rec.wakeId, "settled"));
 			}
 			for (const rec of plan.toFail) {
-				guard("fail", () =>
-					wakes.settle(rec.wakeId, "failed", {
-						error:
-							rec.runId === null
-								? "wake admission authority expired or is unknown"
-								: `turn run ${rec.runId} ended ${runStatus(rec.runId) ?? "?"}`,
-					}),
-				);
+				guard("fail", () => wakes.settle(rec.wakeId, "failed", { error: failReason(rec) }));
 			}
 			// Keep run_id at the live end of its resume chain: forRun and
 			// the begin hook's retarget stay meaningful for the next

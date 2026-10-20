@@ -3,10 +3,13 @@
 // attachment: cursor, work event, and pending wake commit in ONE
 // transaction, then the dispatcher pumps. Source keys are namespaced
 // by attachment generation and durable reset epoch so reused sequences
-// survive both reattachment and server resets. A repeated poll
+// survive reattachment, server resets, and repeated missing/recovered
+// cycles. A repeated poll
 // dedupes to nothing and spends no model call. An
 // unreachable Herdr target is a skipped group — never evidence that
-// its agents vanished. A same-pane replacement is a different
+// its agents vanished. An unexpectedly failing group skips only
+// itself, loudly, and the pass still pumps. A
+// same-pane replacement is a different
 // attachment: agent_session changes mark identity_changed and the
 // observer leaves the occupant alone until a deliberate reattach.
 
@@ -26,7 +29,8 @@ const observedCursorSchema = z.object({
 	terminalId: z.string().nullable(),
 	name: z.string().nullable(),
 	missing: z.boolean(),
-	/** Durable reset namespace; old cursors begin at epoch zero. */
+	/** Durable key namespace — bumps on sequence resets and on each
+	 *  missing/recovered cycle; old cursors begin at epoch zero. */
 	epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
 });
 export type ObservedCursor = z.infer<typeof observedCursorSchema>;
@@ -154,11 +158,23 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		let epoch = prev?.epoch ?? 0;
 		const key = (kind: string, seq: string | number) =>
 			`obs:${att.attachmentId}:g${g}:e${epoch}:${kind}:${seq}`;
+		const bumpEpoch = () => {
+			epoch += 1;
+			if (!Number.isSafeInteger(epoch))
+				throw new Error(`attachment ${att.attachmentId}: cursor epoch exhausted`);
+		};
 		const found = matchOf(att, agents);
 
 		if (found === null) {
 			if (prev?.missing !== true) {
-				commit(att, conversationId, cursorFrom(null, prev), "missing", {
+				// A disappearance opens a fresh key namespace: state_change_seq
+				// can be unchanged across a whole missing/recovered cycle, and
+				// the next cycle's transitions must not collide with — and
+				// dedupe against — this cycle's durable events.
+				bumpEpoch();
+				const cur = cursorFrom(null, prev);
+				cur.epoch = epoch;
+				commit(att, conversationId, cur, "missing", {
 					sourceKey: key("missing", prev?.seq ?? "na"),
 					kind: "agent-missing",
 					text: `attached agent ${att.target.agentName} is no longer listed`,
@@ -173,9 +189,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		const cur = cursorFrom(found, prev);
 		const reset = prev !== null && prev.seq !== null && cur.seq !== null && cur.seq < prev.seq;
 		if (reset) {
-			epoch += 1;
-			if (!Number.isSafeInteger(epoch))
-				throw new Error(`attachment ${att.attachmentId}: cursor epoch exhausted`);
+			bumpEpoch();
 			cur.epoch = epoch;
 		}
 		// Identity first: the same terminal/pane hosting a different
@@ -275,9 +289,13 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 	};
 
 	async function observeOnce(): Promise<void> {
-		// Group live attachments per Herdr target — one list call serves
-		// every attachment on that server/session.
-		{
+		// One group's failure must not starve the others or the dispatcher:
+		// each group is isolated, and the first unexpected error rethrows
+		// only after the pass so it still surfaces to the tick.
+		let unexpected: { err: unknown } | null = null;
+		try {
+			// Group live attachments per Herdr target — one list call serves
+			// every attachment on that server/session.
 			const groups = new Map<string, { server: string; session: string; atts: Attachment[] }>();
 			for (const resp of resps.open()) {
 				if (!WATCHED.has(resp.status)) continue;
@@ -296,26 +314,37 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				}
 			}
 			for (const group of groups.values()) {
-				let agents: OperatorAgent[];
 				try {
-					agents = await list(group.server, group.session);
+					const agents = await list(group.server, group.session);
+					for (const att of group.atts) reconcile(att, agents);
 				} catch (err) {
-					// Only a CLI/target failure is an unavailable snapshot.
-					// Malformed output and unexpected errors propagate; they
-					// must not masquerade as normal target unavailability.
-					if (!(err instanceof HerdrError)) throw err;
-					log.warn("responsibility observation unreachable", {
+					if (err instanceof HerdrError) {
+						// Only a CLI/target failure is an unavailable snapshot.
+						log.warn("responsibility observation unreachable", {
+							server: group.server,
+							session: group.session,
+							attachments: group.atts.map((a) => a.attachmentId),
+							error: err.message,
+						});
+						continue;
+					}
+					// Malformed output and unexpected errors rethrow after
+					// the pass; they must not masquerade as normal target
+					// unavailability either.
+					log.error("responsibility observation failed", err, {
 						server: group.server,
 						session: group.session,
 						attachments: group.atts.map((a) => a.attachmentId),
-						error: err.message,
 					});
-					continue;
+					if (unexpected === null) unexpected = { err };
 				}
-				for (const att of group.atts) reconcile(att, agents);
 			}
+		} finally {
 			// After every transaction has committed — never inside one.
+			// Runs even when a group failed mid-pass: whatever earlier
+			// groups committed still needs its pump.
 			pump();
 		}
+		if (unexpected !== null) throw unexpected.err;
 	}
 }

@@ -480,6 +480,43 @@ describe("responsibility destinations", () => {
 		);
 	});
 
+	test("project turns refuse hook enable/rotate; disable stays open", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		// A project-bound program that carries a hook — minted before the
+		// binding existed, or legacy surgery. The cron keeps disable legal.
+		const prog = programs.create({
+			name: "own",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+			hookHash: hookTokenHash("seed"),
+		});
+		const sent: string[] = [];
+		const tool = programTool({
+			programs,
+			project: { projectId: "p1", resps: { get: (id) => (id === "r1" ? { projectId: "p1" } : null) } },
+			publicUrl: () => "https://example.test",
+			sendPrivate: async (text) => {
+				sent.push(text);
+			},
+		});
+		// The same refusal create applies to responsibility destinations.
+		for (const op of ["enable", "rotate"] as const) {
+			const out = (await exec(tool, { action: "hook", id: prog.id, op })) as { error?: string };
+			expect(out.error).toBe("hook URLs deliver to the operator DM — not available on project turns");
+		}
+		expect(programs.get(prog.id)!.hookHash).toBe(hookTokenHash("seed"));
+		expect(sent).toEqual([]);
+		// Disable delivers nothing — it stays available for cleanup.
+		const off = (await exec(tool, { action: "hook", id: prog.id, op: "disable" })) as {
+			error?: string;
+		};
+		expect(off.error).toBeUndefined();
+		expect(programs.get(prog.id)!.hookHash).toBeNull();
+	});
+
 	test("the project arm only reaches programs bound to the project's responsibilities", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
 		dirs.push(dir);

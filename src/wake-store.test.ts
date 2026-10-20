@@ -416,6 +416,46 @@ describe("wake store", () => {
 		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
 	});
 
+	test("a pending wake whose conversation row is gone fails terminally, not the pass", () => {
+		const { store, conv, other, wakes } = setup();
+		const rec = wakes.record({
+			sourceKey: "poll:1",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line",
+			facts: {},
+			origin: "observer",
+		});
+		// Never committed — the pending state. Same out-of-band surgery.
+		store.db.run("PRAGMA foreign_keys = OFF");
+		store.db.run("DELETE FROM conversations WHERE id = ?", [conv.id]);
+		store.db.run("PRAGMA foreign_keys = ON");
+		const healthy = wakes.record({
+			sourceKey: "poll:2",
+			conversationId: other.id,
+			kind: "done-candidate",
+			text: "line two",
+			facts: {},
+			origin: "observer",
+		});
+		const plan = wakes.reconcile(new Date().toISOString(), () => null);
+		expect(plan.toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
+		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
+		// The dispatcher's transition for pending orphans: claim without an
+		// append, then settle failed — the same tomb settle leaves.
+		wakes.failOrphan(rec.wakeId, "wake conversation row is missing");
+		const tomb = wakes.get(rec.wakeId)!;
+		expect(tomb.state).toBe("failed");
+		expect(tomb.settledAt).not.toBeNull();
+		expect(tomb.lastError).toBe("wake conversation row is missing");
+		expect(tomb.claimEpoch).toBeNull(); // no provable authority
+		expect(tomb.historySeq).toBe(-1); // sentinel — nothing was appended
+		// Terminal: a later pass no longer classifies it, and the
+		// transition refuses to run twice.
+		expect(wakes.reconcile(new Date().toISOString(), () => null).toFail).toHaveLength(0);
+		expect(() => wakes.failOrphan(rec.wakeId, "again")).toThrow(/cannot fail as orphan/);
+	});
+
 	test("deleting a conversation sweeps its wake, event, and join rows", () => {
 		const { store, conv, wakes } = setup();
 		const done = wakes.record({

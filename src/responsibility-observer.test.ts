@@ -207,6 +207,67 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
+	test("colliding server/session concatenations are two targets, not one", async () => {
+		const r = rig();
+		// "local"+"op" and "localo"+"p" concatenate identically — the
+		// group key must still tell them apart.
+		r.resps.attach({
+			responsibilityId: r.respId,
+			target: {
+				server: "localo",
+				session: "p",
+				agentName: "worker-2",
+				paneId: "pane-8",
+				terminalId: "term-10",
+				agentSession: "sess-def",
+				kind: "pi",
+				cwd: "/w",
+			},
+			baseline: {},
+			cursor: {
+				seq: 1,
+				completionSeq: null,
+				status: "working",
+				agentSession: "sess-def",
+				terminalId: "term-10",
+				name: "worker-2",
+				missing: false,
+			},
+		});
+		r.agents = [
+			agent(),
+			agent({
+				pane_id: "pane-8",
+				terminal_id: "term-10",
+				agent_session: "sess-def",
+				name: "worker-2",
+			}),
+		];
+		const calls: [string, string][] = [];
+		const observer = makeResponsibilityObserver({
+			db: r.store.db,
+			resps: r.resps,
+			wakes: openWakeStore(r.store.db),
+			pump: () => {},
+			list: async (server, session) => {
+				calls.push([server, session]);
+				return r.agents;
+			},
+		});
+		await observer.observe();
+		expect(calls.sort()).toEqual([
+			["local", "op"],
+			["localo", "p"],
+		]);
+		// A merged group would reconcile the second attachment against the
+		// first's snapshot — its terminal gone, health "missing".
+		for (const att of r.resps.attachmentsFor(r.respId)) {
+			expect(att.health).toBe("attached");
+		}
+		expect(r.eventsFor()).toHaveLength(0);
+		r.store.close();
+	});
+
 	test("a cursor regression reconciles instead of replaying completions", async () => {
 		const r = rig();
 		// First poll lands a completion so the cursor is ahead.

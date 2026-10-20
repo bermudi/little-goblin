@@ -283,7 +283,9 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				if (!WATCHED.has(resp.status)) continue;
 				for (const att of resps.attachmentsFor(resp.responsibilityId)) {
 					if (!SIGHTED.has(att.health)) continue;
-					const k = `${att.target.server}${att.target.session}`;
+					// Encoded pair, not concatenation — server "a"/session
+					// "bc" must not collide with server "ab"/session "c".
+					const k = JSON.stringify([att.target.server, att.target.session]);
 					const group = groups.get(k) ?? {
 						server: att.target.server,
 						session: att.target.session,

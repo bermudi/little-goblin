@@ -134,6 +134,33 @@ describe("wake dispatcher", () => {
 		r.store.close();
 	});
 
+	test("a pending orphan fails terminally without stalling other deliveries", async () => {
+		const script = scriptedModel([textParts("ok")]);
+		const r = rig({ model: script.model });
+		const orphanConv = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const orphan = r.wakes.record({
+			sourceKey: "orphan:1",
+			conversationId: orphanConv.id,
+			kind: "done-candidate",
+			text: "gone",
+			facts: {},
+			origin: "observer",
+		});
+		// Out-of-band surgery — deleteConversation would have swept the wake.
+		r.store.db.run("PRAGMA foreign_keys = OFF");
+		r.store.db.run("DELETE FROM conversations WHERE id = ?", [orphanConv.id]);
+		r.store.db.run("PRAGMA foreign_keys = ON");
+		// The healthy dev's record() pumps: the orphan takes its terminal
+		// failOrphan transition while the healthy wake delivers.
+		const healthy = dev(r, "healthy:1");
+		expect(wake(r, orphan.wakeId).state).toBe("failed");
+		expect(wake(r, orphan.wakeId).lastError).toBe("wake conversation row is missing");
+		await waitUntil(() => wake(r, healthy.wakeId).state === "settled", "healthy wake settled");
+		expect(script.streamCalls).toHaveLength(1);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
 	test("overflow keeps wake claimed until its successful successor delivers", async () => {
 		const overflow = new APICallError({
 			message:

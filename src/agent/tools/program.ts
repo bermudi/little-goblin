@@ -294,6 +294,12 @@ export const programTool = (deps: ProgramToolDeps) => {
 				case "hook": {
 					const current = scopedGet(input.id);
 					if (current === null) return { error: `no program ${input.id}` };
+					// Same refusal as create: minting delivers the URL to the
+					// operator DM, which project-bound programs don't have.
+					// Disable stays open — it delivers nothing.
+					if (deps.project !== undefined && input.op !== "disable") {
+						return { error: "hook URLs deliver to the operator DM — not available on project turns" };
+					}
 					if (input.op === "disable") {
 						try {
 							deps.programs.setHook(input.id, null);

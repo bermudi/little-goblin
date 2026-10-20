@@ -132,6 +132,14 @@ export interface WakeStore {
 	 *  successor. */
 	retargetRun(wakeId: number, fromRunId: string, toRunId: string): void;
 	settle(wakeId: number, outcome: "settled" | "failed", opts?: { error?: string }): void;
+	/** Terminal failure for a pending wake whose conversation row is
+	 *  gone — out-of-band corruption only; the FK chain and
+	 *  deleteConversation's sweep keep the two together. Claims without
+	 *  an append: no history exists to reference, so the seq is a
+	 *  sentinel and the claim epoch stays NULL (no provable authority),
+	 *  then settles failed — one transaction, the same terminal tomb
+	 *  settle produces from claimed. */
+	failOrphan(wakeId: number, error: string): void;
 	/** Transient pre-execution failure: attempt count, error, next gate. */
 	noteFailure(wakeId: number, error: string, nextAttemptAt: string | null): void;
 	/** Boot classification against history and journal — reads only. */
@@ -267,6 +275,12 @@ export function openWakeStore(db: Database): WakeStore {
 	);
 	const qSettle = db.prepare(
 		"UPDATE wake_deliveries SET state = ?, settled_at = ?, last_error = COALESCE(?, last_error) WHERE wake_id = ? AND state = 'claimed'",
+	);
+	// The orphan claim satisfies the terminal-state CHECK (history_seq
+	// NOT NULL) without inventing a history reference: -1 marks a
+	// trigger that was never appended anywhere.
+	const qClaimOrphan = db.prepare(
+		"UPDATE wake_deliveries SET state = 'claimed', history_seq = -1, claimed_at = ?, claim_epoch = NULL WHERE wake_id = ? AND state = 'pending'",
 	);
 	const qNoteFailure = db.prepare(
 		"UPDATE wake_deliveries SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE wake_id = ? AND state = 'claimed'",
@@ -464,6 +478,21 @@ export function openWakeStore(db: Database): WakeStore {
 			log.info("wake settled", { wake: wakeId, outcome, run: runId, error: opts?.error ?? null });
 		},
 
+		failOrphan(wakeId, error) {
+			const now = new Date().toISOString();
+			db.transaction(() => {
+				const rec = requireWake(wakeId);
+				if (rec.state !== "pending") {
+					throw new Error(`wake ${wakeId} cannot fail as orphan from state ${rec.state}`);
+				}
+				const claimed = qClaimOrphan.run(now, wakeId);
+				if (claimed.changes !== 1) throw new Error(`wake ${wakeId} orphan claim raced`);
+				const settled = qSettle.run("failed", now, error, wakeId);
+				if (settled.changes !== 1) throw new Error(`wake ${wakeId} orphan settle raced`);
+			})();
+			log.error("wake orphan failed", undefined, { wake: wakeId, error });
+		},
+
 		noteFailure(wakeId, error, nextAttemptAt) {
 			let attempts = 0;
 			db.transaction(() => {
@@ -490,6 +519,22 @@ export function openWakeStore(db: Database): WakeStore {
 			for (const row of qOpenAll.all()) {
 				const rec = rowToRecord(row);
 				if (rec.state === "pending") {
+					const conv = qEpoch.get(rec.conversationId);
+					if (conv === null) {
+						// Out-of-band corruption only — the FK chain and
+						// deleteConversation's sweep keep wake rows and their
+						// conversation together. Same ruling as the claimed
+						// branch below: the orphan fails itself, loudly and
+						// terminally (via failOrphan — settle needs a real
+						// claim); classification continues for every other
+						// wake.
+						log.error("pending wake's conversation row is missing", undefined, {
+							wake: rec.wakeId,
+							conversation: rec.conversationId,
+						});
+						plan.toFail.push(rec);
+						continue;
+					}
 					plan.toAppend.push(rec);
 					continue;
 				}

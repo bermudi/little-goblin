@@ -121,8 +121,11 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 
 	// The durable reason a classified wake fails — admission authority
 	// lost, the run's terminal state, or a link the journal can't
-	// resolve at all (missing row, resume-chain cycle).
+	// resolve at all (missing row, resume-chain cycle). A pending wake
+	// in toFail is the orphaned-conversation classification: its
+	// trigger was never appended anywhere.
 	function failReason(rec: WakeRecord): string {
+		if (rec.state === "pending") return "wake conversation row is missing";
 		if (rec.runId === null) return "wake admission authority expired or is unknown";
 		const status = runStatus(rec.runId);
 		return status === null
@@ -225,7 +228,13 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				guard("settle", () => wakes.settle(rec.wakeId, "settled"));
 			}
 			for (const rec of plan.toFail) {
-				guard("fail", () => wakes.settle(rec.wakeId, "failed", { error: failReason(rec) }));
+				// Pending orphans can't take the settle path (it requires a
+				// real claim); failOrphan is their terminal transition.
+				guard("fail", () =>
+					rec.state === "pending"
+						? wakes.failOrphan(rec.wakeId, failReason(rec))
+						: wakes.settle(rec.wakeId, "failed", { error: failReason(rec) }),
+				);
 			}
 			// Keep run_id at the live end of its resume chain: forRun and
 			// the begin hook's retarget stay meaningful for the next

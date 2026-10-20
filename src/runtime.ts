@@ -288,8 +288,11 @@ export class Runtime {
 		const journal = this.deps.turnJournal;
 		if (journal !== undefined && seed.resumedFrom !== undefined) {
 			this.deps.store.db.transaction(() => {
-				this.deps.store.append(conv.id, [message]);
-				journal.noteResumeRequest(seed.resumedFrom!, this.deps.store.lastUserSeq(conv.id)!);
+				// The registry names the seq this append actually wrote —
+				// inferring it (e.g. lastUserSeq) would silently register an
+				// unrelated event if the message's shape ever changed.
+				const seqs = this.deps.store.append(conv.id, [message]);
+				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
 			})();
 		} else {
 			this.deps.store.append(conv.id, [message]);
@@ -450,14 +453,12 @@ export class Runtime {
 			// reverses the order after each call — a provider may resolve under
 			// abort, so there the signal check must land first.
 			this.checkAuthority(conv.id, epoch);
-			const tailTokenBudget =
-				contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
+			const tailTokenBudget = contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
 			// Overflow recovery uses a smaller tail to stay below the provider's
 			// observed limit.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 			// Keep summarizer input below half the window to leave answer headroom.
-			const inputTokenBudget =
-				contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const inputTokenBudget = contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
 			const modelRef = compaction.modelRef(conv);
 			log.info("compaction window", {
 				conversation: conv.id,

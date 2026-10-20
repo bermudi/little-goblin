@@ -834,9 +834,11 @@ describe("turn resume", () => {
 		// No resume event, no successor — the refusal spent nothing.
 		expect(store.history(conv.id).length).toBe(before + 1);
 		expect(
-			store.db.query<{ n: number }, [string]>(
-				"SELECT COUNT(*) AS n FROM turn_runs WHERE resumed_from = ?",
-			).get("run-dead")!.n,
+			store.db
+				.query<{ n: number }, [string]>(
+					"SELECT COUNT(*) AS n FROM turn_runs WHERE resumed_from = ?",
+				)
+				.get("run-dead")!.n,
 		).toBe(0);
 
 		// Answered: a completed later exchange is just as foreign.
@@ -925,7 +927,10 @@ describe("turn resume", () => {
 		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("steered while running");
 		const detail = store.historyDetail(conv.id);
 		const resumeEvent = detail.find(
-			(e) => e.message.role === "user" && e.message.id !== trigger.message.id && e.message.id !== steered.message.id,
+			(e) =>
+				e.message.role === "user" &&
+				e.message.id !== trigger.message.id &&
+				e.message.id !== steered.message.id,
 		)!;
 		expect(resumeEvent).toBeDefined();
 		expect(resumeEvent.message.metadata).toEqual({
@@ -934,9 +939,9 @@ describe("turn resume", () => {
 		const reply = detail.at(-1)!;
 		expect(reply.message.role).toBe("assistant");
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
-		expect(
-			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
-		).toBe(true);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
+			true,
+		);
 		// The registry recorded the event id — a failed next resume would
 		// still recognize it as this source's own request.
 		expect(journal.get("run-owned")!.resumeRequestSeqs).toEqual([resumeEvent.seq]);
@@ -949,10 +954,17 @@ describe("turn resume", () => {
 			ownedInputSeqs: [trigger2.seq],
 		});
 		appendUserMsg(store, conv2, "arrived but never folded in");
-		expect(ops.resume(conv2.id, "run-unclaimed")).toMatchObject({
+		const refusedOut = ops.resume(conv2.id, "run-unclaimed");
+		expect(refusedOut).toMatchObject({
 			kind: "refused",
 			code: "conflict",
 		});
+		if (refusedOut.kind === "refused") {
+			// The unclaimed steer arrived while the turn ran — the refusal
+			// names the anchor boundary, not "after the interruption".
+			expect(refusedOut.reason).toContain("after this run's anchor");
+			expect(refusedOut.reason).not.toContain("after the interruption");
+		}
 		expect(journal.get("run-unclaimed")!.status).toBe("interrupted");
 		await runtime.shutdown();
 		store.close();
@@ -992,17 +1004,15 @@ describe("turn resume", () => {
 		// Parts ride verbatim — the attachment stays a part, not a string.
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("original ask");
 		expect(
-			resumeEvent.message.parts.some(
-				(p) => (p as { type: string }).type === "data-attachment",
-			),
+			resumeEvent.message.parts.some((p) => (p as { type: string }).type === "data-attachment"),
 		).toBe(true);
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("pic.png");
 		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("original ask");
 		const reply = detail.at(-1)!;
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
-		expect(
-			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
-		).toBe(true);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
+			true,
+		);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -1031,6 +1041,112 @@ describe("turn resume", () => {
 			kind: "refused",
 			code: "conflict",
 		});
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a malformed resume-request registry refuses readable, never as foreign input", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const a = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: a,
+			ownedInputSeqs: [a],
+		});
+		// A prior resume's generated request event — the registration is
+		// what corrupts below; without the unreadable flag the scan reads
+		// it as foreign input and misreports a "conflict".
+		store.append(conv.id, [
+			{
+				...userMessage([{ type: "text", text: "[operator resumed interrupted run run-src]" }]),
+				metadata: { goblinResume: { sourceRunId: "run-src" } },
+			},
+		]);
+		store.db.run("UPDATE turn_runs SET resume_request_seqs = ? WHERE run_id = ?", [
+			"{not json",
+			"run-src",
+		]);
+		const out = ops.resume(conv.id, "run-src");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("resume-request registry is unreadable");
+		}
+		expect(journal.get("run-src")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("an anchorless run holding foreign history refuses without blaming post-interruption input", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		appendUser(store, conv, "old ask");
+		interruptedRun(store, journal, conv, "run-anchorless", { ownedInputSeqs: [] });
+		const out = ops.resume(conv.id, "run-anchorless");
+		expect(out).toMatchObject({ kind: "refused", code: "conflict" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("recorded no anchor");
+			expect(out.reason).not.toContain("after the interruption");
+		}
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a trigger still in the model view is not re-copied into the resume event", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		interruptedRun(store, journal, conv, "run-live", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq],
+		});
+		expect(ops.resume(conv.id, "run-live").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) => e.message.role === "user" && e.message.id !== trigger.message.id,
+		)!;
+		// The original request rides its own still-visible event — the
+		// resume carries the provenance prefix only, so the model and the
+		// retention document see the text once.
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("ORIGINAL-ASK");
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain(
+			"operator resumed interrupted run run-live",
+		);
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
+		const reply = detail.at(-1)!;
+		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a registry write that lands zero rows rolls the event append back", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const a = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-silent", {
+			anchorSeq: a,
+			ownedInputSeqs: [a],
+		});
+		// The guarded UPDATE silently skips — changes === 0 — the way a
+		// status flip between the check and the write would surface.
+		store.db.run(
+			"CREATE TRIGGER skip_resume_req BEFORE UPDATE OF resume_request_seqs ON turn_runs " +
+				"BEGIN SELECT RAISE(IGNORE); END",
+		);
+		const before = store.historyDetail(conv.id).length;
+		const out = ops.resume(conv.id, "run-silent");
+		expect(out).toMatchObject({ kind: "refused", code: "unavailable" });
+		// The append rode the same transaction — nothing half-landed.
+		expect(store.historyDetail(conv.id).length).toBe(before);
+		expect(journal.get("run-silent")!.resumeRequestSeqs).toBeNull();
+		expect(journal.get("run-silent")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("noteResumeRequest refuses a seq that is not a durable event seq", async () => {
+		const { store, conv, journal, runtime } = setup({});
+		const a = appendUser(store, conv, "ask");
+		interruptedRun(store, journal, conv, "run-seq", { anchorSeq: a });
+		expect(() => journal.noteResumeRequest("run-seq", 0)).toThrow("not a durable event seq");
+		expect(journal.get("run-seq")!.resumeRequestSeqs).toBeNull();
 		await runtime.shutdown();
 		store.close();
 	});
@@ -1261,13 +1377,9 @@ describe("turn resume", () => {
 		await runtime.shutdown();
 		expect(reads).toEqual([file]); // executed fresh, not replayed
 		const successor = store.db
-			.query<{ run_id: string }, [string]>(
-				"SELECT run_id FROM turn_runs WHERE resumed_from = ?",
-			)
+			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 			.get("run-src")!.run_id;
-		const reask = journal
-			.callsFor(successor)
-			.find((c) => c.toolCallId === "n1")!;
+		const reask = journal.callsFor(successor).find((c) => c.toolCallId === "n1")!;
 		expect(reask.state).toBe("completed");
 		expect(reask.replayed).toBe(false);
 		expect(reask.result).toBe('"B"');
@@ -1495,9 +1607,9 @@ describe("turn resume", () => {
 		expect(reask.result).toContain("[turn-journal conflict]");
 		// The source's own row still reads unconsumed — unreachable, but
 		// honest evidence of what was granted.
-		expect(
-			journal.callsFor("run-src").find((c) => c.toolCallId === "c-grant")!.retryConsumed,
-		).toBe(false);
+		expect(journal.callsFor("run-src").find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(
+			false,
+		);
 		store.close();
 	});
 

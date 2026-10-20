@@ -1071,6 +1071,7 @@ describe("recovery commands", () => {
 		ownedInputSeqs: null,
 		ownedInputSeqsUnreadable: false,
 		resumeRequestSeqs: null,
+		resumeRequestSeqsUnreadable: false,
 		filterRetryUsed: false,
 		createdAt: "2026-10-11T00:00:00.000Z",
 		resumedFrom: null,
@@ -1133,7 +1134,7 @@ describe("recovery commands", () => {
 		});
 		expect(handleCommand(deps, conv, "/resume")).toBe(true);
 		await tick();
-		expect(sent[0]).toContain("known: probe {\"q\":1} — completed");
+		expect(sent[0]).toContain('known: probe {"q":1} — completed');
 		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz authorize-retry");
 		// The known row never occupies a numbered slot — ordinals stay
 		// pinned to the ambiguous list.

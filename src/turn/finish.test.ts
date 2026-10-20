@@ -398,7 +398,11 @@ function reviewerDeps(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
 		reviewModel: async () => {
 			throw new Error("must not review");
 		},
-		store: { append() {} },
+		store: {
+			append() {
+				return [];
+			},
+		},
 		skillsDir: "/none",
 		proposedDir: "/none",
 		workspaceDir: "/none",
@@ -587,7 +591,11 @@ describe("submitTurnReview", () => {
 					}),
 				},
 				reviewModel: async () => ({ ref: "fake/review", model: cap.reviewModel }),
-				store: { append() {} },
+				store: {
+					append() {
+						return [];
+					},
+				},
 				skillsDir: cap.skills,
 				proposedDir: join(cap.workspace, "skills-proposed"),
 				workspaceDir: cap.workspace,
@@ -613,7 +621,11 @@ describe("submitTurnReview", () => {
 			...reviewerDeps(),
 			gate: { decide: (state, questions) => decide(state, questions) },
 			reviewModel: async () => ({ ref: "fake/review", model: cap.reviewModel }),
-			store: { append() {} },
+			store: {
+				append() {
+					return [];
+				},
+			},
 			skillsDir: cap.skills,
 			proposedDir: join(cap.workspace, "skills-proposed"),
 			workspaceDir: cap.workspace,

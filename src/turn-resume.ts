@@ -12,6 +12,7 @@ import {
 	userMessage,
 } from "./runtime.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
 import type { WakeDeps } from "./wake.ts";
@@ -119,8 +120,7 @@ export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
 	// shift every ambiguous call's number. Grants on ambiguous rows and
 	// recorded outcomes keep theirs.
 	return calls.filter(
-		(c) =>
-			(c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
+		(c) => (c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
 	);
 }
 
@@ -211,9 +211,7 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 				} else if (c.error !== null) {
 					note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
 				} else {
-					note = c.retryConsumed
-						? `[turn-journal decision: ${grant}]`
-						: RESOLVED_RETRY_NOTE;
+					note = c.retryConsumed ? `[turn-journal decision: ${grant}]` : RESOLVED_RETRY_NOTE;
 				}
 			}
 			parts.push({
@@ -284,8 +282,7 @@ type DetailEntry = { seq: number; anchorSeq: number | null; message: UIMessage }
 
 function isOwnResumeRequest(e: DetailEntry, run: TurnRun): boolean {
 	return (
-		(run.resumeRequestSeqs?.includes(e.seq) ?? false) &&
-		resumeEventSource(e.message) === run.runId
+		(run.resumeRequestSeqs?.includes(e.seq) ?? false) && resumeEventSource(e.message) === run.runId
 	);
 }
 
@@ -302,11 +299,19 @@ function stalenessRefusal(
 	store: ConversationStore,
 	convId: string,
 	run: TurnRun,
-): { refuse: string; code: ResumeRefusalCode } | { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
+):
+	| { refuse: string; code: ResumeRefusalCode }
+	| { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
 	if (run.ownedInputSeqsUnreadable) {
 		return {
 			code: "invalid",
 			refuse: "the recorded input ownership is unreadable — not resumed",
+		};
+	}
+	if (run.resumeRequestSeqsUnreadable) {
+		return {
+			code: "invalid",
+			refuse: "the recorded resume-request registry is unreadable — not resumed",
 		};
 	}
 	const detail = store.historyDetail(convId);
@@ -338,11 +343,17 @@ function stalenessRefusal(
 			postAnchorOwned.push(e);
 			continue;
 		}
+		// The offending event did not necessarily arrive after the
+		// interruption — steering sent while the turn ran is durable but
+		// never folded — and an anchorless run has no anchor to compare
+		// against at all.
 		return {
 			code: "conflict",
 			refuse:
-				"newer input arrived after the interruption that this run never owned — not resumed; " +
-				"continue from the current conversation as a new request or abandon the interrupted run",
+				(run.anchorSeq === null
+					? "this run recorded no anchor and the conversation holds input it never owned"
+					: "input after this run's anchor was never owned by it — it arrived while the turn ran or after it died") +
+				" — not resumed; continue from the current conversation as a new request or abandon the interrupted run",
 		};
 	}
 	return { anchor, owned: postAnchorOwned };
@@ -562,17 +573,37 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const partial = seedPartial(run, calls);
 			// The resume is a NEW source-linked user event: the provenance
 			// prefix, then the original request and the owned post-anchor
-			// inputs verbatim — attachments and notes ride as parts, so a
-			// compacted trigger reaches the model again.
+			// inputs verbatim — attachments and notes ride as parts. Only
+			// parts compaction already cut from the model view are copied:
+			// an event still visible reaches the model through its own
+			// entry, and re-copying would double the text in the prompt
+			// and in the retention document.
+			// The compaction summary borrows boundarySeq, which can equal a
+			// folded event's seq — exclude it or it masquerades as the anchor.
+			const viewSeqs = new Set(
+				store
+					.modelEntries(convId)
+					.filter((e) => !isCompactionSummaryId(e.message.id))
+					.map((e) => e.seq),
+			);
+			const revived = [
+				...(stale.anchor !== undefined && !viewSeqs.has(stale.anchor.seq)
+					? stale.anchor.message.parts
+					: []),
+				...stale.owned.filter((e) => !viewSeqs.has(e.seq)).flatMap((e) => e.message.parts),
+			];
 			const parts: UIMessage["parts"] = [
 				{
 					type: "text",
-					text: `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`,
+					text:
+						revived.length > 0
+							? `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`
+							: `[operator resumed interrupted run ${run.runId}]`,
 				},
-				...(stale.anchor?.message.parts ?? []),
-				...stale.owned.flatMap((e) => e.message.parts),
+				...revived,
 			];
-			if (parts.length === 1 && partial === null) {
+			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
+			if (!triggerVisible && revived.length === 0 && partial === null) {
 				return refused(
 					"invalid",
 					"the trigger message and the journaled progress are both gone — nothing to resume",

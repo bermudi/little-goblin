@@ -108,6 +108,17 @@ calls (completed/failed/recorded outcomes) under `known:`:
   tracking columns read consumed and fail closed — they can neither
   execute nor take a new decision. Decide the call fresh on the
   interrupted run, or re-ask in a new turn.
+- **`/resume` refuses input the dead run never owned.** A durable user
+  message after the run's trigger that it never consumed — steering it
+  crashed before folding in, or anything sent after it died — blocks
+  the resume with a labeled conflict. Continue from the current
+  conversation as a new request, or `/abandon <run>` the run.
+- **A successful resume appends a new source-linked user event.** It
+  carries a provenance prefix — `[operator resumed interrupted run
+  …]` — plus the original request verbatim when the model view no
+  longer carries it (e.g. after compaction). It shows in history and
+  the app as its own message, re-feeds the model, and anchors the new
+  reply; the original event is never re-appended or duplicated.
 
 ## Diagnostics and first-start acceptance
 

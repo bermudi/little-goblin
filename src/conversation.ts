@@ -12,7 +12,12 @@ import { MemoryQueue } from "./memory/queue.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { retargetPruningMarker } from "./pruning-marker.ts";
+import {
+	coordinationAnchors,
+	ensureResponsibilitiesSchema,
+} from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import { ensureWakeSchema, sweepConversationWakes } from "./wake-store.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 
 // Routing discriminates on kind alone; the app member's zeros are fillers,
@@ -606,6 +611,12 @@ export function openStore(dbPath: string): ConversationStore {
 	// this table.
 	ensureProjectsSchema(db);
 	ensureNotesSchema(db);
+	// Companion schemas whose rows reference conversations: ensured here
+	// so deleteConversation's anchor check and wake sweep always find
+	// their tables on this handle, and the FK chain is complete from the
+	// first open.
+	ensureResponsibilitiesSchema(db);
+	ensureWakeSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -1565,7 +1576,20 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		deleteConversation(id) {
-			db.transaction(() => {
+			const swept = db.transaction((): { wakes: number; workEvents: number } => {
+				// A coordination surface must not outlive the responsibility
+				// that stands on it: the handover loop and wake delivery
+				// would both dangle. Terminal responsibilities keep their
+				// records — the conversation stays too. Refuse with names,
+				// not the bare FK error the row delete would raise.
+				const anchors = coordinationAnchors(db, id);
+				if (anchors.length > 0) {
+					throw new Error(
+						`conversation ${id} coordinates ${anchors
+							.map((a) => `${a.responsibilityId} (${a.status})`)
+							.join(", ")} — resolve them before deleting`,
+					);
+				}
 				// Sever the rolling navigation chain first — successors'
 				// previous_dm_id would FK-fail the row delete (a demoted
 				// lane's persona reset is the one caller that deletes a
@@ -1597,11 +1621,22 @@ export function openStore(dbPath: string): ConversationStore {
 						[gone.id, gone.epoch],
 					);
 				}
+				// Wake rows are this conversation's delivery bookkeeping —
+				// they ride the delete, in the same transaction.
+				const counts = sweepConversationWakes(db, id);
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);
 				qDeleteContexts.run(id);
 				qDeleteConv.run(id);
+				return counts;
 			})();
+			if (swept.wakes > 0) {
+				log.info("wake rows swept with conversation", {
+					conversation: id,
+					wakes: swept.wakes,
+					workEvents: swept.workEvents,
+				});
+			}
 			// The purge waits for the commit: queued retention rides the
 			// append transaction only, so cancelling before the delete and
 			// then rolling back would strand those rows forever. A purge

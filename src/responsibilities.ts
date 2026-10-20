@@ -320,7 +320,12 @@ const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set([
 	"paused",
 ]);
 
-export function openResponsibilities(db: Database): ResponsibilityStore {
+// Driven by openStore alongside the other companion schemas — the FK
+// from coordination_conversation_id and deleteConversation's anchor
+// check need the tables present on every conversation-store handle.
+// openResponsibilities re-ensures for standalone opens; both are
+// idempotent.
+export function ensureResponsibilitiesSchema(db: Database): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS responsibilities (
 			responsibility_id TEXT PRIMARY KEY,
@@ -376,6 +381,25 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			outcome_json TEXT,
 			created_at TEXT NOT NULL
 		)`);
+}
+
+// deleteConversation's anchor check — the responsibilities whose
+// coordination surface this conversation IS. Named here so the refusal
+// is actionable, not a bare FK error from the row delete.
+export function coordinationAnchors(
+	db: Database,
+	conversationId: string,
+): { responsibilityId: string; status: string }[] {
+	return db
+		.query<{ responsibility_id: string; status: string }, [string]>(
+			"SELECT responsibility_id, status FROM responsibilities WHERE coordination_conversation_id = ? ORDER BY created_at",
+		)
+		.all(conversationId)
+		.map((r) => ({ responsibilityId: r.responsibility_id, status: r.status }));
+}
+
+export function openResponsibilities(db: Database): ResponsibilityStore {
+	ensureResponsibilitiesSchema(db);
 
 	const now = () => new Date().toISOString();
 

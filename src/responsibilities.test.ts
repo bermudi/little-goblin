@@ -411,4 +411,26 @@ describe("operation state machine and atomic claim", () => {
 		expect(prepared.operation.toolCallId).toBe("tc-9");
 		r.store.close();
 	});
+
+	test("a coordination conversation refuses deletion while its responsibility stands", () => {
+		const r = rig();
+		const { responsibilityId } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "kl",
+			understanding: understanding(),
+		}).responsibility;
+		expect(() => r.store.deleteConversation(r.convId)).toThrow(responsibilityId);
+		// The refusal names the state and keeps the row — a closed record
+		// anchors its surface just as firmly.
+		expect(r.store.get(r.convId)).not.toBeNull();
+		r.resps.setStatus(responsibilityId, "completed");
+		expect(() => r.store.deleteConversation(r.convId)).toThrow("completed");
+		expect(r.store.get(r.convId)).not.toBeNull();
+		// A conversation that anchors nothing deletes cleanly.
+		const free = r.store.resolve({ kind: "dm", chatId: 4 }, "/w");
+		r.store.deleteConversation(free.id);
+		expect(r.store.get(free.id)).toBeNull();
+		r.store.close();
+	});
 });

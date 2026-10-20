@@ -287,6 +287,28 @@ auto-unarchives**: a delegation notice or a message sent via the ping link
 brings a shelved spin-off back to the rail instead of accumulating replies
 unseen.
 
+## Deletion's dependents (ruling 2026-10-19)
+
+`deleteConversation` must sweep every FK child or the row delete throws a
+bare constraint error — the app rail's delete was unreachable for any
+conversation that had ever carried a wake. Two shapes, two rulings:
+
+- **Wake rows ride the delete** (same transaction): deliveries, work
+  events, and their joins are the conversation's delivery bookkeeping;
+  they mean nothing without it. `openStore` ensures the wake and
+  responsibilities schemas alongside projects/notes so the sweep and the
+  anchor check always find their tables.
+- **A coordination surface outlives its responsibility, never the reverse.**
+  While any responsibility (open or closed) anchors the conversation,
+  delete refuses, naming them — the handover loop and wake delivery stand
+  on that surface, and closed records keep their history. The refusal is
+  the operator's to resolve, not the delete's to cascade.
+
+Reconcile treats a wake whose conversation row is gone (out-of-band
+surgery only — the FK chain and the sweep keep them together) exactly
+like a ghost run link: that wake fails loudly and terminally;
+classification continues for every other wake.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

@@ -45,6 +45,10 @@ describe("wake store", () => {
 	test("opening a pre-epoch wake table migrates without restoring unknown authority", () => {
 		const store = openStore(":memory:");
 		const conv = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		// openStore now ensures the wake schema itself — drop back to the
+		// pre-epoch shape to model the legacy database.
+		store.db.run("DROP TABLE wake_events");
+		store.db.run("DROP TABLE wake_deliveries");
 		store.db.run(`CREATE TABLE wake_deliveries (
 			wake_id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL,
 			message_id TEXT NOT NULL, state TEXT NOT NULL, history_seq INTEGER,
@@ -380,6 +384,70 @@ describe("wake store", () => {
 		const plan = wakes.reconcile(new Date().toISOString(), () => null);
 		expect(plan.toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
 		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
+	});
+
+	test("a wake whose conversation row is gone fails itself, not the pass", () => {
+		const { store, conv, other, wakes } = setup();
+		const rec = wakes.record({
+			sourceKey: "poll:1",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line",
+			facts: {},
+			origin: "observer",
+		});
+		const { append } = appendInto(store, conv.id);
+		wakes.commit(rec.wakeId, append);
+		// Only out-of-band surgery reaches this state — the FK chain and
+		// deleteConversation's sweep keep wake rows with their conversation.
+		store.db.run("PRAGMA foreign_keys = OFF");
+		store.db.run("DELETE FROM conversations WHERE id = ?", [conv.id]);
+		store.db.run("PRAGMA foreign_keys = ON");
+		const healthy = wakes.record({
+			sourceKey: "poll:2",
+			conversationId: other.id,
+			kind: "done-candidate",
+			text: "line two",
+			facts: {},
+			origin: "observer",
+		});
+		const plan = wakes.reconcile(new Date().toISOString(), () => null);
+		expect(plan.toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
+		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
+	});
+
+	test("deleting a conversation sweeps its wake, event, and join rows", () => {
+		const { store, conv, wakes } = setup();
+		const done = wakes.record({
+			sourceKey: "poll:1",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line",
+			facts: {},
+			origin: "observer",
+		});
+		const { append } = appendInto(store, conv.id);
+		wakes.commit(done.wakeId, append);
+		wakes.settle(done.wakeId, "settled");
+		const open = wakes.record({
+			sourceKey: "poll:2",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line two",
+			facts: {},
+			origin: "observer",
+		});
+		store.deleteConversation(conv.id);
+		expect(store.get(conv.id)).toBeNull();
+		expect(wakes.get(done.wakeId)).toBeNull();
+		expect(wakes.pending(conv.id)).toHaveLength(0);
+		expect(
+			store.db
+				.query("SELECT COUNT(*) AS n FROM work_events WHERE conversation_id = ?")
+				.get(conv.id),
+		).toEqual({ n: 0 });
+		expect(store.db.query("SELECT COUNT(*) AS n FROM wake_events").get()).toEqual({ n: 0 });
+		expect(open.created).toBe(true);
 	});
 
 	test("settled work does not block the next development; a repeated key stays a no-op", () => {

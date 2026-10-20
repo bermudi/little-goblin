@@ -138,7 +138,12 @@ export interface WakeStore {
 	reconcile(now: string, runStatus: (runId: string) => JournalStatus | null): ReconcilePlan;
 }
 
-export function openWakeStore(db: Database): WakeStore {
+// Driven by openStore alongside the other companion schemas — the FK
+// chain from wake rows to conversations and deleteConversation's sweep
+// need the tables present on every conversation-store handle, not only
+// ones where the dispatcher was wired. openWakeStore re-ensures for
+// standalone opens; both are idempotent.
+export function ensureWakeSchema(db: Database): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS work_events (
 			event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,6 +198,28 @@ export function openWakeStore(db: Database): WakeStore {
 	db.run(
 		"CREATE INDEX IF NOT EXISTS wake_deliveries_state ON wake_deliveries (state, conversation_id)",
 	);
+}
+
+// deleteConversation's wake sweep — joins its transaction, so no
+// transaction of its own: the caller's commit or rollback decides
+// whether the deletions stick. Wake rows are delivery bookkeeping for
+// a conversation; when the conversation goes, they go with it.
+export function sweepConversationWakes(
+	db: Database,
+	conversationId: string,
+): { wakes: number; workEvents: number } {
+	db.query(
+		"DELETE FROM wake_events WHERE wake_id IN (SELECT wake_id FROM wake_deliveries WHERE conversation_id = ?)",
+	).run(conversationId);
+	const workEvents = db.query("DELETE FROM work_events WHERE conversation_id = ?").run(conversationId)
+		.changes;
+	const wakes = db.query("DELETE FROM wake_deliveries WHERE conversation_id = ?").run(conversationId)
+		.changes;
+	return { wakes, workEvents };
+}
+
+export function openWakeStore(db: Database): WakeStore {
+	ensureWakeSchema(db);
 
 	const qEventByKey = db.query<z.infer<typeof eventIdentitySchema>, [string]>(
 		"SELECT event_id, conversation_id, kind, text FROM work_events WHERE source_key = ?",
@@ -468,7 +495,20 @@ export function openWakeStore(db: Database): WakeStore {
 				}
 				if (rec.runId === null) {
 					const conv = qEpoch.get(rec.conversationId);
-					if (conv === null) throw new Error(`wake ${rec.wakeId} conversation missing`);
+					if (conv === null) {
+						// Out-of-band corruption only — the FK chain and
+						// deleteConversation's sweep keep wake rows and their
+						// conversation together. Same ruling as the ghost-run
+						// branch below: the corrupt wake fails itself, loudly
+						// and terminally; classification must continue for
+						// every other wake.
+						log.error("wake's conversation row is missing", undefined, {
+							wake: rec.wakeId,
+							conversation: rec.conversationId,
+						});
+						plan.toFail.push(rec);
+						continue;
+					}
 					if (rec.claimEpoch === null || rec.claimEpoch !== conv.epoch) {
 						plan.toFail.push(rec);
 					} else if (rec.nextAttemptAt !== null && rec.nextAttemptAt > now) {

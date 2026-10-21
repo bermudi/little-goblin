@@ -586,23 +586,31 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					.filter((e) => !isCompactionSummaryId(e.message.id))
 					.map((e) => e.seq),
 			);
-			const revived = [
-				...(stale.anchor !== undefined && !viewSeqs.has(stale.anchor.seq)
-					? stale.anchor.message.parts
-					: []),
-				...stale.owned.filter((e) => !viewSeqs.has(e.seq)).flatMap((e) => e.message.parts),
-			];
+			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
+			const revivedAnchor =
+				stale.anchor !== undefined && !triggerVisible ? stale.anchor.message.parts : [];
+			const revivedSteering = stale.owned
+				.filter((e) => !viewSeqs.has(e.seq))
+				.flatMap((e) => e.message.parts);
+			const revived = [...revivedAnchor, ...revivedSteering];
+			// Name exactly what the copied parts carry — the prefix must not
+			// claim the request follows when it is still in the model view,
+			// nor claim steering that was never folded.
+			const follows =
+				revivedAnchor.length > 0
+					? revivedSteering.length > 0
+						? "; original request and consumed steering follow"
+						: "; original request follows"
+					: revivedSteering.length > 0
+						? "; consumed steering follows"
+						: "";
 			const parts: UIMessage["parts"] = [
 				{
 					type: "text",
-					text:
-						revived.length > 0
-							? `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`
-							: `[operator resumed interrupted run ${run.runId}]`,
+					text: `[operator resumed interrupted run ${run.runId}${follows}]`,
 				},
 				...revived,
 			];
-			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
 			if (!triggerVisible && revived.length === 0 && partial === null) {
 				return refused(
 					"invalid",

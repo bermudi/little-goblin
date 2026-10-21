@@ -1002,6 +1002,11 @@ describe("turn resume", () => {
 			(e) => e.message.role === "user" && e.message.id !== original.id,
 		)!;
 		// Parts ride verbatim — the attachment stays a part, not a string.
+		// Only the request follows; no folded steering exists to claim.
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain(
+			"[operator resumed interrupted run run-dead; original request follows]",
+		);
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("consumed steering");
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("original ask");
 		expect(
 			resumeEvent.message.parts.some((p) => (p as { type: string }).type === "data-attachment"),
@@ -1013,6 +1018,45 @@ describe("turn resume", () => {
 		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
 			true,
 		);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a resume that revives the trigger and folded steering names both", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		const steered = appendUserMsg(store, conv, "STEERED-INPUT");
+		interruptedRun(store, journal, conv, "run-both", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steered.seq],
+		});
+		// Fold the trigger and its steer — neither is in the model view, so
+		// the resume carries both and the prefix says exactly that.
+		store.setCompaction(conv.id, {
+			boundarySeq: steered.seq,
+			summary: "everything folded",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-both").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) =>
+				e.message.role === "user" &&
+				e.message.id !== trigger.message.id &&
+				e.message.id !== steered.message.id,
+		)!;
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain(
+			"[operator resumed interrupted run run-both; original request and consumed steering follow]",
+		);
+		expect(parts).toContain("ORIGINAL-ASK");
+		expect(parts).toContain("STEERED-INPUT");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
+		expect(prompt.split("STEERED-INPUT").length - 1).toBe(1);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -1107,8 +1151,9 @@ describe("turn resume", () => {
 		// retention document see the text once.
 		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("ORIGINAL-ASK");
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain(
-			"operator resumed interrupted run run-live",
+			"[operator resumed interrupted run run-live]",
 		);
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("follow");
 		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
 		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
 		const reply = detail.at(-1)!;

@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { parseConfig } from "../config.ts";
+import { openStore } from "../conversation.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
 import type { UIMessage } from "ai";
 
@@ -500,5 +502,89 @@ describe("config save", () => {
 			model: "test/glm-5.3",
 			thinking: "max",
 		});
+	});
+});
+
+describe("memory/blocked route", () => {
+	function postBlocked(body: unknown, d: OperatorDeps): Promise<Response | null> {
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/memory/blocked", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}),
+			"memory/blocked",
+			new URL("http://x/memory/blocked"),
+		);
+	}
+
+	function memoryDeps(): { d: OperatorDeps; store: ReturnType<typeof openStore>; target: string } {
+		const store = openStore(join(home, "goblin.sqlite"));
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const d = deps();
+		d.configRef.current = parseConfig({
+			providers: { test: { kind: "codex" } },
+			model: "test/m",
+			operators: [7],
+			allowedUsers: [],
+			memory: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+		});
+		d.memory = {
+			target: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+			client,
+			queue: store.memoryQueue,
+			counts: () => store.memoryQueue.counts(client.target),
+			deletingAll: () => store.memoryQueue.deletingCount(),
+			blockedDetail: () => store.memoryQueue.blockedDetail(client.target),
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
+		};
+		return { d, store, target: client.target };
+	}
+
+	test("retry and dismiss act on the durable blocked rows", async () => {
+		const { d, store, target } = memoryDeps();
+		try {
+			const enqueueBlocked = (id: string) => {
+				const op = store.memoryQueue.enqueue(target, {
+					id,
+					content: "Operator: hi\nGoblin: hello",
+					timestamp: new Date().toISOString(),
+					conversationId: "app/chat-01",
+					sourceIds: ["u1", "a1"],
+				});
+				const item = store.memoryQueue.get(op);
+				if (item === null) throw new Error("expected queued memory");
+				store.memoryQueue.update(item, "blocked", 0, "Hindsight http failure (HTTP 429)");
+			};
+			enqueueBlocked("exchange/app/chat-01/1/a");
+
+			const retried = await postBlocked({ action: "retry" }, d);
+			expect(retried?.status).toBe(200);
+			expect(await retried?.json()).toEqual({ ok: true, action: "retry", affected: 1 });
+			expect(store.memoryQueue.counts(target).blocked).toBe(0);
+			expect(store.memoryQueue.counts(target).pending).toBe(1);
+
+			enqueueBlocked("exchange/app/chat-01/2/a");
+			const dismissed = await postBlocked({ action: "dismiss" }, d);
+			expect(dismissed?.status).toBe(200);
+			expect(await dismissed?.json()).toEqual({ ok: true, action: "dismiss", affected: 1 });
+			expect(store.memoryQueue.counts(target).blocked).toBe(0);
+			expect(store.memoryQueue.counts(target).dismissed).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("bad actions and unwired memory get typed refusals", async () => {
+		const { d, store } = memoryDeps();
+		try {
+			expect((await postBlocked({ action: "maybe" }, d))?.status).toBe(422);
+		} finally {
+			store.close();
+		}
+		expect((await postBlocked({ action: "retry" }, deps()))?.status).toBe(503);
 	});
 });

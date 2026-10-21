@@ -28,6 +28,8 @@ import type {
 	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationMemoryResponse,
+	AppConversationMemoryView,
 	AppConversationPatch,
 	AppDecideResponse,
 	AppInterruptedList,
@@ -144,6 +146,10 @@ const decideBody = z.object({
 	decision: z.enum(["record-result", "authorize-retry", "skip"]),
 	note: z.string().max(4000).optional(),
 });
+
+const memoryBody = z
+	.object({ memoryExcluded: z.boolean() })
+	.strict();
 
 const programDecisionBody = z.object({
 	action: z.enum(["approve", "reject"]),
@@ -416,6 +422,68 @@ export async function handleConversationsRoute(
 			return Response.json(body, { status: 201, headers: NO_STORE });
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	const memoryMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/memory$/);
+	if (memoryMatch) {
+		const convId = conversationFromSegment(memoryMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const projectMemory =
+			conv.projectId === null ? null : (deps.projects.get(conv.projectId)?.memory ?? null);
+		if (req.method === "GET") {
+			const body: AppConversationMemoryView = {
+				memoryExcluded: conv.memoryExcluded,
+				projectMemory,
+			};
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method !== "PATCH") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = memoryBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		if (parsed.data.memoryExcluded === false && projectMemory === "off") {
+			return Response.json(
+				{ error: "project memory is off — switch the project to shared memory first" },
+				{ status: 409, headers: NO_STORE },
+			);
+		}
+		let cancelled = 0;
+		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
+			store.applySettings(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
+			if (parsed.data.memoryExcluded) {
+				cancelled = store.memoryQueue.cancelConversation(convId.id);
+			}
+			log.info(
+				parsed.data.memoryExcluded
+					? "app conversation memory excluded"
+					: "app conversation memory inclusion restored",
+				{ conversation: convId.id, cancelled },
+			);
+		}
+		const body: AppConversationMemoryResponse = {
+			memoryExcluded: parsed.data.memoryExcluded,
+			projectMemory,
+			cancelled,
+		};
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	const configMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/config$/);

@@ -42,6 +42,79 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("memory PATCH fences the conversation and cancels queued retention", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const target = "0".repeat(64);
+			const op = store.memoryQueue.enqueue(target, {
+				id: "exchange/app/chat-01/1/a",
+				content: "Operator: hi\nGoblin: hello",
+				timestamp: new Date().toISOString(),
+				conversationId: "app/chat-01",
+				sourceIds: ["u1", "a1"],
+			});
+			const before = store.get("app/chat-01")!.epoch;
+
+			const off = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: true }),
+			});
+			expect(off.status).toBe(200);
+			expect(await off.json()).toEqual({
+				memoryExcluded: true,
+				projectMemory: null,
+				cancelled: 1,
+			});
+			const excluded = store.get("app/chat-01")!;
+			expect(excluded.memoryExcluded).toBe(true);
+			expect(excluded.epoch).toBe(before + 1);
+			expect(store.memoryQueue.get(op)).toBeNull();
+
+			const on = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: false }),
+			});
+			expect(on.status).toBe(200);
+			expect(await on.json()).toEqual({
+				memoryExcluded: false,
+				projectMemory: null,
+				cancelled: 0,
+			});
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("project memory off stays a hard boundary", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = projects.create({ name: "vault", memory: "off" });
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", projectId: project.id }),
+			});
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
+			const res = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: false }),
+			});
+			expect(res.status).toBe(409);
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,

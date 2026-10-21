@@ -125,6 +125,12 @@ export interface MemoryStatusResponse {
 	blockedDetail: MemoryBlockedItem[];
 }
 
+export interface MemoryBlockedResponse {
+	ok: true;
+	action: "retry" | "dismiss";
+	affected: number;
+}
+
 export interface MemoryDocListItem {
 	id: string;
 	createdAt: string | null;

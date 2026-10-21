@@ -25,10 +25,12 @@ import {
 	getConfig,
 	getContext,
 	getConversationConfig,
+	getConversationMemory,
 	getMessages,
 	listNotes,
 	patchConfig,
 	patchConversationConfig,
+	patchConversationMemory,
 	stopConversation,
 	uploadAttachment,
 } from "./api.ts";
@@ -45,6 +47,7 @@ import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
 	AppConfigView,
 	AppContextView,
+	AppConversationMemoryView,
 	AppNoteSummary,
 	TurnMetadata,
 } from "../../src/http/app-wire.ts";
@@ -1248,6 +1251,34 @@ export function Composer({
 			.finally(() => setConfigSaving(false));
 	};
 
+	const [memory, setMemory] = useState<AppConversationMemoryView | null>(null);
+	const [memorySaving, setMemorySaving] = useState(false);
+	const [memoryError, setMemoryError] = useState<string | null>(null);
+	useEffect(() => {
+		let live = true;
+		setMemory(null);
+		setMemoryError(null);
+		if (conversationId === undefined) return;
+		void getConversationMemory(token, conversationId).then(
+			(view) => live && setMemory(view),
+			(err: unknown) => live && setMemoryError(String(err)),
+		);
+		return () => {
+			live = false;
+		};
+	}, [token, conversationId]);
+	const toggleMemory = () => {
+		if (conversationId === undefined || memory === null) return;
+		setMemorySaving(true);
+		setMemoryError(null);
+		void patchConversationMemory(token, conversationId, !memory.memoryExcluded)
+			.then(
+				(view) => setMemory(view),
+				(err: unknown) => setMemoryError(String(err)),
+			)
+			.finally(() => setMemorySaving(false));
+	};
+
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
 	// transcribes speech:true attachments at intake. Release sends —
 	// the same shape Telegram voice notes take in this channel.
@@ -1483,6 +1514,11 @@ export function Composer({
 					Model settings failed: {configError}
 				</div>
 			)}
+			{memoryError !== null && (
+				<div className="error" role="alert">
+					Memory setting failed: {memoryError}
+				</div>
+			)}
 			{micError !== null && (
 				<div className="error" role="alert">
 					Microphone {micError} — check the browser's permission for this page.
@@ -1631,6 +1667,32 @@ export function Composer({
 							<path d="M5 10a7 7 0 0 0 14 0" />
 							<line x1="12" y1="17" x2="12" y2="22" />
 						</svg>
+					</button>
+				)}
+				{memory !== null && (
+					<button
+						type="button"
+						className="ctx-btn"
+						aria-label={
+							memory.memoryExcluded
+								? "Enable memory for this conversation"
+								: "Exclude this conversation from memory"
+						}
+						title={
+							memory.projectMemory === "off"
+								? "This project's memory is off"
+								: memory.memoryExcluded
+									? "Memory is excluded — click to include this conversation"
+									: "Memory is included — click to exclude this conversation"
+						}
+						disabled={
+							busy ||
+							memorySaving ||
+							(memory.projectMemory === "off" && memory.memoryExcluded)
+						}
+						onClick={toggleMemory}
+					>
+						memory {memory.memoryExcluded ? "off" : "on"}
 					</button>
 				)}
 				{cfg !== null && (

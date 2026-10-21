@@ -57,6 +57,7 @@ import type {
 	MemoriesListResponse,
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
+	MemoryBlockedResponse,
 	MemoryFactItem,
 	MemoryForgetResponse,
 	MemoryStatusResponse,
@@ -514,6 +515,10 @@ const browseQuerySchema = z
 		message: "q and conversation are mutually exclusive",
 	});
 
+const memoryBlockedBody = z
+	.object({ action: z.enum(["retry", "dismiss"]) })
+	.strict();
+
 function programItem(program: Program): OperatorProgramItem {
 	return {
 		id: program.id,
@@ -692,6 +697,42 @@ export async function handleOperatorRoute(
 			blocked: view.blocked,
 		});
 		return Response.json(view, { headers: NO_STORE });
+	}
+
+	if (tail === "memory/blocked") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const gate = memoryGate(deps);
+		if (typeof gate === "string" || gate.queue === undefined || gate.client === undefined) {
+			return Response.json(
+				{ error: typeof gate === "string" ? gate : "memory queue is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = memoryBlockedBody.safeParse(raw);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const affected =
+			parsed.data.action === "retry"
+				? gate.queue.retryBlocked(gate.client.target)
+				: gate.queue.dismissBlocked(gate.client.target);
+		log.info(
+			`memory blocked retentions ${parsed.data.action === "retry" ? "requeued" : "dismissed"} via ${actor.via}`,
+			{ ...who, affected },
+		);
+		const body: MemoryBlockedResponse = { ok: true, action: parsed.data.action, affected };
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	if (tail === "memory/documents") {

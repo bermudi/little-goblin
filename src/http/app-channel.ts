@@ -54,7 +54,10 @@ export async function handleAppApi(
 			);
 		}
 		if (
-			(opTail === "config" || opTail === "secrets" || opTail === "skills/decide") &&
+			(opTail === "config" ||
+				opTail === "secrets" ||
+				opTail === "skills/decide" ||
+				opTail === "memory/blocked") &&
 			req.method === "POST"
 		) {
 			const refusedJson = jsonBodyRefusal(req);

@@ -142,6 +142,15 @@ export interface AppConfigPatch {
 	thinking?: string;
 }
 
+export interface AppConversationMemoryView {
+	memoryExcluded: boolean;
+	projectMemory: "shared" | "off" | null;
+}
+
+export interface AppConversationMemoryResponse extends AppConversationMemoryView {
+	cancelled: number;
+}
+
 export interface AppTtsResponse {
 	chunks: string[];
 	mediaType: "audio/ogg";

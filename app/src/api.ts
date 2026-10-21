@@ -18,6 +18,8 @@ import type {
 	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationMemoryResponse,
+	AppConversationMemoryView,
 	AppConversationPatch,
 	AppDecideRequest,
 	AppDecideResponse,
@@ -45,6 +47,7 @@ import type {
 	ConfigResponse,
 	IdentityResponse,
 	LogTailResponse,
+	MemoryBlockedResponse,
 	MemoryDocDetailResponse,
 	MemoryForgetResponse,
 	MemoriesListResponse,
@@ -474,6 +477,25 @@ export function patchConversationConfig(
 	});
 }
 
+export function getConversationMemory(
+	token: string | null,
+	id: string,
+): Promise<AppConversationMemoryView> {
+	return request(token, `/api/app/conversations/${seg(id)}/memory`);
+}
+
+export function patchConversationMemory(
+	token: string | null,
+	id: string,
+	memoryExcluded: boolean,
+): Promise<AppConversationMemoryResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/memory`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ memoryExcluded }),
+	});
+}
+
 // The composer's context gauge — last-turn window utilization for one
 // conversation. Null fields mean unknown (no turns yet, or the catalog
 // doesn't list the model), never zero.
@@ -638,6 +660,17 @@ export function getThinkingLevels(
 
 export function getMemoryStatus(token: string | null): Promise<MemoryStatusResponse> {
 	return request(token, "/api/app/memory/status");
+}
+
+export function decideBlockedMemory(
+	token: string | null,
+	action: "retry" | "dismiss",
+): Promise<MemoryBlockedResponse> {
+	return request(token, "/api/app/memory/blocked", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
 }
 
 export function listMemoryDocuments(

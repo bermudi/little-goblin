@@ -2630,6 +2630,11 @@ a.hit-title {
 	flex-direction: column;
 	font-size: 12px;
 }
+.blocked-actions {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.75rem;
+}
 
 .doc-row {
 	display: flex;

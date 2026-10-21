@@ -17,6 +17,7 @@ import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wir
 // server's thinkingLevels.
 export const THINKING_ORDER: readonly ThinkingLevel[] = [
 	"off",
+	"minimal",
 	"low",
 	"medium",
 	"high",

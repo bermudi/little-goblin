@@ -10,9 +10,9 @@ import {
 	cacheRouteKey,
 	hashCacheSettings,
 	observedModel,
-	thinkingOptions,
 	turnCallSettings,
 } from "./agent/providers.ts";
+import { thinkingOptions } from "./agent/thinking.ts";
 import { openCacheObservation, type CacheObservation } from "./cache-observation.ts";
 import { openCachePruning, pruningReplacement } from "./cache-pruning.ts";
 import {

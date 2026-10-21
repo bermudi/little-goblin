@@ -22,8 +22,8 @@ import {
 	carriesMedia,
 	observedModel,
 	resolveModel,
-	thinkingOptions,
 } from "./providers.ts";
+import { thinkingOptions } from "./thinking.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
 
 // A wedged vision request would pin the turn's serial lane —

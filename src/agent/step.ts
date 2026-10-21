@@ -17,8 +17,8 @@ import {
 	carriesMedia,
 	observedModel,
 	resolveModel,
-	thinkingOptions,
 } from "./providers.ts";
+import { thinkingOptions } from "./thinking.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 

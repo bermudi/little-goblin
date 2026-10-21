@@ -323,7 +323,19 @@ export const providerSchema = z.discriminatedUnion("kind", [
 		.strict(),
 ]);
 
-export const thinkingLevels = ["off", "low", "medium", "high", "xhigh", "max"] as const;
+// The operator's thinking vocabulary, weakest first. "off" is a state
+// (reasoning off), not a rung; the rungs are the efforts a provider
+// can express. Every model's ladder is a subset of this — the profile
+// in agent/thinking.ts decides which.
+export const thinkingLevels = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 // Optional long-term memory. auth names an auth.jsonl record (loopback

@@ -62,8 +62,9 @@
   ],
   // Operator vocabulary — each model clamps it to its real ladder and the
   // mini app only offers levels the model can express (glm-5.3: low|high|
-  // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
-  thinking: "medium", // off | low | medium | high | xhigh | max
+  // max — thinking is forced; a mandatory-reasoning model has no "off";
+  // gpt-6: low…xhigh|max; non-thinkers: off).
+  thinking: "medium", // off | minimal | low | medium | high | xhigh | max
 
   // Text → Telegram voice notes (/voice mode, the speak tool, 🔊
   // buttons). ON BY DEFAULT — edge read-aloud needs no keys, just ffmpeg

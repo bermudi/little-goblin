@@ -179,15 +179,17 @@ describe("openrouter catalog", () => {
 		}) as unknown as typeof fetch;
 		try {
 			const fresh = await ensureOpenRouterCatalog();
-			expect(fresh?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+			expect(fresh?.get("prov/m1")?.params).toEqual(new Set(["reasoning", "reasoning_effort"]));
 			const cached = JSON.parse(
 				readFileSync(join(dir, "state", "openrouter-models.json"), "utf8"),
-			) as Record<string, string[]>;
-			expect(cached).toEqual({ "prov/m1": ["reasoning", "reasoning_effort"] });
+			) as Record<string, { params: string[]; reasoning: unknown }>;
+			expect(cached).toEqual({
+				"prov/m1": { params: ["reasoning", "reasoning_effort"], reasoning: null },
+			});
 			_resetOpenRouterForTest();
 			fail = true;
 			const cold = await ensureOpenRouterCatalog();
-			expect(cold?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+			expect(cold?.get("prov/m1")?.params).toEqual(new Set(["reasoning", "reasoning_effort"]));
 		} finally {
 			globalThis.fetch = prevFetch;
 			_resetOpenRouterForTest();
@@ -222,8 +224,8 @@ describe("openrouter catalog", () => {
 				),
 			);
 			const [ra, rb] = await Promise.all([a, b]);
-			expect(ra?.get("prov/m1")).toEqual(new Set(["reasoning"]));
-			expect(rb?.get("prov/m1")).toEqual(new Set(["reasoning"]));
+			expect(ra?.get("prov/m1")?.params).toEqual(new Set(["reasoning"]));
+			expect(rb?.get("prov/m1")?.params).toEqual(new Set(["reasoning"]));
 			expect(calls).toBe(1);
 		} finally {
 			globalThis.fetch = prevFetch;
@@ -245,15 +247,37 @@ describe("readOpenRouterCache", () => {
 		expect(readOpenRouterCache()).toBeNull();
 	});
 
-	test("a well-formed cache round-trips into per-model param sets", () => {
+	test("a well-formed cache round-trips into per-model routes", () => {
+		const dir = useHome("goblin-mdev-");
+		mkdirSync(join(dir, "state"), { recursive: true });
+		writeFileSync(
+			join(dir, "state", "openrouter-models.json"),
+			JSON.stringify({
+				"a/b": {
+					params: ["reasoning", "reasoning_effort"],
+					reasoning: { mandatory: true, supported_efforts: ["max", "high", "low"] },
+				},
+			}),
+		);
+		const cat = readOpenRouterCache()!;
+		expect(cat.get("a/b")?.params).toEqual(new Set(["reasoning", "reasoning_effort"]));
+		expect(cat.get("a/b")?.reasoning).toEqual({
+			mandatory: true,
+			supported_efforts: ["max", "high", "low"],
+		});
+	});
+
+	// The pre-reasoning shape carried params only. Reading it as a
+	// reasoning-bearing route would claim per-model truth the file
+	// doesn't have — so the whole cache is refused and refetched.
+	test("the pre-reasoning cache shape is refused, not half-read", () => {
 		const dir = useHome("goblin-mdev-");
 		mkdirSync(join(dir, "state"), { recursive: true });
 		writeFileSync(
 			join(dir, "state", "openrouter-models.json"),
 			JSON.stringify({ "a/b": ["reasoning", "reasoning_effort"] }),
 		);
-		const cat = readOpenRouterCache()!;
-		expect(cat.get("a/b")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+		expect(readOpenRouterCache()).toBeNull();
 	});
 
 	test("no cache file: ENOENT → null, cold and silent", () => {

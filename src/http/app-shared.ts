@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { thinkingLevelsFor } from "../agent/providers.ts";
+import { thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef, splitModelRef, thinkingLevels } from "../config.ts";

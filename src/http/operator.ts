@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { thinkingLevelsFor } from "../agent/providers.ts";
+import { thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
 	type Config,

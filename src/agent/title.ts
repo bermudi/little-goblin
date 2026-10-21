@@ -7,7 +7,8 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
-import { cacheRouteFor, observedModel, resolveModel, thinkingOptions } from "./providers.ts";
+import { cacheRouteFor, observedModel, resolveModel } from "./providers.ts";
+import { thinkingOptions } from "./thinking.ts";
 
 // Bot API topic-name cap.
 const MAX_TITLE_CHARS = 128;

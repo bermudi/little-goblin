@@ -16,20 +16,34 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   retry and compaction. Summaries use the conversation's model and thinking;
   reviewer fallback uses the conversation's model; explicit reviewer and
   title models stay independent.
-- **Thinking.** `off|low|medium|high|xhigh|max` is an operator vocabulary, not
-  a provider contract; each family maps to the nearest honest knob, and the
-  ladder follows the bare model id under every kind — a `glm-5.3` is
-  forced-thinking whether z.ai serves it directly or via a relay. Stored
-  values outside a model's set aren't errors — defaults span models, so the
-  mapping clamps to the nearest rung at-or-above (GLM's own collapse
-  direction). GLM (docs.z.ai): 5.3+ forced thinking, effort `low|high|max`
+- **Thinking (ruling 2026-10-21).** `off|minimal|low|medium|high|xhigh|max` is
+  an operator vocabulary, not a provider contract. Every model has one
+  **profile** — the rungs it supports, what `off` means on it, and the wire
+  knob that carries a rung (`src/agent/thinking.ts`). The ladder the app
+  offers IS the profile: a level a model cannot express is never offered.
+  `glm-5.3` offers `low|high|max` — no `off`, no `medium`, no `xhigh`;
+  `minimax-m3.1-flash` offers `low|medium|high|xhigh|max` and no `off`,
+  because its reasoning is mandatory. `off` is offered only when it
+  genuinely switches reasoning off; a stored `off` on a model that cannot
+  disable reasoning clamps to its weakest rung, because a mandatory model
+  answers a disable with "Reasoning is mandatory for this endpoint and
+  cannot be disabled" (probed on minimax-m3.1-flash, minimax-m2 and
+  deepseek-r1-0528). Stored values outside a model's set aren't errors —
+  defaults span models — so the mapping clamps to the nearest rung
+  at-or-above (GLM's own collapse direction).
+  Sources, in order of honesty: OpenRouter's cached `/models` catalog
+  reads the per-model `reasoning` object (`supported_efforts` → the rungs,
+  `mandatory` → whether `off` can exist; `none` in `supported_efforts` is
+  the disable); z.ai GLM and the OpenAI/codex families use the vendor's own
+  tables — GLM (docs.z.ai): 5.3+ forced thinking, effort `low|high|max`
   (unlisted values silently become `max`); 5.2 toggles plus `high|max`, ≤4.6
   toggles only; the coding-plan alias gives every glm the 5.3 ladder.
   GPT/codex takes `reasoning_effort` verbatim on `low|medium|high|xhigh`
-  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor.
-  OpenRouter's cached `/models` catalog reads `supported_parameters`:
-  `reasoning_effort` → verbatim, `reasoning`-only → toggle, neither → off; a
-  cold catalog passes the level through — fail loud, never fake knowledge.
+  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor. An
+  unknown route (cold catalog, unlisted model, dynamic router) keeps the
+  whole vocabulary and sends no reasoning knob at all for `off` — the
+  route's default — because a disable we cannot back is a failed turn:
+  fail loud, never fake knowledge.
 - **History.** Rows stamp the format that wrote them — the SDK owns the part
   shapes — so a future shape change is a deliberate converter at open, never
   silent placeholder degradation of old rows; a straggler that skips the

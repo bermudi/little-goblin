@@ -127,60 +127,114 @@ export function contextLimitCached(provider: string, modelId: string): number | 
 
 // ---------- openrouter ----------
 
+// The per-model reasoning object: which efforts the route accepts and
+// whether reasoning can be switched off
+// (openrouter.ai/docs/use-cases/reasoning-tokens → "Discovering per-model
+// reasoning options"). Absent on non-reasoning models and on the
+// dynamic routers, which pick a model per request.
+const openrouterReasoningSchema = z.object({
+	mandatory: z.boolean().optional(),
+	supported_efforts: z.array(z.string()).nullable().optional(),
+	default_effort: z.string().optional(),
+	default_enabled: z.boolean().optional(),
+	supports_max_tokens: z.boolean().optional(),
+});
+
+export interface OpenRouterReasoning {
+	mandatory?: boolean | undefined;
+	supported_efforts?: string[] | null | undefined;
+	default_effort?: string | undefined;
+	default_enabled?: boolean | undefined;
+	supports_max_tokens?: boolean | undefined;
+}
+
+export interface OpenRouterRoute {
+	/** The parameters the route advertises. */
+	params: Set<string>;
+	/** The per-model reasoning object, when the route publishes one. */
+	reasoning: OpenRouterReasoning | null;
+}
+
 const openrouterCatalogSchema = z.object({
 	data: z.array(
 		z.object({
 			id: z.string(),
 			supported_parameters: z.array(z.string()).default([]),
+			reasoning: openrouterReasoningSchema.nullable().optional(),
 		}),
 	),
 });
 
-// The disk cache stores the flattened {modelId: [params...]} shape.
-const openrouterCacheSchema = z.record(z.string(), z.array(z.string()));
+// The disk cache stores {modelId: {params, reasoning}}. The pre-reasoning
+// shape ({modelId: [params]}) is refused rather than half-read: a route
+// without its reasoning object is "unknown", and unknown routes must not
+// look like routes that publish one.
+const openrouterCacheSchema = z.record(
+	z.string(),
+	z.object({
+		params: z.array(z.string()),
+		reasoning: openrouterReasoningSchema.nullable(),
+	}),
+);
 
-const openrouter: CachedCatalog<Map<string, Set<string>>> = createCachedCatalog<
-	Map<string, Set<string>>
+const openrouter: CachedCatalog<Map<string, OpenRouterRoute>> = createCachedCatalog<
+	Map<string, OpenRouterRoute>
 >({
 	name: "openrouter catalog",
 	url: "https://openrouter.ai/api/v1/models",
 	cachePath: () => paths.openrouterModelsCache(),
-	// thinkingLevelsFor reads this catalog — stale means generic
-	// ladders instead of per-route ones.
+	// The thinking profile reads this catalog — stale means generic
+	// ladders instead of per-model ones.
 	staleNote: "thinking levels stay generic",
 	parseWire(wire) {
 		const parsed = openrouterCatalogSchema.safeParse(wire);
 		if (!parsed.success) {
 			throw new Error(`openrouter models schema: ${parsed.error.message}`);
 		}
-		return new Map(parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]));
+		return new Map(
+			parsed.data.data.map((m) => [
+				m.id,
+				{ params: new Set(m.supported_parameters), reasoning: m.reasoning ?? null },
+			]),
+		);
 	},
 	parseDisk(disk) {
 		const parsed = openrouterCacheSchema.safeParse(disk);
 		if (!parsed.success) {
 			throw new Error(`openrouter cache schema: ${parsed.error.message}`);
 		}
-		return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
+		return new Map(
+			Object.entries(parsed.data).map(([id, entry]) => [
+				id,
+				{ params: new Set(entry.params), reasoning: entry.reasoning },
+			]),
+		);
 	},
 	toDisk(catalog) {
-		return Object.fromEntries([...catalog].map(([id, p]) => [id, [...p]]));
+		return Object.fromEntries(
+			[...catalog].map(([id, route]) => [
+				id,
+				{ params: [...route.params], reasoning: route.reasoning },
+			]),
+		);
 	},
 });
 
 // On its own so the shape-validation boundary is testable without a
 // network round-trip.
-export function readOpenRouterCache(): Map<string, Set<string>> | null {
+export function readOpenRouterCache(): Map<string, OpenRouterRoute> | null {
 	return openrouter.readDisk();
 }
 
-export function ensureOpenRouterCatalog(): Promise<Map<string, Set<string>> | null> {
+export function ensureOpenRouterCatalog(): Promise<Map<string, OpenRouterRoute> | null> {
 	return openrouter.ensure();
 }
 
-// Null when the catalog is cold or doesn't list the model — callers
+// A route's advertised parameters and its per-model reasoning object.
+// Null when the catalog is cold or doesn't list the route — callers
 // must treat null as "unknown", never "unsupported". A cold read kicks
 // the fetch so the next caller sees the real answer.
-export function openrouterSupportedParams(modelId: string): Set<string> | null {
+export function openrouterRoute(modelId: string): OpenRouterRoute | null {
 	if (!openrouter.current() && !openrouter.backoffArmed()) {
 		void openrouter.ensure();
 	}
@@ -188,7 +242,7 @@ export function openrouterSupportedParams(modelId: string): Set<string> | null {
 }
 
 // Test hook.
-export function _primeOpenRouterCatalog(catalog: Map<string, Set<string>> | null): void {
+export function _primeOpenRouterCatalog(catalog: Map<string, OpenRouterRoute> | null): void {
 	openrouter.prime(catalog);
 }
 

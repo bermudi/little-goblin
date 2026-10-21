@@ -109,13 +109,15 @@ keep Telegram's placeholder name.
 ### Thinking
 
 ```json5
-thinking: "medium",   // off | low | medium | high | xhigh | max
+thinking: "medium",   // off | minimal | low | medium | high | xhigh | max
 ```
 
 This is *your* vocabulary, not the providers'. Each model honestly maps it
 onto what it can actually do — a forced-thinking model clamps `off` up to
 its lowest rung rather than pretending thinking is disabled; the mini app
-only offers the levels the current model supports.
+only offers the levels the current model supports. `off` appears only when
+the model can really switch reasoning off, and `minimal` only where a
+provider expresses it.
 
 ### Speech
 

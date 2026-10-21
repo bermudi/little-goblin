@@ -572,6 +572,33 @@ header h1 {
 .header-action:hover {
 	color: var(--app-fg);
 }
+/* Chat width selector — trails the header-action (which keeps the auto
+   margin), mono like the composer's knobs. Hidden on phone widths: the
+   column is narrow whatever it says there. */
+.width-seg {
+	display: inline-flex;
+	gap: 2px;
+}
+.width-seg button {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+	padding: 0.25rem 0.45rem;
+	border-radius: 6px;
+}
+.width-seg button:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.width-seg button.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+@media (max-width: 720px) {
+	.width-seg {
+		display: none;
+	}
+}
 .nav-toggle {
 	display: none;
 	align-items: center;
@@ -628,6 +655,11 @@ header h1 {
 	max-width: 46rem;
 	display: flex;
 	flex-direction: column;
+}
+/* The header's narrow/wide selector (App.tsx) flips the column — wide
+   spends the rail's spare width on transcript and composer together. */
+.chat-wide .transcript-inner {
+	max-width: 72rem;
 }
 /* The last row's gap belongs to the transcript's padding, not the
    message — otherwise dead space parks between it and the composer. */
@@ -752,12 +784,21 @@ h6.md-h {
 	font-size: 0.92em;
 	max-width: 100%;
 }
+/* The wrapper owns horizontal overflow — the table may exceed the
+   column and scroll, never push the column itself wide. */
+.md-tablewrap {
+	overflow-x: auto;
+}
 .md-table th,
 .md-table td {
 	border: 1px solid var(--app-divider);
 	padding: 0.3rem 0.65rem;
 	text-align: left;
 	vertical-align: top;
+	/* anywhere (not break-word) so a long token — a sha256 in code —
+	   shrinks the cell's min-content width and the table fits instead
+	   of overflowing into the scroll path. */
+	overflow-wrap: anywhere;
 }
 .md-table th {
 	background: var(--app-hover);
@@ -1471,6 +1512,9 @@ a.hit-title {
 	align-self: center;
 	margin: 0.25rem 0 0.75rem;
 	padding: 0.1rem 0.35rem 0.4rem;
+}
+.chat-wide .composer {
+	width: min(72rem, calc(100% - 2rem));
 }
 /* Focus is the moment the boundary matters most — typing draft text
    beside the transcript — so the hairline gains weight under focus

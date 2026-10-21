@@ -15,6 +15,7 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
+import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
@@ -476,6 +477,9 @@ function TelegramDoor() {
 		return p !== null && TELEGRAM_PAGES.some((t) => t.key === p) ? p : "settings";
 	});
 	const [navOpen, setNavOpen] = useState(false);
+	// The mini app honors the PWA's width preference read-only — no
+	// selector here, but Telegram Desktop's viewport is desktop-wide.
+	const [chatWidth] = useState<ChatWidth>(loadChatWidth);
 	const settingsDirty = useRef(false);
 	// Empty initData = not opened by Telegram — every request would 401,
 	// so say so rather than render a form that cannot save.
@@ -533,7 +537,7 @@ function TelegramDoor() {
 				</div>
 			</nav>
 			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
-			<main>
+			<main className={chatWidth === "wide" ? "chat-wide" : undefined}>
 				<header>
 					<button
 						type="button"
@@ -596,6 +600,13 @@ function AppShell() {
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [sourcesOpen, setSourcesOpen] = useState(false);
+	// Chat column width — a header selector on the chat page, persisted
+	// per device (chatWidth.ts).
+	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
+	const setChatWidth = (width: ChatWidth) => {
+		setChatWidthState(width);
+		saveChatWidth(width);
+	};
 	const [listError, setListError] = useState<string | null>(null);
 	// Per-action failures — cleared by the next successful action or
 	// refresh.
@@ -1295,8 +1306,8 @@ function AppShell() {
 					))}
 				</div>
 			</nav>
-			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
-			<main>
+				<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
+			<main className={chatWidth === "wide" ? "chat-wide" : undefined}>
 				<header>
 					<button
 						type="button"
@@ -1331,23 +1342,46 @@ function AppShell() {
 							aria-label="From this thread — memories and skills generated here"
 							onClick={() => setSourcesOpen(true)}
 						>
-							<svg
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.75"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								width="18"
-								height="18"
-							>
-								<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-								<path d="M12 12l8-4.5" />
-								<path d="M12 12v9" />
-								<path d="M12 12L4 7.5" />
-							</svg>
-						</button>
-					)}
+				<svg
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="1.75"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									width="18"
+									height="18"
+								>
+									<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+									<path d="M12 12l8-4.5" />
+									<path d="M12 12v9" />
+									<path d="M12 12L4 7.5" />
+								</svg>
+							</button>
+						)}
+						{/* Trailing the header-action so the action keeps its
+						    auto margin; hidden with the gauge on phone widths,
+						    where the column is narrow whatever this says. */}
+						{page === "chat" && (
+							<span className="width-seg" role="group" aria-label="Chat width">
+								<button
+									type="button"
+									className={chatWidth === "narrow" ? "on" : undefined}
+									aria-pressed={chatWidth === "narrow"}
+									onClick={() => setChatWidth("narrow")}
+								>
+									narrow
+								</button>
+								<button
+									type="button"
+									className={chatWidth === "wide" ? "on" : undefined}
+									aria-pressed={chatWidth === "wide"}
+									onClick={() => setChatWidth("wide")}
+								>
+									wide
+								</button>
+							</span>
+						)}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}

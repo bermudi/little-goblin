@@ -145,6 +145,23 @@ unchanged beside it. An unreadable record stays in place behind an
 error line until the first write replaces it. Text only — staged
 chips are uploads, not prose.
 
+**Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
+the column, the column wastes the desktop, machinery tags read as
+prose).** Three transcript fixes, all render-side — history text is
+never rewritten. Pipe tables render inside a scroll wrapper whose cells
+carry `overflow-wrap: anywhere`, so an unbreakable cell (a sha256 in
+code) shrinks the table's min-content and fits, and a genuinely wide
+table scrolls instead of pushing the transcript column past its width —
+the ui tool's tables already had the wrapper. The chat column width is
+a selector, not a fixed cap: narrow (46rem, the default) and wide
+(72rem) in the chat header, persisted per device in localStorage — a
+phone and the desktop PWA legitimately want different columns; the mini
+app door honors the stored choice read-only and the selector hides on
+phone widths. A machinery tag line (`[delegation: …]`, `[program: …]`,
+spellings owned by src/tags.ts) at a block start renders fenced as
+`status`, not as a transcript paragraph — it is the event envelope, and
+the prose after it in the same paragraph continues as text.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

@@ -4134,3 +4134,113 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		expect(container.textContent).toContain("kept chat");
 	});
 });
+
+// The chat width selector — a header control on the chat page whose
+// choice flips the shell column and survives a remount (per-device
+// localStorage, chatWidth.ts).
+describe("chat width selector", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/conversations")
+				return Promise.resolve(jsonResponse({ conversations: [] }));
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const mount = async () => {
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+	};
+
+	test("wide flips the shell class and survives a remount", async () => {
+		await mount();
+		const seg = container.querySelector(".width-seg");
+		expect(seg).not.toBeNull();
+		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
+
+		const wide = [...(seg?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "wide",
+		);
+		await act(async () => {
+			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+		expect(win.localStorage.getItem("goblin.chat-width.v1")).toBe("wide");
+
+		await act(async () => {
+			root?.unmount();
+		});
+		root = null;
+		await mount();
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+	});
+
+	test("narrow stays the default on a fresh device", async () => {
+		await mount();
+		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
+	});
+});

@@ -209,7 +209,6 @@ export interface StreamDeps<M extends WireMember> {
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
 	settle(m: M, done: MemberSettlement): void;
-	modelEntries(): { seq: number; message: UIMessage }[];
 	steerMarkSeed: number;
 	// The durable user-input seqs owned at admission; successfully folded
 	// steers advance it and persist with the steer mark.
@@ -324,7 +323,10 @@ export async function driveStream<M extends WireMember>(
 				return undefined;
 			}
 			const injected: ModelMessage[] = [];
-			const claimedIds = new Set<string>();
+			// Claimed by event seq, never by message id — ids are
+			// client-controlled and may repeat, so an id match could claim a
+			// steer that failed conversion as owned input.
+			const claimedSeqs = new Set<number>();
 			let admittedCount = 0;
 			for (const t of steered) {
 				try {
@@ -335,7 +337,7 @@ export async function driveStream<M extends WireMember>(
 					}
 					injected.push(...converted);
 					joinMember(convId, live, members, t);
-					claimedIds.add(t.message.id);
+					claimedSeqs.add(t.seq);
 					admittedCount++;
 				} catch (err) {
 					if (!deps.holdsAuthority()) {
@@ -364,10 +366,11 @@ export async function driveStream<M extends WireMember>(
 			}
 			// Ownership and the mark persist together — a crash after the
 			// fold must still name these steered inputs the attempt's own.
-			for (const e of deps.modelEntries()) {
-				if (!claimedIds.has(e.message.id)) continue;
-				if (e.seq > steerMark) steerMark = e.seq;
-				ownedInputSeqs.add(e.seq);
+			// Each seq came through conversion with its event, so only the
+			// steers this attempt actually folded are recorded as owned.
+			for (const seq of claimedSeqs) {
+				if (seq > steerMark) steerMark = seq;
+				ownedInputSeqs.add(seq);
 			}
 			deps.journal?.checkpoint(deps.runId, {
 				ownedInputSeqs: [...ownedInputSeqs],

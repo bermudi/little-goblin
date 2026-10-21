@@ -30,7 +30,7 @@ const msg = (id: string, role: "user" | "assistant" | "system" = "user"): UIMess
 function baseDeps(
 	over: {
 		conversation?: Conversation | null;
-		pendingIds?: ReadonlySet<string>;
+		pendingSeqs?: ReadonlySet<number>;
 		entries?: { seq: number; message: UIMessage }[];
 	} = {},
 ): {
@@ -58,9 +58,9 @@ function baseDeps(
 				expect(wire).toBe(live);
 				return claimed;
 			},
-			pendingIds: () => {
-				order.push("pendingIds");
-				return over.pendingIds ?? new Set<string>();
+			pendingSeqs: () => {
+				order.push("pendingSeqs");
+				return over.pendingSeqs ?? new Set<number>();
 			},
 			modelEntries: () => over.entries ?? [],
 			now: () => 1234,
@@ -91,7 +91,7 @@ describe("admitTurn", () => {
 		expect(out.snapshot.anchorSeq).toBe(3);
 		expect(out.snapshot.steerMarkSeed).toBe(3);
 		expect(out.snapshot.turnStartMs).toBe(1234);
-		expect(h.order).toEqual(["pendingIds"]);
+		expect(h.order).toEqual(["pendingSeqs"]);
 	});
 
 	test("a missing conversation is admission's first failure", () => {
@@ -119,7 +119,7 @@ describe("admitTurn", () => {
 			h.captured.push(c);
 			return conv(99);
 		};
-		h.claimed.push({ message: msg("q1"), sink: {} });
+		h.claimed.push({ seq: 9, message: msg("q1"), sink: {} });
 		const recovered = conv(42);
 		const out = admitTurn(h.deps, { conversation: recovered, startedAt: 777 });
 		expect(out.kind).toBe("admitted");
@@ -128,12 +128,12 @@ describe("admitTurn", () => {
 		expect(out.snapshot.conv).toBe(recovered);
 		expect(out.snapshot.epoch).toBe(42);
 		expect(out.snapshot.turnStartMs).toBe(777);
-		expect(h.order).toEqual(["claim", "pendingIds"]);
+		expect(h.order).toEqual(["claim", "pendingSeqs"]);
 	});
 
-	test("queued-but-unclaimed ids are durable, not owned — they stay out of the snapshot (#82)", () => {
+	test("queued-but-unclaimed events are durable, not owned — they stay out of the snapshot (#82)", () => {
 		const h = baseDeps({
-			pendingIds: new Set(["q1"]),
+			pendingSeqs: new Set([2]),
 			entries: [
 				{ seq: 1, message: msg("u1") },
 				{ seq: 2, message: msg("q1") },
@@ -146,6 +146,26 @@ describe("admitTurn", () => {
 		expect(out.snapshot.entries.map((e) => e.message.id)).toEqual(["u1", "a1"]);
 		expect(out.snapshot.anchorSeq).toBe(1);
 		expect(out.snapshot.steerMarkSeed).toBe(3);
+	});
+
+	test("a pending submit reusing an older event's message id hides only its own event", () => {
+		// Client message ids are neither unique nor trusted: the queued
+		// steer at seq 2 shares id "dup" with the owned event at seq 1 —
+		// seq-based exclusion keeps the older event in the snapshot.
+		const h = baseDeps({
+			pendingSeqs: new Set([2]),
+			entries: [
+				{ seq: 1, message: msg("dup") },
+				{ seq: 2, message: msg("dup") },
+				{ seq: 3, message: msg("u9") },
+			],
+		});
+		const out = admitTurn(h.deps);
+		expect(out.kind).toBe("admitted");
+		if (out.kind !== "admitted") return;
+		expect(out.snapshot.entries.map((e) => e.seq)).toEqual([1, 3]);
+		expect(out.snapshot.ownedInputSeqs).toEqual([1, 3]);
+		expect(out.snapshot.anchorSeq).toBe(3);
 	});
 
 	test("an owned view without user messages anchors null; an empty view seeds the mark at 0", () => {

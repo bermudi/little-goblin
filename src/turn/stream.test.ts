@@ -16,6 +16,7 @@ import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
+import type { TurnJournal } from "../turn-journal.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
@@ -131,14 +132,17 @@ const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
 
 // A turn member with the wire's view of a sink: records every chunk it
-// receives (replay or live).
+// receives (replay or live). `seq` defaults past the range tests assign
+// by hand so incidental members never collide with crafted entries.
+let memberSeq = 100;
 interface RecMember extends WireMember {
 	chunks: UIMessageChunk[];
 }
 
-function member(text: string, streaming = true): RecMember {
+function member(text: string, streaming = true, seq = memberSeq++): RecMember {
 	const chunks: UIMessageChunk[] = [];
 	return {
+		seq,
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
 		sink: streaming ? { onStreamChunk: (c) => chunks.push(c) } : {},
 		chunks,
@@ -196,7 +200,6 @@ function rig(
 		claimSteers: () => queue.splice(0, queue.length),
 		unrequeueSteers: (steered) => unrequeued.push(steered),
 		settle: (m, done) => settlements.push({ m, done }),
-		modelEntries: () => entries,
 		steerMarkSeed: 0,
 		ownedInputSeqs: [],
 		partial: null,
@@ -407,7 +410,7 @@ describe("driveStream", () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 1), textReply("folded answer")]);
 		r.deps.tools = { probe };
-		const steered = member("steered mid-turn");
+		const steered = member("steered mid-turn", true, 7);
 		r.queue.push(steered);
 		// Durable history: the steered message at seq 7, an unclaimed
 		// submit above it at seq 9 — the mark advances by identity, not
@@ -471,6 +474,44 @@ describe("driveStream", () => {
 		expect(r.members).toEqual([]);
 		expect(poison.chunks).toEqual([]);
 		expect(r.prompts[0]).not.toContain("read this");
+	});
+
+	test("steering ownership names the converted event's seq — a duplicate id never owns a failed conversion", async () => {
+		// Two steers share one client message id; only the first converts.
+		// The ownership checkpoint must name seq 2 alone — an id-based scan
+		// sweeps the failed seq 3 in with it, and a crash-resume would then
+		// accept input this turn never folded.
+		const checkpoints: Array<{ ownedInputSeqs?: number[]; steerMark?: number }> = [];
+		const r = rig([textReply("answer")], {
+			journal: {
+				checkpoint: (_runId: string, patch: { ownedInputSeqs?: number[]; steerMark?: number }) =>
+					checkpoints.push(patch),
+			} as unknown as TurnJournal,
+		});
+		const ok = member("converts", true, 2);
+		ok.message = { ...ok.message, id: "dup" };
+		const poison = member("poison", true, 3);
+		poison.message = {
+			id: "dup",
+			role: "user",
+			parts: [
+				{ type: "text", text: "read this" },
+				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+			],
+		} as UIMessage;
+		r.queue.push(ok, poison);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		// The failed steer settled with an error and never joined the wire.
+		expect(r.settlements.length).toBe(1);
+		expect(r.settlements[0]!.m).toBe(poison);
+		expect(r.settlements[0]!.done.kind).toBe("error");
+		// The ownership checkpoint names only the converted event.
+		const ownership = checkpoints.find((c) => c.ownedInputSeqs !== undefined);
+		expect(ownership?.ownedInputSeqs).toEqual([2]);
+		expect(ownership?.steerMark).toBe(2);
+		expect(outcome.steerMark).toBe(2);
 	});
 
 	test("a fence landing mid-conversion settles the successful steer — no join, no fold (#115)", async () => {

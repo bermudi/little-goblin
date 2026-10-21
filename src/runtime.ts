@@ -155,6 +155,10 @@ export class FencedError extends Error {
 export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
+	// The durable event seq of the appended message — captured from the
+	// append (or the persisting caller) so steering ownership never has to
+	// match client message ids, which are neither unique nor trusted.
+	seq: number;
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
 	message: UIMessage;
@@ -267,14 +271,16 @@ export class Runtime {
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		this.deps.store.append(conv.id, [message]);
-		return this.admit(conv, message, sink);
+		const seqs = this.deps.store.append(conv.id, [message]);
+		return this.admit(conv, message, sink, seqs[0]!);
 	}
 
 	// The inbox has already persisted this message; appending again would
-	// duplicate a recovered turn.
-	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		return this.admit(conv, message, sink);
+	// duplicate a recovered turn. `seq` is that persisted event's seq — the
+	// persisting caller watched the append, so the queue never has to guess
+	// it from a client message id.
+	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink, seq: number): boolean {
+		return this.admit(conv, message, sink, seq);
 	}
 
 	// Admission for an operator-resumed turn — turn-resume.ts owns the
@@ -286,32 +292,42 @@ export class Runtime {
 	// submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
 		const journal = this.deps.turnJournal;
+		let seq: number;
 		if (journal !== undefined && seed.resumedFrom !== undefined) {
-			this.deps.store.db.transaction(() => {
+			seq = this.deps.store.db.transaction(() => {
 				// The registry names the seq this append actually wrote —
 				// inferring it (e.g. lastUserSeq) would silently register an
 				// unrelated event if the message's shape ever changed.
 				const seqs = this.deps.store.append(conv.id, [message]);
 				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
+				return seqs[0]!;
 			})();
 		} else {
-			this.deps.store.append(conv.id, [message]);
+			const seqs = this.deps.store.append(conv.id, [message]);
+			seq = seqs[0]!;
 		}
-		return this.admit(conv, message, sink, seed);
+		return this.admit(conv, message, sink, seq, seed);
 	}
 
 	private admit(
 		conv: Conversation,
 		message: UIMessage,
 		sink: TurnSink,
+		seq: number,
 		seed?: ResumeSeed,
 	): boolean {
 		if (this.closed) {
-			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
+			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
+		lane.pending.push({
+			seq,
+			message,
+			sink,
+			doneSent: false,
+			resumeSeed: seed,
+		});
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -809,7 +825,7 @@ export class Runtime {
 				getConversation: () => store.get(convId),
 				captureConversation: this.deps.captureConversation,
 				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
+				pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
 				modelEntries: () => store.modelEntries(convId),
 				now: Date.now,
 			},
@@ -989,7 +1005,6 @@ export class Runtime {
 				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
-				modelEntries: () => store.modelEntries(convId),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: snapshot.ownedInputSeqs,
 				partial: recovery?.partial ?? null,

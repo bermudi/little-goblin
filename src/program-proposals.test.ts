@@ -5,7 +5,7 @@
 // grandfathered rows, never the tool.
 
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	openProgramProposals,
@@ -17,6 +17,12 @@ import { tmpDb } from "./testkit.ts";
 
 setLogWriter(() => {});
 setLogFile(null);
+// Process-global: restore the real writer or later files' log
+// assertions read a file nothing was written to.
+afterAll(() => {
+	setLogWriter(null);
+	setLogFile(null);
+});
 
 const ADDRESS = { chatId: -100, threadId: 7 };
 const NOW = new Date("2026-09-20T10:00:00");

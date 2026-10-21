@@ -4,7 +4,7 @@
 // decision, and an approved hook's URL travels only to operator DMs —
 // never into a stamp, an answer, or model-facing output.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { ProgramDraft } from "../program-proposals.ts";
@@ -22,6 +22,12 @@ import {
 
 setLogWriter(() => {});
 setLogFile(null);
+// The no-op writer is process-global: restore it or later files' log
+// assertions (finish, view, fetch) read a file nothing was written to.
+afterAll(() => {
+	setLogWriter(null);
+	setLogFile(null);
+});
 
 const ADDRESS = { chatId: -100, threadId: 7 };
 const NOW = new Date("2026-09-20T10:00:00");

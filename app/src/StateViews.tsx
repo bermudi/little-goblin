@@ -41,11 +41,16 @@ function OpsLoading() {
 function SkillCard({
 	skill,
 	origin,
+	update,
 	token,
 	onDecided,
 }: {
 	skill: OperatorSkillItem;
 	origin: "skills" | "proposed";
+	/** This proposal is an update to a live skill — the decide labels
+	    say so, since bare "discard" could read as removing the
+	    installed copy. */
+	update?: boolean | undefined;
 	token: string | null;
 	/** Called after a successful install/discard so the list refetches. */
 	onDecided?: (() => void) | undefined;
@@ -130,7 +135,7 @@ function SkillCard({
 						disabled={deciding}
 						onClick={() => decide("install")}
 					>
-						install
+						{update === true ? "Install update" : "install"}
 					</button>
 					<button
 						type="button"
@@ -138,7 +143,7 @@ function SkillCard({
 						disabled={deciding}
 						onClick={() => decide("discard")}
 					>
-						discard
+						{update === true ? "Discard update" : "discard"}
 					</button>
 				</div>
 			)}
@@ -156,12 +161,16 @@ function SkillSection({
 	title,
 	items,
 	origin,
+	installedNames,
 	token,
 	onDecided,
 }: {
 	title: string;
 	items: OperatorSkillItem[];
 	origin: "skills" | "proposed";
+	/** Names of installed skills — a proposed card matching one is an
+	    update, not a new skill. */
+	installedNames?: ReadonlySet<string>;
 	token: string | null;
 	onDecided?: (() => void) | undefined;
 }) {
@@ -176,6 +185,7 @@ function SkillSection({
 					key={`${origin}:${s.name}`}
 					skill={s}
 					origin={origin}
+					update={installedNames?.has(s.name)}
 					token={token}
 					onDecided={onDecided}
 				/>
@@ -189,6 +199,7 @@ export function SkillsView({ token }: { token: string | null }) {
 	if (err !== null) return <OpsError err={err} />;
 	if (data === null) return <OpsLoading />;
 	const d: SkillsResponse = data;
+	const installedNames = new Set(d.skills.map((s) => s.name));
 	return (
 		<div className="ops">
 			<SkillSection title="Skills" items={d.skills} origin="skills" token={token} />
@@ -196,6 +207,7 @@ export function SkillsView({ token }: { token: string | null }) {
 				title="Proposed"
 				items={d.proposed}
 				origin="proposed"
+				installedNames={installedNames}
 				token={token}
 				onDecided={reload}
 			/>

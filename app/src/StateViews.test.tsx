@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { decideSkillProposal } from "../../src/skill-decisions.ts";
 import { listSkills, readSkillFile } from "../../src/stateview.ts";
 import { FilesView, SkillsView } from "./StateViews.tsx";
 
@@ -177,6 +178,74 @@ test("a proposed card's decide buttons post skills/decide and refetch the list",
 	expect(posts).toEqual([{ name: "draft", action: "install" }]);
 	// The decision resolved: the list refetched so state moves installed/gone.
 	expect(lists).toBeGreaterThanOrEqual(2);
+});
+
+test("discarding an update deletes the staged copy, never the installed one", async () => {
+	const workspaceDir = join(home, "workspace");
+	const skills = join(home, "skills");
+	const proposed = join(home, "proposed");
+	// Both copies live: skills/weather is the installed skill,
+	// proposed/weather is the staged update parked on it.
+	mkdirSync(join(skills, "weather"), { recursive: true });
+	writeFileSync(join(skills, "weather/SKILL.md"), "live body");
+	mkdirSync(join(proposed, "weather"), { recursive: true });
+	writeFileSync(join(proposed, "weather/SKILL.md"), "updated body");
+	const posts: { name: string; action: string }[] = [];
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/skills") return Response.json(listSkills(skills, proposed));
+			if (url.pathname === "/api/app/skills/decide" && init?.method === "POST") {
+				const body = JSON.parse(String(init.body)) as {
+					name: string;
+					action: "install" | "discard";
+				};
+				posts.push(body);
+				// Only HTTP is replaced: the decision runs the same disk
+				// mechanics every door runs, so the lifecycle being proven
+				// here is the real one, not a fixture's word.
+				const outcome = decideSkillProposal(
+					{ workspaceDir, skillsDir: skills, proposedDir: proposed },
+					body.name,
+					body.action,
+				);
+				if (!outcome.ok)
+					return Response.json({ error: outcome.reason }, { status: 409 });
+				return Response.json({
+					ok: true,
+					skill: body.name,
+					action: outcome.action,
+					replaced: outcome.action === "install" ? outcome.replaced : false,
+					state: outcome.action === "install" ? "installed" : "gone",
+				});
+			}
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<SkillsView token={null} />));
+	// The staged card is the one carrying the decide row, labeled as an
+	// update since "weather" is installed too.
+	const card = [...container.querySelectorAll(".card")].find(
+		(el) => el.querySelector(".skill-decide") !== null,
+	);
+	expect(card?.querySelector(".op-item-title")?.textContent).toBe("weather");
+	const discard = cardButton(card!, "Discard update");
+	expect(cardButton(card!, "Install update")).toBeDefined();
+	expect(discard).toBeDefined();
+	await act(async () => discard?.click());
+	expect(posts).toEqual([{ name: "weather", action: "discard" }]);
+	// The staged update is gone; the installed copy was never touched.
+	expect(existsSync(join(proposed, "weather"))).toBe(false);
+	expect(readFileSync(join(skills, "weather/SKILL.md"), "utf8")).toBe("live body");
+	// The refetched list still shows the installed skill; the decide row
+	// left with the proposal.
+	expect(container.querySelector(".skill-decide")).toBeNull();
+	const live = [...container.querySelectorAll(".card")].find(
+		(el) => el.querySelector(".op-item-title")?.textContent === "weather",
+	);
+	expect(live?.querySelector(".pill.on")?.textContent).toBe("installed");
 });
 
 test("a slow file response never overwrites a newer selection", async () => {

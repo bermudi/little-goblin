@@ -55,11 +55,14 @@ function SkillRow({
 			</span>
 			{skill.pending && (
 				<span className="skill-decide">
+					{/* A pending proposal on an installed skill is an update:
+					    the labels name it so "discard" can't read as removing the
+					    installed copy. */}
 					<button type="button" className="pill" disabled={busy} onClick={() => decide("install")}>
-						install
+						{skill.state === "installed" ? "Install update" : "install"}
 					</button>
 					<button type="button" className="pill" disabled={busy} onClick={() => decide("discard")}>
-						discard
+						{skill.state === "installed" ? "Discard update" : "discard"}
 					</button>
 				</span>
 			)}

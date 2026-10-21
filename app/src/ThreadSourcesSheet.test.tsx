@@ -229,6 +229,7 @@ describe("ThreadSourcesSheet", () => {
 	});
 
 	test("an installed skill with a parked update proposal still carries the decide row", async () => {
+		let decided = false;
 		globalThis.fetch = ((input: RequestInfo | URL) => {
 			const url = new URL(String(input), "https://x");
 			if (url.pathname === "/api/app/skills/from")
@@ -238,7 +239,7 @@ describe("ThreadSourcesSheet", () => {
 							{
 								skill: "herdr",
 								state: "installed",
-								pending: true,
+								pending: !decided,
 								kind: "reviewer",
 								firstAt: "2026-10-20T00:00:00Z",
 								lastAt: "2026-10-20T00:00:00Z",
@@ -246,6 +247,12 @@ describe("ThreadSourcesSheet", () => {
 						],
 					}),
 				);
+			if (url.pathname === "/api/app/skills/decide") {
+				decided = true;
+				return Promise.resolve(
+					json({ ok: true, skill: "herdr", action: "discard", replaced: false, state: "gone" }),
+				);
+			}
 			if (url.pathname === "/api/app/memory/documents")
 				return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
 			return Promise.resolve(json({ error: "unexpected" }, 500));
@@ -257,13 +264,24 @@ describe("ThreadSourcesSheet", () => {
 			r.textContent?.includes("herdr"),
 		)!;
 		// Live state stays "installed"; the pending proposal surfaces as
-		// its own chip plus the decide buttons.
+		// its own chip plus the decide buttons, labeled as an update so
+		// "discard" can't read as removing the installed copy.
 		expect(row.textContent).toContain("installed");
 		expect(row.textContent).toContain("update pending");
 		expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
-			"install",
-			"discard",
+			"Install update",
+			"Discard update",
 		]);
+		// Discarding the update leaves the row installed — the decide
+		// buttons go away with the pending flag, the skill doesn't.
+		const discard = [...row.querySelectorAll("button")].find(
+			(b) => b.textContent === "Discard update",
+		);
+		await click(discard);
+		await flush();
+		expect(row.textContent).toContain("installed");
+		expect(row.textContent).not.toContain("update pending");
+		expect([...row.querySelectorAll("button")]).toHaveLength(0);
 	});
 
 	test("both sections surface their own errors without hiding the other", async () => {

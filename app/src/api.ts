@@ -369,6 +369,30 @@ export function getMessages(token: string | null, id: string): Promise<AppMessag
 	);
 }
 
+// The document reader — bytes through the same door and auth as
+// request(), but a Response so the caller picks blob or text.
+export async function fetchConversationFile(
+	token: string | null,
+	id: string,
+	path: string,
+): Promise<Response> {
+	const res = await rawRequest(
+		token,
+		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/file?path=${encodeURIComponent(path)}`,
+	);
+	if (!res.ok) {
+		let detail = `http ${res.status}`;
+		try {
+			const body = (await res.json()) as { error?: string };
+			if (body.error !== undefined) detail = body.error;
+		} catch {
+			/* not json */
+		}
+		throw new ApiError(res.status, detail);
+	}
+	return res;
+}
+
 // /stop rides the runtime's own stop — abort the turn server-side, not
 // just this client's stream (history keeps whatever the turn wrote).
 export function stopConversation(token: string | null, id: string): Promise<AppStopResponse> {

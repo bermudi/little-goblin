@@ -4,6 +4,11 @@
 // through the generic fallback, never a crash and never a blank.
 
 import { z } from "zod";
+import {
+	artifactPresentationSchema,
+	artifactSchema,
+	fileSourceSchema,
+} from "../../../src/agent/tools/artifact-schema.ts";
 
 // Every tool's structured refusal — `{error}` is a returned value, not a
 // thrown one, so it arrives as output-available and must be handled as a
@@ -49,3 +54,26 @@ export const editOutputSchema = z.union([z.object({ replaced: z.number() }), too
 
 export const writeInputSchema = z.object({ path: z.string(), content: z.string() });
 export const writeOutputSchema = z.union([z.object({ bytes: z.number() }), toolError]);
+
+// artifact/script share the wire contract with the server — imported,
+// not mirrored (artifact-schema.ts is a leaf module by design).
+export const artifactInputSchema = z.object({
+	source: fileSourceSchema,
+	title: z.string().optional(),
+});
+export const artifactOutputSchema = z.union([z.object({ artifact: artifactSchema }), toolError]);
+
+export const scriptInputSchema = z.object({ code: z.string() });
+export const scriptOutputSchema = z.object({
+	text: z.string(),
+	calls: z.array(
+		z.object({
+			tool: z.string(),
+			args: z.string(),
+			ok: z.boolean(),
+			result: z.string(),
+		}),
+	),
+	error: z.string().optional(),
+	presentations: z.array(artifactPresentationSchema).optional(),
+});

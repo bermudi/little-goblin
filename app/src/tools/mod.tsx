@@ -8,11 +8,13 @@
 import { getToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { Clip, ErrBox, Skeleton, type Face, type ToolView } from "./bits.tsx";
 import { firstLine, joinSummary, shortJson } from "./parse.ts";
+import { artifactView } from "./artifact.tsx";
 import { bashView } from "./bash.tsx";
 import { editView } from "./edit.tsx";
 import { fetchView } from "./fetch.tsx";
 import { genericView } from "./generic.tsx";
 import { readView } from "./read.tsx";
+import { scriptView } from "./script.tsx";
 import { searchView } from "./search.tsx";
 import { writeView } from "./write.tsx";
 
@@ -23,6 +25,8 @@ const VIEWS: Record<string, ToolView> = {
 	read_file: readView,
 	edit_file: editView,
 	write_file: writeView,
+	script: scriptView,
+	artifact: artifactView,
 };
 
 // input-available means the args finished streaming and the call is

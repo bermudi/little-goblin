@@ -58,10 +58,13 @@ hljs.registerLanguage("yaml", yaml);
 // start/end in whitespace, so `2 * 3 * 4` stays literal; `_` only
 // opens/closes on non-word edges so snake_case identifiers stay
 // literal.
+// The last alternative catches relative-path links — they only become
+// live when the host hands inline() an onFileLink (the document viewer);
+// everywhere else they keep rendering as literal syntax.
 const INLINE =
-	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|~~([^\s~](?:[^\n]*?[^\s~])?)~~|(https?:\/\/[^\s<>"')\]]+)/g;
+	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|~~([^\s~](?:[^\n]*?[^\s~])?)~~|(https?:\/\/[^\s<>"')\]]+)|\[([^\]\n]+)\]\(([^\s)]+)\)/g;
 
-export function inline(text: string): ReactNode[] {
+export function inline(text: string, onFileLink?: ((path: string) => void) | undefined): ReactNode[] {
 	const out: ReactNode[] = [];
 	let last = 0;
 	let i = 0;
@@ -78,12 +81,19 @@ export function inline(text: string): ReactNode[] {
 		else if (m[5] !== undefined) out.push(<em key={i}>{m[5]}</em>);
 		else if (m[6] !== undefined) out.push(<em key={i}>{m[6]}</em>);
 		else if (m[7] !== undefined) out.push(<s key={i}>{m[7]}</s>);
-		else
+		else if (m[8] !== undefined)
 			out.push(
 				<a key={i} href={m[8]} target="_blank" rel="noreferrer">
 					{m[8]}
 				</a>,
 			);
+		else if (m[9] !== undefined && onFileLink !== undefined)
+			out.push(
+				<button key={i} type="button" className="md-filelink" onClick={() => onFileLink(m[10]!)}>
+					{m[9]}
+				</button>,
+			);
+		else out.push(m[0]);
 		last = m.index + m[0].length;
 		i++;
 	}
@@ -377,10 +387,15 @@ export function Markdown({
 	onOpenNote,
 	streaming,
 	clipFences,
+	onFileLink,
 }: {
 	text: string;
 	// Host opt-in: long fences clip to a preview with a show-all tail.
 	clipFences?: boolean | undefined;
+	// Host opt-in: relative-path [t](path) links become buttons that ask
+	// the host to open the file (the document viewer); unset they stay
+	// literal syntax.
+	onFileLink?: ((path: string) => void) | undefined;
 } & MarkdownNoteContext) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
@@ -391,7 +406,7 @@ export function Markdown({
 		if (para.length === 0) return;
 		const body = para.join("\n").trim();
 		para = [];
-		if (body !== "") blocks.push(<p key={key++}>{inline(body)}</p>);
+		if (body !== "") blocks.push(<p key={key++}>{inline(body, onFileLink)}</p>);
 	};
 
 	while (i < lines.length) {
@@ -450,7 +465,7 @@ export function Markdown({
 			const Tag = `h${level}` as "h2" | "h3" | "h4" | "h5" | "h6";
 			blocks.push(
 				<Tag key={key++} className="md-h">
-					{inline(heading[2]!)}
+					{inline(heading[2]!, onFileLink)}
 				</Tag>,
 			);
 			i++;
@@ -482,6 +497,7 @@ export function Markdown({
 						onOpenNote={onOpenNote}
 						streaming={streaming}
 						clipFences={clipFences}
+						onFileLink={onFileLink}
 					/>
 				</blockquote>,
 			);
@@ -502,7 +518,7 @@ export function Markdown({
 					<thead>
 						<tr>
 							{header.map((h, c) => (
-								<th key={c}>{inline(h)}</th>
+								<th key={c}>{inline(h, onFileLink)}</th>
 							))}
 						</tr>
 					</thead>
@@ -510,7 +526,7 @@ export function Markdown({
 						{rows.map((r, ri) => (
 							<tr key={ri}>
 								{r.map((c, ci) => (
-									<td key={ci}>{inline(c)}</td>
+									<td key={ci}>{inline(c, onFileLink)}</td>
 								))}
 							</tr>
 						))}
@@ -535,7 +551,7 @@ export function Markdown({
 				});
 				i++;
 			}
-			blocks.push(<ListTree key={key++} items={items} />);
+			blocks.push(<ListTree key={key++} items={items} onFileLink={onFileLink} />);
 			continue;
 		}
 
@@ -551,7 +567,13 @@ export function Markdown({
 	return <>{blocks}</>;
 }
 
-function ListTree({ items }: { items: ListItem[] }) {
+function ListTree({
+	items,
+	onFileLink,
+}: {
+	items: ListItem[];
+	onFileLink?: ((path: string) => void) | undefined;
+}) {
 	interface Node {
 		item: ListItem;
 		kids: Node[];
@@ -577,7 +599,7 @@ function ListTree({ items }: { items: ListItem[] }) {
 						{n.item.checked ? "☑" : "☐"}
 					</span>
 				)}
-				{inline(n.item.text)}
+				{inline(n.item.text, onFileLink)}
 				{n.kids.length > 0 && render(n.kids)}
 			</li>
 		));

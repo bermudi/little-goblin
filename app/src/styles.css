@@ -1365,6 +1365,19 @@ a.hit-title {
 	color: var(--app-fg-subtle);
 	flex: none;
 }
+/* A path chip backed by the document viewer is a real button — same
+   pill, with a hover cue that it opens something. */
+button.pathchip {
+	cursor: pointer;
+	background: none;
+}
+button.pathchip:hover {
+	border-color: var(--app-accent);
+	color: var(--app-accent);
+}
+button.pathchip:hover svg {
+	color: var(--app-accent);
+}
 .diffstat {
 	display: inline-flex;
 	gap: 0.3rem;
@@ -4066,4 +4079,157 @@ button.link:hover {
 	color: var(--app-fg-subtle);
 	font-size: 12px;
 	margin: 0.45rem 0 0;
+}
+
+/* ---------- document viewer + artifact cards ---------- */
+
+/* The artifact card — the openable thing a published file leaves in
+   the transcript. */
+.doccard {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	width: 100%;
+	max-width: 34rem;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	padding: 0.55rem 0.7rem;
+	margin: 0.35rem 0;
+	text-align: left;
+	background: none;
+	cursor: pointer;
+}
+.doccard:hover:not(:disabled) {
+	border-color: var(--app-accent);
+	background: var(--app-hover);
+}
+.doccard:disabled {
+	cursor: default;
+	opacity: 0.7;
+}
+.doccard-glyph {
+	color: var(--app-fg-subtle);
+	flex: none;
+	display: inline-flex;
+}
+.doccard-body {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+.doccard-title {
+	font-size: 13px;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.doccard-meta {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-subtle);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The reader modal — a sheet grown to document size: nearly the whole
+   viewport tall on every screen, wider than the transcript column. */
+.doc {
+	max-width: 46rem;
+	height: 85dvh;
+	max-height: 85dvh;
+}
+.doc-head {
+	flex: none;
+}
+.doc-back {
+	font-size: 15px !important;
+}
+.doc-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+.doc-md {
+	padding: 0.9rem 1.1rem;
+	font-size: 14.5px;
+	line-height: 1.65;
+}
+.doc-md p {
+	margin: 0.55em 0;
+}
+.doc-md p:first-child {
+	margin-top: 0;
+}
+.doc-text {
+	margin: 0;
+	padding: 0.9rem 1.1rem;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+.doc-frame {
+	flex: 1;
+	width: 100%;
+	border: 0;
+	background: var(--app-bg);
+}
+.doc-media {
+	margin: auto;
+	max-width: 100%;
+	max-height: 100%;
+	padding: 1rem;
+}
+.doc-note {
+	padding: 1.5rem 1.1rem;
+	color: var(--app-fg-muted);
+	font-size: 13.5px;
+}
+.doc-err {
+	padding: 1.5rem 1.1rem;
+	color: var(--app-danger);
+	font-size: 13.5px;
+}
+.doc-download {
+	display: inline-block;
+	margin-top: 0.5rem;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12.5px;
+}
+.doc-download:hover {
+	background: var(--app-hover);
+}
+
+/* A relative [t](path) link inside a rendered document — styled like
+   the transcript's anchors, a button only for the click. */
+.md-filelink {
+	font: inherit;
+	color: var(--app-accent);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	background: none;
+	border: none;
+	padding: 0;
+	cursor: pointer;
+}
+
+/* The script row's nested-call ledger. */
+.script-calls {
+	margin: 0 0 0.5rem;
+	padding-left: 1.1rem;
+	font-size: 12px;
+	line-height: 1.6;
+	color: var(--app-fg-muted);
+}
+.script-calls code {
+	font-family: var(--font-mono);
+	color: var(--app-fg);
 }

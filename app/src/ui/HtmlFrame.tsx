@@ -17,7 +17,9 @@ import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
 // base-uri 'none' pins resolution as belt: the click guard sets
 // location.hash verbatim without resolving hrefs, but no static or
 // script-inserted <base href> should ever be usable anyway.
-const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'">`;
+// media-src data:+blob: lets a generated document embed audio/video it
+// carries or builds itself — still no network, still an opaque origin.
+const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data: blob:; base-uri 'none'">`;
 
 // documentElement.scrollHeight can't drop below the frame's own
 // viewport — a one-way ratchet — so measure body bounds instead

@@ -4,6 +4,7 @@
 // dispatcher import from here, never the reverse.
 
 import type { ReactNode } from "react";
+import { useDocViewer } from "../docview.tsx";
 import { useCopy } from "../useCopy.ts";
 import { clipHead } from "./parse.ts";
 
@@ -88,12 +89,28 @@ export function CopyBtn({ text }: { text: string }) {
 	);
 }
 
+/** The file label — a button that asks the document viewer to open the
+ *  path when a chat provides one; a plain span everywhere else. */
 export function PathChip({ path }: { path: string }) {
+	const viewer = useDocViewer();
+	if (viewer === null) {
+		return (
+			<span className="pathchip">
+				<FileGlyph />
+				{path}
+			</span>
+		);
+	}
 	return (
-		<span className="pathchip">
+		<button
+			type="button"
+			className="pathchip pathchip-link"
+			title={`open ${path}`}
+			onClick={() => viewer.openFile(path)}
+		>
 			<FileGlyph />
 			{path}
-		</span>
+		</button>
 	);
 }
 

@@ -877,6 +877,15 @@ export function ContextGauge({
 		busy && live?.input !== null && live?.input !== undefined && ctx?.limit != null
 			? Math.min(100, Math.max(0, (live.input / ctx.limit) * 100))
 			: barPct;
+	// The wire's cacheRead/input pair is the same numerator and
+	// denominator the server reports for a settled turn — while one
+	// runs, the freshest metered step's rate wins; a step whose split
+	// the provider didn't report falls back to the settled figure.
+	const liveHitRate =
+		live != null && live.input !== null && live.input > 0 && live.cacheRead !== null
+			? live.cacheRead / live.input
+			: null;
+	const hitRate = busy && liveHitRate !== null ? liveHitRate : (ctx?.cacheHitRate ?? null);
 	// 85% is the ring's red line — the button and the popover's bar wear
 	// the same state so every face of the gauge agrees.
 	const hot = viewPct >= 85;
@@ -1003,7 +1012,7 @@ export function ContextGauge({
 						</div>
 						<div>
 							<dt>Cache hit</dt>
-							<dd className="mono">{contextRate(ctx.cacheHitRate)}</dd>
+							<dd className="mono">{contextRate(hitRate)}</dd>
 						</div>
 						<div>
 							<dt>Avg cache hit</dt>

@@ -38,6 +38,8 @@ export interface OutboxEntry {
 	decidedAt: string | null;
 	/** Gmail's id for the sent message — set on send. */
 	sentId: string | null;
+	/** The authenticated decision lane ("app" or "telegram:<user>"). */
+	decidedBy: string | null;
 }
 
 export interface QueueDraft {
@@ -55,7 +57,15 @@ export interface OutboxStore {
 	get(id: number): OutboxEntry | null;
 	/** Compare-and-set decision: applies only while the row is still
 	 *  pending — a double-tap or a sweeper race resolves to one winner. */
-	decide(id: number, to: Exclude<OutboxStatus, "pending">, now?: Date, sentId?: string): boolean;
+	decide(
+		id: number,
+		to: Exclude<OutboxStatus, "pending">,
+		now?: Date,
+		sentId?: string,
+		actor?: string,
+	): boolean;
+	/** Pending rows in queue order — the operator's actionable inbox. */
+	pending(): OutboxEntry[];
 	/** Mark every expired pending row; the watcher edits their drafts.
 	 *  Rows the caller excludes (a send in flight) stay pending — the
 	 *  send's own verdict decides them, and the next sweep retries. */
@@ -79,6 +89,7 @@ const rowSchema = z.object({
 	expires_at: z.string(),
 	decided_at: z.string().nullable(),
 	sent_id: z.string().nullable(),
+	decided_by: z.string().nullable(),
 });
 
 const addressArraySchema = z.array(z.string());
@@ -115,6 +126,7 @@ function rowToEntry(row: unknown): OutboxEntry {
 		expiresAt: r.expires_at,
 		decidedAt: r.decided_at,
 		sentId: r.sent_id,
+		decidedBy: r.decided_by,
 	};
 }
 
@@ -137,7 +149,8 @@ export function openOutbox(dbPath: string): OutboxStore {
 		created_at TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
 		decided_at TEXT,
-		sent_id TEXT
+		sent_id TEXT,
+		decided_by TEXT
 	)`);
 	const cols = new Set(
 		db
@@ -152,16 +165,20 @@ export function openOutbox(dbPath: string): OutboxStore {
 			     ELSE 'topic:' || chat_id || ':' || thread_id END
 			WHERE target IS NULL`);
 	}
+	if (!cols.has("decided_by")) {
+		db.exec("ALTER TABLE mail_outbox ADD COLUMN decided_by TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM mail_outbox WHERE id = ?");
 	const qInsert = db.query(`INSERT INTO mail_outbox
 		(to_json, cc_json, subject, body, reply_to_id, target, chat_id, thread_id,
-		 draft_message_id, status, created_at, expires_at, decided_at, sent_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, NULL, NULL)`);
+		 draft_message_id, status, created_at, expires_at, decided_at, sent_id, decided_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, NULL, NULL, NULL)`);
 	const qBind = db.query("UPDATE mail_outbox SET draft_message_id = ? WHERE id = ?");
 	const qDecide = db.query(
-		"UPDATE mail_outbox SET status = ?, decided_at = ?, sent_id = ? WHERE id = ? AND status = 'pending'",
+		"UPDATE mail_outbox SET status = ?, decided_at = ?, sent_id = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
 	);
+	const qPending = db.query("SELECT * FROM mail_outbox WHERE status = 'pending' ORDER BY id");
 	const qExpired = db.query(
 		"SELECT * FROM mail_outbox WHERE status = 'pending' AND expires_at <= ? ORDER BY id",
 	);
@@ -206,15 +223,20 @@ export function openOutbox(dbPath: string): OutboxStore {
 			return row === null ? null : rowToEntry(row);
 		},
 
-		decide(id, to, now = new Date(), sentId?: string) {
-			const res = qDecide.run(to, now.toISOString(), sentId ?? null, id);
+		decide(id, to, now = new Date(), sentId?: string, actor?: string) {
+			const res = qDecide.run(to, now.toISOString(), sentId ?? null, actor ?? null, id);
 			if (res.changes === 0) return false;
 			const entry = rowToEntry(qGet.get(id));
 			log.info(`mail outbox ${to}`, {
 				outbox: id,
 				to: entry.to.map(domainOf),
+				...(actor !== undefined ? { decidedBy: actor } : {}),
 			});
 			return true;
+		},
+
+		pending() {
+			return qPending.all().map(rowToEntry);
 		},
 
 		expireDue(now = new Date(), exclude?: (id: number) => boolean) {

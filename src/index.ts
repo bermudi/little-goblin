@@ -37,11 +37,13 @@ import {
 	wireDelegation,
 } from "./delegation-lifecycle.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
+import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
+import { startMailApproval, type MailApproval } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
@@ -49,6 +51,7 @@ import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
+import { startProgramApproval, type ProgramApproval } from "./program-approval.ts";
 import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
@@ -58,12 +61,20 @@ import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
+import { telegramAddressOf } from "./targets.ts";
 
 import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
-import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import {
+	makeTelegramMailLane,
+	sendMailNotice,
+	startTelegramMailApproval,
+} from "./tg/mail-approval.ts";
 import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
-import { type ProgramApproval, startProgramApproval } from "./tg/program-approval.ts";
+import {
+	postProgramApproval,
+	startTelegramProgramApproval,
+} from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
@@ -285,10 +296,13 @@ async function boot() {
 		(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
 		() => configRef.current.operators,
 	);
-	// Late-bound like mailApproval: the adapter starts after the bot, so
-	// the getter answers undefined to anything earlier rather than a
-	// half-wired gate.
+	// Late-bound like mailApproval: shared owners and their Telegram
+	// adapters start after the bot, so getters answer undefined to
+	// anything earlier rather than a half-wired gate.
 	let programApproval: ProgramApproval | undefined;
+	let mailApproval: MailApproval | undefined;
+	let telegramProgramApproval: ReturnType<typeof startTelegramProgramApproval> | undefined;
+	let telegramMailApproval: ReturnType<typeof startTelegramMailApproval> | undefined;
 	const makeTurnTools = makeTurnToolsFactory({
 		configRef,
 		auth,
@@ -370,28 +384,43 @@ async function boot() {
 		},
 		transcribe: transcribeFile,
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-		mail: () => mailApproval,
-		programApproval: () => programApproval,
+		mail: () => telegramMailApproval,
+		programApproval: () => telegramProgramApproval,
 		followUpGate: () => system1Gate ?? undefined,
 		resumeOps: () => resumeOps,
 	});
 
-	// The mail approval gate — the draft's one owner (queue → post →
-	// bind; taps; expiry sweep). Always started: orphaned drafts still settle.
-	const mailApproval = startMailApproval({
-		api: tg.bot.api,
+	// The shared mail approval owner — queue, CAS, send lifecycle and
+	// expiry are channel-neutral; each door only presents and stamps.
+	mailApproval = startMailApproval({
 		outbox,
 		sender: mailSender,
 		reader: mailPoller,
+		lanes: {
+			app: makeAppMailLane(store),
+			telegram: makeTelegramMailLane(tg.bot.api),
+		},
 	});
+	telegramMailApproval = startTelegramMailApproval({ api: tg.bot.api, approval: mailApproval });
 
-	// The program approval gate — proposals activate only through the
-	// operator's tap. It mints approved hook credentials and DMs them
-	// privately; always started so pending proposals stay decidable.
+	// The shared program grant owner — the durable decision path is one
+	// for both doors. Presentation routes by target: Telegram posts its
+	// chunked buttons; app turns get a durable approval marker.
 	programApproval = startProgramApproval({
-		api: tg.bot.api,
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
+		present: async (proposal) => {
+			if (telegramAddressOf(proposal.target) !== null) {
+				await postProgramApproval(tg.bot.api, programs, proposal);
+			} else {
+				presentProgramApproval(store, proposal);
+			}
+		},
+	});
+	telegramProgramApproval = startTelegramProgramApproval({
+		api: tg.bot.api,
+		approval: programApproval,
+		programs,
 		sendPrivate,
 	});
 
@@ -612,6 +641,11 @@ async function boot() {
 				// them under /api/app/* with the bearer/trust gate.
 				operator: operatorSeams,
 				resumeOps: () => resumeOps,
+				// Both doors reach the same durable CAS owners; this route
+				// supplies the authenticated app actor, never transport authority.
+				...(programApproval !== undefined && mailApproval !== undefined
+					? { approvals: { program: programApproval, mail: mailApproval } }
+					: {}),
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

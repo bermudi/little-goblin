@@ -6,12 +6,18 @@ import { TelegramTimeoutError } from "./deadline.ts";
 import type { MailPoller, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
-	MAIL_CANCEL_PREFIX,
-	MAIL_SEND_PREFIX,
-	chunkDraft,
 	startMailApproval,
 	type MailApproval,
 	type MailApprovalDeps,
+	type MailApprovalLane,
+} from "../mail-approval.ts";
+import {
+	MAIL_CANCEL_PREFIX,
+	MAIL_SEND_PREFIX,
+	chunkDraft,
+	makeTelegramMailLane,
+	startTelegramMailApproval,
+	type TelegramMailApproval,
 } from "./mail-approval.ts";
 import { tmpDb } from "../testkit.ts";
 
@@ -23,7 +29,7 @@ test("draft chunk boundaries never split an emoji", () => {
 	expect(chunks[1]?.startsWith("🙂")).toBe(true);
 });
 
-let gates: MailApproval[] = [];
+let gates: Array<Pick<MailApproval, "stop">> = [];
 afterEach(() => {
 	for (const g of gates) g.stop();
 	gates = [];
@@ -91,6 +97,17 @@ function fakeReader(
 	};
 }
 
+interface HarnessDeps extends Omit<MailApprovalDeps, "lanes"> {
+	api: Api;
+}
+
+const appLane: MailApprovalLane = {
+	present: async () => ({ kind: "posted", messageId: null, surface: "the app" }),
+	notice: async () => {},
+	settle: async () => {},
+	strip: async () => {},
+};
+
 function setup(
 	sender: MailSender | null = fakeSender(),
 	reader: MailPoller | null = fakeReader(),
@@ -98,12 +115,13 @@ function setup(
 ): {
 	outbox: OutboxStore;
 	calls: ApiCalls;
-	deps: MailApprovalDeps;
-	gate: MailApproval;
+	deps: HarnessDeps;
+	gate: TelegramMailApproval;
 } {
 	const calls: ApiCalls = { answers: [], edits: [], markups: [], sends: [] };
-	const deps: MailApprovalDeps = {
-		api: fakeApi(calls),
+	const api = fakeApi(calls);
+	const deps: HarnessDeps = {
+		api,
 		outbox,
 		sender: () => sender,
 		reader: () => reader,
@@ -112,8 +130,18 @@ function setup(
 	// A long tick keeps the timer out of the test — the sweep is driven
 	// through gate.sweep(). An empty outbox makes the boot catch-up a
 	// no-op.
-	const gate = startMailApproval(deps, 60_000);
-	gates.push(gate);
+	const owner = startMailApproval(
+		{
+			outbox,
+			sender: () => deps.sender(),
+			reader: () => deps.reader(),
+			lanes: { app: appLane, telegram: makeTelegramMailLane(api) },
+			now: () => deps.now?.() ?? new Date(),
+		},
+		60_000,
+	);
+	const gate = startTelegramMailApproval({ api, approval: owner });
+	gates.push(owner);
 	return { outbox, calls, deps, gate };
 }
 
@@ -124,6 +152,7 @@ function queue(s: OutboxStore, at: Date = NOW) {
 const tap = (id: number, op: "send" | "cancel") => ({
 	id: `q-${op}-${id}`,
 	data: `${op === "send" ? MAIL_SEND_PREFIX : MAIL_CANCEL_PREFIX}${id}`,
+	from: { id: 1 },
 	message: { message_id: 500, chat: { id: -100 } },
 });
 
@@ -198,7 +227,7 @@ describe("draft requests", () => {
 		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
 		expect(out.status).toContain(`draft #${out.queued}`);
 		expect(out.status).toContain("uncertain");
-		expect(out.status).toContain("check Telegram before retrying");
+		expect(out.status).toContain("check the approval surface before retrying");
 		expect(out.status).not.toContain("cancelled");
 		expect(calls.sends).toHaveLength(1);
 		expect(calls.sends[0]!.keyboard).toBe(true);
@@ -235,7 +264,7 @@ describe("draft requests", () => {
 			ADDRESS,
 		);
 		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
-		expect(out.status).toContain("check Telegram before retrying");
+		expect(out.status).toContain("check the approval surface before retrying");
 		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, true]);
 		expect(outbox.get(out.queued)).toMatchObject({
 			status: "pending",
@@ -297,15 +326,22 @@ describe("draft requests", () => {
 		(api as unknown as Record<string, unknown>).sendMessage = async () => {
 			throw new Error("telegram: HTTP 502");
 		};
-		const gate = startMailApproval(
-			{ api, outbox, sender: () => fakeSender(), reader: () => fakeReader(), now: () => NOW },
+		const owner = startMailApproval(
+			{
+				outbox,
+				sender: () => fakeSender(),
+				reader: () => fakeReader(),
+				lanes: { app: appLane, telegram: makeTelegramMailLane(api) },
+				now: () => NOW,
+			},
 			60_000,
 		);
-		gates.push(gate);
+		const gate = startTelegramMailApproval({ api, approval: owner });
+		gates.push(owner);
 		const out = await gate.requestDraft({ to: ["a@x.com"], subject: "hi", body: "hello" }, ADDRESS);
 		if (!("error" in out)) throw new Error("expected an error verdict");
 		expect(out.error).toBe(
-			"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
+			`posting draft #${seenId} failed — the draft was cancelled; retry when delivery recovers (telegram: HTTP 502)`,
 		);
 		// No orphan — the row settles cancelled, not pending for 24h
 		// with no buttons anywhere.
@@ -388,7 +424,7 @@ describe("mail approval taps", () => {
 		);
 		await gate.handleTap(tap(row.id, "send"));
 		expect(outbox.get(row.id)!.status).toBe("pending");
-		expect(calls.sends[0]!.text).toContain("tap Send to retry");
+		expect(calls.sends[0]!.text).toContain("Send can retry");
 		outbox.close();
 	});
 
@@ -414,7 +450,7 @@ describe("mail approval taps", () => {
 		const row = queue(outbox);
 		await gate.handleTap(tap(row.id, "send"));
 		expect(outbox.get(row.id)!.status).toBe("pending");
-		expect(calls.sends[0]!.text).toContain("tap Send to retry");
+		expect(calls.sends[0]!.text).toContain("Send can retry");
 		outbox.close();
 	});
 

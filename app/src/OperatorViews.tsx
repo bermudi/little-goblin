@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, getServiceStatus, listDelegations, listPrograms } from "./api.ts";
+import { ApprovalsPanel } from "./Approvals.tsx";
 import { describe, KV, ts, uptime, useLoad } from "./opsShared.tsx";
 import type {
 	OperatorDelegationItem,
@@ -23,6 +24,8 @@ export function ProgramsView({ token }: { token: string | null }) {
 		);
 	return (
 		<div className="ops">
+			<h2 className="ops-h2">Pending approvals</h2>
+			<ApprovalsPanel token={token} />
 			<h2 className="ops-h2">Programs ({data.programs.length})</h2>
 			{data.programs.length === 0 && <p className="empty">No programs defined.</p>}
 			{data.programs.map((p: OperatorProgramItem) => (

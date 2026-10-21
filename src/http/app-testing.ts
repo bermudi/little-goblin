@@ -27,6 +27,7 @@ export function setup(
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
 		resumeOps?: AppChannelDeps["resumeOps"];
+		approvals?: AppChannelDeps["approvals"];
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -92,6 +93,7 @@ export function setup(
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
 		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
+		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
 	};
 	const http = startHttp({
 		configRef,

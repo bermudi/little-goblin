@@ -244,3 +244,66 @@ export interface AppResumeBlocked {
 	error: string;
 	calls: AppRunCall[];
 }
+
+export interface AppProgramCandidate {
+	name: string;
+	charter: string;
+	cron: string | null;
+	maxLatenessMinutes: number | null;
+	hook: boolean;
+	mailFilter: string | null;
+}
+
+export interface AppProgramProposal {
+	id: number;
+	kind: "create" | "update";
+	targetId: number | null;
+	target: string;
+	state: "pending" | "approved" | "rejected" | "superseded";
+	createdAt: string;
+	decidedAt: string | null;
+	decidedBy: string | null;
+	activatedId: number | null;
+	candidate: AppProgramCandidate | null;
+}
+
+export interface AppMailDraft {
+	id: number;
+	to: string[];
+	cc: string[];
+	subject: string;
+	body: string;
+	replyToId: string | null;
+	target: string;
+	status: "pending" | "sent" | "cancelled" | "expired";
+	createdAt: string;
+	expiresAt: string;
+	decidedAt: string | null;
+	decidedBy: string | null;
+	sentId: string | null;
+}
+
+export interface AppApprovalsResponse {
+	programs: AppProgramProposal[];
+	mail: AppMailDraft[];
+}
+
+export interface AppApprovalDecisionResponse {
+	status:
+		| "activated"
+		| "rejected"
+		| "refused"
+		| "needs-public-url"
+		| "gone"
+		| "settled"
+		| "busy"
+		| "expired"
+		| "cancelled"
+		| "sent"
+		| "retry"
+		| "conflict";
+	message: string;
+	/** One authenticated reveal for a newly granted webhook URL. Never
+	 *  persisted or repeated by a later GET. */
+	hookUrl?: string;
+}

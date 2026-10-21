@@ -10,6 +10,7 @@ import {
 import { paths } from "./config.ts";
 import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
+import { appConversationOf, telegramAddressOf, type ConversationTarget } from "./targets.ts";
 import { log } from "./log.ts";
 
 export interface WakeDeps {
@@ -96,6 +97,17 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 		return false;
 	}
 	return true;
+}
+
+// Canonical program targets route by channel: Telegram addresses keep
+// the rolling-DM rules; app targets submit into the exact conversation.
+export function wakeTarget(deps: WakeDeps, target: ConversationTarget, text: string): boolean {
+	const telegram = telegramAddressOf(target);
+	if (telegram !== null) return wake(deps, telegram, text);
+	const appConversation = appConversationOf(target);
+	if (appConversation !== null) return wakeApp(deps, appConversation, text);
+	log.error("program wake dropped — invalid target", { target });
+	return false;
 }
 
 // Subagent notices route to the EXACT stored origin row — never a rolled

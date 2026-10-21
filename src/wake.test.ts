@@ -9,7 +9,7 @@ import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
-import { wake, wakeApp, wakeConversation, type WakeDeps } from "./wake.ts";
+import { wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
 	onTextDelta: () => {},
@@ -186,6 +186,26 @@ test("wakeApp on a deleted app conversation drops landed — no submit, no retry
 	expect(landed).toBe(true);
 	expect(submitted).toEqual([]);
 	expect(sinks).toEqual([]);
+	store.close();
+});
+
+test("wakeTarget routes an app target to its exact conversation", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	store.resolve(appAddress("chat-01"), "/w");
+	const landed = wakeTarget(deps, "app/chat-01", "scheduled job ran");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual(["app/chat-01"]);
+	expect(sinks).toHaveLength(1);
+	store.close();
+});
+
+test("wakeTarget keeps Telegram targets on the ordinary wake path", () => {
+	const { deps, store, submitted, sends } = harness(0);
+	store.rollDm(7, "/w");
+	const landed = wakeTarget(deps, "dm:7", "scheduled job ran");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual(["dm:7:2"]);
+	expect(sends).toEqual(["— new conversation —"]);
 	store.close();
 });
 

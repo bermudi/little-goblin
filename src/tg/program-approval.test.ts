@@ -8,15 +8,17 @@ import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { ProgramDraft } from "../program-proposals.ts";
 import { hookTokenHash } from "../program-hook.ts";
+import { startProgramApproval, type ProgramApproval } from "../program-approval.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
+import { telegramAddressOf } from "../targets.ts";
 import { tmpDb } from "../testkit.ts";
 import { fakeApi, type FakeApi } from "../testkit/fake-api.ts";
 import {
 	chunkProposalText,
 	PROGRAM_APPROVE_PREFIX,
 	PROGRAM_REJECT_PREFIX,
-	startProgramApproval,
-	type ProgramApproval,
+	postProgramApproval,
+	startTelegramProgramApproval,
 } from "./program-approval.ts";
 
 setLogWriter(() => {});
@@ -40,7 +42,14 @@ function draft(overrides: Partial<ProgramDraft> = {}): ProgramDraft {
 interface Harness {
 	api: FakeApi;
 	programs: ProgramsStore;
-	approval: ProgramApproval;
+	approval: ProgramApproval & {
+		handleTap(query: {
+			id: string;
+			data: string;
+			from: { id: number };
+			message?: { message_id: number; chat: { id: number } };
+		}): Promise<void>;
+	};
 	dms: string[];
 	answers: Array<string | undefined>;
 	sends: Array<{ chatId: number; text: string; other: Record<string, unknown> }>;
@@ -74,16 +83,26 @@ function harness(
 			},
 		},
 	});
-	const approval = startProgramApproval({
-		api: api.api,
+	const sendPrivate =
+		opts.sendPrivate ??
+		(async (text) => {
+			dms.push(text);
+		});
+	const owner = startProgramApproval({
 		programs,
 		publicUrl: () => opts.publicUrl,
-		sendPrivate:
-			opts.sendPrivate ??
-			(async (text) => {
-				dms.push(text);
-			}),
+		present: async (proposal) => {
+			if (telegramAddressOf(proposal.target) === null) throw new Error("not telegram");
+			await postProgramApproval(api.api, programs, proposal);
+		},
 	});
+	const adapter = startTelegramProgramApproval({
+		api: api.api,
+		approval: owner,
+		programs,
+		sendPrivate,
+	});
+	const approval = { ...owner, handleTap: adapter.handleTap };
 	const tapQuery = (userId: number, data: string, withMessage: boolean) =>
 		approval.handleTap({
 			id: `q-${userId}`,
@@ -169,10 +188,11 @@ describe("program approval posts", () => {
 		const failing = fakeApi({ failOn: (method) => method === "sendMessage" });
 		const programs = openPrograms(tmpDb("goblin-program-approval-"));
 		const approval = startProgramApproval({
-			api: failing.api,
 			programs,
 			publicUrl: () => "https://g.ts.net",
-			sendPrivate: async () => {},
+			present: async (proposal) => {
+				await postProgramApproval(failing.api, programs, proposal);
+			},
 		});
 		try {
 			const proposal = programs.proposals.proposeCreate(draft(), ADDRESS, NOW);

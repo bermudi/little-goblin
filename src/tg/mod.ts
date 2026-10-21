@@ -46,8 +46,11 @@ import {
 	refusalDue,
 	routeMemberGuestMessage,
 } from "./guest.ts";
-import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
-import { PROGRAM_CALLBACK_RE, type ProgramApproval } from "./program-approval.ts";
+import { MAIL_CALLBACK_RE, type TelegramMailApproval } from "./mail-approval.ts";
+import {
+	PROGRAM_CALLBACK_RE,
+	type TelegramProgramApproval,
+} from "./program-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "./ratings.ts";
@@ -122,8 +125,8 @@ export interface BotDeps {
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	memory?: CommandMemoryDeps;
-	mail?: () => MailApproval;
-	programApproval?: () => ProgramApproval | undefined;
+	mail?: () => TelegramMailApproval | undefined;
+	programApproval?: () => TelegramProgramApproval | undefined;
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 	resumeOps?: () => ResumeOps | undefined;
 }

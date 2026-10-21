@@ -293,6 +293,34 @@ describe("program tool", () => {
 		expect(programs.list()[0]).toMatchObject({ chatId: -100, threadId: 7 });
 	});
 
+	test("an app turn pins the app conversation target onto the proposal and program", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const approvals: ProgramProposal[] = [];
+		const tool = programTool({
+			programs,
+			target: "app/chat-01",
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+			requestApproval: async (proposal) => {
+				approvals.push(proposal);
+			},
+		});
+		const out = (await exec(tool, {
+			action: "create",
+			name: "app brief",
+			charter: "brief the app",
+			cron: "30 8 * * 1-5",
+		})) as { proposal: { id: number } };
+		expect(approvals[0]?.target).toBe("app/chat-01");
+		const program = grant(programs, out.proposal)!;
+		expect(program.target).toBe("app/chat-01");
+		expect(program.chatId).toBe(0);
+		expect(program.threadId).toBeNull();
+		programs.close();
+	});
+
 	test("an invalid cron is a tool error — no row and no proposal exists", async () => {
 		const { tool, programs } = toolFor();
 		const out = (await exec(tool, {

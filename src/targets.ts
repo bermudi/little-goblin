@@ -39,7 +39,7 @@ export function telegramAddressOf(target: ConversationTarget): {
 }
 
 export function appConversationOf(target: ConversationTarget): string | null {
-	return appIdOf(target);
+	return appIdOf(target) === null ? null : target;
 }
 
 export function validTarget(target: unknown): target is ConversationTarget {

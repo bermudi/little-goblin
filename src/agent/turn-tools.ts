@@ -17,8 +17,9 @@ import type { ProgramsStore } from "../programs.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
 import type { Subagents } from "../subagents/mod.ts";
-import type { MailApproval } from "../tg/mail-approval.ts";
-import type { ProgramApproval } from "../tg/program-approval.ts";
+import type { MailApproval } from "../mail-approval.ts";
+import type { ProgramApproval } from "../program-approval.ts";
+import { targetOf } from "../targets.ts";
 import { synthesizeSpeech } from "./tts.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";
 import {
@@ -56,7 +57,7 @@ export interface TurnToolsDeps {
 	operatorHerdr: OperatorHerdr;
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
-	mail(): Pick<MailApproval, "requestDraft">;
+	mail(): Pick<MailApproval, "requestDraft"> | undefined;
 	// Same late binding as mail — the adapter starts after the bot, so
 	// the getter may be absent for a turn that somehow runs first; the
 	// request closure then throws and the tool reports the pending
@@ -99,9 +100,9 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const desktops = deps.desktops();
 		const subagentsBoot = deps.subagentsBoot();
 		const tts = configRef.current.tts;
-		// Telegram-bound tools don't register on app turns — disjoint
-		// pools; delegate is the exception.
-		const telegram = channelOf(conv.id) === "telegram";
+		// Guests get a reduced set below; app and Telegram turns share the
+		// approval-capable operator tools through canonical targets.
+		const channel = channelOf(conv.id);
 		// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
 		// relative-path anchor, and delegation's workspaceDir — a
 		// vanished dir throws here and the turn fails at admission.
@@ -130,20 +131,20 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					: undefined,
 			// sendPrivate keeps hook URLs out of model context — a DM per
 			// operator, never in history. publicUrl reads live.
-			program: telegram
-				? {
-						programs,
-						chatId: conv.chatId,
-						threadId: conv.threadId,
-						publicUrl: () => configRef.current.publicUrl,
-						sendPrivate,
-						requestApproval: async (proposal) => {
-							const gate = deps.programApproval();
-							if (gate === undefined) throw new Error("program approvals are not wired yet");
-							await gate.requestApproval(proposal);
-						},
-					}
-				: undefined,
+			program:
+				channel === "app" || channel === "telegram"
+					? {
+							programs,
+							target: targetOf(conv),
+							publicUrl: () => configRef.current.publicUrl,
+							sendPrivate,
+							requestApproval: async (proposal) => {
+								const gate = deps.programApproval();
+								if (gate === undefined) throw new Error("program approvals are not wired yet");
+								await gate.requestApproval(proposal);
+							},
+						}
+					: undefined,
 			file: deliverFile ? { deliver: deliverFile } : undefined,
 			memory: memory
 				? {
@@ -173,13 +174,12 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			herdr: { herdr: operatorHerdr },
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
-				telegram && configRef.current.mail !== undefined
+				(channel === "app" || channel === "telegram") && configRef.current.mail !== undefined
 					? {
-							requestDraft: (input) =>
-								mail.requestDraft(input, {
-									chatId: conv.chatId,
-									threadId: conv.threadId,
-								}),
+							requestDraft: (input) => {
+								if (mail === undefined) throw new Error("mail approvals are not wired yet");
+								return mail.requestDraft(input, { target: targetOf(conv) });
+							},
 						}
 					: undefined,
 			history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },

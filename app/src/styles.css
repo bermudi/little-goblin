@@ -2797,6 +2797,91 @@ a.hit-title {
 	border-color: color-mix(in oklab, var(--app-danger) 40%, transparent);
 }
 
+/* ---------- operator approvals ---------- */
+
+.msg.system {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--app-fg-muted);
+}
+
+.approval-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	margin: 0.5rem 0.4rem 1rem;
+}
+
+.approval-card {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.7rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	font-size: 13px;
+	line-height: 1.45;
+}
+.approval-card pre {
+	margin: 0;
+	font: inherit;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 20rem;
+	overflow-y: auto;
+}
+.approval-card.empty,
+.approval-card.settled {
+	color: var(--app-fg-muted);
+}
+.approval-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.9rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.approval-actions {
+	display: flex;
+	gap: 0.5rem;
+}
+.approval-actions button,
+.secret-reveal button {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.4rem 0.8rem;
+	font-size: 12.5px;
+}
+.approval-actions button:first-child {
+	color: var(--app-success);
+	border-color: color-mix(in oklab, var(--app-success) 40%, transparent);
+}
+.approval-actions button:hover:not(:disabled),
+.secret-reveal button:hover {
+	background: var(--app-hover);
+}
+.approval-actions button:disabled {
+	opacity: 0.45;
+}
+.approval-result {
+	border-left: 2px solid var(--app-border);
+	padding-left: 0.7rem;
+	font-size: 12.5px;
+}
+.secret-reveal {
+	border: 1px solid var(--app-warning);
+	border-radius: 8px;
+	padding: 0.55rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+}
+.secret-reveal pre {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+}
+
 /* ---------- intelligent ui ---------- */
 
 /* The ui tool's rendered input — one column of blocks in the message

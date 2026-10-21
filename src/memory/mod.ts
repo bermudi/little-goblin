@@ -59,6 +59,14 @@ export function messageText(message: UIMessage): string {
 		const p = part as { type?: unknown; text?: unknown; data?: unknown };
 		if (p.type === "text" && typeof p.text === "string") {
 			out.push(p.text);
+		} else if (p.type === "data-approval") {
+			const data =
+				typeof p.data === "object" && p.data !== null
+					? (p.data as { kind?: unknown; id?: unknown })
+					: null;
+			out.push(
+				`[approval request: ${typeof data?.kind === "string" ? data.kind : "item"} #${typeof data?.id === "number" ? data.id : "?"}]`,
+			);
 		} else if (p.type === "data-attachment") {
 			const ref =
 				typeof p.data === "object" && p.data !== null

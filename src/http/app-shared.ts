@@ -8,6 +8,8 @@ import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
 import type { ResumeOps } from "../turn-resume.ts";
+import type { MailApproval } from "../mail-approval.ts";
+import type { ProgramApproval } from "../program-approval.ts";
 import type { AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
 import type { OperatorDeps } from "./operator.ts";
 
@@ -37,6 +39,10 @@ export interface AppChannelDeps {
 	) => Promise<string>;
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
 	resumeOps?: () => ResumeOps | undefined;
+	approvals?: {
+		program: Pick<ProgramApproval, "candidate" | "decide" | "pending">;
+		mail: Pick<MailApproval, "decide" | "pending">;
+	};
 }
 
 export const configPatchBody = z

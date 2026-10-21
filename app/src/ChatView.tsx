@@ -33,6 +33,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { ApprovalCard } from "./Approvals.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
@@ -314,6 +315,19 @@ export function MessageParts({
 					streaming={streaming}
 				/>,
 			);
+			continue;
+		}
+		if (p.type === "data-approval") {
+			const data =
+				typeof p.data === "object" && p.data !== null
+					? (p.data as { kind?: unknown; id?: unknown })
+					: null;
+			if (
+				(data?.kind === "program" || data?.kind === "mail") &&
+				typeof data.id === "number"
+			) {
+				out.push(<ApprovalCard key={i} token={token ?? null} kind={data.kind} id={data.id} />);
+			}
 			continue;
 		}
 		if (isActivityPart(p)) {
@@ -2028,6 +2042,18 @@ function Chat({
 										noteProjectId={noteProjectId}
 										onOpenNote={onOpenNote}
 										clipFences
+									/>
+								</div>
+							);
+						if (m.role === "system")
+							return (
+								<div key={m.id} className="msg system">
+									<MessageParts
+										parts={m.parts}
+										token={token}
+										noteProjectId={noteProjectId}
+										messages={messages}
+										onOpenNote={onOpenNote}
 									/>
 								</div>
 							);

@@ -9,6 +9,8 @@
 // silently.
 
 import type {
+	AppApprovalDecisionResponse,
+	AppApprovalsResponse,
 	AppAttachmentResponse,
 	AppCompactResponse,
 	AppConfigPatch,
@@ -170,6 +172,34 @@ export function createConversation(
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(opts ?? {}),
+	});
+}
+
+export function listApprovals(token: string | null): Promise<AppApprovalsResponse> {
+	return request(token, "/api/app/approvals");
+}
+
+export function decideProgramApproval(
+	token: string | null,
+	id: number,
+	action: "approve" | "reject",
+): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/program/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
+}
+
+export function decideMailApproval(
+	token: string | null,
+	id: number,
+	action: "send" | "cancel",
+): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/mail/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
 	});
 }
 

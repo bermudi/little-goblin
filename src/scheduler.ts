@@ -5,9 +5,8 @@ import { checkInjection, verdictLine } from "./injection.ts";
 import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import type { MailHit } from "./mail.ts";
-import { formatAddress } from "./conversation.ts";
 import { programFireTag } from "./tags.ts";
-import { wake, type WakeDeps } from "./wake.ts";
+import { wakeTarget, type WakeDeps } from "./wake.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 
@@ -411,11 +410,7 @@ function fireProgram(
 		program: program.id,
 		name: program.name,
 		trigger,
-		conversation: formatAddress(
-			program.threadId === null
-				? { kind: "dm", chatId: program.chatId }
-				: { kind: "topic", chatId: program.chatId, threadId: program.threadId },
-		),
+		conversation: program.target,
 		...(scheduledFor === undefined
 			? {}
 			: {
@@ -438,7 +433,7 @@ function fireProgram(
 		decorateSink === undefined
 			? deps
 			: { ...deps, runtime: sinkDecoratingRuntime(deps.runtime, decorateSink) };
-	const landed = wake(firing, { chatId: program.chatId, threadId: program.threadId }, text);
+	const landed = wakeTarget(firing, program.target, text);
 	if (!landed) {
 		log.error("program submit failed", undefined, {
 			program: program.id,

@@ -8,6 +8,8 @@ import { log } from "../log.ts";
 import type { Project } from "../projects.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
+import { refusalText } from "../program-approval.ts";
+import { APP_ACTOR } from "../targets.ts";
 import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import {
 	type AppChannelDeps,
@@ -18,6 +20,8 @@ import {
 } from "./app-shared.ts";
 import { appSseWriter } from "./app-sse.ts";
 import type {
+	AppApprovalDecisionResponse,
+	AppApprovalsResponse,
 	AppCompactResponse,
 	AppContextSegment,
 	AppContextView,
@@ -140,6 +144,40 @@ const decideBody = z.object({
 	note: z.string().max(4000).optional(),
 });
 
+const programDecisionBody = z.object({
+	action: z.enum(["approve", "reject"]),
+});
+
+const mailDecisionBody = z.object({
+	action: z.enum(["send", "cancel"]),
+});
+
+async function parsedJson<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
+	const refusedJson = jsonBodyRefusal(req);
+	if (refusedJson !== null) return refusedJson;
+	let json: unknown;
+	try {
+		json = await req.json();
+	} catch {
+		return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+	}
+	const parsed = schema.safeParse(json);
+	if (!parsed.success) {
+		return Response.json(
+			{ error: z.prettifyError(parsed.error) },
+			{ status: 422, headers: NO_STORE },
+		);
+	}
+	return parsed.data;
+}
+
+function approvalUnavailable(): Response {
+	return Response.json(
+		{ error: "approvals are not configured" },
+		{ status: 503, headers: NO_STORE },
+	);
+}
+
 function appRunCall(c: TurnToolCall): AppRunCall {
 	return {
 		toolCallId: c.toolCallId,
@@ -185,6 +223,116 @@ export async function handleConversationsRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
+
+	if (path === "/api/app/approvals") {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body: AppApprovalsResponse = {
+			programs: deps.approvals.program.pending().map((proposal) => ({
+				id: proposal.id,
+				kind: proposal.kind,
+				targetId: proposal.targetId,
+				target: proposal.target,
+				state: proposal.state,
+				createdAt: proposal.createdAt,
+				decidedAt: proposal.decidedAt,
+				decidedBy: proposal.decidedBy,
+				activatedId: proposal.activatedId,
+				candidate: deps.approvals!.program.candidate(proposal),
+			})),
+			mail: deps.approvals.mail.pending().map((row) => ({
+				id: row.id,
+				to: row.to,
+				cc: row.cc,
+				subject: row.subject,
+				body: row.body,
+				replyToId: row.replyToId,
+				target: row.target,
+				status: row.status,
+				createdAt: row.createdAt,
+				expiresAt: row.expiresAt,
+				decidedAt: row.decidedAt,
+				decidedBy: row.decidedBy,
+				sentId: row.sentId,
+			})),
+		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	const programApprovalMatch = path.match(/^\/api\/app\/approvals\/program\/(\d+)$/);
+	if (programApprovalMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body = await parsedJson(req, programDecisionBody);
+		if (body instanceof Response) return body;
+		const outcome = await deps.approvals.program.decide(
+			Number(programApprovalMatch[1]),
+			body.action,
+			APP_ACTOR,
+		);
+		const response: AppApprovalDecisionResponse =
+			outcome.kind === "activated"
+				? {
+						status: "activated",
+						message: `program "${outcome.program.name}" is active`,
+						...(outcome.hookUrl !== undefined ? { hookUrl: outcome.hookUrl } : {}),
+					}
+				: outcome.kind === "rejected"
+					? { status: "rejected", message: "proposal rejected — nothing was granted" }
+					: outcome.kind === "needs-public-url"
+						? {
+								status: "needs-public-url",
+								message:
+									"publicUrl isn't set — set it in settings, then approve again; the proposal stays pending",
+							}
+						: {
+								status: "refused",
+								message: refusalText(outcome.refusal),
+							};
+		return Response.json(response, {
+			status: outcome.kind === "needs-public-url" ? 422 : 200,
+			headers: NO_STORE,
+		});
+	}
+
+	const mailApprovalMatch = path.match(/^\/api\/app\/approvals\/mail\/(\d+)$/);
+	if (mailApprovalMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body = await parsedJson(req, mailDecisionBody);
+		if (body instanceof Response) return body;
+		const outcome = await deps.approvals.mail.decide(
+			Number(mailApprovalMatch[1]),
+			body.action,
+			APP_ACTOR,
+		);
+		const response: AppApprovalDecisionResponse = {
+			status: outcome.kind,
+			message:
+				outcome.kind === "gone"
+					? "draft gone"
+					: outcome.kind === "settled"
+						? `already ${outcome.row.status}`
+						: outcome.kind === "busy"
+							? "sending — wait for the verdict"
+							: outcome.kind === "expired"
+								? "draft expired"
+								: outcome.kind === "cancelled"
+									? "draft cancelled — never sent"
+									: outcome.kind === "sent"
+										? "draft sent"
+										: outcome.kind === "retry"
+											? outcome.message
+											: "send raced another decision",
+		};
+		return Response.json(response, { headers: NO_STORE });
+	}
 
 	if (path === "/api/app/conversations") {
 		if (req.method === "GET") {

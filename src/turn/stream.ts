@@ -15,6 +15,7 @@ import {
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { z } from "zod";
 import { filterErrorStream } from "../agent/filter-stream.ts";
+import type { AppLiveContext } from "../http/app-wire.ts";
 import {
 	isContentFilter,
 	isContextOverflow,
@@ -438,6 +439,20 @@ export async function driveStream<M extends WireMember>(
 				cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
 				outputTokens: step.usage.outputTokens ?? null,
 			});
+			// The composer's context gauge reads settled turns only — the
+			// wire carries this step's window occupancy as a transient data
+			// part so a streaming client can show it while the turn runs.
+			if (deps.holdsAuthority() && !holdForRecovery) {
+				const liveContext: AppLiveContext = {
+					input: lastStepInputTokens,
+					cacheRead: lastStepCacheRead,
+				};
+				emitChunk(convId, members, live, {
+					type: "data-context",
+					transient: true,
+					data: liveContext,
+				});
+			}
 		},
 	});
 

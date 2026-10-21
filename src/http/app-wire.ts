@@ -172,6 +172,16 @@ export interface AppContextSegment {
 	tokens: number;
 }
 
+// The in-flight turn's window occupancy, pushed over the chat stream as
+// a transient `data-context` part after each model step — the composer's
+// gauge shows it while the turn runs. Transient: never lands in message
+// parts or durable history; the wire log replays the last figure to a
+// late joiner.
+export interface AppLiveContext {
+	input: number | null;
+	cacheRead: number | null;
+}
+
 export interface AppContextView {
 	model: string;
 	input: number | null;

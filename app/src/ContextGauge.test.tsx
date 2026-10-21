@@ -283,7 +283,9 @@ describe("ContextGauge", () => {
 		await act(async () => {
 			resolveA(json(ctxA));
 		});
-		expect(label()).toBe("…");
+		// Busy reads "turn in flight" — the invariant: never A's numbers,
+		// never "no turns yet".
+		expect(label()).toBe("turn in flight");
 
 		act(() => {
 			root?.render(<ContextGauge token={null} conversationId="app/bbb" busy={false} />);
@@ -415,6 +417,85 @@ describe("ContextGauge", () => {
 		expect(hot(".ctx-ring-fill")).toBe(true);
 		act(() => (container.querySelector(".ctx-btn") as HTMLButtonElement).click());
 		expect(hot(".ctx-bar")).toBe(true);
+	});
+
+	test("a turn in flight on a fresh conversation names the turn — never 'no turns yet'", async () => {
+		// The screenshot's lie: a visibly streaming first turn while the
+		// gauge read "no turns yet". Busy suppresses the read entirely —
+		// ctx stays null — so the label must come from the turn, not the
+		// settled view.
+		let calls = 0;
+		globalThis.fetch = mockFetch(() => {
+			calls++;
+			return Promise.resolve(json(view({ turns: 0 })));
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={true} />);
+		});
+		expect(container.querySelector(".ctx-btn")?.textContent).toBe("turn in flight");
+		expect(calls).toBe(0);
+	});
+
+	test("a streamed step's usage is the gauge's numbers while the turn runs", async () => {
+		globalThis.fetch = mockFetch(() =>
+			Promise.resolve(json(view({ input: 5000, limit: 10000, pct: 50, turns: 2 }))),
+		);
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		const label = () => container.querySelector(".ctx-btn")?.textContent;
+		expect(label()).toBe("5k/10k · 50%");
+
+		// A turn starts — before its first step report lands the label
+		// counts the turn after the settled ones.
+		await act(async () => {
+			root?.render(
+				<ContextGauge token={null} conversationId="app/aaa" busy={true} live={null} />,
+			);
+		});
+		expect(label()).toBe("turn 3 in flight");
+
+		// A step the provider didn't meter is unknown, not zero.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={true}
+					live={{ input: null, cacheRead: null }}
+				/>,
+			);
+		});
+		expect(label()).toBe("ctx ?");
+
+		// Then step usage lands — the wire's number reads like the
+		// settled label, against the last known limit.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={true}
+					live={{ input: 23417, cacheRead: 10000 }}
+				/>,
+			);
+		});
+		expect(label()).toBe("23.4k/10k · 234.2%");
+
+		// The turn settles — the read's settled view takes over again.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={false}
+					live={{ input: 23417, cacheRead: 10000 }}
+				/>,
+			);
+		});
+		expect(label()).toBe("5k/10k · 50%");
 	});
 
 	test.each(["fold", "api error"] as const)(

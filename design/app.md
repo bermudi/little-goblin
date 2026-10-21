@@ -36,6 +36,13 @@ unavailable, including cache-hit ratios and segment estimates.
 The gauge's denominator never stalls
 on the network: a cold models.dev memory falls back to a one-time
 disk-cache parse (`contextLimitCached`), memory wins once a turn warms it.
+While a turn streams the settled view is a turn behind (ruling 2026-10-21:
+a visibly streaming first turn must never read "no turns yet"): each
+model step pushes its window occupancy to the chat wire as a transient
+`data-context` part — `useChat`'s `onData` sees it, message parts and
+durable history never do, and the live-stream replay hands the last
+figure to a late joiner. A step the provider didn't meter reads "ctx ?",
+and before the first report lands the label names the turn in flight.
 
 **Auth.** No `initData` exists outside Telegram; the lock is a bearer token,
 optional since 2026-09-30 by operator ruling, on the collie precedent:

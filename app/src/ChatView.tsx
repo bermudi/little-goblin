@@ -44,6 +44,7 @@ import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
 	AppConfigView,
 	AppContextView,
+	AppLiveContext,
 	AppNoteSummary,
 	TurnMetadata,
 } from "../../src/http/app-wire.ts";
@@ -763,10 +764,15 @@ export function ContextGauge({
 	token,
 	conversationId,
 	busy,
+	live,
 }: {
 	token: string | null;
 	conversationId: string | undefined;
 	busy: boolean;
+	// The in-flight turn's window occupancy, streamed over the chat
+	// wire — the gauge's numbers while a turn runs. The settled view
+	// is one turn behind then.
+	live?: AppLiveContext | null | undefined;
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -850,9 +856,30 @@ export function ContextGauge({
 	if (conversationId === undefined) return null;
 	const barPct =
 		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// While a turn streams, the gauge reads the wire's data-context
+	// parts — the settled view is a turn behind. A step whose usage the
+	// provider didn't report says "ctx ?", never zero, never "no turns
+	// yet"; before the first step report lands the label names the turn
+	// in flight.
+	const busyLabel =
+		live !== null && live !== undefined
+			? live.input !== null
+				? ctx?.limit != null
+					? `${contextCount(live.input)}/${contextCount(ctx.limit)} · ${Math.round((live.input / ctx.limit) * 1000) / 10}%`
+					: `${contextCount(live.input)} tok`
+				: "ctx ?"
+			: // The settled view holds the count when it has landed —
+				// on a switch-in-mid-turn it hasn't, so no number.
+				ctx === null
+				? "turn in flight"
+				: `turn ${ctx.turns + 1} in flight`;
+	const viewPct =
+		busy && live?.input !== null && live?.input !== undefined && ctx?.limit != null
+			? Math.min(100, Math.max(0, (live.input / ctx.limit) * 100))
+			: barPct;
 	// 85% is the ring's red line — the button and the popover's bar wear
 	// the same state so every face of the gauge agrees.
-	const hot = barPct >= 85;
+	const hot = viewPct >= 85;
 	// A failed read has no numbers to show and the popover won't open —
 	// the label carries it on wide screens, the reddened ring on narrow.
 	// The click becomes the retry, with the reason on the tooltip.
@@ -872,17 +899,21 @@ export function ContextGauge({
 				aria-label={
 					failedRead
 						? "Context window usage — read failed, activate to retry"
-						: ctx === null
-							? "Context window usage"
-							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+						: busy
+							? `Context window: ${busyLabel}`
+							: ctx === null
+								? "Context window usage"
+								: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
 				}
 				aria-expanded={open && ctx !== null}
 				title={
 					failedRead
 						? `Context window usage — read failed: ${lastError ?? "unknown error"}`
-						: ctx === null
-							? "Context window usage"
-							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+						: busy
+							? `Context window: ${busyLabel} — turn in flight`
+							: ctx === null
+								? "Context window usage"
+								: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
 				}
 				onClick={() => {
 					if (failedRead) {
@@ -894,18 +925,20 @@ export function ContextGauge({
 			>
 				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
-					{barPct > 0 && (
+					{viewPct > 0 && (
 						<circle
-							className={barPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
+							className={viewPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
 							cx="8"
 							cy="8"
 							r="6.5"
-							strokeDasharray={`${(barPct / 100) * 40.84} 40.84`}
+							strokeDasharray={`${(viewPct / 100) * 40.84} 40.84`}
 							transform="rotate(-90 8 8)"
 						/>
 					)}
 				</svg>
-				<span className="ctx-label">{failedRead ? "ctx failed" : contextLabel(ctx)}</span>
+				<span className="ctx-label">
+					{failedRead ? "ctx failed" : busy ? busyLabel : contextLabel(ctx)}
+				</span>
 			</button>
 			{open && ctx !== null && (
 				<div className="note-pick composer-pick ctx-pop">
@@ -979,6 +1012,7 @@ export function ContextGauge({
 					</dl>
 					<p className="empty">
 						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
+						{busy ? " · turn in flight" : ""}
 						{ctx.limit === null ? " · limit unknown" : ""}
 					</p>
 					<button
@@ -1034,6 +1068,7 @@ export function Composer({
 	conversationId,
 	draftScope,
 	busy,
+	liveCtx,
 	staged,
 	setStaged,
 	stagedNotes,
@@ -1051,6 +1086,9 @@ export function Composer({
 	// the project id, "new" for the empty start state.
 	draftScope: string;
 	busy: boolean;
+	// The in-flight turn's window occupancy, streamed over the chat
+	// wire — the gauge's numbers while a turn runs.
+	liveCtx?: AppLiveContext | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
@@ -1673,7 +1711,7 @@ export function Composer({
 						</label>
 					</>
 				)}
-				<ContextGauge token={token} conversationId={conversationId} busy={busy} />
+				<ContextGauge token={token} conversationId={conversationId} busy={busy} live={liveCtx} />
 				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
@@ -1921,6 +1959,11 @@ function Chat({
 			},
 		};
 	}, [token, conversationId]);
+	// The running turn's window occupancy — each model step pushes it over
+	// the wire as a transient data-context part (never persisted). The
+	// gauge shows it while busy; cleared when a new turn starts so a fresh
+	// turn never wears the previous turn's last figure.
+	const [liveCtx, setLiveCtx] = useState<AppLiveContext | null>(null);
 	const { messages, sendMessage, regenerate, status, error, stop, setMessages, resumeStream } =
 		useChat({
 			id: conversationId,
@@ -1930,6 +1973,14 @@ function Chat({
 			// in-flight reply instead of showing a finished-looking chat whose
 			// next send would steer a ghost turn.
 			resume: true,
+			onData: (part) => {
+				if (part.type !== "data-context") return;
+				const d = (typeof part.data === "object" && part.data !== null
+					? part.data
+					: {}) as Record<string, unknown>;
+				const num = (v: unknown) => (typeof v === "number" ? v : null);
+				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
+			},
 			onFinish: ({ message, isAbort }) => {
 				// An aborted reader (stop, or the drop before a steer) is not a
 				// finished reply — the bell belongs to the real finish.
@@ -1980,6 +2031,7 @@ function Chat({
 	// no stop button, and the next send forks a second writer.
 	const submit = async (message: Parameters<typeof sendMessage>[0]) => {
 		pinned.current = true;
+		setLiveCtx(null);
 		if (busy) await stop();
 		await sendMessage(message);
 	};
@@ -2048,7 +2100,10 @@ function Chat({
 									message={m}
 									isLastAssistant={m.id === lastAssistantId}
 									busy={busy}
-									onRetry={() => void regenerate()}
+									onRetry={() => {
+										setLiveCtx(null);
+										void regenerate();
+									}}
 									token={token}
 								/>
 								{meta !== null && <MetaLine meta={meta} />}
@@ -2079,6 +2134,7 @@ function Chat({
 				conversationId={conversationId}
 				draftScope={conversationId}
 				busy={busy}
+				liveCtx={liveCtx}
 				staged={staged}
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}

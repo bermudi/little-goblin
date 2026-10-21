@@ -1,8 +1,8 @@
 // script — the collapsed row counts nested calls and hoisted
-// presentations; the expanded body lists each call's one-line result
-// and the artifact cards the script published, then the digest text.
+// presentations; the expanded body lists each call's one-line result,
+// then the digest text. The cards themselves render beside the fold
+// (ChatView hoists them) — here only the count names them.
 
-import { ArtifactCard } from "../docview.tsx";
 import { Clip, Icon, type ToolView } from "./bits.tsx";
 import { clipHead, firstLine, joinSummary } from "./parse.ts";
 import { scriptInputSchema, scriptOutputSchema } from "./schemas.ts";
@@ -48,9 +48,6 @@ export const scriptView: ToolView = {
 							))}
 						</ul>
 					)}
-					{cards.map((p) => (
-						<ArtifactCard key={p.call} artifact={p.artifact} />
-					))}
 					{text !== "" && <Clip text={clipHead(text, 4000)} />}
 				</div>
 			),

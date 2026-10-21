@@ -408,9 +408,11 @@ export async function handleConversationsRoute(
 		try {
 			workdir = projectWorkdir(deps.projects, conv);
 		} catch (err) {
+			// A vanished project dir is a server-side environment failure,
+			// not something the request got wrong.
 			return Response.json(
 				{ error: err instanceof Error ? err.message : String(err) },
-				{ status: 422, headers: NO_STORE },
+				{ status: 500, headers: NO_STORE },
 			);
 		}
 		const r = readWorkspaceFile(workdir, from);

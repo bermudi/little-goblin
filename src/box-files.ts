@@ -318,11 +318,17 @@ export function readWorkspaceFile(
 	from: string,
 	maxBytes: number = WORKSPACE_READ_MAX_BYTES,
 ): WorkspaceReadResult {
+	// The requested name gets an early refusal; the resolved name gets
+	// the real one — a symlink called notes.md may not launder
+	// auth.jsonl's bytes past the deny.
 	if (READER_DENIED_BASENAMES.has(basename(from))) {
 		return { error: `refused: ${basename(from)} is never served` };
 	}
 	const r = readImport(workspace, from, maxBytes);
 	if ("error" in r) return r;
+	if (READER_DENIED_BASENAMES.has(basename(r.path))) {
+		return { error: `refused: ${from} resolves to ${basename(r.path)}, which is never served` };
+	}
 	if (r.path.split(sep).some((part) => READER_DENIED_COMPONENTS.has(part))) {
 		return { error: `refused: ${from} resolves inside .git` };
 	}

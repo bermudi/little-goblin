@@ -1,7 +1,7 @@
 // artifact — the fold row names what was published; the card below the
-// fold is the openable thing (ChatView hoists it).
+// fold is the openable thing (ChatView hoists it), so the detail shows
+// provenance only: the source chip, target and stored meta.
 
-import { ArtifactCard } from "../docview.tsx";
 import { ErrBox, FileGlyph, PathChip, type ToolView } from "./bits.tsx";
 import { artifactInputSchema, artifactOutputSchema } from "./schemas.ts";
 import { firstLine, fmtBytes, joinSummary } from "./parse.ts";
@@ -34,12 +34,13 @@ export const artifactView: ToolView = {
 			detail: (
 				<div className="tool-body">
 					<div className="meta-row">
-						<PathChip path={a.source.path} />
+						{a.source.target === "workspace" && <PathChip path={a.source.path} />}
 						<span className="tool-meta">
-							{a.source.target} · {a.mediaType} · {fmtBytes(a.size)}
+							{a.source.target}
+							{a.source.target === "workspace" ? "" : ` ${a.source.path}`} · {a.mediaType} ·{" "}
+							{fmtBytes(a.size)}
 						</span>
 					</div>
-					<ArtifactCard artifact={a} />
 				</div>
 			),
 		};

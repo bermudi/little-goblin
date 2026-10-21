@@ -123,4 +123,16 @@ describe("markdown relative links", () => {
 		expect(html).toContain('href="https://a.dev"');
 		expect(html).not.toContain("md-filelink");
 	});
+
+	test("non-http schemes and anchors stay literal even with a handler", () => {
+		const html = renderToStaticMarkup(
+			<Markdown
+				text="[mail](mailto:a@b.c) [js](javascript:1) [anchor](#sec) [data](data:x)"
+				onFileLink={() => {}}
+			/>,
+		);
+		expect(html).not.toContain("md-filelink");
+		expect(html).toContain("[mail](mailto:a@b.c)");
+		expect(html).toContain("[anchor](#sec)");
+	});
 });

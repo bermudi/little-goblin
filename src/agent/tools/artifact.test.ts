@@ -113,6 +113,6 @@ describe("artifact — sandbox source", () => {
 		const out = await exec(t, { source: { target: "sandbox", path: "/work/hi.txt" } });
 		const a = artifactOf(out);
 		expect(seen).toEqual(["app/x:/work/hi.txt"]);
-		expect(readFileSync(a.path)).toEqual(new Uint8Array([104, 105]));
+		expect(readFileSync(a.path).toString()).toBe("hi");
 	});
 });

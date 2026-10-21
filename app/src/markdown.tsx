@@ -60,9 +60,11 @@ hljs.registerLanguage("yaml", yaml);
 // literal.
 // The last alternative catches relative-path links — they only become
 // live when the host hands inline() an onFileLink (the document viewer);
-// everywhere else they keep rendering as literal syntax.
+// everywhere else they keep rendering as literal syntax. A leading
+// scheme (mailto:, data:, javascript:) or # anchor is excluded — those
+// are never file opens, so they stay literal too.
 const INLINE =
-	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|~~([^\s~](?:[^\n]*?[^\s~])?)~~|(https?:\/\/[^\s<>"')\]]+)|\[([^\]\n]+)\]\(([^\s)]+)\)/g;
+	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|~~([^\s~](?:[^\n]*?[^\s~])?)~~|(https?:\/\/[^\s<>"')\]]+)|\[([^\]\n]+)\]\((?![A-Za-z][\w+.-]*:|#)([^\s)]+)\)/g;
 
 export function inline(text: string, onFileLink?: ((path: string) => void) | undefined): ReactNode[] {
 	const out: ReactNode[] = [];

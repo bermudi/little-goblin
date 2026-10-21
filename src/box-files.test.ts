@@ -311,6 +311,14 @@ describe("readWorkspaceFile", () => {
 		).toBe(403);
 	});
 
+	test("a renamed symlink cannot launder auth.jsonl past the deny", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "auth.jsonl"), "{}");
+		symlinkSync(join(workspace, "auth.jsonl"), join(workspace, "notes.md"));
+		const out = readWorkspaceFile(workspace, "notes.md");
+		expect("error" in out && out.error).toContain("never served");
+	});
+
 	test("anything resolving inside .git is refused", () => {
 		const { workspace } = ws();
 		mkdirSync(join(workspace, ".git", "refs"), { recursive: true });

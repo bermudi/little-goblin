@@ -267,6 +267,10 @@ export async function driveStream<M extends WireMember>(
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
+	// Read inside streamText's onStepEnd, so it must be declared before
+	// the factory call — an await inserted between the two leaves every
+	// step end in the TDZ while still compiling.
+	let holdForRecovery = false;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
 	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
@@ -481,7 +485,6 @@ export async function driveStream<M extends WireMember>(
 	let seenText = deps.seenText;
 	let pendingStep = false;
 	let streamError: string | null = null;
-	let holdForRecovery = false;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,

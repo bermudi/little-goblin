@@ -39,3 +39,26 @@ describe("fold arrow selectors", () => {
 		expect(rules.length).toBe(6);
 	});
 });
+
+// Composer boundary invariant (regression): the input box once carried
+// the page background and the near-invisible --app-border hairline, so
+// it disappeared into the transcript and typed draft text read as one
+// more conversation line (operator screenshot 2026-10-20). Rendered
+// contrast isn't observable in happy-dom, so the test guards the
+// stylesheet: the box must sit on a raised surface with a visible
+// hairline — the design language's background-shift-or-divider rule.
+describe("composer box separation", () => {
+	const rule = /(?:^|\n)\.composer \{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+	test("the box sits on a raised surface, not the page background", () => {
+		expect(rule).not.toBe("");
+		expect(rule).not.toMatch(/background:\s*var\(--app-bg\)/);
+		expect(rule).toMatch(/background:\s*var\(--app-gray-200\)/);
+	});
+
+	test("the box edge is a visible hairline, not the invisible border token", () => {
+		expect(rule).not.toBe("");
+		expect(rule).toMatch(/border:\s*1px solid var\(--app-divider\)/);
+		expect(rule).not.toMatch(/var\(--app-border\)/);
+	});
+});

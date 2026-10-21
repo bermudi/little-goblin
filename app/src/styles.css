@@ -1458,14 +1458,25 @@ a.hit-title {
 
 /* ---------- composer ---------- */
 
+/* The box must read against the transcript scrolling above it: on
+   --app-bg with the near-invisible --app-border hairline it vanished,
+   and draft text read as one more conversation line. Same raised
+   surface as the note pickers (background shift) plus a visible
+   hairline — the design language's two separation tools. */
 .composer {
-	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	background: var(--app-gray-200);
+	border: 1px solid var(--app-divider);
 	border-radius: 14px;
 	width: min(46rem, calc(100% - 2rem));
 	align-self: center;
 	margin: 0.25rem 0 0.75rem;
 	padding: 0.1rem 0.35rem 0.4rem;
+}
+/* Focus is the moment the boundary matters most — typing draft text
+   beside the transcript — so the hairline gains weight under focus
+   (the same emphatic mix as the quote/details borders). */
+.composer:focus-within {
+	border-color: color-mix(in oklab, var(--app-fg) 22%, transparent);
 }
 .composer textarea {
 	display: block;

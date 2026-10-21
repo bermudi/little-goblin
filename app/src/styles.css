@@ -2046,8 +2046,8 @@ a.hit-title {
 .prov input,
 .prov select,
 .keyentry input,
-.msheet-custom input,
-.msheet-custom select {
+.msheet-filter input,
+.msheet-filter select {
 	font: inherit;
 	font-size: 12.5px;
 	background: var(--app-bg);
@@ -2059,7 +2059,7 @@ a.hit-title {
 }
 .frow input:focus,
 .chain-card input:focus,
-.msheet-custom input:focus {
+.msheet-filter input:focus {
 	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
 }
 .mono {
@@ -2474,6 +2474,19 @@ a.hit-title {
 .mrow.sel {
 	background: var(--app-active);
 }
+.mrow .mcell {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.mrow .mname {
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .mrow .ref {
 	flex: 1;
 	min-width: 0;
@@ -2482,6 +2495,11 @@ a.hit-title {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+.mrow .mcell .ref {
+	flex: none;
+	color: var(--app-fg-muted);
+	font-size: 10.5px;
 }
 .mrow .off-label {
 	font-family: inherit;
@@ -2499,31 +2517,23 @@ a.hit-title {
 	color: var(--app-fg-subtle);
 	padding: 0.6rem 0.6rem 0.25rem;
 }
-.msheet-custom {
+.msheet-filter {
 	display: flex;
 	gap: 0.4rem;
 	padding: 0.6rem;
-	border-top: 1px solid var(--app-divider);
-	margin-top: 0.4rem;
+	border-bottom: 1px solid var(--app-divider);
 }
-.msheet-custom select {
+.msheet-filter select {
 	max-width: 9rem;
 }
-.msheet-custom input {
+.msheet-filter input {
 	flex: 1;
 	min-width: 0;
 }
-.msheet-custom button {
-	border: 1px solid var(--app-border);
-	border-radius: 8px;
-	padding: 0.35rem 0.7rem;
-	font-size: 12.5px;
-}
-.msheet-custom button:hover:not(:disabled) {
-	background: var(--app-hover);
-}
-.msheet-custom button:disabled {
-	opacity: 0.35;
+.mempty {
+	padding: 0.8rem 0.6rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
 }
 @media (min-width: 721px) {
 	.veil {

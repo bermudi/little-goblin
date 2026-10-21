@@ -1,6 +1,10 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
-import type { ConfigResponse } from "../../src/http/operator-wire.ts";
+import type {
+	ConfigResponse,
+	ModelOption,
+	ProviderModelCatalog,
+} from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
 	getOperatorConfig,
@@ -375,6 +379,7 @@ function ModelSheet({
 	current,
 	allowOff,
 	favorites,
+	catalog,
 	provNames,
 	onPick,
 	onClose,
@@ -383,25 +388,97 @@ function ModelSheet({
 	current: string;
 	allowOff: boolean;
 	favorites: string[];
+	catalog: ProviderModelCatalog[];
 	provNames: string[];
 	onPick: (ref: string) => void;
 	onClose: () => void;
 }) {
-	const [custProv, setCustProv] = useState(provNames[0] ?? "");
-	const [custModel, setCustModel] = useState("");
-	const row = (ref: string, label: string) => (
-		<button
-			key={ref || "off"}
-			type="button"
-			className={ref === current ? "mrow sel" : "mrow"}
-			onClick={() => onPick(ref)}
-		>
-			<span className={ref === "" ? "ref off-label" : "ref"} title={ref}>
-				{label}
-			</span>
-			{ref === current && <span className="check">✓</span>}
-		</button>
-	);
+	const [query, setQuery] = useState("");
+	const [scope, setScope] = useState("");
+	const q = query.trim().toLowerCase();
+	const meta = new Map<string, ModelOption>();
+	const canonical = new Map<string, string>();
+	for (const group of catalog)
+		for (const model of group.models) {
+			const ref = `${group.provider}/${model.id}`;
+			meta.set(ref, model);
+			canonical.set(ref.toLowerCase(), ref);
+		}
+	// Search spans the full ref and the catalog's friendly name, so
+	// "glm-5.3" and "GLM" both land on the same row.
+	const hit = (ref: string) => {
+		if (q === "") return true;
+		const name = meta.get(ref)?.name?.toLowerCase() ?? "";
+		return ref.toLowerCase().includes(q) || name.includes(q);
+	};
+	const favs = favorites.filter(hit);
+	const showCurrent = current !== "" && !favorites.includes(current) && hit(current);
+	const pinned = new Set([...favorites, current]);
+	const groups = catalog
+		.filter((group) => scope === "" || group.provider === scope)
+		.map((group) => ({
+			provider: group.provider,
+			models: group.models
+				.map((model) => ({ ...model, ref: `${group.provider}/${model.id}` }))
+				.filter((model) => !pinned.has(model.ref) && hit(model.ref)),
+		}))
+		.filter((group) => group.models.length > 0);
+	const raw = query.trim();
+	const typedProvider = scope !== "" ? scope : provNames.length === 1 ? provNames[0] : undefined;
+	// Anything the catalog doesn't know stays reachable: a full
+	// provider/model ref is used as typed, a bare id joins the selected
+	// provider (or the only one configured).
+	const customRef =
+		raw === ""
+			? null
+			: raw.includes("/")
+				? raw
+				: typedProvider === undefined
+					? null
+					: `${typedProvider}/${raw}`;
+	const hasResults = favs.length > 0 || showCurrent || groups.length > 0;
+	const known = (ref: string) =>
+		canonical.has(ref.toLowerCase()) ||
+		favorites.some((f) => f.toLowerCase() === ref.toLowerCase());
+	const showCustom =
+		customRef !== null &&
+		!known(customRef) &&
+		customRef !== current &&
+		(!hasResults || customRef.includes("/"));
+	const row = (ref: string, label?: string) => {
+		const model = meta.get(ref);
+		const primary = label ?? model?.name ?? ref;
+		return (
+			<button
+				key={ref || "off"}
+				type="button"
+				className={ref === current ? "mrow sel" : "mrow"}
+				onClick={() => onPick(ref)}
+			>
+				<span className="mcell">
+					<span className={ref === "" ? "off-label" : "mname"}>{primary}</span>
+					{model?.name != null && (
+						<span className="ref" title={ref}>
+							{ref}
+						</span>
+					)}
+				</span>
+				{ref === current && <span className="check">✓</span>}
+			</button>
+		);
+	};
+	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.key !== "Enter" || raw === "") return;
+		e.preventDefault();
+		const exact = canonical.get(raw.toLowerCase());
+		const pick =
+			exact ??
+			favs[0] ??
+			(showCurrent ? current : undefined) ??
+			groups[0]?.models[0]?.ref ??
+			(showCustom ? customRef : null);
+		if (pick !== null) onPick(pick);
+	};
 	return (
 		<div className="veil on" onClick={onClose}>
 			<div className="msheet" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
@@ -411,52 +488,64 @@ function ModelSheet({
 						×
 					</button>
 				</header>
+				<div className="msheet-filter">
+					<input
+						className="mono"
+						value={query}
+						onChange={(e) => setQuery(e.target.value)}
+						onKeyDown={onKeyDown}
+						placeholder="Search models or type provider/model-id"
+						autoComplete="off"
+						spellCheck={false}
+						autoCapitalize="off"
+						aria-label="Search models"
+					/>
+					{provNames.length > 0 && (
+						<select
+							aria-label="Model provider"
+							value={scope}
+							onChange={(e) => setScope(e.target.value)}
+						>
+							<option value="">All providers</option>
+							{provNames.map((n) => (
+								<option key={n} value={n}>
+									{n}
+								</option>
+							))}
+						</select>
+					)}
+				</div>
 				<div className="msheet-body">
 					{allowOff && row("", "Off")}
-					{favorites.length > 0 && (
+					{favs.length > 0 && (
 						<>
 							<div className="mgroup">Favorites</div>
-							{favorites.map((f) => row(f, f))}
+							{favs.map((f) => row(f))}
 						</>
 					)}
-					{current !== "" && !favorites.includes(current) && (
+					{showCurrent && (
 						<>
 							<div className="mgroup">Current</div>
-							{row(current, current)}
+							{row(current)}
 						</>
 					)}
-					{provNames.length > 0 && (
-						<div className="msheet-custom">
-							<select value={custProv} onChange={(e) => setCustProv(e.target.value)}>
-								{provNames.map((n) => (
-									<option key={n} value={n}>
-										{n}
-									</option>
-								))}
-							</select>
-							<input
-								className="mono"
-								value={custModel}
-								onChange={(e) => setCustModel(e.target.value)}
-								placeholder="model id"
-								autoComplete="off"
-								spellCheck={false}
-								autoCapitalize="off"
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && custModel.trim() !== "") {
-										onPick(`${custProv}/${custModel.trim()}`);
-									}
-								}}
-							/>
-							<button
-								type="button"
-								disabled={custModel.trim() === ""}
-								onClick={() => onPick(`${custProv}/${custModel.trim()}`)}
-							>
-								Use
+					{showCustom && customRef !== null && (
+						<>
+							<div className="mgroup">Not in the catalog</div>
+							<button type="button" className="mrow" onClick={() => onPick(customRef)}>
+								<span className="mcell">
+									<span className="mname">Use “{customRef}”</span>
+								</span>
 							</button>
-						</div>
+						</>
 					)}
+					{groups.map((group) => (
+						<Fragment key={group.provider}>
+							<div className="mgroup">{group.provider} models</div>
+							{group.models.map((model) => row(model.ref))}
+						</Fragment>
+					))}
+					{q !== "" && !hasResults && !showCustom && <div className="mempty">No models match.</div>}
 				</div>
 			</div>
 		</div>
@@ -958,6 +1047,7 @@ export function SettingsView({
 		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
+	const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalog[]>([]);
 	// A stored key's record joins the picker list so the "not in
 	// auth.jsonl" hint clears without a reload; apply() points the
 	// owning field's name at it.
@@ -1063,8 +1153,9 @@ export function SettingsView({
 				if (!live) return;
 				// A freshly built client against a not-yet-restarted server
 				// (the forbidden rollout window) must fail loud here, not
-				// crash later when a save materializes from authDefaults.
-				if (!("authDefaults" in data)) {
+				// crash later when a save materializes from authDefaults or
+				// the model sheet reads the catalog.
+				if (!("authDefaults" in data) || !("modelCatalog" in data)) {
 					setLoadErr("The settings endpoint predates this client — restart goblin, then reload.");
 					return;
 				}
@@ -1084,6 +1175,7 @@ export function SettingsView({
 					ttsDefaults: data.ttsDefaults,
 				});
 				setAuthNames(data.authNames);
+				setModelCatalog(data.modelCatalog);
 			},
 			(err) => {
 				if (live)
@@ -1460,6 +1552,9 @@ export function SettingsView({
 							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
 							placeholder="provider/model-id"
 							ariaLabel="add favorite"
+							suggestions={modelCatalog.flatMap((group) =>
+								group.models.map((model) => `${group.provider}/${model.id}`),
+							)}
 							cap="Offered in the pickers above."
 						/>
 					</div>
@@ -2196,6 +2291,7 @@ export function SettingsView({
 					current={sheetCurrent}
 					allowOff={sheet === "title" || sheet === "vision"}
 					favorites={draft.favorites}
+					catalog={modelCatalog}
 					provNames={provNames}
 					onPick={pickModel}
 					onClose={() => setSheet(null)}

@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
-import { ensureOpenRouterCatalog } from "./agent/models-dev.ts";
+import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
@@ -235,8 +235,10 @@ async function boot() {
 	// transcribe.ts (checkBootMedia).
 	await checkBootMedia(config, configRef);
 
-	// Warm the openrouter catalog so thinking options and the mini app
-	// see real levels, not the cold-start fallback.
+	// Warm both catalogs: thinking options and the mini app see real
+	// levels, and the settings model picker gets names and API hosts
+	// instead of a pre-name cache.
+	void ensureModelsDevCatalog();
 	void ensureOpenRouterCatalog();
 
 	// Long-term memory is a boot-time snapshot — queue rows bind to the

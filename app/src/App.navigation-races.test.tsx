@@ -259,6 +259,7 @@ describe("navigation races: late completions", () => {
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main"],
+							modelCatalog: [],
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),

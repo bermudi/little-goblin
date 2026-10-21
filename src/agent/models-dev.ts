@@ -12,10 +12,17 @@ import { createCachedCatalog, type CachedCatalog } from "./catalog-fetch.ts";
 const catalogSchema = z.record(
 	z.string(),
 	z.object({
+		// The provider's API root — the settings picker matches a
+		// configured provider by host when its name isn't a catalog key.
+		api: z.string().optional(),
 		models: z
 			.record(
 				z.string(),
 				z.object({
+					// The picker's friendly label; absent in caches written
+					// before it was retained.
+					name: z.string().optional(),
+					release_date: z.string().optional(),
 					modalities: z
 						.object({
 							input: z.array(z.string()).default(["text"]),
@@ -125,6 +132,67 @@ export function contextLimitCached(provider: string, modelId: string): number | 
 	return diskCatalog === null ? null : limitIn(diskCatalog);
 }
 
+export interface ModelOption {
+	id: string;
+	name: string | null;
+	releaseDate: string | null;
+}
+
+// A configured provider's catalog key: its own name first, then the
+// kinds with one obvious homes catalog, then the API host (names are
+// operator-chosen; a "deepseek" link may be called "main").
+function providerCatalogKey(
+	cat: Catalog,
+	provider: string,
+	kind: string,
+	baseUrl: string | undefined,
+): string | null {
+	if (cat[provider] !== undefined) return provider;
+	if (kind === "openrouter" && cat.openrouter !== undefined) return "openrouter";
+	if (baseUrl === undefined) return null;
+	let host: string;
+	try {
+		host = new URL(baseUrl).host;
+	} catch {
+		return null;
+	}
+	for (const [key, entry] of Object.entries(cat)) {
+		if (entry.api === undefined) continue;
+		try {
+			if (new URL(entry.api).host === host) return key;
+		} catch {
+			// A malformed catalog api is a bad entry, not a failed lookup.
+		}
+	}
+	return null;
+}
+
+// Settings picker options, sorted newest first. Memory first, then the
+// same one lazy disk parse contextLimitCached uses — the operator
+// surface must never stall on models.dev, so a cold catalog is an empty
+// list and the sheet's typed-ref fallback still works.
+export function modelOptionsCached(
+	provider: string,
+	kind: string,
+	baseUrl: string | undefined,
+): ModelOption[] {
+	const cat = modelsDev.current() ?? (diskCatalog ??= modelsDev.readDisk());
+	if (cat === null) return [];
+	const key = providerCatalogKey(cat, provider, kind, baseUrl);
+	if (key === null) return [];
+	return Object.entries(cat[key]?.models ?? {})
+		.map(([id, m]) => ({
+			id,
+			name: m.name ?? null,
+			releaseDate: m.release_date ?? null,
+		}))
+		.sort((a, b) => {
+			// ISO dates sort lexically; a missing date lands last.
+			const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
+			return byDate !== 0 ? byDate : a.id.localeCompare(b.id);
+		});
+}
+
 // ---------- openrouter ----------
 
 // The per-model reasoning object: which efforts the route accepts and
@@ -228,6 +296,12 @@ export function readOpenRouterCache(): Map<string, OpenRouterRoute> | null {
 
 export function ensureOpenRouterCatalog(): Promise<Map<string, OpenRouterRoute> | null> {
 	return openrouter.ensure();
+}
+
+// Boot warm, like the openrouter catalog — names and API hosts in the
+// settings picker come from a fresh copy, not a pre-name cache.
+export function ensureModelsDevCatalog(): Promise<ModelsDevCatalog | null> {
+	return modelsDev.ensure();
 }
 
 // A route's advertised parameters and its per-model reasoning object.

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
 import { type Config, loadConfig, memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
 import { setLogFile } from "../log.ts";
@@ -306,6 +307,9 @@ describe("app operator surface", () => {
 			operator: { beforeConfigWritten: () => {} },
 		});
 		try {
+			_primeModelsDevForTest({
+				zai: { models: { m: { name: "Model M", release_date: "2026-01-01" } } },
+			});
 			const loaded = await call("/api/app/settings");
 			expect(loaded.status).toBe(200);
 			const etag = loaded.headers.get("etag")!;
@@ -313,9 +317,19 @@ describe("app operator surface", () => {
 			const body = (await loaded.json()) as {
 				config: { model: string };
 				providerKinds: string[];
+				modelCatalog: {
+					provider: string;
+					models: { id: string; name: string | null; releaseDate: string | null }[];
+				}[];
 			};
 			expect(body.config.model).toBe("zai/m");
 			expect(body.providerKinds).toContain("codex");
+			expect(body.modelCatalog).toEqual([
+				{
+					provider: "zai",
+					models: [{ id: "m", name: "Model M", releaseDate: "2026-01-01" }],
+				},
+			]);
 
 			const post = (ifMatch: string | null, payload: unknown) =>
 				call("/api/app/settings", {
@@ -350,6 +364,7 @@ describe("app operator surface", () => {
 			expect(configRef.current.logLevel).toBe("debug");
 			expect(configWrites.count).toBe(1);
 		} finally {
+			_resetModelsDevForTest();
 			http.stop();
 		}
 	});

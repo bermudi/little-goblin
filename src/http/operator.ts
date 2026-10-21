@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { modelOptionsCached } from "../agent/models-dev.ts";
 import { thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
@@ -572,6 +573,11 @@ export async function handleOperatorRoute(
 				ttsDefaults: ttsCloudDefaults,
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
+				// Cached only: the settings door never waits on models.dev.
+				modelCatalog: Object.entries(config.providers).map(([provider, p]) => ({
+					provider,
+					models: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
+				})),
 			};
 			return Response.json(body, {
 				headers: { ...NO_STORE, etag: configTag(config) },

@@ -196,6 +196,19 @@ bump, abort, or interrupted answer. Running turns keep their captured
 settings, queued successors use the latest, manual compaction resolves at
 its lane job; a model change legitimately makes the next turn's cache cold.
 
+**Model picker (ruling 2026-10-21).** The settings sheet lists the
+models.dev catalog for every configured provider — matched by exact
+provider name, the openrouter kind, else the catalog provider's API host —
+with favorites and the current ref pinned, newest release first and the
+friendly name above its exact ref. One search field filters favorites and
+catalog across id, name, and full ref; Enter picks the exact match or the
+first hit. The typed `provider/model-id` path survives as the fallback for
+anything the catalog doesn't know or when it is cold. The catalog is a
+memory-or-disk read served on the settings response, never waited on:
+opening settings cannot stall on models.dev (the boot warm refreshes the
+catalog like it already does for openrouter), and a failed or stale
+catalog degrades to the typed fallback rather than blocking a save.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: durable work — something that runs,

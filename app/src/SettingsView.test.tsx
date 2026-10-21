@@ -11,7 +11,7 @@ import {
 	searchKinds,
 } from "../../src/config.ts";
 import { SettingsView } from "./SettingsView.tsx";
-import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
+import type { ConfigPostBody, ProviderModelCatalog } from "../../src/http/operator-wire.ts";
 
 describe("main branch regressions", () => {
 	// The pending provider-name departure guard: a half-typed name sits in
@@ -26,6 +26,7 @@ describe("main branch regressions", () => {
 	let dirtyLog: boolean[] = [];
 	let settingsGate: Promise<void> | null = null;
 	let settings: typeof SETTINGS;
+	let modelCatalog: ProviderModelCatalog[];
 	let secretGate: ReturnType<typeof Promise.withResolvers<void>>;
 	let secretPosts: { name: string; value: string }[] = [];
 	const realFetch = globalThis.fetch;
@@ -50,6 +51,7 @@ describe("main branch regressions", () => {
 		dirtyLog = [];
 		settingsGate = null;
 		settings = SETTINGS;
+		modelCatalog = [];
 		secretGate = Promise.withResolvers<void>();
 		secretPosts = [];
 		for (const [name, value] of [
@@ -94,6 +96,7 @@ describe("main branch regressions", () => {
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main", "groq"],
+							modelCatalog,
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
@@ -474,6 +477,52 @@ describe("main branch regressions", () => {
 		await waitFor(() => lastDirty() === false, "the guard to clear after the ack");
 		expect(savedBodies.at(-1)?.providers).toEqual({});
 	});
+
+	test("the model sheet searches the catalog by name and picks without typing an id", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/favorite"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [
+					{ id: "test", name: "Test Model", releaseDate: "2026-01-01" },
+					{ id: "friendly-id", name: "Friendly Flash", releaseDate: "2026-02-01" },
+				],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
+		const sheet = container.querySelector(".msheet");
+		expect(sheet).not.toBeNull();
+		expect(sheet?.textContent).toContain("main/favorite");
+		expect(sheet?.textContent).toContain("Friendly Flash");
+		await typeInto(sheet!.querySelector('input[aria-label="Search models"]')!, "flash");
+		const rows = [...sheet!.querySelectorAll("button.mrow")];
+		expect(rows.some((b) => b.textContent?.includes("main/friendly-id"))).toBe(true);
+		await click(rows.find((b) => b.textContent?.includes("main/friendly-id")));
+		await waitFor(() => savedBodies.length > 0, "the catalog pick to save");
+		expect(savedBodies.at(-1)?.model).toBe("main/friendly-id");
+	});
+
+	test("the model sheet still accepts a typed ref the catalog does not know", async () => {
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
+		const sheet = container.querySelector(".msheet")!;
+		await typeInto(sheet.querySelector('input[aria-label="Search models"]')!, "main/new-model");
+		expect(sheet.textContent).toContain("Not in the catalog");
+		const use = [...sheet.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("main/new-model"),
+		);
+		expect(use).toBeTruthy();
+		await click(use);
+		await waitFor(() => savedBodies.length > 0, "the typed ref to save");
+		expect(savedBodies.at(-1)?.model).toBe("main/new-model");
+	});
 });
 
 describe("quiet harbor regressions", () => {
@@ -515,6 +564,7 @@ describe("quiet harbor regressions", () => {
 		transcriptionDefaults,
 		authDefaults,
 		authNames: [],
+		modelCatalog: [],
 	};
 
 	const json = (body: unknown, init: { status?: number; etag?: string } = {}): Response =>

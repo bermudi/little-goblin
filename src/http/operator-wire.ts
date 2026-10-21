@@ -11,6 +11,17 @@ import type {
 	ttsCloudDefaults,
 } from "../config.ts";
 
+export interface ModelOption {
+	id: string;
+	name: string | null;
+	releaseDate: string | null;
+}
+
+export interface ProviderModelCatalog {
+	provider: string;
+	models: ModelOption[];
+}
+
 export interface ConfigResponse {
 	config: Config;
 	providerKinds: readonly string[];
@@ -21,6 +32,7 @@ export interface ConfigResponse {
 	ttsDefaults: typeof ttsCloudDefaults;
 	authDefaults: typeof authDefaults;
 	authNames: string[];
+	modelCatalog: ProviderModelCatalog[];
 }
 
 export interface ConfigPostBody {

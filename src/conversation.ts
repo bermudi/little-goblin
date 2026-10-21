@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { clampThinkingFor } from "./agent/thinking.ts";
 import { type Config, splitModelRef, type ThinkingLevel, thinkingLevels } from "./config.ts";
 import { log } from "./log.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
@@ -261,7 +262,10 @@ export interface ConversationStore {
 	): Conversation;
 	// Initialize missing app settings once, no reset, no epoch fence;
 	// missing/non-app ids throw.
-	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
+	initializeAppSettings(
+		id: string,
+		defaults: ModelSettings & { providers?: Config["providers"] },
+	): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// All guest conversations in a chat — closing guest access fences
 	// their running turns.
@@ -1124,16 +1128,33 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
 	}
 
-	function initializeSettings(id: string, defaults: ModelSettings): ModelSettings {
+	function initializeSettings(
+		id: string,
+		defaults: ModelSettings & { providers?: Config["providers"] },
+	): ModelSettings {
 		const row = qGet.get(id);
 		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
-		const settings = modelSettingsSchema.parse({
+		const stored = modelSettingsSchema.parse({
 			model: row.model ?? defaults.model,
 			thinking: row.thinking ?? defaults.thinking,
 		});
+		// A stored level the model can't express is a lie — persist the
+		// rung the wire clamp would land on instead of showing it.
+		const settings: ModelSettings = {
+			model: stored.model,
+			thinking: clampThinkingFor(defaults.providers ?? {}, stored.model, stored.thinking),
+		};
 		if (row.model === null || row.thinking === null) {
 			applyPatch(id, settings);
 			log.info("app conversation settings initialized", { conversation: id, ...settings });
+		} else if (settings.thinking !== stored.thinking) {
+			applyPatch(id, settings);
+			log.info("app conversation thinking clamped to the model's ladder", {
+				conversation: id,
+				model: settings.model,
+				from: stored.thinking,
+				to: settings.thinking,
+			});
 		}
 		return settings;
 	}

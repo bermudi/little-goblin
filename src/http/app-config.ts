@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clampThinkingFor } from "../agent/thinking.ts";
 import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import { prepareAppSettingsForConfig } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -41,6 +42,18 @@ export async function handleConfigRoute(
 			try {
 				const base = loadConfig() ?? parseConfig(deps.configRef.current);
 				const merged = parseConfig({ ...base, ...parsed.data });
+				// A stored level the model can't express is a lie — write the
+				// rung the wire clamp would land on, on both channels.
+				merged.thinking = clampThinkingFor(
+					merged.providers,
+					merged.model,
+					parsed.data.thinking ?? base.thinking,
+				);
+				merged.telegram.thinking = clampThinkingFor(
+					merged.providers,
+					merged.telegram.model ?? merged.model,
+					merged.telegram.thinking ?? merged.thinking,
+				);
 				prepareAppSettingsForConfig(store, base, merged);
 				writeConfig(merged);
 				const fresh = loadConfig();

@@ -452,3 +452,53 @@ describe("secrets route", () => {
 		expect(noSeam?.status).toBe(503);
 	});
 });
+
+describe("config save", () => {
+	async function postConfig(d: OperatorDeps, body: unknown): Promise<Response | null> {
+		const view = await handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config"),
+			"config",
+			new URL("http://x/config"),
+		);
+		const etag = view?.headers.get("etag") ?? "";
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config", {
+				method: "POST",
+				headers: { "content-type": "application/json", "if-match": etag },
+				body: JSON.stringify(body),
+			}),
+			"config",
+			new URL("http://x/config"),
+		);
+	}
+
+	test("the write persists the rung the model's ladder can express", async () => {
+		const d = deps();
+		const res = await postConfig(d, { model: "test/glm-5.3", thinking: "xhigh" });
+		expect(res?.status).toBe(200);
+		// glm-5.3's ladder is low|high|max — xhigh lands where the wire
+		// clamp would send it, and the pinned telegram pair (its own
+		// model, where medium is real) is untouched.
+		expect(d.configRef.current.model).toBe("test/glm-5.3");
+		expect(d.configRef.current.thinking).toBe("max");
+		expect(d.configRef.current.telegram).toMatchObject({
+			model: "test/m",
+			thinking: "medium",
+		});
+		// "off" on a forced-thinking model lands on its floor.
+		expect((await postConfig(d, { thinking: "off" }))?.status).toBe(200);
+		expect(d.configRef.current.thinking).toBe("low");
+		// The telegram pin clamps against its own model's ladder too.
+		expect(
+			(await postConfig(d, { telegram: { model: "test/glm-5.3", thinking: "xhigh" } }))?.status,
+		).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			model: "test/glm-5.3",
+			thinking: "max",
+		});
+	});
+});

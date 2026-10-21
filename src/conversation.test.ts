@@ -1355,6 +1355,34 @@ test("app settings initialize once, survive reopening, and spin-offs snapshot ap
 	store.close();
 });
 
+test("app settings heal a stored level the model can't express — unknown providers keep theirs", () => {
+	const store = openStore(tmpDb("goblin-test-"));
+	try {
+		const providers = {
+			zai: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "zai" },
+		} as const;
+		const defaults = { model: "zai/m", thinking: "medium" as const, providers };
+		const stale = store.resolve(appAddress("stale"), "/work");
+		store.setMeta(stale.id, { model: "zai/glm-5.3", thinking: "xhigh" });
+		expect(store.initializeAppSettings(stale.id, defaults)).toEqual({
+			model: "zai/glm-5.3",
+			thinking: "max",
+		});
+		expect(store.get(stale.id)).toMatchObject({ thinking: "max" });
+		// glm-5.3's floor stands in for the "off" it can't express.
+		store.setMeta(stale.id, { thinking: "off" });
+		expect(store.initializeAppSettings(stale.id, defaults).thinking).toBe("low");
+		expect(store.get(stale.id)).toMatchObject({ thinking: "low" });
+		// A provider the config doesn't name owns its own vocabulary.
+		const ghost = store.resolve(appAddress("ghost"), "/work");
+		store.setMeta(ghost.id, { model: "ghost/m", thinking: "xhigh" });
+		expect(store.initializeAppSettings(ghost.id, defaults).thinking).toBe("xhigh");
+		expect(store.get(ghost.id)).toMatchObject({ thinking: "xhigh" });
+	} finally {
+		store.close();
+	}
+});
+
 test("app resolve commits creation and its initial settings atomically and never resets an existing selection", () => {
 	const store = openStore(tmpDb("goblin-test-"));
 	try {

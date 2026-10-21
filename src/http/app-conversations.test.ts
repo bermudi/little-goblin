@@ -528,6 +528,47 @@ test("conversation settings are isolated, durable, validated, and only future ch
 	}
 });
 
+test("conversation config writes persist a level the model can express — never an offered-looking lie", async () => {
+	const { http, call, store } = setup();
+	const patch = (path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "clamp-01" }),
+		});
+		const a = "/api/app/conversations/clamp-01/config";
+		// xhigh is real on zai/m — it persists verbatim.
+		expect((await patch(a, { model: "zai/m", thinking: "xhigh" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ model: "zai/m", thinking: "xhigh" });
+		// Switching only the model re-clamps the staged level — glm-5.3 has
+		// no xhigh, so the row lands on the rung the wire would send.
+		const switched = await patch(a, { model: "zai/glm-5.3" });
+		expect(switched.status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({
+			model: "zai/glm-5.3",
+			thinking: "max",
+		});
+		expect(await switched.json()).toMatchObject({
+			thinking: "max",
+			thinkingLevels: ["low", "high", "max"],
+		});
+		// An explicit unexpressible level clamps the same way, and "off"
+		// lands on the forced-thinking floor.
+		expect((await patch(a, { thinking: "xhigh" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "max" });
+		expect((await patch(a, { thinking: "off" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "low" });
+	} finally {
+		http.stop();
+	}
+});
+
 test("conversation context reports last-turn usage, limit, and cache rates", async () => {
 	const { http, call } = setup();
 	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });

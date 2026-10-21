@@ -264,6 +264,28 @@ export function thinkingLevelsFor(
 }
 
 /**
+ * The level to store for a model — always one it offers. An
+ * unexpressible level collapses at-or-above, the same direction the
+ * wire clamp takes; a provider the config doesn't know keeps the
+ * level verbatim — unknown routes own their vocabulary.
+ */
+export function clampThinkingFor(
+	providers: Config["providers"],
+	modelRef: string,
+	level: ThinkingLevel,
+): ThinkingLevel {
+	const { provider, modelId } = splitModelRef(modelRef);
+	const p = providers[provider];
+	if (p === undefined) return level;
+	const levels = thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined);
+	if (levels.includes(level)) return level;
+	const idx = thinkingLevels.indexOf(level);
+	return (
+		levels.find((l) => thinkingLevels.indexOf(l) >= idx) ?? levels[levels.length - 1] ?? level
+	);
+}
+
+/**
  * The wire form of one level. A level the model can't express is
  * clamped to the nearest rung at-or-above; "off" never asks a model to
  * disable reasoning it cannot disable.

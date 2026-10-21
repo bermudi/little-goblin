@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { thinkingLevelsFor } from "../agent/thinking.ts";
+import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef, splitModelRef, thinkingLevels } from "../config.ts";
@@ -59,13 +59,18 @@ export const configPatchBody = z
 export function configView(cfg: Config, settings: ModelSettings = cfg): AppConfigView {
 	const { provider, modelId } = splitModelRef(settings.model);
 	const p = cfg.providers[provider];
+	const levels =
+		p === undefined
+			? [...thinkingLevels]
+			: [...thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined)];
+	// thinking must be one of the offered rungs — the select renders its
+	// value as an option, so a stale pair would fake a rung the model
+	// can't express. The wire clamp lands on the same rung this shows.
+	const thinking = clampThinkingFor(cfg.providers, settings.model, settings.thinking);
 	return {
 		model: settings.model,
-		thinking: settings.thinking,
+		thinking,
 		favorites: cfg.favorites,
-		thinkingLevels:
-			p === undefined
-				? [...thinkingLevels]
-				: [...thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined)],
+		thinkingLevels: levels,
 	};
 }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { modelOptionsCached } from "../agent/models-dev.ts";
-import { thinkingLevelsFor } from "../agent/thinking.ts";
+import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
 	type Config,
@@ -310,6 +310,14 @@ async function saveConfig(
 			candidate.telegram = { ...normalized.telegram, ...body.telegram };
 		}
 		const merged = parseConfig(candidate);
+		// A stored level the model can't express is a lie — write the
+		// rung the wire clamp would land on, on both channels.
+		merged.thinking = clampThinkingFor(merged.providers, merged.model, merged.thinking);
+		merged.telegram.thinking = clampThinkingFor(
+			merged.providers,
+			merged.telegram.model ?? merged.model,
+			merged.telegram.thinking ?? merged.thinking,
+		);
 		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
 			return Response.json(
 				{ error: `config would remove your own telegram user id (${actor.userId})` },

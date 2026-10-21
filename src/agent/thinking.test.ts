@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../config.ts";
 import { _primeOpenRouterCatalog, type OpenRouterRoute } from "./models-dev.ts";
-import { thinkingLevelsFor, thinkingOptions } from "./thinking.ts";
+import { clampThinkingFor, thinkingLevelsFor, thinkingOptions } from "./thinking.ts";
 
 const cfg: Config = {
 	providers: {
@@ -190,6 +190,51 @@ describe("thinkingLevelsFor — openrouter reads the model's own reasoning objec
 	test("glm through openrouter keeps z.ai's own ladder", () => {
 		primeCatalog();
 		expect(thinkingLevelsFor("openrouter", "z-ai/glm-5.3")).toEqual(["low", "high", "max"]);
+	});
+});
+
+describe("clampThinkingFor — the stored level is always one the model offers", () => {
+	test("glm-5.3: xhigh collapses up to max, medium to high, off to the floor", () => {
+		const clamp = (l: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") =>
+			clampThinkingFor(cfg.providers, "zai/glm-5.3-flash", l);
+		expect(clamp("xhigh")).toBe("max");
+		expect(clamp("medium")).toBe("high");
+		expect(clamp("minimal")).toBe("low");
+		expect(clamp("off")).toBe("low");
+		expect(clamp("low")).toBe("low");
+		expect(clamp("high")).toBe("high");
+		expect(clamp("max")).toBe("max");
+	});
+	test("glm-5.2 keeps a real off but collapses low up to high", () => {
+		expect(clampThinkingFor(cfg.providers, "other/glm-5.2", "off")).toBe("off");
+		expect(clampThinkingFor(cfg.providers, "other/glm-5.2", "low")).toBe("high");
+		expect(clampThinkingFor(cfg.providers, "other/glm-5.2", "medium")).toBe("high");
+	});
+	test("gpt-5.x has no max — it clamps to its top rung", () => {
+		expect(clampThinkingFor(cfg.providers, "codex/gpt-5.3-codex", "max")).toBe("xhigh");
+		expect(clampThinkingFor(cfg.providers, "codex/gpt-6-astra", "max")).toBe("max");
+	});
+	test("a provider the config doesn't know keeps the level verbatim", () => {
+		expect(clampThinkingFor(cfg.providers, "ghost/model", "xhigh")).toBe("xhigh");
+		expect(clampThinkingFor(cfg.providers, "ghost/model", "off")).toBe("off");
+	});
+	test("an unlisted openrouter route owns its vocabulary — nothing clamps", () => {
+		primeCatalog();
+		expect(clampThinkingFor(cfg.providers, "openrouter/unknown/model", "xhigh")).toBe("xhigh");
+		expect(clampThinkingFor(cfg.providers, "openrouter/unknown/model", "off")).toBe("off");
+	});
+	test("a mandatory model's stored off lands on its weakest rung", () => {
+		primeCatalog();
+		expect(
+			clampThinkingFor(cfg.providers, "openrouter/minimax/minimax-m3.1-flash:free", "off"),
+		).toBe("low");
+		expect(
+			clampThinkingFor(cfg.providers, "openrouter/minimax/minimax-m3.1-flash:free", "minimal"),
+		).toBe("low");
+	});
+	test("a model with no reasoning at all stores off", () => {
+		primeCatalog();
+		expect(clampThinkingFor(cfg.providers, "openrouter/plain/model", "xhigh")).toBe("off");
 	});
 });
 

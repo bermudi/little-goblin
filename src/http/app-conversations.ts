@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
+import { clampThinkingFor } from "../agent/thinking.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
 import { appAddress, appIdSchema } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -456,14 +457,22 @@ export async function handleConversationsRoute(
 				if (!(err instanceof z.ZodError)) throw err;
 				return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 			}
-			store.initializeAppSettings(convId.id, cfg);
+			const settings = store.initializeAppSettings(convId.id, cfg);
+			// A stored level the target model can't express is a lie — the
+			// write persists what the wire clamp would send instead.
+			const thinking = clampThinkingFor(
+				cfg.providers,
+				parsed.data.model ?? settings.model,
+				parsed.data.thinking ?? settings.thinking,
+			);
 			store.setMeta(convId.id, {
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
-				...(parsed.data.thinking !== undefined ? { thinking: parsed.data.thinking } : {}),
+				thinking,
 			});
 			log.info("app conversation settings changed", {
 				conversation: convId.id,
 				...parsed.data,
+				...(parsed.data.thinking !== thinking ? { thinkingApplied: thinking } : {}),
 				applies: "next turn",
 			});
 		}

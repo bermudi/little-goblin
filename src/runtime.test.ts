@@ -2744,7 +2744,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		const first = new RecordingSink();
 		runtime.submit(app, userMessage([{ type: "text", text: "first" }]), first);
 		await first.admitted;
-		store.setMeta(app.id, { model: "test/personal", thinking: "max" });
+		store.setMeta(app.id, { model: "test/personal", thinking: "xhigh" });
 		cfg = parseConfig({
 			...cfg,
 			model: "test/future",
@@ -2757,7 +2757,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		const second = new RecordingSink();
 		runtime.submit(app, userMessage([{ type: "text", text: "second" }]), second);
 		expect((await second.done).kind).toBe("completed");
-		expect(second.text).toBe("test/personal:max");
+		expect(second.text).toBe("test/personal:xhigh");
 		const telegram = new RecordingSink();
 		runtime.submit(dm, userMessage([{ type: "text", text: "telegram" }]), telegram);
 		expect((await telegram.done).kind).toBe("completed");

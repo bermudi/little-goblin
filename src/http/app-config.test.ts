@@ -35,6 +35,19 @@ describe("app config", () => {
 			expect(model.status).toBe(200);
 			expect(configRef.current.model).toBe("zai/m2");
 
+			// glm-5.3 has no xhigh — the write persists the rung the wire
+			// clamp would send. The pinned telegram pair keeps its own
+			// model's ladder, where its stored medium is real.
+			const clamped = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "zai/glm-5.3", thinking: "xhigh" }),
+			});
+			expect(clamped.status).toBe(200);
+			expect(configRef.current.model).toBe("zai/glm-5.3");
+			expect(configRef.current.thinking).toBe("max");
+			expect(configRef.current.telegram).toMatchObject({ model: "zai/m", thinking: "medium" });
+
 			const badModel = await call("/api/app/config", {
 				method: "POST",
 				headers: { "content-type": "application/json" },

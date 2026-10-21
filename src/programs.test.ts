@@ -484,7 +484,7 @@ describe("programs store", () => {
 		s.setMailFilter(bad.id, "from:bad");
 		// A hand edit (or a column from another version) the schema rejects.
 		const db = new Database(path);
-		db.run("UPDATE programs SET chat_id = 'not a number' WHERE id = ?", [bad.id]);
+		db.run("UPDATE programs SET target = 'not a target' WHERE id = ?", [bad.id]);
 		db.close();
 		expect(s.due(NOW).map((p) => p.id)).toEqual([good.id]);
 		expect(s.withMailFilter().map((p) => p.id)).toEqual([good.id]);

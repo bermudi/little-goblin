@@ -32,17 +32,14 @@ function proposalView(proposal: ProgramProposal): Record<string, unknown> {
 	};
 }
 
-export interface ProgramToolDeps {
+export type ProgramToolDeps = {
 	programs: ProgramsStore;
-	chatId: number;
-	threadId: number | null;
 	publicUrl(): string | undefined;
 	sendPrivate(text: string): Promise<void>;
-	/** Posts a staged proposal for the operator's tap — throws when the
-	 *  approval message could not be delivered. The proposal stays
-	 *  pending either way. */
+	/** Posts a staged proposal for the operator's decision — throws when the
+	 *  approval could not be delivered. The proposal stays pending either way. */
 	requestApproval(proposal: ProgramProposal): Promise<void>;
-}
+} & ({ target: string } | { chatId: number; threadId: number | null });
 
 export function makePrivateSender(
 	send: (chatId: number, text: string) => Promise<unknown>,
@@ -140,7 +137,10 @@ export const programTool = (deps: ProgramToolDeps) =>
 		inputSchema: programInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
-			const address = { chatId: deps.chatId, threadId: deps.threadId };
+			const address =
+				"target" in deps
+					? { target: deps.target }
+					: { chatId: deps.chatId, threadId: deps.threadId };
 			switch (input.action) {
 				case "list":
 					return {

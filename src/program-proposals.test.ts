@@ -81,7 +81,7 @@ describe("program proposals — create", () => {
 		expect(programs.due(NOW)).toEqual([]);
 		expect(programs.get(program.id)).not.toBeNull();
 		expect(outcome.proposal.state).toBe("approved");
-		expect(outcome.proposal.decidedBy).toBe(42);
+		expect(outcome.proposal.decidedBy).toBe("telegram:42");
 		expect(outcome.proposal.activatedId).toBe(program.id);
 		programs.close();
 	});
@@ -105,7 +105,7 @@ describe("program proposals — create", () => {
 		expect(outcome.kind).toBe("rejected");
 		expect(programs.list()).toEqual([]);
 		expect(programs.proposals.get(proposal.id)!.state).toBe("rejected");
-		expect(programs.proposals.get(proposal.id)!.decidedBy).toBe(7);
+		expect(programs.proposals.get(proposal.id)!.decidedBy).toBe("telegram:7");
 		expect(programs.proposals.approve(proposal.id, 7).kind).toBe("refused");
 		programs.close();
 	});

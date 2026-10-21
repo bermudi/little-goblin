@@ -21,6 +21,12 @@ import {
 	type ProposalCore,
 } from "./program-proposals.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import {
+	telegramAddressOf,
+	telegramTarget,
+	validTarget,
+	type ConversationTarget,
+} from "./targets.ts";
 
 export interface Program {
 	id: number;
@@ -37,7 +43,9 @@ export interface Program {
 	mailHistoryId: string | null;
 	/** Monotonic generation of filter/re-enable baseline invalidations. */
 	mailRevision: number;
-	/** Pinned Telegram address — replies land where the program was born. */
+	/** Canonical conversation address — replies land where the program was born. */
+	target: string;
+	/** Legacy transport projection derived from `target`; app rows use 0/null. */
 	chatId: number;
 	threadId: number | null;
 	enabled: boolean;
@@ -57,9 +65,12 @@ export class ProgramRuleError extends Error {
 	}
 }
 
-export interface ProgramAddress {
-	chatId: number;
-	threadId: number | null;
+export type ProgramAddress =
+	| { target: ConversationTarget }
+	| { chatId: number; threadId: number | null };
+
+export function programAddressTarget(address: ProgramAddress): ConversationTarget {
+	return "target" in address ? address.target : telegramTarget(address.chatId, address.threadId);
 }
 
 export interface CreateProgram {
@@ -274,8 +285,7 @@ const programSchema = z.object({
 	mail_filter: z.string().nullable(),
 	mail_history_id: z.string().nullable(),
 	mail_revision: z.number().int().nonnegative(),
-	chat_id: z.number(),
-	thread_id: z.number().nullable(),
+	target: z.string().refine(validTarget),
 	enabled: z.number(),
 	created_at: z.string(),
 	last_run: z.string().nullable(),
@@ -304,6 +314,7 @@ function decodeScan(rows: unknown[], scan: string): Program[] {
 
 function rowToProgram(row: unknown): Program {
 	const parsed = programSchema.parse(row);
+	const telegram = telegramAddressOf(parsed.target);
 	return {
 		id: parsed.id,
 		name: parsed.name,
@@ -317,8 +328,9 @@ function rowToProgram(row: unknown): Program {
 		mailFilter: parsed.mail_filter,
 		mailHistoryId: parsed.mail_history_id,
 		mailRevision: parsed.mail_revision,
-		chatId: parsed.chat_id,
-		threadId: parsed.thread_id,
+		target: parsed.target,
+		chatId: telegram?.chatId ?? 0,
+		threadId: telegram?.threadId ?? null,
 		enabled: parsed.enabled === 1,
 		createdAt: parsed.created_at,
 		lastRun: parsed.last_run,
@@ -352,7 +364,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			mail_filter TEXT,
 			mail_history_id TEXT,
 			mail_revision INTEGER NOT NULL DEFAULT 0,
-			chat_id INTEGER NOT NULL,
+			target TEXT NOT NULL,
+			chat_id INTEGER NOT NULL DEFAULT 0,
 			thread_id INTEGER,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
@@ -375,6 +388,13 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		}
 		if (!progCols.has("max_lateness_minutes")) {
 			db.exec("ALTER TABLE programs ADD COLUMN max_lateness_minutes INTEGER");
+		}
+		if (!progCols.has("target")) {
+			db.exec("ALTER TABLE programs ADD COLUMN target TEXT");
+			db.exec(`UPDATE programs SET target =
+				CASE WHEN thread_id IS NULL THEN 'dm:' || chat_id
+				     ELSE 'topic:' || chat_id || ':' || thread_id END
+				WHERE target IS NULL`);
 		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
@@ -400,8 +420,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, target, chat_id, thread_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
 		"UPDATE programs SET name = ?, charter = ?, cron = ?, max_lateness_minutes = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
@@ -510,6 +530,11 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		) {
 			requireTrigger(cron, hookHash, mailFilter);
 			validateLateness(cron, maxLatenessMinutes);
+			const destination = programAddressTarget(address);
+			if (!validTarget(destination)) {
+				throw new ProgramRuleError(`invalid program destination "${destination}"`);
+			}
+			const telegram = telegramAddressOf(destination);
 			const next = cron === null ? null : nextFire(cron, now).toISOString();
 			const res = qInsert.run(
 				name,
@@ -518,8 +543,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				maxLatenessMinutes,
 				hookHash,
 				mailFilter,
-				address.chatId,
-				address.threadId,
+				destination,
+				telegram?.chatId ?? 0,
+				telegram?.threadId ?? null,
 				now.toISOString(),
 				next,
 			);
@@ -624,7 +650,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				)
 				.all();
 			for (const r of rows) {
-				db.run("UPDATE programs SET thread_id = NULL WHERE id = ?", [r.id]);
+				db.run("UPDATE programs SET thread_id = NULL, target = 'dm:' || chat_id WHERE id = ?", [
+					r.id,
+				]);
 				log.info("dm cutover re-pin", {
 					program: r.id,
 					name: r.name,
@@ -692,13 +720,14 @@ function copyLegacyJobs(db: Database): number {
 		}
 		copied += db.run(
 			`INSERT OR IGNORE INTO programs
-			(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
-			VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+			(id, name, charter, cron, hook_hash, target, chat_id, thread_id, enabled, created_at, last_run, next_run)
+			VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				r.id,
 				r.name,
 				r.prompt,
 				r.cron,
+				r.thread_id === null ? `dm:${r.chat_id}` : `topic:${r.chat_id}:${r.thread_id}`,
 				r.chat_id,
 				r.thread_id,
 				r.enabled,

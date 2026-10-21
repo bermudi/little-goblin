@@ -226,7 +226,7 @@ describe("program approval taps", () => {
 			expect(h.answers).toEqual(["rejected"]);
 			expect(h.stamps[0]).toContain("rejected");
 			expect(h.programs.proposals.get(proposal.id)!.state).toBe("rejected");
-			expect(h.programs.proposals.get(proposal.id)!.decidedBy).toBe(1);
+			expect(h.programs.proposals.get(proposal.id)!.decidedBy).toBe("telegram:1");
 		} finally {
 			h.cleanup();
 		}

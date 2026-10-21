@@ -238,11 +238,19 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					done({ responsibilities: all.length, outcome: "ok" });
 					return {
 						responsibilities: fenceMetadata(
-							all.map((r) => ({
-								...r,
-								attachments: deps.resps.attachmentsFor(r.responsibilityId),
-								operations: deps.resps.operationsFor(r.responsibilityId),
-							})),
+							all.map((r) => {
+								// The arm truth is the linked program (the same read
+								// the app feed renders), not the persisted flags a
+								// program-tool disable/delete can strand stale.
+								const arm = deps.service.armedStatus(r.responsibilityId);
+								return {
+									...r,
+									armed: arm.armed,
+									notArmedReason: arm.reason,
+									attachments: deps.resps.attachmentsFor(r.responsibilityId),
+									operations: deps.resps.operationsFor(r.responsibilityId),
+								};
+							}),
 						),
 					};
 				}
@@ -292,14 +300,27 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					const t = await targetFor(input.attachments![0]!);
 					checkAuthority();
 					if (t.error !== undefined) return { error: t.error };
-					const att = deps.resps.attach({
-						responsibilityId: resp.responsibilityId,
-						target: t.target!,
-						baseline: t.baseline,
-						cursor: t.cursor,
-					});
-					done({ attachment: att.attachmentId, outcome: "ok" });
-					return { attachment: fenceMetadata(att) };
+					try {
+						const att = deps.resps.attach({
+							responsibilityId: resp.responsibilityId,
+							target: t.target!,
+							baseline: t.baseline,
+							cursor: t.cursor,
+						});
+						done({ attachment: att.attachmentId, outcome: "ok" });
+						return { attachment: fenceMetadata(att) };
+					} catch (err) {
+						if (err instanceof ReconciliationConflict) {
+							done({ outcome: "refused:delivery-uncertain" });
+							return {
+								refused: "delivery-uncertain",
+								...(err.unresolved !== undefined
+									? { operation: fenceMetadata(err.unresolved) }
+									: {}),
+							};
+						}
+						throw err;
+					}
 				}
 				case "detach": {
 					const att = deps.resps.getAttachment(input.attachment!);
@@ -329,7 +350,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					checkAuthority();
 					if (t.error !== undefined) return { error: t.error };
 					try {
-						const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline);
+						const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline, t.cursor);
 						done({ attachment: att.attachmentId, generation: again.generation, outcome: "ok" });
 						return { attachment: fenceMetadata(again) };
 					} catch (err) {

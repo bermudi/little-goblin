@@ -102,6 +102,22 @@ Rulings:
   write fences the occurrence in-process: the write retries with the
   original fire time, never the submit; a restart may re-offer the row
   once — at-least-once, never a duplicate storm.
+  Responsibility-destination fires (ruling 2026-10-20) enqueue the
+  occurrence as a durable development keyed by `program:<id>:occ:<iso>`.
+  The trigger text rehydrates the responsibility's *current* revision,
+  understanding, and attachment health, so a crash-window replay after a
+  correction re-recording the same key with drifted text is not an
+  identity conflict: flagged `replay`, the store reuses the recorded
+  occurrence — the occurrence that fired is the one that delivers, and
+  the next occurrence carries the fresher view. Conversation and kind
+  are still identity; drift there fails loudly as before.
+  A follow-up program is create-once per responsibility, and the
+  program row's `responsibility_id` binding — not the responsibility's
+  link column — is the durable identity: a create that committed before
+  its link write (crash, failed write) is adopted by the next
+  `ensureFollowup`, never twinned; surplus twins from repeated crashed
+  creates are disabled and logged. Disabling the linked program can
+  never leave an orphan still firing.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

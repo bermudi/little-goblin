@@ -719,3 +719,105 @@ describe("reattach identity guard", () => {
 		r.store.close();
 	});
 });
+
+describe("fresh attach identity guard", () => {
+	const bind = (r: Rig) => {
+		const resp = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		return r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+	};
+	const uncertainOp = (r: Rig, att: { attachmentId: number; responsibilityId: string }) => {
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: att.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId);
+		r.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		return r.resps.getOperation(prepared.operation.operationId)!;
+	};
+
+	test("detach then attach cannot mint a fresh bind past an unresolved delivery", () => {
+		const r = rig();
+		const resp = r.resps
+			.create({
+				projectId: r.projectId,
+				coordinationConversationId: r.convId,
+				handoverKey: `k-${Math.random()}`,
+				understanding: understanding(),
+			})
+			.responsibility;
+		const att = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		const op = uncertainOp(r, att);
+		r.resps.detach(att.attachmentId);
+		// A new attachment id and generation would carry no blocking
+		// operation — the dispatch identity is what recognizes the
+		// destination as the one with the ambiguous send.
+		try {
+			r.resps.attach({
+				responsibilityId: resp.responsibilityId,
+				target: target(),
+				baseline: {},
+			});
+			throw new Error("unreachable");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ReconciliationConflict);
+			expect((err as ReconciliationConflict).unresolved?.operationId).toBe(op.operationId);
+		}
+		expect(r.resps.attachmentsFor(resp.responsibilityId)).toHaveLength(1);
+		// A different dispatch identity binds freely — a replacement is a
+		// deliberate adoption, exactly as reattach rules.
+		const other = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target({ terminalId: "term-other", agentSession: "sess-other" }),
+			baseline: {},
+		});
+		expect(other.attachmentId).not.toBe(att.attachmentId);
+		// Reconciliation unblocks the original identity too.
+		r.resps.reconcileOperation(op.operationId, "not_delivered", "pane shows no prompt");
+		const again = r.resps.attach({
+			responsibilityId: resp.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		expect(again.attachmentId).not.toBe(att.attachmentId);
+		expect(again.generation).toBe(1);
+		r.store.close();
+	});
+
+	test("the fence never reaches across responsibilities or identity drift", () => {
+		const r = rig();
+		const a = bind(r);
+		uncertainOp(r, a);
+		// Another responsibility's send to the same agent is its own lane.
+		const respB = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: `k-${Math.random()}`,
+			understanding: understanding(),
+		}).responsibility;
+		const fresh = r.resps.attach({
+			responsibilityId: respB.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		expect(fresh.responsibilityId).toBe(respB.responsibilityId);
+		r.store.close();
+	});
+});

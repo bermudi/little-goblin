@@ -558,6 +558,12 @@ function fireResponsibility(
 		},
 		origin: "scheduler",
 		responsibilityId: resp.responsibilityId,
+		// The text carries mutable state (revision, understanding,
+		// attachment health), so a crash-window replay after a correction
+		// re-records the same occurrence key with drifted text. The
+		// recorded occurrence is the one that delivers; the next
+		// occurrence carries the fresher view.
+		replay: true,
 	});
 	log.info("responsibility check-in fired", {
 		program: program.id,

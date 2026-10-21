@@ -100,6 +100,90 @@ function button(label: string): HTMLButtonElement {
 	return result;
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+test("a failed refresh keeps the rows and says so — monitoring never silently stops", async () => {
+	const item = feed(false, false);
+	let reads = 0;
+	let rejectNext!: (err: unknown) => void;
+	globalThis.fetch = Object.assign(
+		(input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") return Promise.resolve(Response.json({ ok: true }));
+			reads += 1;
+			if (reads === 1) return Promise.resolve(Response.json({ items: [item] }));
+			// The mutation's refresh — the newest read — fails.
+			return new Promise<Response>((_, reject) => {
+				rejectNext = reject;
+			});
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	expect(container.querySelector(".resp-item")).not.toBeNull();
+	// A mutation succeeds; its refetch fails: the last loaded state
+	// stays visible, and the failure is on the record instead of the
+	// stale rows standing mute.
+	await act(async () => button("Detach").click());
+	await act(async () => {
+		rejectNext(new Error("network gone"));
+		await sleep(5);
+	});
+	expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refresh failed");
+	expect(container.querySelector('[role="alert"]')?.textContent).toContain("network gone");
+	expect(container.querySelector(".resp-item")).not.toBeNull();
+});
+
+test("a stale poll that lands after a mutation's refresh cannot restore obsolete state", async () => {
+	const active = feed(false, false);
+	const paused = {
+		...active,
+		responsibility: { ...active.responsibility, status: "paused" as const },
+	};
+	let latest: AppFeedItem = active;
+	// While gating, every GET is held in order — the test decides which
+	// response lands when. Ungated reads answer with the latest payload.
+	let gating = false;
+	const held: ((r: Response) => void)[] = [];
+	const posts: ((r: Response) => void)[] = [];
+	globalThis.fetch = Object.assign(
+		(input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") {
+				return new Promise<Response>((resolve) => posts.push(resolve));
+			}
+			if (gating) {
+				return new Promise<Response>((resolve) => held.push(resolve));
+			}
+			return Promise.resolve(Response.json({ items: [latest] }));
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(<ResponsibilityFeed token={null} projectId={null} pollMs={5} />),
+	);
+	expect(container.querySelector(".resp-status")?.textContent).toBe("active");
+	// Interval polls pile up in flight, capturing the still-active state.
+	gating = true;
+	await act(async () => sleep(40));
+	expect(held.length).toBeGreaterThan(0);
+	// The operator pauses: the mutation succeeds and its refresh is the
+	// newest read in flight.
+	await act(async () => button("Pause").click());
+	expect(posts.length).toBe(1);
+	await act(async () => posts[0]!(Response.json({ ok: true })));
+	const mutationRead = held[held.length - 1]!;
+	await act(async () => mutationRead(Response.json({ items: [paused] })));
+	expect(container.querySelector(".resp-status")?.textContent).toBe("paused");
+	latest = paused;
+	// A pre-mutation poll — the oldest one in flight — arrives last with
+	// its obsolete active snapshot. It must lose to the newer truth.
+	gating = false;
+	await act(async () => held[0]!(Response.json({ items: [active] })));
+	await act(async () => sleep(30));
+	expect(container.querySelector(".resp-status")?.textContent).toBe("paused");
+});
+
 test("a truncated history names the older events still on the record", async () => {
 	const item = {
 		...feed(false, false),

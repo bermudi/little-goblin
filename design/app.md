@@ -317,6 +317,42 @@ while the app polls the read model every 15s. Durable rows are never
 pruned by the feed; `work_events (responsibility_id, event_id DESC)`
 is the index the window walks.
 
+## Delivery and arm truth (ruling 2026-10-20)
+
+Three fences close the gaps review found in the handover loop's
+delivery edges:
+
+- **Wake ownership is gate-or-fail-closed, never optimistic.** The
+  runtime's ownership hooks observe turns and never gate them, so a
+  `begin` hook that cannot persist the wake→run link cannot abort the
+  run — but an unlinked claim is indistinguishable from a
+  never-admitted one, and reconcile would resubmit a trigger the live
+  or finished run already processed. A failed link therefore fails the
+  *wake* closed (`failUnlinked`: CAS on claimed AND run_id IS NULL) and
+  the dispatcher fences that wake's submit for the process lifetime,
+  retrying the durable closure every pump. The turn always completes;
+  only the resubmission is impossible.
+- **The unresolved-delivery fence binds to dispatch identity, not row
+  identity.** Prepare/claim fence per (attachment, generation), and
+  reattach refuses a same-identity bump — but detach→attach minted a
+  fresh id past both. A fresh `attach` now refuses (ReconciliationConflict
+  naming the op) when any sent/uncertain operation on the same
+  responsibility targets the same dispatch identity — server, session,
+  terminal, harness session, kind. A genuinely changed identity remains
+  a deliberate adoption, same as reattach's ruling; the fence never
+  reaches across responsibilities.
+- **Arm truth is the linked program.** The persisted `armed` flags are
+  a cache `ensureFollowup` writes; the `program` tool can disable or
+  delete the follow-up behind the responsibility's back. Every armed
+  reader — the app feed and the agent-facing `status` action alike —
+  recomputes from the linked program row (armed = exists ∧ enabled ∧
+  active), sharing one `armedView`.
+  The app feed additionally keeps its polls honest (2026-10-20): a
+  refresh failure alongside loaded rows renders a stale-state banner
+  instead of standing mute, and each response carries the refresh's
+  sequence — an older poll resolving after a mutation's refresh is
+  dropped, never restored to obsolete state.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

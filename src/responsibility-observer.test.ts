@@ -362,6 +362,29 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
+	test("a seeded reattach cursor diffs from the snapshot — no silent baseline adoption", async () => {
+		const r = rig();
+		const att = r.resps.getAttachment(r.attId)!;
+		// The reattach read observed the agent at completion 3; the
+		// generation's cursor is seeded from that snapshot.
+		r.resps.reattach(r.attId, att.target, {}, {
+			seq: 9,
+			completionSeq: 3,
+			status: "idle",
+			agentSession: "sess-abc",
+			terminalId: "term-9",
+			name: "worker-1",
+			missing: false,
+		});
+		expect(r.resps.getAttachment(r.attId)!.cursor).toMatchObject({ completionSeq: 3 });
+		// Completion advances before the next observer tick — the
+		// development is emitted, never swallowed into a fresh baseline.
+		r.agents = [agent({ completion_seq: 4, state_change_seq: 10 })];
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["done-candidate"]);
+		r.store.close();
+	});
+
 	test("paused responsibilities neither poll nor develop; resume can observe completion", async () => {
 		const r = rig();
 		const att = r.resps.getAttachment(r.attId);

@@ -48,12 +48,13 @@ function rig(
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
 		compaction?: NonNullable<RuntimeDeps["compaction"]>;
+		wrapWakes?: (wakes: WakeStore) => WakeStore;
 	} = {},
 ): Rig {
 	const store = opts.store ?? openStore(tmpDb("goblin-wd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const journal = openTurnJournal(store.db);
-	const wakes = openWakeStore(store.db);
+	const wakes = opts.wrapWakes?.(openWakeStore(store.db)) ?? openWakeStore(store.db);
 	let dispatcher!: WakeDispatcher;
 	const runtime = new Runtime({
 		store,
@@ -499,6 +500,79 @@ describe("wake dispatcher", () => {
 		r.journal.finishRun("r3", "completed", "delivered");
 		r.dispatcher.pump();
 		expect(wake(r, claimed.wakeId).state).toBe("settled");
+		r.store.close();
+	});
+
+	test("a failed ownership link fails the wake closed — the trigger never runs twice", async () => {
+		const edge = scriptedModel([textParts("ran once")]);
+		let failLink = true;
+		const r = rig({
+			model: edge.model,
+			wrapWakes: (base) => ({
+				...base,
+				linkRun: (wakeId, runId) => {
+					if (failLink) throw new Error("ownership write wedged");
+					base.linkRun(wakeId, runId);
+				},
+			}),
+		});
+		const rec = dev(r, "poll:1");
+		// The begin hook could not persist ownership, so the wake takes
+		// its terminal fail-closed transition instead of staying an
+		// unlinked claim reconcile would resubmit.
+		await waitUntil(() => wake(r, rec.wakeId).state === "failed", "wake failed closed");
+		expect(wake(r, rec.wakeId).lastError).toContain("ownership link");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		// The turn itself was never gated: the trigger ran exactly once.
+		await waitUntil(
+			() => !r.runtime.isAdmitted(r.conv.id, wake(r, rec.wakeId).messageId),
+			"run drained",
+		);
+		// No later pump resubmits it — healed store included.
+		failLink = false;
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		expect(edge.streamCalls).toHaveLength(1);
+		await r.runtime.shutdown();
+		expect(
+			texts(r).filter((m) => m.id === wake(r, rec.wakeId).messageId),
+		).toHaveLength(1);
+		r.store.close();
+	});
+
+	test("a persistently failing ownership write fences resubmission until the store heals", async () => {
+		const edge = scriptedModel([textParts("ran once")]);
+		let healed = false;
+		const r = rig({
+			model: edge.model,
+			wrapWakes: (base) => ({
+				...base,
+				linkRun: () => {
+					throw new Error("ownership write wedged");
+				},
+				failUnlinked: (wakeId, error) => {
+					if (healed) return base.failUnlinked(wakeId, error);
+					throw new Error("ownership write wedged");
+				},
+			}),
+		});
+		const rec = dev(r, "poll:1");
+		// The turn is never gated; the run completes with the trigger.
+		await waitUntil(() => edge.streamCalls.length === 1, "trigger ran once");
+		await r.runtime.shutdown();
+		// Every pump while the write path refuses: the submit stays
+		// fenced — no second admission of the same trigger.
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		expect(edge.streamCalls).toHaveLength(1);
+		expect(wake(r, rec.wakeId).state).toBe("claimed");
+		// The store heals: the next pump lands the durable closure.
+		healed = true;
+		r.dispatcher.pump();
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		expect(wake(r, rec.wakeId).lastError).toContain("ownership link");
+		r.dispatcher.pump();
+		expect(edge.streamCalls).toHaveLength(1);
 		r.store.close();
 	});
 

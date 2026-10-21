@@ -17,6 +17,7 @@ import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
 import {
 	ReconciliationConflict,
+	armedView,
 	type Attachment,
 	type AttachmentTarget,
 	type PromptOperation,
@@ -39,7 +40,7 @@ export interface ServiceDeps {
 	pump(): void;
 	/** Programs owns the check-in's time; the service owns its purpose.
 	 *  Absent = the responsibility stays honestly unarmed. */
-	programs?: Pick<ProgramsStore, "create" | "get" | "update"> | undefined;
+	programs?: Pick<ProgramsStore, "create" | "get" | "update" | "forResponsibility"> | undefined;
 	/** Invoked after the correction commits — the committed epoch in
 	 *  hand — and before pump, so the composition fences the live turn
 	 *  before the correction wake is admitted. The commit stands either
@@ -81,6 +82,11 @@ export interface ResponsibilityService {
 	 *  relink if the row vanished. Returns null while programs is
 	 *  unwired (the responsibility stays unarmed with the reason). */
 	ensureFollowup(responsibilityId: string, opts?: { enable?: boolean }): Program | null;
+	/** The arm truth recomputed from the linked program — the same read
+	 *  the app feed renders. Persisted armed fields lag a program the
+	 *  program tool disabled or deleted behind the responsibility's
+	 *  back; agent-facing status must not. */
+	armedStatus(responsibilityId: string): { armed: boolean; reason: string | null };
 	/** Dispatch a prepared operation. The send edge resolves to the
 	 *  wire's post-send record; a refusal means nothing was sent. */
 	dispatch(operationId: string, send: ManagedSend): Promise<{ sent: true } | { refused: string }>;
@@ -243,6 +249,12 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			return revised;
 		},
 
+		armedStatus(responsibilityId) {
+			const resp = resps.get(responsibilityId);
+			if (resp === null) return { armed: false, reason: "responsibility missing" };
+			return armedView(resp, deps.programs);
+		},
+
 		ensureFollowup(responsibilityId, opts) {
 			const resp = resps.get(responsibilityId);
 			if (resp === null) return null;
@@ -264,22 +276,51 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				);
 				return program;
 			};
+			// Enable-flag settling shared by the linked and adopted rows.
+			const settleEnable = (program: Program): Program => {
+				if (opts?.enable !== undefined && program.enabled !== opts.enable) {
+					const updated = programs.update(program.id, { enabled: opts.enable });
+					if (updated === null) {
+						throw new Error(
+							`follow-up program ${program.id} update failed for responsibility ${responsibilityId}`,
+						);
+					}
+					return updated;
+				}
+				return program;
+			};
 			// Idempotent: a linked row that still exists is reused; a
 			// dangling link (program deleted) recreates under a new id.
 			if (resp.followupProgramId !== null) {
 				const existing = programs.get(Number(resp.followupProgramId));
 				if (existing !== null && existing.responsibilityId === resp.responsibilityId) {
-					if (opts?.enable !== undefined && existing.enabled !== opts.enable) {
-						const updated = programs.update(existing.id, { enabled: opts.enable });
-						if (updated === null) {
-							throw new Error(
-								`follow-up program ${existing.id} update failed for responsibility ${responsibilityId}`,
-							);
-						}
-						return arm(updated);
-					}
-					return arm(existing);
+					return arm(settleEnable(existing));
 				}
+			}
+			// Recovery: programs.create commits before setFollowup links it —
+			// a crash or failed link write leaves an enabled, unlinked
+			// program that a plain recreate would twin (both eligible to
+			// fire; disabling the linked one leaves the orphan running).
+			// The responsibility binding is the durable identity: adopt the
+			// oldest orphan and silence any extras.
+			const orphans = programs.forResponsibility(resp.responsibilityId);
+			if (orphans.length > 0) {
+				const orphan = orphans[0]!;
+				for (const extra of orphans.slice(1)) {
+					programs.update(extra.id, { enabled: false });
+					log.error("responsibility follow-up twin disabled — one program per responsibility", {
+						responsibility: responsibilityId,
+						program: extra.id,
+					});
+				}
+				resps.setFollowup(responsibilityId, String(orphan.id));
+				const program = arm(settleEnable(orphan));
+				log.info("responsibility follow-up program relinked after an unlinked create", {
+					responsibility: responsibilityId,
+					program: program.id,
+					cron: program.cron,
+				});
+				return program;
 			}
 			if (opts?.enable === false || resp.status !== "active") {
 				resps.setArmed(

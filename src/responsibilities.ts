@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
+import type { ProgramsStore } from "./programs.ts";
 
 export type ResponsibilityStatus =
 	| "active"
@@ -152,6 +153,10 @@ export interface ResponsibilityStore {
 	setFollowup(id: string, programId: string | null): void;
 	setArmed(id: string, armed: boolean, reason: string | null): void;
 
+	/** Bind a fresh attachment. Throws ReconciliationConflict when an
+	 *  unresolved delivery to the same dispatch identity exists — a new
+	 *  attachment id must not bypass the unresolved-delivery fence the
+	 *  way a same-identity reattach cannot. */
 	attach(input: {
 		responsibilityId: string;
 		target: AttachmentTarget;
@@ -165,8 +170,16 @@ export interface ResponsibilityStore {
 	/** Detach marks the row; nothing about the Herdr workspace is touched. */
 	detach(attachmentId: number): void;
 	/** Deliberate reattachment: bumps generation so prepared operations
-	 *  under the old generation refuse before dispatch. */
-	reattach(attachmentId: number, target: AttachmentTarget, baseline: unknown): Attachment;
+	 *  under the old generation refuse before dispatch. The supplied
+	 *  baseline/cursor snapshot is the new generation's observation
+	 *  reference — seeding the cursor keeps the observer from adopting
+	 *  whatever it first sees as a silent baseline. */
+	reattach(
+		attachmentId: number,
+		target: AttachmentTarget,
+		baseline: unknown,
+		cursor?: unknown,
+	): Attachment;
 
 	/** Prepare a managed send: validates the live responsibility and
 	 *  attachment, snapshots generation + revision, or refuses by name.
@@ -354,6 +367,35 @@ const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set([
 	"paused",
 ]);
 
+// The arm truth is the linked program, never the persisted flags: the
+// program tool can disable or delete the follow-up behind the
+// responsibility's back, and every armed reader — the app feed and the
+// agent-facing status alike — must report what can actually fire.
+export function armedView(
+	resp: Responsibility,
+	programs: Pick<ProgramsStore, "get"> | undefined,
+): { armed: boolean; reason: string | null } {
+	const linked =
+		resp.followupProgramId === null || programs === undefined
+			? null
+			: programs.get(Number(resp.followupProgramId));
+	const followup =
+		linked !== null && linked.responsibilityId === resp.responsibilityId ? linked : null;
+	const armed = followup !== null && followup.enabled && resp.status === "active";
+	return {
+		armed,
+		reason: armed
+			? null
+			: followup !== null
+				? !followup.enabled
+					? "follow-up program disabled"
+					: `responsibility ${resp.status}`
+				: resp.followupProgramId !== null
+					? "follow-up program missing"
+					: (resp.notArmedReason ?? "follow-up program not linked"),
+	};
+}
+
 // Driven by openStore alongside the other companion schemas — the FK
 // from coordination_conversation_id and deleteConversation's anchor
 // check need the tables present on every conversation-store handle.
@@ -479,7 +521,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		"UPDATE attachments SET health = 'detached', detached_at = ? WHERE attachment_id = ?",
 	);
 	const qAttReattach = db.prepare(
-		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = NULL, detached_at = NULL WHERE attachment_id = ?`,
+		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = ?, detached_at = NULL WHERE attachment_id = ?`,
 	);
 	const qInsertOp = db.prepare(
 		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, brief, state, journal_run_id, tool_call_id, created_at)
@@ -494,6 +536,21 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	// the same attachment generation until reconciled.
 	const qUnresolved = db.query<OpRow, [number, number]>(
 		"SELECT * FROM prompt_operations WHERE attachment_id = ? AND attachment_generation = ? AND state IN ('sent','uncertain') ORDER BY created_at LIMIT 1",
+	);
+	// The same guard against the detach→attach route: a fresh bind mints
+	// a new attachment id and generation, so only the operation's
+	// dispatch identity (server, session, terminal, harness session,
+	// kind) can recognize it as the same destination. `IS` keeps NULL
+	// identity fields comparable.
+	const qUnresolvedForIdentity = db.query<
+		OpRow,
+		[string, string, string, string | null, string | null, string | null]
+	>(
+		`SELECT o.* FROM prompt_operations o JOIN attachments a ON a.attachment_id = o.attachment_id
+		 WHERE o.responsibility_id = ? AND o.state IN ('sent','uncertain')
+		   AND a.server = ? AND a.session = ?
+		   AND a.terminal_id IS ? AND a.agent_session IS ? AND a.kind IS ?
+		 ORDER BY o.created_at LIMIT 1`,
 	);
 	const qOpClaim = db.prepare(
 		`UPDATE prompt_operations SET state = 'sent', sent_at = ? WHERE operation_id = ? AND state = 'prepared'`,
@@ -586,22 +643,41 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		},
 
 		attach(input) {
-			const ts = now();
-			const ins = qAttach.run(
-				input.responsibilityId,
-				input.target.server,
-				input.target.session,
-				input.target.agentName,
-				input.target.paneId,
-				input.target.terminalId,
-				input.target.agentSession,
-				input.target.kind,
-				input.target.cwd,
-				JSON.stringify(input.baseline ?? null),
-				input.cursor === undefined ? null : JSON.stringify(input.cursor),
-				ts,
-			);
-			const att = requireAtt(Number(ins.lastInsertRowid));
+			// Check-and-insert in one transaction, mirroring prepareOperation:
+			// a reconciliation landing between the read and the insert could
+			// not be honored by a fresh bind that never saw it.
+			let att!: Attachment;
+			db.transaction(() => {
+				const blocked = qUnresolvedForIdentity.get(
+					input.responsibilityId,
+					input.target.server,
+					input.target.session,
+					input.target.terminalId,
+					input.target.agentSession,
+					input.target.kind,
+				);
+				if (blocked !== null) {
+					throw new ReconciliationConflict(
+						`attaching ${input.target.agentName} to ${input.target.server}/${input.target.session} skips reconciliation of ${blocked.operation_id} — an earlier send to this dispatch identity is unresolved`,
+						toOperation(opRowSchema.parse(blocked)),
+					);
+				}
+				const ins = qAttach.run(
+					input.responsibilityId,
+					input.target.server,
+					input.target.session,
+					input.target.agentName,
+					input.target.paneId,
+					input.target.terminalId,
+					input.target.agentSession,
+					input.target.kind,
+					input.target.cwd,
+					JSON.stringify(input.baseline ?? null),
+					input.cursor === undefined ? null : JSON.stringify(input.cursor),
+					now(),
+				);
+				att = requireAtt(Number(ins.lastInsertRowid));
+			})();
 			log.info("attachment bound", {
 				attachment: att.attachmentId,
 				responsibility: input.responsibilityId,
@@ -629,7 +705,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			qAttDetach.run(now(), attachmentId);
 			log.info("attachment detached", { attachment: attachmentId });
 		},
-		reattach(attachmentId, target, baseline) {
+		reattach(attachmentId, target, baseline, cursor) {
 			// A reattach to the SAME dispatch identity is not a replacement —
 			// it must not mint a fresh generation past an unresolved
 			// delivery. A genuinely changed identity (new agent_session,
@@ -662,6 +738,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					target.kind,
 					target.cwd,
 					JSON.stringify(baseline ?? null),
+					cursor === undefined ? null : JSON.stringify(cursor),
 					attachmentId,
 				);
 				out = requireAtt(attachmentId);

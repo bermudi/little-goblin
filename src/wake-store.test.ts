@@ -131,6 +131,67 @@ describe("wake store", () => {
 		expect(pending[0]!.events).toHaveLength(1);
 	});
 
+	test("an occurrence replay reuses the recorded event across drifted text, never drifted identity", () => {
+		const { conv, other, wakes } = setup();
+		const first = wakes.record({
+			sourceKey: "program:3:occ:2026-10-20T00:00:00.000Z",
+			conversationId: conv.id,
+			kind: "scheduled-checkin",
+			text: "rev 1 understanding",
+			facts: {},
+			origin: "scheduler",
+		});
+		// The scheduler's crash-window replay: same occurrence key, the
+		// mutable state in the text moved on. The recorded occurrence is
+		// the one that stands.
+		const replayed = wakes.record({
+			sourceKey: "program:3:occ:2026-10-20T00:00:00.000Z",
+			conversationId: conv.id,
+			kind: "scheduled-checkin",
+			text: "rev 2 understanding",
+			facts: {},
+			origin: "scheduler",
+			replay: true,
+		});
+		expect(replayed).toEqual({ eventId: first.eventId, wakeId: first.wakeId, created: false });
+		const stored = wakes.get(first.wakeId)!;
+		expect(stored.text).toBe("rev 1 understanding");
+		// Without the replay flag the drift is still the corruption it was.
+		expect(() =>
+			wakes.record({
+				sourceKey: "program:3:occ:2026-10-20T00:00:00.000Z",
+				conversationId: conv.id,
+				kind: "scheduled-checkin",
+				text: "rev 3 understanding",
+				facts: {},
+				origin: "scheduler",
+			}),
+		).toThrow(/different identity/);
+		// Conversation and kind are identity even for a replay.
+		expect(() =>
+			wakes.record({
+				sourceKey: "program:3:occ:2026-10-20T00:00:00.000Z",
+				conversationId: other.id,
+				kind: "scheduled-checkin",
+				text: "rev 1 understanding",
+				facts: {},
+				origin: "scheduler",
+				replay: true,
+			}),
+		).toThrow(/different identity/);
+		expect(() =>
+			wakes.record({
+				sourceKey: "program:3:occ:2026-10-20T00:00:00.000Z",
+				conversationId: conv.id,
+				kind: "program-mail",
+				text: "rev 1 understanding",
+				facts: {},
+				origin: "scheduler",
+				replay: true,
+			}),
+		).toThrow(/different identity/);
+	});
+
 	test("developments coalesce into one pending wake per conversation, ids preserved", () => {
 		const { conv, other, wakes } = setup();
 		const a = wakes.record({

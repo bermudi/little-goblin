@@ -94,6 +94,10 @@ export interface ProgramsStore {
 	remove(id: number): boolean;
 	get(id: number): Program | null;
 	list(): Program[];
+	/** Programs bound to a responsibility, oldest first — the durable
+	 *  identity recovery reads when a follow-up's create committed but
+	 *  its link write never did. */
+	forResponsibility(responsibilityId: string): Program[];
 	/** Enabled cron programs whose next_run is at or before `now`
 	 *  (boot catch-up is this same query — a fire missed while down is
 	 *  just "due"). Hook-only programs are never due. */
@@ -401,6 +405,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
 	const qList = db.query("SELECT * FROM programs ORDER BY id");
+	const qByResp = db.query("SELECT * FROM programs WHERE responsibility_id = ? ORDER BY id");
 	const qDue = db.query(
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
@@ -541,6 +546,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		},
 		list() {
 			return qList.all().map(rowToProgram);
+		},
+		forResponsibility(responsibilityId) {
+			return qByResp.all(responsibilityId).map(rowToProgram);
 		},
 		due(now) {
 			return decodeScan(qDue.all(now.toISOString()), "due");

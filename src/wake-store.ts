@@ -31,6 +31,14 @@ export interface DevelopmentInput {
 	/** The project responsibility this development belongs to, when it
 	 *  carries one — the feed joins on it, delivery doesn't care. */
 	responsibilityId?: string;
+	/** Occurrence replay (the scheduler's crash recovery): the same
+	 *  source key may re-record with fresher mutable state in the text —
+	 *  a correction or attachment change between the original record and
+	 *  the lost cursor write. Reuse the recorded event instead of
+	 *  refusing; the occurrence that fired is the one that delivers.
+	 *  Conversation and kind are still identity: drift there is
+	 *  corruption and throws regardless. */
+	replay?: boolean;
 }
 
 export interface WakeRecord {
@@ -140,6 +148,14 @@ export interface WakeStore {
 	 *  then settles failed — one transaction, the same terminal tomb
 	 *  settle produces from claimed. */
 	failOrphan(wakeId: number, error: string): void;
+	/** Terminal fail-closed for a claimed wake whose ownership link
+	 *  could not be persisted: the trigger's run executes regardless
+	 *  (hooks never gate a turn), so the only safe disposition is
+	 *  terminal — reconcile must never read the claim as unowned and
+	 *  resubmit a trigger that already ran. CAS: only an unlinked claim
+	 *  closes; a wake linked meanwhile (or already terminal) stands and
+	 *  false returns. */
+	failUnlinked(wakeId: number, error: string): boolean;
 	/** Transient pre-execution failure: attempt count, error, next gate. */
 	noteFailure(wakeId: number, error: string, nextAttemptAt: string | null): void;
 	/** Boot classification against history and journal — reads only. */
@@ -290,6 +306,12 @@ export function openWakeStore(db: Database): WakeStore {
 	const qNoteFailure = db.prepare(
 		"UPDATE wake_deliveries SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE wake_id = ? AND state = 'claimed'",
 	);
+	// The fail-closed twin of failOrphan: a claimed wake that could not
+	// take its run link. run_id IS NULL is the CAS — a wake linked
+	// meanwhile keeps its owner and its ordinary settlement path.
+	const qFailUnlinked = db.prepare(
+		"UPDATE wake_deliveries SET state = 'failed', settled_at = ?, last_error = ? WHERE wake_id = ? AND state = 'claimed' AND run_id IS NULL",
+	);
 
 	function rowToRecord(row: WakeRow): WakeRecord {
 		const parsed = wakeRowSchema.parse(row);
@@ -332,10 +354,23 @@ export function openWakeStore(db: Database): WakeStore {
 					const identity = eventIdentitySchema.parse(existing);
 					if (
 						identity.conversation_id !== input.conversationId ||
-						identity.kind !== input.kind ||
-						identity.text !== input.text
+						identity.kind !== input.kind
 					) {
 						throw new Error(`work event ${input.sourceKey} replayed with a different identity`);
+					}
+					if (identity.text !== input.text) {
+						if (input.replay !== true) {
+							throw new Error(
+								`work event ${input.sourceKey} replayed with a different identity`,
+							);
+						}
+						// The recorded occurrence stands — mutable state moved
+						// since it fired, and the next occurrence carries the
+						// fresher view.
+						log.warn("wake development replayed — mutable state drifted since the record", {
+							sourceKey: input.sourceKey,
+							event: identity.event_id,
+						});
 					}
 					const link = qWakeForEvent.get(identity.event_id);
 					if (link == null) {
@@ -510,6 +545,18 @@ export function openWakeStore(db: Database): WakeStore {
 				attempts = rec.attempts + 1;
 			})();
 			log.warn("wake delivery failed", { wake: wakeId, attempt: attempts, error, nextAttemptAt });
+		},
+
+		failUnlinked(wakeId, error) {
+			const closed =
+				qFailUnlinked.run(new Date().toISOString(), error, wakeId).changes === 1;
+			if (closed) {
+				log.error("wake ownership never linked — failed closed", undefined, {
+					wake: wakeId,
+					error,
+				});
+			}
+			return closed;
 		},
 
 		reconcile(now, runStatus) {

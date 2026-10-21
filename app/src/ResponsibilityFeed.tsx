@@ -5,7 +5,7 @@
 // history with wake dispositions. Controls are the same verbs the
 // coordination tool owns; every mutation refetches the durable truth.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	attachmentAction,
 	correctResponsibility,
@@ -290,43 +290,60 @@ function FeedRow({
 export function ResponsibilityFeed({
 	token,
 	projectId,
+	pollMs = POLL_MS,
 }: {
 	token: string | null;
 	/** null = the home aggregation across projects. */
 	projectId: string | null;
+	/** Poll cadence; the default is production's. */
+	pollMs?: number;
 }) {
 	const [items, setItems] = useState<AppFeedItem[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	// Monotonic response ordering: a poll that resolves after a newer
+	// refresh (the one a mutation triggered, or a later interval tick)
+	// must not overwrite post-mutation state with its stale snapshot.
+	const seqRef = useRef(0);
 
 	const refresh = useCallback(() => {
+		const seq = ++seqRef.current;
 		const fetcher =
 			projectId === null
 				? listResponsibilities(token)
 				: listProjectResponsibilities(token, projectId);
 		void fetcher.then(
 			(res) => {
+				if (seq !== seqRef.current) return;
 				setItems(res?.items ?? []);
 				setError(null);
 			},
-			(err) => setError(err instanceof Error ? err.message : String(err)),
+			(err) => {
+				if (seq !== seqRef.current) return;
+				setError(err instanceof Error ? err.message : String(err));
+			},
 		);
 	}, [token, projectId]);
 
 	useEffect(() => {
 		refresh();
-		const t = setInterval(refresh, POLL_MS);
+		const t = setInterval(refresh, pollMs);
 		return () => clearInterval(t);
-	}, [refresh]);
+	}, [refresh, pollMs]);
 
 	if (items === null && error === null) return null;
-	if (error !== null && (items === null || items.length === 0)) {
-		return <p className="empty">Couldn't load the work feed: {error}</p>;
+	if (items === null || items.length === 0) {
+		if (error !== null) return <p className="empty">Couldn't load the work feed: {error}</p>;
+		return null;
 	}
-	if (items !== null && items.length === 0) return null;
 	return (
 		<div className="resp-feed">
 			<h3 className="resp-feed-h">Handed-over work</h3>
+			{error !== null && (
+				<p className="error" role="alert">
+					Refresh failed — the rows below are the last loaded state: {error}
+				</p>
+			)}
 			{(items ?? []).map((item) => (
 				<FeedRow
 					key={item.responsibility.responsibilityId}

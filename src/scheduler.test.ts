@@ -391,6 +391,90 @@ describe("responsibility-destination programs", () => {
 		h.store.close();
 	});
 
+	test("a crash between recording and markRan replays the recorded occurrence across a correction", () => {
+		const h = harness();
+		const projects = openProjects(h.store);
+		const project = projects.create({ name: "rig" });
+		const conv = h.store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		const resps = openResponsibilities(h.store.db);
+		const { responsibility } = resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding: {
+				outcome: "land the fix",
+				situation: "mid-task",
+				nextAction: "check diff",
+				checkpoints: [],
+				completionEvidence: ["ci green"],
+			},
+		});
+		const wakes = openWakeStore(h.store.db);
+		const events = () =>
+			h.store.db
+				.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events")
+				.get()!.c;
+		const program = h.deps.programs.create({
+			name: `followup:${responsibility.responsibilityId}`,
+			charter: "check in",
+			cron: "* * * * *",
+			responsibilityId: responsibility.responsibilityId,
+		});
+		const at = new Date(program.nextRun!);
+		// The process dies after the record lands and before the cursor
+		// write: the row stays due and the in-process fence is lost. The
+		// crash window is modeled by a deps object whose fence dies with
+		// it — the refire below runs on fresh deps.
+		let crash = true;
+		const crashDeps: SchedulerDeps = {
+			...h.deps,
+			responsibilities: resps,
+			recordDevelopment: (i) => {
+				wakes.record(i);
+			},
+			programs: {
+				...h.deps.programs,
+				markRan: (id: number, now: Date) => {
+					if (crash) throw new Error("crashed before the cursor write");
+					h.deps.programs.markRan(id, now);
+				},
+			} as ProgramsStore,
+		};
+		fireScheduled(crashDeps, program, at);
+		// The event landed; the cursor never advanced and the fence that
+		// would have retried the write dies with this deps object.
+		expect(events()).toBe(1);
+		expect(h.deps.programs.get(program.id)!.nextRun).toBe(program.nextRun);
+		expect(h.deps.programs.get(program.id)!.lastRun).toBeNull();
+		// A correction lands between the record and the replay — the
+		// revision (and so the trigger text) the refire recomposes differs
+		// from the recorded occurrence.
+		resps.revise(responsibility.responsibilityId, {
+			outcome: "land the fix",
+			situation: "mid-task",
+			nextAction: "redirect: review the failing test",
+			checkpoints: [],
+			completionEvidence: ["ci green"],
+		});
+		// A fresh process refires the still-due row: the recorded
+		// occurrence is reused (one event, the original text), and the
+		// cursor finally advances past the occurrence.
+		fireScheduled(
+			{ ...h.deps, responsibilities: resps, recordDevelopment: (i) => wakes.record(i) },
+			h.deps.programs.get(program.id)!,
+			at,
+		);
+		expect(events()).toBe(1);
+		expect(wakes.pending(conv.id)[0]!.text).toContain("rev 1");
+		const cur = h.deps.programs.get(program.id)!;
+		expect(cur.nextRun).not.toBe(program.nextRun);
+		expect(cur.lastRun).toBe(at.toISOString());
+		h.store.close();
+	});
+
 	test("create validates the destination union", () => {
 		const h = harness();
 		expect(() =>

@@ -720,3 +720,35 @@ describe("reattach same-identity guard (tool)", () => {
 		r.store.close();
 	});
 });
+
+describe("attach identity guard (tool)", () => {
+	test("attach to the same agent with an unresolved send returns a named refusal", async () => {
+		const r = rig({ guardedSend: true });
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		r.resps.claimForSend(prepared.operation.operationId);
+		r.resps.transitionOperation(prepared.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		await r.execute({ action: "detach", attachment: att.attachmentId });
+		// A fresh bind under a new attachment id must not bypass the
+		// unresolved-delivery fence the reattach guard enforces.
+		const out = await r.execute({ action: "attach", attachments: [{ pane: "w1:p1" }] });
+		expect(out.refused).toBe("delivery-uncertain");
+		expect(String(out.operation)).toContain(prepared.operation.operationId);
+		expect(r.resps.attachmentsFor(resp.responsibilityId)).toHaveLength(1);
+		// Reconciling unblocks the bind.
+		r.resps.reconcileOperation(prepared.operation.operationId, "not_delivered", "pane shows no prompt");
+		const ok = await r.execute({ action: "attach", attachments: [{ pane: "w1:p1" }] });
+		expect(ok.refused).toBeUndefined();
+		r.store.close();
+	});
+});

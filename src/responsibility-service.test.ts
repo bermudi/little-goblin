@@ -960,14 +960,26 @@ describe("ensureFollowup without a link", () => {
 			attachments: [],
 		}).responsibility;
 
-	test("cancel or pause with a dangling link creates no program and reports not armed", () => {
+	test("cancel or pause with a dangling link adopts the still-bound program — no twin, honest disarm", () => {
 		const r = rig();
 		const resp = acceptRig2(r);
+		const linked = r.programs.forResponsibility(resp.responsibilityId)[0]!;
 		r.resps.setFollowup(resp.responsibilityId, "99999");
 		r.resps.setStatus(resp.responsibilityId, "cancelled");
-		expect(r.svc.ensureFollowup(resp.responsibilityId, { enable: false })).toBeNull();
+		const program = r.svc.ensureFollowup(resp.responsibilityId, { enable: false });
+		// The link column lies, but the program's responsibility binding
+		// is durable: recovery adopts the living row (cancel disables it)
+		// instead of minting a second eligible program.
+		expect(program!.id).toBe(linked.id);
+		expect(program!.enabled).toBe(false);
 		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(false);
-		expect(r.resps.get(resp.responsibilityId)!.notArmedReason).toBe("responsibility cancelled");
+		// The same reason a cancel on a healthy link reports — the
+		// program's disabled state is the arm truth.
+		expect(r.resps.get(resp.responsibilityId)!.notArmedReason).toBe("follow-up program disabled");
+		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBe(String(linked.id));
+		expect(
+			r.programs.list().filter((p) => p.responsibilityId === resp.responsibilityId),
+		).toHaveLength(1);
 		const resp2 = r.svc.accept({
 			projectId: r.projectId,
 			coordinationConversationId: r.convId,
@@ -975,23 +987,63 @@ describe("ensureFollowup without a link", () => {
 			understanding: understanding(),
 			attachments: [],
 		}).responsibility;
+		const linked2 = r.programs.forResponsibility(resp2.responsibilityId)[0]!;
 		r.resps.setFollowup(resp2.responsibilityId, "99999");
 		r.resps.setStatus(resp2.responsibilityId, "paused");
-		expect(r.svc.ensureFollowup(resp2.responsibilityId)).toBeNull();
+		const program2 = r.svc.ensureFollowup(resp2.responsibilityId)!;
+		expect(program2.id).toBe(linked2.id);
 		expect(r.resps.get(resp2.responsibilityId)!.armed).toBe(false);
 		expect(r.resps.get(resp2.responsibilityId)!.notArmedReason).toBe("responsibility paused");
-		expect(r.resps.get(resp2.responsibilityId)!.followupProgramId).toBe("99999");
 		r.store.close();
 	});
 
-	test("an explicit re-enable on a dangling link creates the row fresh", () => {
+	test("an explicit re-enable on a dangling link relinks the living row, never a twin", () => {
 		const r = rig();
 		const resp = acceptRig2(r);
+		const linked = r.programs.forResponsibility(resp.responsibilityId)[0]!;
 		r.resps.setFollowup(resp.responsibilityId, "99999");
 		const program = r.svc.ensureFollowup(resp.responsibilityId, { enable: true })!;
+		expect(program.id).toBe(linked.id);
 		expect(program.responsibilityId).toBe(resp.responsibilityId);
 		expect(program.enabled).toBe(true);
-		expect(String(program.id)).not.toBe("99999");
+		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBe(String(linked.id));
+		r.store.close();
+	});
+
+	test("a crashed create recovers — the unlinked program is adopted, not twinned", () => {
+		const r = rig();
+		const resp = acceptRig2(r);
+		// Stage the crash window: the link write never landed. The orphan
+		// is enabled, unlinked, and eligible to fire.
+		r.resps.setFollowup(resp.responsibilityId, null);
+		const orphan = r.programs.forResponsibility(resp.responsibilityId)[0]!;
+		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBeNull();
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(program.id).toBe(orphan.id);
+		expect(r.programs.list().filter((p) => p.responsibilityId === resp.responsibilityId)).toHaveLength(1);
+		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBe(String(orphan.id));
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(true);
+		r.store.close();
+	});
+
+	test("two unlinked twins from repeated crashed creates collapse to one enabled program", () => {
+		const r = rig();
+		const resp = acceptRig2(r);
+		r.resps.setFollowup(resp.responsibilityId, null);
+		const orphan = r.programs.forResponsibility(resp.responsibilityId)[0]!;
+		// The recovery never ran and another create crashed the same way:
+		// two eligible rows share the binding.
+		const twin = r.programs.create({
+			name: `followup:${resp.responsibilityId}`,
+			charter: "c",
+			cron: "* * * * *",
+			responsibilityId: resp.responsibilityId,
+		});
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(program.id).toBe(orphan.id);
+		expect(r.programs.get(twin.id)!.enabled).toBe(false);
+		expect(r.programs.get(orphan.id)!.enabled).toBe(true);
+		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBe(String(orphan.id));
 		r.store.close();
 	});
 });
@@ -1023,6 +1075,58 @@ describe("feed armed derivation", () => {
 		expect(item.responsibility.armed).toBe(false);
 		expect(item.responsibility.notArmedReason).toBe("responsibility paused");
 		expect(item.nextCheckinAt).toBeNull();
+		r.store.close();
+	});
+});
+
+describe("status tool arm truth", () => {
+	const statusOf = async (r: Rig): Promise<Record<string, unknown>[]> => {
+		const t = responsibilityTool({
+			resps: r.resps,
+			service: r.svc,
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "status-arm",
+			listFor: async () => [],
+		});
+		if (t.execute === undefined) throw new Error("missing execute");
+		const out = (await t.execute(
+			{ action: "status" },
+			{ toolCallId: "status-arm", messages: [], context: {} },
+		)) as { responsibilities: string };
+		const text = out.responsibilities;
+		return JSON.parse(text.slice("<herdr>\n".length, text.indexOf("\n</herdr>"))) as Record<
+			string,
+			unknown
+		>[];
+	};
+
+	test("status recomputes armed from the linked program — a program-tool disable or delete cannot strand stale flags", async () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [],
+		}).responsibility;
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		let rows = await statusOf(r);
+		expect(rows[0]).toMatchObject({ armed: true, notArmedReason: null });
+		// The program tool disables the follow-up behind the
+		// responsibility's back — the persisted armed flag strands true.
+		r.programs.update(program.id, { enabled: false });
+		expect(r.resps.get(resp.responsibilityId)!.armed).toBe(true);
+		rows = await statusOf(r);
+		expect(rows[0]).toMatchObject({
+			armed: false,
+			notArmedReason: "follow-up program disabled",
+		});
+		// Deletion behind the back reads the same way the feed reads it.
+		r.programs.update(program.id, { enabled: true });
+		r.programs.remove(program.id);
+		rows = await statusOf(r);
+		expect(rows[0]).toMatchObject({ armed: false, notArmedReason: "follow-up program missing" });
 		r.store.close();
 	});
 });

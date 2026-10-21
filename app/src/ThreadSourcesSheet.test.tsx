@@ -30,6 +30,7 @@ describe("ThreadSourcesSheet", () => {
 			{
 				skill: "open-source-check",
 				state: "installed",
+				pending: false,
 				kind: "reviewer",
 				firstAt: "2026-10-16T00:43:45.790Z",
 				lastAt: "2026-10-16T00:43:45.790Z",
@@ -37,6 +38,7 @@ describe("ThreadSourcesSheet", () => {
 			{
 				skill: "weather",
 				state: "proposed",
+				pending: true,
 				kind: "reviewer",
 				firstAt: "2026-10-06T03:48:37.698Z",
 				lastAt: "2026-10-06T03:48:37.698Z",
@@ -191,7 +193,9 @@ describe("ThreadSourcesSheet", () => {
 			});
 			if (url.pathname === "/api/app/skills/from") {
 				const items = decided
-					? SKILLS.items.map((s) => (s.skill === "weather" ? { ...s, state: "gone" } : s))
+					? SKILLS.items.map((s) =>
+							s.skill === "weather" ? { ...s, state: "gone", pending: false } : s,
+						)
 					: SKILLS.items;
 				return Promise.resolve(json({ items }));
 			}
@@ -222,6 +226,44 @@ describe("ThreadSourcesSheet", () => {
 		// The row re-read — the state chip now says gone and the buttons left.
 		expect(proposed!.textContent).toContain("gone");
 		expect([...proposed!.querySelectorAll("button")]).toHaveLength(0);
+	});
+
+	test("an installed skill with a parked update proposal still carries the decide row", async () => {
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = new URL(String(input), "https://x");
+			if (url.pathname === "/api/app/skills/from")
+				return Promise.resolve(
+					json({
+						items: [
+							{
+								skill: "herdr",
+								state: "installed",
+								pending: true,
+								kind: "reviewer",
+								firstAt: "2026-10-20T00:00:00Z",
+								lastAt: "2026-10-20T00:00:00Z",
+							},
+						],
+					}),
+				);
+			if (url.pathname === "/api/app/memory/documents")
+				return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		const row = [...container.querySelectorAll(".skill-row")].find((r) =>
+			r.textContent?.includes("herdr"),
+		)!;
+		// Live state stays "installed"; the pending proposal surfaces as
+		// its own chip plus the decide buttons.
+		expect(row.textContent).toContain("installed");
+		expect(row.textContent).toContain("update pending");
+		expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+			"install",
+			"discard",
+		]);
 	});
 
 	test("both sections surface their own errors without hiding the other", async () => {

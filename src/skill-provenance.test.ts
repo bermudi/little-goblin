@@ -3,7 +3,11 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import { SkillSources, skillLiveState } from "./skill-provenance.ts";
+import {
+	liveStateOf,
+	skillDiskPresence,
+	SkillSources,
+} from "./skill-provenance.ts";
 
 const dirs: string[] = [];
 const stores: ConversationStore[] = [];
@@ -123,16 +127,40 @@ test("backfill does not replace live authorship at an equal timestamp", () => {
 });
 
 test("live state resolves from the filesystem", () => {
-	const { sources, workspace } = fixture();
+	const { workspace } = fixture();
 	const skillsDir = join(workspace, "skills");
 	const proposedDir = join(workspace, "skills-proposed");
-	expect(skillLiveState(skillsDir, proposedDir, "nope")).toBe("gone");
+	const state = (skill: string) => liveStateOf(skillDiskPresence(skillsDir, proposedDir, skill));
+	expect(state("nope")).toBe("gone");
 	mkdirSync(join(proposedDir, "staged"));
-	expect(skillLiveState(skillsDir, proposedDir, "staged")).toBe("proposed");
+	expect(state("staged")).toBe("proposed");
 	mkdirSync(join(skillsDir, "staged"));
 	// Installed wins over proposed — approval is a move, but a stray
 	// copy must not render as "merely proposed".
-	expect(skillLiveState(skillsDir, proposedDir, "staged")).toBe("installed");
+	expect(state("staged")).toBe("installed");
+});
+
+test("disk presence keeps both facts — an installed skill can carry a pending proposal", () => {
+	const { workspace } = fixture();
+	const skillsDir = join(workspace, "skills");
+	const proposedDir = join(workspace, "skills-proposed");
+	expect(skillDiskPresence(skillsDir, proposedDir, "nope")).toEqual({
+		installed: false,
+		proposed: false,
+	});
+	mkdirSync(join(proposedDir, "staged"));
+	expect(skillDiskPresence(skillsDir, proposedDir, "staged")).toEqual({
+		installed: false,
+		proposed: true,
+	});
+	mkdirSync(join(skillsDir, "staged"));
+	// An update proposal parked on a live skill — the presence answer
+	// keeps both bits where liveStateOf collapses to installed.
+	expect(skillDiskPresence(skillsDir, proposedDir, "staged")).toEqual({
+		installed: true,
+		proposed: true,
+	});
+	expect(liveStateOf(skillDiskPresence(skillsDir, proposedDir, "staged"))).toBe("installed");
 });
 
 for (const catalog of ["skills", "skills-proposed"]) {
@@ -145,7 +173,7 @@ for (const catalog of ["skills", "skills-proposed"]) {
 			chmodSync(dir, 0);
 			try {
 				expect(() =>
-					skillLiveState(join(workspace, "skills"), join(workspace, "skills-proposed"), "blocked"),
+					skillDiskPresence(join(workspace, "skills"), join(workspace, "skills-proposed"), "blocked"),
 				).toThrow(expect.objectContaining({ code: "EACCES", path: join(dir, "blocked") }));
 			} finally {
 				chmodSync(dir, 0o755);
@@ -157,7 +185,7 @@ for (const catalog of ["skills", "skills-proposed"]) {
 		const { workspace } = fixture();
 		symlinkSync("loop", join(workspace, catalog, "loop"));
 		expect(() =>
-			skillLiveState(join(workspace, "skills"), join(workspace, "skills-proposed"), "loop"),
+			skillDiskPresence(join(workspace, "skills"), join(workspace, "skills-proposed"), "loop"),
 		).toThrow(expect.objectContaining({ code: "ELOOP" }));
 	});
 }
@@ -166,7 +194,7 @@ test("live state propagates ENOTDIR instead of declaring a broken catalog gone",
 	const { workspace } = fixture();
 	const file = join(workspace, "not-a-directory");
 	writeFileSync(file, "occupied");
-	expect(() => skillLiveState(file, join(workspace, "skills-proposed"), "missing")).toThrow(
+	expect(() => skillDiskPresence(file, join(workspace, "skills-proposed"), "missing")).toThrow(
 		expect.objectContaining({ code: "ENOTDIR" }),
 	);
 });

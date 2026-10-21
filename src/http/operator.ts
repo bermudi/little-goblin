@@ -34,9 +34,10 @@ import { type MemoryContexts, memoryStatus, type MemoryWiring } from "../memory/
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
 import {
+	liveStateOf,
+	skillDiskPresence,
 	type SkillSourceRow,
 	SkillSources,
-	skillLiveState,
 	skillNameSchema,
 } from "../skill-provenance.ts";
 import type { SkillDecideResponse } from "./operator-wire.ts";
@@ -939,13 +940,17 @@ export async function handleOperatorRoute(
 			);
 		const sources = deps.skillSources;
 		const rows = sources.forConversation(conversation.data);
-		const items: ThreadSkillItem[] = rows.map((row) => ({
-			skill: row.skill,
-			state: skillLiveState(sources.skillsDir, sources.proposedDir, row.skill),
-			kind: row.kind,
-			firstAt: row.firstAt,
-			lastAt: row.lastAt,
-		}));
+		const items: ThreadSkillItem[] = rows.map((row) => {
+			const presence = skillDiskPresence(sources.skillsDir, sources.proposedDir, row.skill);
+			return {
+				skill: row.skill,
+				state: liveStateOf(presence),
+				pending: presence.proposed,
+				kind: row.kind,
+				firstAt: row.firstAt,
+				lastAt: row.lastAt,
+			};
+		});
 		log.debug("thread skills served", {
 			...who,
 			via: actor.via,

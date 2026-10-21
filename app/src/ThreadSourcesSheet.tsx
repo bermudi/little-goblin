@@ -1,9 +1,11 @@
 // The chat header's thread-sources sheet: everything this conversation
 // produced — its retained
 // exchanges and the skills generated from it — on the thread itself,
-// not in a global tab. Proposed skills decide right here (the same
+// not in a global tab. Pending proposals decide right here (the same
 // skills/decide mechanics as the Telegram ✅/🚫 row and the Skills
-// page); memories keep the shared forget affordance.
+// page) — including an update parked on an installed skill, where
+// `pending` outlives the installed-wins state word; memories keep the
+// shared forget affordance.
 import { useEffect, useRef, useState } from "react";
 import type { MemoryDocListItem, ThreadSkillItem } from "../../src/http/operator-wire.ts";
 import { decideSkill, listMemoryDocuments, listThreadSkills } from "./api.ts";
@@ -40,10 +42,18 @@ function SkillRow({
 			<span className="skill-name mono">{skill.skill}</span>
 			<span className="doc-sub">
 				<span className={`skill-state skill-${skill.state}`}>{skill.state}</span>
+				{/* Installed wins the state word; a parked proposal on an
+				    installed skill is an update awaiting a decision. */}
+				{skill.pending && skill.state === "installed" && (
+					<>
+						{" "}
+						<span className="skill-state skill-proposed">update pending</span>
+					</>
+				)}
 				{" · "}
 				{skill.kind === "reviewer" ? "distilled" : "authored"} {relTime(skill.firstAt)}
 			</span>
-			{skill.state === "proposed" && (
+			{skill.pending && (
 				<span className="skill-decide">
 					<button type="button" className="pill" disabled={busy} onClick={() => decide("install")}>
 						install

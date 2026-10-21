@@ -156,6 +156,10 @@ export interface MemoryForgetResponse {
 export interface ThreadSkillItem {
 	skill: string;
 	state: "installed" | "proposed" | "gone";
+	// A proposal is parked in skills-proposed/ right now — orthogonal to
+	// state, which installed wins: an installed skill can still carry an
+	// undecided update proposal.
+	pending: boolean;
 	kind: "reviewer" | "turn";
 	firstAt: string;
 	lastAt: string;

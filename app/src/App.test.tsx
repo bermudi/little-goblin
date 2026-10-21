@@ -624,6 +624,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 							{
 								skill: "ci-helper",
 								state: "installed",
+								pending: false,
 								kind: "reviewer",
 								firstAt: "2026-10-10T00:00:00Z",
 								lastAt: "2026-10-10T00:00:00Z",

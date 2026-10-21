@@ -554,6 +554,10 @@ describe("app operator surface", () => {
 			const proposedDir = join(home, "workspace", "skills-proposed");
 			mkdirSync(join(skillsDir, "herdr"), { recursive: true });
 			mkdirSync(join(proposedDir, "staged-skill"), { recursive: true });
+			// An update proposal on an installed skill: both dirs exist —
+			// installed still wins the state word, pending carries the
+			// undecided proposal.
+			mkdirSync(join(proposedDir, "herdr"), { recursive: true });
 			sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
 			sources.record("app/1", "gone-skill", "turn", "2026-10-16T02:00:00.000Z");
 			sources.record("app/1", "staged-skill", "reviewer", "2026-10-16T03:00:00.000Z", "r2");
@@ -577,6 +581,7 @@ describe("app operator surface", () => {
 					{
 						skill: "staged-skill",
 						state: "proposed",
+						pending: true,
 						kind: "reviewer",
 						firstAt: "2026-10-16T03:00:00.000Z",
 						lastAt: "2026-10-16T03:00:00.000Z",
@@ -584,6 +589,7 @@ describe("app operator surface", () => {
 					{
 						skill: "gone-skill",
 						state: "gone",
+						pending: false,
 						kind: "turn",
 						firstAt: "2026-10-16T02:00:00.000Z",
 						lastAt: "2026-10-16T02:00:00.000Z",
@@ -591,6 +597,7 @@ describe("app operator surface", () => {
 					{
 						skill: "herdr",
 						state: "installed",
+						pending: true,
 						kind: "reviewer",
 						firstAt: "2026-10-16T01:00:00.000Z",
 						lastAt: "2026-10-16T01:00:00.000Z",

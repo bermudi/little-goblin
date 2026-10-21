@@ -165,23 +165,37 @@ export class SkillSources {
 	}
 }
 
-export function skillLiveState(
+// Disk presence is two independent facts: a live copy can coexist with
+// a parked proposal (an update awaiting decision). Single-word states
+// can't say that — presence callers keep both bits.
+export interface SkillDiskPresence {
+	installed: boolean;
+	proposed: boolean;
+}
+
+export function skillDiskPresence(
 	skillsDir: string,
 	proposedDir: string,
 	skill: string,
-): SkillLiveState {
-	for (const [dir, state] of [
-		[skillsDir, "installed"],
-		[proposedDir, "proposed"],
-	] as const) {
+): SkillDiskPresence {
+	const has = (dir: string): boolean => {
 		try {
 			statSync(join(dir, skill));
-			return state;
+			return true;
 		} catch (err) {
 			// Only absence is a live state; other filesystem errors retain
 			// their syscall/path context and must fail the read.
 			if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) throw err;
+			return false;
 		}
-	}
+	};
+	return { installed: has(skillsDir), proposed: has(proposedDir) };
+}
+
+// The single-word collapse: installed wins over proposed — a stray copy
+// must not render as merely proposed.
+export function liveStateOf(presence: SkillDiskPresence): SkillLiveState {
+	if (presence.installed) return "installed";
+	if (presence.proposed) return "proposed";
 	return "gone";
 }

@@ -333,9 +333,13 @@ opening a sheet with two sections:
   browser) — the Memories tab's rows and detail/facts/forget affordances,
   from shared components, not duplicated.
 - **Skills from this thread** (provenance ruling: design/skills.md → Skill
-  provenance) — name, state, when first written here; proposed rows carry
-  install/discard buttons (ruling 2026-10-17 — the sheet mutates now), the
-  same buttons as the global Skills view, installed/gone read-only.
+  provenance) — name, state, when first written here; rows with a parked
+  proposal carry install/discard buttons (ruling 2026-10-17 — the sheet
+  mutates now), the same buttons as the global Skills view; plain
+  installed/gone are read-only. A parked proposal on an installed skill —
+  an update awaiting a decision — shows both chips and keeps its buttons
+  (amended 2026-10-20: `pending` rides beside the installed-wins state
+  word; the collapse had hidden the decide row entirely).
 
 App conversations only, by the channel rule: Telegram threads keep the
 global Memories tab — a per-thread view would be cross-surface reading. A

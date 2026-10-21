@@ -354,7 +354,10 @@ choice, a small calculator — rendered in the transcript, not described in
 prose. **Chat-native for the app channel** (how an answer renders, not a
 second system), only while stateless: no saved or re-openable "apps", no
 artifact store, no state outliving the message; that line is machinery and
-needs its own ruling.
+needs its own ruling. (The file-presentation half of that line arrived as
+`artifact` + the document reader — see the 2026-10-21 ruling below; the
+bytes persist in the attachment store, the presentation stays
+message-scoped.)
 
 **Mechanism: a component tree, not HTML.** One tool, `ui`, app conversations
 only (Telegram never sees it; guests never). The tool *input is the
@@ -415,3 +418,51 @@ injected.
 prefix per live app conversation. Frozen prompt snapshots keep the old
 "Tools:" line until the next boundary (roll, compaction); the description
 carries the guidance meanwhile.
+
+## Artifacts & the document reader (ruling 2026-10-21)
+
+Operator ask (Mario's Pi codemode thread): files the agent makes should be
+openable in the PWA, and composition should end in a card, not a prose
+summary. Two doc kinds ride one modal:
+
+- **An artifact is an immutable snapshot.** The `artifact` tool copies the
+  bytes once into the attachment store; editing or deleting the source
+  afterwards never rewrites history — a reload renders the snapshot, not
+  the file's future. The wire carries only `{path, name, title?, mediaType,
+  size, source}`: bytes travel file → attachment store → HTTP → render,
+  never through model context. Cards hoist out of the Worked fold beside
+  the fold that ran them — a direct `artifact` call and a script's
+  collected `output.presentations` land the same way. The Intelligent UI
+  ruling's "no artifact store" line moved exactly this far: the store is
+  the existing attachment directory serving by basename, presentation is
+  still message-scoped (a card in history), and no separate registry was
+  built.
+- **A file read is live and mutable.** Clicking a path chip opens the file
+  as it is *now* — same semantics as `read_file`, deliberately not the
+  immutable kind. `GET /api/app/conversations/:id/file?path=` resolves
+  inside that conversation's workdir (the workspace, or the bound
+  project's dir via `projectWorkdir`) with the box-files realpath
+  containment: `..`, absolute escapes, symlink escapes, directories and
+  over-cap reads all refuse. On top of the import boundary the reader
+  refuses `auth.jsonl` anywhere (the State viewer ruling applies — a
+  linked project dir can sit outside `$GOBLIN_HOME`, so the deny rides on
+  the resolved path, not the home) and anything inside `.git` (remote URLs
+  carry credentials). The reader cap is the app byte budget (32 MiB), not
+  the 100 MiB transfer bound. Served `content-disposition: attachment` +
+  `content-security-policy: sandbox` + `nosniff`: direct navigation can
+  never render a stored document in the app origin; the reader pulls it
+  through fetch and renders it itself.
+
+Rendering is by kind: markdown through the shared renderer (relative
+`[t](path)` links are live only inside the viewer — they resolve against
+the doc's own directory and push onto the modal's back stack; in the
+transcript they stay literal syntax), HTML inside the same sandboxed
+srcdoc frame as ui leaves, raster images/audio/video/pdf over object
+URLs, plain text for the rest of the text kinds past a decode cap, and a
+download affordance for binaries (SVG included — it never renders
+same-origin). The frame CSP grew `media-src data: blob:` so a generated
+document can embed or build media — still no network, still an opaque
+origin.
+
+App-channel only, like `ui`: the tool mounts on app turns, the routes sit
+behind app auth, and Telegram/guests get neither.

@@ -124,6 +124,13 @@ appearance is the sanctioned config-change shift.
   destination is re-derived at host-write time; a path resolved before
   the container await is stale, and an ancestor swapped mid-read must not
   aim the write.
+- `artifact` with a `sandbox` source reads the container file through the
+  same `catFile` transport (ruling 2026-10-21) — the byte movement of
+  `export` without the workspace landing, since an artifact's destination
+  is the attachment store, not the workspace. The wall is unchanged:
+  nothing crosses without an explicit call, regular files only, and the
+  app byte budget caps it. A `workspace`-sourced artifact never touches
+  the container.
 - `network` — fail closed: a sandbox whose network state can't be
   confirmed off when off is intended is removed, not used — its row
   stays, carrying the image and intent the next call recreates from.

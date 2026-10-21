@@ -100,6 +100,15 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
 - **Nested calls are real calls** — each runs the tool's live `execute`,
   so the runtime's authority fence wraps it, under the turn's abort
   signal. Calls that completed before a failure are not undone.
+- **Nested calls don't produce SDK tool parts** — they run `execute`
+  directly, so a presentation tool can't ride the allowlist alone
+  (ruling 2026-10-21). `artifact` is the typed presentation seam: a
+  nested call's `{artifact}` result is collected into
+  `output.presentations` under the stable child call id
+  (`<scriptCallId>/<n>`), kept out of the digest text so bytes never
+  re-enter context, and rendered by the app through the same card path
+  as a direct call. Completed presentations survive a script that fails
+  afterwards — the no-rollback rule above.
 - **The bounds live in the worker, before a call can post.** Upstream
   posts every call the VM makes; a cap checked only on the host would run
   after the port flooded and every args blob parsed. A local worker entry

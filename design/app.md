@@ -129,6 +129,22 @@ Save. Async creation retains no navigation authority after dismissal;
 composer restores go only into their originating composer, never over
 newer text; memory pagination belongs to the loaded filter.
 
+**Composer drafts are durable (ruling 2026-10-20, operator ask: the
+Ctrl+W emacs habit closes the tab mid-composition).** The composer's
+text persists per scope — the conversation, the project page, the
+empty start state — in same-origin localStorage beside the note draft:
+restored on mount, stored on every change (no debounce — a close at
+any instant has the last keystroke), removed by an accepted send; a
+declined or fenced send keeps it, so it survives navigation and
+remount until sent or typed over. No close guard rides on it: closing
+costs nothing once nothing can be lost, and the settings/note
+beforeunload prompts exist precisely because those edits have no such
+persistence. Storage always holds the latest local draft, so a restore
+can never land over newer text; the one-shot restore rulings stand
+unchanged beside it. An unreadable record stays in place behind an
+error line until the first write replaces it. Text only — staged
+chips are uploads, not prose.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

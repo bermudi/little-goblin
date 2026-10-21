@@ -128,15 +128,18 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	function ComposerHarness({
 		onSend,
 		draftRestore = null,
+		draftScope = "test",
 	}: {
 		onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 		draftRestore?: { parts: UIMessage["parts"] } | null;
+		draftScope?: string;
 	}) {
 		const [staged, setStaged] = useState<StagedUpload[]>([]);
 		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
 		return (
 			<Composer
 				token={null}
+				draftScope={draftScope}
 				busy={false}
 				staged={staged}
 				setStaged={setStaged}
@@ -182,6 +185,26 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			);
 		});
 	};
+
+	// Type through the real textarea — native value setter + input +
+	// keyup, React's text-input fallback included (same as ChatView's
+	// steering test).
+	const type = async (text: string) => {
+		const ta = container.querySelector("form.composer textarea");
+		expect(ta).not.toBeNull();
+		await act(async () => {
+			const el = ta as HTMLElement;
+			el.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				el,
+				text,
+			);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event);
+		});
+	};
+	const textareaValue = () =>
+		container.querySelector<HTMLTextAreaElement>("form.composer textarea")?.value ?? null;
 
 	test.each([false, true])(
 		"a declined voice send stages one resendable chip (restored while pending: %s)",
@@ -306,5 +329,76 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		// The failed row stays staged as its own chip — the operator can
 		// remove it; it must not have swallowed the sibling.
 		expect(container.querySelectorAll(".attachment.failed").length).toBe(1);
+	});
+
+	test("typing persists the draft per scope; a fresh mount restores it", async () => {
+		await mount();
+		await type("saved from ctrl+w");
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain(
+			"saved from ctrl+w",
+		);
+		// A closed and reopened tab is a fresh mount of the same scope.
+		await act(async () => {
+			root?.unmount();
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		expect(textareaValue()).toBe("saved from ctrl+w");
+		// Another scope's composer starts clean — one conversation's
+		// draft never leaks into another's.
+		await act(async () => {
+			root?.unmount();
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					draftScope="other"
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		expect(textareaValue()).toBe("");
+	});
+
+	test("an accepted send clears the stored draft; a declined one keeps it", async () => {
+		let accept = false;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ComposerHarness onSend={() => accept} />);
+		});
+		await type("keep or clear");
+		await submit();
+		// Declined (failed lazy create): the draft stays for a resend.
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain("keep or clear");
+		expect(textareaValue()).toBe("keep or clear");
+		accept = true;
+		await submit();
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toBeNull();
+		expect(textareaValue()).toBe("");
+	});
+
+	test("an unreadable stored draft says why, starts empty, and waits for typing", async () => {
+		const KEY = "goblin.composer-draft.v1:test";
+		const raw = "{not json";
+		win.localStorage.setItem(KEY, raw);
+		await mount();
+		expect(textareaValue()).toBe("");
+		expect(container.textContent).toContain("couldn't be read");
+		// Unreadable bytes stay in place until the operator types over
+		// them — no silent delete on mount.
+		expect(win.localStorage.getItem(KEY)).toBe(raw);
+		await type("fresh start");
+		expect(win.localStorage.getItem(KEY)).toContain("fresh start");
 	});
 });

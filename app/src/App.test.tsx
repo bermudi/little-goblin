@@ -1239,13 +1239,16 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
 		const restored = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
 		expect(restored.value).toBe("hello");
-		// Away and back — a consumed restore must not replay over a fresh
-		// composer on remount.
+		// Away and back — the one-shot restore must not replay (its
+		// delivery above was consumed), but the durable draft is a
+		// different mechanism: the fenced text survives navigation and
+		// remount until sent or typed over. It can only come from
+		// storage — the restore record is gone.
 		await openPage("Settings");
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer third");
 		expect((container.querySelector("form.composer textarea")! as HTMLTextAreaElement).value).toBe(
-			"",
+			"hello",
 		);
 	});
 

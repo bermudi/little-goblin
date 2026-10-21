@@ -1446,6 +1446,7 @@ function AppShell() {
 									<Composer
 										key={`composer:${currentProject.id}`}
 										token={token}
+										draftScope={currentProject.id}
 										busy={starting}
 										staged={staged}
 										setStaged={setStaged}
@@ -1488,6 +1489,7 @@ function AppShell() {
 							</div>
 							<Composer
 								token={token}
+								draftScope="new"
 								busy={starting}
 								staged={staged}
 								setStaged={setStaged}

@@ -32,6 +32,7 @@ import {
 	stopConversation,
 	uploadAttachment,
 } from "./api.ts";
+import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
@@ -1031,6 +1032,7 @@ export function ContextGauge({
 export function Composer({
 	token,
 	conversationId,
+	draftScope,
 	busy,
 	staged,
 	setStaged,
@@ -1045,6 +1047,9 @@ export function Composer({
 }: {
 	token: string | null;
 	conversationId?: string;
+	// Durable-draft key — one per composer home: the conversation id,
+	// the project id, "new" for the empty start state.
+	draftScope: string;
 	busy: boolean;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
@@ -1063,7 +1068,42 @@ export function Composer({
 	draftRestore?: { parts: UIMessage["parts"] } | null;
 	onDraftRestored?: () => void;
 }) {
-	const [draft, setDraft] = useState("");
+	// The draft is durable per scope: restored at mount, stored on every
+	// change. No debounce and no close guard — a tab close at any
+	// instant (the Ctrl+W habit this exists for) finds the last
+	// keystroke already persisted, so closing costs nothing and needs no
+	// confirm dialog. A record that can't be read surfaces as an error
+	// line and the composer starts empty; the first write replaces it —
+	// prose that fails the record shape has no reader, and freezing it
+	// would brick crash recovery over bytes nothing can parse.
+	let draftLoadFailure: string | null = null;
+	const [draft, setDraft] = useState(() => {
+		try {
+			return loadComposerDraft(draftScope) ?? "";
+		} catch (e) {
+			draftLoadFailure = `A saved draft couldn't be read (${e instanceof Error ? e.message : String(e)}) — typing here replaces it.`;
+			return "";
+		}
+	});
+	const [draftError, setDraftError] = useState<string | null>(draftLoadFailure);
+	// The mount run writes nothing: on restore it would rewrite the
+	// value it just loaded, and after a corrupt load it would delete
+	// the unreadable record before the operator ever sees why.
+	const draftPersisted = useRef(false);
+	useEffect(() => {
+		if (!draftPersisted.current) {
+			draftPersisted.current = true;
+			return;
+		}
+		try {
+			saveComposerDraft(draftScope, draft);
+			setDraftError(null);
+		} catch (e) {
+			setDraftError(
+				`Couldn't save the draft locally (${e instanceof Error ? e.message : String(e)}) — closing the tab loses it.`,
+			);
+		}
+	}, [draft, draftScope]);
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
@@ -1671,6 +1711,7 @@ export function Composer({
 					{sendError}
 				</p>
 			)}
+			{draftError !== null && <p className="error" role="alert">{draftError}</p>}
 			{notePickerOpen && (
 				<NotePicker
 					pickRef={notePickRef}
@@ -2036,6 +2077,7 @@ function Chat({
 			<Composer
 				token={token}
 				conversationId={conversationId}
+				draftScope={conversationId}
 				busy={busy}
 				staged={staged}
 				setStaged={setStaged}

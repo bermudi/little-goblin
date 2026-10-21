@@ -15,6 +15,7 @@ import { log } from "../../log.ts";
 import { summarize } from "../../reviewer.ts";
 import { encodeScriptWorkerCode, SCRIPT_WORKER_URL } from "./script-worker.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
+import { type ArtifactPresentation, artifactOf } from "./artifact-schema.ts";
 import { fenceUntrusted } from "./web.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -36,6 +37,7 @@ export const SCRIPT_CALLABLE: ReadonlySet<string> = new Set([
 	"history_search",
 	"transcribe",
 	"sandbox",
+	"artifact",
 ]);
 
 export interface ScriptDeps {
@@ -54,6 +56,9 @@ interface ScriptOutput {
 	text: string;
 	calls: ScriptCallRecord[];
 	error?: CodemodeErrorKind;
+	// Nested presentation results the app renders as cards — kept out
+	// of the digest text so bytes never re-enter context.
+	presentations?: ArtifactPresentation[];
 }
 
 function scriptDescription(callable: string[], maxCalls: number): string {
@@ -63,6 +68,9 @@ function scriptDescription(callable: string[], maxCalls: number): string {
 			: "",
 		callable.includes("fetch")
 			? "fetch resolves to the page text, or { pdf: { url, path, size } } for a PDF."
+			: "",
+		callable.includes("artifact")
+			? "artifact resolves to { artifact: { path, name, mediaType, size, source } } and shows the operator a card."
 			: "",
 	]
 		.filter((s) => s !== "")
@@ -139,6 +147,7 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 			const parentId = parentOptions.toolCallId;
 			const started = Date.now();
 			const calls: ScriptCallRecord[] = [];
+			const presentations: ArtifactPresentation[] = [];
 			let tainted = false;
 			let seq = 0;
 			let overCapWarned = false;
@@ -249,6 +258,14 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 						noteFail(refused);
 						throw new Error(refused);
 					}
+					// A nested presentation joins the typed envelope — the app
+					// renders the card without the bytes ever riding the digest.
+					if (name === "artifact") {
+						const artifact = artifactOf(result);
+						if (artifact !== null) {
+							presentations.push({ call: `${parentId}/${callNo}`, artifact });
+						}
+					}
 					calls.push({
 						tool: name,
 						args: summarize(args, 200),
@@ -350,6 +367,9 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 				text,
 				calls,
 				...(result.ok ? {} : { error: result.error.kind }),
+				// A script that failed after publishing keeps its completed
+				// presentations — completed effects are never rolled back.
+				...(presentations.length > 0 ? { presentations } : {}),
 			};
 		},
 	});

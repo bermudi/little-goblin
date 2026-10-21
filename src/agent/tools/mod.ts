@@ -1,6 +1,7 @@
 import type { ToolSet } from "ai";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
+import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
 import { bashTool } from "./bash.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
@@ -54,6 +55,7 @@ export interface TranscribeToolDeps {
 }
 
 export type {
+	ArtifactToolDeps,
 	DelegateToolDeps,
 	DesktopToolDeps,
 	HerdrToolDeps,
@@ -75,6 +77,7 @@ export interface MakeToolsOptions {
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
 	file?: FileToolDeps | undefined;
+	artifact?: ArtifactToolDeps | undefined;
 	memory?: MemoryToolDeps | undefined;
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
@@ -97,6 +100,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		voice,
 		program,
 		file,
+		artifact,
 		memory,
 		web,
 		transcribe,
@@ -128,6 +132,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(herdr ? { herdr: herdrTool(herdr) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
+		...(artifact ? { artifact: artifactTool(artifact) } : {}),
 		...(memory
 			? {
 					memory_search: memorySearchTool(memory),

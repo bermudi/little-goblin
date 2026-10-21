@@ -1,5 +1,6 @@
 import { log } from "../log.ts";
 import { handleAttachmentsRoute } from "./app-attachments.ts";
+import { handleAttentionRoute } from "./app-attention.ts";
 import { appAuth } from "./app-auth.ts";
 import { handleChatRoute } from "./app-chat.ts";
 import { handleConfigRoute } from "./app-config.ts";
@@ -75,6 +76,7 @@ export async function handleAppApi(
 
 	const route =
 		(await handleProgramRoutes(req, url, deps)) ??
+		(await handleAttentionRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleProjectsRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??

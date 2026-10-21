@@ -21,6 +21,7 @@ import { MemoryView } from "./MemoryView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
 import { FilesView, SkillsView } from "./StateViews.tsx";
+import { AttentionView } from "./AttentionView.tsx";
 import { LogView } from "./LogView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
@@ -35,6 +36,7 @@ import type {
 // /app/n/<id>) — the union holds the page key only.
 type Page =
 	| "chat"
+	| "attention"
 	| "settings"
 	| "memory"
 	| "delegations"
@@ -49,6 +51,7 @@ type Page =
 	| "note";
 
 const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] = [
+	{ key: "attention", label: "Attention" },
 	{ key: "settings", label: "Settings" },
 	{ key: "memory", label: "Memories" },
 	{ key: "delegations", label: "Delegations" },
@@ -63,7 +66,7 @@ function pageFromPath(pathname: string): Page | null {
 	// Both doors serve this bundle: /app/ the PWA, /t/ the Telegram mini
 	// app — each door clamps the result to its own page scope.
 	const m =
-		/^\/(?:app|t)\/(settings|memory|delegations|programs|status|skills|files|log|projects|notes)\/?$/.exec(
+		/^\/(?:app|t)\/(attention|settings|memory|delegations|programs|status|skills|files|log|projects|notes)\/?$/.exec(
 			pathname,
 		);
 	return m === null ? null : (m[1] as Page);
@@ -1393,6 +1396,13 @@ function AppShell() {
 					<p className="error" role="alert">
 						{navigationError}
 					</p>
+				)}
+				{page === "attention" && (
+					<AttentionView
+						token={token}
+						onPage={openPage}
+						onConversation={openConversation}
+					/>
 				)}
 				{page === "settings" && (
 					<SettingsView

@@ -297,6 +297,31 @@ export interface AppApprovalsResponse {
 	mail: AppMailDraft[];
 }
 
+export type AppAttentionPage = "programs" | "memory" | "skills" | "delegations";
+export type AppAttentionTarget =
+	| { kind: "page"; page: AppAttentionPage }
+	| { kind: "conversation"; conversationId: string };
+
+export interface AppAttentionItem {
+	id: string;
+	kind:
+		| "program-approval"
+		| "mail-approval"
+		| "memory-blocked"
+		| "skill-proposal"
+		| "interrupted-run"
+		| "delegation-input";
+	title: string;
+	detail: string;
+	createdAt: string | null;
+	target: AppAttentionTarget;
+}
+
+export interface AppAttentionResponse {
+	items: AppAttentionItem[];
+	unavailable: string[];
+}
+
 export interface AppApprovalDecisionResponse {
 	status:
 		| "activated"

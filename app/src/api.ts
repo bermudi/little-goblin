@@ -12,6 +12,7 @@ import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
 	AppAttachmentResponse,
+	AppAttentionResponse,
 	AppCompactResponse,
 	AppConfigPatch,
 	AppConfigView,
@@ -181,6 +182,10 @@ export function createConversation(
 
 export function listApprovals(token: string | null): Promise<AppApprovalsResponse> {
 	return request(token, "/api/app/approvals");
+}
+
+export function getAttention(token: string | null): Promise<AppAttentionResponse> {
+	return request(token, "/api/app/attention");
 }
 
 export function decideProgramApproval(

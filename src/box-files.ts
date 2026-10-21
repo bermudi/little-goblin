@@ -39,7 +39,11 @@ function numberedCandidate(base: string, i: number): string {
 
 /** Import side: a workspace path that exists, stays inside the
  *  workspace under realpath, and names a regular file within the cap. */
-export function resolveImport(workspace: string, from: string): BoxImportResult {
+export function resolveImport(
+	workspace: string,
+	from: string,
+	maxBytes: number = BOX_FILE_MAX_BYTES,
+): BoxImportResult {
 	const wsLex = resolve(workspace);
 	const resolved = isAbsolute(from) ? resolve(from) : resolve(wsLex, from);
 	// A lexical `..` escape is refused before the filesystem is
@@ -68,9 +72,9 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 	if (!st.isFile()) {
 		return { error: `refused: ${from} is not a regular file` };
 	}
-	if (st.size > BOX_FILE_MAX_BYTES) {
+	if (st.size > maxBytes) {
 		return {
-			error: `refused: ${from} exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+			error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
 		};
 	}
 	return { path: real, bytes: st.size };
@@ -80,8 +84,9 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 export function readImport(
 	workspace: string,
 	from: string,
+	maxBytes: number = BOX_FILE_MAX_BYTES,
 ): { path: string; data: Uint8Array } | { error: string } {
-	const resolved = resolveImport(workspace, from);
+	const resolved = resolveImport(workspace, from, maxBytes);
 	if ("error" in resolved) return resolved;
 	const fd = openSync(resolved.path, constants.O_RDONLY | constants.O_NONBLOCK);
 	try {
@@ -91,9 +96,9 @@ export function readImport(
 		}
 		const st = fstatSync(fd);
 		if (!st.isFile()) return { error: `refused: ${from} is not a regular file` };
-		if (st.size > BOX_FILE_MAX_BYTES) {
+		if (st.size > maxBytes) {
 			return {
-				error: `refused: ${from} exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+				error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
 			};
 		}
 		// One extra byte detects growth without allowing an unbounded read.
@@ -284,4 +289,42 @@ export function exportNamedBytes(
 	const written = writeExportBytes(workspace, rel, data);
 	if ("error" in written) return written;
 	return { rel };
+}
+
+// ---------- the app document reader ----------
+
+// A viewer read is bounded by what the app can pull, not the 100 MiB
+// transfer bound — same budget as the app attachment upload/serve caps.
+export const WORKSPACE_READ_MAX_BYTES = 32 * 1024 * 1024;
+
+// On top of the import boundary, the reader refuses two things a plain
+// file-open must never render: auth.jsonl (ruled out forever by
+// design/app.md → State viewer, wherever it happens to live — a linked
+// project dir can sit outside $GOBLIN_HOME), and anything inside a
+// .git dir, where remote URLs can carry credentials.
+const READER_DENIED_BASENAMES = new Set(["auth.jsonl"]);
+const READER_DENIED_COMPONENTS = new Set([".git"]);
+
+export type WorkspaceReadResult = { path: string; data: Uint8Array } | { error: string };
+
+/** Whether a denied read means "gone" (404) or "refused" (403) — the
+ *  box error strings own the classification so callers don't re-parse. */
+export function workspaceReadStatus(error: string): number {
+	return error.startsWith("source not found") ? 404 : 403;
+}
+
+export function readWorkspaceFile(
+	workspace: string,
+	from: string,
+	maxBytes: number = WORKSPACE_READ_MAX_BYTES,
+): WorkspaceReadResult {
+	if (READER_DENIED_BASENAMES.has(basename(from))) {
+		return { error: `refused: ${basename(from)} is never served` };
+	}
+	const r = readImport(workspace, from, maxBytes);
+	if ("error" in r) return r;
+	if (r.path.split(sep).some((part) => READER_DENIED_COMPONENTS.has(part))) {
+		return { error: `refused: ${from} resolves inside .git` };
+	}
+	return r;
 }

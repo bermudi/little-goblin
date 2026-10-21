@@ -28,6 +28,7 @@ export function setup(
 		rewriteNote?: AppChannelDeps["rewriteNote"];
 		resumeOps?: AppChannelDeps["resumeOps"];
 		approvals?: AppChannelDeps["approvals"];
+		programOps?: AppChannelDeps["programOps"];
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -94,6 +95,7 @@ export function setup(
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
 		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
 		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
+		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
 	};
 	const http = startHttp({
 		configRef,

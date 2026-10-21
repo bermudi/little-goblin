@@ -7,8 +7,10 @@ import { readFileSync } from "node:fs";
 const CHANNEL_NEUTRAL = [
 	"src/mail-approval.ts",
 	"src/program-approval.ts",
+	"src/program-ops.ts",
 	"src/agent/turn-tools.ts",
 	"src/http/app-conversations.ts",
+	"src/http/app-programs.ts",
 	"src/http/app-shared.ts",
 ] as const;
 

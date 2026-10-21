@@ -516,6 +516,7 @@ function programItem(program: Program): OperatorProgramItem {
 		hasHook: program.hookHash !== null,
 		mailFilter: program.mailFilter,
 		enabled: program.enabled,
+		target: program.target,
 		chatId: program.chatId,
 		threadId: program.threadId,
 		createdAt: program.createdAt,

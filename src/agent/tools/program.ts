@@ -1,9 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { hookTokenHash, hookUrl, newHookToken } from "../../program-hook.ts";
-import { PROPOSAL_CHARTER_MAX, type ProgramProposal } from "../../program-proposals.ts";
-import { nextFire, ProgramRuleError, type Program, type ProgramsStore } from "../../programs.ts";
+import type { ProgramProposal } from "../../program-proposals.ts";
+import { PROPOSAL_CHARTER_MAX } from "../../program-proposals.ts";
+import { startProgramOps, type ProgramOpResult, type ProgramStaged } from "../../program-ops.ts";
+import type { Program, ProgramsStore } from "../../programs.ts";
 
 function programView(program: Program): Record<string, unknown> {
 	return {
@@ -130,8 +131,13 @@ export const programInputSchema = z
 			}
 	});
 
-export const programTool = (deps: ProgramToolDeps) =>
-	tool({
+export const programTool = (deps: ProgramToolDeps) => {
+	const ops = startProgramOps({
+		programs: deps.programs,
+		publicUrl: deps.publicUrl,
+		requestApproval: deps.requestApproval,
+	});
+	return tool({
 		description:
 			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure.",
 		inputSchema: programInputSchema,
@@ -147,16 +153,9 @@ export const programTool = (deps: ProgramToolDeps) =>
 						programs: deps.programs.list().map(programView),
 						proposals: deps.programs.proposals.pending().map(proposalView),
 					};
-				case "create": {
-					if (input.cron !== undefined) {
-						try {
-							nextFire(input.cron, new Date());
-						} catch (err) {
-							return { error: (err as Error).message };
-						}
-					}
-					try {
-						const proposal = deps.programs.proposals.proposeCreate(
+				case "create":
+					return opResult(
+						await ops.create(
 							{
 								name: input.name,
 								charter: input.charter,
@@ -166,25 +165,9 @@ export const programTool = (deps: ProgramToolDeps) =>
 								mailFilter: input.mailFilter ?? null,
 							},
 							address,
-						);
-						return await deliverApproval(deps, proposal);
-					} catch (err) {
-						if (isProgramRuleError(err)) {
-							return { error: err.message };
-						}
-						throw err;
-					}
-				}
+						),
+					);
 				case "update": {
-					if (typeof input.cron === "string") {
-						try {
-							nextFire(input.cron, new Date());
-						} catch (err) {
-							return { error: (err as Error).message };
-						}
-					}
-					const current = deps.programs.get(input.id);
-					if (current === null) return { error: `no program ${input.id}` };
 					const patch: {
 						name?: string;
 						charter?: string;
@@ -198,160 +181,63 @@ export const programTool = (deps: ProgramToolDeps) =>
 					if (input.maxLatenessMinutes !== undefined)
 						patch.maxLatenessMinutes = input.maxLatenessMinutes;
 					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
-					try {
-						if (requiresApproval(current, patch)) {
-							// Any grant-shaped component stages the whole requested
-							// patch — no partial application while it is pending.
-							const proposal = deps.programs.proposals.proposeUpdate(input.id, patch, address);
-							return await deliverApproval(deps, proposal);
-						}
-						const program = deps.programs.update(input.id, patch);
-						if (program === null) return { error: `no program ${input.id}` };
-						log.info("program updated", {
-							program: program.id,
-							name: program.name,
-							maxLatenessMinutes: program.maxLatenessMinutes,
-						});
-						return { program: programView(program) };
-					} catch (err) {
-						if (isProgramRuleError(err)) {
-							return { error: err.message };
-						}
-						throw err;
-					}
+					return opResult(await ops.update(input.id, patch, address));
 				}
-				case "delete": {
-					const ok = deps.programs.remove(input.id);
-					log.info("program deleted", { program: input.id, existed: ok });
-					return ok ? { deleted: input.id } : { error: `no program ${input.id}` };
-				}
-				case "toggle": {
-					const current = deps.programs.get(input.id);
-					if (current === null) return { error: `no program ${input.id}` };
-					const program = deps.programs.update(input.id, { enabled: !current.enabled })!;
-					log.info("program toggled", { program: program.id, enabled: program.enabled });
-					return { program: programView(program) };
-				}
+				case "delete":
+					return opResult(ops.remove(input.id));
+				case "toggle":
+					return opResult(ops.toggle(input.id));
 				case "hook": {
+					const result = await ops.hook(input.id, input.op, address);
+					if (result.kind !== "rotated") return opResult(result);
 					const current = deps.programs.get(input.id);
 					if (current === null) return { error: `no program ${input.id}` };
-					if (input.op === "disable") {
-						try {
-							deps.programs.setHook(input.id, null);
-						} catch (err) {
-							if (isProgramRuleError(err)) {
-								return { error: err.message };
-							}
-							throw err;
-						}
-						log.info("program hook disabled", { program: input.id, name: current.name });
-						return { program: programView(deps.programs.get(input.id)!) };
-					}
-					if (current.hookHash === null) {
-						// A new trigger kind stages like any widened authority —
-						// the credential exists only once approved.
-						try {
-							const proposal = deps.programs.proposals.proposeUpdate(
-								input.id,
-								{ hook: true },
-								address,
-							);
-							return await deliverApproval(deps, proposal);
-						} catch (err) {
-							if (isProgramRuleError(err)) {
-								return { error: err.message };
-							}
-							throw err;
-						}
-					}
-					const minted = mintHook(deps);
-					if ("error" in minted) return { error: minted.error };
-					deps.programs.setHook(input.id, hookTokenHash(minted.token));
-					const err = await sendHookUrl(deps, current, minted.url);
+					const err = await sendHookUrl(deps, current, result.url);
 					if (err !== null) {
 						return {
 							error: `hook rotated but the URL delivery failed: ${err} — run hook/rotate to resend`,
 						};
 					}
-					log.info("program hook rotated", { program: input.id, name: current.name });
 					return { hook: "rotated", url_sent: true };
 				}
-				case "review": {
-					const proposal = deps.programs.proposals.get(input.id);
-					if (proposal === null) return { error: `no proposal ${input.id}` };
-					if (proposal.state !== "pending") {
-						return {
-							proposal: proposalView(proposal),
-							status: `already ${proposal.state}`,
-						};
-					}
-					return await deliverApproval(deps, proposal);
-				}
+				case "review":
+					return reviewResult(await ops.review(input.id));
 			}
 		},
 	});
-
-// The grant boundary: a different charter text always stages (the
-// model never classifies its own authority widening), and so do a new
-// trigger kind — a cron where none existed — and a new or changed
-// non-null mail filter. Everything else stays inside granted
-// authority: rescheduling an existing cron, name or lateness edits,
-// clearing a filter or a cron, toggling.
-function requiresApproval(
-	current: Program,
-	patch: {
-		name?: string;
-		charter?: string;
-		cron?: string | null;
-		maxLatenessMinutes?: number | null;
-		mailFilter?: string | null;
-	},
-): boolean {
-	if (patch.charter !== undefined && patch.charter !== current.charter) return true;
-	if (
-		patch.mailFilter !== undefined &&
-		patch.mailFilter !== null &&
-		patch.mailFilter !== current.mailFilter
-	)
-		return true;
-	if (patch.cron !== undefined && patch.cron !== null && current.cron === null) return true;
-	return false;
 }
 
-// Stage first, notify second: a failed post returns the pending
-// proposal with review guidance — the row is durable, never lost.
-async function deliverApproval(
-	deps: ProgramToolDeps,
-	proposal: ProgramProposal,
-): Promise<Record<string, unknown>> {
-	try {
-		await deps.requestApproval(proposal);
-	} catch (err) {
-		log.error("program approval post failed — proposal stays pending", err, {
-			proposal: proposal.id,
-		});
+function opResult(result: ProgramOpResult): Record<string, unknown> {
+	switch (result.kind) {
+		case "program":
+			return { program: programView(result.program) };
+		case "deleted":
+			return { deleted: result.id };
+		case "proposal":
+			return stagedResult(result);
+		case "error":
+			return { error: result.message };
+		case "rotated":
+			throw new Error("hook rotation reached a public tool result");
+	}
+}
+
+function reviewResult(result: ProgramOpResult): Record<string, unknown> {
+	if (result.kind === "proposal" && result.proposal.state !== "pending") {
 		return {
-			proposal: proposalView(proposal),
-			error: `proposal #${proposal.id} is staged but its approval message could not be posted — nothing is active. Run program/review with id ${proposal.id} to re-send it.`,
+			proposal: proposalView(result.proposal),
+			status: `already ${result.proposal.state}`,
 		};
 	}
+	return opResult(result);
+}
+
+function stagedResult(result: ProgramStaged): Record<string, unknown> {
+	if (!result.posted) return { proposal: proposalView(result.proposal), error: result.error };
 	return {
-		proposal: proposalView(proposal),
+		proposal: proposalView(result.proposal),
 		status: "pending operator approval — nothing is active until they approve it",
 	};
-}
-
-function isProgramRuleError(err: unknown): err is ProgramRuleError {
-	return err instanceof ProgramRuleError;
-}
-
-function mintHook(deps: ProgramToolDeps): { token: string; url: string } | { error: string } {
-	const base = deps.publicUrl();
-	if (base === undefined) {
-		return { error: "publicUrl is not set — set it in the mini app first" };
-	}
-	const token = newHookToken();
-	return { token, url: hookUrl(base, token) };
 }
 
 async function sendHookUrl(

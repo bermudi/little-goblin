@@ -307,3 +307,27 @@ export interface AppApprovalDecisionResponse {
 	 *  persisted or repeated by a later GET. */
 	hookUrl?: string;
 }
+
+export interface AppProgramView {
+	id: number;
+	name: string;
+	charter: string;
+	cron: string | null;
+	maxLatenessMinutes: number | null;
+	hasHook: boolean;
+	mailFilter: string | null;
+	enabled: boolean;
+	target: string;
+	lastRun: string | null;
+	nextRun: string | null;
+}
+
+export interface AppProgramMutationResponse {
+	status: "updated" | "proposal" | "deleted" | "rotated" | "error";
+	message: string;
+	program?: AppProgramView;
+	proposalId?: number;
+	/** One authenticated reveal for a direct hook rotation. Never
+	 *  persisted or repeated by a later GET. */
+	hookUrl?: string;
+}

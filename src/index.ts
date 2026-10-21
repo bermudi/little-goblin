@@ -52,6 +52,7 @@ import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
 import { startProgramApproval, type ProgramApproval } from "./program-approval.ts";
+import { startProgramOps } from "./program-ops.ts";
 import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
@@ -423,6 +424,11 @@ async function boot() {
 		programs,
 		sendPrivate,
 	});
+	const programOps = startProgramOps({
+		programs,
+		publicUrl: () => configRef.current.publicUrl || undefined,
+		requestApproval: (proposal) => programApproval!.requestApproval(proposal),
+	});
 
 	// The retention worker runs after the bot — outage and blocked
 	// notices deliver through bot.api (one per episode / per document).
@@ -646,6 +652,7 @@ async function boot() {
 				...(programApproval !== undefined && mailApproval !== undefined
 					? { approvals: { program: programApproval, mail: mailApproval } }
 					: {}),
+				programOps,
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

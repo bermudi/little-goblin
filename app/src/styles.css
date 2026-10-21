@@ -2882,6 +2882,34 @@ a.hit-title {
 	font-size: 11.5px;
 }
 
+.program-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	margin-top: 0.7rem;
+}
+.program-editor label {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.program-editor input,
+.program-editor textarea {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	padding: 0.45rem 0.6rem;
+	font: inherit;
+	font-size: 13px;
+}
+.program-editor textarea {
+	font-family: var(--font-mono);
+	resize: vertical;
+}
+
 /* ---------- intelligent ui ---------- */
 
 /* The ui tool's rendered input — one column of blocks in the message

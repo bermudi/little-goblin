@@ -10,6 +10,7 @@ import type { Runtime } from "../runtime.ts";
 import type { ResumeOps } from "../turn-resume.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
+import type { ProgramOps } from "../program-ops.ts";
 import type { AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
 import type { OperatorDeps } from "./operator.ts";
 
@@ -43,6 +44,7 @@ export interface AppChannelDeps {
 		program: Pick<ProgramApproval, "candidate" | "decide" | "pending">;
 		mail: Pick<MailApproval, "decide" | "pending">;
 	};
+	programOps?: ProgramOps;
 }
 
 export const configPatchBody = z

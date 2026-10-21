@@ -30,6 +30,7 @@ import type {
 	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
+	AppProgramMutationResponse,
 	AppProject,
 	AppProjectList,
 	AppResumeResponse,
@@ -679,6 +680,50 @@ export function forgetMemoryDocument(
 
 export function listPrograms(token: string | null): Promise<OperatorProgramsResponse> {
 	return request(token, "/api/app/programs");
+}
+
+export function updateProgram(
+	token: string | null,
+	id: number,
+	patch: {
+		name?: string;
+		charter?: string;
+		cron?: string | null;
+		maxLatenessMinutes?: number | null;
+		mailFilter?: string | null;
+	},
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
+	});
+}
+
+export function toggleProgram(
+	token: string | null,
+	id: number,
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}/toggle`, { method: "POST" });
+}
+
+export function deleteProgram(
+	token: string | null,
+	id: number,
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}`, { method: "DELETE" });
+}
+
+export function programHook(
+	token: string | null,
+	id: number,
+	op: "enable" | "rotate" | "disable",
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}/hook`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ op }),
+	});
 }
 
 export function listDelegations(token: string | null): Promise<OperatorDelegationsResponse> {

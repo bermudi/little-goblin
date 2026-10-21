@@ -190,6 +190,7 @@ export interface OperatorProgramItem {
 	hasHook: boolean;
 	mailFilter: string | null;
 	enabled: boolean;
+	target: string;
 	chatId: number;
 	threadId: number | null;
 	createdAt: string;

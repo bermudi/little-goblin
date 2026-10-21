@@ -128,7 +128,7 @@ function useDecision(
 	return { busy, result, err, run };
 }
 
-function SecretReveal({ url }: { url: string }) {
+export function SecretReveal({ url }: { url: string }) {
 	const [copied, setCopied] = useState(false);
 	return (
 		<div className="secret-reveal">

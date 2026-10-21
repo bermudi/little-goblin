@@ -5,6 +5,7 @@
 // never into a stamp, an answer, or model-facing output.
 
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { ProgramDraft } from "../program-proposals.ts";
 import { hookTokenHash } from "../program-hook.ts";
@@ -165,8 +166,138 @@ describe("program approval posts", () => {
 			expect(text).toContain("new charter");
 			expect(text).toContain('cron "0 9 * * *"');
 			expect(text).not.toContain("old charter");
+			// The unstaled card carries no drift warning.
+			expect(text).not.toContain("changed since this proposal");
 		} finally {
 			h.cleanup();
+		}
+	});
+
+	test("a re-post renders the staged base — a moved program never rewrites the card", async () => {
+		const h = harness();
+		try {
+			const program = h.programs.create(
+				{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+				NOW,
+			);
+			const proposal = h.programs.proposals.proposeUpdate(
+				program.id,
+				{ charter: "new charter" },
+				ADDRESS,
+			);
+			await h.approval.requestApproval(proposal);
+			// Reschedule (a direct-authority edit) and re-post via review.
+			h.programs.update(program.id, { cron: "0 10 * * *" });
+			h.sends.length = 0;
+			await h.approval.requestApproval(h.programs.proposals.get(proposal.id)!);
+			const repost = h.sends.map((s) => s.text).join("");
+			// The card advertises the staged base (09:00), never today's row,
+			// and names the stale refusal the tap would now get.
+			expect(repost).toContain('cron "0 9 * * *"');
+			expect(repost).not.toContain("0 10 * * *");
+			expect(repost).toContain("changed since this proposal");
+			expect(repost).toContain("new charter");
+			// Restore the base and approve: what lands is exactly the shown
+			// candidate — the reschedule never rode in beside the charter.
+			h.programs.update(program.id, { cron: "0 9 * * *" });
+			await h.tap(1, approveData(proposal.id));
+			expect(h.answers[0]).toBe("approved");
+			expect(h.programs.get(program.id)!.cron).toBe("0 9 * * *");
+			expect(h.programs.get(program.id)!.charter).toBe("new charter");
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	test("a legacy row with a drifted base renders the coming refusal — never a merge onto today's row", async () => {
+		const path = tmpDb("goblin-program-approval-");
+		const programs = openPrograms(path);
+		const program = programs.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(
+			program.id,
+			{ charter: "new charter" },
+			ADDRESS,
+		);
+		// Rewind the row to pre-snapshot, then drift the program: nothing
+		// immutable is left to render, so the post must name the refusal.
+		const db = new Database(path);
+		db.query("UPDATE program_proposals SET base_snapshot = NULL WHERE id = ?").run(proposal.id);
+		db.close();
+		programs.update(program.id, { cron: "0 10 * * *" });
+		const sends: Array<{ text: string; other: Record<string, unknown> }> = [];
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async (_chatId: number, text: string, other?: Record<string, unknown>) => {
+					sends.push({ text, other: other ?? {} });
+					return { message_id: sends.length };
+				},
+			},
+		});
+		const approval = startProgramApproval({
+			api: api.api,
+			programs,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		try {
+			await approval.requestApproval(programs.proposals.get(proposal.id)!);
+			const text = sends.map((s) => s.text).join("");
+			expect(text).toContain("changed since this proposal");
+			expect(text).toContain("requested:");
+			// No merged candidate off today's row: the 10:00 cron appears
+			// nowhere, and there is no rendered `name:` field at all.
+			expect(text).not.toContain("0 10 * * *");
+			expect(text).not.toContain("name: p");
+		} finally {
+			programs.close();
+		}
+	});
+
+	test("a stopped turn fences the posting — later chunks and the buttons never send", async () => {
+		const path = tmpDb("goblin-program-approval-");
+		const programs = openPrograms(path);
+		const controller = new AbortController();
+		const sends: Array<{ text: string; other: Record<string, unknown> }> = [];
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async (_chatId: number, text: string, other?: Record<string, unknown>) => {
+					sends.push({ text, other: other ?? {} });
+					// The turn dies while the first chunk's send is in flight.
+					if (sends.length === 1) controller.abort();
+					return { message_id: sends.length };
+				},
+				answerCallbackQuery: async () => true,
+			},
+		});
+		const approval = startProgramApproval({
+			api: api.api,
+			programs,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		try {
+			const program = programs.create(
+				{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+				NOW,
+			);
+			const proposal = programs.proposals.proposeUpdate(
+				program.id,
+				{ charter: "x".repeat(9000) },
+				ADDRESS,
+			);
+			await expect(approval.requestApproval(proposal, controller.signal)).rejects.toThrow(
+				"turn stopped",
+			);
+			// Exactly the one send that was already in flight; it carried no
+			// buttons, and the durable row stays pending for review.
+			expect(sends).toHaveLength(1);
+			expect(sends[0]!.other.reply_markup).toBeUndefined();
+			expect(programs.proposals.get(proposal.id)!.state).toBe("pending");
+		} finally {
+			programs.close();
 		}
 	});
 
@@ -421,8 +552,47 @@ describe("program approval — hook grant", () => {
 		}
 	});
 
-	test("a failed hook delivery reports granted-but-undelivered — the activation stands", async () => {
+	test("stop() joins an in-flight tap through the private credential delivery", async () => {
+		// The reviewer's shutdown window: activation commits, then the tap
+		// awaits the callback answer and the operator DM. A graceful
+		// restart must not exit inside that await — the token's plaintext
+		// exists only in the handler.
+		let releaseDm!: () => void;
+		const parked = new Promise<void>((resolve) => {
+			releaseDm = resolve;
+		});
+		const dms: string[] = [];
 		const h = harness({
+			publicUrl: "https://g.ts.net",
+			sendPrivate: async (text) => {
+				dms.push(text);
+				await parked;
+			},
+		});
+		try {
+			const proposal = h.programs.proposals.proposeCreate(hookDraft(), ADDRESS, NOW);
+			const tapping = h.tap(1, approveData(proposal.id));
+			await new Promise((r) => setImmediate(r));
+			// Activation landed; the DM is parked mid-delivery.
+			expect(h.programs.list()).toHaveLength(1);
+			expect(dms).toHaveLength(1);
+			let joined = false;
+			const stopping = h.approval.stop().then(() => {
+				joined = true;
+			});
+			await new Promise((r) => setTimeout(r, 10));
+			// The join waits for the tap — the drain budget owns the bound.
+			expect(joined).toBe(false);
+			releaseDm();
+			await tapping;
+			await stopping;
+			expect(joined).toBe(true);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	test("a failed hook delivery reports granted-but-undelivered — the activation stands", async () => {		const h = harness({
 			publicUrl: "https://g.ts.net",
 			sendPrivate: async () => {
 				throw new Error("couldn't DM the operator");

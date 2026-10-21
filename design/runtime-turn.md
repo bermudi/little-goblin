@@ -143,8 +143,13 @@ is tail-only. Ownership is journaled as durable event seqs — never
 message ids, which are app-controlled and carry no uniqueness
 guarantee: `owned_input_seqs` records the admitted user seqs plus
 every successfully folded steer (one checkpoint write with the steer
-mark, after conversion and the post-await authority check), and
-`resume_request_seqs` on the interrupted source names the generated
+mark, after conversion and the post-await authority check). Each
+steer carries its own event seq on the queued member from the append
+that persisted it — the fold records exactly that seq, never a scan
+of the view matching message ids (two steers may share one id; only
+the one that converted is owned), and admission's pending exclusion
+is seq-based for the same reason. `resume_request_seqs` on the
+interrupted source names the generated
 events that are this run's own — the same store transaction as the
 event append, which returns the real seq it wrote (never a
 lastUserSeq inference), and whose registry UPDATE verifies it landed

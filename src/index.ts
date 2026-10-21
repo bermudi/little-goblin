@@ -655,6 +655,7 @@ async function boot() {
 		delegationLifecycle,
 		mailWatcher,
 		mailApproval,
+		programApproval,
 		memoryWorker,
 		subagentRuns,
 		subagents,
@@ -681,6 +682,7 @@ const {
 	delegationLifecycle,
 	mailWatcher,
 	mailApproval,
+	programApproval,
 	memoryWorker,
 	subagentRuns,
 	subagents,
@@ -706,6 +708,10 @@ async function shutdown(signal: string): Promise<void> {
 	// The approval gate stops sweeping AND joins an in-flight Gmail send
 	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
+	// Program approvals join in-flight posts and taps the same way — an
+	// approved hook commits activation before its private credential
+	// delivery, and the token's plaintext exists only inside that handler.
+	const programJoins = programApproval?.stop() ?? Promise.resolve();
 	// The retention worker aborts its in-flight request and yields — the
 	// outbox rows stay durable for the next boot. Joined under the budget
 	// like everything else: a wedged memory service is not a deploy hold.
@@ -733,6 +739,7 @@ async function shutdown(signal: string): Promise<void> {
 		delegationScan,
 		mailScan,
 		mailSends,
+		programJoins,
 		retention,
 		subagentsClosed,
 	]);

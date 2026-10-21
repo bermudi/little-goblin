@@ -1,17 +1,26 @@
 // The Telegram side of the program grant boundary: requestApproval
 // posts the complete immutable candidate — charter in full plus the
 // resulting trigger set — chunked but never truncated, buttons on the
-// last chunk only. handleTap turns the operator's tap into the store's
-// one-transaction decision: no tap, no activation. A hook requested by
-// a proposal is minted here at grant time — the token never enters
-// model context, tool results, stamps or logs; it goes only to the
-// operators' private chats.
+// last chunk only; update cards render from the proposal's stored base
+// snapshot, so a re-post shows the candidate approval binds to, never a
+// merge onto today's row. handleTap turns the operator's tap into the
+// store's one-transaction decision: no tap, no activation. A hook
+// requested by a proposal is minted here at grant time — the token never
+// enters model context, tool results, stamps or logs; it goes only to
+// the operators' private chats. In-flight posts and taps are tracked so
+// stop() can join them at shutdown: the token's plaintext exists only
+// inside that delivery.
 
 import type { Api } from "grammy";
 import { formatAddress } from "../conversation.ts";
 import { log } from "../log.ts";
 import { hookTokenHash, hookUrl, newHookToken } from "../program-hook.ts";
-import type { ProgramProposal, ProposalRefusal } from "../program-proposals.ts";
+import {
+	programFingerprint,
+	snapshotProgram,
+	type ProgramProposal,
+	type ProposalRefusal,
+} from "../program-proposals.ts";
 import type { ProgramsStore } from "../programs.ts";
 import { withTimeout } from "./deadline.ts";
 
@@ -42,14 +51,43 @@ export interface ProgramApprovalDeps {
 }
 
 export interface ProgramApproval {
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 	handleTap(query: ProgramApprovalQuery): Promise<void>;
+	/** Joins in-flight posts and taps — shutdown's drain budget bounds the
+	 *  wait so an approved hook's credential delivery can't be cut off
+	 *  mid-await. */
+	stop(): Promise<void>;
 }
 
 export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval {
-	const requestApproval = async (proposal: ProgramProposal): Promise<void> => {
+	// In-flight posts and taps; stop() joins them (mail-approval's
+	// pattern). The tap matters most: activation commits before the
+	// callback answer and the private credential delivery, and the token's
+	// plaintext exists only in that handler — losing the process mid-await
+	// loses it permanently.
+	const inFlight = new Set<Promise<void>>();
+	const tracked = (run: () => Promise<void>): Promise<void> => {
+		const p = run();
+		inFlight.add(p);
+		void p.catch(() => {}).then(() => inFlight.delete(p));
+		return p;
+	};
+
+	const postApproval = async (
+		proposal: ProgramProposal,
+		signal: AbortSignal | undefined,
+	): Promise<void> => {
 		const chunks = chunkProposalText(proposalText(deps.programs, proposal));
 		for (let i = 0; i < chunks.length; i++) {
+			// The staging turn fences its own posting: once stopped, no
+			// further chunks — and never the buttons chunk — may go out in
+			// its name. The durable proposal stays pending for
+			// program/review to re-send.
+			if (signal?.aborted) {
+				throw new Error(
+					`turn stopped before the approval card finished posting (${i}/${chunks.length} chunks sent) — proposal #${proposal.id} stays pending`,
+				);
+			}
 			const last = i === chunks.length - 1;
 			await withTimeout(
 				deps.api.sendMessage(proposal.chatId, chunks[i]!, {
@@ -86,18 +124,6 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 			),
 			chunks: chunks.length,
 		});
-	};
-
-	const handleTap = async (query: ProgramApprovalQuery): Promise<void> => {
-		try {
-			await decide(query);
-		} catch (err) {
-			log.error("program approval handler failed", err, { query: query.id });
-			await withTimeout(
-				deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
-				"answerCallbackQuery",
-			).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
-		}
 	};
 
 	const decide = async (query: ProgramApprovalQuery): Promise<void> => {
@@ -205,7 +231,31 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 		);
 	};
 
-	return { requestApproval, handleTap };
+	const handleTap = async (query: ProgramApprovalQuery): Promise<void> => {
+		try {
+			await decide(query);
+		} catch (err) {
+			log.error("program approval handler failed", err, { query: query.id });
+			await withTimeout(
+				deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
+				"answerCallbackQuery",
+			).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
+		}
+	};
+
+	return {
+		requestApproval: (proposal, signal) => tracked(() => postApproval(proposal, signal)),
+		handleTap: (query) => tracked(() => handleTap(query)),
+		stop: async () => {
+			const waits = [...inFlight];
+			if (waits.length > 0) {
+				log.info("program approval — joining in-flight handlers on shutdown", {
+					handlers: waits.length,
+				});
+			}
+			await Promise.allSettled(waits);
+		},
+	};
 }
 
 function refusalText(refusal: ProposalRefusal): string {
@@ -225,10 +275,14 @@ function refusalText(refusal: ProposalRefusal): string {
 	}
 }
 
-// The complete candidate: for a create, the whole draft; for an
-// update, the resulting configuration (current row merged with the
-// requested patch — the shown grant is what lands, not just the
-// diff). Nothing abbreviated: the operator approves exactly this.
+// The complete candidate: for a create, the whole draft; for an update,
+// the resulting configuration (stored base merged with the requested
+// patch — the shown grant is what lands, not just the diff). Update
+// renders come from the immutable snapshot staged with the proposal, so
+// a re-post after the live program moved shows exactly what the original
+// card showed — never a merge onto today's row that approval would then
+// bind to the old base. Nothing abbreviated: the operator approves
+// exactly this.
 function proposalText(programs: Pick<ProgramsStore, "get">, proposal: ProgramProposal): string {
 	const header =
 		proposal.kind === "create"
@@ -263,18 +317,40 @@ function proposalText(programs: Pick<ProgramsStore, "get">, proposal: ProgramPro
 			`requested: ${JSON.stringify(patch)}`,
 		].join("\n");
 	}
+	const stale = programFingerprint(target) !== proposal.base;
+	// Legacy rows predate the snapshot column; their only honest render is
+	// the live row itself, and that is exactly the base while the
+	// fingerprint matches. Once it drifts there is nothing immutable left
+	// to show — name the coming refusal instead of guessing a merge.
+	const base = stale ? proposal.baseSnapshot : (proposal.baseSnapshot ?? snapshotProgram(target));
+	if (base === null) {
+		return [
+			header,
+			lead,
+			"",
+			"(the program changed since this proposal — approving will refuse as stale; reject it and ask again)",
+			"",
+			`requested: ${JSON.stringify(patch)}`,
+		].join("\n");
+	}
 	const merged = {
-		name: patch.name ?? target.name,
-		charter: patch.charter ?? target.charter,
-		cron: patch.cron !== undefined ? patch.cron : target.cron,
+		name: patch.name ?? base.name,
+		charter: patch.charter ?? base.charter,
+		cron: patch.cron !== undefined ? patch.cron : base.cron,
 		maxLatenessMinutes:
-			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : target.maxLatenessMinutes,
-		hook: patch.hook === true ? true : target.hookHash !== null,
-		mailFilter: patch.mailFilter !== undefined ? patch.mailFilter : target.mailFilter,
+			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : base.maxLatenessMinutes,
+		hook: patch.hook === true ? true : base.hook,
+		mailFilter: patch.mailFilter !== undefined ? patch.mailFilter : base.mailFilter,
 	};
 	return [
 		header,
 		lead,
+		...(stale
+			? [
+					"",
+					"(the program changed since this proposal was staged — approving will refuse as stale; reject it and ask again)",
+				]
+			: []),
 		"",
 		`name: ${merged.name}`,
 		"charter:",

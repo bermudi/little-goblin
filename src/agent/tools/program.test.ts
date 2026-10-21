@@ -710,6 +710,45 @@ describe("program tool", () => {
 		expect(approvals.map((p) => p.id)).toEqual([out.proposal.id]);
 	});
 
+	test("an aborted staging turn forwards the signal to the gate and reports review guidance", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const controller = new AbortController();
+		const signals: Array<AbortSignal | undefined> = [];
+		const tool = programTool({
+			programs,
+			chatId: -100,
+			threadId: 7,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+			requestApproval: async (_proposal, signal) => {
+				signals.push(signal);
+				controller.abort();
+				if (signal?.aborted) {
+					throw new Error("turn stopped before the approval card finished posting");
+				}
+			},
+		});
+		const out = (await (
+			tool as unknown as {
+				execute: (i: unknown, o?: { abortSignal?: AbortSignal }) => Promise<unknown>;
+			}
+		).execute(
+			{ action: "create", name: "x", charter: "c", cron: "0 9 * * *" },
+			{ abortSignal: controller.signal },
+		)) as {
+			proposal: { id: number; state: string };
+			error: string;
+		};
+		// The gate saw the turn's own signal, fenced itself, and the tool
+		// degraded to pending-proposal guidance instead of throwing.
+		expect(signals).toHaveLength(1);
+		expect(signals[0]).toBe(controller.signal);
+		expect(out.proposal.state).toBe("pending");
+		expect(out.error).toContain("review");
+	});
+
 	test("review on a decided proposal reports its state without reposting", async () => {
 		const { tool, programs, approvals } = toolFor();
 		const staged = (await exec(tool, {

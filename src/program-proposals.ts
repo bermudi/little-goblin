@@ -7,9 +7,12 @@
 // restart can never activate twice. Update proposals bind to an
 // immutable base fingerprint of the exact active configuration they
 // were shown against — run/cursor accounting excluded, so a landed
-// fire or a mail checkpoint never stales one — and a new proposal for
-// the same target supersedes the older pending ones. History is
-// append-only: no mutation of stored payloads, no deletion.
+// fire or a mail checkpoint never stales one — and store the
+// renderable snapshot of that base, so an approval card re-posted at
+// any time shows the candidate the fingerprint binds to, never a merge
+// onto the live row. A new proposal for the same target supersedes the
+// older pending ones. History is append-only: no mutation of stored
+// payloads, no deletion.
 //
 // This helper composes into ProgramsStore on the SAME connection:
 // programs.ts injects the core get/create/update and the definition
@@ -54,6 +57,20 @@ export interface ProgramPatchRequest {
 
 export type ProposalState = "pending" | "approved" | "rejected" | "superseded";
 
+/** The immutable base configuration an update proposal was shown against —
+ *  the fingerprint's fields minus the fingerprint's own bookkeeping (id,
+ *  address, hookHash, enabled), kept so any later re-post renders the
+ *  exact candidate the operator first saw, never a merge onto whatever
+ *  the live row happens to say today. */
+export interface ProgramBaseSnapshot {
+	name: string;
+	charter: string;
+	cron: string | null;
+	maxLatenessMinutes: number | null;
+	hook: boolean;
+	mailFilter: string | null;
+}
+
 export interface ProgramProposal {
 	id: number;
 	kind: "create" | "update";
@@ -65,6 +82,9 @@ export interface ProgramProposal {
 	patch: ProgramPatchRequest | null;
 	/** kind === "update" — the fingerprinted base configuration. */
 	base: string | null;
+	/** kind === "update" — the renderable base snapshot; null on creates
+	 *  and on legacy rows staged before the column existed. */
+	baseSnapshot: ProgramBaseSnapshot | null;
 	/** The requester's pinned Telegram address — where the approval
 	 *  posts, and where a created program answers. */
 	chatId: number;
@@ -168,6 +188,19 @@ export function programFingerprint(p: Program): string {
 	});
 }
 
+// The renderable half of the fingerprint: what an approval card needs to
+// show the base configuration. Stored at staging, read at every render.
+export function snapshotProgram(p: Program): ProgramBaseSnapshot {
+	return {
+		name: p.name,
+		charter: p.charter,
+		cron: p.cron,
+		maxLatenessMinutes: p.maxLatenessMinutes,
+		hook: p.hookHash !== null,
+		mailFilter: p.mailFilter,
+	};
+}
+
 const draftSchema = z
 	.object({
 		name: z.string().min(1).max(100),
@@ -205,6 +238,7 @@ const rowSchema = z.object({
 	target_id: z.number().nullable(),
 	payload: z.string(),
 	base: z.string().nullable(),
+	base_snapshot: z.string().nullable(),
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
 	state: z.enum(["pending", "approved", "rejected", "superseded"]),
@@ -213,6 +247,17 @@ const rowSchema = z.object({
 	decided_by: z.number().nullable(),
 	activated_id: z.number().nullable(),
 });
+
+const baseSnapshotSchema = z
+	.object({
+		name: z.string().min(1).max(100),
+		charter: z.string().min(1).max(PROPOSAL_CHARTER_MAX),
+		cron: z.string().min(5).nullable(),
+		maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+		hook: z.boolean(),
+		mailFilter: z.string().min(1).max(500).nullable(),
+	})
+	.strict();
 
 // Stored payloads are validated JSON, parsed at read — corruption
 // names itself with the row instead of surfacing downstream as a
@@ -230,6 +275,16 @@ function rowToProposal(row: unknown): ProgramProposal {
 			`program proposal ${r.id}: corrupt payload — ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
+	let baseSnapshot: ProgramBaseSnapshot | null = null;
+	if (r.base_snapshot !== null) {
+		try {
+			baseSnapshot = baseSnapshotSchema.parse(JSON.parse(r.base_snapshot));
+		} catch (err) {
+			throw new Error(
+				`program proposal ${r.id}: corrupt base snapshot — ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
 	return {
 		id: r.id,
 		kind: r.kind,
@@ -237,6 +292,7 @@ function rowToProposal(row: unknown): ProgramProposal {
 		draft,
 		patch,
 		base: r.base,
+		baseSnapshot,
 		chatId: r.chat_id,
 		threadId: r.thread_id,
 		state: r.state,
@@ -254,6 +310,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 		target_id INTEGER,
 		payload TEXT NOT NULL,
 		base TEXT,
+		base_snapshot TEXT,
 		chat_id INTEGER NOT NULL,
 		thread_id INTEGER,
 		state TEXT NOT NULL,
@@ -262,13 +319,23 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 		decided_by INTEGER,
 		activated_id INTEGER
 	)`);
+	// Rows staged before base_snapshot existed read NULL — renders fall
+	// back to the fingerprint check (same conversation.ts ALTER pattern).
+	if (
+		!db
+			.query<{ name: string }, []>("PRAGMA table_info(program_proposals)")
+			.all()
+			.some((c) => c.name === "base_snapshot")
+	) {
+		db.run("ALTER TABLE program_proposals ADD COLUMN base_snapshot TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM program_proposals WHERE id = ?");
 	const qList = db.query("SELECT * FROM program_proposals ORDER BY id");
 	const qPending = db.query("SELECT * FROM program_proposals WHERE state = 'pending' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO program_proposals
-		(kind, target_id, payload, base, chat_id, thread_id, state, created_at, decided_at, decided_by, activated_id)
-		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL)`);
+		(kind, target_id, payload, base, base_snapshot, chat_id, thread_id, state, created_at, decided_at, decided_by, activated_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL)`);
 	const qDecide = db.query(
 		"UPDATE program_proposals SET state = ?, decided_at = ?, decided_by = ?, activated_id = ? WHERE id = ?",
 	);
@@ -295,6 +362,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				targetId,
 				JSON.stringify(validated),
 				programFingerprint(target),
+				JSON.stringify(snapshotProgram(target)),
 				address.chatId,
 				address.threadId,
 				now.toISOString(),
@@ -390,6 +458,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				"create",
 				null,
 				JSON.stringify(validated),
+				null,
 				null,
 				address.chatId,
 				address.threadId,

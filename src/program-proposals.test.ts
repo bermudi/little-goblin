@@ -329,6 +329,67 @@ describe("program proposals — update", () => {
 		expect(() => programs.proposals.get(proposal.id)).toThrow(/corrupt payload/);
 		programs.close();
 	});
+
+	test("an update proposal stores its renderable base snapshot — the immutable render survives reopen", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = openPrograms(path);
+		const program = programs.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		expect(proposal.baseSnapshot).toEqual({
+			name: "p",
+			charter: "c",
+			cron: "0 9 * * *",
+			maxLatenessMinutes: null,
+			hook: false,
+			mailFilter: null,
+		});
+		// The live row moving never rewrites the stored snapshot.
+		programs.update(program.id, { cron: "0 10 * * *" });
+		expect(programs.proposals.get(proposal.id)!.baseSnapshot?.cron).toBe("0 9 * * *");
+		programs.close();
+		const reopened = openPrograms(path);
+		expect(reopened.proposals.get(proposal.id)!.baseSnapshot?.cron).toBe("0 9 * * *");
+		reopened.close();
+	});
+
+	test("a pre-snapshot schema migrates in place — legacy rows read null and stay decidable", () => {
+		const path = tmpDb("goblin-proposals-");
+		const first = openPrograms(path);
+		const program = first.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = first.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		first.close();
+		// Rewind to the pre-snapshot schema, then reopen: the ALTER runs
+		// and the legacy row reads a null snapshot without breaking reads.
+		const db = new Database(path);
+		db.run("ALTER TABLE program_proposals DROP COLUMN base_snapshot");
+		db.close();
+		const reopened = openPrograms(path);
+		const legacy = reopened.proposals.get(proposal.id)!;
+		expect(legacy.baseSnapshot).toBeNull();
+		expect(reopened.proposals.approve(legacy.id, 42).kind).toBe("activated");
+		reopened.close();
+	});
+
+	test("a corrupt stored snapshot fails loud at read", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = openPrograms(path);
+		const program = programs.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		const db = new Database(path);
+		db.query("UPDATE program_proposals SET base_snapshot = '{nope' WHERE id = ?").run(proposal.id);
+		db.close();
+		expect(() => programs.proposals.get(proposal.id)).toThrow(/corrupt base snapshot/);
+		programs.close();
+	});
 });
 
 describe("program proposals — atomicity", () => {

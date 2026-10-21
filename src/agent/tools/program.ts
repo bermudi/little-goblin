@@ -39,9 +39,10 @@ export interface ProgramToolDeps {
 	publicUrl(): string | undefined;
 	sendPrivate(text: string): Promise<void>;
 	/** Posts a staged proposal for the operator's tap — throws when the
-	 *  approval message could not be delivered. The proposal stays
+	 *  approval message could not be delivered. The staging turn's abort
+	 *  signal fences the posting chunk by chunk; the proposal stays
 	 *  pending either way. */
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 }
 
 export function makePrivateSender(
@@ -138,9 +139,12 @@ export const programTool = (deps: ProgramToolDeps) =>
 		description:
 			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves in Telegram — the request activates only on their tap. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure.",
 		inputSchema: programInputSchema,
-		execute: async (raw) => {
+		execute: async (raw, options) => {
 			const input = actionSchema.parse(raw);
 			const address = { chatId: deps.chatId, threadId: deps.threadId };
+			// The staging turn's stop signal fences the approval posting —
+			// carried through every deliverApproval call below.
+			const signal = options?.abortSignal;
 			switch (input.action) {
 				case "list":
 					return {
@@ -167,7 +171,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							},
 							address,
 						);
-						return await deliverApproval(deps, proposal);
+						return await deliverApproval(deps, proposal, signal);
 					} catch (err) {
 						if (isProgramRuleError(err)) {
 							return { error: err.message };
@@ -203,7 +207,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							// Any grant-shaped component stages the whole requested
 							// patch — no partial application while it is pending.
 							const proposal = deps.programs.proposals.proposeUpdate(input.id, patch, address);
-							return await deliverApproval(deps, proposal);
+							return await deliverApproval(deps, proposal, signal);
 						}
 						const program = deps.programs.update(input.id, patch);
 						if (program === null) return { error: `no program ${input.id}` };
@@ -256,7 +260,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 								{ hook: true },
 								address,
 							);
-							return await deliverApproval(deps, proposal);
+							return await deliverApproval(deps, proposal, signal);
 						} catch (err) {
 							if (isProgramRuleError(err)) {
 								return { error: err.message };
@@ -285,7 +289,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							status: `already ${proposal.state}`,
 						};
 					}
-					return await deliverApproval(deps, proposal);
+					return await deliverApproval(deps, proposal, signal);
 				}
 			}
 		},
@@ -319,13 +323,16 @@ function requiresApproval(
 }
 
 // Stage first, notify second: a failed post returns the pending
-// proposal with review guidance — the row is durable, never lost.
+// proposal with review guidance — the row is durable, never lost. A
+// stop-fenced post lands here too: the turn's signal aborted the
+// chunked posting, and the guidance tells the model how to re-send.
 async function deliverApproval(
 	deps: ProgramToolDeps,
 	proposal: ProgramProposal,
+	signal: AbortSignal | undefined,
 ): Promise<Record<string, unknown>> {
 	try {
-		await deps.requestApproval(proposal);
+		await deps.requestApproval(proposal, signal);
 	} catch (err) {
 		log.error("program approval post failed — proposal stays pending", err, {
 			proposal: proposal.id,

@@ -536,6 +536,7 @@ export const COMMANDS = [
 	{ command: "voice", description: "toggle voice-note replies" },
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
 	{ command: "forget", description: "list or delete memorized sources" },
+	{ command: "skill", description: "invoke a skill by name, or fetch one from a GitHub URL" },
 	{ command: "stop", description: "fence the running turn" },
 	{ command: "compact", description: "summarize older history to free context" },
 	{ command: "resume", description: "resume an interrupted turn" },

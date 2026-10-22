@@ -176,8 +176,11 @@ export async function fetchSkill(
 
 	const extracted = await extract(source, digest, cacheRoot, fetchImpl, now);
 	const dir = join(finalDir, extracted.name);
+	let raced = false;
 	try {
 		renameSync(extracted.stagingDir, finalDir);
+		// The staging root (tarball, extraction dirs) never publishes.
+		cachedCleanup(extracted.stagingRoot);
 	} catch (err) {
 		if (
 			(err as NodeJS.ErrnoException).code !== "ENOTEMPTY" &&
@@ -185,9 +188,11 @@ export async function fetchSkill(
 		)
 			throw err;
 		// Lost a publish race with the same tarball — the incumbent wins.
+		raced = true;
 		cachedCleanup(extracted.stagingDir);
 	}
-	const publishedDescriptor = readDescriptor(finalDir) ?? extracted.descriptor;
+	const publishedDescriptor =
+		raced ? (readDescriptor(finalDir) ?? extracted.descriptor) : extracted.descriptor;
 	log.info("skill fetched", {
 		url: rawUrl,
 		digest,
@@ -195,7 +200,7 @@ export async function fetchSkill(
 		bodyBytes: extracted.bodyBytes,
 		dirBytes: extracted.dirBytes,
 		files: extracted.fileCount,
-		cached: publishedDescriptor !== extracted.descriptor,
+		cached: raced,
 		ms: Date.now() - started,
 	});
 	return {
@@ -206,7 +211,7 @@ export async function fetchSkill(
 		fileCount: extracted.fileCount,
 		dirBytes: extracted.dirBytes,
 		digest,
-		cached: publishedDescriptor !== extracted.descriptor,
+		cached: raced,
 	};
 }
 
@@ -277,7 +282,11 @@ async function extract(
 	cacheRoot: string,
 	fetchImpl: typeof fetch,
 	now: () => Date,
-): Promise<{ stagingDir: string; descriptor: CachedSkillDescriptor } & Walked & { name: string }> {
+): Promise<{
+	stagingDir: string;
+	stagingRoot: string;
+	descriptor: CachedSkillDescriptor;
+} & Walked & { name: string }> {
 	const tarballUrl = `https://codeload.github.com/${source.owner}/${source.repo}/tar.gz/${source.ref}`;
 	const stagingRoot = mkdtempSync(join(cacheRoot, ".fetch-"));
 	try {
@@ -336,9 +345,11 @@ async function extract(
 			);
 		}
 
-		// Publish layout: <staging>/<name>/** + <staging>/skill.json.
+		// Publish layout: <staging>/publish/<name>/** + skill.json beside
+		// it — the whole publish dir renames to <cache>/<digest>.
 		const stagingDir = join(stagingRoot, "publish");
-		renameSync(subtree, stagingDir);
+		mkdirSync(stagingDir);
+		renameSync(subtree, join(stagingDir, parsed.fm.name));
 		rmSync(extractDir, { recursive: true, force: true });
 		const descriptor: CachedSkillDescriptor = {
 			name: parsed.fm.name,
@@ -349,8 +360,8 @@ async function extract(
 			// verdict is unavailable and the view refuses injection.
 			verdict: { status: "unavailable", injection: null, severity: null },
 		};
-		durableWriteFile(join(stagingRoot, "skill.json"), JSON.stringify(descriptor, null, "\t"));
-		return { stagingDir, descriptor, name: parsed.fm.name, ...walked };
+		durableWriteFile(join(stagingDir, "skill.json"), JSON.stringify(descriptor, null, "\t"));
+		return { stagingDir, stagingRoot, descriptor, name: parsed.fm.name, ...walked };
 	} catch (err) {
 		rmSync(stagingRoot, { recursive: true, force: true });
 		if (err instanceof SkillFetchError) {

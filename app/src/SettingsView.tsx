@@ -472,8 +472,11 @@ function ModelSheet({
 		if (e.key !== "Enter" || raw === "") return;
 		e.preventDefault();
 		const exact = canonical.get(raw.toLowerCase());
+		// A fully typed provider/model ref beats a catalog row that only
+		// contains it as a substring — Enter saves what was typed.
 		const pick =
 			exact ??
+			(showCustom && raw.includes("/") ? customRef : undefined) ??
 			favs[0] ??
 			(showCurrent ? current : undefined) ??
 			groups[0]?.models[0]?.ref ??

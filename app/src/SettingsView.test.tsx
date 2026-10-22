@@ -523,6 +523,36 @@ describe("main branch regressions", () => {
 		await waitFor(() => savedBodies.length > 0, "the typed ref to save");
 		expect(savedBodies.at(-1)?.model).toBe("main/new-model");
 	});
+
+	test("Enter on a fully typed ref picks it over a catalog row that only contains it", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/glm-5.3"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "glm-5.3", name: "GLM 5.3", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
+		const sheet = container.querySelector(".msheet")!;
+		const input = sheet.querySelector('input[aria-label="Search models"]')!;
+		await typeInto(input, "main/glm-5");
+		// main/glm-5.3 leads the favorites and the catalog on a substring
+		// hit — Enter must save the ref as typed, not the longer match.
+		await act(async () => {
+			input.dispatchEvent(
+				new win.KeyboardEvent("keydown", {
+					bubbles: true,
+					key: "Enter",
+				}) as unknown as Event,
+			);
+		});
+		await waitFor(() => savedBodies.length > 0, "the Enter pick to save");
+		expect(savedBodies.at(-1)?.model).toBe("main/glm-5");
+	});
 });
 
 describe("quiet harbor regressions", () => {

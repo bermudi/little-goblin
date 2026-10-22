@@ -21,7 +21,7 @@ import {
 	toolCallPart,
 	type StreamAttempt,
 } from "./testkit/fake-model.ts";
-import { pauseFakeModelAtDelta, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
+import { deferred, pauseFakeModelAtDelta, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import { openTurnJournal, RESOLVED_RETRY_NOTE, type TurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
@@ -1158,6 +1158,108 @@ describe("turn resume", () => {
 		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
 		const reply = detail.at(-1)!;
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("resume refuses while a compaction is in flight — the view it measured can still move", async () => {
+		const started = deferred();
+		const gate = deferred<string>();
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => 1000,
+				summarize: () => {
+					started.resolve();
+					return gate.promise;
+				},
+			},
+		});
+		seedExchanges(store, conv.id);
+		const trigger = appendUserMsg(store, conv, "original ask");
+		const steered = appendUserMsg(store, conv, "steered while running");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steered.seq],
+		});
+		// Tail-sized assistant events after the owned input push the anchor
+		// and the steer below the coming boundary once the summary lands.
+		for (const id of ["f1", "f2"]) {
+			store.append(conv.id, [
+				{ id, role: "assistant", parts: [{ type: "text", text: "y".repeat(600) }] },
+			]);
+		}
+		const compacted = runtime.compact(conv);
+		await started.promise; // the summarizer holds the lane mid-flight
+		const inFlight = ops.resume(conv.id, "run-dead");
+		// Admitted now, the queued resume would run after the commit — its
+		// still-visible anchor would never reach the model at all.
+		expect(inFlight).toMatchObject({ kind: "refused", code: "conflict" });
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+
+		gate.resolve("the folded era");
+		expect((await compacted).kind).toBe("compacted");
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		// After the commit the same resume measures the moved view — both
+		// folded inputs revive into the generated event instead of being
+		// silently dropped.
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === trigger.message.id)).toBe(
+			false,
+		);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === steered.message.id)).toBe(
+			false,
+		);
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		// The seeded exchanges are user events too — the generated event is
+		// the one registered provenance names.
+		const resumeEvent = detail.find(
+			(e) =>
+				e.message.role === "user" &&
+				(e.message.metadata as { goblinResume?: { sourceRunId?: string } } | undefined)
+					?.goblinResume?.sourceRunId === "run-dead",
+		)!;
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain(
+			"[operator resumed interrupted run run-dead; original request and consumed steering follow]",
+		);
+		expect(parts).toContain("original ask");
+		expect(parts).toContain("steered while running");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("original ask").length - 1).toBe(1);
+		expect(prompt.split("steered while running").length - 1).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("the resumed turn's watchdog judges the run's original request, not the marker", async () => {
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+		});
+		const seen: string[] = [];
+		runtime.setLoopWatchdog({
+			every: 1,
+			decide: async (state) => {
+				seen.push((state as { operatorRequest: string }).operatorRequest);
+				return { answers: { stuck: 0 }, inputTokens: 0, cost: 0 };
+			},
+		});
+		const anchorSeq = appendUser(store, conv, "Find the cause of the billing discrepancy");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		// The anchor stays visible, so the generated head is the marker
+		// alone — the watchdog's task text must still be the real request.
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await waitUntil(() => seen.length > 0, "watchdog check fired");
+		expect(seen[0]).toBe("Find the cause of the billing discrepancy");
 		await runtime.shutdown();
 		store.close();
 	});

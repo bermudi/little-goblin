@@ -338,10 +338,16 @@ export class Runtime {
 		return !this.closed;
 	}
 
-	// Used by app retries to avoid turning a retry into steering input.
+	// Busy is the lane holding any work — a claimed or queued turn, or a
+	// queued/in-flight compaction. Compaction counts because it rewrites
+	// the model view between turns: app retries use this to avoid turning
+	// a retry into steering input, and resume admission refuses on it so
+	// the visibility it measured cannot move before the resumed turn runs.
 	busy(convId: string): boolean {
 		const lane = this.lanes.get(convId);
-		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+		return (
+			lane !== undefined && (lane.running || lane.pending.length > 0 || lane.compacts.length > 0)
+		);
 	}
 
 	// Replay the existing wire and subscribe atomically; the replay/live union is
@@ -805,7 +811,10 @@ export class Runtime {
 			{
 				convId,
 				watchdog: this.loopWatchdog,
-				request: messageText(turns[0]!.message),
+				// An operator-resume head is the generated provenance marker —
+				// the seed carries the run's real request for the watchdog;
+				// every other head message is itself the request.
+				request: recovery?.operatorRequest ?? messageText(turns[0]!.message),
 			},
 			recovery?.loop,
 		);
@@ -1138,6 +1147,7 @@ export class Runtime {
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
 					failedRunId: runId ?? undefined,
+					operatorRequest: recovery?.operatorRequest,
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),

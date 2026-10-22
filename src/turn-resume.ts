@@ -11,6 +11,7 @@ import {
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
 import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
@@ -556,7 +557,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (runtime.busy(convId)) {
 				return refused(
 					"conflict",
-					"a turn is running or queued — stop it or wait for it to finish",
+					"a turn or compaction is running or queued — stop it or wait for it to finish",
 				);
 			}
 			// Tail-only staleness: a durable user event the dead turn never
@@ -624,6 +625,16 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const seed: ResumeSeed = {
 				conversation: captured,
 				partial,
+				// The watchdog judges progress against the operator's real
+				// request — the run's anchor, or its first owned input when
+				// no anchor was recorded. The head event's marker text names
+				// provenance only and must not take its place.
+				operatorRequest:
+					stale.anchor !== undefined
+						? messageText(stale.anchor.message)
+						: stale.owned[0] !== undefined
+							? messageText(stale.owned[0].message)
+							: undefined,
 				seenText: partial !== null && partial.parts.some((p) => p.type === "text"),
 				toolCalls: calls
 					.filter((c) => c.name !== "" && (c.state === "completed" || c.state === "resolved-done"))

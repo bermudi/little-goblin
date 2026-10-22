@@ -136,10 +136,19 @@ original anchor's and the owned post-anchor inputs' parts verbatim,
 but only for events the model view no longer carries — never the
 original event re-appended. An event still in the view reaches the
 model through its own entry; re-copying it would double the text in
-the prompt and in the retention document. The event rides the
+the prompt and in the retention document. Visibility is measured at
+ops-admission, so the lane must hold still for the measurement to
+stay true: `Runtime.busy` counts queued and in-flight compactions as
+busy, and a resume offered while the lane holds work refuses — a
+queued or in-flight summary would otherwise rewrite the view between
+measurement and the resumed turn's own admission, silently dropping
+an anchor that read visible. The event rides the
 admission anchor, so the recovered instruction survives compaction
 and the reply anchors to the resume event itself; the prefix change
-is tail-only. Ownership is journaled as durable event seqs — never
+is tail-only. The seed also carries the original request's text for
+the loop watchdog — the generated marker names provenance, not the
+task, and the watchdog judges progress against the ask. Ownership is
+journaled as durable event seqs — never
 message ids, which are app-controlled and carry no uniqueness
 guarantee: `owned_input_seqs` records the admitted user seqs plus
 every successfully folded steer (one checkpoint write with the steer

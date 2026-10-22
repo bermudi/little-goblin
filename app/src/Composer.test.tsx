@@ -12,7 +12,12 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
+import {
+	Composer,
+	type StagedNote,
+	type StagedSkill,
+	type StagedUpload,
+} from "./ChatView.tsx";
 
 // The server's side of the contract: each upload lands on its own
 // UUID-stemmed path (persistAttachment), so distinct uploads NEVER share
@@ -136,6 +141,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	}) {
 		const [staged, setStaged] = useState<StagedUpload[]>([]);
 		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
+		const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
 		return (
 			<Composer
 				token={null}
@@ -145,6 +151,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}
 				setStagedNotes={setStagedNotes}
+				stagedSkills={stagedSkills}
+				setStagedSkills={setStagedSkills}
 				onSend={onSend}
 				draftRestore={draftRestore}
 			/>

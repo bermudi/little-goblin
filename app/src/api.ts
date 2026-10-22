@@ -56,6 +56,7 @@ import type {
 	SkillDecideBody,
 	SkillDecideResponse,
 	SkillFileResponse,
+	SkillPreviewResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
 	ThreadSkillsResponse,
@@ -736,6 +737,16 @@ export function getServiceStatus(token: string | null): Promise<OperatorStatusRe
 
 export function listSkills(token: string | null): Promise<SkillsResponse> {
 	return request(token, "/api/app/skills");
+}
+
+// Temp-skill preview (ruling 2026-10-21): the server fetches, scores,
+// stamps the verdict; the card decides.
+export function previewSkill(token: string | null, url: string): Promise<SkillPreviewResponse> {
+	return request(token, "/api/app/skills/preview", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ url }),
+	});
 }
 
 // The same mechanical decision the Telegram ✅/🚫 row runs.

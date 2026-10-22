@@ -294,6 +294,8 @@ describe("turn metadata usage", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -375,6 +377,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -465,6 +469,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -536,6 +542,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -650,6 +658,8 @@ describe("ChatView mid-turn steer", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -787,6 +797,8 @@ describe("NotePicker dismissal", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,

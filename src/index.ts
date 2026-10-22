@@ -74,7 +74,6 @@ import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
-import { makeOperatorHerdr } from "./herdr.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
@@ -342,6 +341,7 @@ async function boot() {
 			begin: (e) => wakeDispatcher?.hooks.begin(e),
 			members: (runId, ids) => wakeDispatcher?.hooks.members(runId, ids),
 			end: (runId, status, delivery) => wakeDispatcher?.hooks.end(runId, status, delivery),
+			preRunFailure: (e) => wakeDispatcher?.hooks.preRunFailure?.(e),
 		},
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		pruneBetweenTurns: (convId) => {
@@ -533,7 +533,7 @@ async function boot() {
 		resps: responsibilities,
 		wakes: wakeStore,
 		pump: () => wakeDispatcher!.pump(),
-		list: () => makeOperatorHerdr().list(),
+		list: () => operatorHerdr.list(),
 	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {

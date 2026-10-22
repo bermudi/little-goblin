@@ -7,6 +7,7 @@ import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk }
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import { isTransientTurnFailure } from "./agent/provider-errors.ts";
+import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -948,12 +949,14 @@ export class Runtime {
 				tools,
 				modalities: step.inputModalities,
 				carries: accepts.current.carries,
+				skillRef: resolveSkillRef,
 			};
 			const merged = await buildModelView(viewCtx, {
 				entries,
 				prior: memory.prior,
 				current: memory.current,
 				partial: recovery?.partial ?? null,
+				ownedSeqs: snapshot.ownedInputSeqs,
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 

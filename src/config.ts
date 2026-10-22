@@ -55,6 +55,9 @@ export const paths = {
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
 	bashcache: () => join(goblinHome(), "state", "bashcache"),
+	// Digest-pinned fetched temp skills — cache, not state: deletable,
+	// never a catalog entry.
+	skillcache: () => join(goblinHome(), "state", "skillcache"),
 	// Lazy: created on the first project create, not by ensureHomeLayout.
 	projects: () => join(goblinHome(), "projects"),
 	// Digest-pinned auto-fetch artifacts. Cache, not state: deletable.

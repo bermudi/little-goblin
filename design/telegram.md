@@ -340,3 +340,19 @@ Effects are premium-gated at the receiving chat — the first
 definite, nothing landed) and drops effects for the process lifetime;
 restart re-probes. Multi-image sends share one album; documents never wait;
 a group timeout means the album may be live (uncertain, never resent).
+
+## /skill (ruling 2026-10-21, operator ask)
+
+The Telegram door onto explicit skill invocation (mechanism ruling:
+design/skills.md → Skill invocation). `/skill <name>` submits the turn
+with a `data-skill` part plus any accompanying text; the name resolves
+against the catalog including manual-only ones — naming it is the
+operator's override. A name the catalog doesn't know, or a bare
+`/skill`, replies with the catalog (name, one-line description,
+manual-only marked). `/skill <github-url> [text…]` runs the temp-skill
+pipeline at intake and replies with the preview — name, size, source,
+System One verdict — and a ✅/🚫 row; yes submits the held turn (part +
+held text), no drops it. The pending confirm is keyed by a short token
+(the URL cannot ride the 64-byte callback cap), lives in process
+memory only — a restart or `/stop`-adjacent epoch change loses it, and
+the command re-runs instantly off the skillcache.

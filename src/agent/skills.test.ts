@@ -129,13 +129,27 @@ describe("loadCatalog", () => {
 		expect(catalog.skipped).toBe(2);
 	});
 
-	test("disable-model-invocation stays unlisted but is not malformed", () => {
+	test("disable-model-invocation rides the catalog but not the prompt section", () => {
 		const root = useRoot();
 		writeSkill(root, "manual", "name: manual\ndescription: d\ndisable-model-invocation: true");
 		writeSkill(root, "auto", "name: auto\ndescription: d\ndisable-model-invocation: false");
 		const catalog = loadCatalog(root);
-		expect(catalog.entries.map((e) => e.name)).toEqual(["auto"]);
+		expect(catalog.entries.map((e) => e.name)).toEqual(["auto", "manual"]);
+		expect(catalog.entries.find((e) => e.name === "manual")?.manualOnly).toBe(true);
+		expect(catalog.entries.find((e) => e.name === "auto")?.manualOnly).toBeUndefined();
 		expect(catalog.skipped).toBe(0);
+		// The prompt section never learns a manual-only name.
+		const lines = formatSkillsSection(catalog).join("\n");
+		expect(lines).toContain("- auto — d");
+		expect(lines).not.toContain("manual");
+	});
+
+	test("an all-manual catalog renders none-yet, not a lie", () => {
+		const root = useRoot();
+		writeSkill(root, "manual", "name: manual\ndescription: d\ndisable-model-invocation: true");
+		const lines = formatSkillsSection(loadCatalog(root)).join("\n");
+		expect(lines).toContain("(none yet)");
+		expect(lines).not.toContain("manual");
 	});
 
 	test("unknown frontmatter keys pass through", () => {

@@ -7,12 +7,28 @@ import {
 import { log } from "../log.ts";
 import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
+import {
+	SKILL_PART,
+	isTempSkillRef,
+	skillMarkerText,
+	skillPartDataSchema,
+	tempSkillMarkerText,
+	type SkillRef,
+} from "../skill-part.ts";
 
 export interface ViewContext {
 	convId: string;
 	tools: ToolSet;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
+	/**
+	 * Resolves an invocation: the display name (the descriptor's, for a
+	 * temp skill) and the injected body — preamble plus SKILL.md — or
+	 * null when the body cannot ride (skill deleted, temp verdict
+	 * unstamped). The resolver owns refusal logging; the view logs the
+	 * actual injection.
+	 */
+	skillRef: (ref: SkillRef) => { name: string; body: string | null };
 }
 
 function unconvertiblePlaceholder(m: UIMessage): UIMessage {
@@ -63,6 +79,50 @@ function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
 	};
 }
 
+// Skill invocation parts render as markers in every model view
+// (ruling 2026-10-21); the body rides only the owning turn's output —
+// the caller appends what resolveBodies returns for owned refs.
+// Malformed data degrades to a placeholder like notes.
+function skillPartsAsText(
+	ctx: ViewContext,
+	m: UIMessage,
+): { message: UIMessage; invocations: SkillInvocation[] } {
+	if (!m.parts.some((p) => p.type === SKILL_PART)) return { message: m, invocations: [] };
+	const invocations: SkillInvocation[] = [];
+	const message: UIMessage = {
+		...m,
+		parts: m.parts.map((p) => {
+			if (p.type !== SKILL_PART) return p;
+			const parsed = skillPartDataSchema.safeParse((p as { data?: unknown }).data);
+			if (!parsed.success) {
+				log.warn("malformed skill part — degrading to placeholder", {
+					conversation: ctx.convId,
+					message: m.id,
+				});
+				return {
+					type: "text" as const,
+					text: "[a skill invocation could not be rendered — its stored data was malformed]",
+				};
+			}
+			const resolved = ctx.skillRef(parsed.data);
+			invocations.push({ ...resolved, ref: parsed.data });
+			return {
+				type: "text" as const,
+				text: isTempSkillRef(parsed.data)
+					? tempSkillMarkerText(resolved.name, parsed.data.url)
+					: skillMarkerText(resolved.name),
+			};
+		}),
+	};
+	return { message, invocations };
+}
+
+interface SkillInvocation {
+	name: string;
+	body: string | null;
+	ref: SkillRef;
+}
+
 // Mirrors convertToModelMessages' ignoreIncompleteToolCalls keep-set — if the SDK's set changes, this must follow or the drop log drifts.
 export function incompleteToolCallIds(m: UIMessage): string[] {
 	const ids: string[] = [];
@@ -86,6 +146,8 @@ export async function buildModelView(
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: UIMessage | null;
+		/** Seqs this turn injected — only these get skill bodies (ruling 2026-10-21: owning-turn only). */
+		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
 	},
 ): Promise<ModelMessage[]> {
@@ -98,10 +160,19 @@ export async function buildModelView(
 		ctx.carries,
 	);
 	options.assertAuthority();
+	const owned = new Set(options.ownedSeqs ?? []);
+	// Ownership maps by message id, not index: withMemoryBlocks inserts
+	// recall blocks between entries, so positions drift.
+	const seqById = new Map(options.entries.map((e) => [e.message.id, e.seq]));
 	const messages: ModelMessage[] = [];
 	const partialId = options.partial?.id ?? null;
 	for (const m of prepared) {
-		const rendered = notePartsAsText(ctx, m.role === "system" ? systemEventAsUser(m) : m);
+		const entrySeq = seqById.get(m.id);
+		const { message: skillMarked, invocations } = skillPartsAsText(
+			ctx,
+			m.role === "system" ? systemEventAsUser(m) : m,
+		);
+		const rendered = notePartsAsText(ctx, skillMarked);
 		const unfinished = incompleteToolCallIds(rendered);
 		if (unfinished.length > 0 && m.id === partialId) {
 			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
@@ -136,6 +207,9 @@ export async function buildModelView(
 				})),
 			);
 		}
+		if (entrySeq !== undefined && owned.has(entrySeq)) {
+			messages.push(...injectedBodies(ctx, invocations));
+		}
 	}
 	const merged = mergeConsecutiveUserModels(messages);
 
@@ -144,6 +218,25 @@ export async function buildModelView(
 		messages: merged.length,
 	});
 	return merged;
+}
+
+// The owning turn's tail: one appended user message per resolved
+// invocation, immediately after the invoking message's own content.
+// A null body (refused or unreadable) contributes nothing — the marker
+// in the invoking message stands alone.
+function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): ModelMessage[] {
+	const bodies: ModelMessage[] = [];
+	for (const inv of invocations) {
+		if (inv.body === null) continue;
+		log.info("skill body injected", {
+			conversation: ctx.convId,
+			skill: inv.name,
+			temp: isTempSkillRef(inv.ref),
+			bytes: inv.body.length,
+		});
+		bodies.push({ role: "user", content: inv.body });
+	}
+	return bodies;
 }
 
 export async function convertSteeredMessage(
@@ -156,13 +249,20 @@ export async function convertSteeredMessage(
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,
 	);
-	return convertToModelMessages(
-		materialized.map((m) => notePartsAsText(ctx, m)),
-		{
-			tools: ctx.tools,
-			ignoreIncompleteToolCalls: true,
-		},
-	);
+	const out: ModelMessage[] = [];
+	for (const m of materialized) {
+		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m);
+		out.push(
+			...(await convertToModelMessages([notePartsAsText(ctx, skillMarked)], {
+				tools: ctx.tools,
+				ignoreIncompleteToolCalls: true,
+			})),
+		);
+		// A claimed steer is owned by construction — the claiming turn
+		// is the only one that folds it in.
+		out.push(...injectedBodies(ctx, invocations));
+	}
+	return out;
 }
 
 function mergeConsecutiveUserModels(messages: ModelMessage[]): ModelMessage[] {

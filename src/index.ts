@@ -612,6 +612,11 @@ async function boot() {
 		programs,
 		delegations,
 		skillSources,
+		// Temp-skill previews score through the same gate as the mail
+		// injection check — absent = the endpoint answers 503.
+		...(system1Gate
+			? { skillFetch: { gate: system1Gate as Pick<typeof system1Gate, "decide"> } }
+			: {}),
 		auth,
 		paths,
 		version: pkg.version,

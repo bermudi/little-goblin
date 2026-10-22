@@ -3,7 +3,7 @@
 // snapshot build, not per turn. A malformed entry warns and skips; it
 // never kills a turn.
 
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { log } from "../log.ts";
@@ -17,7 +17,7 @@ const MAX_ENTRIES = 128;
 
 // Spec name rule: 1–64 chars, a-z0-9 and hyphens, no leading/trailing
 // hyphen, no consecutive hyphens.
-const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const frontmatterSchema = z.object({
 	name: z.string().min(1).max(64),
@@ -45,6 +45,11 @@ export interface SkillEntry {
 	compatibility?: string;
 	/** Path shown in the prompt — relative to the workspace. */
 	path: string;
+	/**
+	 * disable-model-invocation: valid but unadvertised in the prompt
+	 * section. Explicit invocation (ruling 2026-10-21) may still name it.
+	 */
+	manualOnly?: boolean;
 }
 
 export interface SkillCatalog {
@@ -56,7 +61,7 @@ export interface SkillCatalog {
 }
 
 // Bounded read of the file head — enough for frontmatter, never the body.
-function readHead(path: string): string {
+export function readHead(path: string): string {
 	const fd = openSync(path, "r");
 	try {
 		const buf = Buffer.alloc(HEAD_BYTES);
@@ -69,7 +74,7 @@ function readHead(path: string): string {
 
 // Split and validate frontmatter. Returns the parsed frontmatter or a
 // human-readable reason it's malformed.
-function parseSkill(head: string): { fm: Frontmatter } | { err: string } {
+export function parseSkill(head: string): { fm: Frontmatter } | { err: string } {
 	const firstBreak = head.indexOf("\n");
 	const firstLine = firstBreak === -1 ? head : head.slice(0, firstBreak);
 	if (firstLine.trim() !== "---") return { err: "missing frontmatter" };
@@ -154,15 +159,16 @@ export function loadCatalog(root: string): SkillCatalog {
 			skip(file, `name "${fm.name}" does not match directory "${dirent.name}"`);
 			continue;
 		}
-		// Manual-only: valid but unadvertised. The operator can still name
-		// it and the agent can ls + read the dir.
-		if (fm["disable-model-invocation"] === true) continue;
+		// Manual-only stays in the catalog (the picker and explicit
+		// invocation list it) — only the prompt section filters it out.
+		const manualOnly = fm["disable-model-invocation"] === true;
 
 		entries.push({
 			name: fm.name,
 			description: fm.description,
 			...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
 			path: join(leaf, dirent.name, "SKILL.md"),
+			...(manualOnly ? { manualOnly: true } : {}),
 		});
 	}
 
@@ -205,10 +211,13 @@ export function formatSkillsSection(
 		"Edits load when the next conversation starts.",
 		"",
 	];
-	if (catalog.entries.length === 0) {
+	// Manual-only is a picker/explicit-invocation fact, never an
+	// advertised one — the model must not learn the name here.
+	const advertised = catalog.entries.filter((e) => e.manualOnly !== true);
+	if (advertised.length === 0) {
 		lines.push("(none yet)");
 	} else {
-		for (const e of catalog.entries) {
+		for (const e of advertised) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";
 			const path = linkBase === undefined ? e.path : join(linkBase, e.path);
 			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
@@ -237,4 +246,25 @@ export function formatSkillsSection(
 		}
 	}
 	return lines;
+}
+
+// Explicit invocation (ruling 2026-10-21): read a skill's SKILL.md for
+// injection into the owning turn. The name is validated against the
+// spec rule — it doubles as the traversal guard, since the catalog
+// never lists a name that could escape the root. A missing skill (the
+// operator deleted it mid-flight) is null, not an error: the marker
+// stands alone and the turn lives.
+export function readSkillBody(
+	root: string,
+	name: string,
+): { body: string; bytes: number } | null {
+	if (!NAME_RE.test(name)) return null;
+	let body: string;
+	try {
+		body = readFileSync(join(root, name, "SKILL.md"), "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
+	}
+	return { body, bytes: Buffer.byteLength(body) };
 }

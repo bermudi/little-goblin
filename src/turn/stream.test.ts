@@ -192,7 +192,15 @@ function rig(
 		step: { model, system: "test" },
 		messages: [{ role: "user", content: "run the thing" }],
 		tools: {},
-		view: { convId: "c1", tools: {}, modalities: new Set(["text"]), carries: () => true },
+		view: {
+			convId: "c1",
+			tools: {},
+			modalities: new Set(["text"]),
+			carries: () => true,
+			skillRef: () => {
+				throw new Error("no skill parts expected in this fixture");
+			},
+		},
 		claimSteers: () => queue.splice(0, queue.length),
 		unrequeueSteers: (steered) => unrequeued.push(steered),
 		settle: (m, done) => settlements.push({ m, done }),
@@ -490,6 +498,9 @@ describe("driveStream", () => {
 				tools: {},
 				modalities: new Set(["text", "image"]),
 				carries: () => true,
+				skillRef: () => {
+					throw new Error("no skill parts expected in this fixture");
+				},
 			},
 		});
 		const steer = member("photo steer");

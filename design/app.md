@@ -490,3 +490,9 @@ injected.
 prefix per live app conversation. Frozen prompt snapshots keep the old
 "Tools:" line until the next boundary (roll, compaction); the description
 carries the guidance meanwhile.
+
+**Parked candidate (2026-10-22): json-render.** Vercel Labs' framework for
+this same idea (`@json-render/core`, `@json-render/react`), layered on the AI
+SDK. Not adopted — see the pin and the reviewer criteria at the bottom of
+`docs/generative-ui.md`. Operator-facing plain-language walkthrough of this
+section: same file.

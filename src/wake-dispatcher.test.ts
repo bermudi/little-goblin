@@ -49,6 +49,7 @@ function rig(
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
 		compaction?: NonNullable<RuntimeDeps["compaction"]>;
+		captureConversation?: RuntimeDeps["captureConversation"];
 		wrapWakes?: (wakes: WakeStore) => WakeStore;
 	} = {},
 ): Rig {
@@ -64,6 +65,9 @@ function rig(
 			opts.buildStep ?? (() => ({ model: opts.model ?? fakeModel(["ok"]), system: "test" })),
 		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
+		...(opts.captureConversation === undefined
+			? {}
+			: { captureConversation: opts.captureConversation }),
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
 			members: (r, ids) => dispatcher.hooks.members(r, ids),
@@ -160,6 +164,81 @@ describe("wake dispatcher", () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(texts(r).length).toBe(submissions);
 		expect(wake(r, rec.wakeId).state).toBe("failed");
+		expect(script.streamCalls).toHaveLength(0);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a refused admission fails the wake closed — no re-admission loop", async () => {
+		const script = scriptedModel([textParts("must not run")]);
+		let captures = 0;
+		const r = rig({
+			model: script.model,
+			// Settings admission dies before the run row exists — the same
+			// unlinked-claim window as a pre-run crash, and reconcile has
+			// nothing to read either way.
+			captureConversation: () => {
+				captures += 1;
+				throw new Error("settings store wedged");
+			},
+		});
+		const rec = dev(r, "admission:1");
+		await waitUntil(() => wake(r, rec.wakeId).state === "failed", "wake failed closed");
+		expect(wake(r, rec.wakeId).lastError).toContain("settings store wedged");
+		// No pump re-admits the trigger: the capture side effect would fire
+		// once per admitted attempt, so a resubmission loop shows here.
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(captures).toBe(1);
+		expect(script.streamCalls).toHaveLength(0);
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a wedged pre-run closure write fences resubmission until the store heals", async () => {
+		const script = scriptedModel([textParts("must not run")]);
+		let builds = 0;
+		let closures = 0;
+		let healed = false;
+		const r = rig({
+			model: script.model,
+			makeTools: () => {
+				builds += 1;
+				throw new Error("project dir vanished");
+			},
+			wrapWakes: (base) => ({
+				...base,
+				failUnlinked: (wakeId, error) => {
+					closures += 1;
+					if (healed) return base.failUnlinked(wakeId, error);
+					throw new Error("wake store wedged");
+				},
+			}),
+		});
+		const rec = dev(r, "prerun:wedged");
+		await waitUntil(() => builds === 1, "first attempt died pre-run");
+		await waitUntil(
+			() => !r.runtime.isAdmitted(r.conv.id, wake(r, rec.wakeId).messageId),
+			"failed attempt settled",
+		);
+		// The terminal write refuses: the wake stays claimed, but the
+		// process-local fence turns each pump into a closure retry —
+		// never a resubmission.
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(builds).toBe(1);
+		expect(closures).toBeGreaterThanOrEqual(3);
+		expect(wake(r, rec.wakeId).state).toBe("claimed");
+		healed = true;
+		r.dispatcher.pump();
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		expect(wake(r, rec.wakeId).lastError).toContain("turn failed before its run started");
+		r.dispatcher.pump();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(builds).toBe(1);
 		expect(script.streamCalls).toHaveLength(0);
 		await r.runtime.shutdown();
 		r.store.close();

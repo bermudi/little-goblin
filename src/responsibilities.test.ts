@@ -571,6 +571,102 @@ describe("unresolved delivery fence", () => {
 		r.store.close();
 	});
 
+	test("reattachment never re-keys the fence — the op keeps the identity it sent to", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const first = prep(r, resp, attId, "brief to the original");
+		if (!("operation" in first)) throw new Error("expected prepared");
+		r.resps.claimForSend(first.operation.operationId);
+		r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		// Deliberate adoption: the same row now binds a replacement agent,
+		// its identity fields rewritten in place.
+		const moved = r.resps.reattach(
+			attId,
+			target({ agentName: "worker-2", terminalId: "term-b", agentSession: "sess-b" }),
+			{},
+		);
+		expect(moved.generation).toBe(2);
+		// The op remembers where its send went — the mutable row moved.
+		expect(r.resps.getOperation(first.operation.operationId)!.dispatch).toEqual({
+			server: "local",
+			session: "goblin-probe",
+			terminalId: "term-9",
+			agentSession: "sess-abc",
+			kind: "pi",
+		});
+		// A send to the replacement is a different destination — the
+		// unresolved send to the original must not fence it.
+		const toReplacement = prep(r, resp, attId, "brief to the replacement");
+		expect("operation" in toReplacement).toBe(true);
+		// The original identity stays protected: a fresh bind to it is
+		// the detach→attach route the fence exists for.
+		try {
+			r.resps.attach({
+				responsibilityId: resp.responsibilityId,
+				target: target(),
+				baseline: {},
+			});
+			throw new Error("unreachable");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ReconciliationConflict);
+			expect((err as ReconciliationConflict).unresolved?.operationId).toBe(
+				first.operation.operationId,
+			);
+		}
+		// And rebinding the original identity onto the same row fences
+		// every send through it — reconciliation is still the only way out.
+		r.resps.reattach(attId, target(), {});
+		const backToOriginal = prep(r, resp, attId, "retry toward the original");
+		if (!("refused" in backToOriginal)) {
+			throw new Error("expected refusal toward the original identity");
+		}
+		expect(backToOriginal.refused).toBe("delivery-uncertain");
+		expect(backToOriginal.unresolved!.operationId).toBe(first.operation.operationId);
+		r.store.close();
+	});
+
+	test("a pre-snapshot database backfills dispatch identity from the bound attachment", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const first = prep(r, resp, attId, "b");
+		if (!("operation" in first)) throw new Error("expected prepared");
+		r.resps.claimForSend(first.operation.operationId);
+		r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		// Rewind the schema to its pre-snapshot shape, then reopen the
+		// store — migrate-on-open re-adds the columns and backfills.
+		for (const col of [
+			"dispatch_server",
+			"dispatch_session",
+			"dispatch_terminal_id",
+			"dispatch_agent_session",
+			"dispatch_kind",
+		]) {
+			r.store.db.run(`ALTER TABLE prompt_operations DROP COLUMN ${col}`);
+		}
+		const resps2 = openResponsibilities(r.store.db);
+		expect(resps2.getOperation(first.operation.operationId)!.dispatch).toEqual({
+			server: "local",
+			session: "goblin-probe",
+			terminalId: "term-9",
+			agentSession: "sess-abc",
+			kind: "pi",
+		});
+		const again = resps2.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: attId,
+			brief: "post-migration",
+		});
+		if (!("refused" in again)) throw new Error("expected refusal after migration");
+		expect(again.refused).toBe("delivery-uncertain");
+		r.store.close();
+	});
+
 	test("an unresolved send on one binding fences prepare and claim through a duplicate", () => {
 		const r = rig();
 		const { responsibility } = r.resps.create({

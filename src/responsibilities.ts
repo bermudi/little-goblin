@@ -8,7 +8,10 @@
 // against generation N+1 before it can dispatch. Managed prompt
 // operations carry their own durable identity — an acknowledged op
 // cannot send again under a new tool-call ID, and an uncertain one is
-// never blindly resent.
+// never blindly resent. Every operation also snapshots its dispatch
+// identity at prepare: the attachment row's copies are rewritten by
+// reattach, so the unresolved-delivery fence reads where the send
+// actually went, not where the row points now.
 //
 // Shares the conversation store's handle: attachments' cursor commits
 // ride the observer's outer transaction with the work event + wake,
@@ -93,12 +96,29 @@ export interface Attachment {
 	detachedAt: string | null;
 }
 
+/** The five fields that decide "same destination" — server, session,
+ *  terminal, harness session, kind. A prompt operation snapshots them
+ *  at prepare because the attachment row's own copies are mutable: a
+ *  reattach to a replacement rewrites them, and the unresolved-
+ *  delivery fence must still name where the ambiguous send actually
+ *  went. */
+export interface DispatchIdentity {
+	server: string;
+	session: string;
+	terminalId: string | null;
+	agentSession: string | null;
+	kind: string | null;
+}
+
 export interface PromptOperation {
 	operationId: string;
 	responsibilityId: string;
 	attachmentId: number;
 	attachmentGeneration: number;
 	responsibilityRevision: number;
+	/** Prepare-time snapshot of the destination's dispatch identity;
+	 *  null only on rows predating the column backfill. */
+	dispatch: DispatchIdentity | null;
 	brief: string;
 	state: OperationState;
 	refusal: string | null;
@@ -277,6 +297,11 @@ const opRowSchema = z.object({
 	attachment_id: z.number(),
 	attachment_generation: z.number(),
 	responsibility_revision: z.number(),
+	dispatch_server: z.string().nullable(),
+	dispatch_session: z.string().nullable(),
+	dispatch_terminal_id: z.string().nullable(),
+	dispatch_agent_session: z.string().nullable(),
+	dispatch_kind: z.string().nullable(),
 	brief: z.string(),
 	state: z.enum(["prepared", "sent", "acknowledged", "uncertain", "refused", "superseded"]),
 	refusal: z.string().nullable(),
@@ -337,6 +362,16 @@ function toOperation(r: OpRow): PromptOperation {
 		attachmentId: r.attachment_id,
 		attachmentGeneration: r.attachment_generation,
 		responsibilityRevision: r.responsibility_revision,
+		dispatch:
+			r.dispatch_server === null || r.dispatch_session === null
+				? null
+				: {
+						server: r.dispatch_server,
+						session: r.dispatch_session,
+						terminalId: r.dispatch_terminal_id,
+						agentSession: r.dispatch_agent_session,
+						kind: r.dispatch_kind,
+					},
 		brief: r.brief,
 		state: r.state,
 		refusal: r.refusal,
@@ -448,6 +483,11 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			attachment_id INTEGER NOT NULL REFERENCES attachments(attachment_id),
 			attachment_generation INTEGER NOT NULL,
 			responsibility_revision INTEGER NOT NULL,
+			dispatch_server TEXT,
+			dispatch_session TEXT,
+			dispatch_terminal_id TEXT,
+			dispatch_agent_session TEXT,
+			dispatch_kind TEXT,
 			brief TEXT NOT NULL,
 			state TEXT NOT NULL CHECK (state IN ('prepared','sent','acknowledged','uncertain','refused','superseded')),
 			refusal TEXT,
@@ -457,6 +497,38 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			outcome_json TEXT,
 			created_at TEXT NOT NULL
 		)`);
+	// Same migrate-on-open pattern as wake_deliveries.claim_epoch:
+	// CREATE covers a fresh database, ALTER fills an existing one. The
+	// dispatch identity is snapshotted on the operation so the
+	// unresolved-delivery fence compares where the send actually went —
+	// reattach rewrites the attachment row's identity fields, so a join
+	// would re-key an unresolved send onto whatever the row points at
+	// now. Legacy rows backfill from the bound attachment: the same
+	// read the fence made before the snapshot existed.
+	const opCols = new Set(
+		(db.query("PRAGMA table_info(prompt_operations)").all() as { name: string }[]).map(
+			(c) => c.name,
+		),
+	);
+	if (!opCols.has("dispatch_server")) {
+		for (const col of [
+			"dispatch_server",
+			"dispatch_session",
+			"dispatch_terminal_id",
+			"dispatch_agent_session",
+			"dispatch_kind",
+		]) {
+			db.run(`ALTER TABLE prompt_operations ADD COLUMN ${col} TEXT`);
+		}
+		db.run(`
+			UPDATE prompt_operations SET
+				dispatch_server = (SELECT server FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
+				dispatch_session = (SELECT session FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
+				dispatch_terminal_id = (SELECT terminal_id FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
+				dispatch_agent_session = (SELECT agent_session FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
+				dispatch_kind = (SELECT kind FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id)`);
+		log.info("prompt operation dispatch identity columns added — rows backfilled from attachments");
+	}
 }
 
 // deleteConversation's anchor check — the responsibilities whose
@@ -524,8 +596,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = ?, detached_at = NULL WHERE attachment_id = ?`,
 	);
 	const qInsertOp = db.prepare(
-		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, brief, state, journal_run_id, tool_call_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?)`,
+		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, dispatch_server, dispatch_session, dispatch_terminal_id, dispatch_agent_session, dispatch_kind, brief, state, journal_run_id, tool_call_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?)`,
 	);
 	const qOp = db.query<OpRow, [string]>("SELECT * FROM prompt_operations WHERE operation_id = ?");
 	const qOpsFor = db.query<OpRow, [string]>(
@@ -540,16 +612,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	// The same guard against the detach→attach route: a fresh bind mints
 	// a new attachment id and generation, so only the operation's
 	// dispatch identity (server, session, terminal, harness session,
-	// kind) can recognize it as the same destination. `IS` keeps NULL
-	// identity fields comparable.
+	// kind) can recognize it as the same destination. The identity is
+	// the operation's own snapshot — the attachment row's copies are
+	// rewritten by every reattach, so reading them would re-key an
+	// unresolved send onto whatever destination the row holds now.
+	// `IS` keeps NULL identity fields comparable.
 	const qUnresolvedForIdentity = db.query<
 		OpRow,
 		[string, string, string, string | null, string | null, string | null]
 	>(
-		`SELECT o.* FROM prompt_operations o JOIN attachments a ON a.attachment_id = o.attachment_id
+		`SELECT o.* FROM prompt_operations o
 		 WHERE o.responsibility_id = ? AND o.state IN ('sent','uncertain')
-		   AND a.server = ? AND a.session = ?
-		   AND a.terminal_id IS ? AND a.agent_session IS ? AND a.kind IS ?
+		   AND o.dispatch_server IS ? AND o.dispatch_session IS ?
+		   AND o.dispatch_terminal_id IS ? AND o.dispatch_agent_session IS ? AND o.dispatch_kind IS ?
 		 ORDER BY o.created_at LIMIT 1`,
 	);
 	// A live (non-detached) sibling already holding this dispatch
@@ -820,6 +895,11 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					input.attachmentId,
 					att!.generation,
 					resp!.revision,
+					att!.target.server,
+					att!.target.session,
+					att!.target.terminalId,
+					att!.target.agentSession,
+					att!.target.kind,
 					input.brief,
 					input.journalRunId ?? null,
 					input.toolCallId ?? null,
@@ -887,15 +967,20 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				// validateForSend just refused a missing attachment in this same
 				// transaction — requireAtt's throw is the unreachable-branch alarm.
 				const att = requireAtt(op.attachmentId);
+				// The fence's candidate is the identity this op dispatches
+				// to: its own prepare-time snapshot, which a generation match
+				// (checked above) makes identical to the bound row's current
+				// target. A pre-snapshot row falls back to that same read.
+				const identity = op.dispatch ?? att.target;
 				const blocked =
 					qUnresolved.get(op.attachmentId, op.attachmentGeneration) ??
 					qUnresolvedForIdentity.get(
 						op.responsibilityId,
-						att.target.server,
-						att.target.session,
-						att.target.terminalId,
-						att.target.agentSession,
-						att.target.kind,
+						identity.server,
+						identity.session,
+						identity.terminalId,
+						identity.agentSession,
+						identity.kind,
 					);
 				if (blocked !== null) {
 					out = { refused: "delivery-uncertain" };

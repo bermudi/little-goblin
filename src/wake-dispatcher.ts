@@ -11,9 +11,11 @@
 // Every hook and pump is internally total — this module observes and
 // recovers turns; it never fails one. The one durable exception is the
 // wake's bookkeeping, never the turn: a wake whose ownership link
-// cannot be persisted fails closed (failUnlinked), because reconcile
-// reads an unlinked claim as never-admitted and would resubmit a
-// trigger that already ran.
+// cannot be persisted, or whose attempt died before any run began,
+// fails closed (failUnlinked), because reconcile reads an unlinked
+// claim as never-admitted and would resubmit a trigger that already
+// ran — and while even that terminal write refuses, a process-local
+// fence holds resubmission and each pump retries the closure.
 
 import type { UIMessage } from "ai";
 import type { Conversation, ConversationStore } from "./conversation.ts";
@@ -216,6 +218,33 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		submitGuarded(claimed);
 	}
 
+	// The durable fail-closed write plus its process-local fence, shared
+	// by every path that must terminally close an unlinked claim — a lost
+	// ownership link and a pre-run terminal failure alike. While the
+	// write refuses (or the claim somehow stays open), the wake sits in
+	// `unlinked`: every pump retries the closure instead of resubmitting.
+	function closeUnlinked(wakeId: number, reason: string): void {
+		try {
+			if (wakes.failUnlinked(wakeId, reason)) {
+				unlinked.delete(wakeId);
+				return;
+			}
+			const current = wakes.get(wakeId);
+			if (current !== null && current.state === "claimed" && current.runId === null) {
+				// Still an open unlinked claim — the write path refuses.
+				unlinked.set(wakeId, reason);
+			} else {
+				// Linked or terminal meanwhile — nothing left to fence.
+				unlinked.delete(wakeId);
+			}
+		} catch (err) {
+			unlinked.set(wakeId, reason);
+			log.error("wake fail-closed write failed — submit fenced for this process", err, {
+				wake: wakeId,
+			});
+		}
+	}
+
 	// The run owns its wake only once the link is durable — but the hook
 	// cannot gate the turn, so a failed link fails the WAKE closed: the
 	// terminal write fences reconcile's resubmission, and this process
@@ -233,25 +262,12 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 					run: runId,
 					conversation: w.conversationId,
 				});
-				const reason = `ownership link to run ${runId} failed: ${
-					err instanceof Error ? err.message : String(err)
-				}`;
-				try {
-					if (wakes.failUnlinked(w.wakeId, reason)) {
-						unlinked.delete(w.wakeId);
-					} else if (wakes.get(w.wakeId)?.state === "claimed") {
-						// Still an open unlinked claim — the write path refuses.
-						unlinked.set(w.wakeId, reason);
-					} else {
-						// Linked or terminal meanwhile — nothing left to fence.
-						unlinked.delete(w.wakeId);
-					}
-				} catch (closeErr) {
-					unlinked.set(w.wakeId, reason);
-					log.error("wake fail-closed write failed — submit fenced for this process", closeErr, {
-						wake: w.wakeId,
-					});
-				}
+				closeUnlinked(
+					w.wakeId,
+					`ownership link to run ${runId} failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
 			}
 		}
 	}
@@ -309,19 +325,24 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				if (reason !== undefined) {
 					// Retry the durable closure each pass; until the store
 					// accepts it, the fence — not a resubmission — answers for
-					// this wake.
-					let closed = false;
+					// this wake. A thrown write leaves the fence untouched, so
+					// the next pass retries instead of submitting.
 					guard("failUnlinked", () => {
-						closed = wakes.failUnlinked(rec.wakeId, reason);
+						if (wakes.failUnlinked(rec.wakeId, reason)) {
+							unlinked.delete(rec.wakeId);
+							return;
+						}
+						const current = wakes.get(rec.wakeId);
+						if (current !== null && current.state === "claimed" && current.runId === null) {
+							log.warn("wake ownership closure still failing — submit stays fenced", {
+								wake: rec.wakeId,
+								conversation: rec.conversationId,
+							});
+						} else {
+							// Linked or terminal meanwhile — the fence is stale.
+							unlinked.delete(rec.wakeId);
+						}
 					});
-					if (closed) {
-						unlinked.delete(rec.wakeId);
-					} else {
-						log.warn("wake ownership closure still failing — submit stays fenced", {
-							wake: rec.wakeId,
-							conversation: rec.conversationId,
-						});
-					}
 					continue;
 				}
 				submitGuarded(rec);
@@ -345,16 +366,18 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				guard("run members", () => linkMessages(runId, messageIds));
 			},
 			preRunFailure(e) {
-				// A terminal failure before the run row began — makeTools, the
-				// model view, a journal write — never links its members, so
-				// reconcile would read the claimed wake as unowned and
-				// re-admit the trigger every pump. The same fail-closed write
-				// as a lost ownership link applies: the trigger is durable
-				// history, and its disposition is terminal.
+				// A terminal failure before the run row began — admission,
+				// makeTools, the model view, a journal write — never links
+				// its members, so reconcile would read the claimed wake as
+				// unowned and re-admit the trigger every pump. The same
+				// fail-closed write as a lost ownership link applies: the
+				// trigger is durable history, its disposition is terminal,
+				// and a refusing store fences the wake rather than letting
+				// the next pump submit it again.
 				guard("pre-run failure", () => {
 					for (const w of wakes.claimedForMessages(e.memberMessageIds)) {
 						if (w.runId !== null) continue; // linked — reconcile owns it
-						wakes.failUnlinked(
+						closeUnlinked(
 							w.wakeId,
 							`turn failed before its run started: ${e.error}`,
 						);

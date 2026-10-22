@@ -160,9 +160,9 @@ export interface RuntimeDeps {
 		/** The attempt died before `begin` could link its members — no run
 		 *  row exists for reconcile to read, so the attempt's terminal
 		 *  outcome is otherwise invisible to ownership. Fired on every
-		 *  pre-run terminal path (including an overflow that will NOT
-		 *  resume — a resuming attempt's fresh run links normally). Hooks
-		 *  must not throw, like the rest. */
+		 *  pre-run terminal path (a refused admission, an overflow that
+		 *  will NOT resume — a resuming attempt's fresh run links
+		 *  normally). Hooks must not throw, like the rest. */
 		preRunFailure?(event: {
 			conversationId: string;
 			memberMessageIds: string[];
@@ -832,23 +832,49 @@ export class Runtime {
 			endLive(live, done, convId);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
-		// Admission fixes this attempt's ownership and model input.
-		const admitted = admitTurn(
-			{
-				convId,
-				live,
-				getConversation: () => store.get(convId),
-				captureConversation: this.deps.captureConversation,
-				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
-				modelEntries: () => store.modelEntries(convId),
-				now: Date.now,
-			},
-			recovery === undefined
-				? undefined
-				: { conversation: recovery.conversation, startedAt: recovery.startedAt },
-		);
+		// The ownership window: from admission until the begin hook, the
+		// attempt's members are unlinked — a terminal failure in that span
+		// (a refused admission included) is invisible to the dispatcher's
+		// reconcile (no run row to read), so it must be announced instead
+		// of re-admitting the trigger forever.
+		let ownershipBegun = false;
+		const announcePreRunFailure = (err: unknown) => {
+			if (ownershipBegun) return;
+			this.deps.runOwnership?.preRunFailure?.({
+				conversationId: convId,
+				memberMessageIds: turns.map((t) => t.message.id),
+				error: err instanceof Error ? err.message : String(err),
+			});
+		};
+		// Admission fixes this attempt's ownership and model input. A
+		// throw escapes to the drain's last-ditch settle — still a
+		// terminal death inside the ownership window, so it announces
+		// the same as a refused admission before propagating.
+		let admitted: ReturnType<typeof admitTurn>;
+		try {
+			admitted = admitTurn(
+				{
+					convId,
+					live,
+					getConversation: () => store.get(convId),
+					captureConversation: this.deps.captureConversation,
+					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
+					pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
+					modelEntries: () => store.modelEntries(convId),
+					now: Date.now,
+				},
+				recovery === undefined
+					? undefined
+					: { conversation: recovery.conversation, startedAt: recovery.startedAt },
+			);
+		} catch (err) {
+			announcePreRunFailure(err);
+			throw err;
+		}
 		if (admitted.kind !== "admitted") {
+			announcePreRunFailure(
+				admitted.kind === "missing" ? "conversation missing" : admitted.message,
+			);
 			await notifyAll({
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
@@ -881,19 +907,6 @@ export class Runtime {
 		// and replays its recorded results instead of re-executing.
 		const sourceRunId = recovery?.resumedFrom;
 		let runId: string | null = null;
-		// The ownership window: between admission and the begin hook, the
-		// attempt's members are unlinked — a terminal failure here is
-		// invisible to the dispatcher's reconcile (no run row to read),
-		// so it must be announced instead of re-admitting forever.
-		let ownershipBegun = false;
-		const announcePreRunFailure = (err: unknown) => {
-			if (ownershipBegun) return;
-			this.deps.runOwnership?.preRunFailure?.({
-				conversationId: convId,
-				memberMessageIds: turns.map((t) => t.message.id),
-				error: err instanceof Error ? err.message : String(err),
-			});
-		};
 		// A thrown journal write anywhere in the fence lands here — the
 		// catch below aborts the turn instead of letting the SDK report a
 		// tool error the model could retry.

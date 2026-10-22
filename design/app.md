@@ -331,7 +331,12 @@ delivery edges:
   *wake* closed (`failUnlinked`: CAS on claimed AND run_id IS NULL) and
   the dispatcher fences that wake's submit for the process lifetime,
   retrying the durable closure every pump. The turn always completes;
-  only the resubmission is impossible.
+  only the resubmission is impossible. The same closure+fence covers
+  every terminal failure *before* `begin` (refused admission,
+  makeTools, the journal row itself): the runtime announces it through
+  `preRunFailure`, because no run row exists for reconcile to read —
+  and while even the closure write refuses, the process-local fence
+  holds the resubmission and each pump retries the write.
 - **The unresolved-delivery fence binds to dispatch identity, not row
   identity.** Prepare, claim, and fresh `attach` all fence per dispatch
   identity — server, session, terminal, harness session, kind, within
@@ -342,8 +347,13 @@ delivery edges:
   refuses a second live binding of one identity outright (plain error;
   detach it or reattach), so the duplicate state stops being minted;
   the prepare/claim fence still covers rows that predate the refusal.
-  A genuinely changed identity remains a deliberate adoption, same as
-  reattach's ruling; the fence never reaches across responsibilities.
+  The identity an operation answers for is persisted **on the
+  operation** at prepare: reattach rewrites the attachment row's
+  copies, so joining it would re-key an unresolved send onto whatever
+  destination the row holds now — fencing the replacement that never
+  received it and freeing the agent that did. A genuinely changed
+  identity remains a deliberate adoption, same as reattach's ruling;
+  the fence never reaches across responsibilities.
 - **Arm truth is the linked program.** The persisted `armed` flags are
   a cache `ensureFollowup` writes; the `program` tool can disable or
   delete the follow-up behind the responsibility's back. Every armed

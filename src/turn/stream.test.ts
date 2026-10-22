@@ -403,6 +403,54 @@ describe("driveStream", () => {
 		expect(md.promptChars!["identity"]).toBe("test".length);
 	});
 
+	test("each step pushes its window occupancy onto the wire as transient data-context", async () => {
+		const probe = probeTool();
+		const r = rig([
+			toolCallStep("c1", 10),
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "done" },
+				{ type: "text-end", id: "t1" },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 50, noCache: undefined, cacheRead: 40, cacheWrite: undefined },
+						outputTokens: { total: 5, text: undefined, reasoning: undefined },
+					},
+				},
+			],
+		]);
+		r.deps.tools = { probe };
+		const watcher = member("watcher");
+		r.members.push(watcher);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		// One data-context per step, carrying that step's prompt tokens —
+		// the gauge's live numbers while the turn runs.
+		const ctx = r.live.chunks.filter((c) => c.type === "data-context");
+		expect(ctx).toEqual([
+			{ type: "data-context", transient: true, data: { input: 10, cacheRead: null } },
+			{ type: "data-context", transient: true, data: { input: 50, cacheRead: 40 } },
+		]);
+		expect(watcher.chunks.filter((c) => c.type === "data-context")).toEqual(ctx);
+		// Transient: it never lands in the response message's parts.
+		expect(outcome.responseMessage?.parts.some((p) => p.type === "data-context")).toBe(false);
+	});
+
+	test("a fenced epoch pushes no live context onto the wire", async () => {
+		const probe = probeTool();
+		const r = rig([toolCallStep("c1", 10), textReply("done")], {
+			holdsAuthority: () => false,
+		});
+		r.deps.tools = { probe };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		expect(r.live.chunks.some((c) => c.type === "data-context")).toBe(false);
+	});
+
 	test("a submit landing mid-turn folds into the next request, joins, and is replayed", async () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 1), textReply("folded answer")]);

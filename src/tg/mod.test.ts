@@ -533,6 +533,31 @@ describe("handleMessage", () => {
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
 	});
 
+	test("a commit that skips the append errors the chat instead of submitting a seq-less turn", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		// Fault injection: the inbox contract runs the append inside
+		// commitBatch's transaction or throws. Break that — commit the
+		// batch without appending — and the flush must fail loud, never
+		// submit a turn whose message has no event identity.
+		const realCommit = h.env.inbox.commitBatch.bind(h.env.inbox);
+		h.env.inbox.commitBatch = (updateIds, conversationId, _append) =>
+			realCommit(updateIds, conversationId, () => {});
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
+		// The error reply rides the async delivery chain — drain it.
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+		await new Promise<void>((r) => process.nextTick(r));
+		expect(submitted).toEqual([]);
+		expect(
+			h.apiCalls.some((c) => (c.text ?? "").includes("inbox commit did not append the turn input")),
+		).toBe(true);
+		h.store.close();
+	});
+
 	test("a promotion to operator clears the guest lane's class-forced exclusion", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
 		h.env.deps.runtime.submitPersisted = () => true;

@@ -868,7 +868,13 @@ function admitBatch(
 		},
 	});
 	try {
-		deps.runtime.submitPersisted(conv, message, sink, seq!);
+		// commitBatch either runs the append inside its transaction or
+		// throws — if that contract ever breaks, fail here instead of
+		// submitting a turn with no event identity.
+		if (seq === undefined) {
+			throw new Error("inbox commit did not append the turn input");
+		}
+		deps.runtime.submitPersisted(conv, message, sink, seq);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({
@@ -960,7 +966,11 @@ function admitAppBatch(
 	}
 	const sink = env.bell(conv);
 	try {
-		deps.runtime.submitPersisted(conv, message, sink, seq!);
+		// Same contract as the telegram batch above: no append, no submit.
+		if (seq === undefined) {
+			throw new Error("inbox commit did not append the turn input");
+		}
+		deps.runtime.submitPersisted(conv, message, sink, seq);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({

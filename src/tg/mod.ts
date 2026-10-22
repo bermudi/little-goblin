@@ -34,7 +34,7 @@ import {
 	type CommandMemoryDeps,
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
-import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { SPEAK_CALLBACK } from "./delivery.ts";
 import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
 import {
@@ -74,6 +74,7 @@ import { openPings, type PingStore } from "./pings.ts";
 import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
+import { makeConversationDeliverySink, sharedChatPart } from "./turn-input.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 500;
@@ -404,15 +405,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			if (command.command === "/skill") {
 				// Submitting door (ruling 2026-10-21) — async fetch/scoring
 				// off the sync intake path; it owns its replies.
-				const skillDeps: SkillCommandDeps = (() => {
-					const gate = deps.followUpGate?.();
-					return {
-						api: env.api,
-						store: deps.store,
-						runtime: deps.runtime,
-						...(gate !== undefined ? { gate } : {}),
-					};
-				})();
+				const skillDeps = skillCommandDeps(deps, env.api);
 				void handleSkillCommand(skillDeps, target, text).catch((err: unknown) => {
 					log.error("/skill failed", err, { conversation: target?.id ?? lane });
 					withTimeout(
@@ -854,17 +847,20 @@ function archiveNavigatedInput(
 	return normal;
 }
 
-export const SHARED_CHAT_NOTE =
-	"[note: this is a shared chat — everyone in it can read your replies. " +
-	"Be deliberate before surfacing private material (workspace files, notes, past conversations).]";
+export { SHARED_CHAT_NOTE, sharedChatPart } from "./turn-input.ts";
 
-export function sharedChatPart(
-	conversationId: string,
-	chatId: number,
-): { type: "text"; text: string } | null {
-	if (channelOf(conversationId) === "guest") return null;
-	if (chatId >= 0) return null;
-	return { type: "text", text: SHARED_CHAT_NOTE };
+// One wiring for every /skill door — the command and the temp-skill
+// callback tap. Delivery is the same conversation-configured sink
+// ordinary intake turns get.
+function skillCommandDeps(deps: BotDeps, api: Api): SkillCommandDeps {
+	const gate = deps.followUpGate?.();
+	return {
+		api,
+		store: deps.store,
+		runtime: deps.runtime,
+		delivery: (target) => makeConversationDeliverySink(api, target, deps),
+		...(gate !== undefined ? { gate } : {}),
+	};
 }
 
 function admitBatch(
@@ -875,7 +871,6 @@ function admitBatch(
 	parts: UIMessage["parts"],
 ): void {
 	const { deps } = env;
-	const tts = deps.configRef.current.tts;
 	const audience = sharedChatPart(conv.id, conv.chatId);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
 	env.inbox.commitBatch(
@@ -885,23 +880,7 @@ function admitBatch(
 			deps.store.append(conv.id, [message]);
 		},
 	);
-	const replyTo = items[0]?.replyTo;
-	const sink = makeDeliverySink(env.api, conv, {
-		...(replyTo !== undefined ? { replyTo } : {}),
-		...(tts && !deps.configRef.ttsDown
-			? {
-					voice: {
-						voiceMode: conv.voice,
-						synthesize: (text: string) => deps.synthesize(text, tts),
-					},
-				}
-			: {}),
-		rating: deps.store,
-		rich: {
-			enabled: deps.configRef.current.telegram.richReplies,
-			reasoning: deps.configRef.current.telegram.showReasoning,
-		},
-	});
+	const sink = makeConversationDeliverySink(env.api, conv, deps, items[0]?.replyTo);
 	try {
 		deps.runtime.submitPersisted(conv, message, sink);
 	} catch (err) {
@@ -1157,16 +1136,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			});
 			return;
 		}
-		void handleTempSkillCallback(
-			(() => {
-				const gate = deps.followUpGate?.();
-				return {
-					api: bot.api,
-					store: deps.store,
-					runtime: deps.runtime,
-					...(gate !== undefined ? { gate } : {}),
-				};
-			})(),
+		void handleTempSkillCallback(skillCommandDeps(deps, bot.api),
 			{
 				id: q.id,
 				data: q.data,

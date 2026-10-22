@@ -13,6 +13,11 @@
 // restart losing a pending confirm is fine: the command re-runs
 // instantly off the skillcache. Like every command, /skill bypasses
 // the intake inbox; a crash-redelivery re-runs it.
+//
+// Fences: the conversation's epoch is captured when the preview is
+// requested and re-checked at every async boundary — a /stop or /new
+// landing mid-fetch or mid-score cancels the preview, and a stale tap
+// can never invoke into a conversation that moved on.
 
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -26,11 +31,16 @@ import { paths } from "../config.ts";
 import { SKILL_PART, type SkillRef } from "../skill-part.ts";
 import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
-import { userMessage, type Runtime } from "../runtime.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
+import { sharedChatPart } from "./turn-input.ts";
 import { withTimeout } from "./deadline.ts";
 
 const LISTING_CAP = 40;
+const REPLY_CHUNK_LIMIT = 4000;
+// The echoed name in an unknown-name reply is bounded — the input is
+// operator-supplied and unbounded, and the whole reply must stay under
+// the chunk cap.
+const NAME_ECHO_CAP = 200;
 const PENDING_TTL_MS = 15 * 60 * 1000;
 const PENDING_CAP = 8;
 
@@ -40,6 +50,11 @@ export interface SkillCommandDeps {
 	runtime: Runtime;
 	/** The shared System One client — absent, temp skills answer unavailable. */
 	gate?: Pick<System1Client, "decide">;
+	/**
+	 * The conversation-configured delivery sink a submitted turn gets —
+	 * the same construction ordinary intake uses (voice, rating, rich).
+	 */
+	delivery(target: Conversation): TurnSink;
 	// Test seams.
 	fetchImpl?: typeof fetch;
 	cacheRoot?: string;
@@ -54,6 +69,8 @@ interface PendingTemp {
 	ref: SkillRef;
 	name: string;
 	text: string;
+	/** The conversation epoch the preview was fetched under. */
+	epoch: number;
 	expiresAt: number;
 }
 
@@ -71,12 +88,40 @@ function sweepPending(now: number): void {
 	}
 }
 
-export function handleSkillCommand(
+// Pack lines into ≤REPLY_CHUNK_LIMIT chunks at newline boundaries; a
+// pathological single line splits hard rather than truncating.
+function chunkLines(lines: string[]): string[] {
+	const pieces: string[] = [];
+	for (const raw of lines) {
+		if (raw.length <= REPLY_CHUNK_LIMIT) {
+			pieces.push(raw);
+			continue;
+		}
+		for (let i = 0; i < raw.length; i += REPLY_CHUNK_LIMIT) {
+			pieces.push(raw.slice(i, i + REPLY_CHUNK_LIMIT));
+		}
+	}
+	const chunks: string[] = [];
+	let cur = "";
+	for (const piece of pieces) {
+		if (cur !== "" && cur.length + 1 + piece.length > REPLY_CHUNK_LIMIT) {
+			chunks.push(cur);
+			cur = "";
+		}
+		cur = cur === "" ? piece : `${cur}\n${piece}`;
+	}
+	if (cur !== "") chunks.push(cur);
+	return chunks;
+}
+
+export async function handleSkillCommand(
 	deps: SkillCommandDeps,
 	target: Conversation,
 	text: string,
 ): Promise<boolean> {
 	const arg = text.replace(/^\/skill(?:@\S+)?/i, "").trim();
+	// Awaited, not fire-and-forget: a failed send rejects the command
+	// into the caller's existing "command failed" path.
 	const reply = (t: string, keyboard?: unknown) =>
 		withTimeout(
 			deps.api.sendMessage(target.chatId, t, {
@@ -85,10 +130,16 @@ export function handleSkillCommand(
 			} as Parameters<Api["sendMessage"]>[2]),
 			"sendMessage (/skill)",
 		).then(() => undefined);
+	const replyLines = async (lines: string[], keyboard?: unknown) => {
+		const chunks = chunkLines(lines);
+		for (const [i, chunk] of chunks.entries()) {
+			await reply(chunk, i === chunks.length - 1 ? keyboard : undefined);
+		}
+	};
 
 	if (arg === "") {
-		void reply(catalogListing());
-		return Promise.resolve(true);
+		await replyLines(catalogLines());
+		return true;
 	}
 
 	// URL vs name: the scheme decides — a name never contains ":".
@@ -104,28 +155,29 @@ export function handleSkillCommand(
 	const catalog = loadCatalog(paths.skills());
 	const entry = catalog.entries.find((e) => e.name === name);
 	if (entry === undefined) {
-		void reply(`no skill named "${name}" — ${catalogListing()}`);
-		return Promise.resolve(true);
+		const shown = name.length > NAME_ECHO_CAP ? `${name.slice(0, NAME_ECHO_CAP)}…` : name;
+		await replyLines([`no skill named "${shown}" —`, ...catalogLines()]);
+		return true;
 	}
 	submitSkillTurn(deps, target, { name }, rest);
-	return Promise.resolve(true);
+	return true;
 }
 
-function catalogListing(): string {
+function catalogLines(): string[] {
 	const catalog = loadCatalog(paths.skills());
-	const lines = catalog.entries.slice(0, LISTING_CAP).map(
-		(e) => `- ${e.name}${e.manualOnly === true ? " (manual-only)" : ""} — ${e.description}`,
-	);
+	const lines = catalog.entries
+		.slice(0, LISTING_CAP)
+		.map((e) => `- ${e.name}${e.manualOnly === true ? " (manual-only)" : ""} — ${e.description}`);
 	if (catalog.entries.length > LISTING_CAP) {
 		lines.push(`…and ${catalog.entries.length - LISTING_CAP} more`);
 	}
-	if (lines.length === 0) return "no skills installed yet.";
+	if (lines.length === 0) return ["no skills installed yet."];
 	return [
 		"skills:",
 		...lines,
 		"",
 		"invoke with /skill <name> — or a GitHub skill URL to try one without installing.",
-	].join("\n");
+	];
 }
 
 function submitSkillTurn(
@@ -134,11 +186,15 @@ function submitSkillTurn(
 	ref: SkillRef,
 	text: string,
 ): void {
-	const parts: UIMessage["parts"] = [{ type: SKILL_PART, data: ref } as UIMessage["parts"][number]];
+	const audience = sharedChatPart(target.id, target.chatId);
+	const parts: UIMessage["parts"] = [
+		...(audience === null ? [] : [audience]),
+		{ type: SKILL_PART, data: ref } as UIMessage["parts"][number],
+	];
 	if (text !== "") parts.push({ type: "text", text });
 	const message = userMessage(parts);
 	deps.store.append(target.id, [message]);
-	const sink = makeDeliverySink(deps.api, target, { rating: deps.store });
+	const sink = deps.delivery(target);
 	try {
 		deps.runtime.submitPersisted(target, message, sink);
 		log.info("skill invoked via /skill", {
@@ -154,6 +210,28 @@ function submitSkillTurn(
 	}
 }
 
+// The epoch probe every async boundary funnels through — synchronous
+// by contract: a successful check must not add an await between the
+// probe and the publish that follows, or a /stop lands in the gap.
+// A fenced preview is logged and answered plainly — never an
+// actionable card, never a pending entry.
+function previewFenced(
+	deps: SkillCommandDeps,
+	target: Conversation,
+	stage: string,
+	epoch: number,
+): boolean {
+	const current = deps.store.get(target.id)?.epoch ?? null;
+	if (current === epoch) return false;
+	log.info("temp skill preview fenced — conversation moved on", {
+		conversation: target.id,
+		stage,
+		epoch,
+		current,
+	});
+	return true;
+}
+
 async function previewTempSkill(
 	deps: SkillCommandDeps,
 	target: Conversation,
@@ -165,6 +243,9 @@ async function previewTempSkill(
 		await reply("temp skills are unavailable — the System One gate is not wired.");
 		return;
 	}
+	// Captured synchronously — the turn input was admitted under this
+	// epoch; anything later works on a stale snapshot.
+	const epoch = target.epoch;
 	let fetched;
 	try {
 		fetched = await fetchSkill(url, {
@@ -179,8 +260,18 @@ async function previewTempSkill(
 		}
 		throw err;
 	}
+	if (previewFenced(deps, target, "fetched", epoch)) {
+		await reply("cancelled — the conversation moved on.");
+		return;
+	}
 	const body = readFileSync(fetched.path, "utf8");
 	const verdict = await checkInjection(deps.gate, body);
+	// Probe, stamp, pending, reply — one synchronous run past the last
+	// real await; nothing may interpose between them.
+	if (previewFenced(deps, target, "scored", epoch)) {
+		await reply("cancelled — the conversation moved on.");
+		return;
+	}
 	stampVerdict(deps.cacheRoot ?? paths.skillcache(), fetched.digest, verdict);
 
 	const token = randomUUID().slice(0, 8);
@@ -194,6 +285,7 @@ async function previewTempSkill(
 		ref: { url: fetched.descriptor.sourceUrl, path: fetched.path },
 		name: fetched.descriptor.name,
 		text: heldText,
+		epoch,
 		expiresAt: now().getTime() + PENDING_TTL_MS,
 	});
 
@@ -266,6 +358,15 @@ export async function handleTempSkillCallback(
 		await answer("expired");
 		return;
 	}
+	const now = (deps.now ?? (() => new Date()))().getTime();
+	if (p.expiresAt <= now) {
+		pending.delete(parsed.token);
+		log.info("temp skill pending expired", { token: parsed.token, name: p.name });
+		await stamp(deps, query, "⚠ pending temp skill expired — run /skill again.");
+		await answer("expired");
+		return;
+	}
+	// Consumed either way — a tap is single-use, including a refusal.
 	pending.delete(parsed.token);
 	if (parsed.op === "drop") {
 		log.info("temp skill dropped", { token: parsed.token, name: p.name });
@@ -274,9 +375,20 @@ export async function handleTempSkillCallback(
 		return;
 	}
 	const conv = deps.store.get(p.conversationId);
-	if (conv === null) {
-		await stamp(deps, query, "⚠ that conversation no longer exists — nothing invoked.");
-		await answer("conversation gone");
+	if (conv === null || conv.epoch !== p.epoch) {
+		log.info("temp skill invoke fenced — conversation moved on", {
+			conversation: p.conversationId,
+			epoch: p.epoch,
+			current: conv?.epoch ?? null,
+		});
+		await stamp(
+			deps,
+			query,
+			conv === null
+				? "⚠ that conversation no longer exists — nothing invoked."
+				: "⚠ the conversation moved on — run /skill again.",
+		);
+		await answer("stale");
 		return;
 	}
 	submitSkillTurn(deps, conv, p.ref, p.text);

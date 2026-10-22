@@ -12,11 +12,13 @@ export function appSseWriter(
 	body: ReadableStream<Uint8Array>;
 	write(chunk: UIMessageChunk): void;
 	finish(done: TurnDone): void;
+	wireDied(): boolean;
 	dispose(): void;
 } {
 	const enc = new TextEncoder();
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
 	let closed = false;
+	let wireDied = false;
 	let lastByte = Date.now();
 	let beat: ReturnType<typeof setInterval> | undefined;
 	const stopBeat = () => {
@@ -30,6 +32,7 @@ export function appSseWriter(
 			lastByte = Date.now();
 		} catch (err) {
 			closed = true;
+			wireDied = true;
 			stopBeat();
 			log.warn("app stream wire died mid-turn — writes dropped, turn continues", err, {
 				conversation: convId,
@@ -51,6 +54,7 @@ export function appSseWriter(
 		},
 		cancel() {
 			closed = true;
+			wireDied = true;
 			stopBeat();
 			log.warn("app stream client gone — wire closed, turn continues", {
 				conversation: convId,
@@ -78,6 +82,9 @@ export function appSseWriter(
 				controller.close();
 			} catch {}
 		},
+		wireDied() {
+			return wireDied;
+		},
 		dispose() {
 			stopBeat();
 			closed = true;
@@ -91,6 +98,7 @@ export function appSseWriter(
 export function appStreamSink(
 	convId: string,
 	media?: AppMediaDeps,
+	onDoneDisconnected?: (done: TurnDone) => Promise<void>,
 ): {
 	sink: TurnSink;
 	body: ReadableStream<Uint8Array>;
@@ -104,9 +112,12 @@ export function appStreamSink(
 		onStreamChunk(chunk) {
 			writer.write(chunk);
 		},
-		onDone(done) {
+		async onDone(done) {
+			const disconnectedBefore = writer.wireDied();
 			writer.finish(done);
+			const disconnected = disconnectedBefore || writer.wireDied();
 			log.info("app stream finish", { conversation: convId, outcome: done.kind });
+			if (disconnected) await onDoneDisconnected?.(done);
 		},
 	};
 	return {

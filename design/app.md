@@ -88,11 +88,23 @@ demanded. TWA is rejected on mechanism: assetlinks verification cannot pass
 on a tailnet-only domain. PWA and APK are one channel in two shells; the
 server can't tell which talks.
 
+**App-native Web Push (ruling 2026-10-22, operator ask: closed-app app
+turns must ring without Telegram).** Enablement is explicit per browser on
+the Attention page — it is device state, not server-wide configuration.
+The VAPID pair is generated lazily and lives only in `auth.jsonl`;
+subscriptions and sent markers live in SQLite; API state exposes endpoint
+hashes, never endpoints or subscription keys. Payloads are generic
+(title/body + `/app/c/<id>`) and contain no reply text or authority.
+Background app turns notify on terminal success or failure; fenced turns
+stay silent. An interactive turn notifies only if its SSE wire died before
+the terminal callback — a live app reply never double-rings. `404`/`410`
+prune an endpoint; transient send failures keep it retryable. Telegram
+stays the bell for its own conversations and still rings app turns as the
+companion channel; Web Push is the app-owned path, not a replacement.
+
 **Out, explicitly:** mirroring or cross-channel reading of any kind (revisit
 needs a ruling here — Spin-off is the one ruled crossing: a copy plus a
-bell, not mirroring), app-side push (Telegram stays the bell for its own
-conversations and, since Spin-off, app background turns; app-native pushes
-wait until demanded), home-screen widgets, in-app voice mode, iOS.
+bell, not mirroring), home-screen widgets, in-app voice mode, iOS.
 (In-transcript interface blocks are a different thing — Intelligent UI
 below.)
 

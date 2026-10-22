@@ -1,5 +1,6 @@
 import { getAttention } from "./api.ts";
 import { KV, ts, useLoad } from "./opsShared.tsx";
+import { PushControls } from "./PushControls.tsx";
 import type { AppAttentionPage, AppAttentionTarget } from "../../src/http/app-wire.ts";
 
 const KIND_LABEL = {
@@ -41,6 +42,7 @@ export function AttentionView({
 
 	return (
 		<div className="ops">
+			<PushControls token={token} />
 			{data.unavailable.length > 0 && (
 				<div className="card">
 					<KV k="unavailable" v={data.unavailable.join(", ")} />

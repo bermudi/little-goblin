@@ -8,7 +8,7 @@ import type { DeliveryApi } from "./tg/delivery.ts";
 import { sendFileTool } from "./agent/tools/send.ts";
 import { appAddress, openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
-import { Runtime, type TurnSink } from "./runtime.ts";
+import { Runtime, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
@@ -236,6 +236,7 @@ test("a background app turn persists generated media without an SSE stream", asy
 		}),
 	});
 	const sends: string[] = [];
+	const pushed: { conversation: string; done: TurnDone }[] = [];
 	const api = {
 		sendMessage: (_chat: number, text: string) => {
 			sends.push(text);
@@ -251,6 +252,12 @@ test("a background app turn persists generated media without an SSE stream", asy
 		synthesize: async () => [],
 		followUpGate: () => undefined,
 		pings: { record: () => {}, lookup: () => null },
+		push: {
+			notifyDone: (notifyConv, done) => {
+				pushed.push({ conversation: notifyConv.id, done });
+				return Promise.resolve();
+			},
+		},
 	});
 
 	expect(wakeTarget(deps, "app/background", "run the report")).toBe(true);
@@ -267,6 +274,11 @@ test("a background app turn persists generated media without an SSE stream", asy
 	expect(media?.data.filename).toBe("report.txt");
 	expect(readFileSync(media!.data.path, "utf8")).toBe("report-bytes");
 	await waitUntil(() => sends.length === 1, "background ping lands");
+	await waitUntil(() => pushed.length === 1, "background push lands");
+	expect(pushed[0]).toMatchObject({
+		conversation: "app/background",
+		done: { kind: "completed" },
+	});
 	await runtime.shutdown();
 	store.close();
 });

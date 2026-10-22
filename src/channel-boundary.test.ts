@@ -8,6 +8,8 @@ const CHANNEL_NEUTRAL = [
 	"src/mail-approval.ts",
 	"src/program-approval.ts",
 	"src/program-ops.ts",
+	"src/app-push.ts",
+	"src/http/app-push.ts",
 	"src/agent/turn-tools.ts",
 	"src/http/app-conversations.ts",
 	"src/http/app-programs.ts",

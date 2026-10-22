@@ -38,6 +38,11 @@ import type {
 	AppReplyRating,
 	AppReplyRatingResponse,
 	AppProjectList,
+	AppPushPublicKeyResponse,
+	AppPushRegisterResponse,
+	AppPushStatus,
+	AppPushSubscriptionRequest,
+	AppPushUnregisterResponse,
 	AppResumeResponse,
 	AppRunCall,
 	AppSearchResponse,
@@ -188,6 +193,40 @@ export function listApprovals(token: string | null): Promise<AppApprovalsRespons
 
 export function getAttention(token: string | null): Promise<AppAttentionResponse> {
 	return request(token, "/api/app/attention");
+}
+
+export function getPushStatus(token: string | null): Promise<AppPushStatus> {
+	return request(token, "/api/app/push");
+}
+
+export function getPushPublicKey(token: string | null): Promise<AppPushPublicKeyResponse> {
+	return request(token, "/api/app/push/public-key", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+	});
+}
+
+export function registerPushSubscription(
+	token: string | null,
+	subscription: AppPushSubscriptionRequest,
+): Promise<AppPushRegisterResponse> {
+	return request(token, "/api/app/push/subscription", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(subscription),
+	});
+}
+
+export function unregisterPushSubscription(
+	token: string | null,
+	endpoint: string,
+): Promise<AppPushUnregisterResponse> {
+	return request(token, "/api/app/push/subscription", {
+		method: "DELETE",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ endpoint }),
+	});
 }
 
 export function decideProgramApproval(

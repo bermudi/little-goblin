@@ -63,6 +63,17 @@ const required = {
 		"rating",
 		"created_at",
 	],
+	app_push_subscriptions: [
+		"endpoint_hash",
+		"endpoint",
+		"p256dh",
+		"auth",
+		"expiration_time",
+		"user_agent",
+		"created_at",
+		"updated_at",
+	],
+	app_push_deliveries: ["notification_key", "endpoint_hash", "sent_at"],
 	dm_rolls: ["chat_id", "current_id", "n"],
 	dm_roll_highwater: ["chat_id", "n"],
 } as const;

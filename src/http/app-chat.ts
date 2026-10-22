@@ -10,6 +10,7 @@ import { appIdOf } from "../conversation.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
+import type { TurnDone } from "../runtime.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { appStreamSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
@@ -168,6 +169,9 @@ export async function handleChatRoute(
 				{ status: 503, headers: { ...NO_STORE, "retry-after": "30" } },
 			);
 		}
+		const push = deps.push;
+		const notifyDisconnected =
+			push === undefined ? undefined : (done: TurnDone) => push.notifyDone(conv, done);
 
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {
@@ -181,9 +185,13 @@ export async function handleChatRoute(
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
-			const { sink, body, dispose } = appStreamSink(convId, {
-				append: (messages, opts) => store.append(convId, messages, opts),
-			});
+			const { sink, body, dispose } = appStreamSink(
+				convId,
+				{
+					append: (messages, opts) => store.append(convId, messages, opts),
+				},
+				notifyDisconnected,
+			);
 			try {
 				runtime.submitPersisted(conv, lastUser, sink);
 			} catch (err) {
@@ -289,9 +297,13 @@ export async function handleChatRoute(
 		}
 
 		log.info("app intake", { conversation: convId, message: message.id });
-		const { sink, body, dispose } = appStreamSink(convId, {
-			append: (messages, opts) => store.append(convId, messages, opts),
-		});
+		const { sink, body, dispose } = appStreamSink(
+			convId,
+			{
+				append: (messages, opts) => store.append(convId, messages, opts),
+			},
+			notifyDisconnected,
+		);
 		try {
 			runtime.submit(conv, message as UIMessage, sink);
 		} catch (err) {

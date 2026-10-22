@@ -385,3 +385,36 @@ export interface AppProgramMutationResponse {
 	 *  persisted or repeated by a later GET. */
 	hookUrl?: string;
 }
+
+export interface AppPushSubscriptionView {
+	endpointHash: string;
+	userAgent: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AppPushSubscriptionRequest {
+	endpoint: string;
+	expirationTime?: number | null;
+	keys: {
+		p256dh: string;
+		auth: string;
+	};
+}
+
+export interface AppPushStatus {
+	configured: boolean;
+	subscriptions: AppPushSubscriptionView[];
+}
+
+export interface AppPushPublicKeyResponse {
+	publicKey: string;
+}
+
+export interface AppPushRegisterResponse {
+	endpointHash: string;
+}
+
+export interface AppPushUnregisterResponse {
+	removed: boolean;
+}

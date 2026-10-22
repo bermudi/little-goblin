@@ -798,6 +798,31 @@ export function openStore(dbPath: string): ConversationStore {
 	db.run(
 		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
 	);
+	// Web Push subscriptions are endpoint-scoped operator devices. The
+	// endpoint and its keys are send credentials, so callers/log lines use
+	// endpoint_hash; only the sender boundary reads the raw row.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS app_push_subscriptions (
+			endpoint_hash TEXT PRIMARY KEY,
+			endpoint TEXT NOT NULL,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			expiration_time INTEGER,
+			user_agent TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`);
+	// One row = one terminal app notification delivered to one endpoint.
+	// Claimed only after send success, so a transient push outage can be
+	// retried by the next merged sink callback while a delivered device is
+	// not rung twice.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS app_push_deliveries (
+			notification_key TEXT NOT NULL,
+			endpoint_hash TEXT NOT NULL REFERENCES app_push_subscriptions(endpoint_hash) ON DELETE CASCADE,
+			sent_at TEXT NOT NULL,
+			PRIMARY KEY (notification_key, endpoint_hash)
+		)`);
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`

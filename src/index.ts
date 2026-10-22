@@ -10,7 +10,8 @@ import { makePrivateSender } from "./agent/tools/program.ts";
 import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
 import { makeSpeaker, synthesizeSpeech } from "./agent/tts.ts";
-import { loadAuth } from "./auth.ts";
+import { appendAuthRecord, loadAuth } from "./auth.ts";
+import { openAppPush } from "./app-push.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import {
@@ -72,10 +73,7 @@ import {
 	startTelegramMailApproval,
 } from "./tg/mail-approval.ts";
 import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
-import {
-	postProgramApproval,
-	startTelegramProgramApproval,
-} from "./tg/program-approval.ts";
+import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
@@ -137,6 +135,17 @@ async function boot() {
 		);
 	}
 	const store = openStore(paths.db());
+	// Browser push is an app-owned device registry. Its VAPID pair is an
+	// auth record generated on first enable, not operator config.
+	const appPush = openAppPush(store.db, {
+		auth,
+		storeSecret: (name, value) => {
+			appendAuthRecord(paths.auth(), name, value);
+			auth.put(name, value);
+		},
+		store,
+		subject: () => configRef.current.publicUrl ?? "mailto:goblin@localhost",
+	});
 	const cacheObservations = openCacheObservation(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
@@ -479,6 +488,7 @@ async function boot() {
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
 		followUpGate: () => system1Gate ?? undefined,
 		pings,
+		push: appPush,
 	});
 
 	// The explicit-resume surface (turn-resume.ts): /resume /decide
@@ -653,6 +663,7 @@ async function boot() {
 					? { approvals: { program: programApproval, mail: mailApproval } }
 					: {}),
 				programOps,
+				push: appPush,
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

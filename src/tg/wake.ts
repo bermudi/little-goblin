@@ -4,6 +4,8 @@ import type { Conversation, ConversationStore } from "../conversation.ts";
 import type { ConfigRef, TtsConfig } from "../config.ts";
 import type { System1Client } from "../system1.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
+import type { AppPush } from "../app-push.ts";
+import { appPushSink } from "../app-push.ts";
 import type { WakeDeps } from "../wake.ts";
 import { makeBellSink, type BellDeps } from "./bell.ts";
 import { makeDeliverySink } from "./delivery.ts";
@@ -21,6 +23,9 @@ export interface WakeBase {
 	followUpGate(): Pick<System1Client, "decide"> | undefined;
 	// Lets swipe replies to delegation rings reach the app conversation.
 	pings: PingStore;
+	/** App-owned browser notification owner; absent only in tests that fake
+	 *  the whole wake assembly. */
+	push?: Pick<AppPush, "notifyDone">;
 }
 
 // Resolve live gap settings for rolling DMs and provide a bell sink for app turns.
@@ -48,6 +53,7 @@ export function makeWakeDeps(base: WakeBase): WakeDeps {
 				appMediaSink(conv.id, {
 					append: (messages, opts) => base.store.append(conv.id, messages, opts),
 				}),
+				...(base.push === undefined ? [] : [appPushSink(base.push, conv)]),
 			),
 	};
 }

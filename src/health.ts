@@ -557,6 +557,8 @@ function expectedTables(config: Config | undefined): string[] {
 		"guest_dedup",
 		"model_cache_calls",
 		"event_projections",
+		"app_push_subscriptions",
+		"app_push_deliveries",
 		"turn_runs",
 		"turn_tool_calls",
 	];

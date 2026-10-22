@@ -5,6 +5,8 @@ import type { UIMessage } from "ai";
 import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
+import type { TurnDone } from "../runtime.ts";
+import type { AppChannelDeps } from "./app-shared.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import { sleep, tmpDir, waitUntil } from "../testkit.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
@@ -513,6 +515,45 @@ describe("app chat", () => {
 					})
 				).status,
 			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a client-cancelled chat stream reaches the push owner at turn end", async () => {
+		const pushed: { conversation: string; done: TurnDone }[] = [];
+		const push: NonNullable<AppChannelDeps["push"]> = {
+			status: () => Promise.resolve({ configured: true, subscriptions: [] }),
+			ensurePublicKey: () => Promise.resolve("public"),
+			register: () => Promise.resolve({ endpointHash: "hash" }),
+			unregister: () => true,
+			notifyDone: (conv, done) => {
+				pushed.push({ conversation: conv.id, done });
+				return Promise.resolve();
+			},
+		};
+		const { http, call } = setup({ token: APP_TOKEN_NAME, delayMs: 80, push });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			await res.body!.cancel();
+			await waitUntil(() => pushed.length === 1, "push on disconnected turn");
+			expect(pushed[0]).toMatchObject({
+				conversation: "app/chat-01",
+				done: { kind: "completed" },
+			});
 		} finally {
 			http.stop();
 		}

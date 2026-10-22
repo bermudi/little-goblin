@@ -30,6 +30,7 @@ export function setup(
 		resumeOps?: AppChannelDeps["resumeOps"];
 		approvals?: AppChannelDeps["approvals"];
 		programOps?: AppChannelDeps["programOps"];
+		push?: AppChannelDeps["push"];
 		model?: LanguageModel;
 		makeTools?: ConstructorParameters<typeof Runtime>[0]["makeTools"];
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
@@ -101,6 +102,7 @@ export function setup(
 		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
 		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
 		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
+		...(opts.push !== undefined ? { push: opts.push } : {}),
 	};
 	const http = startHttp({
 		configRef,

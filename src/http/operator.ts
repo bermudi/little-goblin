@@ -315,11 +315,15 @@ async function saveConfig(
 		// A stored level the model can't express is a lie — write the
 		// rung the wire clamp would land on, on both channels.
 		merged.thinking = clampThinkingFor(merged.providers, merged.model, merged.thinking);
-		merged.telegram.thinking = clampThinkingFor(
-			merged.providers,
-			merged.telegram.model ?? merged.model,
-			merged.telegram.thinking ?? merged.thinking,
-		);
+		// A disabled channel's saved pin is dormant state — leave model and
+		// thinking untouched until it is re-enabled.
+		if (merged.telegram.enabled) {
+			merged.telegram.thinking = clampThinkingFor(
+				merged.providers,
+				merged.telegram.model ?? merged.model,
+				merged.telegram.thinking ?? merged.thinking,
+			);
+		}
 		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
 			return Response.json(
 				{ error: `config would remove your own telegram user id (${actor.userId})` },

@@ -503,6 +503,65 @@ describe("config save", () => {
 			thinking: "max",
 		});
 	});
+
+	test("provider removal under a disabled telegram keeps its pin; re-enable needs it back", async () => {
+		const gone = {
+			kind: "openai-compatible" as const,
+			baseUrl: "https://api.example.org",
+			auth: "ref",
+		};
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" }, gone },
+					model: "test/m",
+					operators: [],
+					allowedUsers: [],
+					telegram: { enabled: false, model: "gone/glm-5.3", thinking: "xhigh" },
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		// Removing the dormant pin's provider is fine while the channel is
+		// off — and the dormant model/thinking ride through unclamped even
+		// though glm-5.3's ladder can't express xhigh.
+		expect(
+			(
+				await postConfig(d, {
+					providers: { test: { kind: "codex" }, gone },
+					model: "test/glm-5.3",
+				})
+			)?.status,
+		).toBe(200);
+		expect((await postConfig(d, { providers: { test: { kind: "codex" } } }))?.status).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			enabled: false,
+			model: "gone/glm-5.3",
+			thinking: "xhigh",
+		});
+		// Re-enabling without the provider is a 422 until it is restored.
+		expect(
+			(
+				await postConfig(d, {
+					telegram: { enabled: true },
+					operators: [7],
+				})
+			)?.status,
+		).toBe(422);
+		expect(
+			(
+				await postConfig(d, {
+					providers: { test: { kind: "codex" }, gone },
+					telegram: { enabled: true },
+					operators: [7],
+				})
+			)?.status,
+		).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			enabled: true,
+			model: "gone/glm-5.3",
+		});
+	});
 });
 
 describe("memory/blocked route", () => {

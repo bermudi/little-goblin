@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
@@ -72,6 +72,36 @@ describe("app config", () => {
 					})
 				).status,
 			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a disabled telegram pin survives app config writes untouched", async () => {
+		const { http, call, configRef, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			// The dormant pin points at a provider still present; a removed one
+			// would parse too — the write path just must not re-validate or
+			// re-clamp it.
+			writeFileSync(
+				join(home, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.example.com",auth:"zai"},gone:{kind:"openai-compatible",baseUrl:"https://api.example.com",auth:"gone"}},model:"zai/m",operators:[],telegram:{enabled:false,model:"gone/glm-5.3",thinking:"xhigh"}}\n`,
+			);
+			const write = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "zai/glm-5.3", thinking: "xhigh" }),
+			});
+			expect(write.status).toBe(200);
+			// The live app model still clamps onto its own ladder…
+			expect(configRef.current.thinking).toBe("max");
+			// …but the dormant pin is dormant state — model and thinking
+			// pass through untouched until re-enable.
+			expect(configRef.current.telegram).toMatchObject({
+				enabled: false,
+				model: "gone/glm-5.3",
+				thinking: "xhigh",
+			});
 		} finally {
 			http.stop();
 		}

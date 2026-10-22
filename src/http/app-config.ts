@@ -49,11 +49,15 @@ export async function handleConfigRoute(
 					merged.model,
 					parsed.data.thinking ?? base.thinking,
 				);
-				merged.telegram.thinking = clampThinkingFor(
-					merged.providers,
-					merged.telegram.model ?? merged.model,
-					merged.telegram.thinking ?? merged.thinking,
-				);
+				// A disabled channel's saved pin is dormant state — leave
+				// model and thinking untouched until it is re-enabled.
+				if (merged.telegram.enabled) {
+					merged.telegram.thinking = clampThinkingFor(
+						merged.providers,
+						merged.telegram.model ?? merged.model,
+						merged.telegram.thinking ?? merged.thinking,
+					);
+				}
 				prepareAppSettingsForConfig(store, base, merged);
 				writeConfig(merged);
 				const fresh = loadConfig();

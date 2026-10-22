@@ -137,6 +137,46 @@ test("telegram.enabled true keeps the one-operator floor", () => {
 	expect(() => parseConfig({ ...objBase, operators: [] })).toThrow(/operators/);
 });
 
+test("a disabled telegram pin keeps a stale provider ref; enabled stays strict", () => {
+	const stale = {
+		...objBase,
+		operators: [],
+		telegram: { enabled: false, model: "gone/m", thinking: "high" },
+	};
+	// Disabled + missing provider → the pin parses through untouched.
+	const off = parseConfig(stale);
+	expect(off.telegram).toMatchObject({ enabled: false, model: "gone/m", thinking: "high" });
+	// A malformed ref is still a syntax error — dormancy is not a parse hole.
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false, model: "notaref" } })).toThrow();
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false, model: "/m" } })).toThrow();
+	// Enabled mode is unchanged: a missing provider rejects.
+	expect(() =>
+		parseConfig({ ...stale, operators: [7], telegram: { enabled: true, model: "gone/m" } }),
+	).toThrow(/telegram: custom/);
+	// Restoring the provider re-enables the same pin without edits.
+	const restored = parseConfig({
+		providers: {
+			test: { kind: "codex" },
+			gone: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
+		},
+		model: "test/m",
+		operators: [7],
+		allowedUsers: [7],
+		telegram: { enabled: true, model: "gone/m", thinking: "high" },
+	});
+	expect(restored.telegram).toMatchObject({ enabled: true, model: "gone/m" });
+	// The exemption is telegram.model only — the live app model and
+	// titleModel still demand a real provider while telegram is off.
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false }, model: "gone/m" })).toThrow(
+		/model: custom/,
+	);
+	expect(() =>
+		parseConfig({ ...stale, telegram: { enabled: false }, titleModel: "gone/m" }),
+	).toThrow(/titleModel: custom/);
+	// An unpinned disabled block still inherits the app model.
+	expect(parseConfig({ ...stale, telegram: { enabled: false } }).telegram.model).toBe("test/m");
+});
+
 const valid: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },

@@ -992,6 +992,9 @@ const configSchema = z
 				});
 				continue;
 			}
+			// A disabled channel keeps its saved pin for re-enable — the
+			// ref's syntax still validates, but the provider may be gone.
+			if (path === "telegram.model" && !cfg.telegram.enabled) continue;
 			if (!(provider in cfg.providers)) {
 				ctx.addIssue({
 					code: "custom",

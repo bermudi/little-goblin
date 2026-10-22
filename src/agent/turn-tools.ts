@@ -7,7 +7,7 @@
 // through this same function so the drift comparison reads the set the
 // resumed attempt would actually get.
 
-import type { RuntimeDeps } from "../runtime.ts";
+import { FencedError, type RuntimeDeps } from "../runtime.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
@@ -29,7 +29,9 @@ import {
 	type VisionToolDeps,
 } from "./tools/mod.ts";
 import { withScript } from "./tools/script.ts";
-import type { OperatorHerdr } from "../herdr.ts";
+import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
+import type { ResponsibilityStore } from "../responsibilities.ts";
+import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
 // decision itself lives in makeTurnTools, not boot().
@@ -71,6 +73,13 @@ export interface TurnToolsDeps {
 	subagents(): Subagents | null;
 	desktops(): Desktops | null;
 	subagentsBoot(): Config["subagents"];
+	// Late-bound like subagents — the responsibility service is built
+	// after Runtime's construction. null = the tool never mounts.
+	responsibility(): {
+		resps: ResponsibilityStore;
+		service: ResponsibilityService;
+		listFor(): Promise<OperatorAgent[]>;
+	} | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
@@ -93,12 +102,14 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile, accepts) => {
+	return (conv, deliverVoice, recording, deliverFile, accepts, context) => {
+		const epoch = conv.epoch;
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
 		const subagents = deps.subagents();
 		const desktops = deps.desktops();
 		const subagentsBoot = deps.subagentsBoot();
+		const responsibilitySvc = deps.responsibility();
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
@@ -130,12 +141,22 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						}
 					: undefined,
 			// sendPrivate keeps hook URLs out of model context — a DM per
-			// operator, never in history. publicUrl reads live.
+			// operator, never in history. publicUrl reads live. App
+			// project turns get the responsibility-destination arm —
+			// programs bound to this project's handed-over work.
 			program:
 				channel === "app" || channel === "telegram"
 					? {
 							programs,
 							target: targetOf(conv),
+							...(conv.projectId !== null && responsibilitySvc !== null
+								? {
+										project: {
+											projectId: conv.projectId,
+											resps: responsibilitySvc.resps,
+										},
+									}
+								: {}),
 							publicUrl: () => configRef.current.publicUrl,
 							...(sendPrivate === undefined ? {} : { sendPrivate }),
 							requestApproval: async (proposal, signal) => {
@@ -224,6 +245,34 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			desktop:
 				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
 					? { conversation: conv.id, workspace: workdir, desktops }
+					: undefined,
+			// Project-bound turns only: the coordination surface the
+			// handover loop lives on. The handover key is the project
+			// conversation — one acceptance per coordination conversation.
+			responsibility:
+				conv.projectId !== null && responsibilitySvc !== null
+					? {
+							resps: responsibilitySvc.resps,
+							service: responsibilitySvc.service,
+							projectId: conv.projectId,
+							coordinationConversationId: conv.id,
+							journalRunId: context?.runId,
+							assertAuthority: () => {
+								if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
+							},
+							handoverKey: () => {
+								if (context === undefined) {
+									throw new Error("responsibility accept needs a turn run context");
+								}
+								return `handover:${conv.id}:${context.sourceMessageId()}`;
+							},
+							listFor: responsibilitySvc.listFor,
+							// The accepted-risk send edge (responsibility-service):
+							// preflight binds pane + kind; post-send identity is
+							// compared to the bound session — a crossed send lands
+							// as uncertain, loudly logged, never a resend.
+							guardedSend: makeManagedSendEdge(operatorHerdr),
+						}
 					: undefined,
 			// App turns only — Telegram and guests render plain text.
 			ui: channelOf(conv.id) === "app",

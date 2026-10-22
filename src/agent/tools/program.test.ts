@@ -820,3 +820,160 @@ describe("program tool", () => {
 		expect(approvals).toHaveLength(1); // only the original post
 	});
 });
+
+describe("responsibility destinations", () => {
+	test("create binds a project responsibility; foreign and telegram creates keep their pins", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const resp = { projectId: "p1" };
+		const tool = programTool({
+			programs,
+			project: { projectId: "p1", resps: { get: (id: string) => (id === "r1" ? resp : null) } },
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		const out = (await exec(tool, {
+			action: "create",
+			name: "watch",
+			charter: "check in",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		})) as { program?: { id: number; responsibility_id?: string }; error?: string };
+		expect(out.error).toBeUndefined();
+		const created = programs.get(out.program!.id)!;
+		expect(created.responsibilityId).toBe("r1");
+		expect(created.chatId).toBe(0);
+		// A foreign-project responsibility refuses.
+		const foreign = (await exec(tool, {
+			action: "create",
+			name: "x",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "other",
+		})) as { error?: string };
+		expect(foreign.error).toBe("no such responsibility in this project");
+		// And a hook can't mint without the operator DM.
+		const hooked = (await exec(tool, {
+			action: "create",
+			name: "x",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+			hook: true,
+		})) as { error?: string };
+		expect(hooked.error).toBe(
+			"hook URLs deliver to the operator DM — not available on project turns",
+		);
+	});
+
+	test("project turns refuse hook enable/rotate; disable stays open", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		// A project-bound program that carries a hook — minted before the
+		// binding existed, or legacy surgery. The cron keeps disable legal.
+		const prog = programs.create({
+			name: "own",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+			hookHash: hookTokenHash("seed"),
+		});
+		const sent: string[] = [];
+		const tool = programTool({
+			programs,
+			project: {
+				projectId: "p1",
+				resps: { get: (id) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => "https://example.test",
+			sendPrivate: async (text) => {
+				sent.push(text);
+			},
+		});
+		// The same refusal create applies to responsibility destinations.
+		for (const op of ["enable", "rotate"] as const) {
+			const out = (await exec(tool, { action: "hook", id: prog.id, op })) as { error?: string };
+			expect(out.error).toBe(
+				"hook URLs deliver to the operator DM — not available on project turns",
+			);
+		}
+		expect(programs.get(prog.id)!.hookHash).toBe(hookTokenHash("seed"));
+		expect(sent).toEqual([]);
+		// Disable delivers nothing — it stays available for cleanup.
+		const off = (await exec(tool, { action: "hook", id: prog.id, op: "disable" })) as {
+			error?: string;
+		};
+		expect(off.error).toBeUndefined();
+		expect(programs.get(prog.id)!.hookHash).toBeNull();
+	});
+
+	test("the project arm only reaches programs bound to the project's responsibilities", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		// One program in scope (r1 belongs to p1), one in another
+		// project's lane (r2/p2), one Telegram-pinned.
+		const own = programs.create({
+			name: "own",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		});
+		const foreign = programs.create({
+			name: "foreign",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r2",
+		});
+		const telegram = programs.create({
+			name: "tg",
+			charter: "c",
+			cron: "*/20 * * * *",
+			address: { chatId: -100, threadId: 7 },
+		});
+		const resps = {
+			get: (id: string) =>
+				id === "r1" ? { projectId: "p1" } : id === "r2" ? { projectId: "p2" } : null,
+		};
+		const tool = programTool({
+			programs,
+			project: { projectId: "p1", resps },
+			publicUrl: () => "https://example.test",
+			sendPrivate: async () => {},
+		});
+		const list = (await exec(tool, { action: "list" })) as {
+			programs: { id: number }[];
+		};
+		expect(list.programs.map((p) => p.id)).toEqual([own.id]);
+		// In-scope verbs work; out-of-scope ids read as absent everywhere.
+		const toggled = (await exec(tool, { action: "toggle", id: own.id })) as {
+			program: { enabled: boolean };
+		};
+		expect(toggled.program.enabled).toBe(false);
+		for (const id of [foreign.id, telegram.id]) {
+			for (const action of [
+				{ action: "update", id, name: "nope" },
+				{ action: "delete", id },
+				{ action: "toggle", id },
+				{ action: "hook", id, op: "rotate" },
+			]) {
+				const out = (await exec(tool, action)) as { error?: string };
+				expect(out.error).toBe(`no program ${id}`);
+			}
+		}
+		expect(programs.get(foreign.id)!.name).toBe("foreign");
+		expect(programs.get(telegram.id)!.name).toBe("tg");
+		// The Telegram arm is untouched — same rows, full authority.
+		const tgTool = programTool({
+			programs,
+			chatId: -100,
+			threadId: 7,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		const tgList = (await exec(tgTool, { action: "list" })) as { programs: { id: number }[] };
+		expect(tgList.programs).toHaveLength(3);
+	});
+});

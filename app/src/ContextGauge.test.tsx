@@ -453,9 +453,7 @@ describe("ContextGauge", () => {
 		// A turn starts — before its first step report lands the label
 		// counts the turn after the settled ones.
 		await act(async () => {
-			root?.render(
-				<ContextGauge token={null} conversationId="app/aaa" busy={true} live={null} />,
-			);
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={true} live={null} />);
 		});
 		expect(label()).toBe("turn 3 in flight");
 

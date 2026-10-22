@@ -35,7 +35,11 @@ export interface ProgramApprovalDeps {
 
 export interface ProgramApproval {
 	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
-	decide(id: number, action: ProgramDecision, actor: DecisionActor): Promise<ProgramDecisionOutcome>;
+	decide(
+		id: number,
+		action: ProgramDecision,
+		actor: DecisionActor,
+	): Promise<ProgramDecisionOutcome>;
 	pending(): ProgramProposal[];
 	candidate(proposal: ProgramProposal): ProgramCandidate | null;
 	/** Joins in-flight requestApproval posts — shutdown's drain budget

@@ -154,11 +154,13 @@ function openrouterRung(
 // aliases every glm id to the 5.3 generation (docs.z.ai/devpack).
 function glmProfile(modelId: string, baseUrl?: string): ReasoningProfile {
 	const { major, minor } = glmVersion(modelId);
-	if (zaiCodingEndpoint(baseUrl)) return { levels: ["low", "high", "max"], off: "floor", knob: "effort" };
+	if (zaiCodingEndpoint(baseUrl))
+		return { levels: ["low", "high", "max"], off: "floor", knob: "effort" };
 	if (major > 5 || (major === 5 && minor >= 3)) {
 		return { levels: ["low", "high", "max"], off: "floor", knob: "effort" };
 	}
-	if (major === 5 && minor === 2) return { levels: ["high", "max"], off: "disable", knob: "effort" };
+	if (major === 5 && minor === 2)
+		return { levels: ["high", "max"], off: "disable", knob: "effort" };
 	return { levels: ["low"], off: "disable", knob: "toggle" };
 }
 

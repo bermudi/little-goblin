@@ -154,6 +154,11 @@ export interface TurnJournal {
 	interrupted(): TurnRun[];
 	readonly interruptedAtOpen: readonly TurnRun[];
 	get(runId: string): TurnRun | null;
+	// The newest run admitted as this row's resume continuation — null
+	// when none exists. A 'resumed' row's successor insert committed in
+	// the same transaction as the mark, and repeated resumes of one
+	// source each mint their own (the latest is the live continuation).
+	successorOf(runId: string): string | null;
 	callsFor(runId: string): TurnToolCall[];
 }
 
@@ -550,6 +555,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 		WHERE run_id = ? AND status = 'interrupted'`,
 	);
 	const qGet = db.query(`${RUN_SELECT} WHERE r.run_id = ?`);
+	const qSuccessor = db.query<{ run_id: string }, [string]>(
+		"SELECT run_id FROM turn_runs WHERE resumed_from = ? ORDER BY started_ms DESC, rowid DESC LIMIT 1",
+	);
 	const qInterrupted = db.query(
 		`${RUN_SELECT} WHERE r.status = 'interrupted' ORDER BY r.started_ms, r.run_id`,
 	);
@@ -795,6 +803,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 		get(runId) {
 			const raw = qGet.get(runId);
 			return raw === null ? null : decodeRun(raw);
+		},
+		successorOf(runId) {
+			return qSuccessor.get(runId)?.run_id ?? null;
 		},
 		callsFor(runId) {
 			return qCalls.all(runId).map(decodeCall);

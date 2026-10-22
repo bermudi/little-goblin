@@ -3,11 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import {
-	liveStateOf,
-	skillDiskPresence,
-	SkillSources,
-} from "./skill-provenance.ts";
+import { liveStateOf, skillDiskPresence, SkillSources } from "./skill-provenance.ts";
 
 const dirs: string[] = [];
 const stores: ConversationStore[] = [];
@@ -173,7 +169,11 @@ for (const catalog of ["skills", "skills-proposed"]) {
 			chmodSync(dir, 0);
 			try {
 				expect(() =>
-					skillDiskPresence(join(workspace, "skills"), join(workspace, "skills-proposed"), "blocked"),
+					skillDiskPresence(
+						join(workspace, "skills"),
+						join(workspace, "skills-proposed"),
+						"blocked",
+					),
 				).toThrow(expect.objectContaining({ code: "EACCES", path: join(dir, "blocked") }));
 			} finally {
 				chmodSync(dir, 0o755);

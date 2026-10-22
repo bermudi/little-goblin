@@ -17,12 +17,7 @@ import { type Config, type ConfigRef, splitModelRef } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
-import {
-	cacheRouteFor,
-	carriesMedia,
-	observedModel,
-	resolveModel,
-} from "./providers.ts";
+import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { thinkingOptions } from "./thinking.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
 

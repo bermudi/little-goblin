@@ -18,8 +18,7 @@ const SEEK_STEP = 10;
 // decoder so a start attempt can't hang the "…" button forever.
 const METADATA_TIMEOUT_MS = 10_000;
 
-const b64Bytes = (b64: string): Uint8Array =>
-	Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+const b64Bytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
 // seconds → m:ss, or h:mm:ss past an hour.
 export function tfmt(seconds: number): string {
@@ -53,7 +52,12 @@ function loadedDuration(el: HTMLAudioElement): Promise<number> {
 	return new Promise((resolve, reject) => {
 		const settled = (ok: boolean) => {
 			if (ok) resolve(el.duration);
-			else reject(new Error(`speech player: audio part has no duration (media error ${el.error?.code ?? 0})`));
+			else
+				reject(
+					new Error(
+						`speech player: audio part has no duration (media error ${el.error?.code ?? 0})`,
+					),
+				);
 		};
 		if (Number.isFinite(el.duration) && el.duration > 0) {
 			settled(true);
@@ -232,7 +236,9 @@ export function useSpeech(token: string | null) {
 				if (gen.current !== myGen) return;
 				parts = r.chunks.map((b64) => {
 					const bytes = b64Bytes(b64);
-					const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: r.mediaType }));
+					const url = URL.createObjectURL(
+						new Blob([bytes.buffer as ArrayBuffer], { type: r.mediaType }),
+					);
 					const el = new Audio(url);
 					el.preload = "metadata";
 					return { url, el };
@@ -301,7 +307,8 @@ export function useSpeech(token: string | null) {
 	);
 
 	const cycleRate = useCallback(() => {
-		const next = SPEECH_RATES[(SPEECH_RATES.indexOf(rateRef.current) + 1) % SPEECH_RATES.length] ?? 1;
+		const next =
+			SPEECH_RATES[(SPEECH_RATES.indexOf(rateRef.current) + 1) % SPEECH_RATES.length] ?? 1;
 		rateRef.current = next;
 		setRate(next);
 		const c = chunks.current[current.current];
@@ -322,7 +329,20 @@ export function useSpeech(token: string | null) {
 		[stop],
 	);
 
-	return { phase, playing, err, position, duration, rate, start, stop, toggle, seekBy, seekTo, cycleRate };
+	return {
+		phase,
+		playing,
+		err,
+		position,
+		duration,
+		rate,
+		start,
+		stop,
+		toggle,
+		seekBy,
+		seekTo,
+		cycleRate,
+	};
 }
 
 export function SpeechPlayer(props: {
@@ -341,14 +361,14 @@ export function SpeechPlayer(props: {
 			<button type="button" onClick={() => props.onSeekBy(-SEEK_STEP)} aria-label="Back 10 seconds">
 				«{SEEK_STEP}
 			</button>
-			<button
-				type="button"
-				onClick={props.onToggle}
-				aria-label={props.playing ? "Pause" : "Play"}
-			>
+			<button type="button" onClick={props.onToggle} aria-label={props.playing ? "Pause" : "Play"}>
 				{props.playing ? "⏸" : "▶"}
 			</button>
-			<button type="button" onClick={() => props.onSeekBy(SEEK_STEP)} aria-label="Forward 10 seconds">
+			<button
+				type="button"
+				onClick={() => props.onSeekBy(SEEK_STEP)}
+				aria-label="Forward 10 seconds"
+			>
 				{SEEK_STEP}»
 			</button>
 			<button type="button" onClick={props.onRate} aria-label="Playback speed">

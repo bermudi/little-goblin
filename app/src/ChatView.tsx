@@ -1572,11 +1572,7 @@ export function Composer({
 					const stored = loadComposerDraft(draftScope) ?? "";
 					saveComposerDraft(
 						draftScope,
-						stored === draft
-							? ""
-							: stored.startsWith(draft)
-								? stored.slice(draft.length)
-								: stored,
+						stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
 					);
 				} catch {
 					// Unreadable records stay put, and a mounted composer's
@@ -2164,9 +2160,10 @@ function Chat({
 			resume: true,
 			onData: (part) => {
 				if (part.type !== "data-context") return;
-				const d = (typeof part.data === "object" && part.data !== null
-					? part.data
-					: {}) as Record<string, unknown>;
+				const d = (typeof part.data === "object" && part.data !== null ? part.data : {}) as Record<
+					string,
+					unknown
+				>;
 				const num = (v: unknown) => (typeof v === "number" ? v : null);
 				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
 			},

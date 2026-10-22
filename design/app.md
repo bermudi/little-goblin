@@ -385,6 +385,89 @@ auto-unarchives**: a delegation notice or a message sent via the ping link
 brings a shelved spin-off back to the rail instead of accumulating replies
 unseen.
 
+## Deletion's dependents (ruling 2026-10-19)
+
+`deleteConversation` must sweep every FK child or the row delete throws a
+bare constraint error — the app rail's delete was unreachable for any
+conversation that had ever carried a wake. Two shapes, two rulings:
+
+- **Wake rows ride the delete** (same transaction): deliveries, work
+  events, and their joins are the conversation's delivery bookkeeping;
+  they mean nothing without it. `openStore` ensures the wake and
+  responsibilities schemas alongside projects/notes so the sweep and the
+  anchor check always find their tables.
+- **A coordination surface outlives its responsibility, never the reverse.**
+  While any responsibility (open or closed) anchors the conversation,
+  delete refuses, naming them — the handover loop and wake delivery stand
+  on that surface, and closed records keep their history. The refusal is
+  the operator's to resolve, not the delete's to cascade.
+
+Reconcile treats a wake whose conversation row is gone (out-of-band
+surgery only — the FK chain and the sweep keep them together) exactly
+like a ghost run link: that wake fails loudly and terminally;
+classification continues for every other wake.
+
+The feed consequence (2026-10-19): unprunable history means the wire,
+not the table, carries the bound. `feedEvents` serves each
+responsibility's newest `FEED_EVENT_WINDOW` (50) developments ascending
+plus `eventsTruncated` — the count of older durable rows omitted —
+while the app polls the read model every 15s. Durable rows are never
+pruned by the feed; `work_events (responsibility_id, event_id DESC)`
+is the index the window walks.
+
+## Delivery and arm truth (ruling 2026-10-20)
+
+Three fences close the gaps review found in the handover loop's
+delivery edges:
+
+- **Wake ownership is gate-or-fail-closed, never optimistic.** The
+  runtime's ownership hooks observe turns and never gate them, so a
+  `begin` hook that cannot persist the wake→run link cannot abort the
+  run — but an unlinked claim is indistinguishable from a
+  never-admitted one, and reconcile would resubmit a trigger the live
+  or finished run already processed. A failed link therefore fails the
+  *wake* closed (`failUnlinked`: CAS on claimed AND run_id IS NULL) and
+  the dispatcher fences that wake's submit for the process lifetime,
+  retrying the durable closure every pump. The turn always completes;
+  only the resubmission is impossible. The same closure+fence covers
+  every terminal failure *before* `begin` (refused admission,
+  makeTools, the journal row itself): the runtime announces it through
+  `preRunFailure`, because no run row exists for reconcile to read —
+  and while even the closure write refuses, the process-local fence
+  holds the resubmission and each pump retries the write.
+- **The unresolved-delivery fence binds to dispatch identity, not row
+  identity.** Prepare, claim, and fresh `attach` all fence per dispatch
+  identity — server, session, terminal, harness session, kind, within
+  one responsibility — never per (attachment, generation) alone, which
+  a duplicate binding of the same agent could have walked around:
+  after A's send went `uncertain`, a prepare or claim via B would have
+  reached the same agent without reconciliation. `attach` additionally
+  refuses a second live binding of one identity outright (plain error;
+  detach it or reattach), so the duplicate state stops being minted;
+  the prepare/claim fence still covers rows that predate the refusal.
+  The identity an operation answers for is persisted **on the
+  operation** at prepare: reattach rewrites the attachment row's
+  copies, so joining it would re-key an unresolved send onto whatever
+  destination the row holds now — fencing the replacement that never
+  received it and freeing the agent that did. A genuinely changed
+  identity remains a deliberate adoption, same as reattach's ruling;
+  the fence never reaches across responsibilities.
+- **Arm truth is the linked program.** The persisted `armed` flags are
+  a cache `ensureFollowup` writes; the `program` tool can disable or
+  delete the follow-up behind the responsibility's back. Every armed
+  reader — the app feed and the agent-facing `status` action alike —
+  recomputes from the linked program row (armed = exists ∧ enabled ∧
+  active), sharing one `armedView`.
+  The app feed additionally keeps its polls honest (2026-10-20): a
+  refresh failure alongside loaded rows renders a stale-state banner
+  instead of standing mute, and each response carries the refresh's
+  sequence — an older poll resolving after a mutation's refresh is
+  dropped, never restored to obsolete state. Ordinary polls also
+  serialize (2026-10-22): the interval skips while a fetch is in
+  flight, so sustained latency above the interval degrades the cadence
+  instead of stacking requests whose every response arrives stale by
+  sequence and gets discarded — the feed would never have rendered.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation
@@ -496,3 +579,35 @@ this same idea (`@json-render/core`, `@json-render/react`), layered on the AI
 SDK. Not adopted — see the pin and the reviewer criteria at the bottom of
 `docs/generative-ui.md`. Operator-facing plain-language walkthrough of this
 section: same file.
+
+## Coordination fences & delivery evidence (ruling 2026-10-20)
+
+- **Corrections fence the whole project, not one lane.** Every
+  conversation bound to the project can reach the coordination tools,
+  so `service.correct()` bumps the epoch of every bound lane plus the
+  coordination conversation inside the same commit as the revision and
+  the durable event — one commit, one rollback unit. The commit hook
+  (`onCorrectionCommitted`, wired to `runtime.cancelFenced`) then
+  cancels each fenced lane before the correction wake is pumped; a hook
+  failure on one lane never skips the rest and never undoes the commit.
+- **Unresolved delivery fences the attachment generation.** While any
+  operation on an attachment generation is `sent`/`uncertain`, no new
+  operation prepares (check+insert atomic) and no sibling prepared op
+  can claim — regardless of brief, revision, tool-call id, or restart.
+  The only way out is `reconcile {operation, delivery, evidence}`:
+  inspected evidence closes the op `acknowledged`/`refused`, records
+  verdict+evidence+prior outcome, is idempotent on identical replay,
+  and conflicts by name. A live in-process dispatch refuses reconcile;
+  a crashed `sent` row reconciles freely. Settlements CAS from `sent`
+  so a reconciled row is never overwritten.
+- **Same-identity reattach skips reconciliation — refused.** A reattach
+  whose target equals the bound dispatch identity (server, session,
+  terminal, agent_session, kind) while a delivery is unresolved throws
+  `ReconciliationConflict` naming the op (tool: `delivery-uncertain`;
+  HTTP: 409). A genuinely changed identity is a deliberate adoption and
+  bumps generation normally.
+- **Responsibility-destination programs are durable enqueues.** If the
+  `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
+  the occurrence stays due and the next scan retries the same source
+  key onto the same work event. Generic Telegram fires keep
+  attempt-once.

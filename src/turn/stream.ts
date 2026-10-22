@@ -210,6 +210,11 @@ export interface StreamDeps<M extends WireMember> {
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
 	settle(m: M, done: MemberSettlement): void;
+	// The durable-wake seam: after a steer fold, the message ids that
+	// actually joined the membership (converted + replayed, not merely
+	// claimed). The runtime wires it to the wake dispatcher's run link;
+	// absent = no wake tracking.
+	noteRunMembers?(messageIds: string[]): void;
 	steerMarkSeed: number;
 	// The durable user-input seqs owned at admission; successfully folded
 	// steers advance it and persist with the steer mark.
@@ -332,6 +337,9 @@ export async function driveStream<M extends WireMember>(
 			// client-controlled and may repeat, so an id match could claim a
 			// steer that failed conversion as owned input.
 			const claimedSeqs = new Set<number>();
+			// The message ids that actually joined the membership — the
+			// wake link's identity, keyed the way runs name their members.
+			const claimedIds = new Set<string>();
 			let admittedCount = 0;
 			for (const t of steered) {
 				try {
@@ -343,6 +351,7 @@ export async function driveStream<M extends WireMember>(
 					injected.push(...converted);
 					joinMember(convId, live, members, t);
 					claimedSeqs.add(t.seq);
+					claimedIds.add(t.message.id);
 					admittedCount++;
 				} catch (err) {
 					if (!deps.holdsAuthority()) {
@@ -360,6 +369,10 @@ export async function driveStream<M extends WireMember>(
 					});
 				}
 			}
+			// Joined members are this run's input now — the wake link
+			// lands before the request does, so a completion can't settle
+			// a delivery it never owned.
+			if (claimedIds.size > 0) deps.noteRunMembers?.([...claimedIds]);
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0) {
 					const outbound = [...stepMessages, ...warnMsgs, ...nudge];

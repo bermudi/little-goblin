@@ -22,16 +22,27 @@ import {
 } from "./program-proposals.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import {
+	responsibilityTarget,
+	responsibilityTargetOf,
 	telegramAddressOf,
 	telegramTarget,
 	validTarget,
 	type ConversationTarget,
 } from "./targets.ts";
 
+/** The destination union's other arm — the project responsibility this
+ *  program checks in on. Exactly one of a real chat_id or a
+ *  responsibility_id is set; create validates it. */
+export type ProgramKind = "custom" | "followup";
+
 export interface Program {
 	id: number;
 	name: string;
 	charter: string;
+	/** The durable identity of service-owned rows: the follow-up
+	 *  check-in is kind "followup", everything the tool/operator mints
+	 *  is "custom". Not patchable — it is what recovery matches on. */
+	kind: ProgramKind;
 	cron: string | null;
 	/** null preserves fire-on-wake behavior. */
 	maxLatenessMinutes: number | null;
@@ -45,9 +56,16 @@ export interface Program {
 	mailRevision: number;
 	/** Canonical conversation address — replies land where the program was born. */
 	target: string;
-	/** Legacy transport projection derived from `target`; app rows use 0/null. */
+	/** Legacy transport projection derived from `target`; app rows use
+	 *  0/null. Also 0 when the destination is a project responsibility:
+	 *  Telegram chat ids are never 0, and every destination read branches
+	 *  on responsibilityId first. */
 	chatId: number;
 	threadId: number | null;
+	/** Destination union's other arm — the project responsibility this
+	 *  program checks in on. Exactly one of a real chat_id or a
+	 *  responsibility_id is set; create validates it. */
+	responsibilityId: string | null;
 	enabled: boolean;
 	createdAt: string;
 	lastRun: string | null;
@@ -73,14 +91,25 @@ export function programAddressTarget(address: ProgramAddress): ConversationTarge
 	return "target" in address ? address.target : telegramTarget(address.chatId, address.threadId);
 }
 
+// A program row's target is a real conversation address, or the resp:<id>
+// pseudo-address a responsibility-destination row carries instead.
+const isProgramTarget = (target: string): boolean =>
+	validTarget(target) || responsibilityTargetOf(target) !== null;
+
 export interface CreateProgram {
 	name: string;
 	charter: string;
+	/** Only the responsibility service mints non-custom rows. */
+	kind?: ProgramKind;
 	cron?: string | null;
 	maxLatenessMinutes?: number | null;
 	hookHash?: string | null;
 	mailFilter?: string | null;
-	address: ProgramAddress;
+	/** Exactly one destination: a Telegram address OR a project
+	 *  responsibility. The service binds responsibility programs
+	 *  itself — the tool's Telegram pin is untouched. */
+	address?: ProgramAddress | undefined;
+	responsibilityId?: string | undefined;
 }
 
 // Patches are partial; cron (when present) re-validates. undefined
@@ -101,6 +130,10 @@ export interface ProgramsStore {
 	remove(id: number): boolean;
 	get(id: number): Program | null;
 	list(): Program[];
+	/** Programs bound to a responsibility, oldest first — the durable
+	 *  identity recovery reads when a follow-up's create committed but
+	 *  its link write never did. */
+	forResponsibility(responsibilityId: string): Program[];
 	/** Enabled cron programs whose next_run is at or before `now`
 	 *  (boot catch-up is this same query — a fire missed while down is
 	 *  just "due"). Hook-only programs are never due. */
@@ -279,13 +312,17 @@ const programSchema = z.object({
 	id: z.number(),
 	name: z.string(),
 	charter: z.string(),
+	kind: z.enum(["custom", "followup"]),
 	cron: z.string().nullable(),
 	max_lateness_minutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
 	hook_hash: z.string().nullable(),
 	mail_filter: z.string().nullable(),
 	mail_history_id: z.string().nullable(),
 	mail_revision: z.number().int().nonnegative(),
-	target: z.string().refine(validTarget),
+	target: z.string().refine(isProgramTarget),
+	chat_id: z.number(),
+	thread_id: z.number().nullable(),
+	responsibility_id: z.string().nullable().default(null),
 	enabled: z.number(),
 	created_at: z.string(),
 	last_run: z.string().nullable(),
@@ -319,6 +356,7 @@ function rowToProgram(row: unknown): Program {
 		id: parsed.id,
 		name: parsed.name,
 		charter: parsed.charter,
+		kind: parsed.kind,
 		cron: parsed.cron,
 		// Rows from before the ≥1 floor may hold 0 — a grace smaller
 		// than the 30s tick can never fire, so 0 reads as 1.
@@ -331,6 +369,7 @@ function rowToProgram(row: unknown): Program {
 		target: parsed.target,
 		chatId: telegram?.chatId ?? 0,
 		threadId: telegram?.threadId ?? null,
+		responsibilityId: parsed.responsibility_id,
 		enabled: parsed.enabled === 1,
 		createdAt: parsed.created_at,
 		lastRun: parsed.last_run,
@@ -358,6 +397,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			charter TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'custom',
 			cron TEXT,
 			max_lateness_minutes INTEGER,
 			hook_hash TEXT,
@@ -367,6 +407,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			target TEXT NOT NULL,
 			chat_id INTEGER NOT NULL DEFAULT 0,
 			thread_id INTEGER,
+			responsibility_id TEXT,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			last_run TEXT,
@@ -396,6 +437,15 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				     ELSE 'topic:' || chat_id || ':' || thread_id END
 				WHERE target IS NULL`);
 		}
+		if (!progCols.has("responsibility_id")) {
+			db.exec("ALTER TABLE programs ADD COLUMN responsibility_id TEXT");
+		}
+		if (!progCols.has("kind")) {
+			// The follow-up's durable identity postdates the rows it was
+			// minting: existing rows read custom, and recovery also matches
+			// the exact legacy name convention.
+			db.exec("ALTER TABLE programs ADD COLUMN kind TEXT NOT NULL DEFAULT 'custom'");
+		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 			.get();
@@ -416,12 +466,13 @@ export function openPrograms(dbPath: string): ProgramsStore {
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
 	const qList = db.query("SELECT * FROM programs ORDER BY id");
+	const qByResp = db.query("SELECT * FROM programs WHERE responsibility_id = ? ORDER BY id");
 	const qDue = db.query(
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, target, chat_id, thread_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, kind, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, target, chat_id, thread_id, responsibility_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
 		"UPDATE programs SET name = ?, charter = ?, cron = ?, max_lateness_minutes = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
@@ -520,18 +571,33 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			{
 				name,
 				charter,
+				kind = "custom",
 				cron = null,
 				maxLatenessMinutes = null,
 				hookHash = null,
 				mailFilter = null,
 				address,
+				responsibilityId,
 			},
 			now = new Date(),
 		) {
 			requireTrigger(cron, hookHash, mailFilter);
 			validateLateness(cron, maxLatenessMinutes);
-			const destination = programAddressTarget(address);
-			if (!validTarget(destination)) {
+			// The destination union: exactly one arm — a conversation
+			// address or a project responsibility. Responsibility rows
+			// carry the resp:<id> pseudo-target; a real Telegram chat id
+			// is never 0, and every destination read branches on
+			// responsibilityId first.
+			if ((address !== undefined) === (responsibilityId !== undefined)) {
+				throw new ProgramRuleError(
+					"a program needs exactly one destination: a chat address or a responsibility",
+				);
+			}
+			const destination =
+				address !== undefined
+					? programAddressTarget(address)
+					: responsibilityTarget(responsibilityId!);
+			if (!isProgramTarget(destination)) {
 				throw new ProgramRuleError(`invalid program destination "${destination}"`);
 			}
 			const telegram = telegramAddressOf(destination);
@@ -539,6 +605,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			const res = qInsert.run(
 				name,
 				charter,
+				kind,
 				cron,
 				maxLatenessMinutes,
 				hookHash,
@@ -546,6 +613,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				destination,
 				telegram?.chatId ?? 0,
 				telegram?.threadId ?? null,
+				responsibilityId ?? null,
 				now.toISOString(),
 				next,
 			);
@@ -583,6 +651,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		get: core.get,
 		list() {
 			return qList.all().map(rowToProgram);
+		},
+		forResponsibility(responsibilityId) {
+			return qByResp.all(responsibilityId).map(rowToProgram);
 		},
 		due(now) {
 			return decodeScan(qDue.all(now.toISOString()), "due");

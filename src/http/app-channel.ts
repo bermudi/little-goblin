@@ -9,6 +9,7 @@ import { handleNotesRoute } from "./app-notes.ts";
 import { handleProgramRoutes } from "./app-programs.ts";
 import { handleProjectsRoute } from "./app-projects.ts";
 import { handleAppPushRoute } from "./app-push.ts";
+import { handleResponsibilitiesRoute } from "./app-responsibilities.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { handleOperatorRoute } from "./operator.ts";
 
@@ -81,6 +82,7 @@ export async function handleAppApi(
 		(await handleAppPushRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleProjectsRoute(req, url, deps)) ??
+		(await handleResponsibilitiesRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??
 		(await handleConfigRoute(req, url, deps)) ??
 		(await handleChatRoute(req, url, deps)) ??

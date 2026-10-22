@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-	decideMailApproval,
-	decideProgramApproval,
-	listApprovals,
-} from "./api.ts";
+import { decideMailApproval, decideProgramApproval, listApprovals } from "./api.ts";
 import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
@@ -99,9 +95,7 @@ export function ApprovalsPanel({ token }: { token: string | null }) {
 	);
 }
 
-function useDecision(
-	onDone: () => Promise<void>,
-): {
+function useDecision(onDone: () => Promise<void>): {
 	busy: boolean;
 	result: AppApprovalDecisionResponse | null;
 	err: string | null;
@@ -195,9 +189,7 @@ export function ProgramApprovalCard({
 			<div className="approval-actions">
 				<button
 					type="button"
-					disabled={
-						decision.busy || candidate === null || decision.result?.hookUrl !== undefined
-					}
+					disabled={decision.busy || candidate === null || decision.result?.hookUrl !== undefined}
 					onClick={() =>
 						void decision.run(() => decideProgramApproval(token, proposal.id, "approve"))
 					}

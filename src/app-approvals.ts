@@ -46,7 +46,9 @@ export function presentProgramApproval(
 	store.append(conversationId, [approvalMessage("program", proposal.id)]);
 }
 
-export function makeAppMailLane(store: Pick<ConversationStore, "append" | "get">): MailApprovalLane {
+export function makeAppMailLane(
+	store: Pick<ConversationStore, "append" | "get">,
+): MailApprovalLane {
 	const append = (row: OutboxEntry, message: UIMessage): void => {
 		const conversationId = appConversationOf(row.target);
 		if (conversationId === null || store.get(conversationId) === null) {

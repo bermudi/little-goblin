@@ -191,15 +191,9 @@ describe("app attention", () => {
 				new Map([
 					["program-approval:7", { kind: "page", page: "programs" }],
 					["mail-approval:9", { kind: "page", page: "programs" }],
-					[
-						"memory-blocked:exchange/app/chat-01/1/a",
-						{ kind: "page", page: "memory" },
-					],
+					["memory-blocked:exchange/app/chat-01/1/a", { kind: "page", page: "memory" }],
 					["skill-proposal:watcher", { kind: "page", page: "skills" }],
-					[
-						"delegation-input:3",
-						{ kind: "conversation", conversationId: "app/chat-01" },
-					],
+					["delegation-input:3", { kind: "conversation", conversationId: "app/chat-01" }],
 					["interrupted-run:run-1", { kind: "conversation", conversationId: "app/chat-01" }],
 				]),
 			);

@@ -57,9 +57,9 @@ const spawnClean = (argv: string[]): Bun.ReadableSubprocess =>
 		detached: true,
 	});
 
-async function cli(args: string[]): Promise<CliResult> {
+async function cli(args: string[], timeoutMs = 15_000): Promise<CliResult> {
 	const r = await boundedRun(spawnClean(["herdr", "--session", SESSION, ...args]), {
-		timeoutMs: 15_000,
+		timeoutMs,
 		maxOutput: 1 << 20,
 	});
 	return { code: r.exitCode ?? -1, stdout: r.stdout, stderr: r.stderr };
@@ -249,6 +249,80 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 		expect(verbs).toContain(`tab list --workspace ${workspaceId}`);
 		expect(opCalls.some((c) => c.slice(2, 4).join(" ") === "agent prompt")).toBe(false);
 	}, 30_000);
+
+	// ---- dispatch identity: the takeover contract's wire facts ----
+	//
+	// A take-over attachment compares these fields across polls:
+	// terminal_id names the terminal (it survives an agent replacement in
+	// the same pane), agent_session the harness session (it does not),
+	// and targets are name-or-pane only. Keep this section pinned — the
+	// adapter's contract comment rides on it.
+
+	let firstTerminalId = "";
+	let firstAgentSession = "";
+	let firstStateSeq = -1;
+
+	test("a real pi agent carries terminal_id and agent_session; name and pane both resolve", async () => {
+		const started = await cli(
+			["agent", "start", "drift-a", "--kind", "pi", "--pane", paneId, "--timeout", "60000"],
+			90_000,
+		);
+		expect(started.code).toBe(0);
+		const a = JSON.parse(started.stdout).result.agent;
+		firstTerminalId = a.terminal_id;
+		firstAgentSession = a.agent_session?.value ?? "";
+		firstStateSeq = a.state_change_seq;
+		expect(firstTerminalId).toMatch(/^term_/);
+		expect(firstAgentSession).not.toBe("");
+		expect(a.pane_id).toBe(paneId);
+		expect(a.name).toBe("drift-a");
+		expect(a.agent).toBe("pi");
+
+		// One record, two targets.
+		for (const target of ["drift-a", paneId]) {
+			const got = await cli(["agent", "get", target]);
+			expect(got.code).toBe(0);
+			const rec = JSON.parse(got.stdout).result.agent;
+			expect(rec.terminal_id).toBe(firstTerminalId);
+			expect(rec.agent_session?.value ?? "").toBe(firstAgentSession);
+		}
+
+		// A terminal id is not a target — agent commands take name or pane.
+		const notTarget = await cli(["agent", "get", firstTerminalId]);
+		expect(notTarget.code).toBe(1);
+		expect(JSON.parse(notTarget.stderr).error.code).toBe("agent_not_found");
+	}, 120_000);
+
+	test("ctrl+d releases the agent; name and pane refuse until a replacement starts", async () => {
+		const sent = await cli(["agent", "send-keys", "drift-a", "ctrl+d"]);
+		expect(sent.code).toBe(0);
+		// Release detection is asynchronous — poll until both targets refuse.
+		const deadline = Date.now() + 20_000;
+		for (;;) {
+			const byName = await cli(["agent", "get", "drift-a"]);
+			const byPane = await cli(["agent", "get", paneId]);
+			if (byName.code === 1 && byPane.code === 1) break;
+			if (Date.now() > deadline) throw new Error("agent did not release after ctrl+d");
+			await Bun.sleep(250);
+		}
+	}, 30_000);
+
+	test("a same-kind replacement keeps terminal_id — only agent_session changes", async () => {
+		const started = await cli(
+			["agent", "start", "drift-b", "--kind", "pi", "--pane", paneId, "--timeout", "60000"],
+			90_000,
+		);
+		expect(started.code).toBe(0);
+		const b = JSON.parse(started.stdout).result.agent;
+		expect(b.terminal_id).toBe(firstTerminalId); // the terminal survives the swap
+		expect(b.name).toBe("drift-b");
+		expect(b.agent_session?.value ?? "").not.toBe(firstAgentSession);
+		// The sequence cursor continues across the replacement — a poller
+		// must namespace cursors by attachment generation, never assume a reset.
+		expect(b.state_change_seq).toBeGreaterThanOrEqual(firstStateSeq);
+		const quit = await cli(["agent", "send-keys", "drift-b", "ctrl+d"]);
+		expect(quit.code).toBe(0);
+	}, 120_000);
 
 	test("workspace close resolves the ok envelope", async () => {
 		await h!.closeWorkspace(workspaceId);

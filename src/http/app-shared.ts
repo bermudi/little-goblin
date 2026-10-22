@@ -47,6 +47,9 @@ export interface AppChannelDeps {
 	};
 	programOps?: ProgramOps;
 	push?: Pick<AppPush, "status" | "ensurePublicKey" | "register" | "unregister" | "notifyDone">;
+	// The responsibility feed + controls (app-responsibilities.ts).
+	// Absent = those routes refuse 503.
+	responsibilities?: import("./app-responsibilities.ts").AppResponsibilityDeps;
 }
 
 export const configPatchBody = z

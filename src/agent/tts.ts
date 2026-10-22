@@ -374,51 +374,53 @@ function withoutStatusTail(text: string): string {
 // result must be idempotent — tg callers pre-strip, then the speaker
 // boundary strips again.
 function stripMarkdown(text: string): string {
-	return text
-		.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-		// Table separator rows (`| --- | :-: |`) vanish before data rows
-		// would read their dashes; outer-piped rows speak as comma lists.
-		// Whitespace stays line-confined — \s here would let a row match
-		// across newlines.
-		.replace(/^[ \t]{0,3}\|?[ \t:|-]+\|?[ \t]*$/gm, "")
-		.replace(/^[ \t]{0,3}\|(.+)\|[ \t]*$/gm, (_m, row: string) =>
-			row
-				.split("|")
-				.map((cell) => cell.trim())
-				.filter(Boolean)
-				.join(", "),
-		)
-		.replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, "")
-		// Horizontal rules (`---`, `***`, `___`, spaced) — `***` would die
-		// in the symbol strip anyway, but the dashes would read "minus
-		// minus minus".
-		.replace(/^\s{0,3}(?:([-*_])[ \t]*)(?:\1[ \t]*){2,}$/gm, "")
-		.replace(/<[^>]+>/g, "")
-		.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (entity) => {
-			switch (entity) {
-				case "&amp;":
-					return "&";
-				case "&lt;":
-					return "<";
-				case "&gt;":
-					return ">";
-				case "&quot;":
-					return '"';
-				case "&apos;":
-				case "&#39;":
-					return "'";
-				default:
-					return " ";
-			}
-		})
-		// snake_case reads as two words, not one blended one; `_ital_`
-		// keeps dying in the symbol strip (underscores at word edges).
-		.replace(/(?<=\w)_(?=\w)/g, " ")
-		.replace(/[*_~`]/g, "")
-		.replace(/[ \t]+\n/g, "\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+	return (
+		text
+			.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			// Table separator rows (`| --- | :-: |`) vanish before data rows
+			// would read their dashes; outer-piped rows speak as comma lists.
+			// Whitespace stays line-confined — \s here would let a row match
+			// across newlines.
+			.replace(/^[ \t]{0,3}\|?[ \t:|-]+\|?[ \t]*$/gm, "")
+			.replace(/^[ \t]{0,3}\|(.+)\|[ \t]*$/gm, (_m, row: string) =>
+				row
+					.split("|")
+					.map((cell) => cell.trim())
+					.filter(Boolean)
+					.join(", "),
+			)
+			.replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, "")
+			// Horizontal rules (`---`, `***`, `___`, spaced) — `***` would die
+			// in the symbol strip anyway, but the dashes would read "minus
+			// minus minus".
+			.replace(/^\s{0,3}(?:([-*_])[ \t]*)(?:\1[ \t]*){2,}$/gm, "")
+			.replace(/<[^>]+>/g, "")
+			.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (entity) => {
+				switch (entity) {
+					case "&amp;":
+						return "&";
+					case "&lt;":
+						return "<";
+					case "&gt;":
+						return ">";
+					case "&quot;":
+						return '"';
+					case "&apos;":
+					case "&#39;":
+						return "'";
+					default:
+						return " ";
+				}
+			})
+			// snake_case reads as two words, not one blended one; `_ital_`
+			// keeps dying in the symbol strip (underscores at word edges).
+			.replace(/(?<=\w)_(?=\w)/g, " ")
+			.replace(/[*_~`]/g, "")
+			.replace(/[ \t]+\n/g, "\n")
+			.replace(/\n{3,}/g, "\n\n")
+			.trim()
+	);
 }
 
 export function speechContent(text: string): { spoken: string; supplemental: string | null } {

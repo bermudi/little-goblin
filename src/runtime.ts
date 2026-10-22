@@ -109,6 +109,7 @@ export interface RuntimeDeps {
 		// Filled after buildStep so fetch can render stored PDF references with
 		// this turn's media capabilities.
 		accepts?: { current: AcceptsMedia },
+		context?: { runId: string; sourceMessageId(): string },
 	): ToolSet;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
@@ -139,6 +140,41 @@ export interface RuntimeDeps {
 	// Each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
+	// Durable wake ownership (wake-dispatcher.ts): the composition's
+	// window into which journal run processes which submitted message.
+	// `begin` fires after the run row exists and before the stream can
+	// reach a tool — the admitted members' message ids plus the run
+	// rows this attempt continues (explicit resume) or inherits
+	// (overflow). `members` fires when a steered submit joins the
+	// membership mid-run. `end` fires at the run's terminal journal
+	// stamp. Only meaningful when turnJournal exists; hooks must not
+	// throw (they observe the turn, they never gate it).
+	runOwnership?: {
+		begin(event: {
+			runId: string;
+			conversationId: string;
+			memberMessageIds: string[];
+			resumedFrom?: string;
+			inheritFrom?: string[];
+		}): void;
+		members(runId: string, messageIds: string[]): void;
+		end(
+			runId: string,
+			status: "fenced" | "completed" | "error",
+			delivery: "delivered" | "undelivered" | "failed",
+		): void;
+		/** The attempt died before `begin` could link its members — no run
+		 *  row exists for reconcile to read, so the attempt's terminal
+		 *  outcome is otherwise invisible to ownership. Fired on every
+		 *  pre-run terminal path (a refused admission, an overflow that
+		 *  will NOT resume — a resuming attempt's fresh run links
+		 *  normally). Hooks must not throw, like the rest. */
+		preRunFailure?(event: {
+			conversationId: string;
+			memberMessageIds: string[];
+			error: string;
+		}): void;
+	};
 }
 
 export class FencedError extends Error {
@@ -173,6 +209,7 @@ interface QueuedTurn {
 	// interrupted run it continues; claimed as a member its recovery
 	// would silently drop, so the claim boundary stops before it.
 	resumeSeed?: ResumeSeed | undefined;
+	release?: (() => void) | undefined;
 }
 
 // Compaction jobs run between turns so the preceding exchange is whole.
@@ -194,6 +231,7 @@ interface Lane {
 	// Shutdown awaits the drain so terminal sink flushes finish.
 	draining: Promise<void> | null;
 	live: LiveChunks | null;
+	admitted: Map<string, QueuedTurn[]>;
 }
 
 // A streaming submit stays queued behind a headless turn so it can lead its
@@ -309,6 +347,15 @@ export class Runtime {
 		return this.admit(conv, message, sink, seq, seed);
 	}
 
+	isAdmitted(conversationId: string, messageId: string): boolean {
+		return (
+			this.lanes
+				.get(conversationId)
+				?.admitted.get(messageId)
+				?.some((t) => !t.doneSent) ?? false
+		);
+	}
+
 	private admit(
 		conv: Conversation,
 		message: UIMessage,
@@ -321,13 +368,18 @@ export class Runtime {
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({
-			seq,
-			message,
-			sink,
-			doneSent: false,
-			resumeSeed: seed,
-		});
+		const turn: QueuedTurn = { seq, message, sink, doneSent: false, resumeSeed: seed };
+		turn.release = () => {
+			const holders = lane.admitted.get(message.id);
+			if (holders === undefined) return;
+			const index = holders.indexOf(turn);
+			if (index !== -1) holders.splice(index, 1);
+			if (holders.length === 0) lane.admitted.delete(message.id);
+		};
+		lane.pending.push(turn);
+		const holders = lane.admitted.get(message.id);
+		if (holders === undefined) lane.admitted.set(message.id, [turn]);
+		else holders.push(turn);
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -528,6 +580,7 @@ export class Runtime {
 				compactController: null,
 				draining: null,
 				live: null,
+				admitted: new Map(),
 			};
 			this.lanes.set(convId, l);
 		}
@@ -543,6 +596,8 @@ export class Runtime {
 			await turn.sink.onDone(done);
 		} catch (err) {
 			log.warn("sink onDone failed", err);
+		} finally {
+			turn.release?.();
 		}
 	}
 
@@ -826,23 +881,49 @@ export class Runtime {
 			endLive(live, done, convId);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
-		// Admission fixes this attempt's ownership and model input.
-		const admitted = admitTurn(
-			{
-				convId,
-				live,
-				getConversation: () => store.get(convId),
-				captureConversation: this.deps.captureConversation,
-				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
-				modelEntries: () => store.modelEntries(convId),
-				now: Date.now,
-			},
-			recovery === undefined
-				? undefined
-				: { conversation: recovery.conversation, startedAt: recovery.startedAt },
-		);
+		// The ownership window: from admission until the begin hook, the
+		// attempt's members are unlinked — a terminal failure in that span
+		// (a refused admission included) is invisible to the dispatcher's
+		// reconcile (no run row to read), so it must be announced instead
+		// of re-admitting the trigger forever.
+		let ownershipBegun = false;
+		const announcePreRunFailure = (err: unknown) => {
+			if (ownershipBegun) return;
+			this.deps.runOwnership?.preRunFailure?.({
+				conversationId: convId,
+				memberMessageIds: turns.map((t) => t.message.id),
+				error: err instanceof Error ? err.message : String(err),
+			});
+		};
+		// Admission fixes this attempt's ownership and model input. A
+		// throw escapes to the drain's last-ditch settle — still a
+		// terminal death inside the ownership window, so it announces
+		// the same as a refused admission before propagating.
+		let admitted: ReturnType<typeof admitTurn>;
+		try {
+			admitted = admitTurn(
+				{
+					convId,
+					live,
+					getConversation: () => store.get(convId),
+					captureConversation: this.deps.captureConversation,
+					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
+					pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
+					modelEntries: () => store.modelEntries(convId),
+					now: Date.now,
+				},
+				recovery === undefined
+					? undefined
+					: { conversation: recovery.conversation, startedAt: recovery.startedAt },
+			);
+		} catch (err) {
+			announcePreRunFailure(err);
+			throw err;
+		}
 		if (admitted.kind !== "admitted") {
+			announcePreRunFailure(
+				admitted.kind === "missing" ? "conversation missing" : admitted.message,
+			);
 			await notifyAll({
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
@@ -888,6 +969,10 @@ export class Runtime {
 			if (journal === undefined || runId === null || runStamped) return;
 			journal.finishRun(runId, status, delivery);
 			runStamped = true;
+			// The terminal stamp IS the durable acknowledgement a wake
+			// waits on — the hook fires after the row lands so the
+			// dispatcher's settle read never sees a live run by mistake.
+			this.deps.runOwnership?.end(runId, status, delivery);
 		};
 		try {
 			this.checkAuthority(convId, epoch);
@@ -939,7 +1024,10 @@ export class Runtime {
 			// them must never leave a successor that re-executes recorded
 			// side effects.
 			runId = randomUUID();
-			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts);
+			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
+				runId,
+				sourceMessageId: () => turns[turns.length - 1]!.message.id,
+			});
 			journal?.beginRun({
 				runId,
 				conversationId: convId,
@@ -953,6 +1041,23 @@ export class Runtime {
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
+			// Every member claimed into this attempt — the drain's initial
+			// claim and a resume admission's queue claim are both already
+			// on `turns` — becomes this run's owned input here, before the
+			// stream can reach a tool. A wake linked to a predecessor the
+			// row continues or inherits moves with it.
+			if (journal !== undefined) {
+				this.deps.runOwnership?.begin({
+					runId,
+					conversationId: convId,
+					memberMessageIds: turns.map((t) => t.message.id),
+					...(sourceRunId !== undefined ? { resumedFrom: sourceRunId } : {}),
+					...(recovery?.predecessorRun !== undefined
+						? { inheritFrom: [recovery.predecessorRun] }
+						: {}),
+				});
+				ownershipBegun = true;
+			}
 			// The recovery guard reads the fresh row once, after
 			// inheritance: it already carries the source's decisions and
 			// every predecessor attempt's recorded executions. Calls this
@@ -1002,6 +1107,12 @@ export class Runtime {
 				state,
 				journal,
 				runId,
+				// A steer that joins mid-run is processed by this run — the
+				// wake hook hears only the joined ids (converts that failed
+				// were settled, never joined). Journaled turns only.
+				...(journal === undefined
+					? {}
+					: { noteRunMembers: (ids: string[]) => this.deps.runOwnership?.members(runId!, ids) }),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
 					if (journalFault.current !== undefined) throw journalFault.current;
@@ -1118,6 +1229,7 @@ export class Runtime {
 					conversation: convId,
 					epoch,
 				});
+				announcePreRunFailure(fault);
 				stampRun("error", "failed");
 				await notifyAll({
 					kind: "error",
@@ -1129,6 +1241,7 @@ export class Runtime {
 				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
+				announcePreRunFailure(err);
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1159,9 +1272,12 @@ export class Runtime {
 					// output was withheld for recovery; the resume opens a
 					// fresh row that inherits this row's settled calls, so a
 					// crash of the continuation still resumes with them.
+					// No pre-run announcement: the fresh run links its members
+					// through its own begin.
 					stampRun("error", "undelivered");
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
+				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
 					outcome.kind === "fenced" ? "undelivered" : "failed",
@@ -1185,6 +1301,7 @@ export class Runtime {
 					modelCalls: state.snapshot().modelCalls,
 					transient: isTransientTurnFailure(err),
 				};
+				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);
 			}

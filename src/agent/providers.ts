@@ -390,4 +390,3 @@ export function observedModel(
 	};
 	return wrapLanguageModel({ model, middleware });
 }
-

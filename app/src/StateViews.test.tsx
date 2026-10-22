@@ -209,8 +209,7 @@ test("discarding an update deletes the staged copy, never the installed one", as
 					body.name,
 					body.action,
 				);
-				if (!outcome.ok)
-					return Response.json({ error: outcome.reason }, { status: 409 });
+				if (!outcome.ok) return Response.json({ error: outcome.reason }, { status: 409 });
 				return Response.json({
 					ok: true,
 					skill: body.name,

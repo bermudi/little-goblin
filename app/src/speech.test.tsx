@@ -241,10 +241,9 @@ describe("speech player", () => {
 		expect(btn?.disabled).toBe(true);
 		await act(async () => {
 			release(
-				new Response(
-					JSON.stringify({ chunks: [btoa("ogg")], mediaType: "audio/ogg" }),
-					{ status: 200 },
-				),
+				new Response(JSON.stringify({ chunks: [btoa("ogg")], mediaType: "audio/ogg" }), {
+					status: 200,
+				}),
 			);
 			await flush();
 		});
@@ -302,7 +301,9 @@ describe("speech player", () => {
 			FakeAudio.made[0]?.headError(3);
 			await flush();
 		});
-		expect(container.querySelector(".msg-err")?.textContent).toBe("playback failed (media error 3)");
+		expect(container.querySelector(".msg-err")?.textContent).toBe(
+			"playback failed (media error 3)",
+		);
 	});
 
 	test("a part that never reports a duration fails loud", async () => {

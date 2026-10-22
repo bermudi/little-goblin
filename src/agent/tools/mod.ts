@@ -17,6 +17,7 @@ import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { readFileTool } from "./read.ts";
+import { type ResponsibilityToolDeps, responsibilityTool } from "./responsibility.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -61,6 +62,7 @@ export type {
 	ImageToolDeps,
 	MailToolDeps,
 	NoteToolDeps,
+	ResponsibilityToolDeps,
 	SandboxToolDeps,
 	SubagentToolDeps,
 	VisionToolDeps,
@@ -88,6 +90,8 @@ export interface MakeToolsOptions {
 	sandbox?: SandboxToolDeps | undefined;
 	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
+	// Project conversations only — the handover/coordination surface.
+	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
 }
 
@@ -110,6 +114,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		sandbox,
 		subagent,
 		desktop,
+		responsibility,
 		ui,
 	} = options;
 	return {
@@ -149,6 +154,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
 		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
+		// The responsibility tool mounts for project-bound turns only —
+		// the caller decides; nothing here reaches for conv state.
+		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),
 		...(ui === true ? { ui: uiTool() } : {}),
 	};
 }

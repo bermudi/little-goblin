@@ -46,7 +46,7 @@ import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
-import { startMailWatcher } from "./mail-watcher.ts";
+import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
@@ -85,6 +85,11 @@ import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { makeResponsibilityObserver } from "./responsibility-observer.ts";
+import { makeResponsibilityService } from "./responsibility-service.ts";
+import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
+import { type DevelopmentInput, openWakeStore } from "./wake-store.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -151,6 +156,21 @@ async function boot() {
 	// Its open reclassifies rows left 'running' — a graceful shutdown
 	// fences first, so 'running' at open means the process died mid-turn.
 	const turnJournal = openTurnJournal(store.db);
+	// Durable wakes share the store handle — the trigger append, its
+	// history reference, and the delivery state commit together. The
+	// dispatcher binds after the runtime exists (the ownership hooks
+	// late-bind through this slot); it is what the responsibility
+	// service's developments ride.
+	const wakeStore = openWakeStore(store.db);
+	let wakeDispatcher: WakeDispatcher | undefined;
+	// Late-bound like the dispatcher — the responsibility service is
+	// built once the store and observer exist (after makeTurnTools is
+	// assembled). The getter below reads this slot per turn.
+	let responsibilitySvc: {
+		resps: ReturnType<typeof openResponsibilities>;
+		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
+		listFor: () => ReturnType<typeof operatorHerdr.list>;
+	} | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
@@ -354,6 +374,7 @@ async function boot() {
 		subagents: () => subagents,
 		desktops: () => desktops,
 		subagentsBoot: () => subagentsBoot,
+		responsibility: () => responsibilitySvc,
 		filterGuests: filterGuestTools,
 	});
 
@@ -369,6 +390,12 @@ async function boot() {
 	const runtime = new Runtime({
 		store,
 		turnJournal,
+		runOwnership: {
+			begin: (e) => wakeDispatcher?.hooks.begin(e),
+			members: (runId, ids) => wakeDispatcher?.hooks.members(runId, ids),
+			end: (runId, status, delivery) => wakeDispatcher?.hooks.end(runId, status, delivery),
+			preRunFailure: (e) => wakeDispatcher?.hooks.preRunFailure?.(e),
+		},
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
@@ -540,10 +567,92 @@ async function boot() {
 				: {}),
 		}),
 	});
+	// Durable wake delivery — the dispatcher owns record→commit→submit
+	// and the journal-run ownership the runtime announces through the
+	// hooks bound above. Built after wakeDeps (the sinks it uses) and
+	// before replayInbox: recovered wakes enter their lanes ahead of
+	// inbound traffic. The boot pump replays the last crash boundary.
+	wakeDispatcher = makeWakeDispatcher({
+		store,
+		wakes: wakeStore,
+		journal: turnJournal,
+		runtime,
+		sinkFor: (conv) =>
+			channelOf(conv.id) === "app" || wakeDeps.delivery === undefined
+				? wakeDeps.bell(conv)
+				: wakeDeps.delivery(conv),
+	});
+	wakeDispatcher.pump();
+	const stopWakeTicker = wakeDispatcher.startTicker();
+
+	// Project-owned responsibilities — the store the handover service
+	// writes, and the deterministic observer that turns attachment
+	// snapshots into deduped durable developments. The observer's list
+	// seam is the local operator session; (server, session) on each
+	// attachment is the grouping key for when a second target exists.
+	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
+	const responsibilityService = makeResponsibilityService({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		conversations: store,
+		pump: () => wakeDispatcher!.pump(),
+		programs,
+		// The committed epoch fence cancels the live turn before the
+		// correction wake is admitted — a stale model stream, queued
+		// tool call, or parked preflight can no longer act.
+		onCorrectionCommitted: (conversationId, epoch) => {
+			const { settled } = runtime.cancelFenced(conversationId, epoch);
+			settled.catch((err) =>
+				log.error("correction cancel settle failed", err, {
+					conversation: conversationId,
+					epoch,
+				}),
+			);
+		},
+	});
+	responsibilitySvc = {
+		resps: responsibilities,
+		service: responsibilityService,
+		listFor: () => operatorHerdr.list(),
+	};
+	// Boot sweep: every open responsibility re-verifies its follow-up
+	// Program — a restart (or a deleted program row) re-links here,
+	// never leaves the check-in silently unarmed.
+	for (const r of responsibilities.open()) {
+		try {
+			responsibilityService.ensureFollowup(r.responsibilityId);
+		} catch (err) {
+			log.error("responsibility follow-up relink failed", err, {
+				responsibility: r.responsibilityId,
+			});
+		}
+	}
+	const responsibilityObserver = makeResponsibilityObserver({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		pump: () => wakeDispatcher!.pump(),
+		list: () => operatorHerdr.list(),
+	});
+	const OBSERVE_MS = 60_000;
+	const observerTicker = setInterval(() => {
+		responsibilityObserver
+			.observe()
+			.catch((err) => log.error("responsibility observe tick failed", err));
+	}, OBSERVE_MS);
+	observerTicker.unref();
+	const stopObserverTicker = () => clearInterval(observerTicker);
+
 	// The scheduler rides the SAME wakeDeps object — a spread here would
 	// snapshot delivery/bell before the telegram attach ever lands.
 	const firingDeps: SchedulerDeps = Object.assign(wakeDeps, {
 		programs,
+		// Responsibility-destination programs fire as durable
+		// developments on the coordination conversation — the
+		// dispatcher owns their wake from the record on.
+		responsibilities,
+		recordDevelopment: (input: DevelopmentInput) => wakeDispatcher!.record(input),
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	});
@@ -687,6 +796,15 @@ async function boot() {
 					: {}),
 				programOps,
 				push: appPush,
+				// The project feed + controls — the same stores the
+				// coordination tool drives; record pumps through the
+				// dispatcher so a correction steers the next wake.
+				responsibilities: {
+					feed: { db: store.db, resps: responsibilities, programs },
+					resps: responsibilities,
+					service: responsibilityService,
+					listAgents: () => operatorHerdr.list(),
+				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
@@ -715,18 +833,22 @@ async function boot() {
 		programs,
 		reader: mailPoller,
 		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
-		notify: (address, text) => {
-			if (tg === null) {
-				log.warn(
-					telegramEnabled
-						? "mail outage notice skipped — telegram channel unavailable"
-						: "mail outage notice skipped — telegram channel disabled",
-					{ chat: address.chatId, thread: address.threadId },
-				);
-				return Promise.resolve();
-			}
-			return sendMailNotice(tg.bot.api, address, text);
-		},
+		notify: makeMailNoticeRouter({
+			resps: responsibilities,
+			record: (input) => wakeDispatcher.record(input),
+			sendTelegram: (address, text) => {
+				if (tg === null) {
+					log.warn(
+						telegramEnabled
+							? "mail outage notice skipped — telegram channel unavailable"
+							: "mail outage notice skipped — telegram channel disabled",
+						{ chat: address.chatId, thread: address.threadId },
+					);
+					return Promise.resolve();
+				}
+				return sendMailNotice(tg.bot.api, address, text);
+			},
+		}),
 	});
 
 	// ---------- deferred telegram attach ----------
@@ -874,6 +996,11 @@ async function boot() {
 		outbox,
 		delegations,
 		runtime,
+		wakeDispatcher,
+		stopWakeTicker,
+		responsibilities,
+		responsibilityObserver,
+		stopObserverTicker,
 		stopTelegram,
 		http,
 		scheduler,
@@ -884,8 +1011,7 @@ async function boot() {
 		// Live closure over the attach/detach-rebound Telegram adapter —
 		// shutdown joins in-flight taps through it without racing a
 		// detach that happened after boot returned.
-		stopTelegramProgramApproval: () =>
-			telegramProgramApproval?.stop() ?? Promise.resolve(),
+		stopTelegramProgramApproval: () => telegramProgramApproval?.stop() ?? Promise.resolve(),
 		memoryWorker,
 		subagentRuns,
 		subagents,
@@ -906,6 +1032,9 @@ const {
 	outbox,
 	delegations,
 	runtime,
+	wakeDispatcher,
+	stopWakeTicker,
+	stopObserverTicker,
 	stopTelegram,
 	http,
 	scheduler,
@@ -930,6 +1059,9 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
+	// Wake retries stop too — open wakes ride to the next boot's pump.
+	stopWakeTicker();
+	stopObserverTicker();
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();

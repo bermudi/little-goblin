@@ -1309,7 +1309,7 @@ function AppShell() {
 					))}
 				</div>
 			</nav>
-				<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
+			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
 			<main className={chatWidth === "wide" ? "chat-wide" : undefined}>
 				<header>
 					<button
@@ -1345,46 +1345,46 @@ function AppShell() {
 							aria-label="From this thread — memories and skills generated here"
 							onClick={() => setSourcesOpen(true)}
 						>
-				<svg
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									strokeWidth="1.75"
-									strokeLinecap="round"
-									strokeLinejoin="round"
-									width="18"
-									height="18"
-								>
-									<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-									<path d="M12 12l8-4.5" />
-									<path d="M12 12v9" />
-									<path d="M12 12L4 7.5" />
-								</svg>
-							</button>
-						)}
-						{/* Trailing the header-action so the action keeps its
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="18"
+								height="18"
+							>
+								<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+								<path d="M12 12l8-4.5" />
+								<path d="M12 12v9" />
+								<path d="M12 12L4 7.5" />
+							</svg>
+						</button>
+					)}
+					{/* Trailing the header-action so the action keeps its
 						    auto margin; hidden with the gauge on phone widths,
 						    where the column is narrow whatever this says. */}
-						{page === "chat" && (
-							<span className="width-seg" role="group" aria-label="Chat width">
-								<button
-									type="button"
-									className={chatWidth === "narrow" ? "on" : undefined}
-									aria-pressed={chatWidth === "narrow"}
-									onClick={() => setChatWidth("narrow")}
-								>
-									narrow
-								</button>
-								<button
-									type="button"
-									className={chatWidth === "wide" ? "on" : undefined}
-									aria-pressed={chatWidth === "wide"}
-									onClick={() => setChatWidth("wide")}
-								>
-									wide
-								</button>
-							</span>
-						)}
+					{page === "chat" && (
+						<span className="width-seg" role="group" aria-label="Chat width">
+							<button
+								type="button"
+								className={chatWidth === "narrow" ? "on" : undefined}
+								aria-pressed={chatWidth === "narrow"}
+								onClick={() => setChatWidth("narrow")}
+							>
+								narrow
+							</button>
+							<button
+								type="button"
+								className={chatWidth === "wide" ? "on" : undefined}
+								aria-pressed={chatWidth === "wide"}
+								onClick={() => setChatWidth("wide")}
+							>
+								wide
+							</button>
+						</span>
+					)}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
 					{page === "notes" && <span className="header-title">Notes</span>}
 					{page === "note" && <span className="header-title">Note</span>}
@@ -1398,11 +1398,7 @@ function AppShell() {
 					</p>
 				)}
 				{page === "attention" && (
-					<AttentionView
-						token={token}
-						onPage={openPage}
-						onConversation={openConversation}
-					/>
+					<AttentionView token={token} onPage={openPage} onConversation={openConversation} />
 				)}
 				{page === "settings" && (
 					<SettingsView
@@ -1421,6 +1417,7 @@ function AppShell() {
 				{page === "log" && <LogView token={token} />}
 				{page === "projects" && (
 					<ProjectsIndex
+						token={token}
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}

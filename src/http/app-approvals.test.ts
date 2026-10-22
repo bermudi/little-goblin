@@ -318,11 +318,7 @@ describe("app approval routes", () => {
 		const h = harness();
 		try {
 			h.store.resolve(appAddress("chat-01"), "/w");
-			const proposal = h.programs.proposals.proposeCreate(
-				draft(),
-				{ target: "app/chat-01" },
-				NOW,
-			);
+			const proposal = h.programs.proposals.proposeCreate(draft(), { target: "app/chat-01" }, NOW);
 			presentProgramApproval(h.store, proposal);
 			const row = h.outbox.queue(
 				{

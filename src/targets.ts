@@ -47,3 +47,16 @@ export function validTarget(target: unknown): target is ConversationTarget {
 	const parsed = parseAddress(target);
 	return parsed?.kind === "app" || parsed?.kind === "dm" || parsed?.kind === "topic" ? true : false;
 }
+
+/** The pseudo-address of a responsibility-destination program row — not a
+ *  conversation, but a canonical non-empty string for the programs
+ *  table's NOT NULL target column. Every conversation projection
+ *  (telegramAddressOf, appConversationOf) yields null for it, and
+ *  delivery branches on responsibilityId before ever reading it. */
+export function responsibilityTarget(responsibilityId: string): ConversationTarget {
+	return `resp:${responsibilityId}`;
+}
+
+export function responsibilityTargetOf(target: ConversationTarget): string | null {
+	return target.startsWith("resp:") ? target.slice("resp:".length) : null;
+}

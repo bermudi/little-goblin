@@ -200,7 +200,9 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				text,
 			);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
 		});
 	};
 	const textareaValue = () =>

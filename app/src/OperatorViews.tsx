@@ -83,10 +83,7 @@ function ProgramCard({
 	const save = async () => {
 		const lateness = maxLateness.trim();
 		const parsedLateness = lateness === "" ? null : Number(lateness);
-		if (
-			parsedLateness !== null &&
-			(!Number.isInteger(parsedLateness) || parsedLateness <= 0)
-		) {
+		if (parsedLateness !== null && (!Number.isInteger(parsedLateness) || parsedLateness <= 0)) {
 			setErr("max lateness must be a positive whole number of minutes");
 			return;
 		}
@@ -114,7 +111,9 @@ function ProgramCard({
 			{program.cron !== null && (
 				<KV
 					k="max lateness"
-					v={program.maxLatenessMinutes === null ? "unlimited" : `${program.maxLatenessMinutes} min`}
+					v={
+						program.maxLatenessMinutes === null ? "unlimited" : `${program.maxLatenessMinutes} min`
+					}
 				/>
 			)}
 			{program.hasHook && <KV k="hook" v="attached" mono />}

@@ -102,7 +102,13 @@ reproduces the checkpoint contract below with no new infrastructure.
   history.list takes no filter query, so arrivals intersect the filter's
   recent list page; a full page warns older matches may be invisible to
   it (the one remaining loss channel). A dead token or quota error warns
-  once per outage episode, never per tick.
+  once per outage episode, never per tick. The notice's destination
+  follows the program's destination union (2026-10-22): a chat-pinned
+  program notices its Telegram conversation, a responsibility-bound one
+  notices its coordination lane as a durable development through the
+  wake dispatcher — building the notice from `program.chatId` targeted
+  a nonexistent chat 0 every scan, and the failed delivery re-warned
+  forever.
 - **Approved sends join shutdown (ruling 2026-10-04).** The gate's stop
   clears the sweep timer and joins any in-flight Gmail send in the
   shutdown drain: a SIGTERM mid-send would otherwise land the row

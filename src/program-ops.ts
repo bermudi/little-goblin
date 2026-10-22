@@ -54,7 +54,7 @@ export interface ProgramOps {
 	hook(
 		id: number,
 		op: "enable" | "rotate" | "disable",
-		address: ProgramAddress,
+		address?: ProgramAddress,
 		signal?: AbortSignal,
 	): Promise<ProgramOpResult>;
 	review(id: number, signal?: AbortSignal): Promise<ProgramOpResult>;
@@ -133,6 +133,12 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 		async hook(id, op, address, signal) {
 			const current = deps.programs.get(id);
 			if (current === null) return { kind: "error", message: `no program ${id}` };
+			if (op !== "disable" && address === undefined) {
+				return {
+					kind: "error",
+					message: "no destination — this surface has no conversation address",
+				};
+			}
 			if (op === "disable") {
 				try {
 					deps.programs.setHook(id, null);
@@ -151,7 +157,7 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 				try {
 					return await stage(
 						deps,
-						deps.programs.proposals.proposeUpdate(id, { hook: true }, address),
+						deps.programs.proposals.proposeUpdate(id, { hook: true }, address!),
 						signal,
 					);
 				} catch (err) {

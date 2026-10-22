@@ -510,32 +510,32 @@ export function Markdown({
 				rows.push(splitRow(lines[i]!));
 				i++;
 			}
-		// The wrapper owns horizontal overflow — an unbreakable cell
-		// (a sha256 in code) must scroll the table, never blow the
-		// transcript column past its width.
-		blocks.push(
-			<div key={key++} className="md-tablewrap">
-				<table className="md-table">
-					<thead>
-						<tr>
-							{header.map((h, c) => (
-								<th key={c}>{inline(h)}</th>
-							))}
-						</tr>
-					</thead>
-					<tbody>
-						{rows.map((r, ri) => (
-							<tr key={ri}>
-								{r.map((c, ci) => (
-									<td key={ci}>{inline(c)}</td>
+			// The wrapper owns horizontal overflow — an unbreakable cell
+			// (a sha256 in code) must scroll the table, never blow the
+			// transcript column past its width.
+			blocks.push(
+				<div key={key++} className="md-tablewrap">
+					<table className="md-table">
+						<thead>
+							<tr>
+								{header.map((h, c) => (
+									<th key={c}>{inline(h)}</th>
 								))}
 							</tr>
-						))}
-					</tbody>
-				</table>
-			</div>,
-		);
-		continue;
+						</thead>
+						<tbody>
+							{rows.map((r, ri) => (
+								<tr key={ri}>
+									{r.map((c, ci) => (
+										<td key={ci}>{inline(c)}</td>
+									))}
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>,
+			);
+			continue;
 		}
 
 		// List kind is per-item so a model mixing - and 1. still renders

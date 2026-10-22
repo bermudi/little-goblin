@@ -54,7 +54,11 @@ Rulings:
   live program moved shows what the original card showed plus a stale
   warning, never a merge onto today's row, and a drifted legacy row
   with nothing immutable left names the coming refusal instead of
-  guessing a candidate. Posting is fenced by the staging turn's abort
+  guessing a candidate. The snapshot's bounds are the trusted
+  store's, never proposal-input limits — a grandfathered or pre-limit
+  charter beyond the input cap still stages and reads, and the stored
+  payload is validated inside the staging transaction so no committed
+  row can fail its own reader. Posting is fenced by the staging turn's abort
   signal chunk by chunk — a stopped turn sends no further chunks and
   never the buttons; the durable row stays pending for
   `program/review`. A hook the proposal requests is minted only at

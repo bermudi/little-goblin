@@ -248,14 +248,18 @@ const rowSchema = z.object({
 	activated_id: z.number().nullable(),
 });
 
+// The snapshot copies an existing program row, so its bounds are the
+// trusted store's — never proposal-input limits: a grandfathered or
+// pre-limit charter, name, or filter longer than a new proposal allows
+// must still stage, read, and decide.
 const baseSnapshotSchema = z
 	.object({
-		name: z.string().min(1).max(100),
-		charter: z.string().min(1).max(PROPOSAL_CHARTER_MAX),
-		cron: z.string().min(5).nullable(),
-		maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+		name: z.string(),
+		charter: z.string(),
+		cron: z.string().nullable(),
+		maxLatenessMinutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
 		hook: z.boolean(),
-		mailFilter: z.string().min(1).max(500).nullable(),
+		mailFilter: z.string().nullable(),
 	})
 	.strict();
 
@@ -356,13 +360,17 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			if (target === null) throw new Error(`program proposal: no program ${targetId}`);
 			const validated = patchSchema.parse(patch);
 			deps.validateUpdate(target, validated);
+			// Validate before any write: the stored snapshot must decode on
+			// every later read, so a rejection aborts the transaction here —
+			// staging can never commit a row its own reader throws on.
+			const baseSnapshot = JSON.stringify(baseSnapshotSchema.parse(snapshotProgram(target)));
 			const superseded = qSupersede.run(now.toISOString(), targetId).changes;
 			const res = qInsert.run(
 				"update",
 				targetId,
 				JSON.stringify(validated),
 				programFingerprint(target),
-				JSON.stringify(snapshotProgram(target)),
+				baseSnapshot,
 				address.chatId,
 				address.threadId,
 				now.toISOString(),

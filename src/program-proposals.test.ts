@@ -9,10 +9,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	openProgramProposals,
+	PROPOSAL_CHARTER_MAX,
 	type ProgramDraft,
 	type ProgramProposalsDeps,
 } from "./program-proposals.ts";
-import { openPrograms, ProgramRuleError, type ProgramsStore } from "./programs.ts";
+import { openPrograms, type Program, ProgramRuleError, type ProgramsStore } from "./programs.ts";
 import { tmpDb } from "./testkit.ts";
 
 setLogWriter(() => {});
@@ -395,6 +396,83 @@ describe("program proposals — update", () => {
 		db.close();
 		expect(() => programs.proposals.get(proposal.id)).toThrow(/corrupt base snapshot/);
 		programs.close();
+	});
+
+	test("a base beyond proposal-input limits stages, reads back, and decides", () => {
+		const programs = store();
+		// The trusted store's rows are the snapshot's bounds — a charter,
+		// name, or filter over the input limits (a grandfathered or
+		// pre-limit row) must not make staging commit a row its own
+		// reader rejects.
+		const program = programs.create(
+			{
+				name: "n".repeat(120),
+				charter: "x".repeat(PROPOSAL_CHARTER_MAX + 1_000),
+				cron: "0 9 * * *",
+				mailFilter: "f".repeat(600),
+				address: ADDRESS,
+			},
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(
+			program.id,
+			{ charter: "a tighter charter" },
+			ADDRESS,
+		);
+		expect(proposal.baseSnapshot?.charter).toHaveLength(PROPOSAL_CHARTER_MAX + 1_000);
+		expect(proposal.baseSnapshot?.name).toHaveLength(120);
+		expect(proposal.baseSnapshot?.mailFilter).toHaveLength(600);
+		// Every read path decodes the committed row — listing stays live.
+		expect(programs.proposals.pending().map((p) => p.id)).toEqual([proposal.id]);
+		expect(programs.proposals.get(proposal.id)!.baseSnapshot).toEqual(proposal.baseSnapshot);
+		expect(programs.proposals.approve(proposal.id, 42).kind).toBe("activated");
+		expect(programs.get(program.id)!.charter).toBe("a tighter charter");
+		programs.close();
+	});
+
+	test("a snapshot the schema rejects aborts staging — no committed row, no supersede", () => {
+		const db = new Database(":memory:");
+		// Store drift only the schema sees — the trusted read-side can
+		// surface a shape the snapshot must refuse, and staging must die
+		// inside the transaction before any write.
+		const target: Program = {
+			id: 7,
+			name: "p",
+			charter: "c",
+			cron: "0 9 * * *",
+			maxLatenessMinutes: null,
+			hookHash: null,
+			mailFilter: null,
+			mailHistoryId: null,
+			mailRevision: 0,
+			chatId: ADDRESS.chatId,
+			threadId: ADDRESS.threadId,
+			enabled: true,
+			createdAt: NOW.toISOString(),
+			lastRun: null,
+			nextRun: null,
+		};
+		let current = target;
+		const deps: ProgramProposalsDeps = {
+			core: {
+				get: () => current,
+				create() {
+					throw new Error("unreachable");
+				},
+				update: () => null,
+			},
+			validateCreate: () => {},
+			validateUpdate: () => {},
+		};
+		const proposals = openProgramProposals(db, deps);
+		const first = proposals.proposeUpdate(7, { name: "v1" }, ADDRESS, NOW);
+		expect(first.state).toBe("pending");
+		current = { ...target, charter: 42 as unknown as string };
+		expect(() => proposals.proposeUpdate(7, { name: "v2" }, ADDRESS)).toThrow();
+		// The aborted staging wrote nothing — the earlier pending row was
+		// not superseded beside a corpse the reader would reject.
+		expect(proposals.pending().map((p) => p.id)).toEqual([first.id]);
+		db.close();
 	});
 });
 

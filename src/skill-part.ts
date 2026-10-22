@@ -66,6 +66,12 @@ export interface CachedSkillDescriptor {
 	description: string;
 	sourceUrl: string;
 	fetchedAt: string;
+	/**
+	 * True once the preview's injection check ran and the verdict was
+	 * stamped (including "unavailable"). Not operator consent — that is
+	 * the channel's confirm. Injection refuses unstamped copies.
+	 */
+	previewed: boolean;
 	verdict: {
 		status: "clean" | "suspicious" | "malicious" | "unavailable";
 		injection: number | null;

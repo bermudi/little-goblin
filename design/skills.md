@@ -82,23 +82,46 @@ behavior, not a prompt contract, so conversations with prompts frozen
 before this ruling invoke identically.
 
 **Temp skills (ruling 2026-10-21, operator ask: "temp skill, not
-install").** A GitHub skill URL (tree/blob/raw forms; a SKILL.md leaf
-takes its parent dir — a skill is a directory) fetches server-side:
-tarball from codeload (one request, public repos — private fails loud),
-subtree extraction via system tar into `state/skillcache/<digest>/`
-(digest of the tarball; cache, not state — deletable), whole directory
-staged because skills' work lives beside their SKILL.md in script dirs
-the body tells the model to run. Caps refuse absurd payloads
-(256KB body, 10MB dir, 500 files). Frontmatter must parse and the name
-must match the directory — the operator previews a known-valid skill.
+install"; hardened 2026-10-22).** A GitHub skill URL (tree/blob/raw
+forms; a SKILL.md leaf takes its parent dir — a skill is a directory)
+fetches server-side: one capped tarball download from codeload (public
+repos — private fails loud), and the fetched bytes are both the cache
+identity input and the extraction input — never a second fetch that
+could race a changed upstream. Cache identity is
+`sha256(sha256(tarball) + "\0" + canonicalSourceUrl)`, so equivalent
+tree/blob/raw forms of one skill share `state/skillcache/<digest>/`
+while sibling subtrees of the same tarball do not (cache, not state —
+deletable). Whole directory staged because skills' work lives beside
+their SKILL.md in script dirs the body tells the model to run.
+
+Pre-flight before payload. The archive's own `tar -t` listing
+(GNU tar, env-pinned) is parsed defensively before a single file is
+extracted: one safe common top-level prefix discovered from entries
+(never the synthesized `repo-ref`), canonical selected paths, regular
+files and directories only inside the selected subtree — links and
+specials refuse before extraction, as do the resource caps (256KiB
+root SKILL.md, 10MiB dir, 500 files, 500 dirs — inode-only payloads
+are payloads). Only then does member-anchored `tar -x` run, with the
+post-extraction walk retained as defense in depth. A cache dir whose
+descriptor is absent or corrupt is a broken cache, not a cache miss:
+it fails loud, never re-extracts over or repairs the incumbent, and a
+publish-race loser re-reads the incumbent. Frontmatter must parse and
+the name must match the directory — the operator previews a
+known-valid skill.
 
 **The gate is System One, the decision is the operator's.** The
 fetched body scores through the injection checker (the shared
-`design/system1.md` client): the preview card shows name, description,
-body size, source repo, and the verdict — the operator clicks yes or
-no before anything stages or sends. The verdict is advisory, not a
-gate: a skill may legitimately instruct, and the operator may accept
-it. On the app the card is the confirm; on Telegram `/skill <url>`
+`design/system1.md` client) with the full cached bytes — no head-cut
+sampling, so a tail payload is scored, not skipped. The preview card
+shows name, description, body size, source repo, and the verdict —
+the operator clicks yes or no before anything stages or sends. The
+verdict is advisory, not a gate: a skill may legitimately instruct,
+and the operator may accept it. The route stamps the verdict onto the
+descriptor before the card renders — `previewed` marks the check
+*completed* (including `unavailable`), not consent; consent is the
+channel's confirm/tap on the preview card. Injection gates on
+`previewed`, and a stamped `unavailable` rides the body as advisory
+preamble text, never a silent clean. On the app the card is the confirm; on Telegram `/skill <url>`
 replies with the preview and a ✅/🚫 row (pending keyed by a short
 token — the URL cannot ride the 64-byte callback cap; a pending
 confirm dies with the process, and the command re-runs instantly off

@@ -1048,10 +1048,14 @@ export async function handleOperatorRoute(
 			// Score exactly the bytes the part will pin: read back from the
 			// published copy, never from an in-memory intermediate.
 			const body = readFileSync(fetched.path, "utf8");
-			const verdict = await checkInjection(preview.gate, body);
-			const stamped =
-				stampVerdict(preview.cacheRoot ?? paths.skillcache(), fetched.digest, verdict) ??
-				fetched.descriptor;
+			// The whole body is scored — no head-cut sampling on the
+			// bytes the part pins.
+			const verdict = await checkInjection(preview.gate, body, { maxChars: body.length });
+			const stamped = stampVerdict(
+				preview.cacheRoot ?? paths.skillcache(),
+				fetched.digest,
+				verdict,
+			);
 			const responseBody: SkillPreviewResponse = {
 				name: stamped.name,
 				description: stamped.description,

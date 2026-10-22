@@ -265,7 +265,9 @@ async function previewTempSkill(
 		return;
 	}
 	const body = readFileSync(fetched.path, "utf8");
-	const verdict = await checkInjection(deps.gate, body);
+	// The whole body is scored — no head-cut sampling on the bytes the
+	// part pins.
+	const verdict = await checkInjection(deps.gate, body, { maxChars: body.length });
 	// Probe, stamp, pending, reply — one synchronous run past the last
 	// real await; nothing may interpose between them.
 	if (previewFenced(deps, target, "scored", epoch)) {

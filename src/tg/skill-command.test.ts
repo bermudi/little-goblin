@@ -67,6 +67,7 @@ interface Harness {
 	sinks: TurnSink[];
 	gateDecisions: Array<Record<string, number>>;
 	synthesized: string[];
+	gateTexts: string[];
 	home: string;
 	gateWired: boolean;
 	cfg: Config;
@@ -104,7 +105,8 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 	};
 	if (gate) {
 		d.gate = {
-			decide: (async () => {
+			decide: (async (text: string) => {
+				h.gateTexts.push(text);
 				h.gateDecisions.push({ injection: 0.1, severity: 0.1 });
 				return {
 					answers: { injection: 0.1, severity: 0.1 },
@@ -132,6 +134,7 @@ function harness(opts?: { gate?: boolean; cfg?: Config }): Harness {
 		sinks: [],
 		gateDecisions: [],
 		synthesized: [],
+		gateTexts: [],
 		home,
 		gateWired: opts?.gate !== false,
 		cfg: opts?.cfg ?? baseConfig(),
@@ -300,6 +303,11 @@ describe("/skill <url> (temp)", () => {
 		expect(text).toContain("held text: do things");
 		expect(lastMarkup(h)).toHaveLength(2);
 		expect(h.gateDecisions).toHaveLength(1);
+		// The whole cached SKILL.md is scored — sentinel at the tail
+		// proves no head-cut sampling.
+		expect(h.gateTexts).toHaveLength(1);
+		expect(h.gateTexts[0]!.length).toBeGreaterThan(8000);
+		expect(h.gateTexts[0]!.endsWith("TAIL_SENTINEL")).toBe(true);
 	});
 
 	test("yes submits the held turn with the temp part", async () => {
@@ -561,7 +569,9 @@ async function fixtureTarball(): Promise<Uint8Array> {
 	mkdirSync(join(src, "r-main", "demo", "scripts"), { recursive: true });
 	writeFileSync(
 		join(src, "r-main", "demo", "SKILL.md"),
-		"---\nname: demo\ndescription: the demo skill\n---\nrun scripts/run.sh",
+		"---\nname: demo\ndescription: the demo skill\n---\n" +
+			"pad ".repeat(2500) +
+			"TAIL_SENTINEL",
 	);
 	writeFileSync(join(src, "r-main", "demo", "scripts", "run.sh"), "echo hi\n");
 	const outDir = mkdtempSync(join(tmpdir(), "goblin-skillfixout-"));

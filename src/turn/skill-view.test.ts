@@ -294,6 +294,7 @@ describe("resolveSkillRef (real fs)", () => {
 				description: "d",
 				sourceUrl: ref.url,
 				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
 				verdict: { status: "clean", injection: 0.1, severity: 0.2 },
 			}),
 		);
@@ -303,5 +304,21 @@ describe("resolveSkillRef (real fs)", () => {
 		expect(stamped.body).toContain("injection check: clean");
 		expect(stamped.body).toContain(join(digestDir, "demo"));
 		expect(stamped.body).toContain("T");
+		// Stamped even when the gate was unavailable — the advisory
+		// preamble rides the injected body, not a refusal.
+		wf(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: ref.url,
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "unavailable", injection: null, severity: null },
+			}),
+		);
+		const advisory = resolveSkillRef(ref);
+		expect(advisory.body).not.toBeNull();
+		expect(advisory.body).toContain("injection check unavailable");
 	});
 });

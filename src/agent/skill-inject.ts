@@ -39,7 +39,7 @@ export function resolveSkillRef(ref: SkillRef): { name: string; body: string | n
 		log.warn("temp skill body unavailable — no readable descriptor", { path: ref.path });
 		return { name: "unknown", body: null };
 	}
-	if (descriptor.verdict.status === "unavailable") {
+	if (!descriptor.previewed) {
 		log.warn("temp skill body refused — verdict never stamped", {
 			name: descriptor.name,
 			path: ref.path,

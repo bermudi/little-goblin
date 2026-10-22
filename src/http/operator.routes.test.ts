@@ -107,24 +107,27 @@ describe("state viewer routes", () => {
 	});
 
 	test("skills/preview fetches, scores, stamps, and answers the card", async () => {
-		// Build a canonical tarball fixture.
+		// Build a canonical tarball fixture — body past the shared
+		// checker's default sampling cap, sentinel at the tail, so the
+		// gate must see ALL the scored bytes.
 		const src = mkdtempSync(join(tmpdir(), "preview-src-"));
 		mkdirSync(join(src, "r-main/demo"), { recursive: true });
-		writeFileSync(
-			join(src, "r-main/demo/SKILL.md"),
-			"---\nname: demo\ndescription: the demo\n---\nbody",
-		);
+		const skillBody =
+			"---\nname: demo\ndescription: the demo\n---\n" +
+			"pad ".repeat(2500) +
+			"TAIL_SENTINEL";
+		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
 		const out = mkdtempSync(join(tmpdir(), "preview-ball-"));
 		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
 		await proc.exited;
 		const ball = await Bun.file(join(out, "b.tgz")).bytes();
 
-		const decisions: unknown[] = [];
+		const scoredTexts: string[] = [];
 		const d = deps();
 		d.skillFetch = {
 			gate: {
-				decide: (async () => {
-					decisions.push(1);
+				decide: (async (text: string) => {
+					scoredTexts.push(text);
 					return {
 						answers: { injection: 0.9, severity: 0.1 },
 						tokens: { input: 1, output: 1 },
@@ -157,7 +160,7 @@ describe("state viewer routes", () => {
 		};
 		expect(body.name).toBe("demo");
 		expect(body.verdict.status).toBe("malicious");
-		expect(decisions).toHaveLength(1);
+		expect(scoredTexts).toEqual([skillBody]);
 		expect(body.cached).toBe(false);
 		// The verdict was stamped into the cached descriptor.
 		const { readFileSync: rf } = await import("node:fs");

@@ -1,39 +1,56 @@
 // Temp-skill fetch pipeline (ruling 2026-10-21, design/skills.md →
 // Skill invocation): a GitHub skill URL becomes a validated, whole-dir
-// copy under state/skillcache/<digest-of-tarball>/ — never a catalog
+// copy under state/skillcache/<digest>/<name>/ — never a catalog
 // entry, never a proposal. Cache, not state: deletable without
-// ceremony. The System One injection verdict is scored by the caller
-// (the route owns the gate client) and stamped into the descriptor via
+// ceremony.
+//
+// The tarball downloads ONCE into a capped buffer; its sha256 plus the
+// canonical source URL form the cache identity, so tree/blob/raw forms
+// of the same skill share one entry while sibling subtrees do not.
+// Before any payload byte is extracted, the archive's own listing is
+// pre-flight validated — one safe top-level prefix, canonical paths,
+// regular files and dirs only inside the selected subtree, and the
+// file/dir/size caps all enforced from declared entries, so a hostile
+// or merely huge archive is refused without writing a single payload
+// file. The System One injection verdict is scored by the caller (the
+// route owns the gate client) and stamped into the descriptor via
 // stampVerdict, so the injected preamble quotes what the operator
 // confirmed on the preview card.
 
 import { createHash } from "node:crypto";
 import {
 	lstatSync,
-	mkdtempSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
 	renameSync,
 	rmSync,
+	mkdtempSync,
 	statSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { log } from "../log.ts";
 import { durableWriteBytes, durableWriteFile } from "../durable.ts";
-import { parseSkill, readHead } from "./skills.ts";
+import { NAME_RE as SKILL_NAME_RE, parseSkill, readHead } from "./skills.ts";
 import type { CachedSkillDescriptor } from "../skill-part.ts";
 import { paths } from "../config.ts";
 
-// The extraction writes only the subtree; the walk bounds what survives.
+// Bounds enforced from the listing BEFORE any extraction write —
+// resource refusal is a typed oversized/invalid, never a disk event.
 export const BODY_MAX_BYTES = 256 * 1024;
 export const DIR_MAX_BYTES = 10 * 1024 * 1024;
 export const FILES_MAX = 500;
+// Inode-only payloads are still payloads: directories count too.
+export const DIRS_MAX = 500;
 // The tarball is the whole repo — a one-file subtree still downloads
 // all of it — so the download cap must clear real repos, not subtrees.
 const DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
+// Listing captures are bounded the same way as the payload caps; a
+// hostile archive cannot trade file-count for listing size.
+const LISTING_MAX_BYTES = 8 * 1024 * 1024;
+const LISTING_ERR_BYTES = 64 * 1024;
 
 // GitHub URL forms (verified against anthropics/skills):
 //   github.com/{o}/{r}/tree/{ref}/{dir}             directory
@@ -52,6 +69,8 @@ export interface GithubSkillSource {
 }
 
 const SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+const safeSegment = (p: string): boolean => p !== "." && p !== ".." && SEGMENT_RE.test(p);
 
 function cleanSegments(path: string): string[] | null {
 	const parts = path.split("/").filter((p) => p !== "" && p !== ".");
@@ -110,7 +129,11 @@ export interface FetchedSkill {
 	bodyBytes: number;
 	fileCount: number;
 	dirBytes: number;
-	/** Content digest of the tarball — the cache key. */
+	/**
+	 * Cache identity — sha256(archiveDigest + "\0" + canonical source
+	 * URL). Equivalent URL forms share it; different subtrees of one
+	 * tarball do not.
+	 */
 	digest: string;
 	cached: boolean;
 }
@@ -135,6 +158,10 @@ function canonicalSourceUrl(s: GithubSkillSource): string {
 	return `https://github.com/${s.owner}/${s.repo}/tree/${s.ref}${s.dir === "" ? "" : `/${s.dir}`}`;
 }
 
+function sha256hex(data: Uint8Array | string): string {
+	return createHash("sha256").update(data).digest("hex");
+}
+
 export async function fetchSkill(
 	rawUrl: string,
 	deps: SkillFetchDeps = {},
@@ -152,90 +179,128 @@ export async function fetchSkill(
 	const now = deps.now ?? (() => new Date());
 	mkdirSync(cacheRoot, { recursive: true });
 
-	const digest = await downloadDigest(source, fetchImpl);
+	// One download serves both the identity digest and the extraction —
+	// never a second fetch that could race a changed upstream.
+	const bytes = await download(source, fetchImpl);
+	const archiveDigest = sha256hex(bytes);
+	const digest = sha256hex(`${archiveDigest}\0${canonicalSourceUrl(source)}`);
 	const finalDir = join(cacheRoot, digest);
-	if (statSyncOrNull(finalDir)?.isDirectory() === true) {
+
+	const incumbentStat = statSyncOrNull(finalDir);
+	if (incumbentStat != null && !incumbentStat.isDirectory()) {
+		throw new SkillFetchError(
+			`cache entry ${finalDir} is not a directory — broken cache`,
+			"invalid",
+		);
+	}
+	if (incumbentStat?.isDirectory() === true) {
+		// A published dir without a descriptor is a broken cache —
+		// fail loud, never re-extract over it or patch the incumbent.
 		const descriptor = readDescriptor(finalDir);
-		if (descriptor !== null) {
-			const dir = join(finalDir, descriptor.name);
-			const walked = rewalk(dir);
-			log.info("skill fetched", {
-				url: rawUrl,
-				digest,
-				name: descriptor.name,
-				bodyBytes: walked.bodyBytes,
-				cached: true,
-				ms: Date.now() - started,
-			});
-			return { descriptor, path: join(dir, "SKILL.md"), dir, cached: true, ...walked, digest };
+		if (descriptor === null) {
+			throw new SkillFetchError(
+				`cached skill at ${finalDir} has no descriptor — refusing to serve it`,
+				"invalid",
+			);
 		}
-		// A published dir without a descriptor is a crash leftover — fall
-		// through and re-extract; the rename below lands ENOTEMPTY and
-		// keeps the incumbent.
+		const dir = join(finalDir, descriptor.name);
+		const walked = rewalk(dir);
+		log.info("skill fetched", {
+			url: rawUrl,
+			digest,
+			name: descriptor.name,
+			bodyBytes: walked.bodyBytes,
+			cached: true,
+			ms: Date.now() - started,
+		});
+		return { descriptor, path: join(dir, "SKILL.md"), dir, cached: true, ...walked, digest };
 	}
 
-	const extracted = await extract(source, digest, cacheRoot, fetchImpl, now);
-	const dir = join(finalDir, extracted.name);
-	let raced = false;
+	// stagingRoot is ours from birth to death — the finally owns it on
+	// success, publish races, and every refusal. The incumbent cache
+	// dir is never touched by a loser.
+	const stagingRoot = mkdtempSync(join(cacheRoot, ".fetch-"));
 	try {
-		renameSync(extracted.stagingDir, finalDir);
-		// The staging root (tarball, extraction dirs) never publishes.
-		cachedCleanup(extracted.stagingRoot);
-	} catch (err) {
-		if (
-			(err as NodeJS.ErrnoException).code !== "ENOTEMPTY" &&
-			(err as NodeJS.ErrnoException).code !== "EEXIST"
-		)
-			throw err;
-		// Lost a publish race with the same tarball — the incumbent wins.
-		raced = true;
-		cachedCleanup(extracted.stagingDir);
+		const extracted = await extract(source, bytes, stagingRoot, now);
+		let descriptor = extracted.descriptor;
+		let walked: Walked = {
+			bodyBytes: extracted.bodyBytes,
+			fileCount: extracted.fileCount,
+			dirBytes: extracted.dirBytes,
+		};
+		let dir = join(finalDir, extracted.name);
+		let raced = false;
+		try {
+			renameSync(extracted.publishDir, finalDir);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOTEMPTY" && code !== "EEXIST") throw err;
+			// Lost a publish race — the incumbent wins. Re-read and
+			// validate IT; never fall back to the copy we extracted.
+			raced = true;
+			const incumbent = readDescriptor(finalDir);
+			if (incumbent === null) {
+				throw new SkillFetchError(
+					`publish race lost to a descriptor-less cache at ${finalDir}`,
+					"invalid",
+				);
+			}
+			descriptor = incumbent;
+			dir = join(finalDir, incumbent.name);
+			walked = rewalk(dir);
+		}
+		log.info("skill fetched", {
+			url: rawUrl,
+			digest,
+			name: descriptor.name,
+			bodyBytes: walked.bodyBytes,
+			dirBytes: walked.dirBytes,
+			files: walked.fileCount,
+			cached: raced,
+			ms: Date.now() - started,
+		});
+		return {
+			descriptor,
+			path: join(dir, "SKILL.md"),
+			dir,
+			...walked,
+			digest,
+			cached: raced,
+		};
+	} finally {
+		cachedCleanup(stagingRoot);
 	}
-	const publishedDescriptor =
-		raced ? (readDescriptor(finalDir) ?? extracted.descriptor) : extracted.descriptor;
-	log.info("skill fetched", {
-		url: rawUrl,
-		digest,
-		name: extracted.name,
-		bodyBytes: extracted.bodyBytes,
-		dirBytes: extracted.dirBytes,
-		files: extracted.fileCount,
-		cached: raced,
-		ms: Date.now() - started,
-	});
-	return {
-		descriptor: publishedDescriptor,
-		path: join(dir, "SKILL.md"),
-		dir,
-		bodyBytes: extracted.bodyBytes,
-		fileCount: extracted.fileCount,
-		dirBytes: extracted.dirBytes,
-		digest,
-		cached: raced,
-	};
 }
 
-// Stamp the preview's System One verdict onto the cached copy. The
-// descriptor is the only place the verdict lives — the part carries
-// just {url, path}, and injection reads what the operator saw.
+// Stamp the preview's System One verdict onto the cached copy, before
+// the card renders — previewed flips true even when status is
+// "unavailable": the check ran (consent is the channel's confirm, not
+// this stamp). The descriptor is the only place the verdict lives —
+// the part carries just {url, path}, and injection reads what the
+// operator saw.
 export function stampVerdict(
 	cacheRoot: string,
 	digest: string,
 	verdict: CachedSkillDescriptor["verdict"],
-): CachedSkillDescriptor | null {
+): CachedSkillDescriptor {
 	const dir = join(cacheRoot, digest);
 	const existing = readDescriptor(dir);
-	if (existing === null) return null;
-	const stamped: CachedSkillDescriptor = { ...existing, verdict };
+	if (existing === null) {
+		throw new Error(`cannot stamp a verdict — no descriptor at ${dir}/skill.json`);
+	}
+	const stamped: CachedSkillDescriptor = { ...existing, previewed: true, verdict };
 	durableWriteFile(join(dir, "skill.json"), JSON.stringify(stamped, null, "\t"));
 	return stamped;
 }
 
 const descriptorSchema = z.object({
-	name: z.string(),
+	name: z.string().regex(SKILL_NAME_RE).max(64),
 	description: z.string(),
 	sourceUrl: z.string(),
 	fetchedAt: z.string(),
+	// Older records predate the flag — default false fails closed
+	// (unstamped), matching an unreadable descriptor.
+	previewed: z.boolean().default(false),
 	verdict: z.object({
 		status: z.enum(["clean", "suspicious", "malicious", "unavailable"]),
 		injection: z.number().nullable(),
@@ -243,20 +308,28 @@ const descriptorSchema = z.object({
 	}),
 });
 
+// null ONLY when the file is absent. Malformed JSON, a schema
+// violation, or any other fs failure throws with the path — a
+// corrupt descriptor is a broken cache, not a cache miss.
 export function readDescriptor(dir: string): CachedSkillDescriptor | null {
+	const file = join(dir, "skill.json");
+	let raw: unknown;
 	try {
-		const raw: unknown = JSON.parse(readFileSync(join(dir, "skill.json"), "utf8"));
-		const parsed = descriptorSchema.safeParse(raw);
-		return parsed.success ? parsed.data : null;
-	} catch {
-		return null;
+		raw = JSON.parse(readFileSync(file, "utf8"));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw new Error(`skill descriptor unreadable at ${file}: ${stringify(err)}`, {
+			cause: err,
+		});
 	}
+	const parsed = descriptorSchema.safeParse(raw);
+	if (!parsed.success) {
+		throw new Error(`skill descriptor invalid at ${file}: ${z.prettifyError(parsed.error)}`);
+	}
+	return parsed.data;
 }
 
-async function downloadDigest(
-	source: GithubSkillSource,
-	fetchImpl: typeof fetch,
-): Promise<string> {
+async function download(source: GithubSkillSource, fetchImpl: typeof fetch): Promise<Uint8Array> {
 	const tarballUrl = `https://codeload.github.com/${source.owner}/${source.repo}/tar.gz/${source.ref}`;
 	let response: Response;
 	try {
@@ -273,50 +346,281 @@ async function downloadDigest(
 			response.status === 404 ? "invalid" : "unreachable",
 		);
 	}
-	return createHash("sha256").update(await sizeCapped(response, DOWNLOAD_MAX_BYTES)).digest("hex");
+	return sizeCapped(response, DOWNLOAD_MAX_BYTES);
+}
+
+// GNU tar's verbose listing, pinned by env LC_ALL=C + TAR_OPTIONS="":
+//   -rw-r--r-- 1000/1001      8587 2026-10-21 17:51:18 repo-5.3.0/SKILL.md
+//   drwxr-xr-x 1000/1001         0 2026-10-21 17:51:18 repo-5.3.0/demo/
+// Links carry " -> target" / " link to target" suffixes; anything the
+// shape doesn't describe is a typed invalid, never a guess.
+const TAR_ENV = { ...process.env, LC_ALL: "C", TAR_OPTIONS: "" };
+const LISTING_RE =
+	/^([bcdhlpsS-])[rwxStTs-]{9}\s+\d+\/\d+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(.+)$/;
+
+interface TarEntry {
+	kind: "file" | "dir" | "link" | "other";
+	path: string;
+	size: number;
+}
+
+function parseListing(text: string): TarEntry[] {
+	const entries: TarEntry[] = [];
+	for (const line of text.split("\n")) {
+		if (line.trim() === "") continue;
+		const m = LISTING_RE.exec(line);
+		if (m === null) {
+			throw new SkillFetchError(`unrecognized tar listing line: ${line.slice(0, 120)}`, "invalid");
+		}
+		const size = Number(m[2]);
+		if (!Number.isSafeInteger(size) || size < 0) {
+			throw new SkillFetchError(`tar listing size out of range: ${m[2]}`, "invalid");
+		}
+		let raw = m[3]!;
+		let link = m[1] === "l" || m[1] === "h";
+		const arrow = raw.indexOf(" -> ");
+		const linkTo = raw.indexOf(" link to ");
+		if (arrow !== -1) {
+			raw = raw.slice(0, arrow);
+			link = true;
+		} else if (linkTo !== -1) {
+			raw = raw.slice(0, linkTo);
+			link = true;
+		}
+		const kind: TarEntry["kind"] = link
+			? "link"
+			: m[1] === "d"
+				? "dir"
+				: m[1] === "-"
+					? "file"
+					: "other";
+		entries.push({ kind, path: raw, size });
+	}
+	return entries;
+}
+
+async function readCapped(stream: ReadableStream<Uint8Array>, cap: number): Promise<Uint8Array> {
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for await (const chunk of stream) {
+		total += chunk.length;
+		// The for-await cleanup cancels the reader on throw — no
+		// explicit cancel needed (and none wanted: it masks the type).
+		if (total > cap) {
+			throw new SkillFetchError(`tar output exceeds the ${cap}-byte cap`, "oversized");
+		}
+		chunks.push(chunk);
+	}
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const c of chunks) {
+		out.set(c, at);
+		at += c.length;
+	}
+	return out;
+}
+
+// List the archive before a single payload byte is written: discover
+// the real top-level prefix (never the synthesized repo-ref), require
+// canonical paths inside the selected subtree, and count declared
+// sizes against the resource caps. The extraction command runs only
+// on success.
+async function listEntries(ballPath: string): Promise<TarEntry[]> {
+	const tar = Bun.spawn(
+		["tar", "-tvzf", ballPath, "--numeric-owner", "--full-time", "--quoting-style=escape"],
+		{ stdout: "pipe", stderr: "pipe", env: TAR_ENV },
+	);
+	try {
+		// Both pipes drain concurrently — a large stderr can otherwise
+		// stall the listing under a full stdout pipe.
+		const [stdout, stderr, code] = await Promise.all([
+			readCapped(tar.stdout, LISTING_MAX_BYTES),
+			readCapped(tar.stderr, LISTING_ERR_BYTES),
+			tar.exited,
+		]);
+		if (code !== 0) {
+			throw new SkillFetchError(
+				`tar listing failed (exit ${code}): ${new TextDecoder().decode(stderr).trim().slice(0, 200)}`,
+				"invalid",
+			);
+		}
+		return parseListing(new TextDecoder().decode(stdout));
+	} catch (err) {
+		tar.kill();
+		await tar.exited.catch(() => {});
+		throw err;
+	}
+}
+
+interface Preflight {
+	/** The real top-level component the archive names — never synthesized. */
+	prefix: string;
+	/** prefix + optional /dir — the extraction member. */
+	member: string;
+	declaredSkillBytes: number;
+	declaredFiles: number;
+	declaredDirs: number;
+	declaredDirBytes: number;
+}
+
+function preflight(entries: TarEntry[], source: GithubSkillSource): Preflight {
+	if (entries.length === 0) {
+		throw new SkillFetchError("tarball lists no entries", "invalid");
+	}
+	// One safe common top-level prefix across every entry — codeload's
+	// shape, and the only shape a member extraction can anchor.
+	let prefix: string | null = null;
+	for (const e of entries) {
+		if (e.path.startsWith("/")) {
+			throw new SkillFetchError(`absolute path in tarball: ${e.path.slice(0, 80)}`, "invalid");
+		}
+		const top = e.path.split("/")[0]!;
+		if (!safeSegment(top)) {
+			throw new SkillFetchError(`unsafe top-level entry in tarball: ${top.slice(0, 80)}`, "invalid");
+		}
+		if (prefix === null) prefix = top;
+		else if (prefix !== top) {
+			throw new SkillFetchError(
+				`tarball mixes top-level prefixes (${prefix} vs ${top})`,
+				"invalid",
+			);
+		}
+	}
+	const member = prefix! + (source.dir === "" ? "" : `/${source.dir}`);
+
+	let declaredSkillBytes = 0;
+	let declaredFiles = 0;
+	let declaredDirs = 0;
+	let declaredDirBytes = 0;
+	let sawSkillMd = false;
+	for (const e of entries) {
+		let path = e.path;
+		if (e.kind === "dir" && path.endsWith("/")) path = path.slice(0, -1);
+		if (path !== member && !path.startsWith(member + "/")) continue;
+		// Selected descendants: canonical paths only — the safety bar is
+		// traversal and ambiguity (empty/dot/dotdot segments, control
+		// bytes, and the backslash escapes the listing hides them
+		// behind), NOT the URL's name rule. Support files legitimately
+		// carry spaces, parens and dots. The member root itself has no
+		// relative segments.
+		if (path !== member) {
+			const rel = path.slice(member.length + 1);
+			for (const seg of rel.split("/")) {
+				if (seg === "" || seg === "." || seg === ".." || /[\x00-\x1f\x7f\\]/.test(seg)) {
+					throw new SkillFetchError(`unsafe path in selected skill: ${path.slice(0, 120)}`, "invalid");
+				}
+			}
+		}
+		if (e.kind === "link") {
+			throw new SkillFetchError(`link inside selected skill: ${path.slice(0, 120)}`, "invalid");
+		}
+		if (e.kind === "other") {
+			throw new SkillFetchError(
+				`special entry inside selected skill: ${path.slice(0, 120)}`,
+				"invalid",
+			);
+		}
+		if (e.kind === "dir") {
+			// Every occurrence counts — a duplicated name pays twice.
+			declaredDirs++;
+			if (declaredDirs > DIRS_MAX) {
+				throw new SkillFetchError(`skill has over ${DIRS_MAX} directories`, "oversized");
+			}
+			continue;
+		}
+		declaredFiles++;
+		declaredDirBytes += e.size;
+		if (declaredFiles > FILES_MAX) {
+			throw new SkillFetchError(`skill has over ${FILES_MAX} files`, "oversized");
+		}
+		if (declaredDirBytes > DIR_MAX_BYTES) {
+			throw new SkillFetchError(`skill dir is over ${DIR_MAX_BYTES} bytes`, "oversized");
+		}
+		if (path === `${member}/SKILL.md`) {
+			sawSkillMd = true;
+			declaredSkillBytes = e.size;
+			if (e.size > BODY_MAX_BYTES) {
+				throw new SkillFetchError(
+					`SKILL.md is ${e.size} bytes — over the ${BODY_MAX_BYTES} temp-skill cap`,
+					"oversized",
+				);
+			}
+		}
+	}
+	if (!sawSkillMd) {
+		throw new SkillFetchError(
+			`skill directory ${source.dir === "" ? "(repo root)" : source.dir} not found in ${source.owner}/${source.repo}@${source.ref}`,
+			"invalid",
+		);
+	}
+	return { prefix: prefix!, member, declaredSkillBytes, declaredFiles, declaredDirs, declaredDirBytes };
 }
 
 async function extract(
 	source: GithubSkillSource,
-	digest: string,
-	cacheRoot: string,
-	fetchImpl: typeof fetch,
+	bytes: Uint8Array,
+	stagingRoot: string,
 	now: () => Date,
-): Promise<{
-	stagingDir: string;
-	stagingRoot: string;
-	descriptor: CachedSkillDescriptor;
-} & Walked & { name: string }> {
+): Promise<
+	{
+		publishDir: string;
+		descriptor: CachedSkillDescriptor;
+		name: string;
+	} & Walked
+> {
 	const tarballUrl = `https://codeload.github.com/${source.owner}/${source.repo}/tar.gz/${source.ref}`;
-	const stagingRoot = mkdtempSync(join(cacheRoot, ".fetch-"));
 	try {
-		const response = await fetchImpl(tarballUrl, { redirect: "follow" });
-		if (!response.ok) {
-			throw new SkillFetchError(`tarball fetch returned ${response.status}`, "unreachable");
-		}
 		const ballPath = join(stagingRoot, "ball.tgz");
-		durableWriteBytes(ballPath, await sizeCapped(response, DOWNLOAD_MAX_BYTES));
+		durableWriteBytes(ballPath, bytes);
 
-		// Extract only the subtree — the tarball carries the whole repo.
-		// A named directory member extracts recursively; no wildcards.
+		// Pre-flight: the archive's own listing decides whether a single
+		// payload byte is ever written.
+		const entries = await listEntries(ballPath);
+		const flight = preflight(entries, source);
+
 		const extractDir = join(stagingRoot, "x");
 		mkdirSync(extractDir);
-		const member = source.dir === "" ? `${source.repo}-${source.ref}` : `${source.repo}-${source.ref}/${source.dir}`;
 		const tar = Bun.spawn(
-			["tar", "-xzf", ballPath, "-C", extractDir, "--no-same-owner", "--no-same-permissions", member],
-			{ stdout: "ignore", stderr: "pipe" },
+			[
+				"tar",
+				"-xzf",
+				ballPath,
+				"-C",
+				extractDir,
+				"--no-same-owner",
+				"--no-same-permissions",
+				"--no-wildcards",
+				"--anchored",
+				"--",
+				flight.member,
+			],
+			{ stdout: "ignore", stderr: "pipe", env: TAR_ENV },
 		);
-		const stderr = await new Response(tar.stderr).text();
-		const code = await tar.exited;
+		let stderr = "";
+		let code: number;
+		try {
+			const [stderrBytes, exitCode] = await Promise.all([
+				readCapped(tar.stderr, LISTING_ERR_BYTES),
+				tar.exited,
+			]);
+			stderr = new TextDecoder().decode(stderrBytes);
+			code = exitCode;
+		} catch (err) {
+			tar.kill();
+			await tar.exited.catch(() => {});
+			throw err;
+		}
 		if (code !== 0) {
 			throw new SkillFetchError(
 				`skill directory ${source.dir === "" ? "(repo root)" : source.dir} not found in ${source.owner}/${source.repo}@${source.ref}` +
-					(code === 2 && stderr.trim() ? ` (tar: ${stderr.trim().slice(0, 200)})` : ""),
+					(stderr.trim() ? ` (tar: ${stderr.trim().slice(0, 200)})` : ""),
 				"invalid",
 			);
 		}
 
-		const subtree = realpathSync(join(extractDir, `${source.repo}-${source.ref}`, source.dir === "" ? "." : source.dir));
+		const subtree = realpathSync(
+			join(extractDir, flight.prefix, source.dir === "" ? "." : source.dir),
+		);
 		const realRoot = realpathSync(extractDir);
 		if (!subtree.startsWith(realRoot + "/")) {
 			throw new SkillFetchError("extracted skill dir escaped the extraction root", "invalid");
@@ -337,33 +641,26 @@ async function extract(
 				"invalid",
 			);
 		}
-		const bodyBytes = statSync(skillMd).size;
-		if (bodyBytes > BODY_MAX_BYTES) {
-			throw new SkillFetchError(
-				`SKILL.md is ${bodyBytes} bytes — over the ${BODY_MAX_BYTES} temp-skill cap`,
-				"oversized",
-			);
-		}
 
 		// Publish layout: <staging>/publish/<name>/** + skill.json beside
 		// it — the whole publish dir renames to <cache>/<digest>.
-		const stagingDir = join(stagingRoot, "publish");
-		mkdirSync(stagingDir);
-		renameSync(subtree, join(stagingDir, parsed.fm.name));
+		const publishDir = join(stagingRoot, "publish");
+		mkdirSync(publishDir);
+		renameSync(subtree, join(publishDir, parsed.fm.name));
 		rmSync(extractDir, { recursive: true, force: true });
 		const descriptor: CachedSkillDescriptor = {
 			name: parsed.fm.name,
 			description: parsed.fm.description,
 			sourceUrl: canonicalSourceUrl(source),
 			fetchedAt: now().toISOString(),
-			// The route scores and stamps after validation; until then the
-			// verdict is unavailable and the view refuses injection.
+			// The route scores and stamps after validation; previewed
+			// stays false until the verdict stamp lands.
+			previewed: false,
 			verdict: { status: "unavailable", injection: null, severity: null },
 		};
-		durableWriteFile(join(stagingDir, "skill.json"), JSON.stringify(descriptor, null, "\t"));
-		return { stagingDir, stagingRoot, descriptor, name: parsed.fm.name, ...walked };
+		durableWriteFile(join(publishDir, "skill.json"), JSON.stringify(descriptor, null, "\t"));
+		return { publishDir, descriptor, name: parsed.fm.name, ...walked };
 	} catch (err) {
-		rmSync(stagingRoot, { recursive: true, force: true });
 		if (err instanceof SkillFetchError) {
 			log.warn("skill fetch rejected", { url: tarballUrl, reason: err.message });
 		}
@@ -390,7 +687,10 @@ function rewalk(dir: string): Walked {
 // Regular files and real directories only — a symlink (or worse) inside
 // a fetched skill is refused, matching the catalog's links-are-
 // second-class rule; the staging move must not carry links anywhere.
+// Post-extraction defense in depth — pre-flight already refused links
+// and specials from the listing.
 function walkSubtree(root: string): Walked {
+	const rootMd = join(root, "SKILL.md");
 	let bodyBytes = 0;
 	let fileCount = 0;
 	let dirBytes = 0;
@@ -414,7 +714,8 @@ function walkSubtree(root: string): Walked {
 		if (dirBytes > DIR_MAX_BYTES) {
 			throw new SkillFetchError(`skill dir is over ${DIR_MAX_BYTES} bytes`, "oversized");
 		}
-		if (basename(path) === "SKILL.md") bodyBytes = stats.size;
+		// The root SKILL.md only — a nested same-named file is not the body.
+		if (path === rootMd) bodyBytes = stats.size;
 	};
 	visit(root);
 	if (bodyBytes === 0) throw new SkillFetchError("no SKILL.md in the skill directory", "invalid");
@@ -428,7 +729,8 @@ async function sizeCapped(response: Response, cap: number): Promise<Uint8Array> 
 		const bytes = chunk as Uint8Array;
 		total += bytes.length;
 		if (total > cap) {
-			await response.body?.cancel();
+			// Throwing out of the for-await releases the reader — the
+			// stream's own cleanup path owns cancellation.
 			throw new SkillFetchError(`download exceeds the ${cap}-byte cap`, "oversized");
 		}
 		chunks.push(bytes);
@@ -445,8 +747,9 @@ async function sizeCapped(response: Response, cap: number): Promise<Uint8Array> 
 function statSyncOrNull(path: string): ReturnType<typeof statSync> | null {
 	try {
 		return statSync(path);
-	} catch {
-		return null;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
 	}
 }
 

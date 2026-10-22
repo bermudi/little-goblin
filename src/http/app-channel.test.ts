@@ -318,13 +318,16 @@ describe("app operator surface", () => {
 	});
 
 	test("skills/preview through the app door: JSON gate before the seam, then the real fetch", async () => {
-		// Same canonical tarball fixture operator.routes.test.ts builds.
+		// Same canonical tarball fixture operator.routes.test.ts builds,
+		// body past the shared checker's sampling cap with a tail
+		// sentinel — the gate must score every byte.
 		const src = mkdtempSync(join(tmpdir(), "app-preview-src-"));
 		mkdirSync(join(src, "r-main/demo"), { recursive: true });
-		writeFileSync(
-			join(src, "r-main/demo/SKILL.md"),
-			"---\nname: demo\ndescription: the demo\n---\nbody",
-		);
+		const skillBody =
+			"---\nname: demo\ndescription: the demo\n---\n" +
+			"pad ".repeat(2500) +
+			"TAIL_SENTINEL";
+		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
 		const out = mkdtempSync(join(tmpdir(), "app-preview-ball-"));
 		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
 		await proc.exited;
@@ -332,13 +335,15 @@ describe("app operator surface", () => {
 
 		let fetches = 0;
 		let scored = 0;
+		const scoredTexts: string[] = [];
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			operator: {
 				skillFetch: {
 					gate: {
-						decide: (async () => {
+						decide: (async (text: string) => {
 							scored++;
+							scoredTexts.push(text);
 							return {
 								answers: { injection: 0.05, severity: 0.1 },
 								tokens: { input: 1, output: 1 },
@@ -393,6 +398,7 @@ describe("app operator surface", () => {
 			expect(body.verdict.status).toBe("clean");
 			expect(body.cached).toBe(false);
 			expect(scored).toBe(1);
+			expect(scoredTexts).toEqual([skillBody]);
 		} finally {
 			http.stop();
 			rmSync(src, { recursive: true, force: true });

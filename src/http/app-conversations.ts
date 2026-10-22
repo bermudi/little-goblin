@@ -525,13 +525,16 @@ export async function handleConversationsRoute(
 				if (!(err instanceof z.ZodError)) throw err;
 				return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 			}
-			const settings = store.initializeAppSettings(convId.id, cfg);
+			// The raw stored pair, defaults filling gaps — no heal write:
+			// clamping against the outgoing model first could erase a level
+			// the destination supports.
+			const stored = store.readAppSettings(convId.id, cfg);
 			// A stored level the target model can't express is a lie — the
 			// write persists what the wire clamp would send instead.
 			const thinking = clampThinkingFor(
 				cfg.providers,
-				parsed.data.model ?? settings.model,
-				parsed.data.thinking ?? settings.thinking,
+				parsed.data.model ?? stored.model,
+				parsed.data.thinking ?? stored.thinking,
 			);
 			store.setMeta(convId.id, {
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),

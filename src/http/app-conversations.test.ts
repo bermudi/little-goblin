@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
-import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
+import {
+	_primeModelsDevForTest,
+	_primeOpenRouterCatalog,
+	_resetModelsDevForTest,
+} from "../agent/models-dev.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
@@ -639,6 +643,64 @@ test("conversation config writes persist a level the model can express — never
 		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "low" });
 	} finally {
 		http.stop();
+	}
+});
+
+test("a model-only PATCH clamps once against the destination — the outgoing model can't erase a level", async () => {
+	const { http, call, store, configRef } = setup();
+	configRef.current.providers.openrouter = { kind: "openrouter", auth: "openrouter" };
+	// Cold catalog: the deepseek route is unknown, so its "high" persists
+	// verbatim until the catalog can judge it.
+	_primeOpenRouterCatalog(null);
+	const patch = (path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ladder-hop" }),
+		});
+		const a = "/api/app/conversations/ladder-hop/config";
+		const seeded = await patch(a, {
+			model: "openrouter/deepseek/deepseek-r1-0528",
+			thinking: "high",
+		});
+		expect(seeded.status).toBe(200);
+		expect(store.get("app/ladder-hop")).toMatchObject({ thinking: "high" });
+		// Warm: deepseek's real profile is a mandatory toggle (low only);
+		// minimax takes the whole effort set, high included.
+		_primeOpenRouterCatalog(
+			new Map([
+				[
+					"deepseek/deepseek-r1-0528",
+					{ params: new Set(["reasoning"]), reasoning: { mandatory: true } },
+				],
+				[
+					"minimax/minimax-m3.1-flash:free",
+					{
+						params: new Set(["reasoning", "reasoning_effort"]),
+						reasoning: {
+							mandatory: true,
+							supported_efforts: ["max", "xhigh", "high", "medium", "low"],
+						},
+					},
+				],
+			]),
+		);
+		const moved = await patch(a, { model: "openrouter/minimax/minimax-m3.1-flash:free" });
+		expect(moved.status).toBe(200);
+		expect(store.get("app/ladder-hop")).toMatchObject({
+			model: "openrouter/minimax/minimax-m3.1-flash:free",
+			thinking: "high",
+		});
+		expect(await moved.json()).toMatchObject({ thinking: "high" });
+	} finally {
+		http.stop();
+		_primeOpenRouterCatalog(null);
 	}
 });
 

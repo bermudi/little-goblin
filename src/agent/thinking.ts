@@ -227,19 +227,16 @@ export function reasoningProfileFor(
 	// to its forced-thinking ladder.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (kind === "openrouter") {
-		// The catalog's own truth wins: it knows this route's efforts
-		// and whether its reasoning can be disabled.
-		const route = openrouterRoute(modelId);
-		if (route !== null) return openrouterProfile(route);
+		// The catalog is the only authority for this kind — a listed
+		// route's own reasoning object, or a missing one (catalog cold or
+		// route unlisted) meaning unknown. Unknown keeps the whole
+		// vocabulary; a name-shaped guess here would narrow a valid
+		// selection the warm catalog supports — and persist wrongly.
+		return openrouterProfile(openrouterRoute(modelId));
 	}
 	if (bare.startsWith("glm-")) return glmProfile(bare, baseUrl);
 	if (kind === "codex" || bare.startsWith("gpt-")) {
 		return { levels: gptLevels(bare), off: "floor", knob: "effort" };
-	}
-	if (kind === "openrouter") {
-		// An unlisted route: unknown, so the whole vocabulary and "off"
-		// as the route's default.
-		return openrouterProfile(null);
 	}
 	// A generic OpenAI-compatible endpoint: the classic effort set, and
 	// "off" as the floor (the endpoint may reject "none"). "minimal" is
@@ -278,11 +275,7 @@ export function clampThinkingFor(
 	const p = providers[provider];
 	if (p === undefined) return level;
 	const levels = thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined);
-	if (levels.includes(level)) return level;
-	const idx = thinkingLevels.indexOf(level);
-	return (
-		levels.find((l) => thinkingLevels.indexOf(l) >= idx) ?? levels[levels.length - 1] ?? level
-	);
+	return clampToLevels(levels, level);
 }
 
 /**

@@ -236,6 +236,23 @@ describe("clampThinkingFor — the stored level is always one the model offers",
 		primeCatalog();
 		expect(clampThinkingFor(cfg.providers, "openrouter/plain/model", "xhigh")).toBe("off");
 	});
+	test("a cold openrouter catalog is unknown — nothing clamps, the whole vocabulary shows", () => {
+		// The name arms would narrow a selection the warm catalog supports
+		// (gpt-5.4 publishes "none" — off is real there); a route the
+		// catalog can't answer keeps its level verbatim.
+		_primeOpenRouterCatalog(null);
+		expect(thinkingLevelsFor("openrouter", "openai/gpt-5.4")).toEqual([
+			"off",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		expect(clampThinkingFor(cfg.providers, "openrouter/openai/gpt-5.4", "off")).toBe("off");
+		expect(clampThinkingFor(cfg.providers, "openrouter/z-ai/glm-5.3", "xhigh")).toBe("xhigh");
+	});
 });
 
 describe("thinkingOptions — glm-5.3+ (forced thinking, effort low|high|max)", () => {

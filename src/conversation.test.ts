@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
+import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
 import {
 	appAddress,
 	appIdOf,
@@ -1380,6 +1381,49 @@ test("app settings heal a stored level the model can't express — unknown provi
 		expect(store.get(ghost.id)).toMatchObject({ thinking: "xhigh" });
 	} finally {
 		store.close();
+	}
+});
+
+test("a cold openrouter catalog never rewrites a selection — the warm catalog judges it", () => {
+	const store = openStore(tmpDb("goblin-test-"));
+	try {
+		// Cold: the route is unknown, so a stored level persists verbatim —
+		// a name-shaped fallback ladder would durably lose a valid "off".
+		_primeOpenRouterCatalog(null);
+		const providers = { openrouter: { kind: "openrouter", auth: "o" } } as const;
+		const defaults = {
+			model: "openrouter/openai/gpt-5.4",
+			thinking: "high" as const,
+			providers,
+		};
+		const conv = store.resolve(appAddress("cold-or"), "/work");
+		store.setMeta(conv.id, { model: "openrouter/openai/gpt-5.4", thinking: "off" });
+		expect(store.initializeAppSettings(conv.id, defaults).thinking).toBe("off");
+		expect(store.get(conv.id)).toMatchObject({ thinking: "off" });
+		// Warm: the route publishes "none" among its efforts — off is real.
+		_primeOpenRouterCatalog(
+			new Map([
+				[
+					"openai/gpt-5.4",
+					{
+						params: new Set(["reasoning", "reasoning_effort"]),
+						reasoning: {
+							mandatory: false,
+							supported_efforts: ["xhigh", "high", "medium", "low", "none"],
+						},
+					},
+				],
+			]),
+		);
+		expect(store.initializeAppSettings(conv.id, defaults).thinking).toBe("off");
+		expect(store.get(conv.id)).toMatchObject({ thinking: "off" });
+		// And a level the warm route can't express still heals upward.
+		store.setMeta(conv.id, { thinking: "minimal" });
+		expect(store.initializeAppSettings(conv.id, defaults).thinking).toBe("low");
+		expect(store.get(conv.id)).toMatchObject({ thinking: "low" });
+	} finally {
+		store.close();
+		_primeOpenRouterCatalog(null);
 	}
 });
 

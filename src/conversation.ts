@@ -266,6 +266,9 @@ export interface ConversationStore {
 		id: string,
 		defaults: ModelSettings & { providers?: Config["providers"] },
 	): ModelSettings;
+	// The stored pair with defaults filling gaps — no clamp, no write.
+	// Missing/non-app ids throw.
+	readAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// All guest conversations in a chat — closing guest access fences
 	// their running turns.
@@ -1128,16 +1131,25 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
 	}
 
+	// The stored selection, defaults filling the gaps — no clamp, no
+	// write. Writers that re-derive the level need the raw pair so a
+	// normalization pass can't erase information first.
+	function readSettings(id: string, defaults: ModelSettings): ModelSettings {
+		const row = qGet.get(id);
+		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
+		return modelSettingsSchema.parse({
+			model: row.model ?? defaults.model,
+			thinking: row.thinking ?? defaults.thinking,
+		});
+	}
+
 	function initializeSettings(
 		id: string,
 		defaults: ModelSettings & { providers?: Config["providers"] },
 	): ModelSettings {
 		const row = qGet.get(id);
 		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
-		const stored = modelSettingsSchema.parse({
-			model: row.model ?? defaults.model,
-			thinking: row.thinking ?? defaults.thinking,
-		});
+		const stored = readSettings(id, defaults);
 		// A stored level the model can't express is a lie — persist the
 		// rung the wire clamp would land on instead of showing it.
 		const settings: ModelSettings = {
@@ -1318,6 +1330,10 @@ export function openStore(dbPath: string): ConversationStore {
 
 		initializeAppSettings(id, defaults) {
 			return db.transaction(() => initializeSettings(id, defaults))();
+		},
+
+		readAppSettings(id, defaults) {
+			return readSettings(id, defaults);
 		},
 
 		forkToApp(fromId, appId, defaultCwd, title, defaults) {

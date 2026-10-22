@@ -128,6 +128,21 @@ describe("MessageParts", () => {
 		expect(html).toContain("a.dev");
 	});
 
+	test("a data-approval part inside a tool run still renders its card", () => {
+		// Approvals persist as standalone system messages today, but a
+		// part that renders its own surface must split an activity run —
+		// like data-attachment and data-note — never fold away unseen.
+		const approval = {
+			type: "data-approval",
+			data: { kind: "program", id: 7 },
+		} as unknown as UIMessage["parts"][number];
+		const html = renderToStaticMarkup(
+			<MessageParts parts={[toolPart, approval, { type: "text", text: "done" }]} />,
+		);
+		expect(html).toContain("approval-card");
+		expect(html).toContain("done");
+	});
+
 	test("an id-only data-note part still renders a chip — the id is its own label", () => {
 		const html = renderToStaticMarkup(
 			<MessageParts

@@ -365,7 +365,12 @@ export function MessageParts({
 					if (q.text.trim() !== "") run.push(q);
 				} else if (q.type === "text") {
 					if (q.text.trim() !== "") break;
-				} else if (q.type === "data-attachment" || q.type === "data-note" || q.type === "file") {
+				} else if (
+					q.type === "data-attachment" ||
+					q.type === "data-note" ||
+					q.type === "data-approval" ||
+					q.type === "file"
+				) {
 					break;
 				}
 				// step-start, sources, and any future plumbing render as

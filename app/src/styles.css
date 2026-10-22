@@ -878,6 +878,10 @@ h6.md-h {
 	color: var(--app-fg);
 	background: var(--app-hover);
 }
+.msg-actions button.on {
+	color: var(--app-fg);
+	background: var(--app-active);
+}
 .msg-actions button:disabled {
 	color: var(--app-fg-subtle);
 }

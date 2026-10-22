@@ -86,8 +86,28 @@ export interface AppNoteRewriteResponse {
 	replacement: string;
 }
 
+export type AppReplyRating = "up" | "down";
+
 export interface AppMessageList {
 	messages: UIMessage[];
+	ratings: AppRatedReply[];
+	rateableMessageIds: string[];
+}
+
+export interface AppRatedReply {
+	messageId: string;
+	eventSeq: number;
+	anchorSeq: number | null;
+	rating: AppReplyRating;
+	createdAt: string;
+}
+
+export interface AppReplyRatingList {
+	ratings: AppRatedReply[];
+}
+
+export interface AppReplyRatingResponse {
+	rating: AppRatedReply;
 }
 
 export interface AppChatRequest {

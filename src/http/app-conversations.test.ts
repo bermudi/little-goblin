@@ -40,7 +40,188 @@ describe("app conversations", () => {
 
 			const messages = await call("/api/app/conversations/chat-01/messages");
 			expect(messages.status).toBe(200);
-			expect((await messages.json()) as { messages: unknown[] }).toEqual({ messages: [] });
+			expect(
+				(await messages.json()) as {
+					messages: unknown[];
+					ratings: unknown[];
+					rateableMessageIds: unknown[];
+				},
+			).toEqual({ messages: [], ratings: [], rateableMessageIds: [] });
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("reply ratings persist against the durable assistant event", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "rated-01" }),
+			});
+			store.append("app/rated-01", [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			]);
+			store.append(
+				"app/rated-01",
+				[
+					{
+						id: "m1",
+						role: "assistant",
+						parts: [
+							{
+								type: "data-attachment",
+								data: {
+									path: "attachments/generated.txt",
+									mediaType: "text/plain",
+									filename: "generated.txt",
+									size: 4,
+								},
+							},
+						],
+					},
+				],
+				{ anchorSeq: 1 },
+			);
+			store.append(
+				"app/rated-01",
+				[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "answer" }] }],
+				{ anchorSeq: 1 },
+			);
+			expect((await call("/api/app/conversations/rated-01/ratings")).status).toBe(200);
+
+			const historyBefore = await call("/api/app/conversations/rated-01/messages");
+			expect(await historyBefore.json()).toMatchObject({
+				rateableMessageIds: ["a1"],
+			});
+			expect(
+				(
+					await call("/api/app/conversations/rated-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "m1", rating: "up" }),
+					})
+				).status,
+			).toBe(404);
+
+			const post = await call("/api/app/conversations/rated-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a1", rating: "up" }),
+			});
+			expect(post.status).toBe(200);
+			expect(await post.json()).toMatchObject({
+				rating: { messageId: "a1", eventSeq: 3, anchorSeq: 1, rating: "up" },
+			});
+
+			const history = await call("/api/app/conversations/rated-01/messages");
+			expect(await history.json()).toMatchObject({
+				ratings: [{ messageId: "a1", eventSeq: 3, rating: "up" }],
+			});
+
+			const changed = await call("/api/app/conversations/rated-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a1", rating: "down" }),
+			});
+			expect(changed.status).toBe(200);
+			const latest = await call("/api/app/conversations/rated-01/ratings");
+			expect(await latest.json()).toMatchObject({
+				ratings: [{ messageId: "a1", eventSeq: 3, rating: "down" }],
+			});
+			expect(
+				(
+					await call("/api/app/conversations/rated-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "u1", rating: "up" }),
+					})
+				).status,
+			).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rating eligibility picks the last assistant event in each reply group", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "eligible-01" }),
+			});
+			const text = (id: string, role: "user" | "assistant") => ({
+				id,
+				role,
+				parts: [{ type: "text" as const, text: id }],
+			});
+			store.append("app/eligible-01", [text("u1", "user")]);
+			store.append("app/eligible-01", [text("a1", "assistant")], { anchorSeq: 1 });
+			store.append("app/eligible-01", [text("a2", "assistant")], { anchorSeq: 1 });
+			// Legacy/no-anchor assistant events still form one reply run; only
+			// its tail is voteable. A user event starts a new run.
+			store.append("app/eligible-01", [text("a3", "assistant"), text("a4", "assistant")]);
+			store.append("app/eligible-01", [text("u2", "user")]);
+			store.append("app/eligible-01", [text("a5", "assistant"), text("a6", "assistant")]);
+
+			const history = await call("/api/app/conversations/eligible-01/messages");
+			expect(await history.json()).toMatchObject({
+				rateableMessageIds: ["a2", "a4", "a6"],
+			});
+			for (const messageId of ["a1", "a3", "a5"]) {
+				expect(
+					(
+						await call("/api/app/conversations/eligible-01/ratings", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ messageId, rating: "up" }),
+						})
+					).status,
+				).toBe(404);
+			}
+			const voted = await call("/api/app/conversations/eligible-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a6", rating: "down" }),
+			});
+			expect(voted.status).toBe(200);
+			expect(await voted.json()).toMatchObject({
+				rating: { messageId: "a6", eventSeq: 8, anchorSeq: null, rating: "down" },
+			});
+
+			expect(
+				(await call("/api/app/conversations/eligible-01/ratings", { method: "PUT" })).status,
+			).toBe(405);
+			expect((await call("/api/app/conversations/ghost/ratings")).status).toBe(404);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "text/plain" },
+						body: "x",
+					})
+				).status,
+			).toBe(415);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{",
+					})
+				).status,
+			).toBe(400);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "a6", rating: "maybe" }),
+					})
+				).status,
+			).toBe(422);
 		} finally {
 			http.stop();
 		}

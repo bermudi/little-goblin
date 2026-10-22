@@ -152,7 +152,8 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat"))
 				return Promise.resolve(
@@ -333,7 +334,8 @@ describe("rail row actions and the pinned pool", () => {
 				}
 				return Promise.resolve(jsonResponse(body));
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			return Promise.resolve(
 				jsonResponse({
@@ -573,7 +575,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					conversations = conversations.map((c) => ({ ...c, archivedAt: "2026-10-10T00:00:00Z" }));
 				return Promise.resolve(jsonResponse({ ok: true }));
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
@@ -2081,7 +2084,10 @@ describe("app projects surface", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
@@ -4018,7 +4024,8 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 				return g.promise;
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat"))
 				return Promise.resolve(
@@ -4170,7 +4177,8 @@ describe("chat width selector", () => {
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/conversations")
 				return Promise.resolve(jsonResponse({ conversations: [] }));
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			return Promise.resolve(
 				jsonResponse({
@@ -4220,9 +4228,7 @@ describe("chat width selector", () => {
 		expect(seg).not.toBeNull();
 		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
 
-		const wide = [...(seg?.querySelectorAll("button") ?? [])].find(
-			(b) => b.textContent === "wide",
-		);
+		const wide = [...(seg?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "wide");
 		await act(async () => {
 			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
 		});

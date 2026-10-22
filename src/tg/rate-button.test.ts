@@ -12,7 +12,7 @@ import {
 	registerRateButton,
 	type RateQuery,
 } from "./rate-button.ts";
-import type { ReplyRatings, ReplyRatingWrite } from "./ratings.ts";
+import type { ReplyRatings, ReplyRatingWrite } from "../reply-ratings.ts";
 
 function answers(calls: RecordedCall[]): (string | undefined)[] {
 	return calls
@@ -29,6 +29,9 @@ function fakeRatings(fail = false): ReplyRatings & { records: ReplyRatingWrite[]
 			records.push(entry);
 		},
 		latest: () => null,
+		recordApp: () => {},
+		latestEvent: () => null,
+		listApp: () => [],
 	};
 }
 

@@ -47,13 +47,10 @@ import {
 	routeMemberGuestMessage,
 } from "./guest.ts";
 import { MAIL_CALLBACK_RE, type TelegramMailApproval } from "./mail-approval.ts";
-import {
-	PROGRAM_CALLBACK_RE,
-	type TelegramProgramApproval,
-} from "./program-approval.ts";
+import { PROGRAM_CALLBACK_RE, type TelegramProgramApproval } from "./program-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
-import { openRatings } from "./ratings.ts";
+import { openRatings } from "../reply-ratings.ts";
 import { SKILL_CALLBACK_RE, startSkillApproval } from "./skill-approval.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";

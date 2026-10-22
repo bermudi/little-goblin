@@ -31,6 +31,7 @@ import {
 	patchConfig,
 	patchConversationConfig,
 	patchConversationMemory,
+	rateReply,
 	stopConversation,
 	uploadAttachment,
 } from "./api.ts";
@@ -49,6 +50,8 @@ import type {
 	AppContextView,
 	AppConversationMemoryView,
 	AppNoteSummary,
+	AppRatedReply,
+	AppReplyRating,
 	TurnMetadata,
 } from "../../src/http/app-wire.ts";
 
@@ -475,12 +478,22 @@ function ActionBar({
 	busy,
 	onRetry,
 	token,
+	rateable,
+	rating,
+	ratingPending,
+	ratingError,
+	onRate,
 }: {
 	message: UIMessage;
 	isLastAssistant: boolean;
 	busy: boolean;
 	onRetry: () => void;
 	token: string | null;
+	rateable: boolean;
+	rating: AppReplyRating | null;
+	ratingPending: boolean;
+	ratingError: string | null;
+	onRate: (rating: AppReplyRating) => void;
 }) {
 	const text = messageText(message);
 	const { copied, failed, copy } = useCopy();
@@ -507,7 +520,32 @@ function ActionBar({
 						{open ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
 					</button>
 				)}
+				{rateable && (
+					<>
+						<button
+							type="button"
+							className={rating === "up" ? "on" : undefined}
+							onClick={() => onRate("up")}
+							aria-label="Rate reply helpful"
+							aria-pressed={rating === "up"}
+							disabled={ratingPending}
+						>
+							helpful
+						</button>
+						<button
+							type="button"
+							className={rating === "down" ? "on" : undefined}
+							onClick={() => onRate("down")}
+							aria-label="Rate reply bad"
+							aria-pressed={rating === "down"}
+							disabled={ratingPending}
+						>
+							bad
+						</button>
+					</>
+				)}
 				{speech.err !== null && <span className="msg-err">{speech.err}</span>}
+				{ratingError !== null && <span className="msg-err">{ratingError}</span>}
 				{isLastAssistant && !busy && (
 					<button type="button" onClick={onRetry} aria-label="Retry">
 						↻ retry
@@ -1897,12 +1935,22 @@ export function ChatView({
 	// Note chips + fenced note cards navigate to the note page in-app.
 	onOpenNote?: ((id: string) => void) | undefined;
 }) {
-	const [initial, setInitial] = useState<UIMessage[] | null>(null);
+	const [initial, setInitial] = useState<{
+		messages: UIMessage[];
+		ratings: AppRatedReply[];
+		rateableMessageIds: string[];
+	} | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	useEffect(() => {
 		let live = true;
 		getMessages(token, conversationId).then(
-			(r) => live && setInitial(r.messages),
+			(r) =>
+				live &&
+				setInitial({
+					messages: r.messages,
+					ratings: r.ratings,
+					rateableMessageIds: r.rateableMessageIds,
+				}),
 			(err) => live && setLoadError(err instanceof Error ? err.message : "history failed to load"),
 		);
 		return () => {
@@ -1917,7 +1965,9 @@ export function ChatView({
 			conversationId={conversationId}
 			title={title}
 			token={token}
-			initial={initial}
+			initial={initial.messages}
+			initialRatings={initial.ratings}
+			initialRateableIds={initial.rateableMessageIds}
 			seed={seed}
 			staged={staged}
 			setStaged={setStaged}
@@ -1936,6 +1986,8 @@ function Chat({
 	conversationId,
 	title,
 	initial,
+	initialRatings,
+	initialRateableIds,
 	seed,
 	staged,
 	setStaged,
@@ -1950,6 +2002,8 @@ function Chat({
 	conversationId: string;
 	title: string | null;
 	initial: UIMessage[];
+	initialRatings: AppRatedReply[];
+	initialRateableIds: string[];
 	seed: UIMessage["parts"] | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
@@ -1973,6 +2027,18 @@ function Chat({
 	// below useChat — the reconnect's answer resolves after a network
 	// round-trip, so it can never beat that effect's assignment.
 	const idleReconnect = useRef<() => void>(() => {});
+	const [ratings, setRatings] = useState<Record<string, AppRatedReply>>(() =>
+		Object.fromEntries(initialRatings.map((r) => [r.messageId, r])),
+	);
+	const [ratingPending, setRatingPending] = useState<string | null>(null);
+	const [ratingErrors, setRatingErrors] = useState<Record<string, string>>({});
+	const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
+		() => new Set(initialRateableIds),
+	);
+	const applyRatingSnapshot = (next: AppRatedReply[], nextIds: string[]) => {
+		setRatings(Object.fromEntries(next.map((rating) => [rating.messageId, rating])));
+		setRateableIds(new Set(nextIds));
+	};
 	const transport = useMemo<ChatTransport<UIMessage>>(() => {
 		const base = new DefaultChatTransport({
 			api: "/api/app/chat",
@@ -2026,12 +2092,47 @@ function Chat({
 				// finished reply — the bell belongs to the real finish.
 				if (!isAbort) notifyDone(title ?? "", messageText(message));
 				onTurnDone();
+				refreshTranscript();
 			},
 		});
+	const refreshTranscript = () => {
+		void getMessages(token, conversationId).then(
+			(r) => {
+				setMessages((current) => mergeTranscript(current, r.messages));
+				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+			},
+			() => {},
+		);
+	};
 	// A failed /stop means the client dropped its stream but the turn
 	// keeps running server-side and will write the reply the operator
 	// asked to stop — that has to be visible, not swallowed.
 	const [stopError, setStopError] = useState<string | null>(null);
+	useEffect(() => {
+		setRatings(Object.fromEntries(initialRatings.map((r) => [r.messageId, r])));
+		setRatingPending(null);
+		setRatingErrors({});
+		setRateableIds(new Set(initialRateableIds));
+	}, [initialRatings, initialRateableIds]);
+	const rate = (messageId: string, rating: AppReplyRating) => {
+		if (ratingPending !== null) return;
+		setRatingPending(messageId);
+		setRatingErrors((errors) => {
+			const next = { ...errors };
+			delete next[messageId];
+			return next;
+		});
+		void rateReply(token, conversationId, messageId, rating)
+			.then(
+				(res) => setRatings((current) => ({ ...current, [messageId]: res.rating })),
+				(err: unknown) =>
+					setRatingErrors((errors) => ({
+						...errors,
+						[messageId]: err instanceof Error ? err.message : "rating failed",
+					})),
+			)
+			.finally(() => setRatingPending(null));
+	};
 
 	// Reload-window reconciliation: a turn that completed between the
 	// history snapshot and the idle reconnect is durably stored but
@@ -2042,7 +2143,11 @@ function Chat({
 	useEffect(() => {
 		idleReconnect.current = () => {
 			void getMessages(token, conversationId).then(
-				(r) => setMessages((current) => mergeTranscript(current, r.messages)),
+				(r) => {
+					setMessages((current) => mergeTranscript(current, r.messages));
+					setRatings(Object.fromEntries(r.ratings.map((rating) => [rating.messageId, rating])));
+					setRateableIds(new Set(r.rateableMessageIds));
+				},
 				() => {},
 			);
 		};
@@ -2153,6 +2258,11 @@ function Chat({
 									busy={busy}
 									onRetry={() => void regenerate()}
 									token={token}
+									rateable={rateableIds.has(m.id)}
+									rating={ratings[m.id]?.rating ?? null}
+									ratingPending={ratingPending === m.id}
+									ratingError={ratingErrors[m.id] ?? null}
+									onRate={(vote) => rate(m.id, vote)}
 								/>
 								{meta !== null && <MetaLine meta={meta} />}
 							</div>

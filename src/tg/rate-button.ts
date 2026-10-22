@@ -2,7 +2,7 @@ import type { Api, Bot } from "grammy";
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from "grammy/types";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import type { ReplyRating, ReplyRatings } from "./ratings.ts";
+import type { ReplyRating, ReplyRatings } from "../reply-ratings.ts";
 
 export const RATE_CALLBACK_RE = /^rate:/;
 const RATE_DATA_RE = /^rate:(up|down)\|([^|]+)\|(\d+|x)$/;

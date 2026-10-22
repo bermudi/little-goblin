@@ -231,7 +231,8 @@ describe("navigation races: late completions", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });

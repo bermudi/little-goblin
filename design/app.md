@@ -249,7 +249,8 @@ the title and link, so the DM reply says where the work went.
 **Background turns.** Notices (done, blocked, a question) wake headless
 turns in the app conversation — they run and persist like client-driven
 ones, nothing streaming; the app shows them on next open. For this, the
-app channel gains the `delegate` tool; `program`/`mail` stay Telegram-only.
+app channel mounts `delegate`; `program` and configured `mail` mount too,
+with their decisions routed through the shared approval owners.
 
 **Telegram rings.** Every completed background turn pings the *current* DM
 — `<title>: <head of the reply>` plus a link, appended as an assistant
@@ -302,6 +303,23 @@ fail-loud broken.
   log warns with the conversation; the turn keeps running — durable history
   plus the resumable attach stream mean a reload re-watches it. Only the
   wire is lost, and now it says so.
+
+## Reply ratings (ruling 2026-10-22)
+
+Assistant action bars carry record-only **helpful** / **bad** votes. The
+store is channel-neutral `reply_ratings`: Telegram callback rows keep
+chat/message identity; app rows key the durable assistant event's `seq`.
+Votes append and reads are latest-wins. Nothing consumes the rows — model
+view, history, FTS, memory, reviewer — matching the Telegram ruling; a
+consumer needs a new ruling.
+
+An app turn can persist several assistant events for one user anchor
+(generated media, then its prose reply). The server, not the client,
+chooses the voteable event: the last assistant event for each anchor, and
+the last event in each contiguous unanchored assistant run. `/messages`
+returns that list with the ratings, and POSTing any other id is refused.
+The action bar refreshes the list after reconnect reconciliation and turn
+finish, so a newly committed reply gets controls without a manual reload.
 
 ## Interrupted turn recovery (ruling 2026-10-17)
 

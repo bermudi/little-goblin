@@ -29,9 +29,11 @@ apply next turn without interrupting the current answer.
   likewise stops voice, no text fallback. Flood control: a 429's
   `retry_after` is waited out once (bounded), then the 429 propagates.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
-  bubble; errors, fenced, voice-mode, and guest replies get none.
-  **Record-only by ruling**: nothing consumes the rows — model view,
-  history, FTS, memory, reviewer; a consumer needs a ruling first.
+  bubble; errors, fenced, voice-mode, and guest replies get none. The
+  callback is only the Telegram adapter over the shared record-only
+  `reply_ratings` store (design/app.md → Reply ratings). **Record-only by
+  ruling**: nothing consumes the rows — model view, history, FTS, memory,
+  reviewer; a consumer needs a ruling first.
 - **TTS**: default-on; `tts: ""` is explicit off. `edge` is unofficial
   read-aloud (can break); `logfare`/`mimo` doc-pinned, unverified live.
   Failures warn + a short chat message, never a turn failure; the tap

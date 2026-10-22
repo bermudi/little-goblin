@@ -4,9 +4,10 @@ import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
-import { appAddress, appIdSchema } from "../conversation.ts";
+import { appAddress, appIdSchema, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { Project } from "../projects.ts";
+import { openRatings } from "../reply-ratings.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
 import { refusalText } from "../program-approval.ts";
@@ -35,6 +36,9 @@ import type {
 	AppInterruptedList,
 	AppInterruptedRun,
 	AppMessageList,
+	AppRatedReply,
+	AppReplyRatingList,
+	AppReplyRatingResponse,
 	AppResumeBlocked,
 	AppResumeResponse,
 	AppRunCall,
@@ -147,9 +151,7 @@ const decideBody = z.object({
 	note: z.string().max(4000).optional(),
 });
 
-const memoryBody = z
-	.object({ memoryExcluded: z.boolean() })
-	.strict();
+const memoryBody = z.object({ memoryExcluded: z.boolean() }).strict();
 
 const programDecisionBody = z.object({
 	action: z.enum(["approve", "reject"]),
@@ -157,6 +159,11 @@ const programDecisionBody = z.object({
 
 const mailDecisionBody = z.object({
 	action: z.enum(["send", "cancel"]),
+});
+
+const replyRatingBody = z.object({
+	messageId: z.string().min(1).max(200),
+	rating: z.enum(["up", "down"]),
 });
 
 async function parsedJson<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
@@ -221,6 +228,60 @@ function refusalStatus(code: ResumeRefusalCode): number {
 		case "unavailable":
 			return 503;
 	}
+}
+
+type HistoryDetailEntry = ReturnType<ConversationStore["historyDetail"]>[number];
+
+// Telegram puts the vote row on a turn's final bubble. App turns can
+// commit several assistant events for one user anchor (media records,
+// then the prose reply), so the rateable event is the last assistant
+// event for each anchor — not every assistant row.
+function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, HistoryDetailEntry> {
+	const lastByAnchor = new Map<number | string, HistoryDetailEntry>();
+	let unanchoredRun = 0;
+	let inUnanchoredRun = false;
+	for (const entry of detail) {
+		if (entry.message.role !== "assistant") {
+			inUnanchoredRun = false;
+			continue;
+		}
+		if (entry.anchorSeq !== null) {
+			lastByAnchor.set(entry.anchorSeq, entry);
+			inUnanchoredRun = false;
+			continue;
+		}
+		if (!inUnanchoredRun) unanchoredRun++;
+		lastByAnchor.set(`unanchored:${unanchoredRun}`, entry);
+		inUnanchoredRun = true;
+	}
+	return new Map([...lastByAnchor.values()].map((entry) => [entry.message.id, entry]));
+}
+
+function ratedReplies(
+	store: ConversationStore,
+	conversationId: string,
+	rateable: Map<string, HistoryDetailEntry>,
+): AppRatedReply[] {
+	const assistantBySeq = new Map(
+		[...rateable.values()].map((entry) => [entry.seq, entry.message.id] as const),
+	);
+	return openRatings(store.db)
+		.listApp(conversationId)
+		.flatMap((record) => {
+			if (record.eventSeq === null) return [];
+			const messageId = assistantBySeq.get(record.eventSeq);
+			return messageId === undefined
+				? []
+				: [
+						{
+							messageId,
+							eventSeq: record.eventSeq,
+							anchorSeq: record.anchorSeq,
+							rating: record.rating,
+							createdAt: record.createdAt,
+						},
+					];
+		});
 }
 
 export async function handleConversationsRoute(
@@ -731,6 +792,57 @@ export async function handleConversationsRoute(
 		);
 	}
 
+	const ratingsMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/ratings$/);
+	if (ratingsMatch) {
+		const convId = conversationFromSegment(ratingsMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const detail = store.historyDetail(convId.id);
+		const rateable = rateableAssistantEntries(detail);
+		const ratings = openRatings(store.db);
+		if (req.method === "GET") {
+			const body: AppReplyRatingList = {
+				ratings: ratedReplies(store, convId.id, rateable),
+			};
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const body = await parsedJson(req, replyRatingBody);
+		if (body instanceof Response) return body;
+		const entry = rateable.get(body.messageId);
+		if (entry === undefined) {
+			return Response.json(
+				{ error: "no such assistant reply" },
+				{ status: 404, headers: NO_STORE },
+			);
+		}
+		ratings.recordApp({
+			conversationId: convId.id,
+			anchorSeq: entry.anchorSeq,
+			eventSeq: entry.seq,
+			rating: body.rating,
+		});
+		const record = ratings.latestEvent(convId.id, entry.seq)!;
+		const rating: AppRatedReply = {
+			messageId: entry.message.id,
+			eventSeq: entry.seq,
+			anchorSeq: record.anchorSeq,
+			rating: record.rating,
+			createdAt: record.createdAt,
+		};
+		log.info("app reply rated", {
+			conversation: convId.id,
+			eventSeq: entry.seq,
+			rating: record.rating,
+		});
+		const response: AppReplyRatingResponse = { rating };
+		return Response.json(response, { headers: NO_STORE });
+	}
+
 	const convMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/messages$/);
 	if (convMatch) {
 		if (req.method !== "GET") {
@@ -741,7 +853,13 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const body: AppMessageList = { messages: store.history(convId.id) };
+		const detail = store.historyDetail(convId.id);
+		const rateable = rateableAssistantEntries(detail);
+		const body: AppMessageList = {
+			messages: detail.map((entry) => entry.message),
+			ratings: ratedReplies(store, convId.id, rateable),
+			rateableMessageIds: [...rateable.keys()],
+		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
 		return Response.json(body, { headers: NO_STORE });
 	}

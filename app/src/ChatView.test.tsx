@@ -265,6 +265,8 @@ describe("turn metadata usage", () => {
 				typeof request === "string" ? request : request instanceof URL ? request.href : request.url;
 			if (url.endsWith("/messages"))
 				return json({
+					ratings: [],
+					rateableMessageIds: ["a1"],
 					messages: [
 						{
 							id: "a1",
@@ -303,6 +305,135 @@ describe("turn metadata usage", () => {
 		expect(dom.container.querySelector(".msg-meta")?.textContent).toBe(
 			`prov/model · 0.0s · ${expected}`,
 		);
+	});
+});
+
+// Reply votes ride the durable event list: the server names the final
+// assistant event for each reply; media records and user messages get no
+// buttons. The selected vote and failures stay visible on the action bar.
+describe("reply ratings", () => {
+	const dom = mountDom();
+
+	const json = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const message = (id: string, role: UIMessage["role"], text: string): UIMessage => ({
+		id,
+		role,
+		parts: [{ type: "text", text }],
+	});
+	const attachment = (id: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [
+			{
+				type: "data-attachment",
+				data: {
+					path: "attachments/generated.txt",
+					mediaType: "text/plain",
+					filename: "generated.txt",
+					size: 4,
+				},
+			} as UIMessage["parts"][number],
+		],
+	});
+
+	const render = async (ratingStatus = 200) => {
+		const posts: { messageId?: string; rating?: string }[] = [];
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/messages"))
+				return json({
+					messages: [
+						message("u1", "user", "hi"),
+						attachment("m1"),
+						message("a1", "assistant", "answer"),
+					],
+					ratings: [
+						{
+							messageId: "a1",
+							eventSeq: 3,
+							anchorSeq: 1,
+							rating: "down",
+							createdAt: "2026-01-01T00:00:00Z",
+						},
+					],
+					rateableMessageIds: ["a1"],
+				});
+			if (url.endsWith("/ratings") && init?.method === "POST") {
+				posts.push(JSON.parse(String(init.body)) as { messageId?: string; rating?: string });
+				return ratingStatus === 200
+					? json({
+							rating: {
+								messageId: "a1",
+								eventSeq: 3,
+								anchorSeq: 1,
+								rating: "up",
+								createdAt: "2026-01-01T00:00:01Z",
+							},
+						})
+					: json({ error: "no such assistant reply" }, ratingStatus);
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return json({ runs: [] });
+			return json({ model: "prov/model", thinking: "off", favorites: [], thinkingLevels: ["off"] });
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await act(async () => {});
+		return posts;
+	};
+
+	test("only the server-rated final reply gets controls; the stored vote is selected", async () => {
+		const posts = await render();
+		const rows = [...dom.container.querySelectorAll(".msg-actions")];
+		expect(
+			rows.map((row) => row.querySelectorAll("button[aria-label^='Rate reply']").length),
+		).toEqual([0, 2]);
+		const bad = dom.container.querySelector(
+			"button[aria-label='Rate reply bad']",
+		) as HTMLButtonElement;
+		const helpful = dom.container.querySelector(
+			"button[aria-label='Rate reply helpful']",
+		) as HTMLButtonElement;
+		expect(bad.getAttribute("aria-pressed")).toBe("true");
+		expect(helpful.getAttribute("aria-pressed")).toBe("false");
+
+		await act(async () => {
+			helpful.click();
+		});
+		await act(async () => {});
+		expect(posts).toEqual([{ messageId: "a1", rating: "up" }]);
+		expect(helpful.getAttribute("aria-pressed")).toBe("true");
+		expect(helpful.classList.contains("on")).toBe(true);
+		expect(bad.getAttribute("aria-pressed")).toBe("false");
+	});
+
+	test("a failed vote stays inline and re-enables the buttons", async () => {
+		await render(404);
+		const helpful = dom.container.querySelector(
+			"button[aria-label='Rate reply helpful']",
+		) as HTMLButtonElement;
+		await act(async () => {
+			helpful.click();
+		});
+		await act(async () => {});
+		expect(dom.container.querySelector(".msg-err")?.textContent).toBe("no such assistant reply");
+		expect(helpful.disabled).toBe(false);
 	});
 });
 
@@ -345,7 +476,9 @@ describe("ChatView reload window (issue #79)", () => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/conversations/chat-01/messages") {
 				historyFetches++;
-				return Promise.resolve(jsonResponse({ messages: stored }));
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			}
 			if (url === "/api/app/conversations/chat-01/stream") {
 				reconnects++;
@@ -432,7 +565,10 @@ describe("ChatView reload window (issue #79)", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			if (url.endsWith("/interrupted")) return Promise.resolve(jsonResponse(interruptedBody));
 			if (url.endsWith("/stream")) {
 				streamGets++;
@@ -509,7 +645,8 @@ describe("ChatView reload window (issue #79)", () => {
 			async (input: RequestInfo | URL) => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-				if (url.endsWith("/messages")) return jsonResponse({ messages: stored });
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
 				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
 				if (url.endsWith("/stream"))
 					return new Response(stream, {
@@ -604,7 +741,11 @@ describe("ChatView mid-turn steer", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (url.endsWith("/messages"))
-					return jsonResponse({ messages: [userMsg("u1", "run the thing")] });
+					return jsonResponse({
+						messages: [userMsg("u1", "run the thing")],
+						ratings: [],
+						rateableMessageIds: [],
+					});
 				if (url.endsWith("/stream")) return new Response(liveStream, { headers: sseHeaders });
 				if (url === "/api/app/chat") {
 					chatPosts.push(JSON.parse(String(init?.body)));
@@ -770,7 +911,8 @@ describe("NotePicker dismissal", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (url.startsWith("/api/app/notes")) return jsonResponse({ notes: [], truncated: false });
-				if (url.endsWith("/messages")) return jsonResponse({ messages: [] });
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
 				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
 			},
 			{ preconnect: dom.realFetch.preconnect },

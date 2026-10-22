@@ -54,10 +54,12 @@ const required = {
 	prompt_snapshots: ["conversation_id", "text", "sources", "built_at"],
 	reply_ratings: [
 		"id",
+		"channel",
 		"conversation_id",
 		"anchor_seq",
 		"chat_id",
 		"message_id",
+		"event_seq",
 		"rating",
 		"created_at",
 	],

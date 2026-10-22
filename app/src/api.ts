@@ -35,6 +35,8 @@ import type {
 	AppNoteVersionList,
 	AppProgramMutationResponse,
 	AppProject,
+	AppReplyRating,
+	AppReplyRatingResponse,
 	AppProjectList,
 	AppResumeResponse,
 	AppRunCall,
@@ -406,6 +408,19 @@ export function getMessages(token: string | null, id: string): Promise<AppMessag
 		token,
 		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages`,
 	);
+}
+
+export function rateReply(
+	token: string | null,
+	id: string,
+	messageId: string,
+	rating: AppReplyRating,
+): Promise<AppReplyRatingResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/ratings`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ messageId, rating }),
+	});
 }
 
 // /stop rides the runtime's own stop — abort the turn server-side, not

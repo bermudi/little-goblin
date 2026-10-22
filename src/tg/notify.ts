@@ -68,7 +68,7 @@ export async function sendMemoryOutageNotice(
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	if (api === null) {
-		log.warn("memory outage notice skipped — telegram channel disabled", {
+		log.warn("memory outage notice skipped — telegram channel unavailable", {
 			conversation: conversationId,
 			queued,
 		});
@@ -106,7 +106,7 @@ export async function sendMemoryBlockedNotice(
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	if (api === null) {
-		log.warn("memory blocked notice skipped — telegram channel disabled", {
+		log.warn("memory blocked notice skipped — telegram channel unavailable", {
 			conversation: conversationId,
 			attempts,
 		});
@@ -141,7 +141,7 @@ export async function sendSkillProposedNotice(
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	if (api === null) {
-		log.warn("skill proposal notice skipped — telegram channel disabled", {
+		log.warn("skill proposal notice skipped — telegram channel unavailable", {
 			conversation: conversationId,
 			skills,
 		});

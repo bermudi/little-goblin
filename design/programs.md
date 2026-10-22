@@ -65,6 +65,12 @@ Rulings:
   leaves the stamp and the throttle window open); mail holds its
   checkpoint on a failed fire (matches are real events that cannot be
   regenerated — they retry next poll). No caller writes program state.
+  One pre-admission exception: a Telegram-targeted occurrence due while
+  the channel is unattached is *held* — no fire attempt, no `last_run`,
+  no retry burn — so a restarting process does not consume catch-ups it
+  cannot deliver; the scan the attach kicks re-evaluates the same due
+  row under the normal lateness/coalescing rules. This is not a failed
+  submit — the failed-submit accounting above is unchanged.
 - **Schedule retry is a bounded in-process ladder** (2026-10-13):
   schedule is the one trigger with no retry middle ground (webhook has
   the caller, mail the checkpoint), so only a fire whose turn died

@@ -10,7 +10,7 @@ import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 export interface HttpDeps extends OperatorDeps {
 	/** Absent when Telegram is disabled: /app stays live, while the
 	 * Telegram mini-app door and its /api tails answer an explicit 503. */
-	botToken?: string;
+	botToken?: string | undefined;
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
 	hooks?: {

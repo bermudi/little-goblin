@@ -13,6 +13,20 @@ Telegram-targeted wakes, notices, approvals, mail presentation, and resume
 requests return an explicit channel-disabled result rather than submitting a
 turn without an output door. `operators: []` is legal only in this mode.
 
+When `true`, the channel attaches *deferred*: boot builds the runtime,
+mail/program owners, wake/resume seams, HTTP, the scheduler and the mail
+watcher on `tg = null` first, then runs one bounded init task — token
+resolve, `getMe` (30s deadline), seam attach, interrupted-run notices,
+inbox replay, polling. A failed attempt logs the channel degraded and
+leaves every Telegram seam answering *unavailable*; recovery is a
+credential/config repair plus an approved restart — there is no retry
+loop. A `getUpdates` ending mid-run (grammy rethrows 401/409) detaches
+the same seams and keeps the app up. The mini-app door and `botToken`
+fail closed until attach. A disabled channel keeps its saved
+`telegram.model`/`thinking` pin dormant: the ref's syntax still
+validates, provider membership and the thinking clamp apply only once
+the channel is re-enabled.
+
 ## Shared model/thinking selection (ruling 2026-10-06)
 
 All Telegram conversations (rolling DMs, group topics) share one

@@ -221,9 +221,9 @@ async function boot() {
 	// reach the delegation lifecycle, whose wakes need bot.api — which
 	// needs the bot, whose intake needs the runtime; and the retention
 	// worker's notices need bot.api while the memory surfaces quiesce
-	// through it. completeBoot() below is the one fill point, before
-	// replayInbox (the first await after startBot) — an unwired read past
-	// it is a boot-order bug.
+	// through it. completeBoot() below is the one fill point, before the
+	// deferred telegram task can replay inbox rows or admit a turn — an
+	// unwired read past it is a boot-order bug.
 
 	interface LateBoot {
 		delegationLifecycle(): DelegationLifecycle;
@@ -302,20 +302,29 @@ async function boot() {
 	const telegramEnabled = config.telegram.enabled;
 	// The one operator-DM lane — the program tool's hook rotation and the
 	// proposal approval's grant-time hook delivery share it (a secret URL
-	// never enters history). Disabled Telegram gets no fake client: the
-	// call-time null check fails loud if a wiring bug races boot.
+	// never enters history). An enabled-but-unattached channel (init
+	// pending or failed) throws at call time — never a silent skip.
 	let tg: RunningBot | null = null;
+	// Stop/drain ownership is separate from routability: a detached
+	// channel still owns intake that shutdown must drain.
+	let telegramRunning: RunningBot | null = null;
+	// The init task reads this after each await — a getMe landing during
+	// shutdown must not attach or start polling.
+	let telegramSealed = false;
+	// Resolved inside the Telegram init task only; the HTTP bot-token
+	// getter fails closed until the channel attaches.
+	let telegramToken: string | undefined;
 	const sendPrivate = telegramEnabled
 		? makePrivateSender(
 				(id, text) => {
-					if (tg === null) throw new Error("telegram channel is disabled");
+					if (tg === null) throw new Error("telegram channel is unavailable");
 					return withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage");
 				},
 				() => configRef.current.operators,
 			)
 		: undefined;
 	// Late-bound like mailApproval: shared owners and their Telegram
-	// adapters start after the bot, so getters answer undefined to
+	// adapters start on channel attach, so getters answer undefined to
 	// anything earlier rather than a half-wired gate.
 	let programApproval: ProgramApproval | undefined;
 	let mailApproval: MailApproval | undefined;
@@ -391,45 +400,29 @@ async function boot() {
 	// seam lazily, so the binding must exist before the awaits that let
 	// traffic in. `undefined` in that window answers "not wired".
 	let resumeOps: ResumeOps | undefined;
-	if (telegramEnabled) {
-		tg = await startBot({
-			configRef,
-			auth,
-			store,
-			runtime,
-			titleFor,
-			async synthesize(text, tts) {
-				return synthesizeSpeech(text, tts, { auth });
-			},
-			transcribe: transcribeFile,
-			...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-			mail: () => telegramMailApproval,
-			programApproval: () => telegramProgramApproval,
-			followUpGate: () => system1Gate ?? undefined,
-			resumeOps: () => resumeOps,
-		});
-	} else {
+	// The bot attaches in the init task kicked after HTTP and the
+	// scheduler stand — everything below boots on tg === null and binds
+	// to the live seams when getMe lands.
+	if (!telegramEnabled) {
 		log.info("telegram channel disabled — bot auth, polling, and mini-app auth skipped");
 	}
 
 	// The shared mail approval owner — queue, CAS, send lifecycle and
 	// expiry are channel-neutral; each door only presents and stamps.
+	// The telegram lane is replaceable: the init task swaps in the real
+	// adapter on attach, and detach restores the unavailable lane.
+	const mailLanes = {
+		app: makeAppMailLane(store),
+		telegram: unavailableMailLane(
+			telegramEnabled ? "telegram channel unavailable" : "telegram channel is disabled",
+		),
+	};
 	mailApproval = startMailApproval({
 		outbox,
 		sender: mailSender,
 		reader: mailPoller,
-		lanes: {
-			app: makeAppMailLane(store),
-			telegram:
-				tg === null
-					? unavailableMailLane("telegram channel is disabled")
-					: makeTelegramMailLane(tg.bot.api),
-		},
+		lanes: mailLanes,
 	});
-	telegramMailApproval =
-		tg === null
-			? undefined
-			: startTelegramMailApproval({ api: tg.bot.api, approval: mailApproval });
 
 	// The shared program grant owner — the durable decision path is one
 	// for both doors. Presentation routes by target: Telegram posts its
@@ -439,29 +432,22 @@ async function boot() {
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		present: async (proposal) => {
 			if (telegramAddressOf(proposal.target) !== null) {
-				if (tg === null) throw new Error("telegram channel is disabled");
+				if (tg === null) throw new Error("telegram channel is unavailable");
 				await postProgramApproval(tg.bot.api, programs, proposal);
 			} else {
 				presentProgramApproval(store, proposal);
 			}
 		},
 	});
-	telegramProgramApproval =
-		tg === null || sendPrivate === undefined
-			? undefined
-			: startTelegramProgramApproval({
-					api: tg.bot.api,
-					approval: programApproval,
-					programs,
-					sendPrivate,
-				});
+	// The Telegram-side adapter binds on channel attach (see the init
+	// task) — programApproval itself is the shared, channel-neutral owner.
 	const programOps = startProgramOps({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		requestApproval: (proposal) => programApproval!.requestApproval(proposal),
 	});
 
-	// The retention worker runs after the bot — outage and blocked
+	// The retention worker boots before the channel — outage and blocked
 	// notices deliver through bot.api (one per episode / per document).
 	const memoryWorker = memoryClient
 		? startMemoryWorker(store.memoryQueue, memoryClient, {
@@ -477,7 +463,7 @@ async function boot() {
 			})
 		: null;
 
-	// Runs after the bot — save notices deliver through bot.api.
+	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
 		configRef,
 		auth,
@@ -501,18 +487,29 @@ async function boot() {
 
 	// The shared wake path — program fires and delegation notices submit
 	// through it; wake.ts owns the routing. Intake opens its own pings handle
-	// inside createBot.
+	// inside createBot. One wakeDeps OBJECT identity for the process: the
+	// telegram init task mutates it in place on attach/detach so the
+	// scheduler, delegation lifecycle, subagent wake and resume sinks all
+	// read the same delivery surface at call time.
 	const pings = openPings(store.db);
-	const wakeDeps = makeWakeDeps({
+	const wakeBase = {
 		store,
 		runtime,
-		api: tg?.bot.api ?? null,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
 		followUpGate: () => system1Gate ?? undefined,
 		pings,
 		push: appPush,
-	});
+	};
+	const wakeDeps = makeWakeDeps({ ...wakeBase, api: null });
+	// Object.assign alone can't drop absent fields — delete the
+	// telegram-only seams before laying the (re)built set down, so detach
+	// restores the app-only bell rather than a stale delivery.
+	const rewireWake = (api: Parameters<typeof makeWakeDeps>[0]["api"]): void => {
+		delete wakeDeps.delivery;
+		delete wakeDeps.markRoll;
+		Object.assign(wakeDeps, makeWakeDeps({ ...wakeBase, api }));
+	};
 
 	// The explicit-resume surface (turn-resume.ts): /resume /decide
 	// /abandon on Telegram, the app runs/* routes on the app channel.
@@ -529,30 +526,31 @@ async function boot() {
 		...makeResumeSinks({
 			wake: wakeDeps,
 			operators: () => configRef.current.operators,
-			...(tg === null
-				? {}
-				: {
+			...(telegramEnabled
+				? {
 						sendDm: (chat: number, text: string) => {
 							const running = tg;
-							if (running === null) throw new Error("telegram channel is disabled");
+							if (running === null) throw new Error("telegram channel is unavailable");
 							return withTimeout(
 								running.bot.api.sendMessage(chat, text),
 								"sendMessage (resumed turn notice)",
 							);
 						},
-					}),
+					}
+				: {}),
 		}),
 	});
-	const firingDeps: SchedulerDeps = {
-		...wakeDeps,
+	// The scheduler rides the SAME wakeDeps object — a spread here would
+	// snapshot delivery/bell before the telegram attach ever lands.
+	const firingDeps: SchedulerDeps = Object.assign(wakeDeps, {
 		programs,
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
-	};
+	});
 
-	// The delegation lifecycle — after tg (notices wake through bot.api),
-	// before replayInbox (the first await after startBot): the wire step
-	// lands before any turn.
+	// The delegation lifecycle wakes through the shared wakeDeps — its
+	// closures read delivery/bell live, so a telegram attach mid-run is
+	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
 		delegations !== null && herdr !== null
 			? startDelegationLifecycle({
@@ -604,28 +602,6 @@ async function boot() {
 		);
 	}
 
-	// Rows reclassified 'interrupted' at open get one DM per operator —
-	// terse facts, never a replay. A failed send must not hold boot;
-	// the log line is the record.
-	if (tg === null) {
-		if (turnJournal.interruptedAtOpen.length > 0) {
-			log.warn("interrupted turn notices skipped — telegram channel disabled", {
-				runs: turnJournal.interruptedAtOpen.length,
-			});
-		}
-	} else {
-		sendInterruptedTurnNotices(
-			tg.bot.api,
-			turnJournal.interruptedAtOpen,
-			configRef.current.operators,
-			(id) => store.get(id)?.title ?? undefined,
-		);
-		// Recover inbox rows before polling: the wirings above must exist before
-		// recovered turns run, and the offset must not advance past journaled input.
-		await tg.replayInbox();
-		tg.startPolling();
-	}
-
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
@@ -674,7 +650,11 @@ async function boot() {
 	const http = startHttp({
 		configRef,
 		...operatorSeams,
-		...(tg === null ? {} : { botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN) }),
+		// Late-bound and fail-closed: until the telegram attach lands,
+		// mini-app initData has no token to validate against and refuses.
+		get botToken() {
+			return tg === null ? undefined : telegramToken;
+		},
 		// POST /hook/<token> — the token is the credential; the webhook
 		// entry point owns the fire's accounting (last_run only when landed).
 		hooks: {
@@ -737,15 +717,154 @@ async function boot() {
 		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
 		notify: (address, text) => {
 			if (tg === null) {
-				log.warn("mail outage notice skipped — telegram channel disabled", {
-					chat: address.chatId,
-					thread: address.threadId,
-				});
+				log.warn(
+					telegramEnabled
+						? "mail outage notice skipped — telegram channel unavailable"
+						: "mail outage notice skipped — telegram channel disabled",
+					{ chat: address.chatId, thread: address.threadId },
+				);
 				return Promise.resolve();
 			}
 			return sendMailNotice(tg.bot.api, address, text);
 		},
 	});
+
+	// ---------- deferred telegram attach ----------
+	//
+	// One bounded attempt (getMe carries the shared 30s deadline), kicked
+	// only after every core service stands — the app channel, HTTP, the
+	// scheduler and the mail watcher must never wait on bot auth. A
+	// failed attempt leaves every telegram seam unavailable and asks for
+	// a config repair plus approved restart; there is no retry loop.
+	const attachTelegram = (running: RunningBot): void => {
+		mailLanes.telegram = makeTelegramMailLane(running.bot.api);
+		if (mailApproval !== undefined) {
+			telegramMailApproval = startTelegramMailApproval({
+				api: running.bot.api,
+				approval: mailApproval,
+			});
+		}
+		if (programApproval !== undefined && sendPrivate !== undefined) {
+			telegramProgramApproval = startTelegramProgramApproval({
+				api: running.bot.api,
+				approval: programApproval,
+				programs,
+				sendPrivate,
+			});
+		}
+		rewireWake(running.bot.api);
+		tg = running;
+		log.info("telegram channel attached", { bot: running.bot.botInfo.username });
+	};
+	const detachTelegram = (): void => {
+		tg = null;
+		telegramMailApproval = undefined;
+		telegramProgramApproval = undefined;
+		mailLanes.telegram = unavailableMailLane("telegram channel unavailable");
+		rewireWake(null);
+		// telegramRunning stays — its intake still belongs to this boot and
+		// shutdown drains it even while routing reads detached.
+	};
+	const telegramInit = telegramEnabled
+		? (async () => {
+				try {
+					// The token resolves inside this task only — the HTTP door
+					// fails closed until the attach below sets it live.
+					telegramToken = await auth.resolve(AUTH_TELEGRAM_TOKEN);
+					if (telegramSealed || !runtime.accepting()) {
+						log.info("telegram attach skipped — shutdown in progress");
+						return;
+					}
+					const running = await startBot({
+						configRef,
+						auth,
+						store,
+						runtime,
+						titleFor,
+						async synthesize(text, tts) {
+							return synthesizeSpeech(text, tts, { auth });
+						},
+						transcribe: transcribeFile,
+						...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
+						mail: () => telegramMailApproval,
+						programApproval: () => telegramProgramApproval,
+						followUpGate: () => system1Gate ?? undefined,
+						resumeOps: () => resumeOps,
+					});
+					// Own the bot the moment it exists — a later detach or a
+					// seal mid-replay must never strand its stop/drain.
+					telegramRunning = running;
+					if (telegramSealed || !runtime.accepting()) {
+						log.info("telegram attach skipped — shutdown in progress");
+						return;
+					}
+					attachTelegram(running);
+					// Rows reclassified 'interrupted' at open get one DM per
+					// operator — terse facts, never a replay. Sent only after a
+					// successful attach; the skip/failure logs above stand alone.
+					sendInterruptedTurnNotices(
+						running.bot.api,
+						turnJournal.interruptedAtOpen,
+						configRef.current.operators,
+						(id) => store.get(id)?.title ?? undefined,
+					);
+					if (telegramSealed || !runtime.accepting()) {
+						detachTelegram();
+						return;
+					}
+					// Replay before polling — the offset must not advance past
+					// journaled input — then poll with a detach-on-end contract:
+					// a terminated long poll degrades the channel, never the boot.
+					await running.replayInbox();
+					if (telegramSealed || !runtime.accepting()) {
+						detachTelegram();
+						return;
+					}
+					running.startPolling((err) => {
+						log.error(
+							"telegram polling ended — channel detached; repair and restart to reattach",
+							err,
+						);
+						detachTelegram();
+					});
+					// Catch up any occurrence held while the channel was
+					// unattached — after replay, before steady-state polling.
+					scheduler.tick();
+				} catch (err) {
+					log.error(
+						"telegram channel init failed — running without it; fix the credentials/config and restart",
+						err,
+					);
+					detachTelegram();
+				}
+			})().catch((err: unknown) => {
+				log.error("telegram init task failed", err);
+				detachTelegram();
+			})
+		: Promise.resolve();
+
+	// Shutdown's telegram stop: seals the attach path first (a late getMe
+	// can no longer bind), detaches routing, stops polling only if it is
+	// actually running, drains intake, and joins the init task — all under
+	// the caller's shared drain budget, never its own timer.
+	const stopTelegram = (): Promise<unknown> => {
+		telegramSealed = true;
+		// Owner, not router: a detached channel still has intake to drain.
+		const running = telegramRunning;
+		if (tg !== null) detachTelegram();
+		const pollStop =
+			running !== null && running.bot.isRunning() ? running.bot.stop() : Promise.resolve();
+		const intake = running === null ? Promise.resolve() : running.drainIntake();
+		const joined = Promise.allSettled([pollStop, intake, telegramInit]);
+		return joined.then((results) => {
+			const labels = ["telegram poll stop", "telegram intake drain", "telegram init join"];
+			for (const [i, r] of results.entries()) {
+				if (r.status === "rejected") {
+					log.warn("shutdown step failed", r.reason, { step: labels[i] });
+				}
+			}
+		});
+	};
 
 	return {
 		configRef,
@@ -755,7 +874,7 @@ async function boot() {
 		outbox,
 		delegations,
 		runtime,
-		tg,
+		stopTelegram,
 		http,
 		scheduler,
 		delegationLifecycle,
@@ -781,7 +900,7 @@ const {
 	outbox,
 	delegations,
 	runtime,
-	tg,
+	stopTelegram,
 	http,
 	scheduler,
 	delegationLifecycle,
@@ -817,17 +936,13 @@ async function shutdown(signal: string): Promise<void> {
 	// like everything else: a wedged memory service is not a deploy hold.
 	const retention = memoryWorker?.stop() ?? Promise.resolve();
 	// bot.stop confirms the polling offset so handled updates don't
-	// redeliver on the next boot.
-	const stopping =
-		tg === null
-			? Promise.resolve()
-			: tg.bot.stop().catch((err: unknown) => {
-					log.warn("bot stop failed", err);
-				});
+	// redeliver on the next boot. stopTelegram seals the attach path,
+	// stops polling only if it is running, drains intake, and joins the
+	// deferred init task — the channel may not even have attached yet.
+	const stopping = stopTelegram();
 	// Close the runtime first — intake that lands during the drain still
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
-	const flushed = tg?.drainIntake() ?? Promise.resolve();
 	// Pause only: pending subagent runs persist for the next boot — the
 	// harness close seals admission, it never aborts work.
 	const subagentsClosed = subagents
@@ -838,7 +953,6 @@ async function shutdown(signal: string): Promise<void> {
 	const settled = Promise.allSettled([
 		stopping,
 		drained,
-		flushed,
 		delegationScan,
 		mailScan,
 		mailSends,

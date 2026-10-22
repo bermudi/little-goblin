@@ -132,7 +132,9 @@ export interface RunningBot {
 	bot: Bot;
 	drainIntake(): Promise<void>;
 	replayInbox(): Promise<void>;
-	startPolling(): void;
+	/** A terminated poll is a channel failure, not a boot failure — the
+	 *  owner detaches in its callback. */
+	startPolling(onError: (err: unknown) => void): void;
 }
 
 export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
@@ -1178,12 +1180,12 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	return {
 		bot,
 		replayInbox: () => replayInbox(env),
-		startPolling() {
+		startPolling(onError: (err: unknown) => void) {
 			void bot
 				.start({ onStart: () => log.startup("long polling started") })
 				.catch((err: unknown) => {
 					log.error("long polling failed", err);
-					process.exit(1);
+					onError(err);
 				});
 		},
 		async drainIntake() {

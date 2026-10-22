@@ -6,6 +6,7 @@ import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import type { MailHit } from "./mail.ts";
 import { programFireTag } from "./tags.ts";
+import { telegramAddressOf } from "./targets.ts";
 import { wakeTarget, type WakeDeps } from "./wake.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
@@ -169,6 +170,19 @@ export function fireScheduled(
 ): void {
 	if (program.cron === null || program.nextRun === null) {
 		throw new Error(`due program ${program.id} has no scheduled occurrence`);
+	}
+	// A Telegram-targeted occurrence can't fire while the channel is
+	// unattached — delivery is what submits the turn. Hold it: no cursor
+	// write, no retry burn, no fire attempt; the next scan (kicked at
+	// attach) re-evaluates the same due row under lateness policy.
+	// App-targeted programs are unaffected.
+	if (telegramAddressOf(program.target) !== null && deps.delivery === undefined) {
+		log.info("program held — telegram channel unavailable", {
+			program: program.id,
+			name: program.name,
+			nextRun: program.nextRun,
+		});
+		return;
 	}
 	const pendingMark = pendingCursorWrites.get(deps.programs)?.get(program.id);
 	if (pendingMark !== undefined) {

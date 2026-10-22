@@ -36,6 +36,16 @@ JSON5 object with defaults materialized: comments and key order do not
 survive, and a config with unknown keys (or malformed JSON5) is refused
 rather than overwritten. The mini app sends the version it loaded
 (`If-Match`); a stale page's save is refused, never merged over newer bytes.
+
+Telegram attaches *after* the app channel and core services stand: one
+bounded init attempt (token resolve, `getMe`, seam attach, inbox replay,
+polling). If it fails — bad token, unreachable Bot API — the service
+stays up with the Telegram channel **degraded**: `/app` and `/api/app/*`
+keep serving, every Telegram seam answers unavailable, and the mini-app
+door refuses. A `getUpdates` dying mid-run detaches the same way. There
+is no retry loop: repair the credential or config, then do an approved
+restart to reattach.
+
 Before deploying a revision with stricter validation, run Doctor from that
 revision against the existing home: unknown fields must be corrected
 explicitly, not dropped during a save. Reopen Settings after any file edit.

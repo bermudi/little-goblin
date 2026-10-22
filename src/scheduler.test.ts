@@ -193,6 +193,60 @@ describe("scoredMailEvent", () => {
 });
 
 describe("scheduler", () => {
+	test("a telegram-targeted due program holds while delivery is unattached; app fires anyway", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T10:00:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const tgProgram = h.deps.programs.create(
+			{
+				name: "tg check",
+				cron: "* * * * *",
+				maxLatenessMinutes: null,
+				charter: "check",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		const delivery = h.deps.delivery;
+		if (delivery === undefined) throw new Error("fixture lost its delivery");
+		const appConv = h.store.resolve(appAddress("chat-99"), "/w");
+		const appProgram = h.deps.programs.create(
+			{
+				name: "app catch-up",
+				cron: "* * * * *",
+				maxLatenessMinutes: null,
+				charter: "check",
+				address: { target: appConv.id },
+			},
+			createdAt,
+		);
+		delete h.deps.delivery;
+		fireScheduled(h.deps, tgProgram, scanAt);
+		// Held: no submission, no cursor write, still due for the next scan.
+		expect(h.submitted).toHaveLength(0);
+		expect(h.deps.programs.get(tgProgram.id)!.lastRun).toBeNull();
+		expect(h.deps.programs.due(scanAt).map((p) => p.id)).toContain(tgProgram.id);
+		// An app-targeted occurrence is unaffected by the absent delivery.
+		fireScheduled(h.deps, appProgram, scanAt);
+		expect(h.submitted.map((s) => s.conv)).toEqual([appConv.id]);
+		expect(h.deps.programs.get(appProgram.id)!.lastRun).toBe(scanAt.toISOString());
+		await closeSinks(h);
+		// Attach through the SAME deps object — the held occurrence fires
+		// exactly once through a real due-scan.
+		h.deps.delivery = delivery;
+		const due = h.deps.programs.due(scanAt).filter((p) => p.id === tgProgram.id);
+		for (const p of due) fireScheduled(h.deps, p, scanAt);
+		expect(h.submitted).toHaveLength(2);
+		expect(h.deps.programs.get(tgProgram.id)!.lastRun).toBe(scanAt.toISOString());
+		// Detach again — the next due occurrence holds once more.
+		delete h.deps.delivery;
+		const later = new Date("2026-09-20T10:06:00");
+		fireScheduled(h.deps, h.deps.programs.get(tgProgram.id)!, later);
+		expect(h.submitted).toHaveLength(2);
+		expect(h.deps.programs.get(tgProgram.id)!.lastRun).toBe(scanAt.toISOString());
+		await closeSinks(h);
+	});
+
 	test("missed occurrences coalesce against the latest one at the inclusive grace boundary", async () => {
 		const h = harness();
 		const createdAt = new Date("2026-09-20T07:05:00");
@@ -848,7 +902,10 @@ describe("scheduler", () => {
 
 		fireScheduled(h.deps, tgScheduled, now);
 		expect(h.submitted).toEqual([]);
-		expect(h.deps.programs.get(tgScheduled.id)!.lastRun).toBe(now.toISOString());
+		// Held, not consumed: the occurrence keeps its due row for the
+		// scan that runs after the channel attaches.
+		expect(h.deps.programs.get(tgScheduled.id)!.lastRun).toBeNull();
+		expect(h.deps.programs.due(now).map((p) => p.id)).toContain(tgScheduled.id);
 		expect(fireWebhook(h.deps, tgHook, "event", now)).toBe(false);
 		expect(h.deps.programs.get(tgHook.id)!.lastRun).toBeNull();
 		expect(h.submitted).toEqual([]);

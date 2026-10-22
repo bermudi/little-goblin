@@ -118,6 +118,13 @@ the *requesting* Telegram id from `operators`, the app door (no requester)
 an empty list while Telegram is enabled. With `telegram.enabled: false`,
 the app door may save `operators: []`.
 
+**Boot independence (ruling 2026-10-22).** The app channel is the primary
+door and never waits on Telegram: boot stands HTTP and every `/api/app/*`
+surface before the deferred Telegram init task even resolves the bot
+token — a held or rejected `getMe`, or a poll that dies mid-run, leaves
+the PWA fully usable. The mini-app door (`/t/`, initData validation)
+fails closed with 503 until a live `botToken` attaches.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

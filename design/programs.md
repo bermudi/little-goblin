@@ -159,6 +159,18 @@ Rulings:
   occurrence — the occurrence that fired is the one that delivers, and
   the next occurrence carries the fresher view. Conversation and kind
   are still identity; drift there fails loudly as before.
+  **Destination union × canonical target (ruling 2026-10-22, merge of
+  the two lines):** a program row carries exactly one destination — a
+  conversation address or a `responsibility_id` — and the canonical
+  `target` column (NOT NULL) holds a `resp:<responsibility_id>` pseudo-
+  address on responsibility rows. That pseudo-address is not a
+  conversation: `telegramAddressOf`/`appConversationOf` project it to
+  null, and every delivery path branches on `responsibilityId` before
+  reading `target`. The program tool on project turns keeps the direct
+  lane inside the handed-over project (responsibility-destination
+  creates, scoped verbs, no hook minting — no operator DM exists there);
+  every other surface stages through the durable proposal gate above.
+
   A follow-up program is create-once per responsibility. Its durable
   identity is its `kind` ("followup", service-minted and unpatchable),
   with the exact `followup:<responsibility_id>` name convention as the

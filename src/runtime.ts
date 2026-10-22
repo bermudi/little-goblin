@@ -36,6 +36,7 @@ import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from ".
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
+import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
 // Completed turns at/above this compact in-lane — the lane stays occupied
@@ -175,6 +176,15 @@ export interface RuntimeDeps {
 			error: string;
 		}): void;
 	};
+	// The context-window view's store (window-capture.ts): the attempt's
+	// final outbound prompt, recorded per conversation, latest wins.
+	// Observability, never turn state — a throw is logged, the turn
+	// proceeds (the journal owns what must be honest; this row only
+	// feeds the view).
+	recordWindow?(
+		conversationId: string,
+		input: { model: string; step: number; capture: WindowCapture },
+	): void;
 }
 
 export class FencedError extends Error {
@@ -1138,6 +1148,21 @@ export class Runtime {
 				turnStartMs,
 				signal: controller.signal,
 			});
+			// Record the window on both rails — the failed rail throws its
+			// recovery/error below, and the request went out either way.
+			if (outcome.window !== null) {
+				try {
+					this.deps.recordWindow?.(convId, {
+						model: outcome.model,
+						step: outcome.steps,
+						capture: outcome.window,
+					});
+				} catch (err) {
+					log.error("context window record failed — turn continues", err, {
+						conversation: convId,
+					});
+				}
+			}
 			if (outcome.kind === "failed") {
 				// Carry the filter retry budget into a possible resume.
 				filterRetryUsed = outcome.filterRetryUsed;

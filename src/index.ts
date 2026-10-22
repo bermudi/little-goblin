@@ -13,6 +13,7 @@ import { makeSpeaker, synthesizeSpeech } from "./agent/tts.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { openAppPush } from "./app-push.ts";
 import { openCacheObservation } from "./cache-observation.ts";
+import { openWindowCapture } from "./window-capture.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import {
 	type Config,
@@ -152,6 +153,9 @@ async function boot() {
 		subject: () => configRef.current.publicUrl ?? "mailto:goblin@localhost",
 	});
 	const cacheObservations = openCacheObservation(store.db);
+	// The context-window view's rows — the final step's outbound prompt
+	// per conversation, recorded by the runtime, served read-only.
+	const windowCapture = openWindowCapture(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
 	// fences first, so 'running' at open means the process died mid-turn.
@@ -400,6 +404,7 @@ async function boot() {
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
 		},
+		recordWindow: windowCapture.record,
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
@@ -810,6 +815,7 @@ async function boot() {
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
 				// rather than failing mid-synthesis (tts.ts owns the gate).
 				speak,
+				windowCapture,
 				titleFor,
 				// Selection rewrite — the configured root model/thinking;
 				// generation only, the accepted proposal returns via PATCH.

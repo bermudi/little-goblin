@@ -986,4 +986,52 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("ok");
 		expect(recorded).toEqual([{ conversationId: "c1", skill: "nested" }]);
 	});
+
+	// The window record: the final prepareStep capture, carried on both
+	// outcome rails for the runtime to store (window-capture.ts).
+	test("the outcome carries the final step's outbound prompt as the window record", async () => {
+		const probe = probeTool();
+		const r = rig([toolCallStep("c1", 10), textReply("done")], {
+			tools: { probe: probe },
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		expect(outcome.steps).toBe(2);
+		expect(typeof outcome.model).toBe("string");
+		const w = outcome.window;
+		expect(w).not.toBeNull();
+		expect(w!.v).toBe(1);
+		expect(w!.system).toBe("test");
+		expect(w!.tools.map((t) => t.name)).toEqual(["probe"]);
+		// The prompt as sent — the outbound of the FINAL step, so it ends
+		// with the tool result the model was answering; the reply itself
+		// is history, not its own input.
+		expect(w!.messages.map((m) => (m as { role: string }).role)).toEqual([
+			"user",
+			"assistant",
+			"tool",
+		]);
+		// The itemization of that same prompt rides along.
+		expect(w!.segments.history).toBeGreaterThan(0);
+		expect(w!.segments.toolResults).toBeGreaterThan(0);
+	});
+
+	test("a failed run still carries its last completed step's window; a stepless failure carries none", async () => {
+		const r = rig([toolCallStep("c1", 10), new Error("provider died")], {
+			tools: { probe: probeTool() },
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind === "ok") return;
+		expect(outcome.steps).toBe(1);
+		expect(outcome.window).not.toBeNull();
+
+		const stepless = rig([new Error("cold dead")]);
+		const deadOutcome = await driveStream(stepless.deps);
+		expect(deadOutcome.kind).toBe("failed");
+		if (deadOutcome.kind === "ok") return;
+		expect(deadOutcome.steps).toBe(0);
+		expect(deadOutcome.window).toBeNull();
+	});
 });

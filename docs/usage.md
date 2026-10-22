@@ -116,7 +116,14 @@ it's the same goblin behind a different door.
 What works there: text, file uploads, hold-to-record voice notes
 (transcribed at intake like Telegram voice notes when `transcription` is
 set), read-aloud on replies, stop, retry, rename, delete, search, and the
-model + thinking knobs. What's absent by design: the delegation and mail
+model + thinking knobs. The chat header's window button opens the
+**context window** view — the exact prompt of the newest model call
+(system prompt, tool schemas, every message as the model read it, media
+as byte counts), with role filters, a text filter, and a raw-JSON mode,
+plus the conversation's full model-call lineage (tokens, cache split,
+prefix relation per call). It's read-only and captured as the turn ran —
+media bytes and replies-after-the-last-call aren't in it by design.
+What's absent by design: the delegation and mail
 tools — their results wake Telegram surfaces an app turn doesn't have, so
 they're simply not in the app channel's tool set.
 

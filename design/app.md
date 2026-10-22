@@ -331,6 +331,60 @@ fail-loud broken.
   plus the resumable attach stream mean a reload re-watches it. Only the
   wire is lost, and now it says so.
 
+## Context window view (ruling 2026-10-22, operator ask)
+
+Operator ask, after pi-mono's `/share` session viewer: a per-conversation
+view of everything that hits the context window — system prompt, tool
+schemas, every message — with toggles and filters, one button away from
+the chat.
+
+**Captured at the source, never reconstructed.** The shareable artifact
+in pi is the session log plus a trailing entry carrying the system
+prompt and tool schemas; the viewer renders what *was*, never a
+re-derivation. Goblin takes the same mechanism one seam deeper:
+`prepareStep` already holds the exact outbound prompt of every model
+call (the gauge's `promptChars` itemization reads the same capture), so
+the final step's prompt — system, tool definitions, every
+`ModelMessage` — is serialized once and stored per conversation
+(`context_windows`, latest wins, gzip). The record is the last model
+call's input, verbatim. A parallel assembler in an HTTP handler would
+have drifted from admission's pipeline the first time either changed;
+there is no reconstruction path, so none can drift.
+
+- **Media bytes are stubbed to counts at capture** (`{omitted: bytes,
+  count}`); the transcript already shows the media, and a second
+  megabyte store per turn buys nothing. Everything textual is verbatim.
+- **The record rides both outcome rails** — an ok turn stores its final
+  step, a failed one its last completed step; gated on completed steps,
+  so a call that never finished a step records nothing (`steps: 0`
+  reads as no window, never as a prompt nothing saw). A failed record
+  write is logged and the turn proceeds — observability, never turn
+  state; the journal owns what must be honest.
+- **The window is the model's input, not the transcript.** It ends
+  where the final call's prompt ended — a single-step turn's window
+  holds the operator message only; steers, warnings and landing nudges
+  appear exactly when they rode the captured step. The reply is never
+  in its own prompt.
+- **Staleness is stated, not hidden.** The view carries the captured
+  model beside the conversation's current one; a mismatch reads "the
+  next turn rebuilds the window" — true by the frozen-snapshot and
+  model-edit rulings, not an error.
+- **The call lineage is the historical half.** `model_cache_calls`
+  already records every call (usage, cache split, prefix relation); the
+  window route serves that lineage per conversation, bounded, newest
+  first. Together they answer "what hit the window" for every call,
+  not just the newest.
+
+**Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
+bearer/trust gate as every `/api/app/*` route; the window is
+operator-private like the transcript and never leaves the process). In
+the PWA, the chat header's context-window action opens
+`/app/c/<id>/window` — a full page, linkable like pi's share URL, not a
+sheet. Filters are client-side: role chips, a substring filter,
+thinking/tool-body expansion, a raw-JSON mode. App conversations only;
+the mini app door has no chat and gets no pages. A conversation with no
+captured window says so — the view never fabricates one.
+
 ## Reply ratings (ruling 2026-10-22)
 
 Assistant action bars carry record-only **helpful** / **bad** votes. The

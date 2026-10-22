@@ -228,6 +228,65 @@ export interface AppContextView {
 	segments: AppContextSegment[] | null;
 }
 
+// ---------- the context window view (design/app.md → Context window view) ----------
+
+export interface AppWindowTool {
+	name: string;
+	description: string | null;
+	/** JSON Schema of the tool input; null when the SDK's async schema
+	 *  converter hadn't materialized it at capture time. */
+	parameters: unknown;
+}
+
+export interface AppWindowCall {
+	callId: string;
+	purpose: string | null;
+	model: string;
+	startedMs: number;
+	finishedMs: number | null;
+	status: string;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	cacheRead: number | null;
+	cacheWrite: number | null;
+	prefixRelation: string;
+	sharedMessages: number;
+}
+
+/** GET /api/app/conversations/<id>/window — the newest model call's
+ *  outbound prompt, captured at prepareStep and stored verbatim
+ *  (window-capture.ts; media bytes stubbed to byte counts), plus the
+ *  conversation's model-call lineage. Null sections: no step has run
+ *  yet. Captured at the source, never reconstructed. */
+export interface AppWindowView {
+	/** The conversation's current model — may differ from the captured
+	 *  one; the view says so instead of hiding the staleness. */
+	model: string;
+	capturedAt: string | null;
+	capturedModel: string | null;
+	steps: number | null;
+	/** Serialized characters per segment — the src/turn/itemize.ts keys,
+	 *  defined structurally: this file stays a leaf. */
+	segments: {
+		identity: number;
+		environment: number;
+		project: number;
+		agentsMd: number;
+		userMd: number;
+		skills: number;
+		toolDefs: number;
+		history: number;
+		toolResults: number;
+	} | null;
+	system: string | null;
+	tools: AppWindowTool[] | null;
+	/** The captured prompt as sent — ModelMessage-shaped with media bytes
+	 *  stubbed to `{omitted: "bytes", count}` (window-capture.ts), so
+	 *  typed loose: a stub is deliberately not a DataContent. */
+	messages: unknown[] | null;
+	calls: AppWindowCall[];
+}
+
 export interface AppRunCall {
 	toolCallId: string;
 	name: string;

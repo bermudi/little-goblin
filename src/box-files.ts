@@ -21,7 +21,15 @@ import { writeThroughTarget } from "./agent/tools/paths.ts";
 export const BOX_FILE_MAX_BYTES = 100 * 1024 * 1024;
 
 export type BoxPathResult = { path: string } | { error: string };
-export type BoxImportResult = { path: string; bytes: number } | { error: string };
+
+/** Why the boundary said no: "not-found" means the named thing isn't
+ *  there at all; "refused" means it exists and the boundary won't serve
+ *  it. Carried on the error so callers classify on structure, never by
+ *  re-parsing the prose. */
+export type BoxErrorCode = "not-found" | "refused";
+export type BoxImportResult =
+	| { path: string; bytes: number }
+	| { error: string; code: BoxErrorCode };
 
 function inside(root: string, path: string): boolean {
 	return path === root || path.startsWith(root + sep);
@@ -51,6 +59,7 @@ export function resolveImport(
 	if (!inside(wsLex, resolved)) {
 		return {
 			error: `refused: ${from} resolves to ${resolved}, outside the workspace — copy it into the workspace first if this is deliberate`,
+			code: "refused",
 		};
 	}
 	let real: string;
@@ -58,7 +67,7 @@ export function resolveImport(
 		real = realpathSync(resolved);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			return { error: `source not found: ${from}` };
+			return { error: `source not found: ${from}`, code: "not-found" };
 		}
 		throw err;
 	}
@@ -66,15 +75,17 @@ export function resolveImport(
 	if (!inside(wsReal, real)) {
 		return {
 			error: `refused: ${from} resolves to ${real}, outside the workspace — copy it into the workspace first if this is deliberate`,
+			code: "refused",
 		};
 	}
 	const st = statSync(real);
 	if (!st.isFile()) {
-		return { error: `refused: ${from} is not a regular file` };
+		return { error: `refused: ${from} is not a regular file`, code: "refused" };
 	}
 	if (st.size > maxBytes) {
 		return {
 			error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
+			code: "refused",
 		};
 	}
 	return { path: real, bytes: st.size };
@@ -85,20 +96,23 @@ export function readImport(
 	workspace: string,
 	from: string,
 	maxBytes: number = BOX_FILE_MAX_BYTES,
-): { path: string; data: Uint8Array } | { error: string } {
+): { path: string; data: Uint8Array } | { error: string; code: BoxErrorCode } {
 	const resolved = resolveImport(workspace, from, maxBytes);
 	if ("error" in resolved) return resolved;
 	const fd = openSync(resolved.path, constants.O_RDONLY | constants.O_NONBLOCK);
 	try {
 		const path = realpathSync(`/proc/self/fd/${fd}`);
 		if (!inside(realpathSync(workspace), path)) {
-			return { error: `refused: ${from} resolves outside the workspace` };
+			return { error: `refused: ${from} resolves outside the workspace`, code: "refused" };
 		}
 		const st = fstatSync(fd);
-		if (!st.isFile()) return { error: `refused: ${from} is not a regular file` };
+		if (!st.isFile()) {
+			return { error: `refused: ${from} is not a regular file`, code: "refused" };
+		}
 		if (st.size > maxBytes) {
 			return {
 				error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
+				code: "refused",
 			};
 		}
 		// One extra byte detects growth without allowing an unbounded read.
@@ -109,7 +123,9 @@ export function readImport(
 			if (n === 0) break;
 			bytes += n;
 		}
-		if (bytes > st.size) return { error: `refused: ${from} grew during import; retry it` };
+		if (bytes > st.size) {
+			return { error: `refused: ${from} grew during import; retry it`, code: "refused" };
+		}
 		return { path, data: data.subarray(0, bytes) };
 	} finally {
 		closeSync(fd);
@@ -305,12 +321,15 @@ export const WORKSPACE_READ_MAX_BYTES = 32 * 1024 * 1024;
 const READER_DENIED_BASENAMES = new Set(["auth.jsonl"]);
 const READER_DENIED_COMPONENTS = new Set([".git"]);
 
-export type WorkspaceReadResult = { path: string; data: Uint8Array } | { error: string };
+export type WorkspaceReadResult =
+	| { path: string; data: Uint8Array }
+	| { error: string; code: BoxErrorCode };
 
 /** Whether a denied read means "gone" (404) or "refused" (403) — the
- *  box error strings own the classification so callers don't re-parse. */
-export function workspaceReadStatus(error: string): number {
-	return error.startsWith("source not found") ? 404 : 403;
+ *  boundary's error codes own the classification so callers don't
+ *  re-parse the prose. */
+export function workspaceReadStatus(result: { code: BoxErrorCode }): number {
+	return result.code === "not-found" ? 404 : 403;
 }
 
 export function readWorkspaceFile(
@@ -322,15 +341,18 @@ export function readWorkspaceFile(
 	// the real one — a symlink called notes.md may not launder
 	// auth.jsonl's bytes past the deny.
 	if (READER_DENIED_BASENAMES.has(basename(from))) {
-		return { error: `refused: ${basename(from)} is never served` };
+		return { error: `refused: ${basename(from)} is never served`, code: "refused" };
 	}
 	const r = readImport(workspace, from, maxBytes);
 	if ("error" in r) return r;
 	if (READER_DENIED_BASENAMES.has(basename(r.path))) {
-		return { error: `refused: ${from} resolves to ${basename(r.path)}, which is never served` };
+		return {
+			error: `refused: ${from} resolves to ${basename(r.path)}, which is never served`,
+			code: "refused",
+		};
 	}
 	if (r.path.split(sep).some((part) => READER_DENIED_COMPONENTS.has(part))) {
-		return { error: `refused: ${from} resolves inside .git` };
+		return { error: `refused: ${from} resolves inside .git`, code: "refused" };
 	}
 	return r;
 }

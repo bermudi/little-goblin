@@ -281,13 +281,16 @@ describe("readWorkspaceFile", () => {
 	test("missing is 404, every other refusal is 403", () => {
 		const { dir, workspace } = ws();
 		const missing = readWorkspaceFile(workspace, "gone.md");
-		expect("error" in missing && workspaceReadStatus(missing.error)).toBe(404);
+		// The classification rides the structural code, not the message.
+		expect("error" in missing && missing.code).toBe("not-found");
+		expect("error" in missing && workspaceReadStatus(missing)).toBe(404);
 		writeFileSync(join(dir, "outside.txt"), "x");
 		const escape = readWorkspaceFile(workspace, "../outside.txt");
-		expect("error" in escape && workspaceReadStatus(escape.error)).toBe(403);
+		expect("error" in escape && escape.code).toBe("refused");
+		expect("error" in escape && workspaceReadStatus(escape)).toBe(403);
 		mkdirSync(join(workspace, "dir"));
 		const dirRead = readWorkspaceFile(workspace, "dir");
-		expect("error" in dirRead && workspaceReadStatus(dirRead.error)).toBe(403);
+		expect("error" in dirRead && workspaceReadStatus(dirRead)).toBe(403);
 	});
 
 	test("a symlink escaping the workspace is refused", () => {
@@ -305,10 +308,8 @@ describe("readWorkspaceFile", () => {
 		writeFileSync(join(workspace, "sub", "auth.jsonl"), "{}");
 		expect("error" in readWorkspaceFile(workspace, "auth.jsonl")).toBe(true);
 		expect("error" in readWorkspaceFile(workspace, "sub/auth.jsonl")).toBe(true);
-		expect(
-			"error" in readWorkspaceFile(workspace, "auth.jsonl") &&
-				workspaceReadStatus((readWorkspaceFile(workspace, "auth.jsonl") as { error: string }).error),
-		).toBe(403);
+		const denied = readWorkspaceFile(workspace, "auth.jsonl");
+		expect("error" in denied && workspaceReadStatus(denied)).toBe(403);
 	});
 
 	test("a renamed symlink cannot launder auth.jsonl past the deny", () => {

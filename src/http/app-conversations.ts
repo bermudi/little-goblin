@@ -415,14 +415,14 @@ export async function handleConversationsRoute(
 				{ status: 500, headers: NO_STORE },
 			);
 		}
-		const r = readWorkspaceFile(workdir, from);
-		if ("error" in r) {
-			log.info("app file refused", { conversation: conv.id, path: from, reason: r.error });
-			return Response.json(
-				{ error: r.error },
-				{ status: workspaceReadStatus(r.error), headers: NO_STORE },
-			);
-		}
+			const r = readWorkspaceFile(workdir, from);
+			if ("error" in r) {
+				log.info("app file refused", { conversation: conv.id, path: from, reason: r.error });
+				return Response.json(
+					{ error: r.error },
+					{ status: workspaceReadStatus(r), headers: NO_STORE },
+				);
+			}
 		log.debug("app file served", { conversation: conv.id, path: r.path, bytes: r.data.byteLength });
 		// Direct navigation must never render a stored document in the app
 		// origin — the reader pulls it through fetch and renders it itself.

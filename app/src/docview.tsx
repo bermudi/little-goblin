@@ -183,7 +183,9 @@ function renderKind(mediaType: string, name: string): DocRender {
 	return "download";
 }
 
-// Text decode is bounded — a 30 MiB log should download, not freeze the tab.
+// Text decode is bounded — a 30 MiB log should download, not freeze the
+// tab. Markdown and html decode those same bytes and then parse them on
+// top, so the cap demotes every decoded kind, not just plain text.
 const TEXT_DECODE_MAX = 4 * 1024 * 1024;
 
 function DocModal({
@@ -275,7 +277,11 @@ function DocBody({
 						? ""
 						: (res.headers.get("content-type") ?? "").split(";")[0]!);
 				let render = renderKind(mediaType || blob.type, name);
-				if (render === "text" && blob.size > TEXT_DECODE_MAX) render = "download";
+				if (
+					(render === "markdown" || render === "html" || render === "text") &&
+					blob.size > TEXT_DECODE_MAX
+				)
+					render = "download";
 				let text: string | null = null;
 				let url: string | null = null;
 				if (render === "markdown" || render === "html" || render === "text") {

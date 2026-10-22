@@ -307,4 +307,28 @@ describe("doc viewer journey (happy-dom)", () => {
 			"auth.jsonl is never served",
 		);
 	});
+
+	test("an oversized markdown downloads instead of rendering", async () => {
+		globalThis.fetch = (async (_input: RequestInfo | URL) =>
+			new Response("# big\n\n" + "x".repeat(4 * 1024 * 1024), {
+				status: 200,
+				headers: { "content-type": "text/markdown" },
+			})) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<DocViewerProvider token={null} conversationId="app/x">
+					<PathChip path="big.md" />
+				</DocViewerProvider>,
+			);
+		});
+		await act(async () => {
+			click(dom, dom.container.querySelector("button.pathchip-link")!);
+		});
+		await settle();
+		// The decode cap demotes markdown like text — the parser is the
+		// freeze, not just the string decode.
+		expect(dom.container.querySelector(".doc-md")).toBeNull();
+		expect(dom.container.querySelector(".doc-download")?.textContent).toContain("big.md");
+	});
 });

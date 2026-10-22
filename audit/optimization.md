@@ -9,7 +9,6 @@ Spec compliance: `DESIGN.md` and `design/*.md` (19 files).
 ## 1. Baseline
 
 All baseline figures below were generated from real runs against current HEAD (`b73d34cfeba5101e5000d82b6872455c690def0f`).
-
 - **HEAD hash**: `b73d34cfeba5101e5000d82b6872455c690def0f`
 - **`bun run typecheck`**: Exit 0 (both TypeScript programs: root `tsconfig.json` and `app/tsconfig.json`).
 - **`bun test app/src/`**: **572 pass, 0 fail** across 32 files (duration: 146.05s).
@@ -22,18 +21,21 @@ All baseline figures below were generated from real runs against current HEAD (`
 `arch-audit.md` (at rev `5e7977d`) concluded **"no general architectural refactor recommended"** and identified three ranked structural findings. Re-checked against current HEAD:
 
 ### Finding 1: Tool replay conflates call equivalence with execution identity
+
 - **Status at HEAD**: **Still Present.**
 - **Evidence**: `src/turn-journal.ts:201` (`replayKey(name, args)` uses `name:sha256hex(stableStringify(args))`) and `src/turn-journal.ts:563-575` (`replayMap` maps `name:argsHash` to an array of results FIFO). `src/runtime.ts:905` passes `journal.replayMap(runId)` to the turn execution.
 - **Analysis**: If a model turn generates two identical tool calls (e.g. `read_file({ path: "foo.txt" })` twice in sequence), `replayMap` stores `[res1, res2]`. During replay in `src/agent/step.ts`, lookup matches by `name:argsHash` rather than strict positional call ID or turn-step sequence index.
 - **Mapping to New Findings**: Extended by **Finding O-1** (Sequence-indexed tool execution replay).
 
 ### Finding 2: Resumed turns can inherit the wrong causal anchor
+
 - **Status at HEAD**: **Partially Resolved / Mitigated.**
 - **Evidence**: `src/turn-journal.ts:84-85, 452-475` (`resumedFrom` and `inheritFrom` parameters in `beginRun`), `src/runtime.ts:898-899` (`resumedFrom: sourceRunId`, `inheritFrom: [recovery.predecessorRun]`).
 - **Analysis**: The introduction of `inheritFrom` explicit DAG linkage in `turn_runs` ensures tool call inheritance is scoped to explicit predecessor runs. However, if multiple interrupted turns exist on a conversation, recovery selection in `src/turn-resume.ts` still requires careful selection of the active head run.
 - **Mapping to New Findings**: Extended by **Finding O-4** (Turn journal recovery run-head selection).
 
 ### Finding 3: Standing-program authorization enforced by model instructions
+
 - **Status at HEAD**: **Still Present.**
 - **Evidence**: `src/programs.ts:334-367` (programs schema holds `charter`, `cron`, `mail_filter`), `src/agent/prompt.ts:178-220` (program charters appended directly to system prompt).
 - **Analysis**: Program execution rights and scope boundaries (e.g. which tools or email filters a scheduled program may invoke) are stated in prompt text rather than constrained at the tool dispatch boundary by capability wrappers.
@@ -45,20 +47,21 @@ All baseline figures below were generated from real runs against current HEAD (`
 
 ### Summary Table
 
-| ID | Finding | Severity / Impact | Effort | Risk | Consumers Touched | Tag |
-|---|---|---|---|---|---|---|
-| **O-1** | Sequence-indexed tool execution replay | **High** | Medium | Low | `turn-journal`, `runtime`, `turn-resume`, `step` | Extends Arch-Audit #1 |
-| **O-2** | Journal write-batching during multi-tool step dispatch | **High** | Low | Low | `turn-journal`, `step`, `runtime` | NEW |
-| **O-3** | In-memory caching for `stableStringify` tool argument hashes | **Medium** | Low | Low | `turn-journal`, `loop-detect` | NEW |
-| **O-4** | Conversation state snapshot delta-logging | **Medium** | Medium | Low | `conversation`, `runtime` | Extends Arch-Audit #2 |
-| **O-5** | Structural tool capability scoping for standing programs | **Medium** | Medium | Low | `programs`, `step`, `prompt` | Extends Arch-Audit #3 |
-| **O-6** | Memory document retention queue batching | **Low** | Low | Low | `memory/queue`, `memory/mod` | NEW |
+| ID      | Finding                                                      | Severity / Impact | Effort | Risk | Consumers Touched                                | Tag                   |
+| ------- | ------------------------------------------------------------ | ----------------- | ------ | ---- | ------------------------------------------------ | --------------------- |
+| **O-1** | Sequence-indexed tool execution replay                       | **High**          | Medium | Low  | `turn-journal`, `runtime`, `turn-resume`, `step` | Extends Arch-Audit #1 |
+| **O-2** | Journal write-batching during multi-tool step dispatch       | **High**          | Low    | Low  | `turn-journal`, `step`, `runtime`                | NEW                   |
+| **O-3** | In-memory caching for `stableStringify` tool argument hashes | **Medium**        | Low    | Low  | `turn-journal`, `loop-detect`                    | NEW                   |
+| **O-4** | Conversation state snapshot delta-logging                    | **Medium**        | Medium | Low  | `conversation`, `runtime`                        | Extends Arch-Audit #2 |
+| **O-5** | Structural tool capability scoping for standing programs     | **Medium**        | Medium | Low  | `programs`, `step`, `prompt`                     | Extends Arch-Audit #3 |
+| **O-6** | Memory document retention queue batching                     | **Low**           | Low    | Low  | `memory/queue`, `memory/mod`                     | NEW                   |
 
 ---
 
 ### Finding Details
 
 #### Finding O-1: Sequence-indexed tool execution replay
+
 - **Tag**: Extends Arch-Audit Finding #1
 - **Severity / Impact**: High (runtime accuracy & deterministic replay under recovery)
 - **Effort**: Medium
@@ -66,6 +69,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 - **Consumers Touched**: `src/turn-journal.ts`, `src/runtime.ts`, `src/turn-resume.ts`, `src/agent/step.ts`.
 - **Suboptimal**: `replayMap` in `src/turn-journal.ts:563-575` indexes call outputs solely by `name:argsHash`. Duplicate calls within a turn step consume items from an array in FIFO order. If tool ordering shifts slightly during resume, outputs can be misaligned.
 - **Evidence**:
+
   ```ts
   // src/turn-journal.ts:563-573
   replayMap(runId) {
@@ -87,6 +91,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 ---
 
 #### Finding O-2: Journal write-batching during multi-tool step dispatch
+
 - **Tag**: NEW
 - **Severity / Impact**: High (runtime IO latency reduction)
 - **Effort**: Low
@@ -95,6 +100,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 - **Suboptimal**: `noteToolInput`, `noteToolDispatch`, `noteToolResult`, and `noteToolError` in `src/turn-journal.ts:482-512` run individual unbatched SQLite statements. When an agent issues 5–10 parallel tool calls in a single step (e.g. `read_file` across multiple files), each call incurs statement execution overhead.
 - **Evidence**:
   Measurement command run:
+
   ```bash
   bun -e '
   import { Database } from "bun:sqlite";
@@ -111,6 +117,7 @@ All baseline figures below were generated from real runs against current HEAD (`
   console.log(`Unbatched: ${(t1-t0).toFixed(2)}ms, Batched: ${(t2-t1).toFixed(2)}ms`);
   '
   ```
+
   **Output**: Unbatched 1000x insert: `1126.57ms` vs Batched transaction 1000x insert: `1.47ms` (**~760x speedup**).
 - **Proposed Change**: Add a `batchNoteToolResults(runId, results[])` method using a single `db.transaction()` wrapper for multi-tool step resolutions.
 - **Expected Gain**: 5ms–20ms latency reduction per multi-tool turn step.
@@ -118,6 +125,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 ---
 
 #### Finding O-3: In-memory caching for `stableStringify` tool argument hashes
+
 - **Tag**: NEW
 - **Severity / Impact**: Medium (CPU cycle savings on large tool payloads)
 - **Effort**: Low
@@ -126,6 +134,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 - **Suboptimal**: `stableStringify` in `src/loop-detect.ts:19` recursively sorts keys and serializes objects. It is called multiple times per tool invocation (`noteToolInput`, `noteToolDispatch`, `replayKey`, `loop-detect`).
 - **Evidence**:
   Measurement command run:
+
   ```bash
   bun -e '
   import { stableStringify } from "./src/loop-detect.ts";
@@ -138,6 +147,7 @@ All baseline figures below were generated from real runs against current HEAD (`
   console.log(`stableStringify 1000x: ${(t1 - t0).toFixed(2)}ms, JSON.stringify 1000x: ${(t2 - t1).toFixed(2)}ms`);
   '
   ```
+
   **Output**: `stableStringify`: `50.20ms` vs `JSON.stringify`: `25.90ms` (~2x CPU overhead for 50KB payload).
 - **Proposed Change**: Compute `stableStringify` once per tool call payload at dispatch time and attach/memoize the resulting `argsHash` on the tool call execution context.
 - **Expected Gain**: Saves 25ms CPU time per 1000 large tool payload serializations.
@@ -145,6 +155,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 ---
 
 #### Finding O-4: Conversation state snapshot delta-logging
+
 - **Tag**: Extends Arch-Audit Finding #2
 - **Severity / Impact**: Medium (Storage & SQLite WAL write amplification)
 - **Effort**: Medium
@@ -158,6 +169,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 ---
 
 #### Finding O-5: Structural tool capability scoping for standing programs
+
 - **Tag**: Extends Arch-Audit Finding #3
 - **Severity / Impact**: Medium (Security boundary / Authorization robustness)
 - **Effort**: Medium
@@ -171,6 +183,7 @@ All baseline figures below were generated from real runs against current HEAD (`
 ---
 
 #### Finding O-6: Memory document retention queue batching
+
 - **Tag**: NEW
 - **Severity / Impact**: Low (Background async IO optimization)
 - **Effort**: Low
@@ -188,43 +201,46 @@ All baseline figures below were generated from real runs against current HEAD (`
 ### Sketch 1: Sequence-Indexed Tool Execution Replay (Finding O-1)
 
 #### Module Layout & Files
+
 - `src/turn-journal.ts`: Extend `TurnToolCall` interface and `turn_tool_calls` table schema with `call_seq INTEGER`.
 - `src/agent/step.ts`: Pass `toolCallId` and step index to journal methods.
 
 #### Interface Changes
+
 ```ts
 // src/turn-journal.ts
 export interface TurnToolCall {
-  runId: string;
-  toolCallId: string;
-  callSeq: number; // Monotonically increasing sequence within the run
-  name: string;
-  args: unknown;
-  argsHash: string;
-  state: ToolCallState;
-  replayed: boolean;
-  result: string | null;
-  error: string | null;
+	runId: string;
+	toolCallId: string;
+	callSeq: number; // Monotonically increasing sequence within the run
+	name: string;
+	args: unknown;
+	argsHash: string;
+	state: ToolCallState;
+	replayed: boolean;
+	result: string | null;
+	error: string | null;
 }
 
 export interface ReplayEntry {
-  toolCallId: string;
-  callSeq: number;
-  name: string;
-  argsHash: string;
-  output: unknown;
+	toolCallId: string;
+	callSeq: number;
+	name: string;
+	argsHash: string;
+	output: unknown;
 }
 
 export interface TurnJournal {
-  // Updated replayMap signature returns map keyed by toolCallId AND argsHash fallback
-  replayMap(runId: string): {
-    byId: Map<string, unknown>;
-    byHash: Map<string, unknown[]>;
-  };
+	// Updated replayMap signature returns map keyed by toolCallId AND argsHash fallback
+	replayMap(runId: string): {
+		byId: Map<string, unknown>;
+		byHash: Map<string, unknown[]>;
+	};
 }
 ```
 
 #### Migration Order
+
 1. Update `turn_tool_calls` schema in `src/turn-journal.ts` (`ALTER TABLE turn_tool_calls ADD COLUMN call_seq INTEGER DEFAULT 0`).
 2. Update `qInput` / `qDispatch` prepared statements to populate `call_seq`.
 3. Update `replayMap()` to populate both `byId` (exact ID match) and `byHash` (fallback).
@@ -236,27 +252,27 @@ export interface TurnJournal {
 ### Sketch 2: Multi-Tool Journal Write Batching (Finding O-2)
 
 #### Module Layout & Files
+
 - `src/turn-journal.ts`: Add `noteToolResultsBatch` and `noteToolDispatchesBatch` transaction methods.
 - `src/agent/step.ts`: Replace loop-based `noteToolResult` calls with single batch call after parallel tool execution.
 
 #### Interface Changes
+
 ```ts
 // src/turn-journal.ts
 export interface ToolResultBatchItem {
-  callId: string;
-  result: unknown;
-  replayed?: boolean;
+	callId: string;
+	result: unknown;
+	replayed?: boolean;
 }
 
 export interface TurnJournal {
-  noteToolResultsBatch(
-    runId: string,
-    items: ToolResultBatchItem[]
-  ): void;
+	noteToolResultsBatch(runId: string, items: ToolResultBatchItem[]): void;
 }
 ```
 
 #### Migration Order
+
 1. Add `qResultBatch` execution logic inside `db.transaction()` in `openTurnJournal` in `src/turn-journal.ts`.
 2. In `src/agent/step.ts`, gather all tool execution outputs from `Promise.allSettled` and invoke `noteToolResultsBatch` once.
 3. Verify test suite with `bun test src/turn-journal.test.ts`.
@@ -266,36 +282,39 @@ export interface TurnJournal {
 ### Sketch 3: Memoized Tool Payload Hashing (Finding O-3)
 
 #### Module Layout & Files
+
 - `src/loop-detect.ts`: Export `memoizedArgsHash(args: unknown): { canonical: string; hash: string }`.
 - `src/turn-journal.ts`: Consume memoized hashes instead of re-evaluating `stableStringify` and `sha256hex` in `noteToolInput` and `noteToolDispatch`.
 
 #### Interface Changes
+
 ```ts
 // src/loop-detect.ts
 export interface HashedPayload {
-  canonical: string;
-  hash: string;
+	canonical: string;
+	hash: string;
 }
 
 const payloadCache = new WeakMap<object, HashedPayload>();
 
 export function getHashedPayload(args: unknown): HashedPayload {
-  if (typeof args === "object" && args !== null) {
-    const cached = payloadCache.get(args);
-    if (cached) return cached;
-    const canonical = stableStringify(args);
-    const hash = createHash("sha256").update(canonical).digest("hex");
-    const entry = { canonical, hash };
-    payloadCache.set(args, entry);
-    return entry;
-  }
-  const canonical = stableStringify(args);
-  const hash = createHash("sha256").update(canonical).digest("hex");
-  return { canonical, hash };
+	if (typeof args === "object" && args !== null) {
+		const cached = payloadCache.get(args);
+		if (cached) return cached;
+		const canonical = stableStringify(args);
+		const hash = createHash("sha256").update(canonical).digest("hex");
+		const entry = { canonical, hash };
+		payloadCache.set(args, entry);
+		return entry;
+	}
+	const canonical = stableStringify(args);
+	const hash = createHash("sha256").update(canonical).digest("hex");
+	return { canonical, hash };
 }
 ```
 
 #### Migration Order
+
 1. Implement `getHashedPayload` with `WeakMap` caching in `src/loop-detect.ts`.
 2. Update `noteToolInput` and `noteToolDispatch` in `src/turn-journal.ts` to use `getHashedPayload`.
 3. Verify that `bun test src/turn-journal.test.ts` passes with identical hash outputs.
@@ -305,7 +324,6 @@ export function getHashedPayload(args: unknown): HashedPayload {
 ## 5. Excluded Improvements (Feature Cuts / Rule Violations)
 
 The following potential optimizations were evaluated and explicitly **excluded** because they violate repository constraints (cutting features, skipping validations, or reducing logging):
-
 1. **Disabling SQLite `fsync` / WAL sync (`PRAGMA synchronous = OFF`)**: Would increase write speed by 10x+, but violates durable writes guardrail ("Whole-file state: tmp + fsync + renameSync").
 2. **Removing Zod runtime validation at HTTP / IPC boundaries**: Would save 1–3ms per request, but violates strict Bun + TypeScript guardrail ("Validate external input with zod at boundaries").
 3. **Suppressing JSONL audit log stdout writes**: Would reduce stdout IO overhead, but violates `log.ts` / AGENTS.md logging guardrails ("No console.log. Every external boundary emits a line").
@@ -316,11 +334,11 @@ The following potential optimizations were evaluated and explicitly **excluded**
 ## 6. Not Worth It (Evaluated & Rejected Ideas)
 
 1. **Replacing Bun SQLite with an ORM (e.g. Prisma / Drizzle)**:
-   - *Reason*: Introduces heavy abstraction overhead, increases bundle size, and adds unnecessary complexity. Direct Bun native SQLite query execution (`db.query(...).all()`) is already fast (<0.1ms per query).
+   - _Reason_: Introduces heavy abstraction overhead, increases bundle size, and adds unnecessary complexity. Direct Bun native SQLite query execution (`db.query(...).all()`) is already fast (<0.1ms per query).
 2. **Global In-Memory Caching of Rendered System Prompts (`src/agent/prompt.ts`)**:
-   - *Reason*: Prompts depend on dynamic per-conversation state, project notes, and skill availability. Global caching risks stale prompt pollution across conversations. `systemPromptFor` already freezes prompts per-turn step cleanly.
+   - _Reason_: Prompts depend on dynamic per-conversation state, project notes, and skill availability. Global caching risks stale prompt pollution across conversations. `systemPromptFor` already freezes prompts per-turn step cleanly.
 3. **Worker Threading for Tool Execution**:
-   - *Reason*: Bun's single-threaded event loop easily handles tool dispatch async I/O. Thread pool IPC context switching overhead exceeds any CPU gains for local tool operations.
+   - _Reason_: Bun's single-threaded event loop easily handles tool dispatch async I/O. Thread pool IPC context switching overhead exceeds any CPU gains for local tool operations.
 
 ---
 

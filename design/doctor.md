@@ -115,7 +115,6 @@ nothing, and only an absent list skips the check.
 
 The versioned report keeps results deterministically ordered even when
 probes run concurrently.
-
 - Disabled checks skip with reasons; blocked dependents name their blocker.
 - Configured, observed outages fail. Unknown coverage is explicit, not green.
 - `0`: no failures. `1`: failures, or warnings with `--strict`.

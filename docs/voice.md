@@ -72,7 +72,7 @@ stored with the message, permanently. Models that can hear audio get the
 audio; models that can't read the transcript instead of staring at a bare
 file path. Either way your words are never lost.
 
-Attached audio is different: an mp3 or flac you *send* is a file, not a
+Attached audio is different: an mp3 or flac you _send_ is a file, not a
 recording — maybe a song to convert, maybe a podcast to transcribe, and
 only you know which. So attached audio is never transcribed eagerly and
 its bytes never go to the model; it lands in the workspace like any
@@ -80,7 +80,6 @@ other file. Ask the bot to transcribe it and the `transcribe` tool does
 that, on the same engine.
 
 Practical notes:
-
 - Transcription happens in the background per topic, so a slow voice note
   never blocks other topics (or `/stop`).
 - Files over the provider's upload cap (25 MB for the cloud kinds; the
@@ -152,15 +151,14 @@ tts: { kind: "mimo", voice: "Mia" },
 ```
 
 Three ways to hear the bot:
-
 1. **`/voice` mode** — per topic. The reply arrives as voice notes instead
    of text: "typing…" while it thinks, "recording…" while it speaks. The
-   *text* is still stored in history, so toggling `/voice` off loses
+   _text_ is still stored in history, so toggling `/voice` off loses
    nothing and you can always ask "what did you say verbatim". Code blocks
    and long links aren't spoken — those arrive as a plain text message next
    to the audio.
 2. **The 🔊 button** — every finished text reply (when speech is configured)
-   carries a 🔊 button that reads the *whole* reply aloud, not just one
+   carries a 🔊 button that reads the _whole_ reply aloud, not just one
    bubble. The whole-reply view comes from a small, per-process in-memory
    cache and never survives a restart. Once a reply has scrolled out of
    the cache (or after a restart), the button falls back to reading only
@@ -202,11 +200,11 @@ underneath.
 
 ## Troubleshooting voice
 
-| Symptom | Likely cause |
-|---|---|
-| `/voice` says speech isn't available | `tts: ""` disabled it, or `ffmpeg` was missing at boot (install it and restart) |
-| 🔊 button missing | same — speech is off or unavailable |
-| Voice notes arrive as files the model can't read | `transcription` not configured, or its provider was down (check the log) |
-| Synthesis suddenly fails for everything | Edge endpoint changed (it's unofficial); check the log, then check for a bot update |
-| A voice note comes out mangled | text language and voice language don't match — Edge reads whatever text it's given with the voice's phonetics |
-| `ffmpeg` warnings at boot/install | install `ffmpeg` — speech features need it |
+| Symptom                                          | Likely cause                                                                                                  |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `/voice` says speech isn't available             | `tts: ""` disabled it, or `ffmpeg` was missing at boot (install it and restart)                               |
+| 🔊 button missing                                | same — speech is off or unavailable                                                                           |
+| Voice notes arrive as files the model can't read | `transcription` not configured, or its provider was down (check the log)                                      |
+| Synthesis suddenly fails for everything          | Edge endpoint changed (it's unofficial); check the log, then check for a bot update                           |
+| A voice note comes out mangled                   | text language and voice language don't match — Edge reads whatever text it's given with the voice's phonetics |
+| `ffmpeg` warnings at boot/install                | install `ffmpeg` — speech features need it                                                                    |

@@ -18,7 +18,6 @@ two (overflow resume). The fenced and error rails are terminal — the
 attempt loop's machinery, not phase modules.
 
 Seam rulings that bind the phases:
-
 - The resume claim must go through the stream driver's membership seam —
   claim + wire replay — via the same runtime-injected queue function the
   steer path uses; never splice `lane.pending`. (#96)
@@ -31,7 +30,6 @@ Seam rulings that bind the phases:
 
 **State is classified by who survives it** — the rule that keeps
 `TurnState` from becoming the giant function in an object costume.
-
 1. **Conversation-scoped** — owned by the Runtime (or its `Lane`),
    survives turns, is never turn state, and reaches modules only as
    injected dependencies or callback seams.
@@ -57,7 +55,6 @@ Seam rulings that bind the phases:
 The recursion is a returned decision consumed by a loop: `runTurn`
 stays the logical-turn entry `drain` calls, creates the wire log once at
 logical-turn scope, and hands it to each attempt.
-
 - The recovery is the only wire between attempts — the loop adds no new
   state channel; membership rides the decision, never a shared
   reference.
@@ -115,7 +112,6 @@ terminal `onDone`.
 
 Invariants a refactor can still break silently — the audit list for any
 turn-structure change.
-
 - **The authority rule** (DESIGN.md). `checkAuthority` around every
   await, `fenceTools` around every tool execute, epoch-compare guards in
   `prepareStep` and the steer error path, `sink.setAuthorityCheck` wired
@@ -127,7 +123,7 @@ turn-structure change.
   fenced on BOTH sides, success path included — a steer whose conversion
   succeeds must still re-compare the epoch before joining, replaying, or
   folding its content into the next request. Preserving the check
-  *sites* through a refactor is not the same as proving the rule; every
+  _sites_ through a refactor is not the same as proving the rule; every
   new await re-earns its post-await check.
 - **Cache stability** (DESIGN.md). Prompt assembly stays byte-stable:
   the view is a pure function of its inputs; steering appends tails

@@ -43,7 +43,6 @@ sanctioned prefix rewrites are listed in Cache stability.
 
 **What a project changes for its conversations.** One seam each, all
 existing parameters:
-
 - **cwd.** `dir` feeds the existing cwd parameter; paths are not confined
   today — absolute paths reach anywhere — so `dir` is a default, not a
   wall. A vanished `dir` fails the turn at admission with the path in the
@@ -96,7 +95,6 @@ other operator data; note bodies are the operator's words, not instructions
 from a third party.
 
 **How chats see notes** (operator ruling: index + attach).
-
 - **Project conversations** get a notes index in the frozen `## project`
   section; current text is a `note read` away.
 - **Attach.** The composer's attach picker adds notes. The client sends a

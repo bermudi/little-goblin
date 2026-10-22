@@ -2,7 +2,7 @@
 
 Telegram-native personal AI agent for one operator on the Vercel AI SDK;
 `goblin.service` runs from this tree, and every session works here. Read
-`DESIGN.md` plus the `design/` file for the area you're touching before 
+`DESIGN.md` plus the `design/` file for the area you're touching before
 any structural work. `docs/` is operator documentation, not spec.
 
 ## Guardrails
@@ -11,17 +11,17 @@ any structural work. `docs/` is operator documentation, not spec.
   external input with zod at boundaries (config, Telegram updates, tool args,
   disk state).
 - **The app client is the one client, two doors.** `app/` is Vite + React
-  + strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream
-  endpoints (DESIGN.md → App channel), its tsconfig program joining
-  `bun run typecheck` with wire types imported from server sources, so
-  config schema changes break typecheck, not the page. It gets the
-  tree's only build step; `src/http` serves `app/dist` under `/app/`
-  (the PWA) and `/t/` (the Telegram mini app — design/telegram.md →
-  Mini Apps), fail-loud 500 + log line when the build is missing. Don't
-  add a second client or unchecked client `.js`, and keep
-  `telegram-webapp.d.ts` out of the server program — its `Window`
-  declaration changes how linkedom's `parseHTML` resolves in
-  `agent/tools/fetch.ts`.
+  - strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream
+    endpoints (DESIGN.md → App channel), its tsconfig program joining
+    `bun run typecheck` with wire types imported from server sources, so
+    config schema changes break typecheck, not the page. It gets the
+    tree's only build step; `src/http` serves `app/dist` under `/app/`
+    (the PWA) and `/t/` (the Telegram mini app — design/telegram.md →
+    Mini Apps), fail-loud 500 + log line when the build is missing. Don't
+    add a second client or unchecked client `.js`, and keep
+    `telegram-webapp.d.ts` out of the server program — its `Window`
+    declaration changes how linkedom's `parseHTML` resolves in
+    `agent/tools/fetch.ts`.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
@@ -48,7 +48,7 @@ any structural work. `docs/` is operator documentation, not spec.
 ## Design inspiration
 
 When designing workspace layout, identity/memory files, prompt assembly, or
-scheduled work, borrow *mechanisms* — never scope — from two mature local
+scheduled work, borrow _mechanisms_ — never scope — from two mature local
 agents: `~/build/testing/openclaw/` (TS, multi-channel) and
 `~/build/testing/hermes-agent/` (Python, Nous). For harness patterns
 (compaction, tool calling): `~/build/pi-mono/`. All three carry feature
@@ -144,7 +144,7 @@ design-doc ruling (delegation.md, mail.md, sandbox.md).
 authority. Its contract (stdout/stderr split, shared-check rules,
 422/500 boundaries) lives in `design/doctor.md`.
 
-No specs tree, no decision records. Small commits, often, on main or 
+No specs tree, no decision records. Small commits, often, on main or
 short-lived branches. If a design tension is real enough to argue about,
 write the ruling into the design docs (`DESIGN.md` or
 `design/<area>.md`) — the docs are the spec.

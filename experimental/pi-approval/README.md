@@ -7,9 +7,9 @@ Pi Durable's crash recovery?** It can, and this is the minimal mechanism.
 
 ## The gap
 
-The authority rule: *"Boot never auto-retries a half-run turn — tool calls
+The authority rule: _"Boot never auto-retries a half-run turn — tool calls
 aren't idempotent… If recovery is ever wanted it is notify-don't-retry:
-surface the orphaned turn to the operator, don't replay it."*
+surface the orphaned turn to the operator, don't replay it."_
 
 Pi Durable 1.0.2 (the exact version `src/subagents/mod.ts` pins) resolves a
 crash-interrupted tool call on reopen **without any hook**
@@ -24,7 +24,6 @@ being reported to the very agent that then chooses to click again.
 The harness's only recovery-time re-entry point is the replay rule: tools
 registered `replay: "safe"` are re-executed on reopen. `gateTool()`
 (experimental/pi-approval/gate.ts) uses that deliberately:
-
 - `"safe"` here means **safe to re-enter, never safe to repeat** — re-entry
   lands in the gate; no side effect re-runs without an operator decision.
 - A task-scoped lease document (`defineDoc`, scope `"task"`) lives inside
@@ -46,13 +45,13 @@ registered `replay: "safe"` are re-executed on reopen. `gateTool()`
 SIGKILLs it mid-dispatch (a marker file proves the dispatch), then reopens
 the storage in the test process and resumes — five scenarios:
 
-| Test | Evidence |
-| --- | --- |
-| baseline (no gate) | interrupted result auto-committed, model asked again, **zero operator involvement** — the gap, reproduced |
-| gate + interrupted | run parks (no model call, no re-execution); decision lands; run continues; the operator's note reaches the model's next request |
-| gate + retry | the exact call re-executes exactly once, after approval |
-| gate + abort | run ends; no further model request |
-| gate + second crash while parked | the undecided question is re-surfaced after another SIGKILL — never acted on |
+| Test                             | Evidence                                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| baseline (no gate)               | interrupted result auto-committed, model asked again, **zero operator involvement** — the gap, reproduced                       |
+| gate + interrupted               | run parks (no model call, no re-execution); decision lands; run continues; the operator's note reaches the model's next request |
+| gate + retry                     | the exact call re-executes exactly once, after approval                                                                         |
+| gate + abort                     | run ends; no further model request                                                                                              |
+| gate + second crash while parked | the undecided question is re-surfaced after another SIGKILL — never acted on                                                    |
 
 ```bash
 bun test experimental/pi-approval/crash.test.ts

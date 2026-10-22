@@ -69,7 +69,6 @@ codemode (`@earendil-works/pi-codemode`: a QuickJS VM whose only
 capability is the injected tools). Not taken: hermes'
 persistent kernel and remote backends; pi's `store`/`load`, `models`,
 `searchTools`/deferred exposure, `mode: only`, and Cloudflare sandboxes.
-
 - **Scripts compose tools; they never reason.** A script is a
   deterministic composition of tool calls inside one tool call:
   in-process, no model calls, no state across calls, no endpoint. The
@@ -136,7 +135,6 @@ vision extension
 description, and follow-up threads keyed by absolute path + size + mtime —
 a rewritten file starts a clean thread; a vision-model switch drops every
 thread so a new model never "remembers" a predecessor's answers.
-
 - **Why it exists despite the no-image-bytes rule.** The pipe rule makes a
   disk image invisible to the conversation's model, vision-capable or not —
   intake materialization covers only media that arrived through a channel.
@@ -181,7 +179,6 @@ thread so a new model never "remembers" a predecessor's answers.
 On demand (2026-09-26). A `history_search` tool: full-text search over
 goblin's own conversation history — "what did we decide about X last
 month?".
-
 - Queries are plain terms, each quoted into an
   AND — no FTS syntax ever reaches MATCH.
 - **Scope: every conversation except memory-excluded ones**, checked at

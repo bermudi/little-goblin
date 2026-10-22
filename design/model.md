@@ -149,7 +149,7 @@ What bounds a turn, in order of who fires first:
 
 **1. The repeat detector (deterministic, always on).** Ported from
 openclaw's `tool-loop-detection.ts` — the mechanism, not its
-eight-detector taxonomy. Same call *and* same result is no progress (a
+eight-detector taxonomy. Same call _and_ same result is no progress (a
 changed result is progress; an A↔B ping-pong with stable results trips it
 too); it needs no model, so it works when system1 is down. Deliberate
 polling with an unchanging result is the known false positive — the
@@ -157,7 +157,7 @@ warning says to wait longer between checks.
 
 **2. The loop watchdog (system1, for what a hash can't see).** system1
 periodically scores the operator's request plus the recent calls against
-a *non-convergence* question: rephrased searches returning the same
+a _non-convergence_ question: rephrased searches returning the same
 nothing, cosmetic retries of the same error, cycling approaches. **A
 stuck score warns; a second consecutive stuck score cuts; a sub-threshold
 check in between resets.** Async and fail-open (an unavailable system1
@@ -169,10 +169,10 @@ Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: six longest stored
 tool turns + six synthetic cases, three runs each, deterministic per
 input):
 
-| | progress cases (max) | stuck cases (min) | MCPi flail @16 |
-|---|---|---|---|
-| `inception/mercury-decide:free` (prod) | 0.085 | 0.963 | 0.963 |
-| `typesafe/jev-1.13` (fallback) | 0.22 | 0.97 | 0.54 |
+|                                        | progress cases (max) | stuck cases (min) | MCPi flail @16 |
+| -------------------------------------- | -------------------- | ----------------- | -------------- |
+| `inception/mercury-decide:free` (prod) | 0.085                | 0.963             | 0.963          |
+| `typesafe/jev-1.13` (fallback)         | 0.22                 | 0.97              | 0.54           |
 
 The threshold sits in the gap for both; the MCPi turn (16 searches for an
 unannounced project) scores stuck on the prod model — correctly. Small

@@ -10,7 +10,6 @@ Classification: `search` and `fetch` are chat-native — an assistant that
 can't look things up is a gap. The browser returns as a skill over a CLI,
 not a native tool. MCP stays out, with its return conditions on record
 (below).
-
 - **`search` is one tool with a provider behind it** — the model-provider
   pattern (OpenClaw and hermes both ship one `web_search` over pluggable
   vendors). Provider switch = config edit; the tool's name, schema, and
@@ -50,7 +49,7 @@ not a native tool. MCP stays out, with its return conditions on record
   rewrite history's request bytes (the text-overflow cache may be
   URL-keyed only because its file is a recovery aid, never replayed).
   Per turn the tool renders a native `file` part when this turn's model
-  takes PDFs (catalog) *and* the pipe can carry them at tool-result
+  takes PDFs (catalog) _and_ the pipe can carry them at tool-result
   position (`carriesMedia`, position-aware; see `design/model.md` →
   Capabilities), a trusted-framing path reference otherwise — a pure
   function of ref + bytes + this turn's model: identical request bytes

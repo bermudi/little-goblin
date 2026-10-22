@@ -54,7 +54,8 @@ describe("restore and snapshot", () => {
 	test("restored warnings re-send once per attempt — the cursor dies with the attempt", () => {
 		const first = new TurnState(deps, loopOf({ warnings: ["w"] }));
 		expect(first.drainWarnings()).toStrictEqual(["w"]);
-		expect(first.drainWarnings()).toStrictEqual([]);		const second = new TurnState(deps, first.snapshot());
+		expect(first.drainWarnings()).toStrictEqual([]);
+		const second = new TurnState(deps, first.snapshot());
 		expect(second.drainWarnings()).toStrictEqual(["w"]);
 	});
 

@@ -1,4 +1,5 @@
 # goblin v2
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bermudi/little-goblin)
 
 
@@ -61,10 +62,10 @@ Details: [`docs/usage.md`](docs/usage.md). Voice features:
 
 Two files, side by side in `~/goblin/`:
 
-| File | What | Secrets? |
-|---|---|---|
-| `goblin.json5` | providers, default model, thinking, speech, Telegram, web UI | never |
-| `auth.jsonl` | one `{"name": ..., "value": ...}` per line, file mode `0600` | always |
+| File           | What                                                         | Secrets? |
+| -------------- | ------------------------------------------------------------ | -------- |
+| `goblin.json5` | providers, default model, thinking, speech, Telegram, web UI | never    |
+| `auth.jsonl`   | one `{"name": ..., "value": ...}` per line, file mode `0600` | always   |
 
 A secret value is either the credential itself or a `!command` that fetches
 it when needed. Direct Pass commands are refused; use a configured

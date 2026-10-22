@@ -7,8 +7,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 The trust model — assets, trust classes, entry points, failure policy, what
 is deliberately out of scope — lives in [`docs/security.md`](../docs/security.md).
-This section owns *why* the secret discipline looks the way it does; that doc
-owns *who is trusted with what*. A change that widens trust belongs in both.
+This section owns _why_ the secret discipline looks the way it does; that doc
+owns _who is trusted with what_. A change that widens trust belongs in both.
 
 No secrets in env — the agent's `bash` tool inherits the process environment,
 and env vars leak — and resolved values never enter the tool environment, the
@@ -16,13 +16,12 @@ model context, or logs.
 
 ### Naming discipline (2026-10-10)
 
-Config blocks reference secrets by record *name* — a join key between
+Config blocks reference secrets by record _name_ — a join key between
 `goblin.json5` (shareable) and `auth.jsonl` (0600, the only place values
 live). Names cannot be deleted from the config: two providers of one kind
 with different keys, and one record serving many features, need the
 indirection. But a typed, required name in every settings field restates what
 the config already knows, so blank means "derive":
-
 - **Search/fetch steps and `openrouter` providers default to the kind's own
   record name.** `jina` is deliberately outside the map: it works keyless, so
   blank must mean "no key", never a record named `jina`.
@@ -46,7 +45,6 @@ the config already knows, so blank means "derive":
 Proton Pass is the operator's credential backbone. Remote access uses a
 scoped, audited **agent token of Goblin's own**; foreground provider/MCP
 consumption reads encrypted local snapshots, not Pass. Rulings:
-
 - **Goblin's own agent token** (`goblin-dev`, provisioned by the owner —
   Goblin never creates, renews, grants, or revokes agents). Grants are item by
   item, viewer; the audit trail is its own. The bootstrap PAT lives in the OS

@@ -11,12 +11,11 @@ You never touch the machinery. Everything happens in chat.
 
 Just ask. The bot sees the list of installed skills on every reply and reads
 the instructions when one matches:
-
-- *"install the mq skill"* — the bot fetches it (from your skills repo, a
+- _"install the mq skill"_ — the bot fetches it (from your skills repo, a
   link, or a file you send it) into its catalog. Live on the next message.
-- *"update the pdf skill to handle tables"* — it edits the files. Live next
+- _"update the pdf skill to handle tables"_ — it edits the files. Live next
   turn.
-- *"remove the mq skill"* — it deletes the folder. Gone next turn.
+- _"remove the mq skill"_ — it deletes the folder. Gone next turn.
 
 If a skill's instructions mention scripts or helper files, the bot runs them
 with its shell. If a skill is broken, the bot says so in chat (broken ones
@@ -38,6 +37,7 @@ Markdown instructions:
 
 ```markdown
 ---
+
 name: pdf
 description: Extract text from PDF files, including scanned pages via OCR.
 ---
@@ -69,8 +69,8 @@ Tell the bot your sources once and it remembers.
 After a turn where you corrected it or it worked through a repeatable
 procedure, the bot may draft what it learned as a skill on its own.
 Drafts never install themselves: they park in `workspace/skills-proposed/`
-and the bot says so in the topic (*"proposed skill: X — approve to
-install"*). Approve and it moves the draft into the catalog; say discard
+and the bot says so in the topic (_"proposed skill: X — approve to
+install"_). Approve and it moves the draft into the catalog; say discard
 and it deletes it. The bot sees pending proposals in its skills list, so
 you can approve from any chat, not just the one where the draft landed.
 

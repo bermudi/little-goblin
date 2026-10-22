@@ -1,12 +1,13 @@
 ---
+
 name: pass-cli
 description: >
-  Retrieve Proton Pass secrets or inject them into a command or config
-  file with pass-cli — always through goblin's own scoped, audited agent
-  session, never the operator's owner session.
+Retrieve Proton Pass secrets or inject them into a command or config
+file with pass-cli — always through goblin's own scoped, audited agent
+session, never the operator's owner session.
 license: Apache-2.0
 metadata:
-  topic: secrets
+topic: secrets
 compatibility: Requires pass-cli and an operator-provisioned goblin-dev agent task session; the bootstrap PAT lives in Secret Service/KWallet as goblin-dev, with per-item viewer grants (owner actions)
 ---
 
@@ -17,12 +18,12 @@ accessible item, passing a secret to a process, rendering a requested
 config file, or reading a TOTP code. It never administers vaults,
 shares, agents, or grants — those are owner actions.
 
-| Need | Route |
-| --- | --- |
-| A program needs a secret, you don't | `pass-cli run` with `pass://` refs — output masked, value reaches the child only |
-| A requested config artifact needs a secret | `pass-cli inject` to an explicit path (default 0600) |
-| An interactive login needs a one-time code | `pass-cli item totp` — the only value allowed into context; it dies in seconds |
-| Find what's accessible | `pass-cli vault list`, `item list --output json` — metadata only |
+| Need                                       | Route                                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| A program needs a secret, you don't        | `pass-cli run` with `pass://` refs — output masked, value reaches the child only |
+| A requested config artifact needs a secret | `pass-cli inject` to an explicit path (default 0600)                             |
+| An interactive login needs a one-time code | `pass-cli item totp` — the only value allowed into context; it dies in seconds   |
+| Find what's accessible                     | `pass-cli vault list`, `item list --output json` — metadata only                 |
 
 Never `item view` (it prints values — once a secret enters context it
 has leaked), never `--no-masking`, never item/vault/agent/share writes.

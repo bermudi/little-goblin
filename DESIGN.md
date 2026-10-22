@@ -54,7 +54,7 @@ resident self-waking behavior is introduced by this capability.
 Two concepts. Conversation identity **is** its channel address — a Telegram
 address (chat + optional topic thread) or an app address (`app/<id>`), ruling
 2026-09-30. The two pools are disjoint; see App channel. One exception
-(ruling 2026-10-03): the bot DM is a *rolling* address — it resolves to its
+(ruling 2026-10-03): the bot DM is a _rolling_ address — it resolves to its
 current conversation, and a quiet gap can start the next one (see Rolling
 DM).
 
@@ -169,7 +169,6 @@ breakpoints; `cached_tokens` in usage), other providers do the same by prefix
 matching. The invariant: **the request for turn N+1 is the request for turn N
 with new content appended — bytes already sent are never rewritten.**
 Consequences:
-
 - No per-turn re-judgment of history. Attachment representation is the pure
   function above; there is no whole-turn budget and no newest-first eviction
   — an old image never degrades to a path reference because newer ones
@@ -267,15 +266,14 @@ their own units — never one scope of closures.
 ## Non-goals (v1 — return only on demand)
 
 The list below is a record, not a law. The law, applied to any capability:
-
 1. **Core** — what the turn loop's honesty depends on (ordering, authority,
    durability, delivery). Always in; defects here jump the queue.
 2. **Chat-native** — a natural property of one operator talking to one agent
    in Telegram: text/voice/media intake, topics, settings commands, the soul.
    The operator is one person (possibly several accounts); anyone else appears
    only as a fenced sandbox lane (`design/telegram.md` → Roles and
-   permissions). In scope by default; a missing piece here is a gap *against
-   this doc*, not a deferral. (Voice notes are chat-native — the rewrite
+   permissions). In scope by default; a missing piece here is a gap _against
+   this doc_, not a deferral. (Voice notes are chat-native — the rewrite
    exists because pi couldn't do audio; if transcription is missing, that's a
    bug in the roadmap, not a choice.)
 3. **Machinery** — a second system the loop must keep honest: memory stores,

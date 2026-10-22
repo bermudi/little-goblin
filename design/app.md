@@ -50,7 +50,7 @@ token MANDATORY.
 proves the device, not the page: any site the browser visits could fire
 no-cors POSTs (`text/plain` bodies, no CORS preflight, response never read)
 at `/api/app/*`, creating conversations and submitting turns. Trust mode
-therefore refuses *mutations* speaking a foreign browser origin: `Origin`
+therefore refuses _mutations_ speaking a foreign browser origin: `Origin`
 must match the request's own Host (either scheme — TLS ends at the front)
 or the configured `publicUrl`'s origin — `tailscale serve` rewrites Host,
 so only the public origin survives it. `Sec-Fetch-Site: same-site` refuses
@@ -102,7 +102,7 @@ Operator ask: the PWA becomes the operations surface, because Telegram is
 the wrong client for long reads and state edits. Two doors onto one surface
 share validation and persistence — a write lands identically either way —
 and differ only in the self-lockout guard: the mini app refuses to remove
-the *requesting* Telegram id from `operators`, the app door (no requester)
+the _requesting_ Telegram id from `operators`, the app door (no requester)
 an empty list.
 
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
@@ -135,8 +135,7 @@ The reply belongs to the conversation, not the connection that submitted
 it. Two defects shared that root (audit 2026-10-04): a second client
 submitting mid-turn received an empty stream; a reload mid-turn showed
 a finished-looking chat whose next send steered a ghost turn (#43).
-
-- **Chunk fan-out.** Every *streaming* member receives the chunks; a
+- **Chunk fan-out.** Every _streaming_ member receives the chunks; a
   throwing streaming sink is detached, never fatal; a streaming head
   claims the whole queue — one burst, one reply.
 - **Join replay.** A member attaching mid-turn first receives everything
@@ -151,7 +150,7 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   for every reply that could have been live at snapshot; the client
   re-reads history once on idle resume and merges by message id, never
   dropping a live local tail.
-- **Parked, with a trigger.** A *passive* screen (no submit, no reload)
+- **Parked, with a trigger.** A _passive_ screen (no submit, no reload)
   still doesn't live-update; promote when "app open while turns happen"
   becomes a daily pattern — the server machinery is ready. Until then it
   stays Spin-off's "live refresh out of scope".
@@ -205,7 +204,7 @@ turns in the app conversation — they run and persist like client-driven
 ones, nothing streaming; the app shows them on next open. For this, the
 app channel gains the `delegate` tool; `program`/`mail` stay Telegram-only.
 
-**Telegram rings.** Every completed background turn pings the *current* DM
+**Telegram rings.** Every completed background turn pings the _current_ DM
 — `<title>: <head of the reply>` plus a link, appended as an assistant
 event (answerable in chat) and counted for the gap rule. A swipe-reply
 routes to the app conversation (headless, so it rings back); the DM
@@ -244,7 +243,6 @@ before the turn ended — and the writer swallowed the enqueue failure,
 fail-loud broken.
 
 **The rules.**
-
 - Heartbeat: an SSE comment (`: ping`) after 5s of wire silence — comments
   are skipped by parsers and by the SDK client's `eventsource-parser`
   (firstCharCode 58), warming the wire without touching the stream; the
@@ -262,7 +260,6 @@ fail-loud broken.
 A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md →
 The turn journal); the app surfaces those runs where they died. Contract,
 mirroring the Telegram `/decide` / `/resume` surface:
-
 - **Decisions are explicit.** Each `dispatched` call shows its tool name, a
   bounded args preview, and three buttons — Record result (asserts an
   outcome the operator already knows; it becomes the replayable result),
@@ -309,7 +306,6 @@ nothing more.
 On a conversation: everything that conversation produced, visible in place,
 not by digging through global tabs. The chat header gains its first action
 opening a sheet with two sections:
-
 - **Retained exchanges** (filter ruling: design/memory.md → Memories
   browser) — the Memories tab's rows and detail/facts/forget affordances,
   from shared components, not duplicated.
@@ -334,13 +330,12 @@ artifact store, no state outliving the message; that line is machinery and
 needs its own ruling.
 
 **Mechanism: a component tree, not HTML.** One tool, `ui`, app conversations
-only (Telegram never sees it; guests never). The tool *input is the
-interface*: a fixed library of native components, zod-validated, rendered
+only (Telegram never sees it; guests never). The tool _input is the
+interface_: a fixed library of native components, zod-validated, rendered
 with the app's design tokens; `execute` validates and returns a one-line
 ack — nothing runs. Store format = wire format: the tool part persists in
 UIMessage history, so reload, resume, and spin-off copies carry the UI, and
 the model sees its past interface as a past tool call.
-
 - **No recursion, two levels** (containers hold leaf children only): a
   recursive zod schema emits `$ref`/`$defs`, which OpenAI-compatible
   providers handle unevenly, and a rejected schema breaks every app turn.
@@ -363,7 +358,7 @@ the model sees its past interface as a past tool call.
 
 **Interaction, two tiers.** Local state (tabs, form inputs) stays in React,
 never server. Actions — a choice button, a form submit — post an ordinary,
-*visible* user message through the composer, so the transcript never lies;
+_visible_ user message through the composer, so the transcript never lies;
 actions disable while a turn runs. No client-side tools: turns run
 server-side and outlive the client, so a turn parked on a browser
 round-trip would hang with the tab closed.

@@ -63,7 +63,7 @@ speech); a failure never mints a `transcript` field.
 
 ### Borrowed from openclaw
 
-Borrowed from openclaw (MIT, `src/media-understanding/`): the *shape*, not
+Borrowed from openclaw (MIT, `src/media-understanding/`): the _shape_, not
 the code — a local CLI kind (we pin one engine where they probe candidates)
 and OpenAI-compatible `/audio/transcriptions` as the shared cloud adapter.
 Their plugin registry and per-provider option surfaces are non-goals here.
@@ -77,7 +77,6 @@ as their Needle model — `needle_load` reads whichever `.cact` it gets),
 spawned per transcription: no daemon, no `--serve`, no Python — a stateless
 subprocess. The binary contains no HTTP client and reads no environment —
 audio never leaves the box.
-
 - **Artifacts** (x86_64 linux): engine `needle` (1.5 MB) and
   `whistle.cact` (16.9 MB) from `huggingface.co/Cactus-Compute/needle3` and
   `/whistle`, auto-fetched on first use, digest-pinned: digest mismatch =
@@ -94,7 +93,6 @@ audio never leaves the box.
 ### Orchestrator (prep and timestamps)
 
 The size-cap decision generalizes:
-
 - `container:"keep"` engines (all cloud) pass the original bytes under the
   provider multipart cap (25 MiB, OpenAI/groq/mistral); over it, mono opus
   segments.

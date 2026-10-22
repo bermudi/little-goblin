@@ -9,7 +9,6 @@ and owns settings, not conversations.
 
 Each forum topic is its own conversation with its own history and settings.
 No `/new`, no `/resume` — that job belongs to Telegram:
-
 - **Start something:** create a topic, say hi.
 - **Resume something:** post in the old topic. Full history is there.
 - **No topics?** A chat without topics is one standing conversation.
@@ -26,14 +25,14 @@ per-topic (the topic you're in), and every settings change interrupts
 whatever that topic is currently doing, so a reply always reflects the
 current settings — never a mix.
 
-| Command | What it does |
-|---|---|
-| `/voice` | Toggles voice-note replies for this topic. Speech is on by default; it needs `ffmpeg` and can be turned off with `tts: ""`. |
-| `/stop` | Interrupts the running reply and drops anything queued behind it. |
-| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses 75% of the context window. Recent messages stay; nothing is deleted. |
-| `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
-| `/forget` | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention. |
-| `/start` | A canned hello (Telegram sends it when a chat first opens). Nothing more. |
+| Command    | What it does                                                                                                                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/voice`   | Toggles voice-note replies for this topic. Speech is on by default; it needs `ffmpeg` and can be turned off with `tts: ""`.                                                                                                                              |
+| `/stop`    | Interrupts the running reply and drops anything queued behind it.                                                                                                                                                                                        |
+| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses 75% of the context window. Recent messages stay; nothing is deleted.                                                        |
+| `/memory`  | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
+| `/forget`  | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention.                                                                                    |
+| `/start`   | A canned hello (Telegram sends it when a chat first opens). Nothing more.                                                                                                                                                                                |
 
 Commands can be addressed (`/stop@yourbot`) in groups; a command addressed
 to a different bot is ignored rather than fed to the model.
@@ -60,7 +59,6 @@ to the message that triggered them.
 
 Photos, documents, voice notes, audio files, videos, GIFs, video circles,
 stickers — just send them, optionally with a caption. What happens:
-
 1. The file is saved into `workspace/attachments/` where the bot (and you,
    over SSH) can reach it.
 2. A model that understands that kind of media gets the file itself.
@@ -132,7 +130,7 @@ URL — see [Security](security.md#the-app-channels-auth).
 - `workspace/AGENTS.md` — the bot's operating notes, owned by the bot
   itself (it starts as a stub the bot is expected to grow). Same deal:
   edits apply next turn.
-- `workspace/USER.md` — the bot's model of *you*: stable preferences as
+- `workspace/USER.md` — the bot's model of _you_: stable preferences as
   directives, each with an observation date. When you change your mind,
   the bot marks the old entry superseded instead of stacking a
   contradiction. Same deal: edits apply next turn.

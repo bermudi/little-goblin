@@ -119,11 +119,7 @@ describe("app attachments", () => {
 		try {
 			const bytes = new Uint8Array([9, 9, 9, 9, 9]);
 			const form = new FormData();
-			form.append(
-				"file",
-				new Blob([bytes], { type: "audio/webm" }),
-				"voice-note.webm",
-			);
+			form.append("file", new Blob([bytes], { type: "audio/webm" }), "voice-note.webm");
 			const res = await call("/api/app/attachments", { method: "POST", body: form });
 			expect(res.status).toBe(201);
 			const body = (await res.json()) as { ref: { path: string } };

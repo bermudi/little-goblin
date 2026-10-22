@@ -15,7 +15,6 @@ not by mechanism — the honest limit (below). The `+watch` helper
 (Pub/Sub push) was rejected: a GCP project, Pub/Sub resources and 7-day
 watch renewal are a second system to keep honest, and the poller
 reproduces the checkpoint contract below with no new infrastructure.
-
 - **Scopes: readonly is the wall.** `gmail.readonly` (search needs `q`;
   the metadata scope rejects it), `drive.readonly` (no write — Drive
   deletes are unrecoverable), `calendar` + `spreadsheets` read-write
@@ -54,7 +53,7 @@ reproduces the checkpoint contract below with no new infrastructure.
   Only a callback from an `operators` id sends, via a send token no tool
   path and no skill ever touches; threading resolves at send time from
   the stored reply target over the read credential (the send-only scope
-  would 403 it). The row decides *after* Gmail accepts the send — a
+  would 403 it). The row decides _after_ Gmail accepts the send — a
   crash between the two leaves a re-tappable pending row (a visible
   duplicate on retry), never a silent loss — and only pending rows can
   send: cancelled, expired, and decided rows never do, while a restart
@@ -63,7 +62,7 @@ reproduces the checkpoint contract below with no new infrastructure.
   automatically — a landed button still settles the row, otherwise it
   expires. The operator checks Telegram before requesting a replacement.
   Honest boundary: goblin already holds full-bash same-uid trust, so
-  this stops a *tricked* model, not a hostile one.
+  this stops a _tricked_ model, not a hostile one.
 - **Watcher ownership and shutdown.** One mail watcher per programs
   store; duplicate starts throw until the stop settles, and stop fences
   new scans while joining in-flight work.

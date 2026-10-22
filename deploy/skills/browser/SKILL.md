@@ -1,17 +1,19 @@
 ---
+
 name: browser
 description: >
-  Real browser automation for pages the fetch tool can't handle —
-  JavaScript-heavy apps, login walls behind cookies, anything that needs
-  clicking or forms. Drives the agent-browser CLI (Rust, CDP,
-  accessibility-tree snapshots with @eN element refs) through bash.
+Real browser automation for pages the fetch tool can't handle —
+JavaScript-heavy apps, login walls behind cookies, anything that needs
+clicking or forms. Drives the agent-browser CLI (Rust, CDP,
+accessibility-tree snapshots with @eN element refs) through bash.
 license: Apache-2.0
 metadata:
-  version: "1.0"
-  topic: browser-automation
+version: "1.0"
+topic: browser-automation
 compatibility: Requires the agent-browser CLI and a Chrome/Chromium binary; if the CLI is missing (e.g. a rebuilt box), restore it with npm i -g agent-browser && agent-browser install
 allowed-tools:
-  - Bash(agent-browser:*)
+- Bash(agent-browser:*)
+
 ---
 
 # browser

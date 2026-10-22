@@ -19,7 +19,6 @@ Telegram rings for `needs_input` (goblin needs a human) — not for
 routine completions.
 
 Rulings:
-
 - **The herdr session is its own systemd user unit**, not a child of
   goblin: systemd stops a unit's whole cgroup, so a spawned session
   would kill every running delegation on a goblin restart. Verified
@@ -116,7 +115,7 @@ Rulings:
   answered, else the launch fails with herdr's own error; forwarding
   never falls back or retries. An unreachable target is **cannot
   observe**, not agent gone: its rows stay watched, the error logs, the
-  agent runs host-side. A parked row resumes on *any* seq advance, not
+  agent runs host-side. A parked row resumes on _any_ seq advance, not
   a `working` glimpse — an attached operator can finish the exchange
   between polls. A completion that folds into a captured baseline
   settles from a fresh local report or parks `needs_input` —

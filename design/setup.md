@@ -26,7 +26,6 @@ opt-in capability boundary.
 ## Install order
 
 Required sequence:
-
 1. Cheap host/input/path checks and existing-installed-target refusal,
    before any dependency, asset or service mutation.
 2. Frozen dependency sync. Dependency-using validation runs only after
@@ -67,19 +66,19 @@ status or the typed JSON report — never scraping human output.
 Disabled, pending action, blocked inspection and broken are different
 states; expected absence must never masquerade as a health pass.
 
-| Observation | `preflight` after dependencies/provisioning | `installed` / first-boot acceptance |
-| --- | --- | --- |
-| Config/auth absent | Fail start-ready preflight; untouched checkout is not this phase | Fail; do not enable/start |
-| Config malformed, auth too open, missing `telegram` or configured auth ref, direct `pass-cli` | Fail before service mutations; blocked dependent checks skip with reason | Fail |
-| Workspace, stubs, MCP seed, shims absent | Pending boot scaffolding; skip presence checks | Missing required boot outputs fail; distinguish optional note files per Doctor's agreed policy |
-| SQLite absent | Expected before first boot; skip presence/schema checks, never create it to inspect | Fail first-boot acceptance; existing DB inspected read-only including WAL |
-| Unit missing / service stopped | Expected until installation; do not require running service | Fail installed-service acceptance; stop is an observation, never an instruction to auto-start |
-| `app/dist` absent | Skip in preflight; shared asset check immediately after build must pass before units/enable | Fail full two-channel setup; verify actual loopback HTML and referenced local assets, not directory existence alone |
-| Required Pass snapshot absent/locked | Fail when configured: explicit provisioning precedes preflight | Fail fresh-resolution readiness; do not infer the running process lost cached credentials |
-| Usable old snapshot | Warn, not expired; no automatic warm | Same; age threshold belongs to Doctor/operator |
-| Configured optional dependency unavailable | Fail start-ready preflight; provisioning precedes this phase | Fail feature readiness even if core Telegram remains alive |
-| Whistle cache absent | Expected deferred first-use download on supported platform; configured override missing is a failure | Cache absence alone is not corruption; report cold/unverified until exercised, no diagnostic download |
-| Storage/inspection permission or I/O error | Preserve operation/errno; never relabel as absence | Same; capacity does not prove future durable writes will succeed |
+| Observation                                                                                   | `preflight` after dependencies/provisioning                                                          | `installed` / first-boot acceptance                                                                                 |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Config/auth absent                                                                            | Fail start-ready preflight; untouched checkout is not this phase                                     | Fail; do not enable/start                                                                                           |
+| Config malformed, auth too open, missing `telegram` or configured auth ref, direct `pass-cli` | Fail before service mutations; blocked dependent checks skip with reason                             | Fail                                                                                                                |
+| Workspace, stubs, MCP seed, shims absent                                                      | Pending boot scaffolding; skip presence checks                                                       | Missing required boot outputs fail; distinguish optional note files per Doctor's agreed policy                      |
+| SQLite absent                                                                                 | Expected before first boot; skip presence/schema checks, never create it to inspect                  | Fail first-boot acceptance; existing DB inspected read-only including WAL                                           |
+| Unit missing / service stopped                                                                | Expected until installation; do not require running service                                          | Fail installed-service acceptance; stop is an observation, never an instruction to auto-start                       |
+| `app/dist` absent                                                                             | Skip in preflight; shared asset check immediately after build must pass before units/enable          | Fail full two-channel setup; verify actual loopback HTML and referenced local assets, not directory existence alone |
+| Required Pass snapshot absent/locked                                                          | Fail when configured: explicit provisioning precedes preflight                                       | Fail fresh-resolution readiness; do not infer the running process lost cached credentials                           |
+| Usable old snapshot                                                                           | Warn, not expired; no automatic warm                                                                 | Same; age threshold belongs to Doctor/operator                                                                      |
+| Configured optional dependency unavailable                                                    | Fail start-ready preflight; provisioning precedes this phase                                         | Fail feature readiness even if core Telegram remains alive                                                          |
+| Whistle cache absent                                                                          | Expected deferred first-use download on supported platform; configured override missing is a failure | Cache absence alone is not corruption; report cold/unverified until exercised, no diagnostic download               |
+| Storage/inspection permission or I/O error                                                    | Preserve operation/errno; never relabel as absence                                                   | Same; capacity does not prove future durable writes will succeed                                                    |
 
 No channel-disable knob: full two-channel assets are the default install
 acceptance. Network-dependent features have separate readiness results; a
@@ -89,7 +88,6 @@ configured local reference does not prove its provider works.
 
 A bounded, invocation-specific action sequence owned by the installer —
 not another Doctor phase, not a service repair loop:
-
 1. Before the approved start, record the attempted-start boundary and
    baseline invocation identity: invocation ID, start timestamp, restart
    count. Reject ambiguous target identity.
@@ -156,15 +154,15 @@ or provider access — the operator handshake does.
 A seeded skill is not a provisioned capability. The installer documents
 these boundaries; it does not silently install them.
 
-| Capability | Operator prerequisites / readiness boundary |
-| --- | --- |
-| Speech | `ffmpeg` in service PATH. Whistle's digest-pinned engine/weights download on first use — platform, network, exec and cache permitting; cloud kinds need `ffmpeg` over the upload cap. |
-| Pass refs | `pass-keys`, scoped agent/grants, both profile snapshots when using the shipped warmer/MCP lane, an available unlocked persistent wallet, commands in service PATH. Provision and warm are explicit operator actions, never diagnostics. |
-| Memory | An existing endpoint or the separately approved installer. Local stack: rootless Podman, user units, subuid/subgid; local embeddings add Ollama/model/relay. Environment-dump commands are never health checks. |
-| Delegation | herdr plus the operator-configured harnesses on each target. No live pane probes or agent launches during diagnostics. |
-| Browser | Separate `agent-browser`/Chromium install; the seeded skill documents recovery. The installer supplies no executable. |
-| Mail / Workspace | gws install and scoped login, send refs, optional System One refs. MCP needs its pinned local executable, isolated config and snapshot. |
-| Remote access | Loopback HTTP is not a public HTTPS door. Reverse proxy/tailnet and `publicUrl` are operator-owned. Trust mode merely warns; public exposure requires bearer auth by policy, not enforced `publicUrl` detection. |
+| Capability       | Operator prerequisites / readiness boundary                                                                                                                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Speech           | `ffmpeg` in service PATH. Whistle's digest-pinned engine/weights download on first use — platform, network, exec and cache permitting; cloud kinds need `ffmpeg` over the upload cap.                                                    |
+| Pass refs        | `pass-keys`, scoped agent/grants, both profile snapshots when using the shipped warmer/MCP lane, an available unlocked persistent wallet, commands in service PATH. Provision and warm are explicit operator actions, never diagnostics. |
+| Memory           | An existing endpoint or the separately approved installer. Local stack: rootless Podman, user units, subuid/subgid; local embeddings add Ollama/model/relay. Environment-dump commands are never health checks.                          |
+| Delegation       | herdr plus the operator-configured harnesses on each target. No live pane probes or agent launches during diagnostics.                                                                                                                   |
+| Browser          | Separate `agent-browser`/Chromium install; the seeded skill documents recovery. The installer supplies no executable.                                                                                                                    |
+| Mail / Workspace | gws install and scoped login, send refs, optional System One refs. MCP needs its pinned local executable, isolated config and snapshot.                                                                                                  |
+| Remote access    | Loopback HTTP is not a public HTTPS door. Reverse proxy/tailnet and `publicUrl` are operator-owned. Trust mode merely warns; public exposure requires bearer auth by policy, not enforced `publicUrl` detection.                         |
 
 ## Verification boundary
 

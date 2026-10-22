@@ -678,10 +678,10 @@ describe("worker timer", () => {
 					},
 				},
 			});
-		await w.tickNow();
-		expect(queue.retryBlocked(client.target)).toBe(1);
-		await w.tickNow();
-		expect(notices).toHaveLength(1);
+			await w.tickNow();
+			expect(queue.retryBlocked(client.target)).toBe(1);
+			await w.tickNow();
+			expect(notices).toHaveLength(1);
 			expect(notices[0]?.conversationId).toBe("dm:1");
 			expect(notices[0]?.error).toContain("HTTP 401");
 			expect(submitted).toHaveLength(2);
@@ -729,9 +729,9 @@ describe("worker timer", () => {
 					},
 				},
 			});
-		await w.tickNow();
-		await w.tickNow();
-		expect(calls).toHaveLength(1);
+			await w.tickNow();
+			await w.tickNow();
+			expect(calls).toHaveLength(1);
 			expect(calls[0]!.msg).toContain("blocked notice failed");
 			expect(String(calls[0]!.err)).toContain("telegram unreachable");
 			expect(calls[0]!.fields.conversation).toBe("dm:9");

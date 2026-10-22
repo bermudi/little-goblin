@@ -17,7 +17,7 @@ no command, registry, cache, or tombstone — live at the next conversation
 boundary (a DM roll or compaction; the system prompt is frozen per
 conversation, the SKILL.md read fresh on use), and no ssh: the operator
 asks in Telegram; goblin is already on the box. Hand-editing `skills/`
-over ssh is the fallback, not the flow. Where to fetch *from* (the
+over ssh is the fallback, not the flow. Where to fetch _from_ (the
 operator's skills repo, the host catalog) is deployment fact, not code,
 living in the workspace `AGENTS.md`. `skills-ref validate` is installed
 for authoring-time checks. Sharing in a host skill is a symlink — made
@@ -62,7 +62,6 @@ On demand (2026-09-26, the second slice of "richer inner life"). After a
 turn, goblin may distill what it learned into a skill unprompted. A
 better model of the operator is **not** this feature — that is Hindsight's
 job (tune it, don't duplicate it).
-
 - **Gate: System One on every completed turn** — the shared client
   (`design/system1.md`) asks two typed `noul` questions; a decision
   model, not a chat model. Both criteria sides are required — the

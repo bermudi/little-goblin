@@ -131,7 +131,6 @@ function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
 }
 
 describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () => {
-
 	test("all six tails answer through the real door wiring", async () => {
 		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
 		try {

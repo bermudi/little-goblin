@@ -98,7 +98,6 @@ Configured synthetic embedding probes can load/cache the configured model
 and affect ordinary runtime counters; they retain no facts in a memory bank.
 
 Fresh install follows this order, not an update sequence:
-
 1. Cheap prerequisites/input checks and existing-target refusal.
 2. Frozen dependencies, then confirm explicit provisioning is already complete.
 3. `bun --no-install run src/doctor.ts --phase preflight [--json]` from the checkout with
@@ -176,7 +175,7 @@ separately reviewed operator update; it is not overwritten by deployment.
 
 Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
 source of truth for the seeded copy; `ensureHomeLayout` installs it on
-first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
+first boot. A skill that _advertises a backend tool_ (e.g. herdr v2.2,
 which assumes the `herdr` tool exists) must NOT be synced into the live
 workspace ahead of the backend deploy that ships the tool. After the
 approved `scripts/deploy.sh` rollout verifies the new backend, explicitly
@@ -466,12 +465,12 @@ result-committed windows behave as designed.
 
 Goblin's own state is under `~/goblin/`:
 
-| What | Where | Notes |
-|---|---|---|
-| Conversations + history | `state/goblin.sqlite` | SQLite, WAL mode — snapshot with `scripts/backup-state.sh` (see below) |
-| Settings | `goblin.json5` | plain text — the backup script copies it beside each DB snapshot |
-| Secrets | `auth.jsonl` | guard this copy like the original — plain `cp` while readable |
-| Identity, notes, skills, attachments | `workspace/` | plain files |
+| What                                 | Where                 | Notes                                                                  |
+| ------------------------------------ | --------------------- | ---------------------------------------------------------------------- |
+| Conversations + history              | `state/goblin.sqlite` | SQLite, WAL mode — snapshot with `scripts/backup-state.sh` (see below) |
+| Settings                             | `goblin.json5`        | plain text — the backup script copies it beside each DB snapshot       |
+| Secrets                              | `auth.jsonl`          | guard this copy like the original — plain `cp` while readable          |
+| Identity, notes, skills, attachments | `workspace/`          | plain files                                                            |
 
 The state database snapshot is manual, not scheduled:
 
@@ -484,7 +483,7 @@ It runs sqlite3's `.backup` — the online-safe copy that reads the live
 WAL consistently without checkpointing or mutating the source —
 `quick_check`s the result, names it `state/backups/goblin-<UTC>.sqlite`,
 copies `goblin.json5` beside it, and prunes only its own stamp-shaped
-files to the newest *keep* (hand-named backups are never touched). Run
+files to the newest _keep_ (hand-named backups are never touched). Run
 it before risky operations and as often as feels useful; the DB is a few
 megabytes, so a snapshot is instant.
 
@@ -528,26 +527,26 @@ it only while the bot is stopped, if ever.
 
 ## Troubleshooting
 
-| Symptom | Check |
-|---|---|
-| Service crash-loops or won't start | Run installed Doctor with the intended checkout/home/service PATH; inspect journal privately if needed. Older deployed code/logs can still contain parser fragments — do not share raw errors |
-| `insecure permissions … chmod 600` | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about |
-| `no secret named "…"` | `auth.jsonl` needs `telegram`, every configured provider `auth` name (Codex uses its own OAuth file), configured optional auth refs, and every search/fetch step's name (blank = the kind's own record — see `authDefaults` in `src/config.ts`); create/edit privately with mode 0600 |
-| Secret command fails | For `pass-keys`, check `status goblin-dev` and `journalctl --user -u goblin-keys`; check wallet unlock/availability and snapshot/key presence first. Fix bootstrap/profile/item grants and explicitly `pass-keys warm goblin-dev` as needed. `get` never fetches remotely on a miss. Don't print values. Auth edits/rotated resolved keys need an approved Goblin restart; service `PATH` covers `~/bin` and `~/.local/bin` |
-| Key sync fails but the bot still works | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent |
-| Keys unavailable after reboot | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass |
-| Bot runs but never answers | your user id in `operators`? The log names refusals and drops with the id. DM `@userinfobot` to confirm yours |
-| Settings button missing/stale | Set `publicUrl` in Settings; saves apply it without restart. Bootstrap/recovery file edits need validation and an approved restart |
-| Mini app won't load / `load failed: 401` | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen |
-| `config would remove your own telegram user id` | the save you're attempting drops your id from `operators` — fix the field, save again |
-| Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |
-| `/memory` says degraded — blocked retention(s) | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked |
-| `/app/` answers 500 / "app client not built" | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. `app:build` + `publish-app.sh`, then check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved publish |
-| `/app/` asks for a token you didn't expect | the server is in bearer mode — `appToken` is set in `goblin.json5`; paste the value of the `auth.jsonl` record it names. Never had a token? `appToken` was probably just added — it's boot-pinned, so a running process ignores the change until restart |
-| `/app/` shows "The stored token stopped working" | the `auth.jsonl` record's value rotated (rotation needs a goblin restart to take) — the app's own "Paste a new token" door clears it |
-| All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |
-| `ffmpeg` warnings at boot | install `ffmpeg` — voice features and large-file transcription need it |
-| Thinking levels look wrong for a model | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself |
+| Symptom                                                       | Check                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Service crash-loops or won't start                            | Run installed Doctor with the intended checkout/home/service PATH; inspect journal privately if needed. Older deployed code/logs can still contain parser fragments — do not share raw errors                                                                                                                                                                                                                                                                           |
+| `insecure permissions … chmod 600`                            | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about                                                                                                                                                                                                                                                                                                                                                                            |
+| `no secret named "…"`                                         | `auth.jsonl` needs `telegram`, every configured provider `auth` name (Codex uses its own OAuth file), configured optional auth refs, and every search/fetch step's name (blank = the kind's own record — see `authDefaults` in `src/config.ts`); create/edit privately with mode 0600                                                                                                                                                                                   |
+| Secret command fails                                          | For `pass-keys`, check `status goblin-dev` and `journalctl --user -u goblin-keys`; check wallet unlock/availability and snapshot/key presence first. Fix bootstrap/profile/item grants and explicitly `pass-keys warm goblin-dev` as needed. `get` never fetches remotely on a miss. Don't print values. Auth edits/rotated resolved keys need an approved Goblin restart; service `PATH` covers `~/bin` and `~/.local/bin`                                             |
+| Key sync fails but the bot still works                        | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent                                                                                                                                                                                                                                                                                                     |
+| Keys unavailable after reboot                                 | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass                                                                                                                                                                                                                                                                                            |
+| Bot runs but never answers                                    | your user id in `operators`? The log names refusals and drops with the id. DM `@userinfobot` to confirm yours                                                                                                                                                                                                                                                                                                                                                           |
+| Settings button missing/stale                                 | Set `publicUrl` in Settings; saves apply it without restart. Bootstrap/recovery file edits need validation and an approved restart                                                                                                                                                                                                                                                                                                                                      |
+| Mini app won't load / `load failed: 401`                      | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen                                                                                                                                                                                                                                                                                                                                                       |
+| `config would remove your own telegram user id`               | the save you're attempting drops your id from `operators` — fix the field, save again                                                                                                                                                                                                                                                                                                                                                                                   |
+| Voice notes the model "can't hear"                            | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/`                                                                                                                                                                                                                                                                                                                                                        |
+| `/memory` says degraded — blocked retention(s)                | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked                                                                                                           |
+| `/app/` answers 500 / "app client not built"                  | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. `app:build` + `publish-app.sh`, then check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved publish                                                                                                                                                                                                  |
+| `/app/` asks for a token you didn't expect                    | the server is in bearer mode — `appToken` is set in `goblin.json5`; paste the value of the `auth.jsonl` record it names. Never had a token? `appToken` was probably just added — it's boot-pinned, so a running process ignores the change until restart                                                                                                                                                                                                                |
+| `/app/` shows "The stored token stopped working"              | the `auth.jsonl` record's value rotated (rotation needs a goblin restart to take) — the app's own "Paste a new token" door clears it                                                                                                                                                                                                                                                                                                                                    |
+| All speech synthesis suddenly fails                           | the Edge endpoint is unofficial and drifts — check the log, then update the bot                                                                                                                                                                                                                                                                                                                                                                                         |
+| `ffmpeg` warnings at boot                                     | install `ffmpeg` — voice features and large-file transcription need it                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Thinking levels look wrong for a model                        | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself                                                                                                                                                                                                                                                                                                                     |
 | `sandbox disabled with N tracked container(s) still standing` | the `sandbox` block was removed/emptied — the tool is off, so no call ever runs the idle sweep and the containers keep running. Remove them by hand: `podman rm -f <names>` (the warning lists them; `podman ps -a --filter label=goblin.sandbox=1` catches any row-less strays too). Stale rows left behind are inert while the block stays absent — if you'd rather they not seed a recreate on re-enable, `DELETE FROM sandboxes` on the stopped service clears them |
 
 Can't pin it down? Share safe Doctor findings once integrated. If an incident

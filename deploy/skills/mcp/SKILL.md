@@ -1,16 +1,18 @@
 ---
+
 name: mcp
 description: >
-  Reach MCP servers — external tools and services — through goblin's own
-  isolated mcporter: its own config, its own keys, never the operator's
-  editor setups. Discover servers, read tool schemas, call tools via bash.
+Reach MCP servers — external tools and services — through goblin's own
+isolated mcporter: its own config, its own keys, never the operator's
+editor setups. Discover servers, read tool schemas, call tools via bash.
 license: Apache-2.0
 metadata:
-  version: "1.0"
-  topic: external-tools
+version: "1.0"
+topic: external-tools
 compatibility: Requires the pinned mcporter dep plus goblin's agent token (the goblin-mcp-dev pass-keys profile); if the entry point reports a missing piece, its error names the fix
 allowed-tools:
-  - Bash($GOBLIN_HOME/mcp:*)
+- Bash($GOBLIN_HOME/mcp:*)
+
 ---
 
 # mcp — external tools through goblin's own mcporter
@@ -34,7 +36,6 @@ host's. A widened or missing config fails loud before anything runs.
 ## Two timeouts
 
 Every non-trivial call has two, and the outer one must win:
-
 - `mcp call --timeout <ms>` — how long mcporter waits for the server.
 - The `bash` tool's own timeout (seconds) — the shell around it.
 

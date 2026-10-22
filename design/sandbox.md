@@ -27,7 +27,6 @@ A rootless container shares the host kernel: not a VM, not a hard boundary
 against a kernel exploit — a wall against goblin doing something dumb and
 ordinary untrusted code. Measured on g7 (2026-10-10, podman 6.1.3, runc,
 cgroup v2 with cpu/memory/pids delegated):
-
 - **Identity.** Stock rootless maps container root to host uid 1000
   (daniel); the sandbox pins a subuid range that puts container root at
   host uid 139999 — outside daniel and the memory stack's in-use subuids
@@ -37,7 +36,7 @@ cgroup v2 with cpu/memory/pids delegated):
 - **Capabilities.** The five-cap set in `src/podman.ts` is the sandbox
   wall — never widened: never `--privileged`, never `--env-host` (the
   container env is the image's, so no daemon env or secret reaches it),
-  never the podman socket. *Desktops* append `SYS_CHROOT` so Chromium can
+  never the podman socket. _Desktops_ append `SYS_CHROOT` so Chromium can
   run its own sandbox (design/subagents.md); sandboxes get exactly the
   five.
 - **Filesystem: nothing shared.** No bind mounts, no volumes, no
@@ -65,8 +64,8 @@ cgroup v2 with cpu/memory/pids delegated):
 - **Resources.** Memory, CPU and pids are capped from config; disk is not
   (rootless overlay has no quota) — idle reaping bounds it.
 - **The wall is verified live, from inside the container (2026-10-11).**
-  The argv seam's fakes pin what goblin *asks* podman for; only a real
-  container proves what it *gets*. `src/podman.live.test.ts`
+  The argv seam's fakes pin what goblin _asks_ podman for; only a real
+  container proves what it _gets_. `src/podman.live.test.ts`
   (`GOBLIN_PODMAN_LIVE=1`) builds one real container through the adapter
   and reads the wall back from the kernel — in-container `/proc` is the
   strong form; inspect would only restate the argv. Run after any podman
@@ -108,7 +107,6 @@ cgroup v2 with cpu/memory/pids delegated):
 per turn). A separate tool, not more `bash` actions, so the host tool's
 prefix bytes don't move when the sandbox is configured — the new tool's
 appearance is the sanctioned config-change shift.
-
 - `exec` — `/bin/sh -c` (alpine has no bash). The `podman exec` client
   dying (timeout, abort, output cap) does not kill the in-container
   command, so the container is restarted: background processes die,

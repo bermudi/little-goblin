@@ -2,7 +2,6 @@
 
 Two files in your goblin home folder (`~/goblin` unless `GOBLIN_HOME` says
 otherwise). Settings go in one, secrets in the other — never the twain.
-
 - `goblin.json5` — everything adjustable. No secrets here, ever.
 - `auth.jsonl` — secrets. Mode `0600`.
 
@@ -78,12 +77,12 @@ providers: {
 
 Four kinds exist (the shipped example uses `responses` for Z.AI):
 
-| Kind | What it is | `auth` points at |
-|---|---|---|
-| `openai-compatible` | OpenAI-style Chat Completions endpoints | a secret in `auth.jsonl` |
-| `responses` | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl` |
-| `openrouter` | OpenRouter | a secret in `auth.jsonl` |
-| `codex` | ChatGPT-subscription models via the Codex CLI's own login | nothing — it reads `~/.codex/auth.json` (override with `authFile`) |
+| Kind                | What it is                                                                                 | `auth` points at                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `openai-compatible` | OpenAI-style Chat Completions endpoints                                                    | a secret in `auth.jsonl`                                           |
+| `responses`         | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl`                                           |
+| `openrouter`        | OpenRouter                                                                                 | a secret in `auth.jsonl`                                           |
+| `codex`             | ChatGPT-subscription models via the Codex CLI's own login                                  | nothing — it reads `~/.codex/auth.json` (override with `authFile`) |
 
 For `codex`, run `codex login` first. The bot refreshes expired tokens
 itself and writes the rotated tokens back, so the CLI login keeps working.
@@ -112,7 +111,7 @@ keep Telegram's placeholder name.
 thinking: "medium",   // off | low | medium | high | xhigh | max
 ```
 
-This is *your* vocabulary, not the providers'. Each model honestly maps it
+This is _your_ vocabulary, not the providers'. Each model honestly maps it
 onto what it can actually do — a forced-thinking model clamps `off` up to
 its lowest rung rather than pretending thinking is disabled; the mini app
 only offers the levels the current model supports.

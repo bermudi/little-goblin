@@ -7,7 +7,7 @@ to win against this document first.
 
 It is deliberately not a control checklist and not a pentest. It states the
 model the code already implements, with citations, and labels anything that
-is a *belief* rather than an *observed fact*.
+is a _belief_ rather than an _observed fact_.
 
 **The one-line rule:** Goblin is a thinking process wired to the internet and
 to a shell, chasing a target that changes after every tool call. It is not a
@@ -20,31 +20,30 @@ itself.
 
 In rough order of blast radius.
 
-| Asset | Where | Why it matters |
-|---|---|---|
-| Provider keys (`zai`, `openrouter`) | `auth.jsonl` → `pass-keys get` → encrypted OS-store snapshot | Metered spend; a leaked key is someone else's bill |
-| Goblin bootstrap PAT | OS store under `goblin-dev` | Dedicated agent's item grants; shared by provider/MCP sync profiles |
-| `telegram` bot token | `auth.jsonl` | Full control of the bot — send as it, read its updates |
-| `gmail-send` refresh token | `auth.jsonl` | Sends mail **as bermudi** |
-| `gmail-read` / gws read auth | `auth.jsonl` + gws's own auth | Reads the entire mailbox |
-| `brave`, `tavily`, `parallel` | `auth.jsonl` | Search-API spend |
-| `gmail-client-secret` | `auth.jsonl` | OAuth client secret (not the mailbox itself) |
-| Conversation history | `state/goblin.sqlite` | Everything said, in every topic, plus memory |
-| Workspace files | `workspace/` | Files, attachments, skills, `SOUL.md`/`AGENTS.md` |
-| The operator's machine | same uid, no sandbox | `bash` is a first-class tool; `~/` is one command away |
+| Asset                               | Where                                                        | Why it matters                                                      |
+| ----------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Provider keys (`zai`, `openrouter`) | `auth.jsonl` → `pass-keys get` → encrypted OS-store snapshot | Metered spend; a leaked key is someone else's bill                  |
+| Goblin bootstrap PAT                | OS store under `goblin-dev`                                  | Dedicated agent's item grants; shared by provider/MCP sync profiles |
+| `telegram` bot token                | `auth.jsonl`                                                 | Full control of the bot — send as it, read its updates              |
+| `gmail-send` refresh token          | `auth.jsonl`                                                 | Sends mail **as bermudi**                                           |
+| `gmail-read` / gws read auth        | `auth.jsonl` + gws's own auth                                | Reads the entire mailbox                                            |
+| `brave`, `tavily`, `parallel`       | `auth.jsonl`                                                 | Search-API spend                                                    |
+| `gmail-client-secret`               | `auth.jsonl`                                                 | OAuth client secret (not the mailbox itself)                        |
+| Conversation history                | `state/goblin.sqlite`                                        | Everything said, in every topic, plus memory                        |
+| Workspace files                     | `workspace/`                                                 | Files, attachments, skills, `SOUL.md`/`AGENTS.md`                   |
+| The operator's machine              | same uid, no sandbox                                         | `bash` is a first-class tool; `~/` is one command away              |
 
 **Same-uid is not a boundary.** Goblin runs as `daniel` (uid 1000), the same
-uid as this shell. File modes on `auth.jsonl` (0600) stop *other* local users
+uid as this shell. File modes on `auth.jsonl` (0600) stop _other_ local users
 and services, not the agent: a same-uid reader ignores them. `DESIGN.md` says
 this outright ("Honest boundary: same uid, full bash — the token's grants are
 the real limit"). The real limits are the three below, in this order:
-
 1. **Which secrets are accessible** — auth records, granted items and unlocked
    OS-store snapshots all count; absence from `auth.jsonl` is not isolation.
 2. **What scopes those secrets carry** — a read-only Gmail token can't send.
 3. **What egress is reachable** — see §5.
 
-Mode bits still matter for *other* users and for containerized services on
+Mode bits still matter for _other_ users and for containerized services on
 this box: `state/goblin.sqlite` and `state/goblin.log` are `0644` inside a
 `0755` directory, so any other uid that can traverse can read full history and
 logs. (Observed 2026-09-30.)
@@ -54,13 +53,13 @@ logs. (Observed 2026-09-30.)
 Everything Goblin reads is one of five things, and only two of them are
 allowed to act.
 
-| Class | Examples | May it steer? |
-|---|---|---|
-| **Operator** | Telegram messages from an `operators` id | Yes — but still "ask first" for standing authority |
-| **Goblin itself** | its own skills, `SOUL.md`, `AGENTS.md`, memory it wrote | Yes |
-| **Untrusted content** | fetched pages, search results, mail bodies, delegated reports, terminal screens | **Never** — data to evaluate |
-| **Machine/config** | `goblin.json5`, `auth.jsonl`, program rows | High-integrity, operator-owned |
-| **Third-party model** | whatever the configured provider returns | Data, but note it *does* drive tool calls |
+| Class                 | Examples                                                                        | May it steer?                                      |
+| --------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------- |
+| **Operator**          | Telegram messages from an `operators` id                                        | Yes — but still "ask first" for standing authority |
+| **Goblin itself**     | its own skills, `SOUL.md`, `AGENTS.md`, memory it wrote                         | Yes                                                |
+| **Untrusted content** | fetched pages, search results, mail bodies, delegated reports, terminal screens | **Never** — data to evaluate                       |
+| **Machine/config**    | `goblin.json5`, `auth.jsonl`, program rows                                      | High-integrity, operator-owned                     |
+| **Third-party model** | whatever the configured provider returns                                        | Data, but note it _does_ drive tool calls          |
 
 The operator's Telegram account is the root of authority. A message from an
 `operators` id is a request from the operator, no matter which topic it
@@ -75,9 +74,8 @@ sandbox turns, and a stranger gets nothing.
 
 ### The untrusted-content fence
 
-Three *different* mechanisms enforce "content is data, never instructions,"
+Three _different_ mechanisms enforce "content is data, never instructions,"
 because the three sources fail differently:
-
 - **Fetched pages, search results, delegated reports, terminal screens** ride
   inside an explicit `<web>` fence with a closing instruction line
   (`src/agent/tools/web.ts` `fenceUntrusted`; used by `fetch.ts`, `search.ts`,
@@ -86,14 +84,14 @@ because the three sources fail differently:
 - **The reviewer's skills staging** refuses any symlink whose resolved target
   leaves the skills tree, so a crafted link can't pull host files into the
   model-readable staging copy (`src/reviewer.ts` staging walk).
-- **Inbound mail** is gated at the sender, then *scored* for injection by the
+- **Inbound mail** is gated at the sender, then _scored_ for injection by the
   System One checker on the read path (`src/injection.ts`,
   `src/mail-watcher.ts`). The mail path is the one place untrusted text is
   fetched and could be read before any human sees it.
 
 The model provider is the weak seam in this table. It is "data" in the sense
-that its prose is not authority — but it is the component that *chooses tool
-calls*, so anything that can influence its output (an injection that survives
+that its prose is not authority — but it is the component that _chooses tool
+calls_, so anything that can influence its output (an injection that survives
 the fence, a poisoned file it reads) is upstream of tool execution. Treat the
 provider as semi-trusted: its judgment is the thing you're paying for, and it
 is also the thing an injection is trying to reach.
@@ -101,7 +99,6 @@ is also the thing an injection is trying to reach.
 ## 3. Entry points into the agent
 
 These are the ways text gets into a turn. Ordered by reach.
-
 1. **Telegram messages** — a human door. The two-list gate
    (`operators`/`allowedUsers`) classifies every update first thing. Media (photos, documents, voice) is materialized to
    `workspace/attachments/`; Telegram's `file_unique_id` is validated against
@@ -141,13 +138,12 @@ under `tailscale serve`; the public internet under `funnel`) can POST to a hook
 URL they were given, and the token is the only thing protecting it. `DESIGN.md`
 says this explicitly ("reachable only through whatever door `publicUrl`
 fronts"). Operationally:
-
-- `tailscale serve` keeps it tailnet-only — every device on *your* tailnet can
+- `tailscale serve` keeps it tailnet-only — every device on _your_ tailnet can
   reach it. That is not the same set as "you".
 - `funnel` makes it public. Do not enable funnel on this port unless you mean it.
 - A reverse proxy should strip or refuse `/hook/*` unless a hook must be public.
 - `/api/app/*` rides the same front. In bearer mode a funnel front publishes a
-  locked door; in trust mode it publishes *the operator* — see the auth
+  locked door; in trust mode it publishes _the operator_ — see the auth
   subsection below.
 
 ## 4. Secrets and egress
@@ -198,7 +194,7 @@ Auth command edits and successfully rotated keys require an approved
 Goblin restart: auth is loaded at boot and successful values are memoized.
 
 One sharp rule from that section, repeated because it is load-bearing: a
-`!`-command that invokes `pass-cli` directly is *poisoned at load* and refuses
+`!`-command that invokes `pass-cli` directly is _poisoned at load_ and refuses
 to resolve — Goblin's keys must come through `pass-keys`, so its audit trail
 is its own. `install.sh` refuses such records.
 
@@ -229,7 +225,6 @@ zone adds `ssh`, `samba`, `kdeconnect`, `mosh`, `RustDesk` — so the exposure o
 ### The mini app's auth
 
 Two different checks, deliberately:
-
 - **API routes** (`/api/*`) require Telegram WebApp `initData`: HMAC-SHA256
   keyed by the bot token, timing-safe compare, `auth_date` freshness (24h, 5m
   future skew), and a user-id allowlist (`src/http/auth.ts`). Observed: 401
@@ -240,7 +235,7 @@ Two different checks, deliberately:
   the same box. Observed 2026-09-30: through `tailscale serve` it returns
   **403**, because Tailscale rewrites `Host` to `127.0.0.1:8788`; from the
   loopback with a spoofed tailnet `Host` it is **403** too. So this check
-  fails *closed* under the proxy — a proxy that preserved `Host` would make it
+  fails _closed_ under the proxy — a proxy that preserved `Host` would make it
   publicly callable, which is the failure mode to watch for.
 
 ### The app channel's auth
@@ -248,7 +243,6 @@ Two different checks, deliberately:
 Same server, different check — no Telegram `initData` exists outside
 Telegram. The mode resolves once at boot (`src/http/app-auth.ts`
 `resolveAppAuth`), so a mid-run flip applies only after restart:
-
 - **`appToken` set** — every `/api/app/*` request needs
   `Authorization: Bearer <value>` where the value is whatever the named
   `auth.jsonl` record resolves to (`!`-commands included). Compare is
@@ -258,7 +252,7 @@ Telegram. The mode resolves once at boot (`src/http/app-auth.ts`
   memoizes) — the client re-prompts on 401 and keeps the token only in
   localStorage.
 - **`appToken` unset** — trust mode: no credential exists, so whoever can
-  reach the front *is* the operator. Defensible only because the intended
+  reach the front _is_ the operator. Defensible only because the intended
   front is `tailscale serve` — device-level trust on the tailnet (the collie
   precedent), not person-level. Boot warns
   `app channel trust mode must never sit behind a public URL (funnel)` —
@@ -286,7 +280,6 @@ When the `sandbox` block is configured, the model can run code inside a
 rootless-podman container (`design/sandbox.md`). The wall that matters
 here is egress, not filesystem (nothing is mounted — files cross only
 through `import`/`export`, both realpath-contained to `workspace/`):
-
 - **Disconnected (default)** it reaches nothing — the container sits on
   an `isolate=strict` bridge and is disconnected before first use.
 - **Connected** it reaches what daniel's sockets reach minus host
@@ -313,26 +306,26 @@ ordinary untrusted code, not a VM boundary.
 This is the part a change is most likely to break, so it is stated per
 boundary.
 
-| Check | On failure | Why that direction |
-|---|---|---|
-| `operators`/`allowedUsers` gate | **closed** — refuse or drop the update | Auth must never fail open |
-| `initData` validation | **closed** — 401 | Same |
-| `appToken` bearer (when set) | **closed** — 401; 503 if the record can't resolve | Same. When unset the check doesn't exist by design — trust mode is "no check," not fail-open |
-| Browser-origin gate (trust mode, mutations) | **closed** — 403 | A page riding the device is not the operator (#75); non-browser clients keep reachability as the whole check |
-| JSON content-type on `/api/app/*` mutations | **closed** — 415 | `application/json` is a claim a cross-origin page cannot make without a preflight |
-| `/api/check-injection` host check | **closed** — 403 | Only reachable on-loopback anyway |
-| Webhook token | **closed** — 404/405/503 | Unknown == disabled, no oracle |
-| Injection scoring (system1) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |
-| Reviewer gate (skill review) | **open** → fall back to "≥8 tool calls" | Review is an experiment; a gate outage must not drop reviews silently — it logs the fallback and the streak |
-| Memory recall | **open** — continue without prior context | Turns must not wait on memory |
-| Pass-keys local snapshot/key or wallet unavailable | **closed** — loud failure, no Pass/owner fallback | Foreground consumption is local-only |
-| Pass-keys background sync failure | surfaced; retain last-good snapshot | Offline availability is deliberate; age is visible, not an expiry gate |
-| Model provider error | surfaced, not swallowed | A failed call must look failed |
-| Sandbox network-off verification | **closed** — container removed, row deleted | A sandbox whose off state can't be confirmed by inspect is never used (`src/sandboxes.ts` `applyNetwork`) |
-| Log file sink | degraded, retried (transient); dead after one warn (permanent) | A full disk is exactly when the durable log matters |
+| Check                                              | On failure                                                     | Why that direction                                                                                           |
+| -------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `operators`/`allowedUsers` gate                    | **closed** — refuse or drop the update                         | Auth must never fail open                                                                                    |
+| `initData` validation                              | **closed** — 401                                               | Same                                                                                                         |
+| `appToken` bearer (when set)                       | **closed** — 401; 503 if the record can't resolve              | Same. When unset the check doesn't exist by design — trust mode is "no check," not fail-open                 |
+| Browser-origin gate (trust mode, mutations)        | **closed** — 403                                               | A page riding the device is not the operator (#75); non-browser clients keep reachability as the whole check |
+| JSON content-type on `/api/app/*` mutations        | **closed** — 415                                               | `application/json` is a claim a cross-origin page cannot make without a preflight                            |
+| `/api/check-injection` host check                  | **closed** — 403                                               | Only reachable on-loopback anyway                                                                            |
+| Webhook token                                      | **closed** — 404/405/503                                       | Unknown == disabled, no oracle                                                                               |
+| Injection scoring (system1)                        | **open** — "unavailable", read proceeds                        | A checker outage must not block mail; the hard limit is read-only Gmail scopes                               |
+| Reviewer gate (skill review)                       | **open** → fall back to "≥8 tool calls"                        | Review is an experiment; a gate outage must not drop reviews silently — it logs the fallback and the streak  |
+| Memory recall                                      | **open** — continue without prior context                      | Turns must not wait on memory                                                                                |
+| Pass-keys local snapshot/key or wallet unavailable | **closed** — loud failure, no Pass/owner fallback              | Foreground consumption is local-only                                                                         |
+| Pass-keys background sync failure                  | surfaced; retain last-good snapshot                            | Offline availability is deliberate; age is visible, not an expiry gate                                       |
+| Model provider error                               | surfaced, not swallowed                                        | A failed call must look failed                                                                               |
+| Sandbox network-off verification                   | **closed** — container removed, row deleted                    | A sandbox whose off state can't be confirmed by inspect is never used (`src/sandboxes.ts` `applyNetwork`)    |
+| Log file sink                                      | degraded, retried (transient); dead after one warn (permanent) | A full disk is exactly when the durable log matters                                                          |
 
 The injection checker is the interesting one: it fails **open** on purpose. Its
-whole job is to *advise*, and the thing it protects is a mailbox Goblin can
+whole job is to _advise_, and the thing it protects is a mailbox Goblin can
 read with a read-only token. Turning a checker outage into a read outage would
 trade a rare risk for a certain one. If the read credential's scope ever widens
 from read-only, revisit this line — the fail-open is only defensible while the
@@ -387,7 +380,6 @@ output recorded here with a date.
 ## 8. Change discipline
 
 A change is a security decision — worth writing down here — if it does any of:
-
 - adds a secret, or widens a scope on an existing one;
 - adds an entry point (§3) or makes an existing one reachable by a wider set;
 - treats a new source of text as trusted (or stops fencing one that was);
@@ -396,5 +388,5 @@ A change is a security decision — worth writing down here — if it does any o
   log line).
 
 When a boundary is genuinely argued about and the argument is settled, the
-ruling goes in `DESIGN.md` and the *model* goes here. `DESIGN.md` owns why;
+ruling goes in `DESIGN.md` and the _model_ goes here. `DESIGN.md` owns why;
 this owns who and what.

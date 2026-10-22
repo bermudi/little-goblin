@@ -5,7 +5,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## What this is
 
-System One is the working name for a *discriminative model*: one that
+System One is the working name for a _discriminative model_: one that
 answers calibrated yes-probability (`noul`) questions about state instead
 of generating text, cheap enough to ride every turn. The textbook name and
 this working name are both recorded; which catches on is open.
@@ -17,7 +17,6 @@ the model id names the model, not the system.
 ## The shared client
 
 One `System1Client` is built at boot and shared by every consumer.
-
 - **Models.** Default and backup are both `typesafe/jev-1.13` (operator
   ruling, 2026-10-05); the configured primary is
   `inception/mercury-decide:free`.
@@ -34,7 +33,6 @@ rejects a one-sided question.
 Four consumers ride the one client; each keeps its own call site, budget
 and failure semantics — this list is the single source of truth for who
 they are:
-
 - **Skill-review gate** — runs on every completed turn; fail-open: a gate
   outage falls back to the deterministic tool-count trigger (streak
   logged). `design/skills.md` → Skill reviewer.

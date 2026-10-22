@@ -22,9 +22,8 @@ program's state, never a workspace file** — cache stable by
 construction.
 
 Rulings:
-
 - **Authority is granted, never self-issued.** Creating or widening a
-  program needs the operator's explicit ask — the agent may *propose*
+  program needs the operator's explicit ask — the agent may _propose_
   one ("want me to own this?"), never grant itself standing authority.
   What a firing turn does is bounded by its charter and the same
   ask-first rule as any operator message.
@@ -87,7 +86,7 @@ Rulings:
   in it). A schedule's optional lateness grace is measured against the
   latest missed occurrence at or before the scan — "occurrence" meaning
   the scheduler's own forward sequence (ruling 2026-10-12: a backward
-  `.prev()` is a *different* sequence across DST — it skips the
+  `.prev()` is a _different_ sequence across DST — it skips the
   spring-forward landing hour and admits the fall-back repeated hour,
   so catch-up lateness would lie late and on-time respectively). `null`
   (the default) means unlimited lateness: fire once on wake. Missed

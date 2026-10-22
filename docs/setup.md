@@ -47,16 +47,16 @@ launch work to make a finding pass.
 Configured synthetic embedding probes may load/cache the configured model;
 they do not retain facts in a memory bank.
 
-| Capability | Operator prerequisites / readiness boundary |
-| --- | --- |
-| TTS / ASR | TTS is enabled by default; install `ffmpeg` in service PATH, or explicitly set `tts: ""`. Without ffmpeg, boot disables TTS with a warning. ASR is absent unless `transcription` is configured. Whistle always needs ffmpeg and a supported platform; its pinned engine/weights download on first use with network/cache access, not during diagnosis. Cloud ASR needs its configured auth and ffmpeg over the upload cap. See [Voice](voice.md). |
-| Pass command refs | `pass-keys` (and its sync dependencies), scoped agent/grants, profiles, explicit initial sync and an available unlocked persistent Secret Service/KWallet. Service PATH must find the commands. See the snapshot steps below. |
-| MCP | Frozen dependencies supply Goblin's pinned mcporter; configure its own `mcporter.json` with `imports: []` and placeholders only. Provision `goblin-mcp-dev` and any server executables/OAuth separately. A seed with no servers is intentionally empty. |
-| Browser | Install `agent-browser` and Chromium separately; the browser skill alone does not install them. |
-| Mail / Workspace | Install `gws`, perform its scoped login, and provision configured send/[System One](../design/system1.md) auth refs. See [Mail design](../design/mail.md). |
-| Delegation | Install herdr and the configured harnesses on each target, with their own logins and service PATH. Diagnostics do not create panes or launch agents. |
-| Long-term memory | Hindsight is a separate service, not Goblin's SQLite store. Choose an existing endpoint or follow the separately approved [memory setup](memory.md). A local stack needs rootless Podman/user units and subuid/subgid; local embeddings additionally need configured Ollama/model/relay access. No automatic memory deployment or embedding-model change. |
-| Remote app / Settings access | Configure a reverse proxy or tailnet HTTPS door and `publicUrl`. Loopback acceptance does not verify the public route. Public exposure requires app bearer auth (`appToken`); trust mode is only appropriate for a trusted private door. |
+| Capability                   | Operator prerequisites / readiness boundary                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TTS / ASR                    | TTS is enabled by default; install `ffmpeg` in service PATH, or explicitly set `tts: ""`. Without ffmpeg, boot disables TTS with a warning. ASR is absent unless `transcription` is configured. Whistle always needs ffmpeg and a supported platform; its pinned engine/weights download on first use with network/cache access, not during diagnosis. Cloud ASR needs its configured auth and ffmpeg over the upload cap. See [Voice](voice.md). |
+| Pass command refs            | `pass-keys` (and its sync dependencies), scoped agent/grants, profiles, explicit initial sync and an available unlocked persistent Secret Service/KWallet. Service PATH must find the commands. See the snapshot steps below.                                                                                                                                                                                                                     |
+| MCP                          | Frozen dependencies supply Goblin's pinned mcporter; configure its own `mcporter.json` with `imports: []` and placeholders only. Provision `goblin-mcp-dev` and any server executables/OAuth separately. A seed with no servers is intentionally empty.                                                                                                                                                                                           |
+| Browser                      | Install `agent-browser` and Chromium separately; the browser skill alone does not install them.                                                                                                                                                                                                                                                                                                                                                   |
+| Mail / Workspace             | Install `gws`, perform its scoped login, and provision configured send/[System One](../design/system1.md) auth refs. See [Mail design](../design/mail.md).                                                                                                                                                                                                                                                                                        |
+| Delegation                   | Install herdr and the configured harnesses on each target, with their own logins and service PATH. Diagnostics do not create panes or launch agents.                                                                                                                                                                                                                                                                                              |
+| Long-term memory             | Hindsight is a separate service, not Goblin's SQLite store. Choose an existing endpoint or follow the separately approved [memory setup](memory.md). A local stack needs rootless Podman/user units and subuid/subgid; local embeddings additionally need configured Ollama/model/relay access. No automatic memory deployment or embedding-model change.                                                                                         |
+| Remote app / Settings access | Configure a reverse proxy or tailnet HTTPS door and `publicUrl`. Loopback acceptance does not verify the public route. Public exposure requires app bearer auth (`appToken`); trust mode is only appropriate for a trusted private door.                                                                                                                                                                                                          |
 
 ## The two files
 
@@ -71,7 +71,6 @@ cp goblin.json5.example ~/goblin/goblin.json5
 ```
 
 Edit the copy:
-
 - `operators`: your user id. Unauthorized users cannot operate your bot; anyone you name in `allowedUsers` gets a sandboxed guest lane, and everyone else is refused.
 - `providers`: the registry has **four** kinds, including `responses`; see
   [Configuration](configuration.md#providers).
@@ -163,7 +162,6 @@ GOBLIN_HOME="$HOME/goblin" scripts/install.sh
 ```
 
 The required executable order is:
-
 1. Cheap host/input/path checks and existing-installed-target refusal,
    before any dependency, asset or service mutation.
 2. `bun install --frozen-lockfile` in that checkout. Dependency-using
@@ -201,7 +199,7 @@ prevent later phases, but do not roll back accepted systemd jobs/services or
 already-written files. Use its read-only Doctor remedy; recovery/reinstall
 is a separately authorized operator action, not another fresh-installer run.
 9. Complete the explicit operator handshake below. Installer success is
-   not proof of model generation or public HTTPS access.
+not proof of model generation or public HTTPS access.
 
 ## First boot and acceptance
 

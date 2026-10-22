@@ -177,7 +177,6 @@ Assets: `deploy/memory/`. The shipped 1.0.0 target was checked against tagged
 source, the registry manifest, and image revision metadata. This inspection
 did not pull images, restart services, read operator credentials, or invoke
 models. Existing deployments keep their old image until an approved migration.
-
 - Hindsight **1.0.0-slim**, API-only, pinned to multi-architecture manifest
   `sha256:1e889b5f44a3546a40765d084162cf0807c0b08c97fb29f64d0705597f1ef3b6`.
   Image revision matches tag `v1.0.0`:
@@ -196,10 +195,10 @@ models. Existing deployments keep their old image until an approved migration.
 - Embeddings require `HINDSIGHT_API_EMBEDDINGS_PROVIDER` and the selected
   provider's settings (no credential fallback):
 
-  | Provider | Required model / auth | Endpoint |
-  | --- | --- | --- |
+  | Provider     | Required model / auth                                                                      | Endpoint                                                                                                                                            |
+  | ------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
   | `openrouter` | `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY` | Selecting this provider explicitly selects upstream's fixed `https://openrouter.ai/api/v1`; this profile has no embedding endpoint override for it. |
-  | `openai` | `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` | Require `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` for OpenAI or a compatible endpoint. |
+  | `openai`     | `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY`         | Require `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` for OpenAI or a compatible endpoint.                                                             |
 
   Remove the previous provider's fields when switching; inactive settings fail.
   Model IDs are operator-selected, not allowlisted. The env file's
@@ -460,7 +459,6 @@ operator has verified recovery and chosen its retention policy.
 `deploy/memory/bench.py` measures the stack's two tuning surfaces without
 mutating anything. Both subcommands read the live service and hindsight.env;
 keys stay in process memory and are never printed.
-
 - `uv run deploy/memory/bench.py llm` — renders the bank's exact retain
   prompts and response schema via `prompts/preview`, then replays them
   against the configured LLM under a matrix of the sampling knobs
@@ -479,7 +477,7 @@ Known reading notes: language grading is a two-layer verdict — the configured
 LLM acts as a structured judge (ISO 639-1 + confidence, over the fact texts,
 not keys or entity names), and deterministic script detection cross-checks it
 for cross-script drift (a judge "en" on Cyrillic text is a hard fail). Judge
-failures are counted as *ungraded*, never as passes; `--no-judge` skips
+failures are counted as _ungraded_, never as passes; `--no-judge` skips
 grading for latency-only runs. Extraction coverage is graded against curated
 gold assertions in `bench_fixtures/docs.json` (strict: a near-miss is false
 coverage), and each fixture declares its expected baseline language, so pinned
@@ -493,7 +491,6 @@ surfacing in the data, not model slowness.
 From live traffic (`~/goblin/state/goblin.log`) and a same-seat replay
 against the local API. The numbers below are the reference for any latency
 work on the memory stack.
-
 - Response gap (intake → first model call), 46 turns: p50 1837 ms, p90 3454,
   p95 4356, max 7103.
 - Hindsight recall (goblin-side `memory request completed` durationMs), 51

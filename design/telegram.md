@@ -48,14 +48,14 @@ apply next turn without interrupting the current answer.
   a turn never switches medium mid-flight. The record keeps the text, so
   toggling off loses nothing and "what did you say verbatim" stays
   answerable; with transcription, a voice-mode topic is ears-in-ears-out.
-- **Mini Apps**: Telegram requires HTTPS and the *client device* fetches the
+- **Mini Apps**: Telegram requires HTTPS and the _client device_ fetches the
   page, so the door is config (`publicUrl`) — NAT-first by construction
   (`tailscale serve`/`funnel`, or any cert'd reverse proxy). **One client,
   two doors (ruling 2026-10-10):** the Telegram door serves the same
   `app/dist` bundle the PWA runs, in **telegram mode** — operator surface
   only (no rail, chat, or composer) — auth unchanged (initData per
   request), and the self-lockout guard works here too (it refuses to drop
-  the *requesting* Telegram id from `operators`). **Prohibition (ruling
+  the _requesting_ Telegram id from `operators`). **Prohibition (ruling
   2026-10-13):** `telegram-web-app.js` is never fetched — no third-party
   script, live or a pinned copy, executes there; both doors are one origin,
   the app token in its sessionStorage. Telegram Desktop does not inject
@@ -63,7 +63,7 @@ apply next turn without interrupting the current answer.
   `tgWebAppData` from the URL hash and posting `web_app_ready`/`expand`
   via the official bridges. Settings-from-Telegram depends on the app build
   (deploy.sh gates it, rollback rebuilds it; accepted by ruling). `/`
-  redirects to `/app/` with a *relative* Location — the #105 rule: never
+  redirects to `/app/` with a _relative_ Location — the #105 rule: never
   bounce off a Host the backend guessed.
 - **Commands** are few on purpose; `/model` and `/think` are retired — the
   mini app owns model/thinking. No conversation-lifecycle commands — group
@@ -148,17 +148,17 @@ the DM to render as a plain chat, and whether a threadless send behaves while
 it's on.
 
 **Landing rulings (stage 1, 2026-10-03).**
-- *Which chats roll:* private chats only, `chatId > 0` (users positive,
+- _Which chats roll:_ private chats only, `chatId > 0` (users positive,
   groups negative).
-- *Lanes:* the pre-ruling `dm:<chat>` conversation stays history, never
+- _Lanes:_ the pre-ruling `dm:<chat>` conversation stays history, never
   current.
-- *A live turn always absorbs input* (it steers), whatever the gap.
-- *The check has a 3 s interactive deadline* (shared client's usual 30 s,
+- _A live turn always absorbs input_ (it steers), whatever the gap.
+- _The check has a 3 s interactive deadline_ (shared client's usual 30 s,
   raced externally; losing is a fallback); a roll during the check (a fire)
   joins the burst to the new current — never two rolls.
-- *Delegation notices join, never roll* (they continue operator-started
+- _Delegation notices join, never roll_ (they continue operator-started
   work); program fires roll past the gap.
-- *Topic-root replies are not replies:* Telegram marks topic messages as
+- _Topic-root replies are not replies:_ Telegram marks topic messages as
   replies to the root, so `reply_to_message` is ignored — else every burst
   skips the check.
 
@@ -206,14 +206,14 @@ Accepted residual: the window is the coalescing delay.
 
 ## Guest mode (ruling 2026-10-06)
 
-- **Guest summons** — `@goblin …` where the bot is *not* a member arrives as
+- **Guest summons** — `@goblin …` where the bot is _not_ a member arrives as
   `guest_message`: the summoning message plus the one it replied to, nothing
   else (no history, no participant list). One reply per summons —
   placeholder-first, then streamed into — one message only: no multi-bubble
   chunking, files, or voice; capped at `guest.outputChars`, with an explicit
   truncation notice pointing at the bot DM.
 - **Member mentions** — mentions and replies-to-goblin from third parties in
-  chats the bot *is* a member of route to a guest turn with the **normal
+  chats the bot _is_ a member of route to a guest turn with the **normal
   delivery sink**; the bot may speak like any member. The operator's own
   messages there are ordinary intake: a standing conversation in that chat,
   full agent, no guest machinery.
@@ -225,12 +225,12 @@ chats, mirroring guest mode's no-history property.
 
 **Three classes, decided per summons, enforced by hard exclusion.**
 `from.id ∈ operators` (read live; the BotFather platform restriction is OFF,
-so goblin owns every gate) → a *personal* guest turn: the normal persona,
+so goblin owns every gate) → a _personal_ guest turn: the normal persona,
 told **other people can read the chat** — be deliberate before surfacing
 private material — with the personal toolset minus everything that pins,
 reaches beyond the chat, or changes medium (one ruling everywhere, even
 where the member surface's sink could deliver them).
-`from.id ∈ allowedUsers` → a *sandbox* turn: a **guest persona** prompt (no
+`from.id ∈ allowedUsers` → a _sandbox_ turn: a **guest persona** prompt (no
 SOUL.md, no USER.md, no skills — nothing private in, nothing about the
 operator out) and a toolset of `search` only — constructed, never a
 prompt-level promise. **No sandbox `fetch` (ruling 2026-10-09).** Personal
@@ -264,7 +264,7 @@ is frozen per conversation (cache stability), so the audience note is a text
 part injected at the head of every burst in a group-addressed conversation —
 always current, append-only, prefix-stable — covering every member group,
 the operator's standing conversation and topics included; private chats
-never get one: a chat where the bot is a member and the id is positive *is*
+never get one: a chat where the bot is a member and the id is positive _is_
 the bot DM.
 
 **Probes (unverified, resolve at enablement).** Whether `guest_message`
@@ -305,7 +305,7 @@ unprobed.
 **Guest answers edit into rich (ruling 2026-10-13).** `editMessageText`'s
 `text_or_rich_message` accepts an `InputRichMessage` (`{markdown}`) with
 `inline_message_id` — the placeholder is updated in place, never replaced by
-a second message; the boundary is the send side (a *sent* rich message can't
+a second message; the boundary is the send side (a _sent_ rich message can't
 be edited). Live behavior is **unprobed**, types pinned: the first rejected
 rich edit flips that sink to plain edits for the rest of the turn —
 warn-logged, the reply still lands. The placeholder stays plain text — a

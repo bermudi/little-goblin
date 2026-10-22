@@ -29,7 +29,7 @@ subagent. Goblin's own turn stays for chat and short work.
   a delegation and never rides herdr.**
 - **Not the AI SDK for the long loop.** Pi is the polished, widely used
   harness, trusted for long agentic runs; the `Why` section's exit from
-  pi-ai governs goblin's *chat engine*, and a subagent runtime on pi-ai
+  pi-ai governs goblin's _chat engine_, and a subagent runtime on pi-ai
   underneath does not reverse it.
 
 ### Subagent runtime: Pi Durable, in-process
@@ -37,13 +37,12 @@ subagent. Goblin's own turn stays for chat and short work.
 `@earendil-works/pi-durable` (+ `pi-ai`, `chord`), **pinned exactly**
 (newest release ≥7 days old), embedded in goblin's process —
 probe-verified on g7 (2026-10-11, Bun 1.4.3):
-
 - `openNodeSqliteStorage` runs under Bun as-is (`node:sqlite`); Pi Durable
   has no cross-process locking, so goblin owns its single storage file.
 - **Crash resume** (kill -9 mid-tool and mid-stream): `replay: "safe"`
   tools re-enter on recovery, a cut-off model stream restarts cleanly, and
   boot calls `harness.resume()` — a goblin restart pauses runs, it does
-  not kill them. Re-entry is only the *wrapper*: behind the mark, the
+  not kill them. Re-entry is only the _wrapper_: behind the mark, the
   crash-approval gate (below) decides from the durable lease whether a
   side-effecting call may run again.
 - Concurrent conversations in one harness and `whenBusy: "steer"` both
@@ -57,7 +56,6 @@ blind.
 
 **Scope rules** (v1's generic + named agents, recursion, timeout-revive
 and separate run store are retired):
-
 - **Purpose-typed.** Two types, `computer` and `worker`: a type fixes its
   tools, execution environment, model and terminal outcomes in code. No
   generic "spawn an agent" tool, and **no type ever gets host bash** —
@@ -68,7 +66,7 @@ and separate run store are retired):
   because every type shares the operator's z.ai Coding Plan quota with
   goblin's chat; beyond it `start` queues the run and says so.
 - **No timeout-and-revive.** Runs end by outcome, explicit stop or
-  *exhausted retry budget* — never on one infra hiccup; halt intents
+  _exhausted retry budget_ — never on one infra hiccup; halt intents
   (stop, close, vanished row) are never retried.
 - **Goblin starts them and owns the outcome.** Results return fenced (the
   delegation fence rule); reading arbitrary screens gains no authority by
@@ -103,7 +101,6 @@ isolated experiment runners, not production configuration.
 A desktop is a named, long-lived resource, not a property of a
 conversation (operator ruling): **allocate, claim, share, reserve,
 release.**
-
 - **Allocate** — `desktop new <name>` creates a container from the
   desktop image; row-vs-engine reconcile on every call follows the
   sandboxes.ts rule.
@@ -171,7 +168,6 @@ The desktop image (`deploy/desktop/Containerfile`, Debian trixie-slim)
 carries its X stack and **cua-driver** (trycua/cua, MIT; official
 linux-x86_64 binary, version + sha256 pinned in the Containerfile). Probe-verified at cua-driver 0.34.1
 under runc:
-
 - Element tokens are session-scoped — every call carries the lease's
   session label.
 - Chromium's AT-SPI tree appears with `--force-renderer-accessibility` and
@@ -197,7 +193,6 @@ builds through a tool; a missing image errors with the exact build line.
 
 Its whole tool set is the desktop — **no bash, no host files, no network
 of its own** — bound to one desktop and its lease:
-
 - Observation is `replay: "safe"`; every frame also lands in the
   desktop's audit trail. Input is never replay-safe, and is **bound to
   the latest observation** (Eliza's mechanism): an input names the
@@ -227,7 +222,6 @@ replay-safe; `bash`, `write` and `edit` are not.
 **One sandbox, two users.** Serious work runs through the worker; goblin
 still checks and reaches in with its own `sandbox` tool (operator ruling),
 so the sandbox carries a run lease, not an exclusive lock:
-
 - one worker run per conversation sandbox at a time — a second queues;
 - goblin's `exec`, `import`, `export` and `network` keep working while a
   run holds it, and each result notes the run that holds the sandbox;

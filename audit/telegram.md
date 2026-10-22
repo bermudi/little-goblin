@@ -38,7 +38,7 @@ headline findings below were re-verified by direct reads before filing.
   call site (voice/photo/document/rich/bell/notify one-shots — e.g. a 45s flood wait on a bell ping
   mislogs as "delivery uncertain — timed out").
 - **D2 — Non-timeout transport error retried as "definite" → duplicate bubble. P2, verified (path) / suspected (trigger).**
-  `src/tg/delivery.ts:806-814`. If `sendMessage`'s fetch throws *after* Telegram committed the message
+  `src/tg/delivery.ts:806-814`. If `sendMessage`'s fetch throws _after_ Telegram committed the message
   (response lost — ECONNRESET, proxy drop), the catch takes the else-branch (`c.id = -1`, reply link
   cleared) and the drain resends the same window. Only `TelegramTimeoutError` is treated as ambiguous;
   all other throws are assumed "provably never landed". True for API-level 400s, false for post-commit
@@ -66,8 +66,8 @@ headline findings below were re-verified by direct reads before filing.
   `src/tg/flood-wait.ts:27-71` (per-call state only) + `src/tg/delivery.ts:302-321,344-358`
   (typing/record pings bypass the serialized chain). A chunk send and a typing ping concurrently 429ed
   with `retry_after=10` both sleep the full 10s and retry at the same instant; `demanded = retryAfterS
-  * 1000` exactly risks landing inside the server window and burning one of 2 retries. Concurrency ≤2
-  typical; timing-dependent, low impact.
+  - 1000` exactly risks landing inside the server window and burning one of 2 retries. Concurrency ≤2
+    typical; timing-dependent, low impact.
 - Deadline/buffer/fencing: **none found.** `deadline.ts` (39 lines) — abandon-not-cancel documented,
   every caller traces an ambiguity decision. `buffer.ts` — ordering front-first, failed flushes retained
   with backoff, `fire`/`fireMax` double-fire harmless. `notifyUncertain` (`delivery.ts:241-248`)
@@ -146,7 +146,7 @@ headline findings below were re-verified by direct reads before filing.
   summons → duplicate turn (cost/double-reply, not a leak). If a member-chat mention ever double-fires
   as both `message` and `guest_message` (spec's self-flagged unverified probe, `design/telegram.md:611-616`),
   the two updates carry different `update_id`s so neither dedup collapses them — net effect is one turn
-  + one busy line (busy checks at `:550,673` hold), no steering.
+  - one busy line (busy checks at `:550,673` hold), no steering.
 - **G4 — Callback-tap authorization rests solely on middleware order. P3, verified (structure) / not exploitable as read.**
   `src/tg/mod.ts:1221` (gate) before `:1230-1277` (taps); `skill-approval.ts` `handleTap` takes no sender;
   `mail-approval.ts` tap path contains no `from`/`operators` comparison (grep-verified). Holds today
@@ -154,10 +154,10 @@ headline findings below were re-verified by direct reads before filing.
   a button rendered into a shared chat turns this into guest→operator action (mail send, skill install).
   Defense-in-depth gap.
 - Persona freeze vs snapshot bust on flip: **none found.** Demotion deletes the row (history + compactions
-  + contexts swept, `conversation.ts:1472-1475`; snapshot dies via `ON DELETE CASCADE`) then busts
-  (`guest.ts:437-462`); promotion busts too. Test-pinned (`guest.test.ts:693-774`). Residual is G1.
+  - contexts swept, `conversation.ts:1472-1475`; snapshot dies via `ON DELETE CASCADE`) then busts
+    (`guest.ts:437-462`); promotion busts too. Test-pinned (`guest.test.ts:693-774`). Residual is G1.
 - Sandbox really search-only: **none found.** `SANDBOX_TOOLS={search}` (`guest.ts:740`), persona-driven
-  filter applied post-assembly *and* post-`withScript` (`index.ts:517-528`); `fetch`/bash/file tools mount
+  filter applied post-assembly _and_ post-`withScript` (`index.ts:517-528`); `fetch`/bash/file tools mount
   but are stripped for guests. Test-pinned (`guest.test.ts:205-243`).
 - Memory exclusion: **none found.** Guest lanes force `memoryExcluded: true` (`guest.ts:472-483`,
   `mod.ts:865-867`); recall, retention, FTS filter, and `/memory`/`/forget` refusal all gate on it.
@@ -205,7 +205,7 @@ headline findings below were re-verified by direct reads before filing.
   Practically holds for program fires (reply arrives seconds later); command replies (`/voice → on`) are
   immediate concurrent `sendMessage` calls with no ordering guarantee. Cosmetic.
 - **R4 — Batch-level swipe-reply bypass. P3, suspected.**
-  `src/tg/mod.ts:833`: `batch.some((i) => i.quoted !== undefined)` routes the *entire* coalesced batch
+  `src/tg/mod.ts:833`: `batch.some((i) => i.quoted !== undefined)` routes the _entire_ coalesced batch
   via `"reply"` (join current, no check) even if only one message in the 500ms window quoted another.
   Design rule 2 is stated per-burst; a mixed batch lets non-reply text skip the follow-up check. Narrow window.
 - **R5 — `memoryExcluded` stickiness across class promotion. P3, suspected (design question).**
@@ -251,7 +251,7 @@ headline findings below were re-verified by direct reads before filing.
   → grammy acks silently. `edited_message` requires a pending `tg_inbox` row (`inbox.ts:220-233`,
   `mod.ts:637-644`); sender unchecked but only the author can edit per platform.
 - Swipe-reply routing: **none found.** Guest replies-to-bot consumed by `routeMemberGuestMessage`
-  (`guest.ts:625-709`) *before* the ping lookup (`mod.ts:504-510`) — a guest cannot steer an app
+  (`guest.ts:625-709`) _before_ the ping lookup (`mod.ts:504-510`) — a guest cannot steer an app
   conversation via a delegation-ping reply. Operator ping replies route to the app lane with no quoted
   part; deleted targets degrade to ordinary reply; topic-root pseudo-replies excluded.
 - Addressing: **none found.** `conversationAddress` (`mod.ts:85-98`) matches tested behavior

@@ -1,14 +1,15 @@
 ---
+
 name: herdr
 description: >
-  Herdr — the agent automation layer that hosts delegated coding
-  agents. Your session is `goblin` (your own, local) and configured
-  machine targets are yours to orchestrate through the `delegate`
-  tool. The operator's session is reached only on ask through the
-  `herdr` tool. Read this before touching herdr.
+Herdr — the agent automation layer that hosts delegated coding
+agents. Your session is `goblin` (your own, local) and configured
+machine targets are yours to orchestrate through the `delegate`
+tool. The operator's session is reached only on ask through the
+`herdr` tool. Read this before touching herdr.
 metadata:
-  version: "2.2"
-  topic: delegation
+version: "2.2"
+topic: delegation
 ---
 
 # herdr
@@ -17,7 +18,7 @@ Herdr is the agent automation layer on this host: it recognizes the
 coding agents running in panes, owns their lifecycle
 (`idle|working|blocked|done|unknown`), and lets a client launch,
 prompt, read, and answer them. This file covers how herdr fits
-*you* — it is not the usage guide (`herdr --skill` prints that,
+_you_ — it is not the usage guide (`herdr --skill` prints that,
 written for agents running inside panes; you are never inside one —
 you are a client that drives sessions).
 
@@ -26,7 +27,7 @@ stop.** Everything you do with your sessions goes through the
 `delegate` tool: `start`, `list`, `read`, `send`, `answer`, `stop`.
 The CLI bypasses what makes delegation safe — the state rows, the
 watcher that delivers results, and the fencing that marks agent
-output as untrusted. If the tool can't express what a *delegation*
+output as untrusted. If the tool can't express what a _delegation_
 needs, that's a missing tool verb — tell the operator, don't reach
 for the binary. For panes in his session that he explicitly points
 you at, use the separate `herdr` tool below.
@@ -51,7 +52,7 @@ elsewhere.
 ## Delegations are your own acts
 
 You delegate as part of doing your work, and the result is yours:
-it arrives in the conversation the delegation was born in, and *you*
+it arrives in the conversation the delegation was born in, and _you_
 decide what the operator needs to hear about it. Telegram rings the
 operator only for `needs_input` — a question or approval only a
 human can answer — not because an agent finished. Answer the
@@ -62,15 +63,14 @@ operator, let the notice arrive, and summarize what matters.
 A delegation that parks on a prompt (approval, trust dialog,
 question) lands at `needs_input`. `delegate read` shows the screen —
 relay it to the operator **verbatim** and wait for their answer:
-
 - **A keypress dialog** (press Enter, pick a numbered option,
   y/n): `delegate answer {id, key}` — one whitelisted key
   (`enter`, `esc`, arrows, `space`, `tab`, `y`/`n`, digits). This is
-  the *only* input a blocked agent takes — plain `send` is refused.
+  the _only_ input a blocked agent takes — plain `send` is refused.
 - **Free-text input** (a question needing words): `delegate send
   {id, text}`.
 
-A launch can even park *before* its task was sent (`agent_not_ready`
+A launch can even park _before_ its task was sent (`agent_not_ready`
 at startup — a first-run dialog): the row holds the task and the
 watcher delivers it automatically the moment the dialog clears, by
 your `answer` or the operator's own attach. Never choose for him —
@@ -88,7 +88,6 @@ first-run trust dialog; if one still appears, it parks as
 
 His interactive session is his desk. Inspect or prompt agents there only
 when he asks, using the `herdr` tool, never the CLI from bash.
-
 - `list {}` shows agents with pane IDs and workspace/tab context.
 - `read {pane, lines?}` reads an agent's screen.
 - `prompt {pane, expect, text}` checks the expected agent kind, then

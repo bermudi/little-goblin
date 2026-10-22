@@ -1,17 +1,19 @@
 ---
+
 name: gws
 description: >
-  Gmail, Drive, Calendar, and Sheets through the gws CLI. Mail reads go
-  through the goblin-mail wrapper (injection-checked and fenced) — never
-  raw +read. Discover services, read schemas, run commands via bash.
+Gmail, Drive, Calendar, and Sheets through the gws CLI. Mail reads go
+through the goblin-mail wrapper (injection-checked and fenced) — never
+raw +read. Discover services, read schemas, run commands via bash.
 license: Apache-2.0
 metadata:
-  version: "1.0"
-  topic: google-workspace
+version: "1.0"
+topic: google-workspace
 compatibility: Requires gws CLI v0.22.5+ plus `gws auth login` with the four scopes below (gmail/drive readonly, calendar/sheets read-write) and a running goblin for the injection check; if the entry point reports a missing piece, its error names the fix
 allowed-tools:
-  - Bash($GOBLIN_HOME/goblin-mail:*)
-  - Bash(gws:*)
+- Bash($GOBLIN_HOME/goblin-mail:*)
+- Bash(gws:*)
+
 ---
 
 # gws — Google Workspace through goblin's wrapper and the gws CLI
@@ -45,12 +47,12 @@ read, never send, delete, or widen access. Keep it that way (below).
 
 ## Scopes
 
-| Scope | Why |
-| --- | --- |
-| `gmail.readonly` | triage + read need `q` search; the metadata scope rejects it |
-| `drive.readonly` | files list/get without write (Drive deletes are unrecoverable) |
-| `calendar` (read-write) | event reads AND writes — both have undo history |
-| `spreadsheets` (read-write) | sheet reads AND writes — both have undo history |
+| Scope                       | Why                                                            |
+| --------------------------- | -------------------------------------------------------------- |
+| `gmail.readonly`            | triage + read need `q` search; the metadata scope rejects it   |
+| `drive.readonly`            | files list/get without write (Drive deletes are unrecoverable) |
+| `calendar` (read-write)     | event reads AND writes — both have undo history                |
+| `spreadsheets` (read-write) | sheet reads AND writes — both have undo history                |
 
 Login with exactly these four scopes:
 

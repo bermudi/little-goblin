@@ -838,6 +838,7 @@ export function ContextGauge({
 	conversationId,
 	busy,
 	live,
+	model,
 }: {
 	token: string | null;
 	conversationId: string | undefined;
@@ -846,6 +847,11 @@ export function ContextGauge({
 	// wire — the gauge's numbers while a turn runs. The settled view
 	// is one turn behind then.
 	live?: AppLiveContext | null | undefined;
+	// The conversation's configured model — what the next turn runs.
+	// A read carries the model it was made for; when this one differs,
+	// the read's limit says nothing about the live window and only the
+	// bare token count shows until the re-read lands.
+	model?: string | undefined;
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -903,8 +909,12 @@ export function ContextGauge({
 	};
 	useEffect(() => {
 		read();
+		// The model knob rides along: a model change between turns must
+		// re-read, or the gauge would keep utilizing against the previous
+		// model's limit. cfg resolving after mount re-fires this once —
+		// a duplicate GET the seq retires.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [token, conversationId, busy]);
+	}, [token, conversationId, busy, model]);
 	// Dismiss on any outside press or Escape — the gauge button's own
 	// toggle stays the open path. Escape hands focus back to the control
 	// that opened it.
@@ -927,8 +937,26 @@ export function ContextGauge({
 		};
 	}, [open]);
 	if (conversationId === undefined) return null;
-	const barPct =
-		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// The limit the gauge's arithmetic may use — the read's figure only
+	// when the read belongs to the conversation's live model. A model
+	// change between turns outdates it (the token count survives, the
+	// window doesn't), and until the fresh read lands only the count is
+	// known. Without the live model the caller can't know better, so
+	// the read stands.
+	const limit =
+		ctx !== null &&
+		ctx.limit !== null &&
+		ctx.limit > 0 &&
+		(model === undefined || ctx.model === model)
+			? ctx.limit
+			: null;
+	// The figures every face shows — the streaming turn's latest
+	// reported step while it runs, the last read's otherwise. Label,
+	// ring, and popover all derive from these, so they cannot disagree.
+	const viewInput = busy && live?.input != null ? live.input : (ctx?.input ?? null);
+	const viewPct =
+		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
+	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));
 	// While a turn streams, the gauge reads the wire's data-context
 	// parts — the settled view is a turn behind. A step whose usage the
 	// provider didn't report says "ctx ?", never zero, never "no turns
@@ -937,8 +965,8 @@ export function ContextGauge({
 	const busyLabel =
 		live !== null && live !== undefined
 			? live.input !== null
-				? ctx?.limit != null
-					? `${contextCount(live.input)}/${contextCount(ctx.limit)} · ${Math.round((live.input / ctx.limit) * 1000) / 10}%`
+				? limit !== null
+					? `${contextCount(live.input)}/${contextCount(limit)} · ${viewPct}%`
 					: `${contextCount(live.input)} tok`
 				: "ctx ?"
 			: // The settled view holds the count when it has landed —
@@ -946,10 +974,17 @@ export function ContextGauge({
 				ctx === null
 				? "turn in flight"
 				: `turn ${ctx.turns + 1} in flight`;
-	const viewPct =
-		busy && live?.input !== null && live?.input !== undefined && ctx?.limit != null
-			? Math.min(100, Math.max(0, (live.input / ctx.limit) * 100))
-			: barPct;
+	// The read wearing the figures above — the settled label and the
+	// popover render this, so a streamed step moves them with the ring.
+	const shown: AppContextView | null =
+		ctx === null
+			? null
+			: {
+					...ctx,
+					limit,
+					input: viewInput ?? ctx.input,
+					pct: viewPct,
+				};
 	// The wire's cacheRead/input pair is the same numerator and
 	// denominator the server reports for a settled turn — while one
 	// runs, the freshest metered step's rate wins; a step whose split
@@ -961,7 +996,7 @@ export function ContextGauge({
 	const hitRate = busy && liveHitRate !== null ? liveHitRate : (ctx?.cacheHitRate ?? null);
 	// 85% is the ring's red line — the button and the popover's bar wear
 	// the same state so every face of the gauge agrees.
-	const hot = viewPct >= 85;
+	const hot = viewPct !== null && viewPct >= 85;
 	// A failed read has no numbers to show and the popover won't open —
 	// the label carries it on wide screens, the reddened ring on narrow.
 	// The click becomes the retry, with the reason on the tooltip.
@@ -985,7 +1020,7 @@ export function ContextGauge({
 							? `Context window: ${busyLabel}`
 							: ctx === null
 								? "Context window usage"
-								: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+								: `Context window: ${contextLabel(shown)} — ${ctx.model}`
 				}
 				aria-expanded={open && ctx !== null}
 				title={
@@ -995,7 +1030,7 @@ export function ContextGauge({
 							? `Context window: ${busyLabel} — turn in flight`
 							: ctx === null
 								? "Context window usage"
-								: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+								: `Context window: ${contextLabel(shown)} — ${ctx.model}`
 				}
 				onClick={() => {
 					if (failedRead) {
@@ -1007,42 +1042,42 @@ export function ContextGauge({
 			>
 				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
-					{viewPct > 0 && (
+					{viewPct !== null && viewPct > 0 && (
 						<circle
-							className={viewPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
+							className={hot ? "ctx-ring-fill hot" : "ctx-ring-fill"}
 							cx="8"
 							cy="8"
 							r="6.5"
-							strokeDasharray={`${(viewPct / 100) * 40.84} 40.84`}
+							strokeDasharray={`${(barPct / 100) * 40.84} 40.84`}
 							transform="rotate(-90 8 8)"
 						/>
 					)}
 				</svg>
 				<span className="ctx-label">
-					{failedRead ? "ctx failed" : busy ? busyLabel : contextLabel(ctx)}
+					{failedRead ? "ctx failed" : busy ? busyLabel : contextLabel(shown)}
 				</span>
 			</button>
-			{open && ctx !== null && (
+			{open && shown !== null && (
 				<div className="note-pick composer-pick ctx-pop">
 					<div className="ctx-head">
 						<span>Context window</span>
 						<span className="mono">
-							{ctx.input === null || ctx.limit === null
+							{shown.input === null || shown.limit === null
 								? "—"
-								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)}`}
+								: `${contextCount(shown.input)}/${contextCount(shown.limit)}`}
 						</span>
 					</div>
 					<div className="ctx-hero">
-						{ctx.limit === null
-							? ctx.input === null
+						{shown.limit === null
+							? shown.input === null
 								? "—"
-								: `${contextCount(ctx.input)} tok`
-							: ctx.pct === null
+								: `${contextCount(shown.input)} tok`
+							: shown.pct === null
 								? "?"
-								: `${ctx.pct}%`}
+								: `${shown.pct}%`}
 					</div>
 					<div
-						className={ctx?.pct == null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
+						className={shown.pct === null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
 						aria-hidden="true"
 					>
 						<span style={{ width: `${barPct}%` }} />
@@ -1080,7 +1115,7 @@ export function ContextGauge({
 						<div>
 							<dt>Input</dt>
 							<dd className="mono">
-								{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}
+								{shown.input === null ? "—" : `${contextCount(shown.input)} tok`}
 							</dd>
 						</div>
 						<div>
@@ -1089,13 +1124,13 @@ export function ContextGauge({
 						</div>
 						<div>
 							<dt>Avg cache hit</dt>
-							<dd className="mono">{contextRate(ctx.avgCacheHitRate)}</dd>
+							<dd className="mono">{contextRate(shown.avgCacheHitRate)}</dd>
 						</div>
 					</dl>
 					<p className="empty">
-						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
+						{shown.model} · {shown.turns} {shown.turns === 1 ? "turn" : "turns"}
 						{busy ? " · turn in flight" : ""}
-						{ctx.limit === null ? " · limit unknown" : ""}
+						{shown.limit === null ? " · limit unknown" : ""}
 					</p>
 					<button
 						type="button"
@@ -1864,7 +1899,13 @@ export function Composer({
 						</label>
 					</>
 				)}
-				<ContextGauge token={token} conversationId={conversationId} busy={busy} live={liveCtx} />
+				<ContextGauge
+					token={token}
+					conversationId={conversationId}
+					busy={busy}
+					live={liveCtx}
+					model={cfg?.model}
+				/>
 				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.

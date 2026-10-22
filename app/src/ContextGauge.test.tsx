@@ -449,6 +449,10 @@ describe("ContextGauge", () => {
 		});
 		const label = () => container.querySelector(".ctx-btn")?.textContent;
 		expect(label()).toBe("5k/10k · 50%");
+		const popRow = (name: string) =>
+			[...container.querySelectorAll(".ctx-rows > div")]
+				.find((r) => r.querySelector("dt")?.textContent === name)
+				?.querySelector("dd")?.textContent;
 
 		// A turn starts — before its first step report lands the label
 		// counts the turn after the settled ones.
@@ -462,13 +466,10 @@ describe("ContextGauge", () => {
 		act(() => {
 			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
 		});
-		const hitRow = () =>
-			[...container.querySelectorAll(".ctx-rows > div")]
-				.find((r) => r.querySelector("dt")?.textContent === "Cache hit")
-				?.querySelector("dd")?.textContent;
-		expect(hitRow()).toBe("50.0%");
+		expect(popRow("Cache hit")).toBe("50.0%");
 
-		// A step the provider didn't meter is unknown, not zero.
+		// A step the provider didn't meter is unknown, not zero — the
+		// popover keeps the settled figures as its fallback.
 		await act(async () => {
 			root?.render(
 				<ContextGauge
@@ -480,7 +481,9 @@ describe("ContextGauge", () => {
 			);
 		});
 		expect(label()).toBe("ctx ?");
-		expect(hitRow()).toBe("50.0%");
+		expect(popRow("Cache hit")).toBe("50.0%");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
+		expect(popRow("Input")).toBe("5k tok");
 
 		// Then step usage lands — the wire's number reads like the
 		// settled label, against the last known limit.
@@ -495,7 +498,15 @@ describe("ContextGauge", () => {
 			);
 		});
 		expect(label()).toBe("23.4k/10k · 234.2%");
-		expect(hitRow()).toBe("42.7%");
+		expect(popRow("Cache hit")).toBe("42.7%");
+
+		// The open popover wears the same live figures — a ring at 234%
+		// over a popover still reporting the settled 50% is the
+		// disagreement this exists to kill. The bar clamps the overflow.
+		expect(container.querySelector(".ctx-head .mono")?.textContent).toBe("23.4k/10k");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("234.2%");
+		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 100%;");
+		expect(popRow("Input")).toBe("23.4k tok");
 
 		// The turn settles — the read's settled view takes over again.
 		await act(async () => {
@@ -509,7 +520,79 @@ describe("ContextGauge", () => {
 			);
 		});
 		expect(label()).toBe("5k/10k · 50%");
-		expect(hitRow()).toBe("50.0%");
+		expect(popRow("Cache hit")).toBe("50.0%");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
+	});
+
+	test("a model change between turns outdates the limit until a fresh read lands", async () => {
+		const oldModel = view({ model: "vendor/old", input: 5000, limit: 10000, pct: 50, turns: 2 });
+		const newModel = view({ model: "vendor/new", input: 5000, limit: 20000, pct: 25, turns: 2 });
+		let gets = 0;
+		let resolveSecond!: (res: Response) => void;
+		const second = new Promise<Response>((res) => {
+			resolveSecond = res;
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/aaa/context") {
+				gets++;
+				return gets === 1 ? Promise.resolve(json(oldModel)) : second;
+			}
+			return Promise.reject(new Error(`unexpected fetch ${url}`));
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ContextGauge token={null} conversationId="app/aaa" busy={false} model="vendor/old" />,
+			);
+		});
+		const label = () => container.querySelector(".ctx-btn")?.textContent;
+		expect(label()).toBe("5k/10k · 50%");
+
+		// The knob flips — the read for the new model is still in flight,
+		// and until it lands the old limit must not dress the new model's
+		// window: the count survives, the utilization doesn't.
+		act(() => {
+			root?.render(
+				<ContextGauge token={null} conversationId="app/aaa" busy={false} model="vendor/new" />,
+			);
+		});
+		expect(gets).toBe(2);
+		expect(label()).toBe("5k tok");
+		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
+
+		// The popover agrees — hero and footer carry the count and the
+		// unknown limit, never the previous model's 50%.
+		act(() => {
+			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
+		});
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("5k tok");
+		expect(container.querySelector(".ctx-pop .empty")?.textContent).toContain("limit unknown");
+
+		// The fresh read lands for the new model — utilization returns.
+		await act(async () => {
+			resolveSecond(json(newModel));
+		});
+		expect(label()).toBe("5k/20k · 25%");
+
+		// A live figure mid-turn then utilizes against the new model's
+		// limit, and the popover's bar and hero move with the label.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={true}
+					live={{ input: 12000, cacheRead: 8000 }}
+					model="vendor/new"
+				/>,
+			);
+		});
+		expect(label()).toBe("12k/20k · 60%");
+		expect(container.querySelector(".ctx-head .mono")?.textContent).toBe("12k/20k");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("60%");
+		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 60%;");
 	});
 
 	test.each(["fold", "api error"] as const)(

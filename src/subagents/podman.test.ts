@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -514,8 +513,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			store2?.close();
 			try {
 				if (await probeExists(CONTAINER)) await podman!.rm(CONTAINER);
-			} catch {
-			}
+			} catch {}
 			const net = await boundedRun(spawnProc(["podman", "network", "rm", NETWORK]), {
 				timeoutMs: 30_000,
 				maxOutput: 1 << 20,

@@ -598,7 +598,8 @@ describe("program approval — hook grant", () => {
 		}
 	});
 
-	test("a failed hook delivery reports granted-but-undelivered — the activation stands", async () => {		const h = harness({
+	test("a failed hook delivery reports granted-but-undelivered — the activation stands", async () => {
+		const h = harness({
 			publicUrl: "https://g.ts.net",
 			sendPrivate: async () => {
 				throw new Error("couldn't DM the operator");

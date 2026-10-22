@@ -75,16 +75,14 @@ export function appSseWriter(
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
 		},
 		dispose() {
 			stopBeat();
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
 		},
 	};
 }

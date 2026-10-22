@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
+import type { AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
+import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import {
 	appendQuote,
 	ChatView,
@@ -553,7 +555,8 @@ describe("ChatView reload window (issue #79)", () => {
 		let stored: UIMessage[] = [userMsg("u1", "run the thing")];
 		let streamGets = 0;
 		let resumePosts = 0;
-		const interruptedBody = {
+		const callState: AppRunCall["state"] = "resolved-skip";
+		const interruptedBody: AppInterruptedList = {
 			runs: [
 				{
 					runId: "run-deadbeef",
@@ -566,12 +569,12 @@ describe("ChatView reload window (issue #79)", () => {
 							toolCallId: "c1",
 							name: "probe",
 							args: { q: 1 },
-							state: "resolved-skip",
+							state: callState,
 							result: null,
 							error: null,
 							resolutionNote: null,
 							resolvedMs: null,
-							canAuthorizeRetry: false,
+							canAuthorizeRetry: canAuthorizeRetry({ state: callState, replayed: false }),
 						},
 					],
 				},

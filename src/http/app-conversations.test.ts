@@ -1201,6 +1201,9 @@ describe("app channel interrupted-run routes", () => {
 			interruptedRun(store, wired.journal, convId, "run-dead");
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
 			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+			wired.journal.noteToolInput("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.noteToolDispatch("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.resolveCall("run-dead", "c2", "skip");
 
 			const res = await call("/api/app/conversations/chat-01/interrupted");
 			expect(res.status).toBe(200);
@@ -1208,7 +1211,11 @@ describe("app channel interrupted-run routes", () => {
 			expect(body.runs).toHaveLength(1);
 			expect(body.runs[0]!.runId).toBe("run-dead");
 			expect(body.runs[0]!.calls.dispatched).toBe(1);
+			expect(body.runs[0]!.calls.resolved).toBe(1);
 			expect(body.runs[0]!.toolCalls[0]!.state).toBe("dispatched");
+			expect(body.runs[0]!.toolCalls[0]!.canAuthorizeRetry).toBe(true);
+			expect(body.runs[0]!.toolCalls[1]!.state).toBe("resolved-skip");
+			expect(body.runs[0]!.toolCalls[1]!.canAuthorizeRetry).toBe(false);
 
 			expect((await call("/api/app/conversations/ghost/interrupted")).status).toBe(404);
 			expect(

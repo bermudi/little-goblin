@@ -48,9 +48,25 @@ Rulings:
   target supersedes older ones, and the decision — activation through
   the store's own create/update plus the stamp — is one immediate
   SQLite transaction, so a repeated tap or a crash can never grant
-  twice. A hook the proposal requests is minted only at approval and
-  travels only to operator DMs — no credential exists to leak before
-  the grant, and without `publicUrl` the tap refuses pending. Existing
+  twice. The update row also stores the renderable snapshot of its
+  base (`base_snapshot`, NULL on pre-column legacy rows): approval
+  cards always render that immutable candidate — a re-post after the
+  live program moved shows what the original card showed plus a stale
+  warning, never a merge onto today's row, and a drifted legacy row
+  with nothing immutable left names the coming refusal instead of
+  guessing a candidate. The snapshot's bounds are the trusted
+  store's, never proposal-input limits — a grandfathered or pre-limit
+  charter beyond the input cap still stages and reads, and the stored
+  payload is validated inside the staging transaction so no committed
+  row can fail its own reader. Posting is fenced by the staging turn's abort
+  signal chunk by chunk — a stopped turn sends no further chunks and
+  never the buttons; the durable row stays pending for
+  `program/review`. A hook the proposal requests is minted only at
+  approval and travels only to operator DMs — no credential exists to
+  leak before the grant, and without `publicUrl` the tap refuses
+  pending; the token's plaintext exists only inside the tap handler,
+  so in-flight posts and taps are tracked and shutdown joins them
+  under the drain budget before the store closes. Existing
   programs were never proposals: grandfathered rows activate nothing,
   ask nothing, migrate nothing.
 - **Firing is one path for every trigger.** Cron tick, webhook hit, or

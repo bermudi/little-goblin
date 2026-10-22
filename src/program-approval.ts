@@ -5,7 +5,13 @@
 // that requested approval — it never enters model context or history.
 
 import { hookTokenHash, hookUrl, newHookToken } from "./program-hook.ts";
-import type { ProgramProposal, ProposalRefusal } from "./program-proposals.ts";
+import { log } from "./log.ts";
+import {
+	programFingerprint,
+	snapshotProgram,
+	type ProgramProposal,
+	type ProposalRefusal,
+} from "./program-proposals.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import type { DecisionActor } from "./targets.ts";
 
@@ -20,22 +26,34 @@ export type ProgramDecisionOutcome =
 export interface ProgramApprovalDeps {
 	programs: Pick<ProgramsStore, "get" | "proposals">;
 	publicUrl(): string | undefined;
-	/** Posts the complete immutable candidate to the proposal's target. */
-	present(proposal: ProgramProposal): Promise<void>;
+	/** Posts the complete immutable candidate to the proposal's target.
+	 *  The staging turn's abort signal fences chunked posting; a present
+	 *  that cannot honor it still returns normally or throws. */
+	present(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 	now?(): Date;
 }
 
 export interface ProgramApproval {
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 	decide(id: number, action: ProgramDecision, actor: DecisionActor): Promise<ProgramDecisionOutcome>;
 	pending(): ProgramProposal[];
 	candidate(proposal: ProgramProposal): ProgramCandidate | null;
+	/** Joins in-flight requestApproval posts — shutdown's drain budget
+	 *  bounds the wait. */
+	stop(): Promise<void>;
 }
 
 export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval {
+	// In-flight posts; stop() joins them (mail-approval's pattern). The
+	// staging turn's signal fences the posting itself — the join only
+	// bounds the await, never replaces the fencing.
+	const inFlight = new Set<Promise<void>>();
 	return {
-		async requestApproval(proposal) {
-			await deps.present(proposal);
+		async requestApproval(proposal, signal) {
+			const p = deps.present(proposal, signal);
+			inFlight.add(p);
+			void p.catch(() => {}).then(() => inFlight.delete(p));
+			await p;
 		},
 		async decide(id, action, actor) {
 			const proposal = deps.programs.proposals.get(id);
@@ -82,6 +100,15 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 		candidate(proposal) {
 			return proposalCandidate(deps.programs, proposal);
 		},
+		async stop() {
+			const waits = [...inFlight];
+			if (waits.length > 0) {
+				log.info("program approval — joining in-flight posts on shutdown", {
+					posts: waits.length,
+				});
+			}
+			await Promise.allSettled(waits);
+		},
 	};
 }
 
@@ -115,8 +142,15 @@ export interface ProgramCandidate {
 	mailFilter: string | null;
 }
 
-// The complete candidate: a create's draft, or the live row merged with
-// the requested patch. Approval grants this exact result, not the diff.
+// The complete candidate: a create's draft, or the patch merged onto the
+// base the operator was shown. Update renders come from the immutable
+// snapshot staged with the proposal, so a re-post after the live program
+// moved shows exactly what the original card showed — never a merge onto
+// today's row that approval would then bind to the old base. Legacy rows
+// predate the snapshot column; their only honest render is the live row
+// itself, and that is exactly the base while the fingerprint matches.
+// Once it drifts there is nothing immutable left to show — null, not a
+// guess. Approval grants this exact result, not the diff.
 export function proposalCandidate(
 	programs: Pick<ProgramsStore, "get">,
 	proposal: ProgramProposal,
@@ -125,14 +159,18 @@ export function proposalCandidate(
 	const patch = proposal.patch!;
 	const target = proposal.targetId !== null ? programs.get(proposal.targetId) : null;
 	if (target === null) return null;
+	if (proposal.baseSnapshot === null && programFingerprint(target) !== proposal.base) {
+		return null;
+	}
+	const base = proposal.baseSnapshot ?? snapshotProgram(target);
 	return {
-		name: patch.name ?? target.name,
-		charter: patch.charter ?? target.charter,
-		cron: patch.cron !== undefined ? patch.cron : target.cron,
+		name: patch.name ?? base.name,
+		charter: patch.charter ?? base.charter,
+		cron: patch.cron !== undefined ? patch.cron : base.cron,
 		maxLatenessMinutes:
-			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : target.maxLatenessMinutes,
-		hook: patch.hook === true ? true : target.hookHash !== null,
-		mailFilter: patch.mailFilter !== undefined ? patch.mailFilter : target.mailFilter,
+			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : base.maxLatenessMinutes,
+		hook: patch.hook === true ? true : base.hook,
+		mailFilter: patch.mailFilter !== undefined ? patch.mailFilter : base.mailFilter,
 	};
 }
 
@@ -148,26 +186,60 @@ export function proposalText(
 		proposal.kind === "create"
 			? "Approving grants it standing authority exactly as shown:"
 			: "Approving applies exactly this configuration:";
-	const candidate = proposalCandidate(programs, proposal);
-	if (candidate === null) {
+	if (proposal.kind === "create") {
+		const candidate = proposalCandidate(programs, proposal)!;
+		return [
+			header,
+			lead,
+			"",
+			`name: ${candidate.name}`,
+			"charter:",
+			candidate.charter,
+			"",
+			`triggers: ${triggerLine(candidate)}`,
+		].join("\n");
+	}
+	const patch = proposal.patch!;
+	const target = proposal.targetId !== null ? programs.get(proposal.targetId) : null;
+	if (target === null) {
 		return [
 			header,
 			lead,
 			"",
 			"(the program is already gone — the approval will refuse; reject to clear it)",
 			"",
-			`requested: ${JSON.stringify(proposal.patch)}`,
+			`requested: ${JSON.stringify(patch)}`,
+		].join("\n");
+	}
+	const stale = programFingerprint(target) !== proposal.base;
+	const candidate = proposalCandidate(programs, proposal);
+	if (stale && candidate === null) {
+		// A drifted legacy row has nothing immutable left to show — name
+		// the coming refusal instead of guessing a merge.
+		return [
+			header,
+			lead,
+			"",
+			"(the program changed since this proposal — approving will refuse as stale; reject it and ask again)",
+			"",
+			`requested: ${JSON.stringify(patch)}`,
 		].join("\n");
 	}
 	return [
 		header,
 		lead,
+		...(stale
+			? [
+					"",
+					"(the program changed since this proposal was staged — approving will refuse as stale; reject it and ask again)",
+				]
+			: []),
 		"",
-		`name: ${candidate.name}`,
+		`name: ${candidate!.name}`,
 		"charter:",
-		candidate.charter,
+		candidate!.charter,
 		"",
-		`triggers: ${triggerLine(candidate)}`,
+		`triggers: ${triggerLine(candidate!)}`,
 	].join("\n");
 }
 

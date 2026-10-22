@@ -1,4 +1,3 @@
-
 import { describe, expect, test } from "bun:test";
 import { setLogFile } from "../log.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";

@@ -840,11 +840,14 @@ function admitBatch(
 	const tts = deps.configRef.current.tts;
 	const audience = sharedChatPart(conv.id, conv.chatId);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
+	// The append runs inside commitBatch's transaction — capturing its seq
+	// here hands submitPersisted the event's true identity without a lookup.
+	let seq: number | undefined;
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
 		laneKey,
 		() => {
-			deps.store.append(conv.id, [message]);
+			seq = deps.store.append(conv.id, [message])[0]!;
 		},
 	);
 	const replyTo = items[0]?.replyTo;
@@ -865,7 +868,7 @@ function admitBatch(
 		},
 	});
 	try {
-		deps.runtime.submitPersisted(conv, message, sink);
+		deps.runtime.submitPersisted(conv, message, sink, seq!);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({
@@ -917,11 +920,14 @@ function admitAppBatch(
 ): void {
 	const { deps } = env;
 	const message = userMessage(parts);
+	// Same capture as the telegram batch: the seq rides out of the
+	// commitBatch transaction so the queued turn owns its real event.
+	let seq: number | undefined;
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
 		laneKey,
 		() => {
-			deps.store.append(conv.id, [message]);
+			seq = deps.store.append(conv.id, [message])[0]!;
 		},
 	);
 	for (const item of items) {
@@ -954,7 +960,7 @@ function admitAppBatch(
 	}
 	const sink = env.bell(conv);
 	try {
-		deps.runtime.submitPersisted(conv, message, sink);
+		deps.runtime.submitPersisted(conv, message, sink, seq!);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({

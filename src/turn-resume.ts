@@ -11,7 +11,9 @@ import {
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
 import type { WakeDeps } from "./wake.ts";
@@ -322,6 +324,12 @@ function stalenessRefusal(
 			refuse: "the recorded input ownership is unreadable — not resumed",
 		};
 	}
+	if (run.resumeRequestSeqsUnreadable) {
+		return {
+			code: "invalid",
+			refuse: "the recorded resume-request registry is unreadable — not resumed",
+		};
+	}
 	const detail = store.historyDetail(convId);
 	const owned = new Set(run.ownedInputSeqs ?? []);
 	let anchor: DetailEntry | undefined;
@@ -351,11 +359,17 @@ function stalenessRefusal(
 			postAnchorOwned.push(e);
 			continue;
 		}
+		// The offending event did not necessarily arrive after the
+		// interruption — steering sent while the turn ran is durable but
+		// never folded — and an anchorless run has no anchor to compare
+		// against at all.
 		return {
 			code: "conflict",
 			refuse:
-				"newer input arrived after the interruption that this run never owned — not resumed; " +
-				"continue from the current conversation as a new request or abandon the interrupted run",
+				(run.anchorSeq === null
+					? "this run recorded no anchor and the conversation holds input it never owned"
+					: "input after this run's anchor was never owned by it — it arrived while the turn ran or after it died") +
+				" — not resumed; continue from the current conversation as a new request or abandon the interrupted run",
 		};
 	}
 	return { anchor, owned: postAnchorOwned };
@@ -558,7 +572,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (runtime.busy(convId)) {
 				return refused(
 					"conflict",
-					"a turn is running or queued — stop it or wait for it to finish",
+					"a turn or compaction is running or queued — stop it or wait for it to finish",
 				);
 			}
 			// Tail-only staleness: a durable user event the dead turn never
@@ -575,17 +589,45 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const partial = seedPartial(run, calls);
 			// The resume is a NEW source-linked user event: the provenance
 			// prefix, then the original request and the owned post-anchor
-			// inputs verbatim — attachments and notes ride as parts, so a
-			// compacted trigger reaches the model again.
+			// inputs verbatim — attachments and notes ride as parts. Only
+			// parts compaction already cut from the model view are copied:
+			// an event still visible reaches the model through its own
+			// entry, and re-copying would double the text in the prompt
+			// and in the retention document.
+			// The compaction summary borrows boundarySeq, which can equal a
+			// folded event's seq — exclude it or it masquerades as the anchor.
+			const viewSeqs = new Set(
+				store
+					.modelEntries(convId)
+					.filter((e) => !isCompactionSummaryId(e.message.id))
+					.map((e) => e.seq),
+			);
+			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
+			const revivedAnchor =
+				stale.anchor !== undefined && !triggerVisible ? stale.anchor.message.parts : [];
+			const revivedSteering = stale.owned
+				.filter((e) => !viewSeqs.has(e.seq))
+				.flatMap((e) => e.message.parts);
+			const revived = [...revivedAnchor, ...revivedSteering];
+			// Name exactly what the copied parts carry — the prefix must not
+			// claim the request follows when it is still in the model view,
+			// nor claim steering that was never folded.
+			const follows =
+				revivedAnchor.length > 0
+					? revivedSteering.length > 0
+						? "; original request and consumed steering follow"
+						: "; original request follows"
+					: revivedSteering.length > 0
+						? "; consumed steering follows"
+						: "";
 			const parts: UIMessage["parts"] = [
 				{
 					type: "text",
-					text: `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`,
+					text: `[operator resumed interrupted run ${run.runId}${follows}]`,
 				},
-				...(stale.anchor?.message.parts ?? []),
-				...stale.owned.flatMap((e) => e.message.parts),
+				...revived,
 			];
-			if (parts.length === 1 && partial === null) {
+			if (!triggerVisible && revived.length === 0 && partial === null) {
 				return refused(
 					"invalid",
 					"the trigger message and the journaled progress are both gone — nothing to resume",
@@ -598,6 +640,16 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const seed: ResumeSeed = {
 				conversation: captured,
 				partial,
+				// The watchdog judges progress against the operator's real
+				// request — the run's anchor, or its first owned input when
+				// no anchor was recorded. The head event's marker text names
+				// provenance only and must not take its place.
+				operatorRequest:
+					stale.anchor !== undefined
+						? messageText(stale.anchor.message)
+						: stale.owned[0] !== undefined
+							? messageText(stale.owned[0].message)
+							: undefined,
 				seenText: partial !== null && partial.parts.some((p) => p.type === "text"),
 				toolCalls: calls
 					.filter((c) => c.name !== "" && (c.state === "completed" || c.state === "resolved-done"))

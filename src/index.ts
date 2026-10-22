@@ -430,10 +430,10 @@ async function boot() {
 	programApproval = startProgramApproval({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
-		present: async (proposal) => {
+		present: async (proposal, signal) => {
 			if (telegramAddressOf(proposal.target) !== null) {
 				if (tg === null) throw new Error("telegram channel is unavailable");
-				await postProgramApproval(tg.bot.api, programs, proposal);
+				await postProgramApproval(tg.bot.api, programs, proposal, signal);
 			} else {
 				presentProgramApproval(store, proposal);
 			}
@@ -444,7 +444,7 @@ async function boot() {
 	const programOps = startProgramOps({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
-		requestApproval: (proposal) => programApproval!.requestApproval(proposal),
+		requestApproval: (proposal, signal) => programApproval!.requestApproval(proposal, signal),
 	});
 
 	// The retention worker boots before the channel — outage and blocked
@@ -880,6 +880,12 @@ async function boot() {
 		delegationLifecycle,
 		mailWatcher,
 		mailApproval,
+		programApproval,
+		// Live closure over the attach/detach-rebound Telegram adapter —
+		// shutdown joins in-flight taps through it without racing a
+		// detach that happened after boot returned.
+		stopTelegramProgramApproval: () =>
+			telegramProgramApproval?.stop() ?? Promise.resolve(),
 		memoryWorker,
 		subagentRuns,
 		subagents,
@@ -906,6 +912,8 @@ const {
 	delegationLifecycle,
 	mailWatcher,
 	mailApproval,
+	programApproval,
+	stopTelegramProgramApproval,
 	memoryWorker,
 	subagentRuns,
 	subagents,
@@ -931,6 +939,12 @@ async function shutdown(signal: string): Promise<void> {
 	// The approval gate stops sweeping AND joins an in-flight Gmail send
 	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
+	// Program approvals join in-flight posts and taps the same way — an
+	// approved hook commits activation before its private credential
+	// delivery, and the token's plaintext exists only inside that handler.
+	// The Telegram adapter's stop reads live, before stopTelegram detaches.
+	const telegramProgramJoins = stopTelegramProgramApproval();
+	const programJoins = programApproval?.stop() ?? Promise.resolve();
 	// The retention worker aborts its in-flight request and yields — the
 	// outbox rows stay durable for the next boot. Joined under the budget
 	// like everything else: a wedged memory service is not a deploy hold.
@@ -956,6 +970,8 @@ async function shutdown(signal: string): Promise<void> {
 		delegationScan,
 		mailScan,
 		mailSends,
+		programJoins,
+		telegramProgramJoins,
 		retention,
 		subagentsClosed,
 	]);

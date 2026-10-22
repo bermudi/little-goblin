@@ -247,14 +247,11 @@ describe("app channel browser-origin gate (trust mode, #75)", () => {
 	test("bearer mode is unaffected by browser origin — the token is the check", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {
-			const created = await call(
-				"/api/app/conversations",
-				{
-					method: "POST",
-					headers: { origin: EVIL_ORIGIN, "content-type": "application/json" },
-					body: JSON.stringify({ id: "token-01" }),
-				},
-			);
+			const created = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { origin: EVIL_ORIGIN, "content-type": "application/json" },
+				body: JSON.stringify({ id: "token-01" }),
+			});
 			expect(created.status).toBe(201);
 			const plain = await call("/api/app/conversations", {
 				method: "POST",

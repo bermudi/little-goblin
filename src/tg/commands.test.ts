@@ -1071,6 +1071,7 @@ describe("recovery commands", () => {
 		ownedInputSeqs: null,
 		ownedInputSeqsUnreadable: false,
 		resumeRequestSeqs: null,
+		resumeRequestSeqsUnreadable: false,
 		filterRetryUsed: false,
 		createdAt: "2026-10-11T00:00:00.000Z",
 		resumedFrom: null,
@@ -1134,11 +1135,28 @@ describe("recovery commands", () => {
 		expect(handleCommand(deps, conv, "/resume")).toBe(true);
 		await tick();
 		expect(sent[0]).toContain('known: probe {"q":1} — completed');
-		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz authorize-retry");
+		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz789 authorize-retry");
 		// The known row never occupies a numbered slot — ordinals stay
 		// pinned to the ambiguous list.
 		const numbered = sent[0]!.split("\n").filter((l) => /^\s*\d+\./.test(l));
 		expect(numbered).toEqual([`  1. probe {"q":1}`]);
+		store.close();
+	});
+
+	test("/resume prints full call ids for known calls — shared prefixes stay decidable", async () => {
+		// Script children are "${parentId}/${callNo}" — an 8-char prefix
+		// covers siblings identically, and known calls take no ordinal.
+		const calls = [
+			{ ...call, toolCallId: "call-root/0", state: "completed" as const, result: "{}" },
+			{ ...call, toolCallId: "call-root/1", state: "failed" as const, error: "boom" },
+		];
+		const { store, conv, sent, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
+		});
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("re-run: /decide abcdef01 call-root/0 authorize-retry");
+		expect(sent[0]).toContain("re-run: /decide abcdef01 call-root/1 authorize-retry");
 		store.close();
 	});
 

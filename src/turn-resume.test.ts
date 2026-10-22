@@ -26,6 +26,7 @@ import {
 	type StreamAttempt,
 } from "./testkit/fake-model.ts";
 import {
+	deferred,
 	pauseFakeModelAtDelta,
 	RecordingSink,
 	tmpDb,
@@ -970,10 +971,17 @@ describe("turn resume", () => {
 			ownedInputSeqs: [trigger2.seq],
 		});
 		appendUserMsg(store, conv2, "arrived but never folded in");
-		expect(ops.resume(conv2.id, "run-unclaimed")).toMatchObject({
+		const refusedOut = ops.resume(conv2.id, "run-unclaimed");
+		expect(refusedOut).toMatchObject({
 			kind: "refused",
 			code: "conflict",
 		});
+		if (refusedOut.kind === "refused") {
+			// The unclaimed steer arrived while the turn ran — the refusal
+			// names the anchor boundary, not "after the interruption".
+			expect(refusedOut.reason).toContain("after this run's anchor");
+			expect(refusedOut.reason).not.toContain("after the interruption");
+		}
 		expect(journal.get("run-unclaimed")!.status).toBe("interrupted");
 		await runtime.shutdown();
 		store.close();
@@ -1011,6 +1019,11 @@ describe("turn resume", () => {
 			(e) => e.message.role === "user" && e.message.id !== original.id,
 		)!;
 		// Parts ride verbatim — the attachment stays a part, not a string.
+		// Only the request follows; no folded steering exists to claim.
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain(
+			"[operator resumed interrupted run run-dead; original request follows]",
+		);
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("consumed steering");
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("original ask");
 		expect(
 			resumeEvent.message.parts.some((p) => (p as { type: string }).type === "data-attachment"),
@@ -1022,6 +1035,45 @@ describe("turn resume", () => {
 		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
 			true,
 		);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a resume that revives the trigger and folded steering names both", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		const steered = appendUserMsg(store, conv, "STEERED-INPUT");
+		interruptedRun(store, journal, conv, "run-both", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steered.seq],
+		});
+		// Fold the trigger and its steer — neither is in the model view, so
+		// the resume carries both and the prefix says exactly that.
+		store.setCompaction(conv.id, {
+			boundarySeq: steered.seq,
+			summary: "everything folded",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-both").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) =>
+				e.message.role === "user" &&
+				e.message.id !== trigger.message.id &&
+				e.message.id !== steered.message.id,
+		)!;
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain(
+			"[operator resumed interrupted run run-both; original request and consumed steering follow]",
+		);
+		expect(parts).toContain("ORIGINAL-ASK");
+		expect(parts).toContain("STEERED-INPUT");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
+		expect(prompt.split("STEERED-INPUT").length - 1).toBe(1);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -1050,6 +1102,215 @@ describe("turn resume", () => {
 			kind: "refused",
 			code: "conflict",
 		});
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a malformed resume-request registry refuses readable, never as foreign input", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const a = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq: a,
+			ownedInputSeqs: [a],
+		});
+		// A prior resume's generated request event — the registration is
+		// what corrupts below; without the unreadable flag the scan reads
+		// it as foreign input and misreports a "conflict".
+		store.append(conv.id, [
+			{
+				...userMessage([{ type: "text", text: "[operator resumed interrupted run run-src]" }]),
+				metadata: { goblinResume: { sourceRunId: "run-src" } },
+			},
+		]);
+		store.db.run("UPDATE turn_runs SET resume_request_seqs = ? WHERE run_id = ?", [
+			"{not json",
+			"run-src",
+		]);
+		const out = ops.resume(conv.id, "run-src");
+		expect(out).toMatchObject({ kind: "refused", code: "invalid" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("resume-request registry is unreadable");
+		}
+		expect(journal.get("run-src")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("an anchorless run holding foreign history refuses without blaming post-interruption input", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		appendUser(store, conv, "old ask");
+		interruptedRun(store, journal, conv, "run-anchorless", { ownedInputSeqs: [] });
+		const out = ops.resume(conv.id, "run-anchorless");
+		expect(out).toMatchObject({ kind: "refused", code: "conflict" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("recorded no anchor");
+			expect(out.reason).not.toContain("after the interruption");
+		}
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a trigger still in the model view is not re-copied into the resume event", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		interruptedRun(store, journal, conv, "run-live", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq],
+		});
+		expect(ops.resume(conv.id, "run-live").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) => e.message.role === "user" && e.message.id !== trigger.message.id,
+		)!;
+		// The original request rides its own still-visible event — the
+		// resume carries the provenance prefix only, so the model and the
+		// retention document see the text once.
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("ORIGINAL-ASK");
+		expect(JSON.stringify(resumeEvent.message.parts)).toContain(
+			"[operator resumed interrupted run run-live]",
+		);
+		expect(JSON.stringify(resumeEvent.message.parts)).not.toContain("follow");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
+		const reply = detail.at(-1)!;
+		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("resume refuses while a compaction is in flight — the view it measured can still move", async () => {
+		const started = deferred();
+		const gate = deferred<string>();
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => 1000,
+				summarize: () => {
+					started.resolve();
+					return gate.promise;
+				},
+			},
+		});
+		seedExchanges(store, conv.id);
+		const trigger = appendUserMsg(store, conv, "original ask");
+		const steered = appendUserMsg(store, conv, "steered while running");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steered.seq],
+		});
+		// Tail-sized assistant events after the owned input push the anchor
+		// and the steer below the coming boundary once the summary lands.
+		for (const id of ["f1", "f2"]) {
+			store.append(conv.id, [
+				{ id, role: "assistant", parts: [{ type: "text", text: "y".repeat(600) }] },
+			]);
+		}
+		const compacted = runtime.compact(conv);
+		await started.promise; // the summarizer holds the lane mid-flight
+		const inFlight = ops.resume(conv.id, "run-dead");
+		// Admitted now, the queued resume would run after the commit — its
+		// still-visible anchor would never reach the model at all.
+		expect(inFlight).toMatchObject({ kind: "refused", code: "conflict" });
+		expect(edge.streamCalls).toHaveLength(0);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+
+		gate.resolve("the folded era");
+		expect((await compacted).kind).toBe("compacted");
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		// After the commit the same resume measures the moved view — both
+		// folded inputs revive into the generated event instead of being
+		// silently dropped.
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === trigger.message.id)).toBe(
+			false,
+		);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === steered.message.id)).toBe(
+			false,
+		);
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		// The seeded exchanges are user events too — the generated event is
+		// the one registered provenance names.
+		const resumeEvent = detail.find(
+			(e) =>
+				e.message.role === "user" &&
+				(e.message.metadata as { goblinResume?: { sourceRunId?: string } } | undefined)
+					?.goblinResume?.sourceRunId === "run-dead",
+		)!;
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain(
+			"[operator resumed interrupted run run-dead; original request and consumed steering follow]",
+		);
+		expect(parts).toContain("original ask");
+		expect(parts).toContain("steered while running");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("original ask").length - 1).toBe(1);
+		expect(prompt.split("steered while running").length - 1).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("the resumed turn's watchdog judges the run's original request, not the marker", async () => {
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			attempts: [
+				[toolCallPart("n1", "probe", '{"q":1}'), finishPart("tool-calls")],
+				textParts("done"),
+			],
+		});
+		const seen: string[] = [];
+		runtime.setLoopWatchdog({
+			every: 1,
+			decide: async (state) => {
+				seen.push((state as { operatorRequest: string }).operatorRequest);
+				return { answers: { stuck: 0 }, inputTokens: 0, cost: 0 };
+			},
+		});
+		const anchorSeq = appendUser(store, conv, "Find the cause of the billing discrepancy");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		// The anchor stays visible, so the generated head is the marker
+		// alone — the watchdog's task text must still be the real request.
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await waitUntil(() => seen.length > 0, "watchdog check fired");
+		expect(seen[0]).toBe("Find the cause of the billing discrepancy");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a registry write that lands zero rows rolls the event append back", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const a = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-silent", {
+			anchorSeq: a,
+			ownedInputSeqs: [a],
+		});
+		// The guarded UPDATE silently skips — changes === 0 — the way a
+		// status flip between the check and the write would surface.
+		store.db.run(
+			"CREATE TRIGGER skip_resume_req BEFORE UPDATE OF resume_request_seqs ON turn_runs " +
+				"BEGIN SELECT RAISE(IGNORE); END",
+		);
+		const before = store.historyDetail(conv.id).length;
+		const out = ops.resume(conv.id, "run-silent");
+		expect(out).toMatchObject({ kind: "refused", code: "unavailable" });
+		// The append rode the same transaction — nothing half-landed.
+		expect(store.historyDetail(conv.id).length).toBe(before);
+		expect(journal.get("run-silent")!.resumeRequestSeqs).toBeNull();
+		expect(journal.get("run-silent")!.status).toBe("interrupted");
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("noteResumeRequest refuses a seq that is not a durable event seq", async () => {
+		const { store, conv, journal, runtime } = setup({});
+		const a = appendUser(store, conv, "ask");
+		interruptedRun(store, journal, conv, "run-seq", { anchorSeq: a });
+		expect(() => journal.noteResumeRequest("run-seq", 0)).toThrow("not a durable event seq");
+		expect(journal.get("run-seq")!.resumeRequestSeqs).toBeNull();
 		await runtime.shutdown();
 		store.close();
 	});

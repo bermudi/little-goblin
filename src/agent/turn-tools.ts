@@ -138,10 +138,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							target: targetOf(conv),
 							publicUrl: () => configRef.current.publicUrl,
 							...(sendPrivate === undefined ? {} : { sendPrivate }),
-							requestApproval: async (proposal) => {
+							requestApproval: async (proposal, signal) => {
 								const gate = deps.programApproval();
 								if (gate === undefined) throw new Error("program approvals are not wired yet");
-								await gate.requestApproval(proposal);
+								await gate.requestApproval(proposal, signal);
 							},
 						}
 					: undefined,

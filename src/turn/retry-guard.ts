@@ -8,11 +8,7 @@
 // bounded preview — and historical CALL ids for grants. A signature is
 // evidence about what ran; it is never execution identity.
 
-import {
-	RESOLVED_SKIP_NOTE,
-	type ToolCallState,
-	type TurnToolCall,
-} from "../turn-journal.ts";
+import { RESOLVED_SKIP_NOTE, type ToolCallState, type TurnToolCall } from "../turn-journal.ts";
 
 // Reads whose observed value is only meaningful when freshly observed —
 // they execute again without an operator grant (a stale file listing is
@@ -36,10 +32,7 @@ export const RETRY_AUTHORIZABLE: ReadonlySet<ToolCallState> = new Set([
 	"resolved-done",
 ]);
 
-export function canAuthorizeRetry(call: {
-	state: ToolCallState;
-	replayed: boolean;
-}): boolean {
+export function canAuthorizeRetry(call: { state: ToolCallState; replayed: boolean }): boolean {
 	return !call.replayed && RETRY_AUTHORIZABLE.has(call.state);
 }
 
@@ -97,9 +90,7 @@ export type RetryVerdict =
 // The label the model sees on a refused re-ask: structured, with the
 // historical call ids and states so the operator can act on them.
 function conflictError(name: string, entries: GuardEntry[]): string {
-	const hist = entries
-		.map((e) => `${e.toolCallId} (${e.state})`)
-		.join(", ");
+	const hist = entries.map((e) => `${e.toolCallId} (${e.state})`).join(", ");
 	return (
 		`[turn-journal conflict] '${name}' with identical arguments already ran ` +
 		`in the interrupted attempt: ${hist}. Those recorded outcomes are ` +
@@ -115,14 +106,9 @@ function conflictError(name: string, entries: GuardEntry[]): string {
 // skip refuses; a matching safe read executes afresh; any other
 // historical execution refuses as an unowned repeat; nothing recorded
 // executes normally.
-export function classifyRetry(
-	name: string,
-	entries: GuardEntry[] | undefined,
-): RetryVerdict {
+export function classifyRetry(name: string, entries: GuardEntry[] | undefined): RetryVerdict {
 	if (entries !== undefined) {
-		const grant = entries.find(
-			(e) => e.state === "resolved-retry" && !e.retryConsumed,
-		);
+		const grant = entries.find((e) => e.state === "resolved-retry" && !e.retryConsumed);
 		if (grant !== undefined) return { kind: "execute-grant", grant };
 		const skip = entries.find((e) => e.state === "resolved-skip");
 		if (skip !== undefined) {

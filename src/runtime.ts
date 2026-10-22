@@ -155,6 +155,10 @@ export class FencedError extends Error {
 export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
+	// The durable event seq of the appended message — captured from the
+	// append (or the persisting caller) so steering ownership never has to
+	// match client message ids, which are neither unique nor trusted.
+	seq: number;
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
 	message: UIMessage;
@@ -267,14 +271,16 @@ export class Runtime {
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		this.deps.store.append(conv.id, [message]);
-		return this.admit(conv, message, sink);
+		const seqs = this.deps.store.append(conv.id, [message]);
+		return this.admit(conv, message, sink, seqs[0]!);
 	}
 
 	// The inbox has already persisted this message; appending again would
-	// duplicate a recovered turn.
-	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		return this.admit(conv, message, sink);
+	// duplicate a recovered turn. `seq` is that persisted event's seq — the
+	// persisting caller watched the append, so the queue never has to guess
+	// it from a client message id.
+	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink, seq: number): boolean {
+		return this.admit(conv, message, sink, seq);
 	}
 
 	// Admission for an operator-resumed turn — turn-resume.ts owns the
@@ -286,29 +292,42 @@ export class Runtime {
 	// submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
 		const journal = this.deps.turnJournal;
+		let seq: number;
 		if (journal !== undefined && seed.resumedFrom !== undefined) {
-			this.deps.store.db.transaction(() => {
-				this.deps.store.append(conv.id, [message]);
-				journal.noteResumeRequest(seed.resumedFrom!, this.deps.store.lastUserSeq(conv.id)!);
+			seq = this.deps.store.db.transaction(() => {
+				// The registry names the seq this append actually wrote —
+				// inferring it (e.g. lastUserSeq) would silently register an
+				// unrelated event if the message's shape ever changed.
+				const seqs = this.deps.store.append(conv.id, [message]);
+				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
+				return seqs[0]!;
 			})();
 		} else {
-			this.deps.store.append(conv.id, [message]);
+			const seqs = this.deps.store.append(conv.id, [message]);
+			seq = seqs[0]!;
 		}
-		return this.admit(conv, message, sink, seed);
+		return this.admit(conv, message, sink, seq, seed);
 	}
 
 	private admit(
 		conv: Conversation,
 		message: UIMessage,
 		sink: TurnSink,
+		seq: number,
 		seed?: ResumeSeed,
 	): boolean {
 		if (this.closed) {
-			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
+			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
+		lane.pending.push({
+			seq,
+			message,
+			sink,
+			doneSent: false,
+			resumeSeed: seed,
+		});
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -319,10 +338,16 @@ export class Runtime {
 		return !this.closed;
 	}
 
-	// Used by app retries to avoid turning a retry into steering input.
+	// Busy is the lane holding any work — a claimed or queued turn, or a
+	// queued/in-flight compaction. Compaction counts because it rewrites
+	// the model view between turns: app retries use this to avoid turning
+	// a retry into steering input, and resume admission refuses on it so
+	// the visibility it measured cannot move before the resumed turn runs.
 	busy(convId: string): boolean {
 		const lane = this.lanes.get(convId);
-		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+		return (
+			lane !== undefined && (lane.running || lane.pending.length > 0 || lane.compacts.length > 0)
+		);
 	}
 
 	// Replay the existing wire and subscribe atomically; the replay/live union is
@@ -444,23 +469,31 @@ export class Runtime {
 			// Metadata only — never buildStep: resolving a model and building
 			// a system prompt here would freeze a snapshot no turn asked for.
 			const contextWindow = await compaction.contextWindow(conv);
-			// The authority check precedes the abort check so a /stop (epoch
-			// bump + abort) still reports as a fence, matching the commit-time
-			// assertAuthority inside runCompaction.
+			// The authority check doubles as the abort check: compactController
+			// is only aborted by cancelFenced after the epoch commits, so a
+			// /stop during the lookup already reports as a fence. runCompaction
+			// reverses the order after each call — a provider may resolve under
+			// abort, so there the signal check must land first.
 			this.checkAuthority(conv.id, epoch);
-			controller.signal.throwIfAborted();
-			const tailTokenBudget =
-				contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
+			const tailTokenBudget = contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
 			// Overflow recovery uses a smaller tail to stay below the provider's
 			// observed limit.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 			// Keep summarizer input below half the window to leave answer headroom.
-			const inputTokenBudget =
-				contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const inputTokenBudget = contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const modelRef = compaction.modelRef(conv);
+			log.info("compaction window", {
+				conversation: conv.id,
+				model: modelRef,
+				contextWindow,
+				tailTokenBudget: tail,
+				inputTokenBudget,
+				reason,
+			});
 			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,
-				compaction.modelRef(conv),
+				modelRef,
 				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
 				{
 					tailTokenBudget: tail,
@@ -778,7 +811,10 @@ export class Runtime {
 			{
 				convId,
 				watchdog: this.loopWatchdog,
-				request: messageText(turns[0]!.message),
+				// An operator-resume head is the generated provenance marker —
+				// the seed carries the run's real request for the watchdog;
+				// every other head message is itself the request.
+				request: recovery?.operatorRequest ?? messageText(turns[0]!.message),
 			},
 			recovery?.loop,
 		);
@@ -798,7 +834,7 @@ export class Runtime {
 				getConversation: () => store.get(convId),
 				captureConversation: this.deps.captureConversation,
 				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
+				pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
 				modelEntries: () => store.modelEntries(convId),
 				now: Date.now,
 			},
@@ -978,7 +1014,6 @@ export class Runtime {
 				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
-				modelEntries: () => store.modelEntries(convId),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: snapshot.ownedInputSeqs,
 				partial: recovery?.partial ?? null,
@@ -1112,6 +1147,7 @@ export class Runtime {
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
 					failedRunId: runId ?? undefined,
+					operatorRequest: recovery?.operatorRequest,
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),

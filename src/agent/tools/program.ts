@@ -41,8 +41,10 @@ export type ProgramToolDeps = {
 	 * mutate state before finding out the private lane is gone. */
 	sendPrivate?(text: string): Promise<void>;
 	/** Posts a staged proposal for the operator's decision — throws when the
-	 *  approval could not be delivered. The proposal stays pending either way. */
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+	 *  approval could not be delivered. The staging turn's abort signal
+	 *  fences the posting chunk by chunk; the proposal stays pending either
+	 *  way. */
+	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 } & ({ target: string } | { chatId: number; threadId: number | null });
 
 export function makePrivateSender(
@@ -144,12 +146,15 @@ export const programTool = (deps: ProgramToolDeps) => {
 		description:
 			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure.",
 		inputSchema: programInputSchema,
-		execute: async (raw) => {
+		execute: async (raw, options) => {
 			const input = actionSchema.parse(raw);
 			const address =
 				"target" in deps
 					? { target: deps.target }
 					: { chatId: deps.chatId, threadId: deps.threadId };
+			// The staging turn's stop signal fences the approval posting —
+			// carried through every staging op below.
+			const signal = options?.abortSignal;
 			switch (input.action) {
 				case "list":
 					return {
@@ -168,6 +173,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 								mailFilter: input.mailFilter ?? null,
 							},
 							address,
+							signal,
 						),
 					);
 				case "update": {
@@ -184,7 +190,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 					if (input.maxLatenessMinutes !== undefined)
 						patch.maxLatenessMinutes = input.maxLatenessMinutes;
 					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
-					return opResult(await ops.update(input.id, patch, address));
+					return opResult(await ops.update(input.id, patch, address, signal));
 				}
 				case "delete":
 					return opResult(ops.remove(input.id));
@@ -203,7 +209,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 								"telegram channel is disabled — rotate or reveal the hook from Programs in the app instead",
 						};
 					}
-					const result = await ops.hook(input.id, input.op, address);
+					const result = await ops.hook(input.id, input.op, address, signal);
 					if (result.kind !== "rotated") return opResult(result);
 					const current = deps.programs.get(input.id);
 					if (current === null) return { error: `no program ${input.id}` };
@@ -216,7 +222,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 					return { hook: "rotated", url_sent: true };
 				}
 				case "review":
-					return reviewResult(await ops.review(input.id));
+					return reviewResult(await ops.review(input.id, signal));
 			}
 		},
 	});

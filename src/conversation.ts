@@ -284,8 +284,10 @@ export interface ConversationStore {
 	clearPromptSnapshot(id: string): void;
 	// Settings patch + epoch bump in one transaction — never half-applied.
 	applySettings(id: string, patch: ConversationMetaPatch): number;
-	// One transaction; seq assigned here. anchorSeq ties a response to the
-	// user event that triggered its turn.
+	// One transaction; seq assigned here and returned (one per message,
+	// in order) — callers that journal the event need the real seq, not
+	// a lastUserSeq inference. anchorSeq ties a response to the user
+	// event that triggered its turn.
 	append(
 		id: string,
 		messages: UIMessage[],
@@ -293,7 +295,7 @@ export interface ConversationStore {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };
 		},
-	): void;
+	): number[];
 	// The causal view (anchored responses sort right after their user
 	// event) as messages; historyEntries adds seqs (recall blocks need
 	// positions); historyDetail adds anchors (compaction's cut rule).
@@ -1494,7 +1496,7 @@ export function openStore(dbPath: string): ConversationStore {
 		append(id, messages, opts) {
 			let operation: string | undefined;
 			let unarchived = false;
-			db.transaction(() => {
+			const seqs = db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
 				// Eligibility is stamped at admission, from the live exclusion
@@ -1537,6 +1539,7 @@ export function openStore(dbPath: string): ConversationStore {
 					}
 					operation = memoryQueue.enqueue(opts.memory.target, opts.memory.document);
 				}
+				return messages.map((_, i) => start + i + 1);
 			})();
 			if (operation)
 				log.info("memory queued", {
@@ -1547,6 +1550,7 @@ export function openStore(dbPath: string): ConversationStore {
 			if (unarchived) {
 				log.info("conversation unarchived on activity", { conversation: id });
 			}
+			return seqs;
 		},
 
 		lastUserSeq(id) {

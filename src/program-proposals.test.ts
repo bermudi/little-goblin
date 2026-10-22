@@ -9,10 +9,11 @@ import { describe, expect, test } from "bun:test";
 import { setLogFile } from "./log.ts";
 import {
 	openProgramProposals,
+	PROPOSAL_CHARTER_MAX,
 	type ProgramDraft,
 	type ProgramProposalsDeps,
 } from "./program-proposals.ts";
-import { openPrograms, ProgramRuleError, type ProgramsStore } from "./programs.ts";
+import { openPrograms, type Program, ProgramRuleError, type ProgramsStore } from "./programs.ts";
 import { tmpDb } from "./testkit.ts";
 
 setLogFile(null);
@@ -327,6 +328,145 @@ describe("program proposals — update", () => {
 		db.close();
 		expect(() => programs.proposals.get(proposal.id)).toThrow(/corrupt payload/);
 		programs.close();
+	});
+
+	test("an update proposal stores its renderable base snapshot — the immutable render survives reopen", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = openPrograms(path);
+		const program = programs.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		expect(proposal.baseSnapshot).toEqual({
+			name: "p",
+			charter: "c",
+			cron: "0 9 * * *",
+			maxLatenessMinutes: null,
+			hook: false,
+			mailFilter: null,
+		});
+		// The live row moving never rewrites the stored snapshot.
+		programs.update(program.id, { cron: "0 10 * * *" });
+		expect(programs.proposals.get(proposal.id)!.baseSnapshot?.cron).toBe("0 9 * * *");
+		programs.close();
+		const reopened = openPrograms(path);
+		expect(reopened.proposals.get(proposal.id)!.baseSnapshot?.cron).toBe("0 9 * * *");
+		reopened.close();
+	});
+
+	test("a pre-snapshot schema migrates in place — legacy rows read null and stay decidable", () => {
+		const path = tmpDb("goblin-proposals-");
+		const first = openPrograms(path);
+		const program = first.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = first.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		first.close();
+		// Rewind to the pre-snapshot schema, then reopen: the ALTER runs
+		// and the legacy row reads a null snapshot without breaking reads.
+		const db = new Database(path);
+		db.run("ALTER TABLE program_proposals DROP COLUMN base_snapshot");
+		db.close();
+		const reopened = openPrograms(path);
+		const legacy = reopened.proposals.get(proposal.id)!;
+		expect(legacy.baseSnapshot).toBeNull();
+		expect(reopened.proposals.approve(legacy.id, 42).kind).toBe("activated");
+		reopened.close();
+	});
+
+	test("a corrupt stored snapshot fails loud at read", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = openPrograms(path);
+		const program = programs.create(
+			{ name: "p", charter: "c", cron: "0 9 * * *", address: ADDRESS },
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(program.id, { charter: "wider" }, ADDRESS);
+		const db = new Database(path);
+		db.query("UPDATE program_proposals SET base_snapshot = '{nope' WHERE id = ?").run(proposal.id);
+		db.close();
+		expect(() => programs.proposals.get(proposal.id)).toThrow(/corrupt base snapshot/);
+		programs.close();
+	});
+
+	test("a base beyond proposal-input limits stages, reads back, and decides", () => {
+		const programs = store();
+		// The trusted store's rows are the snapshot's bounds — a charter,
+		// name, or filter over the input limits (a grandfathered or
+		// pre-limit row) must not make staging commit a row its own
+		// reader rejects.
+		const program = programs.create(
+			{
+				name: "n".repeat(120),
+				charter: "x".repeat(PROPOSAL_CHARTER_MAX + 1_000),
+				cron: "0 9 * * *",
+				mailFilter: "f".repeat(600),
+				address: ADDRESS,
+			},
+			NOW,
+		);
+		const proposal = programs.proposals.proposeUpdate(
+			program.id,
+			{ charter: "a tighter charter" },
+			ADDRESS,
+		);
+		expect(proposal.baseSnapshot?.charter).toHaveLength(PROPOSAL_CHARTER_MAX + 1_000);
+		expect(proposal.baseSnapshot?.name).toHaveLength(120);
+		expect(proposal.baseSnapshot?.mailFilter).toHaveLength(600);
+		// Every read path decodes the committed row — listing stays live.
+		expect(programs.proposals.pending().map((p) => p.id)).toEqual([proposal.id]);
+		expect(programs.proposals.get(proposal.id)!.baseSnapshot).toEqual(proposal.baseSnapshot);
+		expect(programs.proposals.approve(proposal.id, 42).kind).toBe("activated");
+		expect(programs.get(program.id)!.charter).toBe("a tighter charter");
+		programs.close();
+	});
+
+	test("a snapshot the schema rejects aborts staging — no committed row, no supersede", () => {
+		const db = new Database(":memory:");
+		// Store drift only the schema sees — the trusted read-side can
+		// surface a shape the snapshot must refuse, and staging must die
+		// inside the transaction before any write.
+		const target: Program = {
+			id: 7,
+			name: "p",
+			charter: "c",
+			cron: "0 9 * * *",
+			maxLatenessMinutes: null,
+			hookHash: null,
+			mailFilter: null,
+			mailHistoryId: null,
+			mailRevision: 0,
+			target: `topic:${ADDRESS.chatId}:${ADDRESS.threadId}`,
+			chatId: ADDRESS.chatId,
+			threadId: ADDRESS.threadId,
+			enabled: true,
+			createdAt: NOW.toISOString(),
+			lastRun: null,
+			nextRun: null,
+		};
+		let current = target;
+		const deps: ProgramProposalsDeps = {
+			core: {
+				get: () => current,
+				create() {
+					throw new Error("unreachable");
+				},
+				update: () => null,
+			},
+			validateCreate: () => {},
+			validateUpdate: () => {},
+		};
+		const proposals = openProgramProposals(db, deps);
+		const first = proposals.proposeUpdate(7, { name: "v1" }, ADDRESS, NOW);
+		expect(first.state).toBe("pending");
+		current = { ...target, charter: 42 as unknown as string };
+		expect(() => proposals.proposeUpdate(7, { name: "v2" }, ADDRESS)).toThrow();
+		// The aborted staging wrote nothing — the earlier pending row was
+		// not superseded beside a corpse the reader would reject.
+		expect(proposals.pending().map((p) => p.id)).toEqual([first.id]);
+		db.close();
 	});
 });
 

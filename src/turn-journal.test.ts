@@ -275,8 +275,12 @@ describe("turn journal", () => {
 		expect(calls.find((c) => c.toolCallId === "c-fail")!.error).toContain("blew up");
 		expect(calls.find((c) => c.toolCallId === "c-asserted")!.state).toBe("resolved-retry");
 		// record-result/skip stay dispatched-only on known rows
-		expect(() => journal.resolveCall(runId, "c-done", "record-result")).toThrow(/only 'dispatched'/);
-		expect(() => journal.resolveCall(runId, "c-synth", "authorize-retry")).toThrow(/journaled recovery row/);
+		expect(() => journal.resolveCall(runId, "c-done", "record-result")).toThrow(
+			/only 'dispatched'/,
+		);
+		expect(() => journal.resolveCall(runId, "c-synth", "authorize-retry")).toThrow(
+			/journaled recovery row/,
+		);
 		// a resolved-retry row takes no second in-place decision
 		expect(() => journal.resolveCall(runId, "c-done", "authorize-retry")).toThrow(
 			/authorize-retry needs/,
@@ -380,8 +384,7 @@ describe("turn journal", () => {
 			resolved_ms INTEGER,
 			PRIMARY KEY (run_id, tool_call_id)
 		)`);
-		const hash = (args: unknown) =>
-			createHash("sha256").update(JSON.stringify(args)).digest("hex");
+		const hash = (args: unknown) => createHash("sha256").update(JSON.stringify(args)).digest("hex");
 		store.db.run(
 			`INSERT INTO turn_runs (run_id, conversation_id, epoch, conv_snapshot, tool_names,
 				started_ms, status, delivery, created_at)
@@ -422,9 +425,7 @@ describe("turn journal", () => {
 		expect(granted.retryConsumed).toBe(false);
 		expect(granted.retryFromKnown).toBe(true);
 		journal.noteToolDispatch("run-1", "n1", "probe", { q: 1 }, { retryCallId: "c-done" });
-		expect(journal.callsFor("run-1").find((c) => c.toolCallId === "n1")!.state).toBe(
-			"dispatched",
-		);
+		expect(journal.callsFor("run-1").find((c) => c.toolCallId === "n1")!.state).toBe("dispatched");
 		expect(journal.callsFor("run-1").find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(
 			true,
 		);
@@ -441,9 +442,7 @@ describe("turn journal", () => {
 		expect(() => journal.resolveCall(live, "c1", "authorize-retry")).toThrow(
 			/only 'interrupted' runs take decisions/,
 		);
-		expect(journal.callsFor(live).find((c) => c.toolCallId === "c1")!.state).toBe(
-			"dispatched",
-		);
+		expect(journal.callsFor(live).find((c) => c.toolCallId === "c1")!.state).toBe("dispatched");
 
 		const dead = begunRun(journal, conv.id, "run-dead");
 		journal.noteToolInput(dead, "c1", "probe", { q: 1 });
@@ -453,9 +452,7 @@ describe("turn journal", () => {
 		expect(() => journal.resolveCall(dead, "c1", "authorize-retry")).toThrow(
 			/only 'interrupted' runs take decisions/,
 		);
-		expect(journal.callsFor(dead).find((c) => c.toolCallId === "c1")!.state).toBe(
-			"dispatched",
-		);
+		expect(journal.callsFor(dead).find((c) => c.toolCallId === "c1")!.state).toBe("dispatched");
 		store.close();
 	});
 

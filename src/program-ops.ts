@@ -19,7 +19,7 @@ import {
 export interface ProgramOpsDeps {
 	programs: Pick<ProgramsStore, "get" | "proposals" | "remove" | "setHook" | "update">;
 	publicUrl(): string | undefined;
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+	requestApproval(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 }
 
 export type ProgramStaged = {
@@ -38,12 +38,26 @@ export type ProgramOpResult =
 
 export interface ProgramOps {
 	get(id: number): Program | null;
-	create(draft: ProgramDraft, address: ProgramAddress): Promise<ProgramOpResult>;
-	update(id: number, patch: EditableProgramPatch, address: ProgramAddress): Promise<ProgramOpResult>;
+	create(
+		draft: ProgramDraft,
+		address: ProgramAddress,
+		signal?: AbortSignal,
+	): Promise<ProgramOpResult>;
+	update(
+		id: number,
+		patch: EditableProgramPatch,
+		address: ProgramAddress,
+		signal?: AbortSignal,
+	): Promise<ProgramOpResult>;
 	remove(id: number): ProgramOpResult;
 	toggle(id: number): ProgramOpResult;
-	hook(id: number, op: "enable" | "rotate" | "disable", address: ProgramAddress): Promise<ProgramOpResult>;
-	review(id: number): Promise<ProgramOpResult>;
+	hook(
+		id: number,
+		op: "enable" | "rotate" | "disable",
+		address: ProgramAddress,
+		signal?: AbortSignal,
+	): Promise<ProgramOpResult>;
+	review(id: number, signal?: AbortSignal): Promise<ProgramOpResult>;
 }
 
 export type EditableProgramPatch = Pick<
@@ -57,20 +71,20 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 			return deps.programs.get(id);
 		},
 
-		async create(draft, address) {
+		async create(draft, address, signal) {
 			if (draft.cron !== null) {
 				const invalid = invalidCron(draft.cron);
 				if (invalid !== null) return { kind: "error", message: invalid };
 			}
 			try {
-				return await stage(deps, deps.programs.proposals.proposeCreate(draft, address));
+				return await stage(deps, deps.programs.proposals.proposeCreate(draft, address), signal);
 			} catch (err) {
 				if (err instanceof ProgramRuleError) return { kind: "error", message: err.message };
 				throw err;
 			}
 		},
 
-		async update(id, patch, address) {
+		async update(id, patch, address, signal) {
 			if (typeof patch.cron === "string") {
 				const invalid = invalidCron(patch.cron);
 				if (invalid !== null) return { kind: "error", message: invalid };
@@ -81,7 +95,11 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 				if (requiresApproval(current, patch)) {
 					// Any grant-shaped component stages the whole requested
 					// patch — no partial application while it is pending.
-					return await stage(deps, deps.programs.proposals.proposeUpdate(id, patch, address));
+					return await stage(
+						deps,
+						deps.programs.proposals.proposeUpdate(id, patch, address),
+						signal,
+					);
 				}
 				const program = deps.programs.update(id, storePatch(patch));
 				if (program === null) return { kind: "error", message: `no program ${id}` };
@@ -112,7 +130,7 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 			return { kind: "program", program };
 		},
 
-		async hook(id, op, address) {
+		async hook(id, op, address, signal) {
 			const current = deps.programs.get(id);
 			if (current === null) return { kind: "error", message: `no program ${id}` };
 			if (op === "disable") {
@@ -134,6 +152,7 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 					return await stage(
 						deps,
 						deps.programs.proposals.proposeUpdate(id, { hook: true }, address),
+						signal,
 					);
 				} catch (err) {
 					if (err instanceof ProgramRuleError) return { kind: "error", message: err.message };
@@ -149,11 +168,11 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 			return { kind: "rotated", url: hookUrl(base, token) };
 		},
 
-		async review(id) {
+		async review(id, signal) {
 			const proposal = deps.programs.proposals.get(id);
 			if (proposal === null) return { kind: "error", message: `no proposal ${id}` };
 			if (proposal.state !== "pending") return { kind: "proposal", proposal, posted: true };
-			return stage(deps, proposal);
+			return stage(deps, proposal, signal);
 		},
 	};
 }
@@ -178,9 +197,13 @@ export function requiresApproval(current: Program, patch: EditableProgramPatch):
 
 // Stage first, notify second: a failed post returns the pending
 // proposal with review guidance — the row is durable, never lost.
-async function stage(deps: ProgramOpsDeps, proposal: ProgramProposal): Promise<ProgramStaged> {
+async function stage(
+	deps: ProgramOpsDeps,
+	proposal: ProgramProposal,
+	signal?: AbortSignal,
+): Promise<ProgramStaged> {
 	try {
-		await deps.requestApproval(proposal);
+		await deps.requestApproval(proposal, signal);
 		return { kind: "proposal", proposal, posted: true };
 	} catch (err) {
 		log.error("program approval post failed — proposal stays pending", err, {

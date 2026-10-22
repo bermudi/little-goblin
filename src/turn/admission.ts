@@ -3,6 +3,10 @@ import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 
 export interface AdmittedMember {
+	// The durable event seq of this member's appended message — client
+	// message ids are neither unique nor trusted, so every ownership or
+	// exclusion decision names the event by seq.
+	seq: number;
 	message: UIMessage;
 	sink: { onStreamChunk?(chunk: UIMessageChunk): void };
 }
@@ -19,7 +23,7 @@ export interface AdmissionDeps<M extends AdmittedMember = AdmittedMember> {
 	getConversation(): Conversation | null;
 	captureConversation?: ((conv: Conversation) => Conversation) | undefined;
 	claimQueued: ClaimQueued<M>;
-	pendingIds(): ReadonlySet<string>;
+	pendingSeqs(): ReadonlySet<number>;
 	modelEntries(): { seq: number; message: UIMessage }[];
 	now(): number;
 }
@@ -66,17 +70,18 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 	}
 	const epoch = conv.epoch;
 	if (recovery !== undefined) deps.claimQueued(deps.live);
-	const queuedIds = deps.pendingIds();
-	const entries = deps.modelEntries().filter((e) => !queuedIds.has(e.message.id));
+	// Pending work leaves by its own seqs — a queued submit that reuses an
+	// older event's message id must not hide that older event from the
+	// admission set.
+	const queuedSeqs = deps.pendingSeqs();
+	const entries = deps.modelEntries().filter((e) => !queuedSeqs.has(e.seq));
 	let anchorSeq: number | null = null;
 	for (const e of entries) {
 		if (e.message.role === "user" && (anchorSeq === null || e.seq > anchorSeq)) anchorSeq = e.seq;
 	}
 	let steerMarkSeed = 0;
 	for (const e of entries) steerMarkSeed = Math.max(steerMarkSeed, e.seq);
-	const ownedInputSeqs = entries
-		.filter((e) => e.message.role === "user")
-		.map((e) => e.seq);
+	const ownedInputSeqs = entries.filter((e) => e.message.role === "user").map((e) => e.seq);
 	log.info("turn started", { conversation: deps.convId, epoch, history: entries.length });
 	return {
 		kind: "admitted",

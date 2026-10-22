@@ -180,11 +180,11 @@ export async function handleChatRoute(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			const lastUser = store.history(convId).findLast((m) => m.role === "user");
+			const lastUser = store.historyEntries(convId).findLast((e) => e.message.role === "user");
 			if (lastUser === undefined) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
-			log.info("app retry", { conversation: convId, message: lastUser.id });
+			log.info("app retry", { conversation: convId, message: lastUser.message.id });
 			const { sink, body, dispose } = appStreamSink(
 				convId,
 				{
@@ -193,7 +193,7 @@ export async function handleChatRoute(
 				notifyDisconnected,
 			);
 			try {
-				runtime.submitPersisted(conv, lastUser, sink);
+				runtime.submitPersisted(conv, lastUser.message, sink, lastUser.seq);
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
 				dispose();

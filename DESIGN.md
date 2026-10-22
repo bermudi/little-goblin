@@ -85,7 +85,8 @@ Conversation ─────── (channel address) → durable event history
   Recall stays admission-time — steered input is not re-recalled. The reply's
   anchor, retention source, and reviewer evidence read the exchange as it
   ended **bounded by an ownership high-water mark** advancing only over
-  entries the turn actually injected (claimed by message id): input the turn
+  entries the turn actually injected (claimed by durable event seq, never
+  the app-controlled message id): input the turn
   never read — a mid-conversion arrival still queued, an uncarryable steer —
   never anchors its reply. The admission-time model view is bounded the same
   way (2026-10-08, #82): durability is not ownership — a submit still queued
@@ -211,7 +212,9 @@ stored PDF fetch refs through the same modalities-and-pipe gate); a fenced or
 failed turn leaves its user message unanswered, and the successor turn's
 burst-merge (Causal view) rewrites that boundary; a corrupt row's placeholder
 is a repair, not drift; a deploy that changes the read-time compaction
-marker's wording rewrites it once in every compacted conversation; a
+marker's wording rewrites it once in every compacted conversation; the
+owning turn's injected skill body collapses to its `[skill: name]` marker
+on the next turn's view (owned-seq ruling); a
 committed pruning marker replaces an old textual tool result once, then
 replays verbatim forever. Everything else that moves the hash is a bug.
 

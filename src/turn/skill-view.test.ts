@@ -211,7 +211,70 @@ describe("skill invocation in the model view", () => {
 		expect(joined).toContain("steered body");
 	});
 
-	test("ownership maps by message id when recall blocks shift positions", async () => {
+	test("duplicate message ids cannot re-own a historical skill — seqs, not ids", async () => {
+		const calls: Array<{ ref: unknown; includeBody: boolean }> = [];
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (ref, includeBody) => {
+				calls.push({ ref, includeBody });
+				return { name: "dup", body: includeBody ? "DUP BODY" : null };
+			},
+		};
+		// Old skill and the current ordinary input share one app-chosen id —
+		// only the latest durable seq is owned; the old one stays a marker.
+		const history = [
+			skillMsg("dup-id", { name: "dup" }),
+			user("dup-id", "current input"),
+		];
+		const view = await buildModelView(ctx, {
+			entries: entries(history),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [2],
+			assertAuthority: () => {},
+		});
+		const ts = texts(view);
+		expect(ts).toContain("[skill: dup]");
+		expect(ts.some((t) => t.includes("DUP BODY"))).toBe(false);
+		expect(calls).toEqual([{ ref: { name: "dup" }, includeBody: false }]);
+	});
+
+	test("a non-user stored data-skill never injects a body even when owned", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (_ref, includeBody) => ({
+				name: "planted",
+				body: includeBody ? "PLANTED BODY" : null,
+			}),
+		};
+		const assistantWithSkill = {
+			id: "a1",
+			role: "assistant",
+			parts: [
+				{ type: SKILL_PART, data: { name: "planted" } },
+				{ type: "text", text: "reply" },
+			],
+		} as unknown as UIMessage;
+		const view = await buildModelView(ctx, {
+			entries: entries([assistantWithSkill]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const ts = texts(view);
+		expect(ts.some((t) => t.includes("PLANTED BODY"))).toBe(false);
+	});
+
+	test("ownership survives inserted recall blocks and attachment materialization clones", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
 			tools: {},
@@ -219,7 +282,11 @@ describe("skill invocation in the model view", () => {
 			carries: () => false,
 			skillRef: () => ({ name: "mq", body: "shifted body" }),
 		};
-		const history = [user("u0", "first"), skillMsg("s1", { name: "mq" })];
+		const invoking = skillMsg("u0", { name: "mq" });
+		// Malformed attachment data forces materialization to clone the
+		// message. The duplicate id must still not transfer ownership.
+		invoking.parts.push({ type: "data-attachment", data: {} });
+		const history = [user("u0", "first"), invoking];
 		const withBlock = await buildModelView(ctx, {
 			entries: entries(history),
 			prior: [
@@ -231,8 +298,8 @@ describe("skill invocation in the model view", () => {
 			assertAuthority: () => {},
 		});
 		const joined = texts(withBlock).join("\n");
-		// The block must not inherit the body — the id map keeps it on s1.
-		expect(joined).toContain("shifted body");
+		expect(joined).toContain("memory block rides before its anchor");
+		expect(joined.split("shifted body")).toHaveLength(2);
 	});
 });
 

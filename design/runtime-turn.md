@@ -137,7 +137,13 @@ never the original event re-appended. The event rides the admission
 anchor, so the recovered instruction survives compaction and the reply
 anchors to the resume event itself; the prefix change is tail-only.
 Ownership is journaled as durable event seqs — never message ids, which
-are app-controlled and carry no uniqueness guarantee: `owned_input_seqs`
+are app-controlled and carry no uniqueness guarantee. Each admitted member
+carries its own durable user-event seq, captured at enqueue
+(`lastUserSeq` right after the caller's synchronous append); admission
+filters still-queued inputs out of the view BY SEQ, and the attempt owns
+only the seqs its members carry — historical entries stay in the model
+view as context but are never owned, so an owning-turn-only payload (a
+skill body) resolves for owned seqs alone. `owned_input_seqs`
 records the admitted user seqs plus every successfully folded steer (one
 checkpoint write with the steer mark, after conversion and the
 post-await authority check), and `resume_request_seqs` on the
@@ -195,10 +201,10 @@ turn-structure change.
   and never re-runs for steered input; the reply's anchor, retention
   source, and reviewer evidence read the exchange as ended, bounded by
   the ownership mark. The #82 ruling — durability is not ownership —
-  means the `queuedIds` filter is **admission's**, not the view
-  builder's: the view receives already-owned entries and cannot express
-  "read what is merely durable", so the bug class cannot reappear as a
-  view-layer convenience.
+  means the `pendingSeqs` filter is **admission's**, not the view
+  builder's: the view receives historical context and admitted inputs,
+  never still-pending inputs. Its separate owned-input seq set names
+  only the current members, not every user entry in that context.
 - **The sink contract.** Exactly one `onDone` per submit — completed,
   fenced, or error — including drops by `/stop` and the drain crash
   guard. `notifyDone`'s `doneSent` guard stays runtime-owned; every

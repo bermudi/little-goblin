@@ -159,6 +159,10 @@ interface QueuedTurn {
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
 	message: UIMessage;
+	// The durable USER event seq admitted for this member, captured at
+	// enqueue; null for a non-user member. Ownership rides the seq —
+	// never the app-controlled message id.
+	inputSeq: number | null;
 	sink: TurnSink;
 	// Prevents a throwing sink from receiving a second terminal notification.
 	// Drain's last-ditch handler can therefore safely settle the whole lane.
@@ -273,7 +277,9 @@ export class Runtime {
 	}
 
 	// The inbox has already persisted this message; appending again would
-	// duplicate a recovered turn.
+	// duplicate a recovered turn. Contract: the caller appends then calls
+	// this synchronously, so the member's input seq is the latest durable
+	// user event at admit time (or the explicitly-retried latest user).
 	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		return this.admit(conv, message, sink);
 	}
@@ -304,12 +310,23 @@ export class Runtime {
 		sink: TurnSink,
 		seed?: ResumeSeed,
 	): boolean {
+		// The durable seq is captured at enqueue — every caller persists
+		// the user message before admitting, with no await between.
+		const inputSeq = message.role === "user" ? this.deps.store.lastUserSeq(conv.id) : null;
+		if (message.role === "user" && inputSeq === null) {
+			throw new Error(
+				`submitted user message to ${conv.id} has no durable user event — append before admit`,
+			);
+		}
 		if (this.closed) {
-			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
+			void this.notifyDone(
+				{ message, sink, doneSent: false, inputSeq },
+				{ kind: "fenced" },
+			);
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
+		lane.pending.push({ message, sink, doneSent: false, inputSeq, resumeSeed: seed });
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -799,7 +816,17 @@ export class Runtime {
 				getConversation: () => store.get(convId),
 				captureConversation: this.deps.captureConversation,
 				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
+				pendingSeqs: () =>
+					new Set(
+						this.lane(convId)
+							.pending.map((t) => t.inputSeq)
+							.filter((s): s is number => s !== null),
+					),
+				// Read after claimQueued — it can add members to `turns`.
+				ownedInputSeqs: () =>
+					new Set(
+						turns.map((t) => t.inputSeq).filter((s): s is number => s !== null),
+					),
 				modelEntries: () => store.modelEntries(convId),
 				now: Date.now,
 			},
@@ -981,7 +1008,6 @@ export class Runtime {
 				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
-				modelEntries: () => store.modelEntries(convId),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: snapshot.ownedInputSeqs,
 				partial: recovery?.partial ?? null,

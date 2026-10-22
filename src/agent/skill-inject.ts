@@ -21,8 +21,14 @@ import {
 import { readSkillBody } from "./skills.ts";
 import { readDescriptor } from "./skill-fetch.ts";
 
-export function resolveSkillRef(ref: SkillRef): { name: string; body: string | null } {
+export function resolveSkillRef(
+	ref: SkillRef,
+	includeBody = true,
+): { name: string; body: string | null } {
 	if (!isTempSkillRef(ref)) {
+		// Historical invocations resolve the marker name only — the body
+		// is never re-read for a non-owning turn.
+		if (!includeBody) return { name: ref.name, body: null };
 		const found = readSkillBody(paths.skills(), ref.name);
 		if (found === null) {
 			log.warn("skill body unavailable — not in the catalog", { skill: ref.name });
@@ -39,6 +45,9 @@ export function resolveSkillRef(ref: SkillRef): { name: string; body: string | n
 		log.warn("temp skill body unavailable — no readable descriptor", { path: ref.path });
 		return { name: "unknown", body: null };
 	}
+	// The descriptor still names the historical marker — but a
+	// non-owning turn gets no body, whatever the verdict was.
+	if (!includeBody) return { name: descriptor.name, body: null };
 	if (!descriptor.previewed) {
 		log.warn("temp skill body refused — verdict never stamped", {
 			name: descriptor.name,

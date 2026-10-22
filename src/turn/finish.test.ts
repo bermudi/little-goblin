@@ -109,7 +109,9 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		contextWindow: undefined,
 		forcedKind: null,
 		live,
-		members: [{ message: msg("u2", "user"), sink: { onStreamChunk: (c) => wire.push(c) } }],
+		members: [
+			{ message: msg("u2", "user"), inputSeq: null, sink: { onStreamChunk: (c) => wire.push(c) } },
+		],
 		sink: {
 			onTextDelta: (d) => {
 				deltas.push(d);
@@ -243,6 +245,7 @@ describe("landAttempt", () => {
 			let calls = 0;
 			const dead: WireMember = {
 				message: msg("u2", "user"),
+				inputSeq: null,
 				sink: {
 					onStreamChunk() {
 						calls++;
@@ -264,7 +267,11 @@ describe("landAttempt", () => {
 				live,
 				members: [
 					dead,
-					{ message: msg("u3", "user"), sink: { onStreamChunk: (c) => healthy.push(c) } },
+					{
+						message: msg("u3", "user"),
+						inputSeq: null,
+						sink: { onStreamChunk: (c) => healthy.push(c) },
+					},
 				],
 				forcedKind: "context",
 				responseMessage: msg("a2", "assistant"),

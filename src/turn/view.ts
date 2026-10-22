@@ -25,10 +25,11 @@ export interface ViewContext {
 	 * Resolves an invocation: the display name (the descriptor's, for a
 	 * temp skill) and the injected body — preamble plus SKILL.md — or
 	 * null when the body cannot ride (skill deleted, temp verdict
-	 * unstamped). The resolver owns refusal logging; the view logs the
-	 * actual injection.
+	 * unstamped). includeBody=false resolves the marker name only, never
+	 * reading the body — historical invocations stay markers. The
+	 * resolver owns refusal logging; the view logs the actual injection.
 	 */
-	skillRef: (ref: SkillRef) => { name: string; body: string | null };
+	skillRef: (ref: SkillRef, includeBody: boolean) => { name: string; body: string | null };
 }
 
 function unconvertiblePlaceholder(m: UIMessage): UIMessage {
@@ -86,6 +87,7 @@ function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
 function skillPartsAsText(
 	ctx: ViewContext,
 	m: UIMessage,
+	includeBody: boolean,
 ): { message: UIMessage; invocations: SkillInvocation[] } {
 	if (!m.parts.some((p) => p.type === SKILL_PART)) return { message: m, invocations: [] };
 	const invocations: SkillInvocation[] = [];
@@ -104,7 +106,7 @@ function skillPartsAsText(
 					text: "[a skill invocation could not be rendered — its stored data was malformed]",
 				};
 			}
-			const resolved = ctx.skillRef(parsed.data);
+			const resolved = ctx.skillRef(parsed.data, includeBody);
 			invocations.push({ ...resolved, ref: parsed.data });
 			return {
 				type: "text" as const,
@@ -161,16 +163,26 @@ export async function buildModelView(
 	);
 	options.assertAuthority();
 	const owned = new Set(options.ownedSeqs ?? []);
-	// Ownership maps by message id, not index: withMemoryBlocks inserts
-	// recall blocks between entries, so positions drift.
-	const seqById = new Map(options.entries.map((e) => [e.message.id, e.seq]));
+	// Seq maps by object identity + view index, never by UIMessage.id —
+	// ids are app-controlled and can duplicate. withMemoryBlocks returns
+	// the same message objects it was given (inserted recall blocks are
+	// new objects with no seq), and materializeAttachments preserves
+	// order/cardinality even where it clones — so index i in prepared is
+	// index i in view, and view[i] is either an original entry message
+	// (identifiable by reference) or an inserted block.
+	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
+	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
 	const messages: ModelMessage[] = [];
 	const partialId = options.partial?.id ?? null;
-	for (const m of prepared) {
-		const entrySeq = seqById.get(m.id);
+	for (const [i, m] of prepared.entries()) {
+		const entrySeq = seqByIndex[i] ?? null;
+		// Bodies are a user-input privilege as well as an owned one — a
+		// non-user entry carrying a data-skill part never injects.
+		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
 			ctx,
 			m.role === "system" ? systemEventAsUser(m) : m,
+			includeBody,
 		);
 		const rendered = notePartsAsText(ctx, skillMarked);
 		const unfinished = incompleteToolCallIds(rendered);
@@ -207,7 +219,7 @@ export async function buildModelView(
 				})),
 			);
 		}
-		if (entrySeq !== undefined && owned.has(entrySeq)) {
+		if (includeBody) {
 			messages.push(...injectedBodies(ctx, invocations));
 		}
 	}
@@ -251,7 +263,7 @@ export async function convertSteeredMessage(
 	);
 	const out: ModelMessage[] = [];
 	for (const m of materialized) {
-		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m);
+		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m, true);
 		out.push(
 			...(await convertToModelMessages([notePartsAsText(ctx, skillMarked)], {
 				tools: ctx.tools,

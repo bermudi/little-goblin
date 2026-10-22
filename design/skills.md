@@ -66,7 +66,11 @@ prefix bytes never rewrite within the turn. The next turn's view carries
 the marker alone — a bounded suffix rewrite at the invocation point,
 the accepted price of owning-turn-only semantics. A body read that
 fails (skill deleted mid-flight, cache evicted) logs a warning and the
-marker stands alone; the turn never dies for it. An injected body is a
+marker stands alone; the turn never dies for a missing body. For a
+non-owning turn the resolver excludes the body outright: historical
+invocations resolve the marker name only, never re-reading SKILL.md.
+A temp marker still reads its descriptor for the display name.
+An injected body is a
 log line (`skill invoked`: conversation, skill or source host, bytes)
 plus the durable part — activation stays answerable from the log,
 though no tool call marks it.

@@ -136,10 +136,12 @@ interface RecMember extends WireMember {
 	chunks: UIMessageChunk[];
 }
 
-function member(text: string, streaming = true): RecMember {
+function member(text: string, streaming = true, inputSeq: number | null = null): RecMember {
 	const chunks: UIMessageChunk[] = [];
 	return {
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
+		// Ownership rides the durable seq, not the app-controlled id.
+		inputSeq,
 		sink: streaming ? { onStreamChunk: (c) => chunks.push(c) } : {},
 		chunks,
 	};
@@ -179,7 +181,6 @@ function rig(
 	const queue: RecMember[] = [];
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const unrequeued: RecMember[][] = [];
-	const entries: Array<{ seq: number; message: UIMessage }> = [];
 	const deps: StreamDeps<RecMember> = {
 		convId: "c1",
 		epoch: 1,
@@ -204,7 +205,6 @@ function rig(
 		claimSteers: () => queue.splice(0, queue.length),
 		unrequeueSteers: (steered) => unrequeued.push(steered),
 		settle: (m, done) => settlements.push({ m, done }),
-		modelEntries: () => entries,
 		steerMarkSeed: 0,
 		ownedInputSeqs: [],
 		partial: null,
@@ -227,7 +227,6 @@ function rig(
 		queue,
 		settlements,
 		unrequeued,
-		entries,
 		prompts,
 		toolChoices,
 	};
@@ -415,22 +414,11 @@ describe("driveStream", () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 1), textReply("folded answer")]);
 		r.deps.tools = { probe };
-		const steered = member("steered mid-turn");
+		const steered = member("steered mid-turn", true, 7);
 		r.queue.push(steered);
-		// Durable history: the steered message at seq 7, an unclaimed
-		// submit above it at seq 9 — the mark advances by identity, not
-		// position.
-		r.entries.push(
-			{ seq: 7, message: steered.message },
-			{
-				seq: 9,
-				message: {
-					id: "u-other",
-					role: "user",
-					parts: [{ type: "text", text: "queued not steered" }],
-				},
-			},
-		);
+		// The member carries its own durable seq — ownership advances by
+		// inputSeq, never by rediscovering ids in history.
+		expect(steered.inputSeq).toBe(7);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;

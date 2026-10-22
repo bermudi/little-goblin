@@ -477,7 +477,7 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
-function ActionBar({
+export function ActionBar({
 	message,
 	isLastAssistant,
 	busy,
@@ -519,10 +519,10 @@ function ActionBar({
 					<button
 						type="button"
 						onClick={() => (open ? speech.stop() : void speech.start(text))}
-						aria-label="Read aloud"
+						aria-label={speech.phase === "open" ? "Stop reading aloud" : "Read aloud"}
 						disabled={speech.phase === "loading"}
 					>
-						{open ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
+						{speech.phase === "open" ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
 					</button>
 				)}
 				{rateable && (

@@ -36,7 +36,10 @@ function proposalView(proposal: ProgramProposal): Record<string, unknown> {
 export type ProgramToolDeps = {
 	programs: ProgramsStore;
 	publicUrl(): string | undefined;
-	sendPrivate(text: string): Promise<void>;
+	/** Absent when Telegram is disabled: hook grants still stage through
+	 * the shared approval owner, but rotating an existing credential cannot
+	 * mutate state before finding out the private lane is gone. */
+	sendPrivate?(text: string): Promise<void>;
 	/** Posts a staged proposal for the operator's decision — throws when the
 	 *  approval could not be delivered. The proposal stays pending either way. */
 	requestApproval(proposal: ProgramProposal): Promise<void>;
@@ -188,6 +191,18 @@ export const programTool = (deps: ProgramToolDeps) => {
 				case "toggle":
 					return opResult(ops.toggle(input.id));
 				case "hook": {
+					const before = deps.programs.get(input.id);
+					if (
+						before !== null &&
+						before.hookHash !== null &&
+						input.op !== "disable" &&
+						deps.sendPrivate === undefined
+					) {
+						return {
+							error:
+								"telegram channel is disabled — rotate or reveal the hook from Programs in the app instead",
+						};
+					}
 					const result = await ops.hook(input.id, input.op, address);
 					if (result.kind !== "rotated") return opResult(result);
 					const current = deps.programs.get(input.id);
@@ -205,7 +220,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 			}
 		},
 	});
-}
+};
 
 function opResult(result: ProgramOpResult): Record<string, unknown> {
 	switch (result.kind) {
@@ -246,6 +261,7 @@ async function sendHookUrl(
 	url: string,
 ): Promise<string | null> {
 	try {
+		if (deps.sendPrivate === undefined) return "telegram channel is disabled";
 		await deps.sendPrivate(
 			`Webhook for program ${program.name}: ${url}\nKeep it secret; rotate via goblin if it leaks.`,
 		);

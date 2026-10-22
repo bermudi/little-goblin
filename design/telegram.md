@@ -3,6 +3,16 @@
 Part of the goblin design spec; the core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md), read first.
 
+## Channel availability (ruling 2026-10-22)
+
+`telegram.enabled` is an explicit boot-pinned channel switch; absent stays
+`true` for legacy configs. When `false`, startup resolves no bot token,
+constructs no bot, starts no polling or Mini-App authentication, and mounts
+no Telegram delivery/private-DM seam. `/app` and `/api/app/*` remain live;
+Telegram-targeted wakes, notices, approvals, mail presentation, and resume
+requests return an explicit channel-disabled result rather than submitting a
+turn without an output door. `operators: []` is legal only in this mode.
+
 ## Shared model/thinking selection (ruling 2026-10-06)
 
 All Telegram conversations (rolling DMs, group topics) share one
@@ -167,7 +177,8 @@ it's on.
 ## Roles and permissions (ruling 2026-10-11)
 
 The unit of trust is the person, not the chat. Two config lists: `operators`
-(min 1) and `allowedUsers` (may be empty). Everyone else is a stranger,
+(min 1 while `telegram.enabled`; may be empty when the channel is off) and
+`allowedUsers` (may be empty). Everyone else is a stranger,
 never served: **every summons gets one short refusal line and nothing else**
 — no turn, no conversation, no state, no meter — on every summons surface
 (bot DM, member-chat @mention or reply-to-goblin, guest surface — settled

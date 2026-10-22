@@ -71,6 +71,7 @@ export interface ConfigPostBody {
 	operators: number[];
 	allowedUsers: number[];
 	telegram: {
+		enabled?: boolean;
 		apiRoot: string;
 		dmGapMinutes: number;
 		model?: string;

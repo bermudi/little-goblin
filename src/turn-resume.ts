@@ -60,7 +60,9 @@ export interface ResumeDeps {
 	runtime: Runtime;
 	captureConversation(conv: Conversation): Conversation;
 	makeTools: RuntimeDeps["makeTools"];
-	sinkFor(conv: Conversation): TurnSink;
+	// Null means the lane's delivery channel is disabled — refuse before
+	// the resume can build tools or submit a turn.
+	sinkFor(conv: Conversation): TurnSink | null;
 	sinkHooks(conv: Conversation): { voice: boolean; recording: boolean; file: boolean };
 	notifyDone?(conv: Conversation, sourceRunId: string, done: TurnDone): void;
 }
@@ -68,7 +70,7 @@ export interface ResumeDeps {
 export interface ResumeSinkDeps {
 	wake: Pick<WakeDeps, "bell" | "delivery">;
 	operators(): number[];
-	sendDm(chatId: number, text: string): Promise<unknown>;
+	sendDm?(chatId: number, text: string): Promise<unknown>;
 }
 
 export function makeResumeSinks(
@@ -76,13 +78,21 @@ export function makeResumeSinks(
 ): Pick<ResumeDeps, "sinkFor" | "sinkHooks" | "notifyDone"> {
 	return {
 		sinkFor: (conv) =>
-			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : deps.wake.delivery(conv),
+			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : (deps.wake.delivery?.(conv) ?? null),
 		sinkHooks: (conv) =>
-			channelOf(conv.id) === "app"
+			channelOf(conv.id) === "app" || deps.wake.delivery === undefined
 				? { voice: false, recording: false, file: false }
 				: { voice: true, recording: true, file: true },
 		notifyDone: (conv, sourceRunId, done) => {
 			if (channelOf(conv.id) === "app") return;
+			if (deps.sendDm === undefined) {
+				log.warn("resumed turn notice skipped — telegram channel disabled", {
+					conversation: conv.id,
+					run: sourceRunId,
+					outcome: done.kind,
+				});
+				return;
+			}
 			const text =
 				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
 				(done.kind === "error" ? ` — ${done.message}` : "");
@@ -119,8 +129,7 @@ export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
 	// shift every ambiguous call's number. Grants on ambiguous rows and
 	// recorded outcomes keep theirs.
 	return calls.filter(
-		(c) =>
-			(c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
+		(c) => (c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
 	);
 }
 
@@ -211,9 +220,7 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 				} else if (c.error !== null) {
 					note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
 				} else {
-					note = c.retryConsumed
-						? `[turn-journal decision: ${grant}]`
-						: RESOLVED_RETRY_NOTE;
+					note = c.retryConsumed ? `[turn-journal decision: ${grant}]` : RESOLVED_RETRY_NOTE;
 				}
 			}
 			parts.push({
@@ -284,8 +291,7 @@ type DetailEntry = { seq: number; anchorSeq: number | null; message: UIMessage }
 
 function isOwnResumeRequest(e: DetailEntry, run: TurnRun): boolean {
 	return (
-		(run.resumeRequestSeqs?.includes(e.seq) ?? false) &&
-		resumeEventSource(e.message) === run.runId
+		(run.resumeRequestSeqs?.includes(e.seq) ?? false) && resumeEventSource(e.message) === run.runId
 	);
 }
 
@@ -302,7 +308,9 @@ function stalenessRefusal(
 	store: ConversationStore,
 	convId: string,
 	run: TurnRun,
-): { refuse: string; code: ResumeRefusalCode } | { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
+):
+	| { refuse: string; code: ResumeRefusalCode }
+	| { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
 	if (run.ownedInputSeqsUnreadable) {
 		return {
 			code: "invalid",
@@ -483,6 +491,13 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (!runtime.accepting()) {
 				return refused("unavailable", "the runtime is shut down");
 			}
+			const inner = deps.sinkFor(conv);
+			if (inner === null) {
+				return refused(
+					"unavailable",
+					"telegram channel is disabled — the interrupted turn cannot resume",
+				);
+			}
 			const calls = journal.callsFor(run.runId);
 			const undecided = calls.filter((c) => c.state === "dispatched");
 			if (undecided.length > 0) {
@@ -595,7 +610,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				filterRetryUsed: run.filterRetryUsed,
 				resumedFrom: run.runId,
 			};
-			const inner = deps.sinkFor(conv);
 			// A prototype clone still splits the receiver — getters and private state belong to the real instance, so forward through it; only onDone is overridden.
 			const onDone = async (done: TurnDone) => {
 				try {

@@ -53,7 +53,7 @@ function noticeDoor(
 }
 
 export async function sendMemoryOutageNotice(
-	api: Api,
+	api: Api | null,
 	conversationId: string,
 	sinceMs: number,
 	queued: number,
@@ -67,6 +67,13 @@ export async function sendMemoryOutageNotice(
 		return;
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
+	if (api === null) {
+		log.warn("memory outage notice skipped — telegram channel disabled", {
+			conversation: conversationId,
+			queued,
+		});
+		return;
+	}
 	const hours = Math.max(1, Math.round(sinceMs / 3_600_000));
 	const text =
 		`⚠️ memory service has been unreachable for ~${hours}h — ` +
@@ -84,7 +91,7 @@ export async function sendMemoryOutageNotice(
 }
 
 export async function sendMemoryBlockedNotice(
-	api: Api,
+	api: Api | null,
 	conversationId: string,
 	error: string | null,
 	attempts: number,
@@ -98,6 +105,13 @@ export async function sendMemoryBlockedNotice(
 		return;
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
+	if (api === null) {
+		log.warn("memory blocked notice skipped — telegram channel disabled", {
+			conversation: conversationId,
+			attempts,
+		});
+		return;
+	}
 	const text =
 		`memory retention blocked for one exchange: ${(error ?? "unknown error").slice(0, 120)} — ` +
 		"/memory retry to resend, /memory dismiss to drop";
@@ -113,7 +127,7 @@ export async function sendMemoryBlockedNotice(
 }
 
 export async function sendSkillProposedNotice(
-	api: Api,
+	api: Api | null,
 	conversationId: string,
 	skills: string[],
 ): Promise<void> {
@@ -126,6 +140,13 @@ export async function sendSkillProposedNotice(
 		return;
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
+	if (api === null) {
+		log.warn("skill proposal notice skipped — telegram channel disabled", {
+			conversation: conversationId,
+			skills,
+		});
+		return;
+	}
 	const thread = addr.threadId !== null ? { message_thread_id: addr.threadId } : {};
 	for (const skill of skills) {
 		const installData = skillInstallData(conversationId, skill);

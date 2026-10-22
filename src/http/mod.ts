@@ -8,7 +8,9 @@ import { validateInitData, type InitDataResult } from "./auth.ts";
 import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
 export interface HttpDeps extends OperatorDeps {
-	botToken: string;
+	/** Absent when Telegram is disabled: /app stays live, while the
+	 * Telegram mini-app door and its /api tails answer an explicit 503. */
+	botToken?: string;
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
 	hooks?: {
@@ -90,7 +92,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		return done(landed ? 202 : 500, fresh);
 	}
-	function authedUser(req: Request): InitDataResult {
+	type AuthOutcome = InitDataResult | { ok: false; why: "channel-disabled" };
+	function authedUser(req: Request): AuthOutcome {
+		if (deps.botToken === undefined) return { ok: false, why: "channel-disabled" };
 		const initData = req.headers.get("x-init-data") ?? "";
 		const allowed = new Set(deps.configRef.current.operators);
 		return validateInitData(initData, deps.botToken, allowed);
@@ -169,6 +173,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			url.pathname === "/t/" ||
 			/^\/t\/(?:settings|memory)\/?$/.test(url.pathname)
 		) {
+			if (deps.botToken === undefined) {
+				return Response.json(
+					{ error: "telegram channel is disabled" },
+					{ status: 503, headers: NO_STORE },
+				);
+			}
 			return serveClient("");
 		}
 		if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -182,6 +192,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (!auth.ok) {
 				// Category and path only — the presented credential never logs.
 				log.warn("mini-app auth refused", { path: url.pathname, why: auth.why });
+				if (auth.why === "channel-disabled") {
+					return Response.json(
+						{ error: "telegram channel is disabled" },
+						{ status: 503, headers: NO_STORE },
+					);
+				}
 				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 			}
 			const res = await handleOperatorRoute(

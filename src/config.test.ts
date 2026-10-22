@@ -123,6 +123,20 @@ for (const [name, input] of parseThrows) {
 	});
 }
 
+test("telegram.enabled absent stays on; false permits an app-only config with no operators", () => {
+	expect(parseConfig(objBase).telegram.enabled).toBe(true);
+	const off = parseConfig({ ...objBase, operators: [], telegram: { enabled: false } });
+	expect(off.telegram.enabled).toBe(false);
+	expect(off.operators).toEqual([]);
+});
+
+test("telegram.enabled true keeps the one-operator floor", () => {
+	expect(() => parseConfig({ ...objBase, operators: [], telegram: { enabled: true } })).toThrow(
+		/operators/,
+	);
+	expect(() => parseConfig({ ...objBase, operators: [] })).toThrow(/operators/);
+});
+
 const valid: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },
@@ -133,7 +147,7 @@ const valid: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -1098,6 +1112,19 @@ describe("authReferences", () => {
 		// Primary default "groq", the fallback's explicit "or-asr"; a
 		// keyless whistle entry adds nothing.
 		expect([...authReferences(c)].sort()).toEqual(["groq", "or-asr", "telegram", "zai"]);
+	});
+
+	test("telegram auth leaves the sweep when the channel is disabled", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [],
+			telegram: { enabled: false },
+		});
+		expect([...authReferences(c)].sort()).toEqual(["zai"]);
+		expect(missingAuthNames(c, () => false)).toEqual(["zai"]);
 	});
 
 	test("missingAuthNames names the absent records, sorted — boot's warn sweep", () => {

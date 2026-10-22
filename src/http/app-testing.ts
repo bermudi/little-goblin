@@ -75,7 +75,7 @@ export function setup(
 			thinking: "medium",
 			operators: [42],
 			allowedUsers: [42],
-			telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 			http: { port: 0 },
 			logLevel: "info",
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),

@@ -233,6 +233,7 @@ const CONFIG_POST_KEYS = {
 } as const satisfies Record<keyof ConfigPostBody, true>;
 
 const CONFIG_POST_TELEGRAM_KEYS = {
+	enabled: true,
 	apiRoot: true,
 	dmGapMinutes: true,
 	model: true,
@@ -515,9 +516,7 @@ const browseQuerySchema = z
 		message: "q and conversation are mutually exclusive",
 	});
 
-const memoryBlockedBody = z
-	.object({ action: z.enum(["retry", "dismiss"]) })
-	.strict();
+const memoryBlockedBody = z.object({ action: z.enum(["retry", "dismiss"]) }).strict();
 
 function programItem(program: Program): OperatorProgramItem {
 	return {

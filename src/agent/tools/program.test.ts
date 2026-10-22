@@ -619,6 +619,31 @@ describe("program tool", () => {
 		expect(sent[0]!.text).toContain("Keep it secret");
 	});
 
+	test("a disabled Telegram lane refuses rotation before the stored credential can change", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const seeded = programs.create({
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
+			hookHash: "old-hash",
+			address: { chatId: -100, threadId: 7 },
+		});
+		const tool = programTool({
+			programs,
+			target: "app/chat-01",
+			publicUrl: () => "https://g.ts.net",
+			requestApproval: async () => {},
+		});
+		expect(await exec(tool, { action: "hook", id: seeded.id, op: "rotate" })).toEqual({
+			error:
+				"telegram channel is disabled — rotate or reveal the hook from Programs in the app instead",
+		});
+		expect(programs.get(seeded.id)!.hookHash).toBe("old-hash");
+		programs.close();
+	});
+
 	test("hook rotation DMs every operator, never the topic chat", async () => {
 		const { tool, programs, sent } = toolFor(-100, 7, "https://g.ts.net", {
 			operatorIds: [42, 7],

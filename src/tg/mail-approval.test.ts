@@ -7,6 +7,7 @@ import type { MailPoller, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	startMailApproval,
+	unavailableMailLane,
 	type MailApproval,
 	type MailApprovalDeps,
 	type MailApprovalLane,
@@ -307,6 +308,43 @@ describe("draft requests", () => {
 		// The buttons chunk never ran — posting stopped at the timeout.
 		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, false]);
 		expect(outbox.get(seenId)).toMatchObject({ status: "cancelled", draftMessageId: null });
+		outbox.close();
+	});
+
+	test("a disabled Telegram lane fails presentation and cancels the draft, not a silent queue", async () => {
+		const store = openOutbox(tmpDb("goblin-mailtap-"));
+		let seenId = 0;
+		const outbox: OutboxStore = {
+			...store,
+			queue: (input, now) => {
+				const row = store.queue(input, now);
+				seenId = row.id;
+				return row;
+			},
+		};
+		const owner = startMailApproval(
+			{
+				outbox,
+				sender: () => fakeSender(),
+				reader: () => fakeReader(),
+				lanes: {
+					app: appLane,
+					telegram: unavailableMailLane("telegram channel is disabled"),
+				},
+				now: () => NOW,
+			},
+			60_000,
+		);
+		gates.push(owner);
+		const out = await owner.requestDraft(
+			{ to: ["a@x.com"], subject: "hi", body: "hello" },
+			ADDRESS,
+		);
+		if (!("error" in out)) throw new Error("expected an unavailable-lane error verdict");
+		expect(out.error).toBe(
+			`posting draft #${seenId} failed — the draft was cancelled; retry when delivery recovers (telegram channel is disabled)`,
+		);
+		expect(outbox.get(seenId)!.status).toBe("cancelled");
 		outbox.close();
 	});
 

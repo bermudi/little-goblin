@@ -16,8 +16,10 @@ import { log } from "./log.ts";
 export interface WakeDeps {
 	store: ConversationStore;
 	runtime: Runtime;
-	delivery(conv: Conversation): TurnSink;
-	markRoll(chatId: number, conversationId: string): Promise<void>;
+	// Telegram delivery exists only while that channel is enabled. Its
+	// absence is a refused wake, never a turn without an output door.
+	delivery?(conv: Conversation): TurnSink;
+	markRoll?(chatId: number, conversationId: string): Promise<void>;
 	// Wakes use synchronous routeDm: it honors the live gap but skips intake's follow-up check.
 	roll: RollDeps;
 	// App turns need a headless sink; they have no Telegram delivery address.
@@ -36,6 +38,11 @@ export function wake(
 	text: string,
 	opts?: { dmTrigger?: "fire" | "current" },
 ): boolean {
+	const delivery = deps.delivery;
+	if (delivery === undefined) {
+		log.warn("telegram wake refused — channel disabled", { address });
+		return false;
+	}
 	if (!deps.runtime.accepting()) return false;
 	let conv: Conversation;
 	if (address.threadId === null && isRollingChat(address.chatId)) {
@@ -43,7 +50,9 @@ export function wake(
 		// Mark before submit without awaiting: wake stays synchronous, and
 		// the Telegram adapter logs marker failures without blocking the turn.
 		const routed = routeDm(deps.roll, address.chatId, opts?.dmTrigger ?? "fire");
-		if (routed.rolled) void deps.markRoll(address.chatId, routed.conv.id);
+		if (routed.rolled && deps.markRoll !== undefined) {
+			void deps.markRoll(address.chatId, routed.conv.id);
+		}
 		conv = routed.conv;
 	} else {
 		const addr: ConversationAddress =
@@ -52,7 +61,7 @@ export function wake(
 				: { kind: "topic", chatId: address.chatId, threadId: address.threadId };
 		conv = deps.store.resolve(addr, paths.workspace());
 	}
-	const sink = deps.delivery(conv);
+	const sink = delivery(conv);
 	try {
 		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
 		if (!admitted) {
@@ -125,7 +134,12 @@ export function wakeConversation(deps: WakeDeps, conversationId: string, text: s
 		return true;
 	}
 	const channel = channelOf(conv.id);
-	const sink = channel === "app" ? deps.bell(conv) : deps.delivery(conv);
+	const delivery = channel === "app" ? deps.bell : deps.delivery;
+	if (delivery === undefined) {
+		log.warn("subagent wake refused — telegram channel disabled", { conversation: conv.id });
+		return false;
+	}
+	const sink = delivery(conv);
 	try {
 		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
 		if (!admitted) {

@@ -36,6 +36,44 @@ export interface MailApprovalLane {
 	strip(row: OutboxEntry, opts?: { messageId?: number }): Promise<void>;
 }
 
+/** A transport lane for a channel that was not booted. Presentation
+ * fails explicitly; lifecycle calls stay no-ops so an existing durable
+ * row remains readable and cancelable through another approval door. */
+export function unavailableMailLane(reason: string): MailApprovalLane {
+	return {
+		present: async (row) => {
+			log.warn("mail draft presentation unavailable", {
+				outbox: row.id,
+				target: row.target,
+				reason,
+			});
+			return { kind: "failed", detail: reason };
+		},
+		notice: async (row, text) => {
+			log.warn("mail notice skipped — channel disabled", {
+				outbox: row.id,
+				target: row.target,
+				text: text.slice(0, 160),
+				reason,
+			});
+		},
+		settle: async (row) => {
+			log.debug("mail draft stamp skipped — channel disabled", {
+				outbox: row.id,
+				target: row.target,
+				reason,
+			});
+		},
+		strip: async (row) => {
+			log.debug("mail draft controls strip skipped — channel disabled", {
+				outbox: row.id,
+				target: row.target,
+				reason,
+			});
+		},
+	};
+}
+
 export interface MailApprovalDeps {
 	outbox: OutboxStore;
 	sender(): MailSender | null;
@@ -159,7 +197,10 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 				inFlight.delete(id);
 			}
 		})();
-		inFlight.set(id, send.then(() => undefined));
+		inFlight.set(
+			id,
+			send.then(() => undefined),
+		);
 		return send;
 	};
 
@@ -173,9 +214,7 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 			return;
 		}
 		await Promise.allSettled(
-			rows.map((row) =>
-				laneFor(row).settle(row, `⌛ Draft #${row.id} expired — never sent.`),
-			),
+			rows.map((row) => laneFor(row).settle(row, `⌛ Draft #${row.id} expired — never sent.`)),
 		);
 		if (rows.length > 0) log.info("outbox expiry swept", { count: rows.length });
 	};
@@ -222,7 +261,8 @@ async function sendApproved(
 	if (row.replyToId !== null) {
 		const reader = deps.reader();
 		if (reader === null) {
-			const message = "⚠️ mail reading is not configured — couldn't thread the reply — Send can retry.";
+			const message =
+				"⚠️ mail reading is not configured — couldn't thread the reply — Send can retry.";
 			await lane.notice(row, message);
 			return { kind: "retry", row, message };
 		}

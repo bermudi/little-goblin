@@ -41,8 +41,8 @@ export interface TurnToolsDeps {
 	notes: NoteStore;
 	programs: ProgramsStore;
 	// DM-per-operator send for program hooks; conv-independent by
-	// construction.
-	sendPrivate(text: string): Promise<void>;
+	// construction. Absent when Telegram is disabled.
+	sendPrivate?(text: string): Promise<void>;
 	// Boot snapshot pair — a live config read can only hide the memory
 	// tools, never swap the endpoint mid-run (same freeze as subagents).
 	memory: {
@@ -137,7 +137,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							programs,
 							target: targetOf(conv),
 							publicUrl: () => configRef.current.publicUrl,
-							sendPrivate,
+							...(sendPrivate === undefined ? {} : { sendPrivate }),
 							requestApproval: async (proposal) => {
 								const gate = deps.programApproval();
 								if (gate === undefined) throw new Error("program approvals are not wired yet");

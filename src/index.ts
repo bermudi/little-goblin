@@ -44,7 +44,7 @@ import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
-import { startMailApproval, type MailApproval } from "./mail-approval.ts";
+import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
@@ -72,7 +72,7 @@ import {
 	sendMailNotice,
 	startTelegramMailApproval,
 } from "./tg/mail-approval.ts";
-import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
+import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot, type RunningBot } from "./tg/mod.ts";
 import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
@@ -299,13 +299,21 @@ async function boot() {
 	// The mount policy (which slots exist per channel/config/boot pin)
 	// lives in turn-tools.ts; boot binds the seams and the late-bound
 	// getters (subagents/mail/desktop bind past Runtime construction).
+	const telegramEnabled = config.telegram.enabled;
 	// The one operator-DM lane — the program tool's hook rotation and the
 	// proposal approval's grant-time hook delivery share it (a secret URL
-	// never enters history). Reads tg.bot.api at call time.
-	const sendPrivate = makePrivateSender(
-		(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
-		() => configRef.current.operators,
-	);
+	// never enters history). Disabled Telegram gets no fake client: the
+	// call-time null check fails loud if a wiring bug races boot.
+	let tg: RunningBot | null = null;
+	const sendPrivate = telegramEnabled
+		? makePrivateSender(
+				(id, text) => {
+					if (tg === null) throw new Error("telegram channel is disabled");
+					return withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage");
+				},
+				() => configRef.current.operators,
+			)
+		: undefined;
 	// Late-bound like mailApproval: shared owners and their Telegram
 	// adapters start after the bot, so getters answer undefined to
 	// anything earlier rather than a half-wired gate.
@@ -322,7 +330,7 @@ async function boot() {
 		programs,
 		// The one send composed outside tg/ — same deadline as every tg/
 		// sender, or a wedged API stalls the program turn's tool call.
-		sendPrivate,
+		...(sendPrivate === undefined ? {} : { sendPrivate }),
 		memory:
 			memoryClient && memoryBootConfig
 				? { client: memoryClient, config: memoryBootConfig, noteRecall }
@@ -383,22 +391,26 @@ async function boot() {
 	// seam lazily, so the binding must exist before the awaits that let
 	// traffic in. `undefined` in that window answers "not wired".
 	let resumeOps: ResumeOps | undefined;
-	const tg = await startBot({
-		configRef,
-		auth,
-		store,
-		runtime,
-		titleFor,
-		async synthesize(text, tts) {
-			return synthesizeSpeech(text, tts, { auth });
-		},
-		transcribe: transcribeFile,
-		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-		mail: () => telegramMailApproval,
-		programApproval: () => telegramProgramApproval,
-		followUpGate: () => system1Gate ?? undefined,
-		resumeOps: () => resumeOps,
-	});
+	if (telegramEnabled) {
+		tg = await startBot({
+			configRef,
+			auth,
+			store,
+			runtime,
+			titleFor,
+			async synthesize(text, tts) {
+				return synthesizeSpeech(text, tts, { auth });
+			},
+			transcribe: transcribeFile,
+			...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
+			mail: () => telegramMailApproval,
+			programApproval: () => telegramProgramApproval,
+			followUpGate: () => system1Gate ?? undefined,
+			resumeOps: () => resumeOps,
+		});
+	} else {
+		log.info("telegram channel disabled — bot auth, polling, and mini-app auth skipped");
+	}
 
 	// The shared mail approval owner — queue, CAS, send lifecycle and
 	// expiry are channel-neutral; each door only presents and stamps.
@@ -408,10 +420,16 @@ async function boot() {
 		reader: mailPoller,
 		lanes: {
 			app: makeAppMailLane(store),
-			telegram: makeTelegramMailLane(tg.bot.api),
+			telegram:
+				tg === null
+					? unavailableMailLane("telegram channel is disabled")
+					: makeTelegramMailLane(tg.bot.api),
 		},
 	});
-	telegramMailApproval = startTelegramMailApproval({ api: tg.bot.api, approval: mailApproval });
+	telegramMailApproval =
+		tg === null
+			? undefined
+			: startTelegramMailApproval({ api: tg.bot.api, approval: mailApproval });
 
 	// The shared program grant owner — the durable decision path is one
 	// for both doors. Presentation routes by target: Telegram posts its
@@ -421,18 +439,22 @@ async function boot() {
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		present: async (proposal) => {
 			if (telegramAddressOf(proposal.target) !== null) {
+				if (tg === null) throw new Error("telegram channel is disabled");
 				await postProgramApproval(tg.bot.api, programs, proposal);
 			} else {
 				presentProgramApproval(store, proposal);
 			}
 		},
 	});
-	telegramProgramApproval = startTelegramProgramApproval({
-		api: tg.bot.api,
-		approval: programApproval,
-		programs,
-		sendPrivate,
-	});
+	telegramProgramApproval =
+		tg === null || sendPrivate === undefined
+			? undefined
+			: startTelegramProgramApproval({
+					api: tg.bot.api,
+					approval: programApproval,
+					programs,
+					sendPrivate,
+				});
 	const programOps = startProgramOps({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
@@ -446,11 +468,11 @@ async function boot() {
 				outage: {
 					tracker: new OutageTracker(store.db),
 					notify: (conversationId, sinceMs, queued) =>
-						sendMemoryOutageNotice(tg.bot.api, conversationId, sinceMs, queued),
+						sendMemoryOutageNotice(tg?.bot.api ?? null, conversationId, sinceMs, queued),
 				},
 				blocked: {
 					notify: (conversationId, error, attempts) =>
-						sendMemoryBlockedNotice(tg.bot.api, conversationId, error, attempts),
+						sendMemoryBlockedNotice(tg?.bot.api ?? null, conversationId, error, attempts),
 				},
 			})
 		: null;
@@ -462,7 +484,8 @@ async function boot() {
 		store,
 		observation: cacheObservations,
 		paths,
-		notify: (conversationId, skills) => sendSkillProposedNotice(tg.bot.api, conversationId, skills),
+		notify: (conversationId, skills) =>
+			sendSkillProposedNotice(tg?.bot.api ?? null, conversationId, skills),
 		recordSources: (conversationId, reviewId, skills) => {
 			for (const skill of skills)
 				skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
@@ -483,7 +506,7 @@ async function boot() {
 	const wakeDeps = makeWakeDeps({
 		store,
 		runtime,
-		api: tg.bot.api,
+		api: tg?.bot.api ?? null,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
 		followUpGate: () => system1Gate ?? undefined,
@@ -506,8 +529,18 @@ async function boot() {
 		...makeResumeSinks({
 			wake: wakeDeps,
 			operators: () => configRef.current.operators,
-			sendDm: (chat, text) =>
-				withTimeout(tg.bot.api.sendMessage(chat, text), "sendMessage (resumed turn notice)"),
+			...(tg === null
+				? {}
+				: {
+						sendDm: (chat: number, text: string) => {
+							const running = tg;
+							if (running === null) throw new Error("telegram channel is disabled");
+							return withTimeout(
+								running.bot.api.sendMessage(chat, text),
+								"sendMessage (resumed turn notice)",
+							);
+						},
+					}),
 		}),
 	});
 	const firingDeps: SchedulerDeps = {
@@ -574,17 +607,24 @@ async function boot() {
 	// Rows reclassified 'interrupted' at open get one DM per operator —
 	// terse facts, never a replay. A failed send must not hold boot;
 	// the log line is the record.
-	sendInterruptedTurnNotices(
-		tg.bot.api,
-		turnJournal.interruptedAtOpen,
-		configRef.current.operators,
-		(id) => store.get(id)?.title ?? undefined,
-	);
-
-	// Recover inbox rows before polling: the wirings above must exist before
-	// recovered turns run, and the offset must not advance past journaled input.
-	await tg.replayInbox();
-	tg.startPolling();
+	if (tg === null) {
+		if (turnJournal.interruptedAtOpen.length > 0) {
+			log.warn("interrupted turn notices skipped — telegram channel disabled", {
+				runs: turnJournal.interruptedAtOpen.length,
+			});
+		}
+	} else {
+		sendInterruptedTurnNotices(
+			tg.bot.api,
+			turnJournal.interruptedAtOpen,
+			configRef.current.operators,
+			(id) => store.get(id)?.title ?? undefined,
+		);
+		// Recover inbox rows before polling: the wirings above must exist before
+		// recovered turns run, and the offset must not advance past journaled input.
+		await tg.replayInbox();
+		tg.startPolling();
+	}
 
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
@@ -595,6 +635,7 @@ async function boot() {
 	const bootPins: BootPins = {
 		memory: memoryBootConfig,
 		appToken: appTokenName,
+		telegramEnabled,
 		apiRoot: apiRootBoot,
 		delegation: delegationBoot,
 		subagents: subagentsBoot,
@@ -608,7 +649,9 @@ async function boot() {
 		pins: bootPins,
 		// publicUrl is operator-editable — keep the menu button in sync
 		// without a restart.
-		syncMenuButton: () => applyMenuButton(tg.bot.api, configRef.current.publicUrl),
+		syncMenuButton: () => {
+			if (tg !== null) applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+		},
 		warnStrandedSandboxes,
 	});
 	// The operator surface (settings, memory, programs, delegations,
@@ -631,7 +674,7 @@ async function boot() {
 	const http = startHttp({
 		configRef,
 		...operatorSeams,
-		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		...(tg === null ? {} : { botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN) }),
 		// POST /hook/<token> — the token is the credential; the webhook
 		// entry point owns the fire's accounting (last_run only when landed).
 		hooks: {
@@ -692,7 +735,16 @@ async function boot() {
 		programs,
 		reader: mailPoller,
 		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
-		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
+		notify: (address, text) => {
+			if (tg === null) {
+				log.warn("mail outage notice skipped — telegram channel disabled", {
+					chat: address.chatId,
+					thread: address.threadId,
+				});
+				return Promise.resolve();
+			}
+			return sendMailNotice(tg.bot.api, address, text);
+		},
 	});
 
 	return {
@@ -766,13 +818,16 @@ async function shutdown(signal: string): Promise<void> {
 	const retention = memoryWorker?.stop() ?? Promise.resolve();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
-	const stopping = tg.bot.stop().catch((err: unknown) => {
-		log.warn("bot stop failed", err);
-	});
+	const stopping =
+		tg === null
+			? Promise.resolve()
+			: tg.bot.stop().catch((err: unknown) => {
+					log.warn("bot stop failed", err);
+				});
 	// Close the runtime first — intake that lands during the drain still
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
-	const flushed = tg.drainIntake();
+	const flushed = tg?.drainIntake() ?? Promise.resolve();
 	// Pause only: pending subagent runs persist for the next boot — the
 	// harness close seals admission, it never aborts work.
 	const subagentsClosed = subagents

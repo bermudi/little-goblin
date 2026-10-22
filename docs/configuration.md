@@ -251,10 +251,19 @@ allowedUsers: [],
 http: { port: 8787 },
 ```
 
+- `telegram.enabled` — default `true`. `false` makes Telegram optional:
+  boot needs no `telegram` auth record, constructs no bot, starts no
+  polling, and answers the Telegram Mini-App door with `503`; `/app` and
+  `/api/app/*` stay live. Telegram-targeted wakes, notices, mail drafts,
+  and interrupted-turn resumes report the channel as unavailable instead
+  of running without a delivery door. Boot-pinned: a Settings save writes
+  the switch and the restart hint applies it.
 - `operators` — your Telegram user id(s): you, plus any of your own
   accounts. Full personal agent on every surface, app doors included.
-  DM `@userinfobot` to find yours. Checked on every message, so mini-app
-  edits take effect immediately.
+  DM `@userinfobot` to find yours. At least one is required while
+  Telegram is enabled; the list may be empty only when `telegram.enabled`
+  is `false`. Checked on every message, so mini-app edits take effect
+  immediately.
 - `allowedUsers` — people you name. Sandboxed: a guest persona with
   search-only tools, no memory, no app. Their DM is a standing chat; in
   groups they @mention you. Everyone else gets one refusal line per
@@ -310,8 +319,9 @@ The following values are placeholders:
 {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_API_KEY"}
 ```
 
-- `telegram` (the bot token) is always required, plus one record per
-  configured provider `auth` name. Codex uses its own OAuth file instead.
+- `telegram` (the bot token) is required while `telegram.enabled` is
+  true (the default), plus one record per configured provider `auth`
+  name. Codex uses its own OAuth file instead.
   Include configured optional auth references too: transcription, search/fetch,
   memory, mail, reviewer/System One and `appToken`, as applicable. A reference's
   presence does not prove the credential or remote model works.

@@ -327,15 +327,7 @@ export const providerSchema = z.discriminatedUnion("kind", [
 // (reasoning off), not a rung; the rungs are the efforts a provider
 // can express. Every model's ladder is a subset of this — the profile
 // in agent/thinking.ts decides which.
-export const thinkingLevels = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
+export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 // Optional long-term memory. auth names an auth.jsonl record (loopback
@@ -881,12 +873,16 @@ const configSchema = z
 		// Two-list trust: operators get the personal agent on every
 		// surface; allowedUsers get the sandbox class. Anyone on neither
 		// list is a stranger — one refusal line per summons, nothing else.
-		operators: z.array(z.number().int().positive()).min(1),
+		// Telegram owns both lists, so operators may be empty only when
+		// that channel is disabled; superRefine owns the conditional floor.
+		operators: z.array(z.number().int().positive()),
 		allowedUsers: z.array(z.number().int().positive()).default([]),
 		// apiRoot: self-hosted telegram-bot-api in --local mode. dmGapMinutes:
 		// the Rolling DM quiet gap — read live, applies immediately.
 		telegram: z
 			.object({
+				// Boot-pinned channel switch. Absent keeps legacy configs enabled.
+				enabled: z.boolean().default(true),
 				// Absent here → pinned to the top-level model/thinking below.
 				model: z.string().min(1).optional(),
 				thinking: z.enum(thinkingLevels).optional(),
@@ -906,7 +902,7 @@ const configSchema = z
 				showReasoning: z.boolean().default(false),
 			})
 			.strict()
-			.default({ dmGapMinutes: 45, richReplies: true, showReasoning: false }),
+			.default({ enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false }),
 		// External HTTPS door for mini apps — nothing in-process assumes
 		// a public IP. "" = unset (the form can't express undefined).
 		publicUrl: z
@@ -969,6 +965,13 @@ const configSchema = z
 		return cfg;
 	})
 	.superRefine((cfg, ctx) => {
+		if (cfg.telegram.enabled && cfg.operators.length === 0) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["operators"],
+				message: "at least one Telegram operator id is required while telegram is enabled",
+			});
+		}
 		for (const [path, ref] of [
 			["model", cfg.model],
 			["telegram.model", cfg.telegram.model],
@@ -1179,11 +1182,12 @@ export function splitModelRef(ref: string): { provider: string; modelId: string 
 	return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
 }
 
-// Auth record names goblin resolves at boot ("telegram" is implicit).
-// Single source for the doctor's preflight gate and the installer's
-// warm-target rendering — deriving the set twice is how they drift.
+// Auth record names goblin resolves at boot ("telegram" only while that
+// channel is enabled). Single source for the doctor's preflight gate and
+// the installer's warm-target rendering — deriving the set twice is how
+// they drift.
 export function authReferences(config: Config): Set<string> {
-	const refs = new Set<string>(["telegram"]);
+	const refs = new Set<string>(config.telegram.enabled ? ["telegram"] : []);
 	for (const provider of Object.values(config.providers))
 		if ("auth" in provider) refs.add(provider.auth);
 	for (const feature of [

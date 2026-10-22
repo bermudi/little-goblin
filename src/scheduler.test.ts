@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
-import { openStore } from "./conversation.ts";
+import { appAddress, openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 import { openPrograms } from "./programs.ts";
@@ -46,7 +46,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -809,6 +809,52 @@ describe("scheduler", () => {
 		// Chat 2's pin is a private address — the fire rolled into its
 		// first rolling conversation.
 		expect(h.submitted.map((x) => x.conv)).toEqual(["dm:2:1"]);
+		await closeSinks(h);
+	});
+
+	test("a disabled Telegram lane refuses its fires before submit while an app program lands", async () => {
+		const h = harness();
+		delete h.deps.delivery;
+		delete h.deps.markRoll;
+		const now = new Date();
+		const tgScheduled = h.deps.programs.create(
+			{
+				name: "tg cron",
+				cron: "* * * * *",
+				charter: "p",
+				address: { chatId: 1, threadId: null },
+			},
+			new Date(now.getTime() - 5 * 60_000),
+		);
+		const tgHook = h.deps.programs.create(
+			{
+				name: "tg hook",
+				charter: "p",
+				hookHash: "hook",
+				address: { chatId: 1, threadId: null },
+			},
+			new Date(now.getTime() - 5 * 60_000),
+		);
+		const appConv = h.store.resolve(appAddress("chat-01"), "/w");
+		const appScheduled = h.deps.programs.create(
+			{
+				name: "app cron",
+				cron: "* * * * *",
+				charter: "p",
+				address: { target: appConv.id },
+			},
+			new Date(now.getTime() - 5 * 60_000),
+		);
+
+		fireScheduled(h.deps, tgScheduled, now);
+		expect(h.submitted).toEqual([]);
+		expect(h.deps.programs.get(tgScheduled.id)!.lastRun).toBe(now.toISOString());
+		expect(fireWebhook(h.deps, tgHook, "event", now)).toBe(false);
+		expect(h.deps.programs.get(tgHook.id)!.lastRun).toBeNull();
+		expect(h.submitted).toEqual([]);
+
+		fireScheduled(h.deps, appScheduled, now);
+		expect(h.submitted.map((s) => s.conv)).toEqual([appConv.id]);
 		await closeSinks(h);
 	});
 

@@ -39,7 +39,7 @@ const baseConfig = (over: Partial<Config> = {}): Config =>
 		favorites: [],
 		operators: [7],
 		allowedUsers: [8],
-		telegram: { dmGapMinutes: 45, apiRoot: undefined },
+		telegram: { enabled: true, dmGapMinutes: 45, apiRoot: undefined },
 		http: { port: 8787 },
 		guest: { outputChars: 3500 },
 		...over,

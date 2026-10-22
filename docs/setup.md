@@ -1,6 +1,7 @@
 # Setup
 
-Getting a fresh checkout to answering messages on Telegram and serving `/app/`.
+Getting a fresh checkout to serving `/app/` and, when `telegram.enabled` is
+true, answering messages on Telegram.
 There is no setup wizard: two operator-created files plus a non-interactive
 installer. Provisioning credentials and optional services is your responsibility.
 
@@ -22,9 +23,11 @@ is not approval to install units, publish a live client, restart, or deploy.
   shell. The declared minimum is 1.1; it is not a certified compatibility floor.
   The currently installed development version is 1.4.2.
 - Online access for `bun install --frozen-lockfile` and the client build's
-  dependencies, plus runtime access to Telegram and your chosen providers.
+  dependencies, plus runtime access to Telegram (when enabled) and your chosen
+  providers.
 - A Telegram bot token from [@BotFather](https://t.me/BotFather) (`/newbot`),
-  and your user id from [@userinfobot](https://t.me/userinfobot).
+  and your user id from [@userinfobot](https://t.me/userinfobot), unless the
+  copy sets `telegram.enabled: false` for an app-only install.
 - At least one model provider credential, or an explicit `codex login` for
   the Codex provider. Onboarding does not select a provider or model for you.
 - A free loopback HTTP port (default `8787`), or `http.port: 0` to allocate
@@ -72,7 +75,11 @@ cp goblin.json5.example ~/goblin/goblin.json5
 
 Edit the copy:
 
-- `operators`: your user id. Unauthorized users cannot operate your bot; anyone you name in `allowedUsers` gets a sandboxed guest lane, and everyone else is refused.
+- `operators`: your user id while Telegram is enabled (`telegram.enabled`
+  defaults to `true`). Unauthorized users cannot operate your bot; anyone you
+  name in `allowedUsers` gets a sandboxed guest lane, and everyone else is
+  refused. `operators: []` is valid only with `telegram.enabled: false` for an
+  app-only install.
 - `providers`: the registry has **four** kinds, including `responses`; see
   [Configuration](configuration.md#providers).
 - Root `model`/`thinking`: app defaults for **new** conversations.
@@ -97,7 +104,9 @@ Then edit privately; these are placeholders, not real credentials:
 {"name": "zai", "value": "replace-with-your-provider-key"}
 ```
 
-`telegram` is required. Add a record for every configured provider `auth`
+`telegram` is required while `telegram.enabled` is true (the default); an
+app-only install with `telegram.enabled: false` omits it. Add a record for
+every configured provider `auth`
 (except Codex, which uses its own OAuth file) and optional auth reference.
 Never put credentials in environment variables, command-line arguments,
 `goblin.json5`, workspace files or shared logs. MCP's scoped wrapper injects

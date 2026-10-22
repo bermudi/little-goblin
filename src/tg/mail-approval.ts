@@ -56,9 +56,10 @@ export interface TelegramMailApproval {
 	stop(): Promise<void>;
 }
 
-export function startTelegramMailApproval(
-	deps: { api: Api; approval: MailApproval },
-): TelegramMailApproval {
+export function startTelegramMailApproval(deps: {
+	api: Api;
+	approval: MailApproval;
+}): TelegramMailApproval {
 	const handleTap = async (query: MailApprovalQuery): Promise<void> => {
 		try {
 			await decide(query);
@@ -93,7 +94,9 @@ export function startTelegramMailApproval(
 			outboxId,
 			action,
 			telegramActor(query.from.id),
-			{ ...(query.message?.message_id !== undefined ? { messageId: query.message.message_id } : {}) },
+			{
+				...(query.message?.message_id !== undefined ? { messageId: query.message.message_id } : {}),
+			},
 		);
 		if (outcome.kind === "sent") {
 			await answer();
@@ -298,10 +301,11 @@ async function stampMailDraft(
 }
 
 export async function sendMailNotice(
-	api: Api,
+	api: Api | null,
 	address: { chatId: number; threadId: number | null },
 	text: string,
 ): Promise<void> {
+	if (api === null) throw new Error("telegram channel is disabled");
 	await withTimeout(
 		api.sendMessage(address.chatId, text, {
 			...(address.threadId !== null ? { message_thread_id: address.threadId } : {}),

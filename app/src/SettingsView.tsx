@@ -65,6 +65,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	titleModel: "topic-title model",
 	favorites: "favorites",
 	thinking: "app thinking",
+	telegramEnabled: "telegram channel",
 	telegramModel: "telegram model",
 	telegramThinking: "telegram thinking",
 	tts: "text to speech",
@@ -1560,50 +1561,64 @@ export function SettingsView({
 					</div>
 					<h2 className="ops-h2">Telegram</h2>
 					<div className="card">
-						{modelButton(
-							"Model",
-							"Shared by all Telegram conversations.",
-							"telegram",
-							draft.telegramModel,
-							"tgModelLabel",
-						)}
 						<Row
-							label="Thinking"
-							cap={
-								levels.telegram.unavailable
-									? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
-									: "Only levels this model can express are shown."
-							}
-							col
-						>
-							<Seg
-								options={levels.telegram.values}
-								value={displayLevel(draft.telegramThinking, levels.telegram.values)}
-								ariaLabel="Telegram thinking level"
-								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
-							/>
-						</Row>
-						<Row
-							label="Rich replies"
-							cap="Markdown replies in your DM with a live draft preview while goblin works. Off restores plain text — the off-switch if streaming misbehaves. Applies to new turns."
+							label="Telegram channel"
+							cap="Off runs the app without a bot token, polling, or the Telegram mini app. Existing Telegram settings stay saved for a later re-enable; restart applies."
 						>
 							<Switch
-								on={draft.richReplies}
-								ariaLabel="rich replies"
-								onChange={(on) => patchDraft({ richReplies: on })}
+								on={draft.telegramEnabled}
+								ariaLabel="telegram channel"
+								onChange={(on) => patchDraft({ telegramEnabled: on })}
 							/>
 						</Row>
-						{draft.richReplies && (
-							<Row
-								label="Show reasoning"
-								cap="The model's thinking streams into its own preview bubble and lands collapsed above the reply. DMs only."
-							>
-								<Switch
-									on={draft.showReasoning}
-									ariaLabel="show reasoning"
-									onChange={(on) => patchDraft({ showReasoning: on })}
-								/>
-							</Row>
+						{draft.telegramEnabled && (
+							<>
+								{modelButton(
+									"Model",
+									"Shared by all Telegram conversations.",
+									"telegram",
+									draft.telegramModel,
+									"tgModelLabel",
+								)}
+								<Row
+									label="Thinking"
+									cap={
+										levels.telegram.unavailable
+											? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
+											: "Only levels this model can express are shown."
+									}
+									col
+								>
+									<Seg
+										options={levels.telegram.values}
+										value={displayLevel(draft.telegramThinking, levels.telegram.values)}
+										ariaLabel="Telegram thinking level"
+										onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
+									/>
+								</Row>
+								<Row
+									label="Rich replies"
+									cap="Markdown replies in your DM with a live draft preview while goblin works. Off restores plain text — the off-switch if streaming misbehaves. Applies to new turns."
+								>
+									<Switch
+										on={draft.richReplies}
+										ariaLabel="rich replies"
+										onChange={(on) => patchDraft({ richReplies: on })}
+									/>
+								</Row>
+								{draft.richReplies && (
+									<Row
+										label="Show reasoning"
+										cap="The model's thinking streams into its own preview bubble and lands collapsed above the reply. DMs only."
+									>
+										<Switch
+											on={draft.showReasoning}
+											ariaLabel="show reasoning"
+											onChange={(on) => patchDraft({ showReasoning: on })}
+										/>
+									</Row>
+								)}
+							</>
 						)}
 					</div>
 				</>
@@ -2179,7 +2194,11 @@ export function SettingsView({
 							placeholder="telegram user id"
 							ariaLabel="add operator"
 							numeric
-							cap="Telegram user ids with the full personal agent on every surface — these settings included. The list can't be emptied — that would lock everyone out."
+							cap={
+								draft.telegramEnabled
+									? "Telegram user ids with the full personal agent on every surface — these settings included. The list can't be emptied — that would lock everyone out."
+									: "Telegram user ids with the full personal agent on every surface — these settings included. The list may be empty while Telegram is off."
+							}
 						/>
 					</div>
 					<h2 className="ops-h2">Allowed users</h2>

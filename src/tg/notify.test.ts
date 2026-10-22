@@ -178,6 +178,14 @@ describe("skill proposal notice send", () => {
 	});
 });
 
+describe("disabled telegram notices", () => {
+	test("telegram ids skip cleanly when no api exists", async () => {
+		await sendMemoryOutageNotice(null, "dm:42", 3_600_000, 1);
+		await sendMemoryBlockedNotice(null, "topic:-100:7", "err", 2);
+		await sendSkillProposedNotice(null, "dm:42", ["x"]);
+	});
+});
+
 describe("app conversation notices", () => {
 	// App conversations ring nothing — no push channel exists. Every
 	// notice is a deliberate skip, not a parse failure: the api is never

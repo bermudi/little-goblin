@@ -36,7 +36,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [42],
 	allowedUsers: [42],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 0 },
 	logLevel: "info",
 };
@@ -596,6 +596,43 @@ describe("client serving", () => {
 			}
 		} finally {
 			http.stop();
+		}
+	});
+
+	test("a disabled Telegram channel keeps /app and /api/app/* live while its own doors refuse 503", async () => {
+		const dir = tmpDir("goblin-appdist-");
+		try {
+			writeFileSync(join(dir, "index.html"), "<html><body>SENTINEL SHELL</body></html>\n");
+			useHome("goblin-http-");
+			const http = startHttp({
+				configRef: {
+					current: {
+						...baseConfig,
+						operators: [],
+						telegram: { ...baseConfig.telegram, enabled: false },
+					},
+				},
+				onConfigWritten: () => {},
+				appDistDir: dir,
+				appApi: async () => Response.json({ ok: true }),
+			});
+			try {
+				const app = await fetch(`http://127.0.0.1:${http.port}/app`, { redirect: "manual" });
+				expect(app.status).toBe(200);
+				expect(await app.text()).toContain("SENTINEL SHELL");
+				const api = await fetch(`http://127.0.0.1:${http.port}/api/app/anything`);
+				expect(api.status).toBe(200);
+				expect(await api.json()).toEqual({ ok: true });
+				for (const path of ["/t", "/api/settings"]) {
+					const res = await fetch(`http://127.0.0.1:${http.port}${path}`);
+					expect(res.status, path).toBe(503);
+					expect(await res.json()).toEqual({ error: "telegram channel is disabled" });
+				}
+			} finally {
+				http.stop();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 

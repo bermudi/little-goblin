@@ -25,7 +25,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -551,7 +551,7 @@ describe("handleMessage", () => {
 		const h = routerHarness({
 			...baseConfig,
 			guest: { outputChars: 3500 },
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		// An answered exchange seeds — without one the burst never
 		// reaches the check.
@@ -589,7 +589,7 @@ describe("handleMessage", () => {
 		h.env.deps.configRef.current = {
 			...baseConfig,
 			allowedUsers: [],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		};
 		release();
 		await flushing;
@@ -1858,7 +1858,7 @@ describe("rolling dm", () => {
 			...baseConfig,
 			allowedUsers: [2, 7],
 			guest: { outputChars: 3500 },
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -1903,7 +1903,7 @@ describe("rolling dm", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, 7],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -2020,7 +2020,7 @@ describe("manual DM navigation", () => {
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
 		const h = routerHarness({
 			...baseConfig,
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		for (const [i, text] of [
 			"/new@otherbot",
@@ -2061,7 +2061,7 @@ describe("manual DM navigation", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, chat.id],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.

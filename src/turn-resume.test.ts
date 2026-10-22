@@ -40,6 +40,7 @@ function setup(opts: {
 	// Overflow-recovery tests wire a small window and a fold stub.
 	contextWindow?: number;
 	compaction?: RuntimeDeps["compaction"];
+	sinkFor?: () => RecordingSink | null;
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -79,6 +80,7 @@ function setup(opts: {
 		captureConversation: (c) => c,
 		makeTools,
 		sinkFor: () => {
+			if (opts.sinkFor !== undefined) return opts.sinkFor();
 			sink = opts.sinkFactory?.() ?? new RecordingSink();
 			return sink;
 		},
@@ -834,9 +836,11 @@ describe("turn resume", () => {
 		// No resume event, no successor — the refusal spent nothing.
 		expect(store.history(conv.id).length).toBe(before + 1);
 		expect(
-			store.db.query<{ n: number }, [string]>(
-				"SELECT COUNT(*) AS n FROM turn_runs WHERE resumed_from = ?",
-			).get("run-dead")!.n,
+			store.db
+				.query<{ n: number }, [string]>(
+					"SELECT COUNT(*) AS n FROM turn_runs WHERE resumed_from = ?",
+				)
+				.get("run-dead")!.n,
 		).toBe(0);
 
 		// Answered: a completed later exchange is just as foreign.
@@ -925,7 +929,10 @@ describe("turn resume", () => {
 		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("steered while running");
 		const detail = store.historyDetail(conv.id);
 		const resumeEvent = detail.find(
-			(e) => e.message.role === "user" && e.message.id !== trigger.message.id && e.message.id !== steered.message.id,
+			(e) =>
+				e.message.role === "user" &&
+				e.message.id !== trigger.message.id &&
+				e.message.id !== steered.message.id,
 		)!;
 		expect(resumeEvent).toBeDefined();
 		expect(resumeEvent.message.metadata).toEqual({
@@ -934,9 +941,9 @@ describe("turn resume", () => {
 		const reply = detail.at(-1)!;
 		expect(reply.message.role).toBe("assistant");
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
-		expect(
-			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
-		).toBe(true);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
+			true,
+		);
 		// The registry recorded the event id — a failed next resume would
 		// still recognize it as this source's own request.
 		expect(journal.get("run-owned")!.resumeRequestSeqs).toEqual([resumeEvent.seq]);
@@ -992,17 +999,15 @@ describe("turn resume", () => {
 		// Parts ride verbatim — the attachment stays a part, not a string.
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("original ask");
 		expect(
-			resumeEvent.message.parts.some(
-				(p) => (p as { type: string }).type === "data-attachment",
-			),
+			resumeEvent.message.parts.some((p) => (p as { type: string }).type === "data-attachment"),
 		).toBe(true);
 		expect(JSON.stringify(resumeEvent.message.parts)).toContain("pic.png");
 		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).toContain("original ask");
 		const reply = detail.at(-1)!;
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
-		expect(
-			store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id),
-		).toBe(true);
+		expect(store.modelEntries(conv.id).some((e) => e.message.id === resumeEvent.message.id)).toBe(
+			true,
+		);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -1261,13 +1266,9 @@ describe("turn resume", () => {
 		await runtime.shutdown();
 		expect(reads).toEqual([file]); // executed fresh, not replayed
 		const successor = store.db
-			.query<{ run_id: string }, [string]>(
-				"SELECT run_id FROM turn_runs WHERE resumed_from = ?",
-			)
+			.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
 			.get("run-src")!.run_id;
-		const reask = journal
-			.callsFor(successor)
-			.find((c) => c.toolCallId === "n1")!;
+		const reask = journal.callsFor(successor).find((c) => c.toolCallId === "n1")!;
 		expect(reask.state).toBe("completed");
 		expect(reask.replayed).toBe(false);
 		expect(reask.result).toBe('"B"');
@@ -1495,9 +1496,9 @@ describe("turn resume", () => {
 		expect(reask.result).toContain("[turn-journal conflict]");
 		// The source's own row still reads unconsumed — unreachable, but
 		// honest evidence of what was granted.
-		expect(
-			journal.callsFor("run-src").find((c) => c.toolCallId === "c-grant")!.retryConsumed,
-		).toBe(false);
+		expect(journal.callsFor("run-src").find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(
+			false,
+		);
 		store.close();
 	});
 
@@ -1580,6 +1581,35 @@ describe("turn resume", () => {
 		expect(nested.result).toContain("c-script/1");
 		// …and the script's own record carries the same refusal.
 		expect(parent.result).toContain("[turn-journal conflict]");
+		store.close();
+	});
+
+	test("a missing lane refuses before tools or a successor run are built", async () => {
+		let toolBuilds = 0;
+		const { store, conv, journal, ops, runtime, edge } = setup({
+			sinkFor: () => null,
+			makeTools: () => {
+				toolBuilds++;
+				return {};
+			},
+		});
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq: appendUser(store, conv, "go"),
+		});
+		expect(ops.resume(conv.id, "run-dead")).toEqual({
+			kind: "refused",
+			code: "unavailable",
+			reason: "telegram channel is disabled — the interrupted turn cannot resume",
+		});
+		expect(toolBuilds).toBe(0);
+		expect(edge.streamCalls).toEqual([]);
+		expect(journal.get("run-dead")!.status).toBe("interrupted");
+		expect(
+			store.db
+				.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
+				.all("run-dead"),
+		).toEqual([]);
+		await runtime.shutdown();
 		store.close();
 	});
 
@@ -1666,6 +1696,22 @@ describe("makeResumeSinks", () => {
 		// Fire-and-forget by contract — the send's rejection rides its own catch.
 		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "error", message: "boom" });
 		await Bun.sleep(20);
+		store.close();
+	});
+
+	test("a disabled telegram lane has no sink or hooks and notices skip without sending", async () => {
+		const store = openStore(tmpDb("goblin-rs-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const sent: number[] = [];
+		const deps = makeResumeSinks({
+			wake: { bell: () => new RecordingSink() },
+			operators: () => [7],
+		});
+		expect(deps.sinkFor(conv)).toBeNull();
+		expect(deps.sinkHooks(conv)).toEqual({ voice: false, recording: false, file: false });
+		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "completed" });
+		await Bun.sleep(20);
+		expect(sent).toEqual([]);
 		store.close();
 	});
 });

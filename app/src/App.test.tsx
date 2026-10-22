@@ -1131,7 +1131,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		for (let i = 0; i < 40; i++) await settle();
 		expect(savedBodies).toHaveLength(0);
 		expect(container.textContent).toContain("unsaved");
-		expect(container.textContent).toContain("Operators must keep at least one Telegram id.");
+		expect(container.textContent).toContain(
+			"Operators must keep at least one Telegram id while Telegram is enabled.",
+		);
 	});
 
 	test("publicUrl stages for the explicit Save — the debounce never carries an in-between value", async () => {

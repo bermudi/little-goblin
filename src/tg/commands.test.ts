@@ -23,7 +23,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -1133,7 +1133,7 @@ describe("recovery commands", () => {
 		});
 		expect(handleCommand(deps, conv, "/resume")).toBe(true);
 		await tick();
-		expect(sent[0]).toContain("known: probe {\"q\":1} — completed");
+		expect(sent[0]).toContain('known: probe {"q":1} — completed');
 		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz authorize-retry");
 		// The known row never occupies a numbered slot — ordinals stay
 		// pinned to the ambiguous list.

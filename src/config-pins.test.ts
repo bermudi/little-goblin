@@ -33,6 +33,7 @@ function pinsFor(c: Config): BootPins {
 	return {
 		memory: c.memory,
 		appToken: c.appToken,
+		telegramEnabled: c.telegram.enabled,
 		apiRoot: c.telegram.apiRoot,
 		delegation: c.delegation,
 		subagents: c.subagents,
@@ -74,6 +75,7 @@ describe("bootPinnedDiffs", () => {
 	test.each([
 		["memory", `memory:{baseUrl:"http://127.0.0.1:8888",bankId:"b"}`, "memory"],
 		["appToken", `appToken:"other"`, "appToken"],
+		["telegram.enabled", `telegram:{enabled:false}`, "telegram.enabled"],
 		["apiRoot", `telegram:{apiRoot:"http://127.0.0.1:9"}`, "telegram.apiRoot"],
 		["delegation", `delegation:{harnesses:{a:{kind:"x"}}}`, "delegation"],
 		["subagents", `subagents:{maxRuns:2}`, "subagents"],

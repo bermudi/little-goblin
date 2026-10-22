@@ -10,6 +10,7 @@ export interface BootPins {
 	memory: Config["memory"];
 	// Resolved auth name — the appToken name, not the secret.
 	appToken: string | undefined;
+	telegramEnabled: boolean;
 	apiRoot: Config["telegram"]["apiRoot"];
 	delegation: Config["delegation"];
 	subagents: Config["subagents"];
@@ -22,6 +23,7 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 	const diffs: string[] = [];
 	if (!eq(cur.memory, pins.memory)) diffs.push("memory");
 	if (cur.appToken !== pins.appToken) diffs.push("appToken");
+	if (cur.telegram.enabled !== pins.telegramEnabled) diffs.push("telegram.enabled");
 	if (cur.telegram.apiRoot !== pins.apiRoot) diffs.push("telegram.apiRoot");
 	if (!eq(cur.delegation, pins.delegation)) diffs.push("delegation");
 	if (!eq(cur.subagents, pins.subagents)) diffs.push("subagents");

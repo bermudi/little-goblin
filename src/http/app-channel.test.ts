@@ -132,7 +132,6 @@ function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
 }
 
 describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () => {
-
 	test("all six tails answer through the real door wiring", async () => {
 		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
 		try {
@@ -365,6 +364,38 @@ describe("app operator surface", () => {
 			expect(configWrites.count).toBe(1);
 		} finally {
 			_resetModelsDevForTest();
+			http.stop();
+		}
+	});
+
+	test("the app settings door can disable Telegram and save an empty operator list", async () => {
+		const { http, call, configRef } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { beforeConfigWritten: () => {} },
+		});
+		try {
+			configRef.current = {
+				...configRef.current,
+				operators: [],
+				telegram: { ...configRef.current.telegram, enabled: false },
+			};
+			const etag = (await call("/api/app/settings")).headers.get("etag")!;
+			const saved = await call("/api/app/settings", {
+				method: "POST",
+				headers: { "content-type": "application/json", "if-match": etag },
+				body: JSON.stringify({
+					operators: [],
+					telegram: { enabled: false },
+				}),
+			});
+			expect(saved.status).toBe(200);
+			expect(configRef.current.telegram.enabled).toBe(false);
+			expect(configRef.current.operators).toEqual([]);
+			expect(loadConfig()).toMatchObject({
+				operators: [],
+				telegram: { enabled: false },
+			});
+		} finally {
 			http.stop();
 		}
 	});

@@ -12,8 +12,8 @@
 //   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
 //   {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_KEY"}
 // A value starting with "!" is resolved by running it as a command at the
-// point of use. Required records: "telegram" (the bot token) plus one per
-// provider `auth` name below.
+// point of use. Required records: "telegram" (the bot token, while
+// telegram.enabled is true) plus one per provider `auth` name below.
 {
   // --- Provider registry: name → factory + auth.jsonl key ---
   providers: {
@@ -279,6 +279,10 @@
   // },
 
   // --- Telegram ---
+  // enabled:false runs the PWA/runtime without a bot token, polling, or
+  // the Telegram mini app; Telegram-targeted work reports the channel as
+  // unavailable. The flag is boot-pinned — Settings writes it and the
+  // restart hint applies it. While off, operators may be empty.
   // Two-list trust (design/telegram.md → Roles and permissions).
   // operators: full personal agent on every surface — you, and any of
   // your own accounts. allowedUsers: people you name, sandboxed (guest
@@ -294,6 +298,7 @@
   // conversations. Legacy configs without these keys start at the app
   // defaults above; a settings save pins the Telegram values explicitly.
   telegram: {
+    enabled: true,
     model: "zai/glm-5.3-flash",
     thinking: "medium",
     dmGapMinutes: 45,

@@ -35,6 +35,7 @@ const baseConfig = (): Config => ({
 	operators: [111],
 	allowedUsers: [111, 222],
 	telegram: {
+		enabled: true,
 		model: "route/auto",
 		thinking: "low",
 		dmGapMinutes: 45,
@@ -61,6 +62,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	titleModel: "",
 	favorites: [],
 	thinking: "medium",
+	telegramEnabled: true,
 	telegramModel: "main/gpt-5",
 	telegramThinking: "medium",
 	tts: null,
@@ -84,7 +86,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 describe("draftFromConfig", () => {
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {
 		const c = baseConfig();
-		c.telegram = { dmGapMinutes: 45, richReplies: true, showReasoning: false };
+		c.telegram = { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false };
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toBeNull();
 		expect(d.transcription).toBeNull();
@@ -225,6 +227,19 @@ describe("validateDraft", () => {
 	test("both models are required", () => {
 		expect(validateDraft(draft({ model: "" }), [prov()])).toMatch(/app default/);
 		expect(validateDraft(draft({ telegramModel: "" }), [prov()])).toMatch(/Telegram/);
+	});
+
+	test("a disabled Telegram channel allows no model and no operators, and serializes its switch", () => {
+		const c = baseConfig();
+		c.telegram.enabled = false;
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.telegramEnabled).toBe(false);
+		const off = { ...d, operators: [], telegramModel: "" };
+		expect(validateDraft(off, providers)).toBeNull();
+		const body = bodyFromDraft(off, providers, authDefaults);
+		expect(body.operators).toEqual([]);
+		expect(body.telegram.enabled).toBe(false);
+		expect(body.telegram).not.toHaveProperty("model");
 	});
 });
 

@@ -276,6 +276,7 @@ export interface SettingsDraft {
 	titleModel: string;
 	favorites: string[];
 	thinking: ThinkingLevel;
+	telegramEnabled: boolean;
 	telegramModel: string;
 	telegramThinking: ThinkingLevel;
 	tts: TtsDraft | null;
@@ -300,6 +301,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	titleModel: "",
 	favorites: [],
 	thinking: "medium",
+	telegramEnabled: true,
 	telegramModel: "",
 	telegramThinking: "medium",
 	tts: null,
@@ -333,6 +335,7 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 		titleModel: c.titleModel || "",
 		favorites: (c.favorites || []).slice(),
 		thinking: c.thinking || "medium",
+		telegramEnabled: c.telegram.enabled,
 		telegramModel: c.telegram.model || c.model,
 		telegramThinking: c.telegram.thinking || c.thinking,
 		tts:
@@ -415,8 +418,8 @@ export function displayLevel(configured: ThinkingLevel, levels: readonly string[
 }
 
 // Catches what the form can express badly; the server's schema is
-// still the gate. No own-id check — the schema's min(1) on operators
-// covers lockout.
+// still the gate. No own-id check — the schema's conditional floor on
+// operators covers lockout while Telegram is enabled.
 export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string | null {
 	const names = provs.map((p) => p.name.trim());
 	if (names.some((n) => !n)) return "Every provider needs a name.";
@@ -432,7 +435,7 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	// and defaulted server-side. The picker's "not in auth.jsonl" hint
 	// covers the typo case without blocking config-before-key.
 	if (!draft.model) return "Pick an app default model.";
-	if (!draft.telegramModel) return "Pick a Telegram model.";
+	if (draft.telegramEnabled && !draft.telegramModel) return "Pick a Telegram model.";
 	if (draft.tts && draft.tts.kind === "edge" && !draft.tts.voice.trim())
 		return "Text to speech is on — set a voice.";
 	// No transcription secret check: whistle takes none, and a blank cloud
@@ -457,7 +460,8 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	if (draft.publicUrl.trim() && !draft.publicUrl.trim().startsWith("https://")) {
 		return "Public URL must use HTTPS for Telegram Web Apps.";
 	}
-	if (!draft.operators.length) return "Operators must keep at least one Telegram id.";
+	if (draft.telegramEnabled && !draft.operators.length)
+		return "Operators must keep at least one Telegram id while Telegram is enabled.";
 	return null;
 }
 
@@ -532,7 +536,10 @@ export function bodyFromDraft(
 		operators: [...draft.operators],
 		allowedUsers: [...draft.allowedUsers],
 		telegram: {
-			model: draft.telegramModel,
+			enabled: draft.telegramEnabled,
+			// Disabled keeps the saved identity fields legible for a later
+			// re-enable; a blank model is omitted so the merge preserves it.
+			...(draft.telegramModel.trim() ? { model: draft.telegramModel.trim() } : {}),
 			thinking: draft.telegramThinking,
 			// "" clears — the server treats an absent key as "keep".
 			apiRoot: draft.apiRoot.trim(),

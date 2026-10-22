@@ -33,7 +33,7 @@ const testConfig = (model = "zai/glm-5.3-flash", thinking: Config["thinking"] = 
 		thinking,
 		operators: [1],
 		allowedUsers: [1],
-		telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+		telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 		http: { port: 8787 },
 		logLevel: "info",
 	}) as Config;

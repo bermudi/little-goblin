@@ -36,7 +36,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -210,6 +210,20 @@ test("wakeTarget keeps Telegram targets on the ordinary wake path", () => {
 	expect(landed).toBe(true);
 	expect(submitted).toEqual(["dm:7:2"]);
 	expect(sends).toEqual(["— new conversation —"]);
+	store.close();
+});
+
+test("no Telegram delivery refuses Telegram targets while app targets keep the bell", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	delete deps.delivery;
+	delete deps.markRoll;
+	expect(wakeTarget(deps, "dm:7", "scheduled job ran")).toBe(false);
+	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/w");
+	expect(wakeConversation(deps, dm.id, "subagent notice")).toBe(false);
+	const app = store.resolve(appAddress("chat-01"), "/w");
+	expect(wakeTarget(deps, app.id, "scheduled job ran")).toBe(true);
+	expect(submitted).toEqual([app.id]);
+	expect(sinks).toHaveLength(1);
 	store.close();
 });
 

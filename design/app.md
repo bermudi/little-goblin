@@ -115,7 +115,8 @@ the wrong client for long reads and state edits. Two doors onto one surface
 share validation and persistence — a write lands identically either way —
 and differ only in the self-lockout guard: the mini app refuses to remove
 the *requesting* Telegram id from `operators`, the app door (no requester)
-an empty list.
+an empty list while Telegram is enabled. With `telegram.enabled: false`,
+the app door may save `operators: []`.
 
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out

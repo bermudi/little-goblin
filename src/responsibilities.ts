@@ -552,6 +552,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		   AND a.terminal_id IS ? AND a.agent_session IS ? AND a.kind IS ?
 		 ORDER BY o.created_at LIMIT 1`,
 	);
+	// A live (non-detached) sibling already holding this dispatch
+	// identity — a second binding for the same destination, the state
+	// that lets an unresolved send on one row be bypassed by sending
+	// through the other.
+	const qLiveBindingForIdentity = db.query<
+		AttRow,
+		[string, string, string, string | null, string | null, string | null]
+	>(
+		`SELECT * FROM attachments WHERE responsibility_id = ? AND health != 'detached'
+		   AND server = ? AND session = ?
+		   AND terminal_id IS ? AND agent_session IS ? AND kind IS ?
+		 ORDER BY attachment_id LIMIT 1`,
+	);
 	const qOpClaim = db.prepare(
 		`UPDATE prompt_operations SET state = 'sent', sent_at = ? WHERE operation_id = ? AND state = 'prepared'`,
 	);
@@ -662,6 +675,22 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 						toOperation(opRowSchema.parse(blocked)),
 					);
 				}
+				// One live binding per dispatch identity: a second attachment
+				// for the same destination could dispatch around the
+				// unresolved-delivery fence that scopes to one row.
+				const duplicate = qLiveBindingForIdentity.get(
+					input.responsibilityId,
+					input.target.server,
+					input.target.session,
+					input.target.terminalId,
+					input.target.agentSession,
+					input.target.kind,
+				);
+				if (duplicate !== null) {
+					throw new Error(
+						`attachment ${duplicate.attachment_id} already binds ${input.target.agentName} at ${input.target.server}/${input.target.session} — detach it or reattach instead of a second binding`,
+					);
+				}
 				const ins = qAttach.run(
 					input.responsibilityId,
 					input.target.server,
@@ -764,7 +793,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				| { operation: PromptOperation }
 				| { refused: SendRefusal; unresolved: PromptOperation };
 			db.transaction(() => {
-				const blocked = qUnresolved.get(att!.attachmentId, att!.generation);
+				// The fence is the dispatch identity, not the row: a duplicate
+				// binding of the same agent must not reach the wire around an
+				// unresolved send on its sibling.
+				const blocked =
+					qUnresolved.get(att!.attachmentId, att!.generation) ??
+					qUnresolvedForIdentity.get(
+						input.responsibilityId,
+						att!.target.server,
+						att!.target.session,
+						att!.target.terminalId,
+						att!.target.agentSession,
+						att!.target.kind,
+					);
 				if (blocked !== null) {
 					prepared = {
 						refused: "delivery-uncertain",
@@ -839,11 +880,24 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				}
 				// Two ops prepared before the first claim both validated —
 				// the claim is the second fence: once a sibling is sent or
-				// uncertain, this prepared op can never dispatch.
+				// uncertain, this prepared op can never dispatch. The fence is
+				// the dispatch identity, not the row: a duplicate binding of
+				// the same agent is fenced with its sibling's operations.
 				const op = store.getOperation(operationId)!;
-				if (
-					qUnresolved.get(op.attachmentId, op.attachmentGeneration) !== null
-				) {
+				// validateForSend just refused a missing attachment in this same
+				// transaction — requireAtt's throw is the unreachable-branch alarm.
+				const att = requireAtt(op.attachmentId);
+				const blocked =
+					qUnresolved.get(op.attachmentId, op.attachmentGeneration) ??
+					qUnresolvedForIdentity.get(
+						op.responsibilityId,
+						att.target.server,
+						att.target.session,
+						att.target.terminalId,
+						att.target.agentSession,
+						att.target.kind,
+					);
+				if (blocked !== null) {
 					out = { refused: "delivery-uncertain" };
 					return;
 				}

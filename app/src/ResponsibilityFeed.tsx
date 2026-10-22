@@ -305,20 +305,32 @@ export function ResponsibilityFeed({
 	// refresh (the one a mutation triggered, or a later interval tick)
 	// must not overwrite post-mutation state with its stale snapshot.
 	const seqRef = useRef(0);
+	// Ordinary polls never stack: with sustained latency above the
+	// interval, a new request every tick would make every completed
+	// response stale by seq — the feed would never render at all. The
+	// counter (not a boolean) stays honest when a mutation's refresh
+	// overlaps an in-flight poll.
+	const inflightRef = useRef(0);
 
 	const refresh = useCallback(() => {
 		const seq = ++seqRef.current;
+		inflightRef.current += 1;
+		const settle = () => {
+			inflightRef.current -= 1;
+		};
 		const fetcher =
 			projectId === null
 				? listResponsibilities(token)
 				: listProjectResponsibilities(token, projectId);
 		void fetcher.then(
 			(res) => {
+				settle();
 				if (seq !== seqRef.current) return;
 				setItems(res?.items ?? []);
 				setError(null);
 			},
 			(err) => {
+				settle();
 				if (seq !== seqRef.current) return;
 				setError(err instanceof Error ? err.message : String(err));
 			},
@@ -327,7 +339,9 @@ export function ResponsibilityFeed({
 
 	useEffect(() => {
 		refresh();
-		const t = setInterval(refresh, pollMs);
+		const t = setInterval(() => {
+			if (inflightRef.current === 0) refresh();
+		}, pollMs);
 		return () => clearInterval(t);
 	}, [refresh, pollMs]);
 

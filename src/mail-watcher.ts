@@ -4,6 +4,8 @@
 // draft expiry is the approval gate's job.
 
 import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
+import type { DevelopmentInput } from "./wake-store.ts";
+import type { ResponsibilityStore } from "./responsibilities.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 
@@ -24,9 +26,11 @@ export interface MailWatcherDeps {
 	 *  owns the fire and the checkpoint policy. Async: the injection
 	 *  check scores the event before the turn lands. */
 	fire(program: Program, hits: MailHit[], checkpoint: string, now: Date): Promise<void>;
-	/** Direct sends into the pinned conversation (built in tg/): outage
-	 *  notices. Throwing retries next tick. */
-	notify(address: { chatId: number; threadId: number | null }, text: string): Promise<void>;
+	/** The destination router for outage notices: a chat-pinned program
+	 *  notices its Telegram conversation; a responsibility-bound one
+	 *  (chat_id 0 is not an address) notices its coordination lane.
+	 *  Throwing retries next tick. */
+	notify(program: Program, text: string): Promise<void>;
 	/** Test door for the poll clock. */
 	now?(): Date;
 }
@@ -38,6 +42,58 @@ export interface MailWatcher {
 	 *  shutdown can join it: a scan parked in a Gmail call must not come
 	 *  back after the drain and fire into a closed runtime. */
 	stop(): Promise<void>;
+}
+
+export interface MailNoticeRouting {
+	/** The responsibility seam — a responsibility-bound program's lane. */
+	resps: Pick<ResponsibilityStore, "get">;
+	/** The durable development sink — the wake dispatcher's record. */
+	record(input: DevelopmentInput): void;
+	/** The Telegram send for chat-pinned programs. */
+	sendTelegram(
+		address: { chatId: number; threadId: number | null },
+		text: string,
+	): Promise<void>;
+}
+
+/** Where an outage notice goes. A chat-pinned program notices its
+ *  Telegram conversation; a responsibility-bound one has no address
+ *  (chat_id 0 is the destination marker) — its notice is a durable
+ *  development on the work's coordination lane, delivered through the
+ *  wake dispatcher like any other event. */
+export function makeMailNoticeRouter(
+	routing: MailNoticeRouting,
+): (program: Program, text: string) => Promise<void> {
+	return async (program, text) => {
+		if (program.responsibilityId !== null) {
+			const resp = routing.resps.get(program.responsibilityId);
+			if (resp === null) {
+				// The program outlived its responsibility — nobody to tell.
+				log.warn("mail outage notice skipped — responsibility gone", {
+					program: program.id,
+					responsibility: program.responsibilityId,
+				});
+				return;
+			}
+			// Per-episode key: the watcher re-warns on a changed error, and
+			// a recovery + re-failure must notify again, not dedupe onto an
+			// old event.
+			routing.record({
+				sourceKey: `mail-outage:${program.id}:${crypto.randomUUID()}`,
+				conversationId: resp.coordinationConversationId,
+				kind: "mail-outage",
+				text,
+				facts: { program: program.id, name: program.name },
+				origin: "mail-watcher",
+				responsibilityId: resp.responsibilityId,
+			});
+			return;
+		}
+		await routing.sendTelegram(
+			{ chatId: program.chatId, threadId: program.threadId },
+			text,
+		);
+	};
 }
 
 const TICK_MS = 5 * 60_000;
@@ -239,7 +295,7 @@ async function failed(
 	});
 	try {
 		await deps.notify(
-			{ chatId: program.chatId, threadId: program.threadId },
+			program,
 			`⚠️ mail check for "${program.name}" is failing (${message.slice(0, 150)}) — new matching mail won't wake it until this clears.`,
 		);
 	} catch (notifyErr) {

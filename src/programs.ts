@@ -15,10 +15,19 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
+/** The destination union's other arm — the project responsibility this
+ *  program checks in on. Exactly one of a real chat_id or a
+ *  responsibility_id is set; create validates it. */
+export type ProgramKind = "custom" | "followup";
+
 export interface Program {
 	id: number;
 	name: string;
 	charter: string;
+	/** The durable identity of service-owned rows: the follow-up
+	 *  check-in is kind "followup", everything the tool/operator mints
+	 *  is "custom". Not patchable — it is what recovery matches on. */
+	kind: ProgramKind;
 	cron: string | null;
 	/** null preserves fire-on-wake behavior. */
 	maxLatenessMinutes: number | null;
@@ -65,6 +74,8 @@ export interface ProgramAddress {
 export interface CreateProgram {
 	name: string;
 	charter: string;
+	/** Only the responsibility service mints non-custom rows. */
+	kind?: ProgramKind;
 	cron?: string | null;
 	maxLatenessMinutes?: number | null;
 	hookHash?: string | null;
@@ -272,6 +283,7 @@ const programSchema = z.object({
 	id: z.number(),
 	name: z.string(),
 	charter: z.string(),
+	kind: z.enum(["custom", "followup"]),
 	cron: z.string().nullable(),
 	max_lateness_minutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
 	hook_hash: z.string().nullable(),
@@ -313,6 +325,7 @@ function rowToProgram(row: unknown): Program {
 		id: parsed.id,
 		name: parsed.name,
 		charter: parsed.charter,
+		kind: parsed.kind,
 		cron: parsed.cron,
 		// Rows from before the ≥1 floor may hold 0 — a grace smaller
 		// than the 30s tick can never fire, so 0 reads as 1.
@@ -352,6 +365,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			charter TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'custom',
 			cron TEXT,
 			max_lateness_minutes INTEGER,
 			hook_hash TEXT,
@@ -385,6 +399,12 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		if (!progCols.has("responsibility_id")) {
 			db.exec("ALTER TABLE programs ADD COLUMN responsibility_id TEXT");
 		}
+		if (!progCols.has("kind")) {
+			// The follow-up's durable identity postdates the rows it was
+			// minting: existing rows read custom, and recovery also matches
+			// the exact legacy name convention.
+			db.exec("ALTER TABLE programs ADD COLUMN kind TEXT NOT NULL DEFAULT 'custom'");
+		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 			.get();
@@ -410,8 +430,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, responsibility_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, kind, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, responsibility_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
 		"UPDATE programs SET name = ?, charter = ?, cron = ?, max_lateness_minutes = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
@@ -499,6 +519,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			{
 				name,
 				charter,
+				kind = "custom",
 				cron = null,
 				maxLatenessMinutes = null,
 				hookHash = null,
@@ -522,6 +543,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			const res = qInsert.run(
 				name,
 				charter,
+				kind,
 				cron,
 				maxLatenessMinutes,
 				hookHash,

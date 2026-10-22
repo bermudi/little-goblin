@@ -43,7 +43,7 @@ import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { openOutbox } from "./mail-outbox.ts";
-import { startMailWatcher } from "./mail-watcher.ts";
+import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
@@ -733,7 +733,11 @@ async function boot() {
 		programs,
 		reader: mailPoller,
 		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
-		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
+		notify: makeMailNoticeRouter({
+			resps: responsibilities,
+			record: (input) => wakeDispatcher.record(input),
+			sendTelegram: (address, text) => sendMailNotice(tg.bot.api, address, text),
+		}),
 	});
 
 	return {

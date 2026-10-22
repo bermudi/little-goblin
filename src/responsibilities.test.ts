@@ -537,6 +537,119 @@ describe("unresolved delivery fence", () => {
 		expect(r.resps.getOperation(b.operation.operationId)!.state).toBe("prepared");
 		r.store.close();
 	});
+
+	test("a duplicate binding of one dispatch identity is refused at attach", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+		});
+		r.resps.attach({ responsibilityId: responsibility.responsibilityId, target: target(), baseline: {} });
+		// Same agent, second row — by pane or by name, the identity is
+		// the same destination. A detached sibling frees the identity.
+		expect(() =>
+			r.resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: target({ agentName: "renamed-worker" }),
+				baseline: {},
+			}),
+		).toThrow(/already binds/);
+		const det = r.resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: target({ terminalId: "term-elsewhere", agentSession: "sess-other" }),
+			baseline: {},
+		});
+		r.resps.detach(det.attachmentId);
+		const again = r.resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: target({ terminalId: "term-elsewhere", agentSession: "sess-other" }),
+			baseline: {},
+		});
+		expect(again.attachmentId).not.toBe(det.attachmentId);
+		r.store.close();
+	});
+
+	test("an unresolved send on one binding fences prepare and claim through a duplicate", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+		});
+		// Two attachments, same dispatch identity, different rows. The
+		// attach-time duplicate refusal is newer than the data the fence
+		// must cover, so the sibling row is staged the way pre-existing
+		// state would carry it.
+		const a = r.resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: target(),
+			baseline: {},
+		});
+		r.store.db
+			.query(
+				"INSERT INTO attachments (responsibility_id, generation, server, session, agent_name, pane_id, terminal_id, agent_session, kind, cwd, baseline_json, health, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'attached', ?)",
+			)
+			.run(
+				responsibility.responsibilityId,
+				"local",
+				"goblin-probe",
+				"worker-1-b",
+				"pane-via-name",
+				"term-9",
+				"sess-abc",
+				"pi",
+				"/w",
+				new Date().toISOString(),
+			);
+		const b = r.resps.attachmentsFor(responsibility.responsibilityId)[1]!;
+		// Both prepared while nothing is unresolved — the state two
+		// duplicate bindings sit in before either sends.
+		const aOp = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: a.attachmentId,
+			brief: "first",
+		});
+		const bOp = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: b.attachmentId,
+			brief: "twin",
+		});
+		if (!("operation" in aOp) || !("operation" in bOp))
+			throw new Error("both prepare — nothing unresolved yet");
+		r.resps.claimForSend(aOp.operation.operationId);
+		r.resps.transitionOperation(aOp.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		// Prepare via the duplicate row is the bypass the fence exists
+		// for: same agent, untouched attachment-level state.
+		const viaB = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: b.attachmentId,
+			brief: "bypass",
+		});
+		if (!("refused" in viaB)) throw new Error("expected refusal via the duplicate binding");
+		expect(viaB.refused).toBe("delivery-uncertain");
+		expect(viaB.unresolved!.operationId).toBe(aOp.operation.operationId);
+		// And the same holds at claim: the twin op prepared in the clean
+		// window must die at the fence, not dispatch to the same agent.
+		expect(r.resps.claimForSend(bOp.operation.operationId)).toEqual({
+			refused: "delivery-uncertain",
+		});
+		expect(r.resps.getOperation(bOp.operation.operationId)!.state).toBe("prepared");
+		// Reconciliation is still the documented escape, on either row.
+		r.resps.reconcileOperation(
+			aOp.operation.operationId,
+			"not_delivered",
+			"operator inspected the pane — nothing arrived",
+		);
+		const unblocked = r.resps.claimForSend(bOp.operation.operationId);
+		expect("operation" in unblocked).toBe(true);
+		r.store.close();
+	});
 });
 
 describe("operation reconciliation", () => {

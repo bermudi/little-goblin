@@ -237,6 +237,18 @@ describe("app responsibilities", () => {
 			const body = (await rebound.json()) as { generation: number };
 			expect(body.generation).toBe(att.generation + 1);
 			expect(rig.resps.getAttachment(att.attachmentId)!.target.agentSession).toBe("sess-NEW");
+			// The live snapshot is the new generation's observation cursor —
+			// a null here would make the observer adopt its next poll as
+			// baseline and developments in between would be lost.
+			expect(rig.resps.getAttachment(att.attachmentId)!.cursor).toMatchObject({
+				seq: 9,
+				completionSeq: 2,
+				status: "idle",
+				agentSession: "sess-NEW",
+				terminalId: "term-9",
+				missing: false,
+				epoch: 0,
+			});
 		} finally {
 			http.stop();
 		}

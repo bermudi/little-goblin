@@ -157,6 +157,17 @@ export interface RuntimeDeps {
 			status: "fenced" | "completed" | "error",
 			delivery: "delivered" | "undelivered" | "failed",
 		): void;
+		/** The attempt died before `begin` could link its members — no run
+		 *  row exists for reconcile to read, so the attempt's terminal
+		 *  outcome is otherwise invisible to ownership. Fired on every
+		 *  pre-run terminal path (including an overflow that will NOT
+		 *  resume — a resuming attempt's fresh run links normally). Hooks
+		 *  must not throw, like the rest. */
+		preRunFailure?(event: {
+			conversationId: string;
+			memberMessageIds: string[];
+			error: string;
+		}): void;
 	};
 }
 
@@ -870,6 +881,19 @@ export class Runtime {
 		// and replays its recorded results instead of re-executing.
 		const sourceRunId = recovery?.resumedFrom;
 		let runId: string | null = null;
+		// The ownership window: between admission and the begin hook, the
+		// attempt's members are unlinked — a terminal failure here is
+		// invisible to the dispatcher's reconcile (no run row to read),
+		// so it must be announced instead of re-admitting forever.
+		let ownershipBegun = false;
+		const announcePreRunFailure = (err: unknown) => {
+			if (ownershipBegun) return;
+			this.deps.runOwnership?.preRunFailure?.({
+				conversationId: convId,
+				memberMessageIds: turns.map((t) => t.message.id),
+				error: err instanceof Error ? err.message : String(err),
+			});
+		};
 		// A thrown journal write anywhere in the fence lands here — the
 		// catch below aborts the turn instead of letting the SDK report a
 		// tool error the model could retry.
@@ -968,6 +992,7 @@ export class Runtime {
 						? { inheritFrom: [recovery.predecessorRun] }
 						: {}),
 				});
+				ownershipBegun = true;
 			}
 			// The fence's evidence reads the fresh row after inheritance:
 			// it already carries the source's decisions and every
@@ -1140,6 +1165,7 @@ export class Runtime {
 					conversation: convId,
 					epoch,
 				});
+				announcePreRunFailure(fault);
 				stampRun("error", "failed");
 				await notifyAll({
 					kind: "error",
@@ -1151,6 +1177,7 @@ export class Runtime {
 				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
+				announcePreRunFailure(err);
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1180,9 +1207,12 @@ export class Runtime {
 					// output was withheld for recovery; the resume opens a
 					// fresh row that inherits this row's settled calls, so a
 					// crash of the continuation still resumes with them.
+					// No pre-run announcement: the fresh run links its members
+					// through its own begin.
 					stampRun("error", "undelivered");
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
+				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
 					outcome.kind === "fenced" ? "undelivered" : "failed",
@@ -1206,6 +1236,7 @@ export class Runtime {
 					modelCalls: state.snapshot().modelCalls,
 					transient: isTransientTurnFailure(err),
 				};
+				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);
 			}

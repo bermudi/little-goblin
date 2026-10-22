@@ -333,14 +333,17 @@ delivery edges:
   retrying the durable closure every pump. The turn always completes;
   only the resubmission is impossible.
 - **The unresolved-delivery fence binds to dispatch identity, not row
-  identity.** Prepare/claim fence per (attachment, generation), and
-  reattach refuses a same-identity bump — but detach→attach minted a
-  fresh id past both. A fresh `attach` now refuses (ReconciliationConflict
-  naming the op) when any sent/uncertain operation on the same
-  responsibility targets the same dispatch identity — server, session,
-  terminal, harness session, kind. A genuinely changed identity remains
-  a deliberate adoption, same as reattach's ruling; the fence never
-  reaches across responsibilities.
+  identity.** Prepare, claim, and fresh `attach` all fence per dispatch
+  identity — server, session, terminal, harness session, kind, within
+  one responsibility — never per (attachment, generation) alone, which
+  a duplicate binding of the same agent could have walked around:
+  after A's send went `uncertain`, a prepare or claim via B would have
+  reached the same agent without reconciliation. `attach` additionally
+  refuses a second live binding of one identity outright (plain error;
+  detach it or reattach), so the duplicate state stops being minted;
+  the prepare/claim fence still covers rows that predate the refusal.
+  A genuinely changed identity remains a deliberate adoption, same as
+  reattach's ruling; the fence never reaches across responsibilities.
 - **Arm truth is the linked program.** The persisted `armed` flags are
   a cache `ensureFollowup` writes; the `program` tool can disable or
   delete the follow-up behind the responsibility's back. Every armed
@@ -351,7 +354,11 @@ delivery edges:
   refresh failure alongside loaded rows renders a stale-state banner
   instead of standing mute, and each response carries the refresh's
   sequence — an older poll resolving after a mutation's refresh is
-  dropped, never restored to obsolete state.
+  dropped, never restored to obsolete state. Ordinary polls also
+  serialize (2026-10-22): the interval skips while a fetch is in
+  flight, so sustained latency above the interval degrades the cadence
+  instead of stacking requests whose every response arrives stale by
+  sequence and gets discarded — the feed would never have rendered.
 
 ## Pinning (ruling 2026-10-10)
 

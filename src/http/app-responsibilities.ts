@@ -10,6 +10,7 @@ import { z } from "zod";
 import { log } from "../log.ts";
 import type { OperatorAgent } from "../herdr.ts";
 import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.ts";
+import { cursorFromAgent } from "../responsibility-observer.ts";
 import {
 	ReconciliationConflict,
 	understandingSchema,
@@ -167,7 +168,10 @@ export async function handleResponsibilitiesRoute(
 		}
 		// Reattach binds the CURRENT occupant — a same-pane replacement
 		// gets a new generation with its new agent_session; never the
-		// old binding revived.
+		// old binding revived. The live snapshot is also the new
+		// generation's observation cursor: without it the observer
+		// silently adopts its next poll as baseline and developments in
+		// between are lost.
 		const agents = await respsDeps.listAgents();
 		// A stored pane is the identity selector; its former name may
 		// now belong to another agent. Name lookup is legacy-only.
@@ -221,7 +225,7 @@ export async function handleResponsibilitiesRoute(
 		};
 		let rebound: Attachment;
 		try {
-			rebound = respsDeps.resps.reattach(attachmentId, target, live);
+			rebound = respsDeps.resps.reattach(attachmentId, target, live, cursorFromAgent(live));
 		} catch (err) {
 			if (err instanceof ReconciliationConflict) {
 				log.warn("app attachment reattach refused — unresolved delivery", {

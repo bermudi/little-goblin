@@ -163,10 +163,11 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 		root?.render(<ResponsibilityFeed token={null} projectId={null} pollMs={5} />),
 	);
 	expect(container.querySelector(".resp-status")?.textContent).toBe("active");
-	// Interval polls pile up in flight, capturing the still-active state.
+	// Gated slow reads hold the one ordinary poll in flight; the interval
+	// must not stack more on top of it.
 	gating = true;
 	await act(async () => sleep(40));
-	expect(held.length).toBeGreaterThan(0);
+	expect(held.length).toBe(1);
 	// The operator pauses: the mutation succeeds and its refresh is the
 	// newest read in flight.
 	await act(async () => button("Pause").click());
@@ -213,6 +214,42 @@ test("a truncated history names the older events still on the record", async () 
 	expect(container.querySelector(".resp-events-older")?.textContent).toContain(
 		"3 older events on the record",
 	);
+});
+
+test("a poll slower than the interval never stacks requests and still lands", async () => {
+	const item = feed(false, false);
+	let reads = 0;
+	let release!: (r: Response) => void;
+	globalThis.fetch = Object.assign(
+		(input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") return Promise.resolve(Response.json({ ok: true }));
+			reads += 1;
+			if (reads === 1) {
+				// The first read is slower than several poll intervals.
+				return new Promise<Response>((resolve) => {
+					release = resolve;
+				});
+			}
+			return Promise.resolve(Response.json({ items: [item] }));
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(<ResponsibilityFeed token={null} projectId={null} pollMs={5} />),
+	);
+	// Several intervals pass while the first read is in flight — each
+	// one must skip, not stack another request that would only be
+	// stale-discarded on arrival.
+	await act(async () => sleep(40));
+	expect(reads).toBe(1);
+	await act(async () => release(Response.json({ items: [item] })));
+	// The slow response is the newest read — it must render, not be
+	// discarded by a newer seq a stacked poll would have taken.
+	expect(container.querySelector(".resp-item")).not.toBeNull();
+	// Polling resumes after the slow read settles.
+	await act(async () => sleep(15));
+	expect(reads).toBeGreaterThan(1);
 });
 
 for (const [label, action] of [

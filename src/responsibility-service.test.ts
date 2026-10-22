@@ -478,7 +478,11 @@ describe("correct", () => {
 			.all();
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.kind).toBe("operator-correction");
-		expect(rows[0]!.text).toBe("watch the flaky test");
+		// The trigger text names the target — two responsibilities share
+		// one coordination conversation, and the model sees only text.
+		expect(rows[0]!.text).toBe(
+			`Operator correction on responsibility ${resp.responsibilityId} — it is now revision ${resp.revision + 1}.\nwatch the flaky test`,
+		);
 		const facts = JSON.parse(rows[0]!.facts_json) as {
 			responsibilityId: string;
 			revision: number;
@@ -506,9 +510,11 @@ describe("correct", () => {
 			)
 			.all();
 		expect(texts).toHaveLength(2);
-		expect(texts[0]!.text).toBe("comment");
+		expect(texts[0]!.text).toBe(
+			`Operator correction on responsibility ${resp.responsibilityId} — it is now revision ${resp.revision + 1}.\ncomment`,
+		);
 		expect(texts[1]!.text).toBe(
-			`Responsibility understanding corrected:\n${JSON.stringify(r2.understanding)}`,
+			`Operator correction on responsibility ${resp.responsibilityId} — it is now revision ${resp.revision + 2}.\nUpdated understanding:\n${JSON.stringify(r2.understanding)}`,
 		);
 		r.store.close();
 	});
@@ -1044,6 +1050,34 @@ describe("ensureFollowup without a link", () => {
 		expect(r.programs.get(twin.id)!.enabled).toBe(false);
 		expect(r.programs.get(orphan.id)!.enabled).toBe(true);
 		expect(r.resps.get(resp.responsibilityId)!.followupProgramId).toBe(String(orphan.id));
+		r.store.close();
+	});
+
+	test("an independent responsibility-bound program is neither adopted nor silenced by recovery", () => {
+		const r = rig();
+		const resp = acceptRig2(r);
+		// A mail watch shares the responsibility destination — a legal,
+		// independent program, not a crashed follow-up twin.
+		const mail = r.programs.create({
+			name: "bank mail watch",
+			charter: "flag bank mail",
+			mailFilter: "from:bank",
+			responsibilityId: resp.responsibilityId,
+		});
+		// The link dangles (the create committed, the link write never
+		// landed): recovery adopts the followup-kind orphan only.
+		r.resps.setFollowup(resp.responsibilityId, null);
+		const orphan = r.programs
+			.forResponsibility(resp.responsibilityId)
+			.find((p) => p.kind === "followup")!;
+		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(program.id).toBe(orphan.id);
+		expect(program.kind).toBe("followup");
+		// The mail program keeps its binding, name, and enabled state.
+		const after = r.programs.get(mail.id)!;
+		expect(after.enabled).toBe(true);
+		expect(after.mailFilter).toBe("from:bank");
+		expect(after.kind).toBe("custom");
 		r.store.close();
 	});
 });

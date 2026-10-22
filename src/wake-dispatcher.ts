@@ -344,6 +344,23 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			members(runId, messageIds) {
 				guard("run members", () => linkMessages(runId, messageIds));
 			},
+			preRunFailure(e) {
+				// A terminal failure before the run row began — makeTools, the
+				// model view, a journal write — never links its members, so
+				// reconcile would read the claimed wake as unowned and
+				// re-admit the trigger every pump. The same fail-closed write
+				// as a lost ownership link applies: the trigger is durable
+				// history, and its disposition is terminal.
+				guard("pre-run failure", () => {
+					for (const w of wakes.claimedForMessages(e.memberMessageIds)) {
+						if (w.runId !== null) continue; // linked — reconcile owns it
+						wakes.failUnlinked(
+							w.wakeId,
+							`turn failed before its run started: ${e.error}`,
+						);
+					}
+				});
+			},
 			end(runId, status, delivery) {
 				guard("run end", () => {
 					log.debug("wake run ended", { run: runId, status, delivery });

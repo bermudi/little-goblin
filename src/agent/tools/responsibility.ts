@@ -20,6 +20,7 @@ import type {
 	ResponsibilityStore,
 } from "../../responsibilities.ts";
 import { ReconciliationConflict, understandingSchema } from "../../responsibilities.ts";
+import { cursorFromAgent } from "../../responsibility-observer.ts";
 import type { ManagedSend, ResponsibilityService } from "../../responsibility-service.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -207,15 +208,9 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						completionSeq: a.completion_seq,
 						revision: a.revision,
 					},
-					cursor: {
-						seq: a.state_change_seq,
-						completionSeq: a.completion_seq,
-						status: a.agent_status,
-						agentSession: a.agent_session,
-						terminalId: a.terminal_id,
-						name: a.name ?? null,
-						missing: false,
-					},
+					// The bind seeds the observation reference — the observer
+					// diffs against this, never against whatever it first sees.
+					cursor: cursorFromAgent(a),
 				};
 			};
 

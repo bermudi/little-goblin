@@ -212,9 +212,14 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 					sourceKey: `correction:${responsibilityId}:${randomUUID()}`,
 					conversationId: current.coordinationConversationId,
 					kind: "operator-correction",
+					// The trigger text is all the model sees: it must name the
+					// responsibility and revision it applies to — two
+					// responsibilities share one coordination conversation, and
+					// an unattributed correction text is ambiguous to it.
 					text:
-						input.text ??
-						`Responsibility understanding corrected:\n${JSON.stringify(revised.understanding)}`,
+						input.text === undefined
+							? `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\nUpdated understanding:\n${JSON.stringify(revised.understanding)}`
+							: `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\n${input.text}`,
 					facts: {
 						responsibilityId,
 						revision: revised.revision,
@@ -301,9 +306,16 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			// a crash or failed link write leaves an enabled, unlinked
 			// program that a plain recreate would twin (both eligible to
 			// fire; disabling the linked one leaves the orphan running).
-			// The responsibility binding is the durable identity: adopt the
-			// oldest orphan and silence any extras.
-			const orphans = programs.forResponsibility(resp.responsibilityId);
+			// The follow-up's durable identity is its kind (plus the exact
+			// name convention rows created before kinds existed carry), NOT
+			// the responsibility binding: independent programs — a mail
+			// watch, a webhook — may legally share the destination and must
+			// never be adopted or silenced as crashed twins.
+			const orphans = programs
+				.forResponsibility(resp.responsibilityId)
+				.filter(
+					(p) => p.kind === "followup" || p.name === `followup:${resp.responsibilityId}`,
+				);
 			if (orphans.length > 0) {
 				const orphan = orphans[0]!;
 				for (const extra of orphans.slice(1)) {
@@ -335,6 +347,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				charter: followupCharter(resp),
 				cron: FOLLOWUP_CRON,
 				responsibilityId: resp.responsibilityId,
+				kind: "followup",
 			});
 			resps.setFollowup(responsibilityId, String(program.id));
 			arm(program);

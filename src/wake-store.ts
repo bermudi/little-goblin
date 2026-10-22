@@ -227,6 +227,9 @@ export function ensureWakeSchema(db: Database): void {
 	db.run(
 		"CREATE INDEX IF NOT EXISTS work_events_resp ON work_events (responsibility_id, event_id DESC)",
 	);
+	// The feed's wake join and record()'s event→wake lookup hit event_id;
+	// the PK leads with wake_id, so both full-scanned wake_events.
+	db.run("CREATE INDEX IF NOT EXISTS wake_events_event ON wake_events (event_id)");
 }
 
 // deleteConversation's wake sweep — joins its transaction, so no

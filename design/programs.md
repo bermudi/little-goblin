@@ -111,13 +111,19 @@ Rulings:
   occurrence — the occurrence that fired is the one that delivers, and
   the next occurrence carries the fresher view. Conversation and kind
   are still identity; drift there fails loudly as before.
-  A follow-up program is create-once per responsibility, and the
-  program row's `responsibility_id` binding — not the responsibility's
-  link column — is the durable identity: a create that committed before
-  its link write (crash, failed write) is adopted by the next
-  `ensureFollowup`, never twinned; surplus twins from repeated crashed
-  creates are disabled and logged. Disabling the linked program can
-  never leave an orphan still firing.
+  A follow-up program is create-once per responsibility. Its durable
+  identity is its `kind` ("followup", service-minted and unpatchable),
+  with the exact `followup:<responsibility_id>` name convention as the
+  fallback for rows created before kinds existed — NOT the
+  `responsibility_id` binding alone: independent programs (a mail
+  watch, a webhook) legally share a responsibility destination, and
+  recovery that matched on the binding adopted the oldest row whatever
+  it was, losing the scheduled check-in to a mail-only program. A
+  create that committed before its link write (crash, failed write) is
+  adopted by the next `ensureFollowup`, never twinned; surplus twins
+  from repeated crashed creates are disabled and logged; independent
+  programs sharing the destination are neither adopted nor silenced.
+  Disabling the linked program can never leave an orphan still firing.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

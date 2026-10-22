@@ -45,6 +45,7 @@ function rig(
 	opts: {
 		model?: LanguageModel;
 		tools?: ToolSet;
+		makeTools?: RuntimeDeps["makeTools"];
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
 		compaction?: NonNullable<RuntimeDeps["compaction"]>;
@@ -61,12 +62,13 @@ function rig(
 		turnJournal: journal,
 		buildStep:
 			opts.buildStep ?? (() => ({ model: opts.model ?? fakeModel(["ok"]), system: "test" })),
-		makeTools: () => opts.tools ?? {},
+		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
 			members: (r, ids) => dispatcher.hooks.members(r, ids),
 			end: (r, s, d) => dispatcher.hooks.end(r, s, d),
+			preRunFailure: (e) => dispatcher.hooks.preRunFailure?.(e),
 		},
 	});
 	dispatcher = makeWakeDispatcher({
@@ -130,6 +132,34 @@ describe("wake dispatcher", () => {
 		// Reopening the store must preserve the cancellation fence.
 		const reopened = openWakeStore(r.store.db);
 		expect(reopened.reconcile(new Date().toISOString(), () => null).toResubmit).toHaveLength(0);
+		expect(script.streamCalls).toHaveLength(0);
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a pre-run failure fails the wake closed — no re-admission loop", async () => {
+		const script = scriptedModel([textParts("must not run")]);
+		// The attempt dies before its run row begins — the window where
+		// reconcile has no run to read and would re-admit every pump.
+		const r = rig({
+			model: script.model,
+			makeTools: () => {
+				throw new Error("project dir vanished");
+			},
+		});
+		const rec = dev(r, "prerun:1");
+		await waitUntil(() => wake(r, rec.wakeId).state === "failed", "pre-run failure failed the wake");
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		expect(wake(r, rec.wakeId).lastError).toContain("project dir vanished");
+		// The trigger landed exactly once and nothing re-admits it.
+		const submissions = texts(r).length;
+		expect(submissions).toBe(1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		r.dispatcher.pump();
+		r.dispatcher.pump();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(texts(r).length).toBe(submissions);
+		expect(wake(r, rec.wakeId).state).toBe("failed");
 		expect(script.streamCalls).toHaveLength(0);
 		await r.runtime.shutdown();
 		r.store.close();

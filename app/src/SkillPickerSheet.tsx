@@ -37,7 +37,6 @@ export function SkillPickerSheet({
 	const [preview, setPreview] = useState<SkillPreviewResponse | null>(null);
 	const [previewing, setPreviewing] = useState(false);
 	const [previewErr, setPreviewErr] = useState<string | null>(null);
-	const [reload, setReload] = useState(0);
 
 	useEffect(() => {
 		let live = true;
@@ -52,7 +51,7 @@ export function SkillPickerSheet({
 		return () => {
 			live = false;
 		};
-	}, [token, reload]);
+	}, [token]);
 
 	const q = query.trim().toLowerCase();
 	const rows = (catalog ?? []).filter(

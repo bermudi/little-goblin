@@ -40,7 +40,16 @@ export function resolveSkillRef(
 	// <cache>/<digest>/<name>/SKILL.md — descriptor one level up.
 	const skillDir = dirname(ref.path);
 	const digestDir = dirname(skillDir);
-	const descriptor: CachedSkillDescriptor | null = readDescriptor(digestDir);
+	let descriptor: CachedSkillDescriptor | null;
+	try {
+		descriptor = readDescriptor(digestDir);
+	} catch (err) {
+		// Corrupt is not absent: the fetch path refuses a broken cache,
+		// but this is the view path, and the part replays with history —
+		// the missing-body ruling wins and the turn never dies for it.
+		log.warn("temp skill body unavailable — descriptor unreadable", err, { path: ref.path });
+		return { name: "unknown", body: null };
+	}
 	if (descriptor === null) {
 		log.warn("temp skill body unavailable — no readable descriptor", { path: ref.path });
 		return { name: "unknown", body: null };

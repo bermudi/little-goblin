@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage, UIMessage } from "ai";
@@ -387,5 +387,29 @@ describe("resolveSkillRef (real fs)", () => {
 		const advisory = resolveSkillRef(ref);
 		expect(advisory.body).not.toBeNull();
 		expect(advisory.body).toContain("injection check unavailable");
+	});
+
+	test("a corrupt descriptor degrades like a missing one — the turn survives", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref3-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const digestDir = join(home, "state", "skillcache", "d1");
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nT");
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const ref = {
+			url: "https://github.com/o/r/tree/main/demo",
+			path: join(digestDir, "demo", "SKILL.md"),
+		};
+		// Both corrupt shapes throw inside readDescriptor — malformed JSON
+		// and a schema violation. The view path degrades either way, for
+		// owning (body) and historical (marker-only) builds alike; the
+		// part replays with history, so a throw here would brick the
+		// conversation's every later turn.
+		writeFileSync(join(digestDir, "skill.json"), "{not json");
+		expect(resolveSkillRef(ref)).toEqual({ name: "unknown", body: null });
+		expect(resolveSkillRef(ref, false)).toEqual({ name: "unknown", body: null });
+		writeFileSync(join(digestDir, "skill.json"), JSON.stringify({ nope: true }));
+		expect(resolveSkillRef(ref)).toEqual({ name: "unknown", body: null });
 	});
 });

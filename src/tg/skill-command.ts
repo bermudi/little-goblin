@@ -65,7 +65,6 @@ interface PendingTemp {
 	conversationId: string;
 	chatId: number;
 	threadId: number | null;
-	messageId: number;
 	ref: SkillRef;
 	name: string;
 	text: string;
@@ -283,7 +282,6 @@ async function previewTempSkill(
 		conversationId: target.id,
 		chatId: target.chatId,
 		threadId: target.threadId,
-		messageId: 0, // stamped by the send below
 		ref: { url: fetched.descriptor.sourceUrl, path: fetched.path },
 		name: fetched.descriptor.name,
 		text: heldText,
@@ -299,12 +297,9 @@ async function previewTempSkill(
 			],
 		],
 	};
-	const flag =
-		verdict.status === "malicious" || verdict.status === "suspicious"
-			? "⚠️ "
-			: verdict.status === "unavailable"
-				? ""
-				: "";
+	// Matches the app card's verdict labels: only suspicious/malicious
+	// carry the flag; clean and unavailable read plainly.
+	const flag = verdict.status === "malicious" || verdict.status === "suspicious" ? "⚠️ " : "";
 	const sizes = `SKILL.md ${fmtBytes(fetched.bodyBytes)} · ${fetched.fileCount} files · ${fmtBytes(fetched.dirBytes)}`;
 	const held = heldText === "" ? "" : `\nheld text: ${heldText.slice(0, 500)}`;
 	await reply(

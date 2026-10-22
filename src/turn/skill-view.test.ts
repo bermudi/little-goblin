@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage, UIMessage } from "ai";
-import { SKILL_PART } from "../skill-part.ts";
+import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import {
 	buildModelView,
 	convertSteeredMessage,
@@ -40,6 +40,36 @@ const texts = (view: ModelMessage[]): string[] =>
 	);
 
 const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+
+describe("skill part data schema", () => {
+	test("catalog names follow the spec rule — 64 chars accepted, longer refused", () => {
+		const ok = (name: string) => skillPartDataSchema.safeParse({ name }).success;
+		expect(ok("a".repeat(64))).toBe(true);
+		expect(ok("a".repeat(65))).toBe(false);
+		expect(ok("a".repeat(256))).toBe(false);
+	});
+
+	test("an over-long stored name degrades to the placeholder — resolver untouched", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => {
+				throw new Error("resolver must not see malformed data");
+			},
+		};
+		const view = await buildModelView(ctx, {
+			entries: entries([skillMsg("s1", { name: "a".repeat(65) })]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		expect(texts(view).join("\n")).toContain("skill invocation could not be rendered");
+	});
+});
 
 describe("skill invocation in the model view", () => {
 	test("marker in every view; body only for the owning seq", async () => {

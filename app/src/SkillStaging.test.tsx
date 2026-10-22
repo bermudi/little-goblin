@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
 import { Composer, MessageParts, type StagedSkill, type StagedUpload } from "./ChatView.tsx";
+import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 
 const jsonResponse = (body: unknown, status = 200): Response =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -226,5 +227,85 @@ describe("Composer skill staging", () => {
 		});
 		expect(sent).toHaveLength(1);
 		expect(sent[0]!.map((p) => p.type)).toEqual(["data-skill"]);
+	});
+
+	test("a staged skill alone enables Send — a click emits the part and clears the chip", async () => {
+		root = createRoot(container);
+		act(() => {
+			root?.render(<ComposerHarness />);
+		});
+		await act(async () => {
+			buttonByLabel("Invoke a skill")!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+		const row = Array.from(container.querySelectorAll("button")).find((b) =>
+			b.textContent?.includes("herdr"),
+		)!;
+		await act(async () => {
+			row.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		expect(container.textContent).toContain("Skill · herdr");
+		const sendBtn = container.querySelector<HTMLButtonElement>(
+			'button[aria-label="Send"]',
+		);
+		expect(sendBtn).not.toBeNull();
+		expect(sendBtn!.disabled).toBe(false);
+		await act(async () => {
+			sendBtn!.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		expect(sent).toHaveLength(1);
+		expect(sent[0]!.map((p) => p.type)).toEqual(["data-skill"]);
+		expect((sent[0]![0] as { data: unknown }).data).toEqual({ name: "herdr" });
+		expect(container.textContent).not.toContain("Skill · herdr");
+	});
+
+	test("Enter in the picker filter does not submit the enclosing composer form", async () => {
+		let submits = 0;
+		root = createRoot(container);
+		act(() => {
+			root?.render(
+				// The sheet lives inside the composer's <form> — a bare Enter
+				// on the filter input is an implicit form submission.
+				<form
+					onSubmit={(e) => {
+						e.preventDefault();
+						submits++;
+					}}
+				>
+					<SkillPickerSheet token={null} onClose={() => {}} onStage={() => {}} />
+				</form>,
+			);
+		});
+		await act(async () => {});
+		const filter = container.querySelector('input[aria-label="Filter skills"]');
+		expect(filter).not.toBeNull();
+		// A typed filter still narrows the rows while the sheet is open.
+		// Native setter + input + keyup — the same sequence the composer
+		// tests drive React's controlled inputs with.
+		await act(async () => {
+			const el = filter as HTMLElement;
+			el.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				el,
+				"herd",
+			);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "d" }) as unknown as Event,
+			);
+		});
+		expect(container.textContent).toContain("herdr");
+		expect(container.textContent).not.toContain("shh");
+		const enter = new win.KeyboardEvent("keydown", {
+			key: "Enter",
+			bubbles: true,
+			cancelable: true,
+		});
+		await act(async () => {
+			filter!.dispatchEvent(enter as unknown as Event);
+		});
+		expect(enter.defaultPrevented).toBe(true);
+		expect(submits).toBe(0);
+		expect(sent).toEqual([]);
 	});
 });

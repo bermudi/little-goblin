@@ -24,7 +24,7 @@ export function isCachedSkillPath(path: string): boolean {
 }
 
 export const skillPartDataSchema = z.union([
-	z.object({ name: z.string().regex(SKILL_NAME_RE) }),
+	z.object({ name: z.string().regex(SKILL_NAME_RE).max(64) }),
 	z.object({
 		url: z.string().url().startsWith("https://"),
 		path: z.string().min(1).refine(isCachedSkillPath),
@@ -71,10 +71,6 @@ export interface CachedSkillDescriptor {
 		injection: number | null;
 		severity: number | null;
 	};
-}
-
-export function descriptorPath(dir: string): string {
-	return `${dir}/skill.json`;
 }
 
 // Catalog variant: a two-line header keeps the injected body labeled.

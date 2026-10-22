@@ -1821,7 +1821,8 @@ export function Composer({
 						recording ||
 						(draft.trim() === "" &&
 							staged.every((e) => e.failed === true || e.uploading === true) &&
-							stagedNotes.length === 0)
+							stagedNotes.length === 0 &&
+							stagedSkills.length === 0)
 					}
 				>
 					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">

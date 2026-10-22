@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
 import { type Config, loadConfig, memoryConfigSchema } from "../config.ts";
@@ -296,8 +304,99 @@ describe("app operator surface", () => {
 			expect((await call("/api/app/settings", {}, "wrong")).status).toBe(401);
 			expect((await call("/api/app/settings")).status).toBe(503);
 			expect((await call("/api/app/memory/status")).status).toBe(503);
+			// The preview tail is mounted: 503 (unwired) proves routing, a
+			// missing tail would 404.
+			const preview = await call("/api/app/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			});
+			expect(preview.status).toBe(503);
 		} finally {
 			http.stop();
+		}
+	});
+
+	test("skills/preview through the app door: JSON gate before the seam, then the real fetch", async () => {
+		// Same canonical tarball fixture operator.routes.test.ts builds.
+		const src = mkdtempSync(join(tmpdir(), "app-preview-src-"));
+		mkdirSync(join(src, "r-main/demo"), { recursive: true });
+		writeFileSync(
+			join(src, "r-main/demo/SKILL.md"),
+			"---\nname: demo\ndescription: the demo\n---\nbody",
+		);
+		const out = mkdtempSync(join(tmpdir(), "app-preview-ball-"));
+		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
+		await proc.exited;
+		const ball = await Bun.file(join(out, "b.tgz")).bytes();
+
+		let fetches = 0;
+		let scored = 0;
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				skillFetch: {
+					gate: {
+						decide: (async () => {
+							scored++;
+							return {
+								answers: { injection: 0.05, severity: 0.1 },
+								tokens: { input: 1, output: 1 },
+								latencyMs: 1,
+								model: "gate",
+							};
+						}) as never,
+					},
+					fetchImpl: (async () => {
+						fetches++;
+						return new Response(ball as never);
+					}) as unknown as typeof fetch,
+				},
+			},
+		});
+		try {
+			const unauthenticated = await call(
+				"/api/app/skills/preview",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+				},
+				null,
+			);
+			expect(unauthenticated.status).toBe(401);
+
+			// The content-type gate fires before the handler — no fetch,
+			// no scoring, no cache write.
+			const plain = await call("/api/app/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "text/plain" },
+				body: "https://github.com/o/r/tree/main/demo",
+			});
+			expect(plain.status).toBe(415);
+			expect(await plain.json()).toEqual({ error: "expected application/json" });
+			expect(fetches).toBe(0);
+			expect(scored).toBe(0);
+
+			const ok = await call("/api/app/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			});
+			expect(ok.status).toBe(200);
+			const body = (await ok.json()) as {
+				name: string;
+				verdict: { status: string };
+				cached: boolean;
+			};
+			expect(body.name).toBe("demo");
+			expect(body.verdict.status).toBe("clean");
+			expect(body.cached).toBe(false);
+			expect(scored).toBe(1);
+		} finally {
+			http.stop();
+			rmSync(src, { recursive: true, force: true });
+			rmSync(out, { recursive: true, force: true });
 		}
 	});
 

@@ -7,13 +7,7 @@
 import { useEffect, useState } from "react";
 import type { SkillPreviewResponse, SkillsResponse } from "../../src/http/operator-wire.ts";
 import { listSkills, previewSkill } from "./api.ts";
-import { describe } from "./opsShared.tsx";
-
-function bytes(n: number): string {
-	if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-	if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${n} B`;
-}
+import { bytes, describe } from "./opsShared.tsx";
 
 const VERDICT_LABEL: Record<SkillPreviewResponse["verdict"]["status"], string> = {
 	clean: "injection check: clean",
@@ -96,12 +90,18 @@ export function SkillPickerSheet({
 				</button>
 			</div>
 			<div className="msheet-body ops">
+				{/* The sheet mounts inside the composer's <form> — a bare
+					Enter here is an implicit submission and would send the
+					draft out from under the picker. */}
 				<input
 					type="search"
 					value={query}
 					placeholder="Filter skills"
 					aria-label="Filter skills"
 					onChange={(e) => setQuery(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") e.preventDefault();
+					}}
 				/>
 				{loadErr !== null && (
 					<p className="error" role="alert">

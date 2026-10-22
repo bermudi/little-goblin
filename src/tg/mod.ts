@@ -88,6 +88,7 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/resume",
 	"/decide",
 	"/abandon",
+	"/skill",
 ]);
 
 // `message_thread_id` also rides on non-forum comment threads (is_topic_message unset) — those stay bare-chat.

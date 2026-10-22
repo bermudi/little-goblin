@@ -935,6 +935,45 @@ describe("operator-only command gate", () => {
 		h.store.close();
 	});
 
+	test("an approved user's /skill refuses — bare, by name, by URL, bot-addressed", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const fetching = spyOn(globalThis, "fetch").mockImplementation(
+			(() => Promise.reject(new Error("skill fetch must not run"))) as unknown as typeof fetch,
+		);
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		try {
+			for (const [i, text] of [
+				"/skill",
+				"/skill herdr",
+				"/skill https://github.com/o/r/tree/main/skills/x",
+				"/skill@goblin herdr",
+			].entries()) {
+				handleMessage(h.env, guestMsg(text, 70 + i), 70 + i);
+				// The refusal latch coalesces while a send is pending — let
+				// it settle so every refused variant is counted, not merged.
+				await Bun.sleep(0);
+			}
+		} finally {
+			fetching.mockRestore();
+		}
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+		]);
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(submitted).toEqual([]);
+		expect(fetching).not.toHaveBeenCalled();
+		h.store.close();
+	});
+
 	test("privileged command refusals deduplicate one sender and cap actual unresolved sends", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
 		const gate = Promise.withResolvers<{ message_id: number }>();

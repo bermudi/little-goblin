@@ -60,11 +60,14 @@ export function listPickerSkills(skillsDir: string): PickerSkillItem[] {
 	const catalog = loadCatalog(skillsDir);
 	const items: PickerSkillItem[] = [];
 	for (const e of catalog.entries) {
-		let bodyBytes = 0;
+		let bodyBytes: number;
 		try {
 			bodyBytes = statSync(join(skillsDir, e.name, "SKILL.md")).size;
-		} catch {
-			// Vanished between scan and stat — a zero row beats a missing one.
+		} catch (err) {
+			// ENOENT raced the scan — the skill is gone, not zero-sized.
+			// Anything else is a real read failure, not an empty row.
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
 		}
 		items.push({
 			name: e.name,

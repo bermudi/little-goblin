@@ -1512,6 +1512,24 @@ export function Composer({
 			.then(() => onSend(parts) ?? true)
 			.then((accepted) => {
 				if (accepted === false) return;
+				// The accept continuation can outlive this composer — a lazy
+				// create swaps the view before it runs, and an unmounted
+				// composer's persist effect never fires. Write the post-send
+				// remainder to storage directly, against the stored text.
+				try {
+					const stored = loadComposerDraft(draftScope) ?? "";
+					saveComposerDraft(
+						draftScope,
+						stored === draft
+							? ""
+							: stored.startsWith(draft)
+								? stored.slice(draft.length)
+								: stored,
+					);
+				} catch {
+					// Unreadable records stay put, and a mounted composer's
+					// effect still reports its own save failures.
+				}
 				setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
 				// Entries that weren't sent — uploads still in flight, failed
 				// chips — stay staged. Clearing them would drop files the

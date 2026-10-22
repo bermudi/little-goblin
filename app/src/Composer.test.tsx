@@ -388,6 +388,35 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		expect(textareaValue()).toBe("");
 	});
 
+	test("an accepted send clears the stored draft even after the composer unmounts", async () => {
+		// The lazy-create swap: onSend stays in flight while the view —
+		// and this composer with it — unmounts. The accept lands on a
+		// dead tree whose persist effect never runs, so the accept path
+		// itself must write the clear.
+		let accept!: (accepted: boolean) => void;
+		const pendingSend = new Promise<boolean>((resolve) => {
+			accept = resolve;
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ComposerHarness onSend={() => pendingSend} />);
+		});
+		await type("sent from the start screen");
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain(
+			"sent from the start screen",
+		);
+		await submit();
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		await act(async () => {
+			accept(true);
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toBeNull();
+	});
+
 	test("an unreadable stored draft says why, starts empty, and waits for typing", async () => {
 		const KEY = "goblin.composer-draft.v1:test";
 		const raw = "{not json";

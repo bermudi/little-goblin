@@ -6,7 +6,7 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { setLogFile, setLogWriter } from "./log.ts";
+import { setLogFile } from "./log.ts";
 import {
 	openProgramProposals,
 	type ProgramDraft,
@@ -15,7 +15,6 @@ import {
 import { openPrograms, ProgramRuleError, type ProgramsStore } from "./programs.ts";
 import { tmpDb } from "./testkit.ts";
 
-setLogWriter(() => {});
 setLogFile(null);
 
 const ADDRESS = { chatId: -100, threadId: 7 };

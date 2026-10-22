@@ -106,6 +106,7 @@ function useDecision(
 	result: AppApprovalDecisionResponse | null;
 	err: string | null;
 	run(action: () => Promise<AppApprovalDecisionResponse>): Promise<void>;
+	dismiss(): Promise<void>;
 } {
 	const [busy, setBusy] = useState(false);
 	const [result, setResult] = useState<AppApprovalDecisionResponse | null>(null);
@@ -115,8 +116,12 @@ function useDecision(
 			setBusy(true);
 			setErr(null);
 			try {
-				setResult(await action());
-				await onDone();
+				const res = await action();
+				setResult(res);
+				// A granted hook URL is revealed once and never refetchable,
+				// so the refresh that drops this settled card waits for the
+				// operator to dismiss the result.
+				if (res.hookUrl === undefined) await onDone();
 			} catch (e) {
 				setErr(e instanceof Error ? e.message : String(e));
 			} finally {
@@ -125,7 +130,8 @@ function useDecision(
 		},
 		[onDone],
 	);
-	return { busy, result, err, run };
+	const dismiss = useCallback(() => onDone(), [onDone]);
+	return { busy, result, err, run, dismiss };
 }
 
 export function SecretReveal({ url }: { url: string }) {
@@ -189,7 +195,9 @@ export function ProgramApprovalCard({
 			<div className="approval-actions">
 				<button
 					type="button"
-					disabled={decision.busy || candidate === null}
+					disabled={
+						decision.busy || candidate === null || decision.result?.hookUrl !== undefined
+					}
 					onClick={() =>
 						void decision.run(() => decideProgramApproval(token, proposal.id, "approve"))
 					}
@@ -199,7 +207,7 @@ export function ProgramApprovalCard({
 				<button
 					type="button"
 					className="danger"
-					disabled={decision.busy}
+					disabled={decision.busy || decision.result?.hookUrl !== undefined}
 					onClick={() =>
 						void decision.run(() => decideProgramApproval(token, proposal.id, "reject"))
 					}
@@ -238,7 +246,7 @@ export function MailApprovalCard({
 			<div className="approval-actions">
 				<button
 					type="button"
-					disabled={decision.busy}
+					disabled={decision.busy || decision.result?.hookUrl !== undefined}
 					onClick={() => void decision.run(() => decideMailApproval(token, draft.id, "send"))}
 				>
 					Send
@@ -246,7 +254,7 @@ export function MailApprovalCard({
 				<button
 					type="button"
 					className="danger"
-					disabled={decision.busy}
+					disabled={decision.busy || decision.result?.hookUrl !== undefined}
 					onClick={() => void decision.run(() => decideMailApproval(token, draft.id, "cancel"))}
 				>
 					Cancel
@@ -264,6 +272,7 @@ function DecisionResult({
 		busy: boolean;
 		result: AppApprovalDecisionResponse | null;
 		err: string | null;
+		dismiss(): Promise<void>;
 	};
 }) {
 	return (
@@ -273,7 +282,14 @@ function DecisionResult({
 			{decision.result !== null && (
 				<div className={`approval-result st-${decision.result.status}`}>
 					{decision.result.message}
-					{decision.result.hookUrl !== undefined && <SecretReveal url={decision.result.hookUrl} />}
+					{decision.result.hookUrl !== undefined && (
+						<>
+							<SecretReveal url={decision.result.hookUrl} />
+							<button type="button" onClick={() => void decision.dismiss()}>
+								Done
+							</button>
+						</>
+					)}
 				</div>
 			)}
 		</>

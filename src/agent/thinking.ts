@@ -27,6 +27,7 @@
 
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
+import { isOneMinHost } from "./onemin.ts";
 import { openrouterRoute, type OpenRouterRoute } from "./models-dev.ts";
 
 // The effort rungs, weakest first. "off" is not a rung — it is a state
@@ -147,6 +148,63 @@ function openrouterRung(
 	return { openrouter: { reasoning: { effort: rung } } };
 }
 
+// ---------- 1min.AI relay ----------
+
+// Through 1min, reasoning_effort is OpenAI reasoning-models-only —
+// GPT-5, GPT-6 and o3 (docs → Reasoning models); the older
+// non-reasoning GPT-3.5/4/4.1/4o ids reject the knob like every other
+// family it serves (GLM, DeepSeek, Qwen, Mistral, Kimi, Muse Spark —
+// all provider-default reasoning). The published value set is
+// none|minimal|low|medium|high|xhigh — no "max" — and GPT-5.6* plus
+// GPT-6 Sol/Luna demand "none" whenever a request carries tools or
+// tool-result history; goblin's loop always defines tools, so their
+// ladder is the disable alone.
+const ONE_MIN_RUNGS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+function oneMinToolsNoneRequired(modelId: string): boolean {
+	// "GPT-5.6" is the 5.6 family — the relay lists luna/terra/sol
+	// variants, and the tools rule covers them (docs → Tool and output
+	// capabilities).
+	return /^gpt-5\.6/.test(modelId) || modelId === "gpt-6-sol" || modelId === "gpt-6-luna";
+}
+
+function oneMinProfile(modelId: string): ReasoningProfile {
+	if (oneMinToolsNoneRequired(modelId)) {
+		return { levels: [], off: "disable", knob: "effort" };
+	}
+	// The OpenAI reasoning families: gpt-5*, gpt-6*, o3* — nothing
+	// older (gpt-4.1/gpt-4o/… have no reasoning for the knob to set).
+	if (/^gpt-[56]/.test(modelId) || modelId.startsWith("o3")) {
+		return { levels: [...ONE_MIN_RUNGS], off: "floor", knob: "effort" };
+	}
+	// Provider-default reasoning with no knob the relay accepts —
+	// "off" means the route's own default, so the wire carries nothing.
+	// The older OpenAI non-reasoning ids land here too: no reasoning at
+	// all is the honest "always".
+	return {
+		levels: [],
+		off: /^(gpt-|o\d)/.test(modelId) ? "always" : "default",
+		knob: "none",
+	};
+}
+
+function oneMinOptions(
+	key: string,
+	modelId: string,
+	level: ThinkingLevel,
+): ProviderOptions | undefined {
+	const profile = oneMinProfile(modelId);
+	// No accepted knob: sending nothing is the only wire form that
+	// works — the relay rejects reasoning_effort on these families.
+	if (profile.knob === "none") return undefined;
+	// Tools demand the disable explicitly, and every goblin chat call
+	// defines tools — the level (always clamped to "off") is not sent.
+	// Tool-free callers (titles, vision, summaries) ride the same
+	// mapping: "none" is a valid effort on these ids regardless.
+	if (profile.levels.length === 0) return { [key]: { reasoningEffort: "none" } };
+	return { [key]: { reasoningEffort: clampToLevels(profile.levels, level) } };
+}
+
 // ---------- z.ai GLM ----------
 
 // GLM 5.3+ is forced thinking on the effort ladder low|high|max; 5.2
@@ -179,9 +237,10 @@ function openaiCompatibleThinking(
 	modelId: string,
 	level: ThinkingLevel,
 	baseUrl?: string,
-): ProviderOptions {
+): ProviderOptions | undefined {
 	// Options use the first dot-separated provider segment ("z.ai" → "z").
 	const key = provider.split(".")[0]!.trim();
+	if (isOneMinHost(baseUrl)) return oneMinOptions(key, modelId, level);
 	if (modelId.startsWith("glm-")) {
 		const profile = glmProfile(modelId, baseUrl);
 		if (level === "off") {
@@ -236,6 +295,10 @@ export function reasoningProfileFor(
 		// selection the warm catalog supports — and persist wrongly.
 		return openrouterProfile(openrouterRoute(modelId));
 	}
+	// 1min first: its GLM/GPT rows differ from the families' own
+	// ladders (the relay rejects the knob off the OpenAI reasoning
+	// models, and takes z.ai-shaped `thinking` objects for nothing).
+	if (kind === "openai-compatible" && isOneMinHost(baseUrl)) return oneMinProfile(bare);
 	if (bare.startsWith("glm-")) return glmProfile(bare, baseUrl);
 	if (kind === "codex" || bare.startsWith("gpt-")) {
 		return { levels: gptLevels(bare), off: "floor", knob: "effort" };

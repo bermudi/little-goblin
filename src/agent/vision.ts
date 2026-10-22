@@ -17,6 +17,7 @@ import { type Config, type ConfigRef, splitModelRef } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
+import { modelCallMaxRetries } from "./onemin.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { thinkingOptions } from "./thinking.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
@@ -213,6 +214,7 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	// Thinking pinned off — a forced-thinking vision model burns a
 	// reasoning round-trip per question.
 	const providerOptions = thinkingOptions(deps.configRef.current, cfg.model, "off");
+	const maxRetries = modelCallMaxRetries(deps.configRef.current, cfg.model);
 	const { text, usage } = await generateText({
 		model,
 		instructions: VISION_SYSTEM_PROMPT,
@@ -223,6 +225,7 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 		),
 		maxOutputTokens: cfg.maxTokens,
 		...(providerOptions ? { providerOptions } : {}),
+		...(maxRetries !== undefined ? { maxRetries } : {}),
 		abortSignal: signal,
 	});
 	const result = { text, usage } as { text: string; usage?: VisionUsage };
@@ -272,8 +275,14 @@ export function makeVisionDepsFor(deps: {
 		if (cfg.vision.mode !== "always") {
 			const { provider, modelId } = splitModelRef(conv.model!);
 			const mods = inputModalitiesCached(provider, modelId);
-			const kind = cfg.providers[provider]?.kind ?? "";
-			if (mods !== null && mods.has("image") && carriesMedia(kind, "image/jpeg", "user")) {
+			const p = cfg.providers[provider];
+			const kind = p?.kind ?? "";
+			const pipeBase = p !== undefined && "baseUrl" in p ? p.baseUrl : undefined;
+			if (
+				mods !== null &&
+				mods.has("image") &&
+				carriesMedia(kind, "image/jpeg", "user", pipeBase)
+			) {
 				return undefined;
 			}
 		}

@@ -8,6 +8,7 @@ import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { cacheRouteFor, observedModel, resolveModel } from "./providers.ts";
+import { modelCallMaxRetries } from "./onemin.ts";
 import { thinkingOptions } from "./thinking.ts";
 
 // Bot API topic-name cap.
@@ -20,6 +21,7 @@ export async function generateTopicTitle(
 	model: LanguageModel,
 	firstText: string,
 	providerOptions?: ProviderOptions,
+	maxRetries?: number,
 ): Promise<string | null> {
 	const input = firstText.slice(0, MAX_INPUT_CHARS);
 	const result = await generateText({
@@ -30,6 +32,7 @@ export async function generateTopicTitle(
 			"trailing period.",
 		prompt: input,
 		...(providerOptions ? { providerOptions } : {}),
+		...(maxRetries !== undefined ? { maxRetries } : {}),
 	});
 	const title = sanitizeTitle(result.text);
 	// A throwaway call is still a cost line — log usage with the cache
@@ -78,6 +81,7 @@ export function makeTitleFor(deps: {
 			}),
 			text,
 			thinkingOptions(cfg, cfg.titleModel, "off"),
+			modelCallMaxRetries(cfg, cfg.titleModel),
 		);
 	};
 }

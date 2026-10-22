@@ -32,6 +32,10 @@ export const cacheContractSources = {
 		url: "https://logfare.ai/docs",
 		fragments: [],
 	},
+	onemin: {
+		url: "https://docs.1min.ai/docs/api/openai-compatible",
+		fragments: [],
+	},
 } as const;
 
 export type CacheSourceId = keyof typeof cacheContractSources;
@@ -42,6 +46,7 @@ export type CacheContractId =
 	| "openai"
 	| "codex"
 	| "logfare"
+	| "onemin"
 	| "unknown";
 
 export interface CacheContract {
@@ -112,6 +117,16 @@ const contracts: Readonly<Record<CacheContractId, CacheContract>> = {
 		requiresExplicitControls: false,
 		detail: "The reviewed public API page does not establish a prompt-cache lifetime.",
 	},
+	onemin: {
+		id: "onemin",
+		sources: ["onemin"],
+		mode: "unknown",
+		lifetime: "unknown",
+		idleExpiryMs: null,
+		requiresExplicitControls: false,
+		detail:
+			"1min's relay routes across upstream providers and publishes no prompt-cache contract; an upstream's own caching does not carry through the relay.",
+	},
 	unknown: {
 		id: "unknown",
 		sources: [],
@@ -136,6 +151,7 @@ export function cacheContractFor(config: Config, modelRef: string): CacheContrac
 	if (url.hostname === "api.z.ai") return contracts.zai;
 	if (url.hostname === "api.openai.com") return contracts.openai;
 	if (url.hostname === "logfare.ai") return contracts.logfare;
+	if (url.hostname === "api.1min.ai") return contracts.onemin;
 	return contracts.unknown;
 }
 

@@ -88,12 +88,40 @@ Four kinds exist (the shipped example uses `responses` for Z.AI):
 For `codex`, run `codex login` first. The bot refreshes expired tokens
 itself and writes the rotated tokens back, so the CLI login keeps working.
 
+#### 1min.AI (OpenAI-compatible relay)
+
+```json5
+onemin: {
+  kind: "openai-compatible",
+  baseUrl: "https://api.1min.ai/openai/v1",
+  auth: "onemin",
+},
+```
+
+`auth` names your 1min.AI API key (`pass-keys add goblin-dev onemin
+Keys/<Item>`, then an `auth.jsonl` record
+`{"name": "onemin", "value": "!pass-keys get goblin-dev onemin"}`).
+Model ids come straight from 1min's catalog (`gpt-5.4`, `qwen3.6-plus`,
+`moonshotai/kimi-k2.6` — ids keep their slashes); the picker isn't
+pre-seeded for this relay, so use the typed-ref fallback and keep the
+relay's own `GET /openai/v1/models` as the source of truth. Pinned
+behavior (docs.1min.ai/docs/api/openai-compatible): every model is
+text-only (including the `vl` ids) — attachments stay path references
+and the `vision` tool answers image questions; requests cap at 200
+messages / 100,000 characters and a two-minute generation deadline;
+every attempt bills, so each chat call makes one POST — no SDK
+retries (the one deliberate exception is the content-filter re-ask,
+bounded to once per turn) — and `reasoning_effort` rides only the
+OpenAI reasoning models (GPT-5/6 and o3 — not the older gpt-4 ids,
+which reject it). `gpt-6-astra` cannot serve as the chat model (it
+rejects function tools).
+
 ### Model selection
 
 ```json5
 model: "zai/glm-5.3-flash", // app default for new conversations
 telegram: { model: "zai/glm-5.3-flash", thinking: "high" }, // independent
-favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5"],
+favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5", "onemin/gpt-5.4"],
 ```
 
 A model is written `provider/model-id`, split at the **first** slash —

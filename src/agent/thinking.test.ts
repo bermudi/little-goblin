@@ -25,6 +25,13 @@ const cfg: Config = {
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
 		// Dotted name — the shape the SDK's first-segment lookup rule exists for.
 		"z.ai": { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
+		// The 1min.AI relay — text-only pipe whose effort knob is
+		// OpenAI-only (docs.1min.ai/docs/api/openai-compatible).
+		onemin: {
+			kind: "openai-compatible",
+			baseUrl: "https://api.1min.ai/openai/v1",
+			auth: "onemin",
+		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
 		codex: { kind: "codex" },
 	},
@@ -384,6 +391,85 @@ describe("thinkingOptions — non-glm openai-compatible and openrouter", () => {
 		expect(thinkingOptions(cfg, "other/whatever-9", "off")).toEqual({
 			other: { reasoningEffort: "low" },
 		});
+	});
+});
+
+describe("1min relay — the effort knob is OpenAI-only", () => {
+	// docs.1min.ai/docs/api/openai-compatible → Supported request
+	// fields + Tool and output capabilities: reasoning_effort is for
+	// OpenAI reasoning models, value set none|minimal|low|medium|high|
+	// xhigh — no "max" — and GLM/DeepSeek/Qwen/Mistral/Kimi/Muse run
+	// provider-default reasoning, with the knob rejected (not ignored).
+	const base = "https://api.1min.ai/openai/v1";
+
+	test("OpenAI models keep the ladder with 1min's own rungs", () => {
+		expect(thinkingLevelsFor("openai-compatible", "gpt-5.4", base)).toEqual([
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+		]);
+		// "off" is not a disable the docs back — the floor rung stands in.
+		expect(thinkingOptions(cfg, "onemin/gpt-5.4", "off")).toEqual({
+			onemin: { reasoningEffort: "minimal" },
+		});
+		// "max" is not in 1min's set — the top rung clamps.
+		expect(thinkingOptions(cfg, "onemin/gpt-5.4", "max")).toEqual({
+			onemin: { reasoningEffort: "xhigh" },
+		});
+		// o3 keeps the knob through this relay.
+		expect(thinkingOptions(cfg, "onemin/o3-mini", "medium")).toEqual({
+			onemin: { reasoningEffort: "medium" },
+		});
+	});
+
+	test("gpt-5.6 family and gpt-6 sol/luna send the disable — tools demand it", () => {
+		// "GPT-5.6, GPT-6 Sol and GPT-6 Luna tool requests, including
+		// tool-result history, require explicit reasoning_effort: none"
+		// — goblin's loop always defines tools, so the ladder is the
+		// disable alone and every stored level clamps onto it.
+		expect(thinkingLevelsFor("openai-compatible", "gpt-5.6-luna", base)).toEqual(["off"]);
+		expect(thinkingLevelsFor("openai-compatible", "gpt-6-sol", base)).toEqual(["off"]);
+		expect(thinkingOptions(cfg, "onemin/gpt-5.6-sol", "medium")).toEqual({
+			onemin: { reasoningEffort: "none" },
+		});
+		expect(thinkingOptions(cfg, "onemin/gpt-5.6-terra", "off")).toEqual({
+			onemin: { reasoningEffort: "none" },
+		});
+		expect(thinkingOptions(cfg, "onemin/gpt-6-luna", "high")).toEqual({
+			onemin: { reasoningEffort: "none" },
+		});
+	});
+
+	test("every other family sends nothing — the relay rejects the knob", () => {
+		expect(thinkingOptions(cfg, "onemin/glm-5.2", "medium")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/glm-5.2", "off")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/qwen3.6-plus", "high")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/deepseek-flash", "low")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/moonshotai/kimi-k2.6", "medium")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/meta/muse-spark-1.1", "high")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/mistral-large-2512", "off")).toBeUndefined();
+		// The offered ladder is the disable-shaped "off" alone.
+		expect(thinkingLevelsFor("openai-compatible", "qwen3.6-plus", base)).toEqual(["off"]);
+		expect(thinkingLevelsFor("openai-compatible", "glm-5.3", base)).toEqual(["off"]);
+	});
+
+	test("the older OpenAI non-reasoning ids get no knob either — they are not reasoning models", () => {
+		// "OpenAI GPT-5, GPT-6, and o3 models accept reasoning_effort"
+		// — gpt-3.5/4/4.1/4o are not on that list, so the knob would be a
+		// rejected field. The docs' own quick-start id is one of these.
+		expect(thinkingOptions(cfg, "onemin/gpt-4.1-mini", "medium")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/gpt-4o", "off")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/gpt-4-turbo", "high")).toBeUndefined();
+		expect(thinkingOptions(cfg, "onemin/gpt-3.5-turbo", "xhigh")).toBeUndefined();
+		expect(thinkingLevelsFor("openai-compatible", "gpt-4.1-mini", base)).toEqual(["off"]);
+	});
+
+	test("a stored level clamps onto the relay's ladder", () => {
+		expect(clampThinkingFor(cfg.providers, "onemin/gpt-5.6-terra", "medium")).toBe("off");
+		expect(clampThinkingFor(cfg.providers, "onemin/glm-5.2", "high")).toBe("off");
+		expect(clampThinkingFor(cfg.providers, "onemin/gpt-5.4", "max")).toBe("xhigh");
 	});
 });
 

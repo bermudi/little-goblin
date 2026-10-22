@@ -326,6 +326,40 @@ describe("membership seam", () => {
 
 // ---------- the driver ----------
 
+describe("driveStream — the provider retry budget (1min)", () => {
+	// docs.1min.ai/docs/api/openai-compatible: "Automatic retries are
+	// disabled upstream. Set maxRetries: 0 in your client too: retrying a
+	// POST is a new generation and may incur another charge." The step
+	// carries the provider's rule; without it the SDK's default of 2
+	// retries applies (3 attempts total on a retryable 5xx).
+	const retryable = () =>
+		new APICallError({
+			message: "upstream had a hiccup",
+			url: "https://api.1min.ai/openai/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 503,
+			// Zero the SDK's backoff waits (retry-after-ms is the honored
+			// short-delay header) so the default-budget case settles inside
+			// the test timeout.
+			responseHeaders: { "retry-after-ms": "0" },
+		});
+
+	test("without a step budget the SDK default retries twice", async () => {
+		const r = rig([retryable(), retryable(), retryable()]);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		expect(r.prompts.length).toBe(3);
+	});
+
+	test("a 1min step (maxRetries 0) POSTs exactly once — every attempt bills", async () => {
+		const failing = scriptedModel([retryable(), retryable(), retryable()]);
+		const r = rig([], { step: { model: failing.model, system: "test", maxRetries: 0 } });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		expect(failing.prompts.length).toBe(1);
+	});
+});
+
 describe("driveStream", () => {
 	test("deltas reach the head, chunks fan out to every streaming member, the wire logs them", async () => {
 		const r = rig([textReply("the answer")]);

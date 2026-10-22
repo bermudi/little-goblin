@@ -90,6 +90,10 @@ export interface ModelStep {
 	carries?: (mediaType: string, position: MediaPosition) => boolean;
 	// Context-window denominator for utilization logging, when known.
 	contextWindow?: number;
+	// Retry budget for the provider's chat calls, when the provider's own
+	// rules override the SDK default (2) — 1min bills every attempt, so
+	// its steps carry 0. Absent keeps the default.
+	maxRetries?: number;
 }
 
 export interface RuntimeDeps {

@@ -120,8 +120,23 @@ function followupCharter(resp: Responsibility): string {
 // which is honest — the bytes may have crossed to a replacement and an
 // automatic resend would only double the exposure.
 export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): ManagedSend {
+	// Anything thrown before the send is a refusal: nothing has reached
+	// the PTY, so the operation must not land 'uncertain' and fence the
+	// attachment on a delivery that never happened. A HerdrRefusal
+	// (stale revision, identity checks) passes through with its code.
+	const preSend = (run: () => void): void => {
+		try {
+			run();
+		} catch (err) {
+			if (err instanceof HerdrRefusal) throw err;
+			throw new HerdrRefusal(
+				"fenced",
+				`send fenced before dispatch: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	};
 	return async (brief, target, beforeSend, signal) => {
-		signal?.throwIfAborted();
+		preSend(() => signal?.throwIfAborted());
 		// The adapter is the operator session on the local server — a
 		// target outside that scope would misroute, so it refuses.
 		if (target.server !== "local" || target.session !== OPERATOR_SESSION) {
@@ -149,8 +164,10 @@ export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): Manag
 				beforeSend: () => {
 					// Preflight awaits Herdr; a stopped turn must not regain
 					// authority just because that read eventually succeeded.
-					signal?.throwIfAborted();
-					beforeSend?.();
+					preSend(() => {
+						signal?.throwIfAborted();
+						beforeSend?.();
+					});
 				},
 			},
 		);

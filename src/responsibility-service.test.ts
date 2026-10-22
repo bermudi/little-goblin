@@ -30,6 +30,7 @@ import { deferred, tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { feedForProject } from "./responsibility-feed.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
+import { FencedError } from "./runtime.ts";
 
 setLogFile(null);
 
@@ -1297,7 +1298,7 @@ describe("atomic dispatch claim", () => {
 });
 
 describe("managed prompt authority after Herdr preflight", () => {
-	test.each(["cancel", "revise"] as const)(
+	test.each(["cancel", "revise", "fence"] as const)(
 		"%s during delayed agent get prevents prompt submission",
 		async (change) => {
 			const r = rig();
@@ -1351,9 +1352,15 @@ describe("managed prompt authority after Herdr preflight", () => {
 				handoverKey: "delayed-send",
 				listFor: async () => [],
 				guardedSend: makeManagedSendEdge(makeOperatorHerdr(run)),
+				// The epoch fence the runtime wires in production — flipped
+				// mid-preflight for the "fence" case below.
+				assertAuthority: () => {
+					if (fenced) throw new FencedError(r.convId);
+				},
 			});
 			if (tool.execute === undefined) throw new Error("missing execute");
 			const abort = new AbortController();
+			let fenced = false;
 			const pending = tool.execute(
 				{
 					action: "send",
@@ -1365,14 +1372,19 @@ describe("managed prompt authority after Herdr preflight", () => {
 			);
 			await waitUntil(() => calls.includes("agent get"), "Herdr preflight entered");
 			if (change === "cancel") abort.abort();
-			else r.resps.revise(resp.responsibilityId, understanding());
+			else if (change === "revise") r.resps.revise(resp.responsibilityId, understanding());
+			else fenced = true;
 			release();
 			await pending;
 			expect(calls).toEqual(["workspace list", "agent get"]);
 			expect(signals).toEqual([abort.signal, abort.signal]);
 			const op = r.resps.operationsFor(resp.responsibilityId)[0]!;
-			expect(op.state).toBe(change === "cancel" ? "uncertain" : "refused");
+			// Every change lands pre-send: nothing reached the PTY, so the
+			// operation refuses — never 'uncertain', which would fence the
+			// attachment on a delivery that never happened.
+			expect(op.state).toBe("refused");
 			if (change === "revise") expect(op.refusal).toBe("stale-revision");
+			else expect(op.refusal).toBe("fenced");
 			r.store.close();
 		},
 	);

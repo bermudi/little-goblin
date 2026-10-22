@@ -589,6 +589,16 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 		},
 
 		async prompt(pane, expect, text, signal, guard) {
+			// An abort the `agent get` read observes — before spawn or
+			// after a runner that ignored the signal — means nothing
+			// reached the PTY: it refuses the send, never an uncertain
+			// delivery. Earlier reads (topology) keep the raw abort so a
+			// stopped turn still unwinds as an abort.
+			const abortRefusal = (err: unknown): HerdrRefusal =>
+				new HerdrRefusal(
+					"fenced",
+					`send aborted before dispatch: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			// Labels first; `agent get` is the LAST read before the send
 			// and nothing is read after it — post-submit churn must not
 			// turn a delivered prompt into an error.
@@ -616,6 +626,7 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 					});
 					throw new HerdrRefusal("agent_not_found", `pane ${pane} does not host an agent`);
 				}
+				if (signal?.aborted) throw abortRefusal(err);
 				throw err;
 			}
 			// One preflight boundary line: what was verified at get time —

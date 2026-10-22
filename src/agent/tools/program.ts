@@ -169,13 +169,16 @@ export const programTool = (deps: ProgramToolDeps) => {
 			await deps.requestApproval(proposal, signal);
 		},
 	});
-	// The project arm's boundary: only programs whose responsibility
-	// belongs to this project. A conversation-pinned row or another
-	// project's lane is unreachable here — the same line create
-	// validates for its responsibilityId. A deleted responsibility
-	// drops its programs out of scope too (fail closed).
+	// The project arm's boundary: this project's responsibility-bound
+	// rows plus the conversation's own pins — a create without a
+	// responsibilityId stages onto this conversation's target, so its
+	// rows must stay reachable after approval. Another project's lane
+	// is unreachable here — the same line create validates for its
+	// responsibilityId. A deleted responsibility drops its programs
+	// out of scope too (fail closed).
 	const inScope = (program: Program): boolean =>
 		deps.project === undefined ||
+		(deps.target !== undefined && program.target === deps.target) ||
 		(program.responsibilityId !== null &&
 			deps.project.resps.get(program.responsibilityId)?.projectId === deps.project.projectId);
 	// Get + scope in one step: out-of-scope reads identical to absent.
@@ -185,7 +188,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 	};
 	return tool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool only reaches programs bound to this project's responsibilities.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool reaches the programs bound to this project's responsibilities plus the ones pinned to this conversation itself.",
 		inputSchema: programInputSchema,
 		execute: async (raw, options) => {
 			const input = actionSchema.parse(raw);

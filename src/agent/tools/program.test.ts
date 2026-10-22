@@ -976,4 +976,46 @@ describe("responsibility destinations", () => {
 		const tgList = (await exec(tgTool, { action: "list" })) as { programs: { id: number }[] };
 		expect(tgList.programs).toHaveLength(3);
 	});
+
+	test("a project turn still reaches its own conversation-pinned programs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		// A project conversation's own pin, another conversation's pin,
+		// and this project's responsibility lane.
+		const ownPin = programs.create({
+			name: "own-pin",
+			charter: "c",
+			cron: "*/20 * * * *",
+			address: { target: "app/a1" },
+		});
+		const otherPin = programs.create({
+			name: "other-pin",
+			charter: "c",
+			cron: "*/20 * * * *",
+			address: { target: "app/b2" },
+		});
+		const resp = programs.create({
+			name: "resp",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		});
+		const resps = { get: (id: string) => (id === "r1" ? { projectId: "p1" } : null) };
+		const tool = programTool({
+			programs,
+			target: "app/a1",
+			project: { projectId: "p1", resps },
+			publicUrl: () => "https://example.test",
+			sendPrivate: async () => {},
+		});
+		const list = (await exec(tool, { action: "list" })) as { programs: { id: number }[] };
+		expect(list.programs.map((p) => p.id)).toEqual([ownPin.id, resp.id]);
+		const toggled = (await exec(tool, { action: "toggle", id: ownPin.id })) as {
+			program: { enabled: boolean };
+		};
+		expect(toggled.program.enabled).toBe(false);
+		const out = (await exec(tool, { action: "toggle", id: otherPin.id })) as { error?: string };
+		expect(out.error).toBe(`no program ${otherPin.id}`);
+	});
 });

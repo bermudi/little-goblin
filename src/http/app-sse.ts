@@ -1,4 +1,5 @@
 import type { UIMessageChunk } from "ai";
+import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 
@@ -75,40 +76,48 @@ export function appSseWriter(
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
 		},
 		dispose() {
 			stopBeat();
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
 		},
 	};
 }
 
-export function appStreamSink(convId: string): {
+export function appStreamSink(
+	convId: string,
+	media?: AppMediaDeps,
+): {
 	sink: TurnSink;
 	body: ReadableStream<Uint8Array>;
 	dispose(): void;
 } {
 	const writer = appSseWriter(convId);
+	const stream: TurnSink = {
+		onTextDelta() {},
+		onReasoningDelta() {},
+		onToolCall() {},
+		onStreamChunk(chunk) {
+			writer.write(chunk);
+		},
+		onDone(done) {
+			writer.finish(done);
+			log.info("app stream finish", { conversation: convId, outcome: done.kind });
+		},
+	};
 	return {
 		body: writer.body,
 		dispose: writer.dispose,
-		sink: {
-			onTextDelta() {},
-			onReasoningDelta() {},
-			onToolCall() {},
-			onStreamChunk(chunk) {
-				writer.write(chunk);
-			},
-			onDone(done) {
-				writer.finish(done);
-				log.info("app stream finish", { conversation: convId, outcome: done.kind });
-			},
-		},
+		sink:
+			media === undefined
+				? stream
+				: composeTurnSinks(
+						stream,
+						appMediaSink(convId, media, (chunk) => writer.write(chunk)),
+					),
 	};
 }

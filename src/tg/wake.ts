@@ -1,4 +1,5 @@
 import type { Api } from "grammy";
+import { appMediaSink, composeTurnSinks } from "../app-media.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import type { ConfigRef, TtsConfig } from "../config.ts";
 import type { System1Client } from "../system1.ts";
@@ -41,7 +42,13 @@ export function makeWakeDeps(base: WakeBase): WakeDeps {
 			gapMinutes: () => base.configRef.current.telegram.dmGapMinutes,
 			gate: base.followUpGate,
 		},
-		bell: (conv: Conversation): TurnSink => makeBellSink(bell, conv, "delegation notice"),
+		bell: (conv: Conversation): TurnSink =>
+			composeTurnSinks(
+				makeBellSink(bell, conv, "delegation notice"),
+				appMediaSink(conv.id, {
+					append: (messages, opts) => base.store.append(conv.id, messages, opts),
+				}),
+			),
 	};
 }
 

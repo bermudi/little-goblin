@@ -181,7 +181,9 @@ export async function handleChatRoute(
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
-			const { sink, body, dispose } = appStreamSink(convId);
+			const { sink, body, dispose } = appStreamSink(convId, {
+				append: (messages, opts) => store.append(convId, messages, opts),
+			});
 			try {
 				runtime.submitPersisted(conv, lastUser, sink);
 			} catch (err) {
@@ -287,7 +289,9 @@ export async function handleChatRoute(
 		}
 
 		log.info("app intake", { conversation: convId, message: message.id });
-		const { sink, body, dispose } = appStreamSink(convId);
+		const { sink, body, dispose } = appStreamSink(convId, {
+			append: (messages, opts) => store.append(convId, messages, opts),
+		});
 		try {
 			runtime.submit(conv, message as UIMessage, sink);
 		} catch (err) {

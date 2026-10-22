@@ -946,6 +946,47 @@ describe("AttachmentChip download failure", () => {
 	});
 });
 
+describe("AttachmentChip audio", () => {
+	const dom = mountDom();
+
+	test("a stored voice note renders an inline player", async () => {
+		const seen: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			seen.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			return Promise.resolve(
+				new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "audio/ogg" }), {
+					headers: { "content-type": "audio/ogg" },
+				}),
+			);
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		act(() => {
+			dom.root?.render(
+				<MessageParts
+					parts={[
+						{
+							type: "data-attachment",
+							data: {
+								path: "attachments/voice-1-voice-note.ogg",
+								mediaType: "audio/ogg",
+								filename: "voice-note.ogg",
+								size: 3,
+							},
+						},
+					]}
+					token={null}
+				/>,
+			);
+		});
+		await act(async () => {});
+		const player = dom.container.querySelector("audio");
+		expect(player).not.toBeNull();
+		expect(player?.getAttribute("controls")).not.toBeNull();
+		expect(player?.getAttribute("src")).toContain("blob:");
+		expect(seen[0]).toContain("/api/app/attachments/voice-1-voice-note.ogg");
+	});
+});
+
 // The note fence's append affordance gates on the message's own
 // streaming flag, not on whether the fence closed: mid-turn the
 // unclosed fence is a prefix; once the turn settles — or the

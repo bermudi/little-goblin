@@ -8,6 +8,7 @@ import { Runtime } from "../runtime.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
+import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { startHttp } from "./mod.ts";
 
@@ -29,6 +30,8 @@ export function setup(
 		resumeOps?: AppChannelDeps["resumeOps"];
 		approvals?: AppChannelDeps["approvals"];
 		programOps?: AppChannelDeps["programOps"];
+		model?: LanguageModel;
+		makeTools?: ConstructorParameters<typeof Runtime>[0]["makeTools"];
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -41,15 +44,17 @@ export function setup(
 		store,
 		turnJournal,
 		buildStep: () => ({
-			model: textModel(opts.deltas ?? ["hello", " app"], {
-				...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
-			}).model,
+			model:
+				opts.model ??
+				textModel(opts.deltas ?? ["hello", " app"], {
+					...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
+				}).model,
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
-		makeTools: (conv) => {
+		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
-			return {};
+			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile, accepts) ?? {};
 		},
 	});
 	const auth: Pick<AuthStore, "resolve"> = {

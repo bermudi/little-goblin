@@ -131,11 +131,12 @@ function FileIcon() {
 
 // Read-back for a stored attachment — bearer header, blob, object URL;
 // the server confines reads to workspace/attachments/.
-// Raster formats keep their type for inline rendering (<img> and a
-// top-level image document run no script). Everything else — SVG
-// carries script, and blob: URLs execute in this origin — is
-// re-wrapped as octet-stream so opening it downloads, never executes.
+// Raster and audio formats keep their type for inline rendering (<img>,
+// <audio>, and their top-level documents run no script). Everything else —
+// SVG carries script, and blob: URLs execute in this origin — is re-wrapped
+// as octet-stream so opening it downloads, never executes.
 const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
+const INLINE_AUDIO = /^audio\//;
 async function fetchAttachmentUrl(token: string | null, path: string): Promise<string> {
 	const name = path.split("/").pop() ?? "";
 	const res = await fetch(`/api/app/attachments/${encodeURIComponent(name)}`, {
@@ -143,27 +144,30 @@ async function fetchAttachmentUrl(token: string | null, path: string): Promise<s
 	});
 	if (!res.ok) throw new Error(`http ${res.status}`);
 	const bytes = await res.blob();
-	if (INLINE_IMAGE.test(bytes.type)) return URL.createObjectURL(bytes);
+	if (INLINE_IMAGE.test(bytes.type) || INLINE_AUDIO.test(bytes.type)) {
+		return URL.createObjectURL(bytes);
+	}
 	return URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
 }
 
 function AttachmentChip({ data, token }: { data: unknown; token: string | null }) {
 	const ref = (typeof data === "object" && data !== null ? data : {}) as AttachmentRef;
 	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
+	const isAudio = typeof ref.mediaType === "string" && ref.mediaType.startsWith("audio/");
 	const path = typeof ref.path === "string" ? ref.path : "";
-	const [thumb, setThumb] = useState<string | null>(null);
+	const [inlineUrl, setInlineUrl] = useState<string | null>(null);
 	// A failed download surfaces as a chip message — a missing
 	// attachment or expired credential otherwise reads as a dead button.
 	const [dlError, setDlError] = useState<string | null>(null);
 	useEffect(() => {
-		if (!isImage || path === "") return;
+		if ((!isImage && !isAudio) || path === "") return;
 		let live = true;
 		let url: string | null = null;
 		void fetchAttachmentUrl(token, path)
 			.then((u) => {
 				if (live) {
 					url = u;
-					setThumb(u);
+					setInlineUrl(u);
 				} else {
 					// Unmounted mid-fetch — the cleanup already ran, so
 					// revoke here or the blob pins until page unload.
@@ -179,15 +183,27 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			live = false;
 			if (url !== null) URL.revokeObjectURL(url);
 		};
-	}, [isImage, path, token]);
+	}, [isImage, isAudio, path, token]);
 	if (typeof ref.filename !== "string") return null;
-	if (isImage && thumb !== null) {
+	if (isImage && inlineUrl !== null) {
 		return (
-			<a className="attachment image" href={thumb} target="_blank" rel="noreferrer">
-				<img src={thumb} alt={ref.filename} />
+			<a className="attachment image" href={inlineUrl} target="_blank" rel="noreferrer">
+				<img src={inlineUrl} alt={ref.filename} />
 				<span className="attachment-name">{ref.filename}</span>
 				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			</a>
+		);
+	}
+	if (isAudio && inlineUrl !== null) {
+		return (
+			<span className="attachment audio">
+				<audio controls preload="metadata" src={inlineUrl} />
+				<span className="attachment-name">{ref.filename}</span>
+				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
+				{ref.speech === true && ref.transcript !== undefined && (
+					<span className="attachment-transcript">“{ref.transcript}”</span>
+				)}
+			</span>
 		);
 	}
 	return (
@@ -325,10 +341,7 @@ export function MessageParts({
 				typeof p.data === "object" && p.data !== null
 					? (p.data as { kind?: unknown; id?: unknown })
 					: null;
-			if (
-				(data?.kind === "program" || data?.kind === "mail") &&
-				typeof data.id === "number"
-			) {
+			if ((data?.kind === "program" || data?.kind === "mail") && typeof data.id === "number") {
 				out.push(<ApprovalCard key={i} token={token ?? null} kind={data.kind} id={data.id} />);
 			}
 			continue;
@@ -1686,9 +1699,7 @@ export function Composer({
 									: "Memory is included — click to exclude this conversation"
 						}
 						disabled={
-							busy ||
-							memorySaving ||
-							(memory.projectMemory === "off" && memory.memoryExcluded)
+							busy || memorySaving || (memory.projectMemory === "off" && memory.memoryExcluded)
 						}
 						onClick={toggleMemory}
 					>
@@ -1787,7 +1798,11 @@ export function Composer({
 					{sendError}
 				</p>
 			)}
-			{draftError !== null && <p className="error" role="alert">{draftError}</p>}
+			{draftError !== null && (
+				<p className="error" role="alert">
+					{draftError}
+				</p>
+			)}
 			{notePickerOpen && (
 				<NotePicker
 					pickRef={notePickRef}

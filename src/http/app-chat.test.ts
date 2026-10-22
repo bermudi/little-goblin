@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import type { UIMessage } from "ai";
+import { sendFileTool } from "../agent/tools/send.ts";
+import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
-import { sleep, waitUntil } from "../testkit.ts";
+import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
+import { sleep, tmpDir, waitUntil } from "../testkit.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
 describe("app chat", () => {
@@ -38,6 +42,105 @@ describe("app chat", () => {
 			expect(types).toContain("finish");
 
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("generated files and voice notes persist durably and stream live", async () => {
+		const work = tmpDir("goblin-app-media-");
+		writeFileSync(join(work, "note.txt"), "file-bytes");
+		const audio = new Uint8Array([9, 8, 7]);
+		const model = scriptedModel([
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart(
+					"file-1",
+					"send_file",
+					JSON.stringify({ path: "note.txt", caption: "keepsake" }),
+				),
+				toolCallPart("voice-1", "speak", JSON.stringify({ text: "hello" })),
+				finishPart("tool-calls"),
+			],
+			textParts("sent"),
+		]).model;
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			model,
+			makeTools: (_conv, deliverVoice, _recording, deliverFile) => ({
+				send_file: sendFileTool(work, deliverFile!),
+				speak: speakTool(work, async () => [audio], deliverVoice!),
+			}),
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-media" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-media",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "send media" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			const frames = (await res.text())
+				.split("\n\n")
+				.filter((f) => f.startsWith("data: "))
+				.map((f) => f.slice("data: ".length));
+			const chunks = frames
+				.filter((f) => f !== "[DONE]")
+				.map((f) => JSON.parse(f) as { type: string; data?: unknown });
+			const live = chunks
+				.filter((c) => c.type === "data-attachment")
+				.map(
+					(c) =>
+						c.data as {
+							path: string;
+							mediaType: string;
+							filename: string;
+							size: number;
+						},
+				);
+			expect(live.map((a) => a.filename).sort()).toEqual(["note.txt", "voice-note.ogg"]);
+
+			const detail = store.historyDetail("app/chat-media");
+			expect(detail.map((e) => e.message.role)).toEqual([
+				"user",
+				"assistant",
+				"assistant",
+				"assistant",
+			]);
+			const media = detail.filter((e) => e.message.parts.some((p) => p.type === "data-attachment"));
+			expect(media).toHaveLength(2);
+			expect(media.map((e) => e.anchorSeq)).toEqual([1, 1]);
+
+			const reopened = (await (
+				await call("/api/app/conversations/chat-media/messages")
+			).json()) as { messages: UIMessage[] };
+			const refs = reopened.messages.flatMap((m) =>
+				m.parts
+					.filter((p) => p.type === "data-attachment")
+					.map((p) => (p as { data: { path: string; mediaType: string; filename: string } }).data),
+			);
+			expect(refs.map((r) => r.filename).sort()).toEqual(["note.txt", "voice-note.ogg"]);
+
+			const fileRef = refs.find((r) => r.filename === "note.txt")!;
+			const fileGet = await call(
+				`/api/app/attachments/${encodeURIComponent(basename(fileRef.path))}`,
+			);
+			expect(fileGet.status).toBe(200);
+			expect(await fileGet.text()).toBe("file-bytes");
+			const voiceRef = refs.find((r) => r.filename === "voice-note.ogg")!;
+			const voiceGet = await call(
+				`/api/app/attachments/${encodeURIComponent(basename(voiceRef.path))}`,
+			);
+			expect(voiceGet.status).toBe(200);
+			expect(voiceGet.headers.get("content-type")).toBe("audio/ogg");
+			expect([...new Uint8Array(await voiceGet.arrayBuffer())]).toEqual([9, 8, 7]);
 		} finally {
 			http.stop();
 		}

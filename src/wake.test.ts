@@ -1,14 +1,18 @@
-import { makeWakeDelivery } from "./tg/wake.ts";
+import { makeWakeDelivery, makeWakeDeps } from "./tg/wake.ts";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api } from "grammy";
 import type { DeliveryApi } from "./tg/delivery.ts";
+import { sendFileTool } from "./agent/tools/send.ts";
 import { appAddress, openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
+import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
+import { useHome, waitUntil } from "./testkit.ts";
 import { wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
@@ -206,6 +210,64 @@ test("wakeTarget keeps Telegram targets on the ordinary wake path", () => {
 	expect(landed).toBe(true);
 	expect(submitted).toEqual(["dm:7:2"]);
 	expect(sends).toEqual(["— new conversation —"]);
+	store.close();
+});
+
+test("a background app turn persists generated media without an SSE stream", async () => {
+	const home = useHome("goblin-wake-media-");
+	const work = join(home, "work");
+	mkdirSync(work, { recursive: true });
+	writeFileSync(join(work, "report.txt"), "report-bytes");
+	const store = openStore(join(home, "goblin.sqlite"));
+	const conv = store.resolve(appAddress("background"), join(home, "workspace"));
+	const model = scriptedModel([
+		[
+			{ type: "stream-start", warnings: [] },
+			toolCallPart("file-1", "send_file", JSON.stringify({ path: "report.txt" })),
+			finishPart("tool-calls"),
+		],
+		textParts("report sent"),
+	]).model;
+	const runtime = new Runtime({
+		store,
+		buildStep: () => ({ model, system: "test" }),
+		makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
+			send_file: sendFileTool(work, deliverFile!),
+		}),
+	});
+	const sends: string[] = [];
+	const api = {
+		sendMessage: (_chat: number, text: string) => {
+			sends.push(text);
+			return Promise.resolve({ message_id: sends.length });
+		},
+		sendChatAction: () => Promise.resolve(true),
+	} as unknown as Api;
+	const deps = makeWakeDeps({
+		store,
+		runtime,
+		api,
+		configRef: { current: config, ttsDown: false },
+		synthesize: async () => [],
+		followUpGate: () => undefined,
+		pings: { record: () => {}, lookup: () => null },
+	});
+
+	expect(wakeTarget(deps, "app/background", "run the report")).toBe(true);
+	await waitUntil(
+		() => store.history(conv.id).filter((m) => m.role === "assistant").length === 2,
+		"background media turn lands",
+	);
+	const media = store
+		.history(conv.id)
+		.flatMap((m) => m.parts)
+		.find((p) => p.type === "data-attachment") as
+		| { data: { path: string; filename: string } }
+		| undefined;
+	expect(media?.data.filename).toBe("report.txt");
+	expect(readFileSync(media!.data.path, "utf8")).toBe("report-bytes");
+	await waitUntil(() => sends.length === 1, "background ping lands");
+	await runtime.shutdown();
 	store.close();
 });
 

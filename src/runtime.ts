@@ -71,7 +71,7 @@ export interface TurnSink {
 	// Voice synthesis exposes a visible wait and returns its stopper. Starting
 	// that indicator is a side effect and is fenced by the running turn.
 	onVoiceSynthesisStart?(): () => void;
-	setAuthorityCheck?(check: () => boolean): void;
+	setAuthorityCheck?(check: () => boolean, anchorSeq?: number | null): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
@@ -817,7 +817,7 @@ export class Runtime {
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
 		// Resume members join `turns` before admission so all paths settle them.
 		// An admission failure must not strand a member claimed during recovery.
-		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
+		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch, anchorSeq);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;

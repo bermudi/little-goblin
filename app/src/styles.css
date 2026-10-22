@@ -1482,6 +1482,17 @@ a.hit-title {
 .attachment-thumb {
 	border-radius: 6px;
 }
+/* Voice notes stay in place instead of becoming a detached download. */
+.attachment.audio {
+	border-radius: 14px;
+	padding: 0.2rem 0.6rem;
+}
+.attachment.audio audio {
+	display: block;
+	width: 12rem;
+	max-width: 42vw;
+	height: 1.9rem;
+}
 /* A name that opens the file is a button wearing the name's look. */
 .attachment-name.link {
 	font-size: inherit;

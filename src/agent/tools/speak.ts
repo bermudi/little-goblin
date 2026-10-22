@@ -35,7 +35,7 @@ export function speakTool(
 	const allowed = voices?.length ? [...new Set(voices)] : null;
 	return tool({
 		description:
-			"Synthesize text or a plain-text/Markdown file and send it as Telegram voice notes." +
+			"Synthesize text or a plain-text/Markdown file and send it as voice notes." +
 			(allowed ? ` Voice (optional, match the text's language): ${allowed.join(", ")}.` : ""),
 		inputSchema: speakInputSchema(voices),
 		execute: async ({ text, path, voice }) => {

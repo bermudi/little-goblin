@@ -2,7 +2,7 @@
 // reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +11,13 @@ import type { LanguageModel, UIMessage } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { openStore, type Conversation, type ConversationStore } from "./conversation.ts";
+import { appMediaSink, composeTurnSinks } from "./app-media.ts";
+import { makeTools as realMakeTools } from "./agent/tools/mod.ts";
 import { withScript } from "./agent/tools/script.ts";
 import { setLogFile } from "./log.ts";
-import { Runtime, type RuntimeDeps, type TurnDone, userMessage } from "./runtime.ts";
+import { Runtime, type RuntimeDeps, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
+import { makeDeliverySink } from "./tg/delivery.ts";
+import { fakeApi } from "./testkit/fake-api.ts";
 import {
 	finishPart,
 	scriptedModel,
@@ -21,7 +25,14 @@ import {
 	toolCallPart,
 	type StreamAttempt,
 } from "./testkit/fake-model.ts";
-import { pauseFakeModelAtDelta, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
+import {
+	pauseFakeModelAtDelta,
+	RecordingSink,
+	tmpDb,
+	tmpDir,
+	useHome,
+	waitUntil,
+} from "./testkit.ts";
 import { openTurnJournal, RESOLVED_RETRY_NOTE, type TurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
@@ -40,7 +51,7 @@ function setup(opts: {
 	// Overflow-recovery tests wire a small window and a fold stub.
 	contextWindow?: number;
 	compaction?: RuntimeDeps["compaction"];
-	sinkFor?: () => RecordingSink | null;
+	sinkFor?: (conv: Conversation) => TurnSink | null;
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -73,14 +84,16 @@ function setup(opts: {
 	});
 	const notices: { convId: string; sourceRunId: string; done: TurnDone }[] = [];
 	let sink: RecordingSink | undefined;
+	const sinksBuilt = { count: 0 };
 	const ops = makeResumeOps({
 		store,
 		journal,
 		runtime,
 		captureConversation: (c) => c,
 		makeTools,
-		sinkFor: () => {
-			if (opts.sinkFor !== undefined) return opts.sinkFor();
+		sinkFor: (conv) => {
+			if (opts.sinkFor !== undefined) return opts.sinkFor(conv);
+			sinksBuilt.count++;
 			sink = opts.sinkFactory?.() ?? new RecordingSink();
 			return sink;
 		},
@@ -97,6 +110,7 @@ function setup(opts: {
 		notices,
 		edge,
 		sink: () => sink,
+		sinksBuilt,
 	};
 }
 
@@ -1584,7 +1598,7 @@ describe("turn resume", () => {
 		store.close();
 	});
 
-	test("a missing lane refuses before tools or a successor run are built", async () => {
+	test("a missing lane still builds no successor and executes nothing", async () => {
 		let toolBuilds = 0;
 		const { store, conv, journal, ops, runtime, edge } = setup({
 			sinkFor: () => null,
@@ -1595,13 +1609,18 @@ describe("turn resume", () => {
 		});
 		interruptedRun(store, journal, conv, "run-dead", {
 			anchorSeq: appendUser(store, conv, "go"),
+			// An empty recorded surface passes the check — the lane probe is
+			// the refusal under test, not a missing tool.
+			toolNames: [],
 		});
 		expect(ops.resume(conv.id, "run-dead")).toEqual({
 			kind: "refused",
 			code: "unavailable",
-			reason: "telegram channel is disabled — the interrupted turn cannot resume",
+			reason: "telegram channel is unavailable — the interrupted turn cannot resume",
 		});
-		expect(toolBuilds).toBe(0);
+		// The surface check runs before the lane probe — one validation
+		// build, never an execution, submission, or successor run.
+		expect(toolBuilds).toBe(1);
 		expect(edge.streamCalls).toEqual([]);
 		expect(journal.get("run-dead")!.status).toBe("interrupted");
 		expect(
@@ -1610,6 +1629,283 @@ describe("turn resume", () => {
 				.all("run-dead"),
 		).toEqual([]);
 		await runtime.shutdown();
+		store.close();
+	});
+
+	// Every pre-admission refusal must leave sinkFor uncalled — a real
+	// delivery sink starts its typing interval at construction, so
+	// building one on a refusal path leaks live Telegram API traffic.
+	for (const c of [
+		{
+			name: "undecided calls return needs-decisions",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead");
+				h.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
+				h.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "settings drift refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+					anchorSeq: appendUser(h.store, h.conv, "go"),
+					snapshot: { model: "old/provider", thinking: "low" },
+				});
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "a shrunk tool surface refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+					anchorSeq: appendUser(h.store, h.conv, "go"),
+					toolNames: ["probe", "retired-tool"],
+				});
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "an unreadable tool surface refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+					anchorSeq: appendUser(h.store, h.conv, "go"),
+				});
+				h.store.db.run("UPDATE turn_runs SET tool_names = ? WHERE run_id = ?", [
+					"{not json",
+					"run-dead",
+				]);
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "an unreadable loop checkpoint refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+					anchorSeq: appendUser(h.store, h.conv, "go"),
+				});
+				h.store.db.run("UPDATE turn_runs SET loop_state = ? WHERE run_id = ?", [
+					"[bad",
+					"run-dead",
+				]);
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "foreign post-anchor input refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				const anchorSeq = appendUser(h.store, h.conv, "original ask");
+				interruptedRun(h.store, h.journal, h.conv, "run-dead", { anchorSeq });
+				appendUser(h.store, h.conv, "unrelated follow-up");
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+		{
+			name: "nothing to resume refuses",
+			run: (h: ReturnType<typeof setup>) => {
+				interruptedRun(h.store, h.journal, h.conv, "run-dead");
+				return h.ops.resume(h.conv.id, "run-dead");
+			},
+		},
+	]) {
+		test(`refused resume builds no delivery sink — ${c.name}`, async () => {
+			const h = setup({});
+			const out = await c.run(h);
+			expect(out.kind).not.toBe("resumed");
+			expect(h.sinksBuilt.count).toBe(0);
+			expect(h.edge.streamCalls).toEqual([]);
+			expect(h.journal.get("run-dead")!.status).toBe("interrupted");
+			await h.runtime.shutdown();
+			h.store.close();
+		});
+	}
+
+	test("a busy lane's refusal also builds no delivery sink", async () => {
+		const gated = pauseFakeModelAtDelta(["parked", "tail"], 0);
+		const h = setup({ model: gated.model });
+		interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+			anchorSeq: appendUser(h.store, h.conv, "go"),
+		});
+		const blocker = new RecordingSink();
+		h.runtime.submit(h.conv, userMessage([{ type: "text", text: "hold the lane" }]), blocker);
+		await gated.entered;
+		expect(h.ops.resume(h.conv.id, "run-dead")).toMatchObject({
+			kind: "refused",
+			code: "conflict",
+		});
+		expect(h.sinksBuilt.count).toBe(0);
+		gated.release();
+		expect(await blocker.done).toEqual({ kind: "completed" });
+		await h.runtime.shutdown();
+		h.store.close();
+	});
+
+	test("repeated refused resumes never tick a real delivery sink", async () => {
+		const { api, calls } = fakeApi();
+		const h = setup({
+			sinkFor: (conv) => makeDeliverySink(api, conv, { typingIntervalMs: 5 }),
+		});
+		// needs-decisions twice — the early return never reaches sinkFor.
+		interruptedRun(h.store, h.journal, h.conv, "run-dead");
+		h.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
+		h.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+		expect(h.ops.resume(h.conv.id, "run-dead").kind).toBe("needs-decisions");
+		expect(h.ops.resume(h.conv.id, "run-dead").kind).toBe("needs-decisions");
+		// …nor does a later-settings refusal.
+		interruptedRun(h.store, h.journal, h.conv, "run-drift", {
+			anchorSeq: appendUser(h.store, h.conv, "go"),
+			snapshot: { model: "other/m", thinking: "low" },
+		});
+		expect(h.ops.resume(h.conv.id, "run-drift").kind).toBe("refused");
+		await Bun.sleep(30);
+		expect(calls.filter((c) => c.method === "sendChatAction")).toEqual([]);
+		await h.runtime.shutdown();
+		h.store.close();
+	});
+
+	test("a resume dying at admission fences the just-built sink and stays resumable", async () => {
+		const { api, calls } = fakeApi();
+		let explode = true;
+		const h = setup({
+			attempts: [textParts("resumed answer")],
+			sinkFor: (conv) => makeDeliverySink(api, conv, { typingIntervalMs: 5 }),
+			wrapJournal: (real) => ({
+				...real,
+				noteResumeRequest(runId, eventSeq) {
+					if (explode) throw new Error("journal append exploded");
+					return real.noteResumeRequest(runId, eventSeq);
+				},
+			}),
+		});
+		interruptedRun(h.store, h.journal, h.conv, "run-dead", {
+			anchorSeq: appendUser(h.store, h.conv, "go"),
+		});
+		const out = h.ops.resume(h.conv.id, "run-dead");
+		expect(out).toMatchObject({ kind: "refused", code: "unavailable" });
+		if (out.kind === "refused") {
+			expect(out.reason).toContain("journal append exploded");
+		}
+		// The orphaned sink was fenced at the throw — typing stops and
+		// stays stopped; the source row was never consumed.
+		const ticks = calls.filter((c) => c.method === "sendChatAction").length;
+		await Bun.sleep(30);
+		expect(calls.filter((c) => c.method === "sendChatAction")).toHaveLength(ticks);
+		expect(h.journal.get("run-dead")!.status).toBe("interrupted");
+		// The claim released with the refusal — a repaired journal resumes.
+		explode = false;
+		expect(h.ops.resume(h.conv.id, "run-dead").kind).toBe("resumed");
+		await waitUntil(() => h.journal.get("run-dead")!.status === "resumed", "source consumed");
+		await h.runtime.shutdown();
+		h.store.close();
+	});
+
+	test("an app-lane resume assembles the real media surface — send_file and speak land durably", async () => {
+		const home = useHome("goblin-appresume-");
+		const cwd = tmpDir("goblin-appresume-cwd-");
+		writeFileSync(join(cwd, "note.txt"), "attachment body\n");
+		const store = openStore(tmpDb("goblin-rs-app-"));
+		const conv = store.resolve({ kind: "app", appId: "chat-01", chatId: 0, threadId: 0 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const edge = scriptedModel([
+			[
+				toolCallPart("n1", "send_file", JSON.stringify({ path: "note.txt", caption: "the note" })),
+				toolCallPart("n2", "speak", JSON.stringify({ text: "voice hello" })),
+				finishPart("tool-calls"),
+			],
+			textParts("both sent"),
+		]);
+		// The real tool factory, keyed on the same hook arguments the
+		// resume path and the admitted attempt hand it — the fourth
+		// (deliverFile) argument is what mounts send_file.
+		const synthesized: string[] = [];
+		const tools: RuntimeDeps["makeTools"] = (_conv, voice, recording, file) =>
+			realMakeTools({
+				cwd,
+				...(voice !== undefined
+					? {
+							voice: {
+								synthesize: async (text: string) => {
+									synthesized.push(text);
+									return [new Uint8Array([1, 2, 3])];
+								},
+								deliver: voice,
+								...(recording !== undefined ? { recording } : {}),
+							},
+						}
+					: {}),
+				...(file !== undefined ? { file: { deliver: file } } : {}),
+			});
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: tools,
+		});
+		const sinks = makeResumeSinks({
+			wake: {
+				bell: (c) =>
+					composeTurnSinks(appMediaSink(c.id, { append: (msgs) => store.append(c.id, msgs, {}) })),
+			},
+			operators: () => [],
+		});
+		const ops = makeResumeOps({
+			store,
+			journal,
+			runtime,
+			captureConversation: (c) => c,
+			makeTools: tools,
+			sinkFor: sinks.sinkFor,
+			sinkHooks: sinks.sinkHooks,
+			...(sinks.notifyDone !== undefined ? { notifyDone: sinks.notifyDone } : {}),
+		});
+		const anchorSeq = appendUser(store, conv, "send me the note and say hi");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq,
+			// The recorded surface is what the mounted lane actually offers.
+			toolNames: Object.keys(
+				tools(
+					conv,
+					async () => {},
+					undefined,
+					async () => {},
+				),
+			),
+		});
+		expect(
+			Object.keys(
+				tools(
+					conv,
+					async () => {},
+					undefined,
+					async () => {},
+				),
+			),
+		).toContain("send_file");
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "resumed turn drains");
+		await runtime.shutdown();
+
+		// Both deliveries are durable: an assistant attachment message per
+		// file, and persisted bytes under the home's attachment store.
+		const attachments = store
+			.historyDetail(conv.id)
+			.flatMap((e) => e.message.parts)
+			.filter((p) => p.type === "data-attachment")
+			.map((p) => (p as { data: { path: string; filename: string } }).data);
+		expect(attachments.map((a) => a.filename)).toContain("note.txt");
+		expect(attachments.map((a) => a.filename)).toContain("voice-note.ogg");
+		for (const a of attachments) {
+			expect(a.path.startsWith(join(home, "workspace", "attachments"))).toBe(true);
+			expect(existsSync(a.path)).toBe(true);
+		}
+		// The bytes themselves: the copied file is the source verbatim,
+		// the voice note is exactly the synthesized audio.
+		const note = attachments.find((a) => a.filename === "note.txt")!;
+		expect(readFileSync(note.path, "utf8")).toBe("attachment body\n");
+		const voice = attachments.find((a) => a.filename === "voice-note.ogg")!;
+		expect(new Uint8Array(readFileSync(voice.path))).toEqual(new Uint8Array([1, 2, 3]));
+		expect(synthesized).toEqual(["voice hello"]);
+		expect(journal.get("run-dead")!.status).toBe("resumed");
 		store.close();
 	});
 
@@ -1642,7 +1938,8 @@ describe("turn resume", () => {
 });
 
 // Per-lane routing the composition root wires: app lanes take the bell
-// with no hooks and no terminal DM (the bell is already the notice);
+// — appMediaSink carries file and voice-note delivery, so its hooks are
+// media-true — and no terminal DM (the bell is already the notice);
 // telegram lanes take the delivery sink, full hooks, and one DM.
 describe("makeResumeSinks", () => {
 	function sinks() {
@@ -1673,12 +1970,14 @@ describe("makeResumeSinks", () => {
 		store.close();
 	});
 
-	test("an app lane takes the bell, no hooks, and no DM — the bell is the notice", async () => {
+	test("an app lane takes the bell, the media hooks, and no DM — the bell is the notice", async () => {
 		const store = openStore(tmpDb("goblin-rs-"));
 		const conv = store.resolve({ kind: "app", appId: "chat-01", chatId: 0, threadId: 0 }, "/w");
 		const { sent, bellSink, deps } = sinks();
 		expect(deps.sinkFor(conv)).toBe(bellSink);
-		expect(deps.sinkHooks(conv)).toEqual({ voice: false, recording: false, file: false });
+		// The real app bell composes appMediaSink: file and voice-note are
+		// mountable, the recording indicator is telegram-only.
+		expect(deps.sinkHooks(conv)).toEqual({ voice: true, recording: false, file: true });
 		deps.notifyDone?.(conv, "run-abcdef123456", { kind: "completed" });
 		await Bun.sleep(20);
 		expect(sent).toHaveLength(0);

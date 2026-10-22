@@ -60,8 +60,8 @@ export interface ResumeDeps {
 	runtime: Runtime;
 	captureConversation(conv: Conversation): Conversation;
 	makeTools: RuntimeDeps["makeTools"];
-	// Null means the lane's delivery channel is disabled — refuse before
-	// the resume can build tools or submit a turn.
+	// Null means the lane's delivery channel is unavailable — refuse after
+	// validation builds its tool surface, before any sink or submission.
 	sinkFor(conv: Conversation): TurnSink | null;
 	sinkHooks(conv: Conversation): { voice: boolean; recording: boolean; file: boolean };
 	notifyDone?(conv: Conversation, sourceRunId: string, done: TurnDone): void;
@@ -80,9 +80,14 @@ export function makeResumeSinks(
 		sinkFor: (conv) =>
 			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : (deps.wake.delivery?.(conv) ?? null),
 		sinkHooks: (conv) =>
-			channelOf(conv.id) === "app" || deps.wake.delivery === undefined
-				? { voice: false, recording: false, file: false }
-				: { voice: true, recording: true, file: true },
+			// The app bell composes appMediaSink — durable file and voice-note
+			// delivery (no recording indicator) — so its surface carries
+			// send_file and speak like telegram's, minus the recording hook.
+			channelOf(conv.id) === "app"
+				? { voice: true, recording: false, file: true }
+				: deps.wake.delivery === undefined
+					? { voice: false, recording: false, file: false }
+					: { voice: true, recording: true, file: true },
 		notifyDone: (conv, sourceRunId, done) => {
 			if (channelOf(conv.id) === "app") return;
 			if (deps.sendDm === undefined) {
@@ -491,13 +496,6 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (!runtime.accepting()) {
 				return refused("unavailable", "the runtime is shut down");
 			}
-			const inner = deps.sinkFor(conv);
-			if (inner === null) {
-				return refused(
-					"unavailable",
-					"telegram channel is disabled — the interrupted turn cannot resume",
-				);
-			}
 			const calls = journal.callsFor(run.runId);
 			const undecided = calls.filter((c) => c.state === "dispatched");
 			if (undecided.length > 0) {
@@ -610,6 +608,16 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				filterRetryUsed: run.filterRetryUsed,
 				resumedFrom: run.runId,
 			};
+			// The sink is the last thing built — every refusal above must not
+			// create it: a real delivery sink starts its typing interval at
+			// construction, and only admission or an explicit fence stops it.
+			const inner = deps.sinkFor(conv);
+			if (inner === null) {
+				return refused(
+					"unavailable",
+					"telegram channel is unavailable — the interrupted turn cannot resume",
+				);
+			}
 			// A prototype clone still splits the receiver — getters and private state belong to the real instance, so forward through it; only onDone is overridden.
 			const onDone = async (done: TurnDone) => {
 				try {
@@ -641,6 +649,21 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				}
 			} catch (err) {
 				claimed.delete(run.runId);
+				// The attempt was never admitted — nobody else will settle this
+				// sink, so fence it here (its typing interval is already live).
+				try {
+					void Promise.resolve(inner.onDone({ kind: "fenced" })).catch((disposeErr: unknown) => {
+						log.warn("resume sink disposal failed", disposeErr, {
+							conversation: convId,
+							run: run.runId,
+						});
+					});
+				} catch (disposeErr) {
+					log.warn("resume sink disposal failed", disposeErr, {
+						conversation: convId,
+						run: run.runId,
+					});
+				}
 				log.error("resume event could not be recorded", err, {
 					conversation: convId,
 					run: run.runId,

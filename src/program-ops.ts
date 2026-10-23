@@ -46,7 +46,10 @@ export interface ProgramOps {
 	update(
 		id: number,
 		patch: EditableProgramPatch,
-		address: ProgramAddress,
+		/** Staging a grant-shaped patch pins the proposal to its approval
+		 *  lane, so staging without one refuses; direct edits (rename,
+		 *  lateness, reschedule) never touch it — hook's rule. */
+		address?: ProgramAddress,
 		signal?: AbortSignal,
 	): Promise<ProgramOpResult>;
 	remove(id: number): ProgramOpResult;
@@ -92,15 +95,23 @@ export function startProgramOps(deps: ProgramOpsDeps): ProgramOps {
 			const current = deps.programs.get(id);
 			if (current === null) return { kind: "error", message: `no program ${id}` };
 			try {
-				if (requiresApproval(current, patch)) {
-					// Any grant-shaped component stages the whole requested
-					// patch — no partial application while it is pending.
-					return await stage(
-						deps,
-						deps.programs.proposals.proposeUpdate(id, patch, address),
-						signal,
-					);
+			if (requiresApproval(current, patch)) {
+				// Any grant-shaped component stages the whole requested
+				// patch — no partial application while it is pending. The
+				// staged row pins its approval lane, so an addressless
+				// surface can apply directly but can never stage.
+				if (address === undefined) {
+					return {
+						kind: "error",
+						message: "no destination — this surface has no conversation address",
+					};
 				}
+				return await stage(
+					deps,
+					deps.programs.proposals.proposeUpdate(id, patch, address),
+					signal,
+				);
+			}
 				const program = deps.programs.update(id, storePatch(patch));
 				if (program === null) return { kind: "error", message: `no program ${id}` };
 				log.info("program updated", {

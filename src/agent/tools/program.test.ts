@@ -1018,4 +1018,134 @@ describe("responsibility destinations", () => {
 		const out = (await exec(tool, { action: "toggle", id: otherPin.id })) as { error?: string };
 		expect(out.error).toBe(`no program ${otherPin.id}`);
 	});
+
+	test("an addressless project turn applies direct edits; only grant-shaped updates refuse", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const prog = programs.create({
+			name: "watch",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		});
+		const tool = programTool({
+			programs,
+			project: {
+				projectId: "p1",
+				resps: { get: (id: string) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		// Rename, lateness and reschedule stay inside granted authority —
+		// no destination needed, nothing staged.
+		const renamed = (await exec(tool, { action: "update", id: prog.id, name: "renamed" })) as {
+			program?: { name: string };
+			error?: string;
+		};
+		expect(renamed.error).toBeUndefined();
+		expect(renamed.program!.name).toBe("renamed");
+		const late = (await exec(tool, {
+			action: "update",
+			id: prog.id,
+			maxLatenessMinutes: 30,
+		})) as { error?: string };
+		expect(late.error).toBeUndefined();
+		expect(programs.get(prog.id)!.maxLatenessMinutes).toBe(30);
+		const rescheduled = (await exec(tool, {
+			action: "update",
+			id: prog.id,
+			cron: "*/30 * * * *",
+		})) as { error?: string };
+		expect(rescheduled.error).toBeUndefined();
+		expect(programs.get(prog.id)!.cron).toBe("*/30 * * * *");
+		expect(programs.proposals.pending()).toEqual([]);
+		// A charter rewrite is grant-shaped — staging pins a lane, so an
+		// addressless turn refuses before anything is staged.
+		const grant = (await exec(tool, { action: "update", id: prog.id, charter: "new" })) as {
+			error?: string;
+		};
+		expect(grant.error).toBe("no destination — this surface has no conversation address");
+		expect(programs.get(prog.id)!.charter).toBe("c");
+		expect(programs.proposals.pending()).toEqual([]);
+	});
+
+	test("a project turn's review cannot re-post another conversation's proposal", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const foreign = programs.create({
+			name: "foreign",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r2",
+		});
+		// Another conversation stages a create and an update for its own
+		// lane (the update targets another project's program).
+		const elsewhere: ProgramProposal[] = [];
+		const foreignTool = programTool({
+			programs,
+			target: "app/other",
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+			requestApproval: async (proposal) => {
+				elsewhere.push(proposal);
+			},
+		});
+		const theirCreate = (await exec(foreignTool, {
+			action: "create",
+			name: "theirs",
+			charter: "c",
+			cron: "*/20 * * * *",
+		})) as { proposal: { id: number } };
+		const theirUpdate = (await exec(foreignTool, {
+			action: "update",
+			id: foreign.id,
+			charter: "rewritten",
+		})) as { proposal: { id: number } };
+		// The project turn shares the store but not the lane.
+		const mine: ProgramProposal[] = [];
+		const tool = programTool({
+			programs,
+			target: "app/mine",
+			project: {
+				projectId: "p1",
+				resps: { get: (id: string) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+			requestApproval: async (proposal) => {
+				mine.push(proposal);
+			},
+		});
+		// A create has no program to scope against — its pinned
+		// destination decides, and that is another conversation's lane.
+		const poached = (await exec(tool, { action: "review", id: theirCreate.proposal.id })) as {
+			error?: string;
+		};
+		expect(poached.error).toBe(`no proposal ${theirCreate.proposal.id}`);
+		// The update's program belongs to another project's lane.
+		const crossProject = (await exec(tool, { action: "review", id: theirUpdate.proposal.id })) as {
+			error?: string;
+		};
+		expect(crossProject.error).toBe(`no proposal ${theirUpdate.proposal.id}`);
+		expect(elsewhere).toHaveLength(2); // only the original posts
+		expect(programs.proposals.get(theirCreate.proposal.id)!.state).toBe("pending");
+		// Its own lane's create re-posts through review.
+		const own = (await exec(tool, {
+			action: "create",
+			name: "ours",
+			charter: "c",
+			cron: "*/20 * * * *",
+		})) as { proposal: { id: number } };
+		expect(mine).toHaveLength(1);
+		const repost = (await exec(tool, { action: "review", id: own.proposal.id })) as {
+			proposal?: { id: number };
+			error?: string;
+		};
+		expect(repost.error).toBeUndefined();
+		expect(repost.proposal!.id).toBe(own.proposal.id);
+		expect(mine).toHaveLength(2);
+	});
 });

@@ -170,6 +170,14 @@ Rulings:
   lane inside the handed-over project (responsibility-destination
   creates, scoped verbs, no hook minting — no operator DM exists there);
   every other surface stages through the durable proposal gate above.
+  Only staging needs a destination: on an addressless project turn the
+  direct verbs still apply (rename, lateness, reschedule, hook disable),
+  while a grant-shaped update refuses — its staged row would have no
+  lane to pin. `review` scopes a staged proposal by the grant it asks
+  for: the program it patches, or, on a create (no program row yet),
+  the conversation its draft pins as its destination — a foreign lane's
+  pending proposal reads as absent, so one project turn can never
+  re-post another conversation's approval card.
 
   A follow-up program is create-once per responsibility. Its durable
   identity is its `kind` ("followup", service-minted and unpatchable),

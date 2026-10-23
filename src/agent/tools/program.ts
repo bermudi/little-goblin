@@ -289,9 +289,9 @@ export const programTool = (deps: ProgramToolDeps) => {
 					if (deps.project !== undefined && scopedGet(input.id) === null) {
 						return { error: `no program ${input.id}` };
 					}
-					if (address === undefined) {
-						return { error: "no destination — this turn has no conversation address" };
-					}
+					// No address gate here: direct edits apply without a
+					// destination; ops.update refuses only the grant-shaped
+					// patches that would have to stage one.
 					return opResult(await ops.update(input.id, patch, address, signal));
 				}
 				case "delete":
@@ -348,13 +348,20 @@ export const programTool = (deps: ProgramToolDeps) => {
 				}
 				case "review": {
 					if (deps.project !== undefined) {
-						// A proposal rides this lane only if the program it
-						// patches is in scope — foreign lanes read as absent.
+						// A proposal rides this lane only if the grant it asks
+						// for lands in scope — the program it patches, or, on
+						// a create (no target row yet), the conversation its
+						// draft pins as its destination. Foreign lanes read as
+						// absent either way; a staged proposal always pins a
+						// real conversation (validTarget rejects resp:), so
+						// plain address equality is the whole match.
 						const proposal = deps.programs.proposals.get(input.id);
-						if (
-							proposal === null ||
-							(proposal.targetId !== null && scopedGet(proposal.targetId) === null)
-						) {
+						const inLane =
+							proposal !== null &&
+							(proposal.targetId !== null
+								? scopedGet(proposal.targetId) !== null
+								: deps.target !== undefined && proposal.target === deps.target);
+						if (!inLane) {
 							return { error: `no proposal ${input.id}` };
 						}
 					}

@@ -23,7 +23,13 @@ export interface AdmissionDeps<M extends AdmittedMember = AdmittedMember> {
 	getConversation(): Conversation | null;
 	captureConversation?: ((conv: Conversation) => Conversation) | undefined;
 	claimQueued: ClaimQueued<M>;
+	/** Durable input seqs still queued — filtered OUT of the view until their own turn. */
 	pendingSeqs(): ReadonlySet<number>;
+	/**
+	 * Durable user-input seqs this attempt owns — read AFTER claimQueued,
+	 * which can add current members.
+	 */
+	ownedInputSeqs(): ReadonlySet<number>;
 	modelEntries(): { seq: number; message: UIMessage }[];
 	now(): number;
 }
@@ -39,8 +45,9 @@ export interface AdmissionSnapshot {
 	entries: { seq: number; message: UIMessage }[];
 	anchorSeq: number | null;
 	steerMarkSeed: number;
-	// The durable user-input seqs this attempt owns — the post-queuedIds
-	// admission set, so resume can tell its inputs from foreign later ones.
+	// The durable user-input seqs this attempt owns — admitted user
+	// entries whose seqs the members carry, after the still-queued seqs
+	// are filtered out. Resume tells its inputs from foreign later ones.
 	ownedInputSeqs: number[];
 	turnStartMs: number;
 }
@@ -70,18 +77,24 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 	}
 	const epoch = conv.epoch;
 	if (recovery !== undefined) deps.claimQueued(deps.live);
-	// Pending work leaves by its own seqs — a queued submit that reuses an
-	// older event's message id must not hide that older event from the
-	// admission set.
 	const queuedSeqs = deps.pendingSeqs();
+	// Pending inputs are excluded BY SEQ — duplicate UIMessage ids can
+	// alias a queued member to a same-id historical entry, but their
+	// durable seqs differ.
 	const entries = deps.modelEntries().filter((e) => !queuedSeqs.has(e.seq));
+	const owned = deps.ownedInputSeqs();
 	let anchorSeq: number | null = null;
 	for (const e of entries) {
 		if (e.message.role === "user" && (anchorSeq === null || e.seq > anchorSeq)) anchorSeq = e.seq;
 	}
 	let steerMarkSeed = 0;
 	for (const e of entries) steerMarkSeed = Math.max(steerMarkSeed, e.seq);
-	const ownedInputSeqs = entries.filter((e) => e.message.role === "user").map((e) => e.seq);
+	// Only entries whose seq this attempt actually claimed are owned —
+	// a historical user input admitted into the view is not this turn's
+	// input just because it precedes it.
+	const ownedInputSeqs = entries
+		.filter((e) => e.message.role === "user" && owned.has(e.seq))
+		.map((e) => e.seq);
 	log.info("turn started", { conversation: deps.convId, epoch, history: entries.length });
 	return {
 		kind: "admitted",

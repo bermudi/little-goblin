@@ -183,7 +183,6 @@ function rig(
 	const queue: RecMember[] = [];
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const unrequeued: RecMember[][] = [];
-	const entries: Array<{ seq: number; message: UIMessage }> = [];
 	const deps: StreamDeps<RecMember> = {
 		convId: "c1",
 		epoch: 1,
@@ -196,7 +195,15 @@ function rig(
 		step: { model, system: "test" },
 		messages: [{ role: "user", content: "run the thing" }],
 		tools: {},
-		view: { convId: "c1", tools: {}, modalities: new Set(["text"]), carries: () => true },
+		view: {
+			convId: "c1",
+			tools: {},
+			modalities: new Set(["text"]),
+			carries: () => true,
+			skillRef: () => {
+				throw new Error("no skill parts expected in this fixture");
+			},
+		},
 		claimSteers: () => queue.splice(0, queue.length),
 		unrequeueSteers: (steered) => unrequeued.push(steered),
 		settle: (m, done) => settlements.push({ m, done }),
@@ -222,7 +229,6 @@ function rig(
 		queue,
 		settlements,
 		unrequeued,
-		entries,
 		prompts,
 		toolChoices,
 	};
@@ -460,20 +466,9 @@ describe("driveStream", () => {
 		r.deps.tools = { probe };
 		const steered = member("steered mid-turn", true, 7);
 		r.queue.push(steered);
-		// Durable history: the steered message at seq 7, an unclaimed
-		// submit above it at seq 9 — the mark advances by identity, not
-		// position.
-		r.entries.push(
-			{ seq: 7, message: steered.message },
-			{
-				seq: 9,
-				message: {
-					id: "u-other",
-					role: "user",
-					parts: [{ type: "text", text: "queued not steered" }],
-				},
-			},
-		);
+		// The member carries its own durable seq — ownership advances by
+		// that seq, never by rediscovering ids in history.
+		expect(steered.seq).toBe(7);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
@@ -579,6 +574,9 @@ describe("driveStream", () => {
 				tools: {},
 				modalities: new Set(["text", "image"]),
 				carries: () => true,
+				skillRef: () => {
+					throw new Error("no skill parts expected in this fixture");
+				},
 			},
 		});
 		const steer = member("photo steer");

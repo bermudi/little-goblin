@@ -622,3 +622,20 @@ section: same file.
   the occurrence stays due and the next scan retries the same source
   key onto the same work event. Generic Telegram fires keep
   attempt-once.
+
+
+## Skill picker & temp skills (ruling 2026-10-21)
+
+Composer skill button → sheet with the catalog (every valid entry,
+manual-only included, description + body size) and a from-link field.
+A link runs the fetch pipeline server-side
+(`POST /api/app/skills/preview`) and renders a preview card — name,
+description, body size, source repo, System One injection verdict —
+where yes stages the chip and no drops it; nothing is fetched into a
+send the card didn't approve. The staged chip rides the composer's
+existing staged-chip rows; send appends the `data-skill` part
+(ruling: design/skills.md → Skill invocation), and the transcript
+renders it as a chip on the user message, like attachments and notes.
+Drafts stay text-only — staged skills are references, not prose
+(Composer drafts, above). The listing endpoint's response gains the
+picker's catalog view; the operator Skills page is unchanged.

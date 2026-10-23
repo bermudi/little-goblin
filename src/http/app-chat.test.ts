@@ -222,6 +222,56 @@ describe("app chat", () => {
 		}
 	});
 
+	test("a data-skill part validates name and temp path against the cache", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-skill" }),
+			});
+			const chat = (data: Record<string, unknown>) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: "app/chat-skill",
+						message: { id: "m1", role: "user", parts: [{ type: "data-skill", data }] },
+					}),
+				});
+			expect((await chat({ name: "Bad Name" })).status).toBe(422);
+			expect((await chat({ name: "../escape" })).status).toBe(422);
+			expect(
+				(await chat({ url: "https://github.com/o/r/tree/main/demo", path: "/etc/passwd" }))
+					.status,
+			).toBe(422);
+			// A support file under the cache is not the descriptor's
+			// SKILL.md — only the exact cached body shape passes.
+			const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+			const { mkdirSync, writeFileSync } = await import("node:fs");
+			mkdirSync(join(digestDir, "demo"), { recursive: true });
+			writeFileSync(join(digestDir, "demo", "payload.txt"), "x");
+			expect(
+				(
+					await chat({
+						url: "https://github.com/o/r/tree/main/demo",
+						path: join(digestDir, "demo", "payload.txt"),
+					})
+				).status,
+			).toBe(422);
+			// A staged copy under this home's skillcache passes and persists.
+			const cached = join(digestDir, "demo", "SKILL.md");
+			writeFileSync(cached, "x");
+			const ok = await chat({
+				url: "https://github.com/o/r/tree/main/demo",
+				path: cached,
+			});
+			expect(ok.status).toBe(200);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("chat refuses a non-app conversation id and an unknown one", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

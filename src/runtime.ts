@@ -7,6 +7,7 @@ import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk }
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import { isTransientTurnFailure } from "./agent/provider-errors.ts";
+import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -912,6 +913,8 @@ export class Runtime {
 					captureConversation: this.deps.captureConversation,
 					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
 					pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
+					// Read after claimQueued — it can add members to `turns`.
+					ownedInputSeqs: () => new Set(turns.map((t) => t.seq)),
 					modelEntries: () => store.modelEntries(convId),
 					now: Date.now,
 				},
@@ -1092,12 +1095,14 @@ export class Runtime {
 				tools,
 				modalities: step.inputModalities,
 				carries: accepts.current.carries,
+				skillRef: resolveSkillRef,
 			};
 			const merged = await buildModelView(viewCtx, {
 				entries,
 				prior: memory.prior,
 				current: memory.current,
 				partial: recovery?.partial ?? null,
+				ownedSeqs: snapshot.ownedInputSeqs,
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 

@@ -383,6 +383,8 @@ export async function driveStream<M extends WireMember>(
 			// fold must still name these steered inputs the attempt's own.
 			// Each seq came through conversion with its event, so only the
 			// steers this attempt actually folded are recorded as owned.
+			// Ownership is the member's own durable seq, never a rediscovery
+			// through app-controlled message ids.
 			for (const seq of claimedSeqs) {
 				if (seq > steerMark) steerMark = seq;
 				ownedInputSeqs.add(seq);

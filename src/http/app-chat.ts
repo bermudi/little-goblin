@@ -11,6 +11,7 @@ import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
 import type { TurnDone } from "../runtime.ts";
+import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { appStreamSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
@@ -42,6 +43,17 @@ const chatBody = z
 										code: "custom",
 										path: [i, "data", "id"],
 										message: "a note attachment carries only the note id",
+									});
+								}
+								continue;
+							}
+							if (p.type === SKILL_PART) {
+								const ref = skillPartDataSchema.safeParse(p.data);
+								if (!ref.success) {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "data"],
+										message: `invalid skill invocation: ${z.prettifyError(ref.error)}`,
 									});
 								}
 								continue;

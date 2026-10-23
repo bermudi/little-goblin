@@ -367,3 +367,45 @@ Effects are premium-gated at the receiving chat — the first
 definite, nothing landed) and drops effects for the process lifetime;
 restart re-probes. Multi-image sends share one album; documents never wait;
 a group timeout means the album may be live (uncertain, never resent).
+
+## /skill (ruling 2026-10-21, operator ask)
+
+The Telegram door onto explicit skill invocation (mechanism ruling:
+design/skills.md → Skill invocation). `/skill <name>` submits the turn
+with a `data-skill` part plus any accompanying text; the name resolves
+against the catalog including manual-only ones — naming it is the
+operator's override. A name the catalog doesn't know, or a bare
+`/skill`, replies with the catalog (name, one-line description,
+manual-only marked). `/skill <github-url> [text…]` runs the temp-skill
+pipeline at intake and replies with the preview — name, size, source,
+System One verdict — and a ✅/🚫 row; yes submits the held turn (part +
+held text), no drops it. The pending confirm is keyed by a short token
+(the URL cannot ride the 64-byte callback cap), lives in process
+memory only — a restart or `/stop`-adjacent epoch change loses it, and
+the command re-runs instantly off the skillcache.
+
+Invariants:
+
+- **Operators only.** `/skill` rides the privileged-command set —
+  sender-gated before routing, catalog read, or fetch, like `/memory`
+  and `/voice`. The callback tap is refused the same way.
+- **Shared delivery.** A `/skill` turn is indistinguishable from a
+  typed one: the durable message starts with the shared-chat audience
+  note in group lanes (never in DM/guest lanes), and the turn gets the
+  same conversation-configured sink ordinary intake builds (voice,
+  rating, rich drafts) — both doors construct it through one helper.
+- **Bounded replies.** Every reply — the catalog and the unknown-name
+  answer alike — is chunked under Telegram's message cap, packed at
+  newline boundaries; a pathological line splits rather than
+  truncates, and the echoed name is bounded independently. Replies are
+  awaited, so a failed send is a failed command.
+- **Epoch fencing.** The conversation's epoch is captured before the
+  fetch and re-probed synchronously after the fetch and after scoring
+  — a `/stop` or `/new` landing mid-flight cancels to a plain reply,
+  never an actionable card. Between a successful probe and the
+  pending+preview publish there is no await: nothing can interpose.
+- **Single-use, expiring confirms.** A pending confirm is deleted when
+  tapped regardless of outcome, checked against its 15-minute TTL at
+  tap time, and invokes only when the conversation still exists and
+  its epoch still matches the capture — anything else is stamped
+  stale/gone, never submitted.

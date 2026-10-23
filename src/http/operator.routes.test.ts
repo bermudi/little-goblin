@@ -70,15 +70,153 @@ function getWithQuery(tail: string, query: string): Promise<Response> {
 describe("state viewer routes", () => {
 	test("skills lists the fixture catalog", () => {
 		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
-		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "d");
+		writeFileSync(
+			join(home, "workspace/skills/weather/SKILL.md"),
+			"---\nname: weather\ndescription: forecast\n---\nsun",
+		);
 		mkdirSync(join(home, "workspace/skills-proposed"), { recursive: true });
 		const res = get("skills");
 		return res.then(async (r) => {
 			expect(r.status).toBe(200);
-			const body = (await r.json()) as { skills: unknown[]; proposed: unknown[] };
+			const body = (await r.json()) as {
+				skills: unknown[];
+				proposed: unknown[];
+				catalog: Array<{ name: string; manualOnly: boolean; bodyBytes: number }>;
+			};
 			expect(body.skills.length).toBe(1);
 			expect(body.proposed).toEqual([]);
+			// The picker's catalog view rides the same response.
+			expect(body.catalog).toHaveLength(1);
+			expect(body.catalog[0]!.name).toBe("weather");
+			expect(body.catalog[0]!.bodyBytes).toBeGreaterThan(0);
 		});
+
+	});
+	test("skills/catalog includes manual-only entries", () => {
+		mkdirSync(join(home, "workspace/skills/secret"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace/skills/secret/SKILL.md"),
+			"---\nname: secret\ndescription: shh\ndisable-model-invocation: true\n---\nx",
+		);
+		const res = get("skills");
+		return res.then(async (r) => {
+			const body = (await r.json()) as {
+				catalog: Array<{ name: string; manualOnly: boolean }>;
+			};
+			expect(body.catalog.map((c) => c.name)).toEqual(["secret"]);
+			expect(body.catalog[0]!.manualOnly).toBe(true);
+		});
+	});
+
+	test("skills/preview fetches, scores, stamps, and answers the card", async () => {
+		// Build a canonical tarball fixture — body past the shared
+		// checker's default sampling cap, sentinel at the tail, so the
+		// gate must see ALL the scored bytes.
+		const src = mkdtempSync(join(tmpdir(), "preview-src-"));
+		mkdirSync(join(src, "r-main/demo"), { recursive: true });
+		const skillBody =
+			"---\nname: demo\ndescription: the demo\n---\n" +
+			"pad ".repeat(2500) +
+			"TAIL_SENTINEL";
+		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
+		const out = mkdtempSync(join(tmpdir(), "preview-ball-"));
+		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
+		await proc.exited;
+		const ball = await Bun.file(join(out, "b.tgz")).bytes();
+
+		const scoredTexts: string[] = [];
+		const d = deps();
+		d.skillFetch = {
+			gate: {
+				decide: (async (text: string) => {
+					scoredTexts.push(text);
+					return {
+						answers: { injection: 0.9, severity: 0.1 },
+						tokens: { input: 1, output: 1 },
+						latencyMs: 5,
+						model: "gate",
+					};
+				}) as never,
+			},
+			fetchImpl: (async () => new Response(ball as never)) as unknown as typeof fetch,
+		};
+		const res = handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>;
+		const r = await res;
+		expect(r.status).toBe(200);
+		const body = (await r.json()) as {
+			name: string;
+			verdict: { status: string };
+			path: string;
+			digest: string;
+			cached: boolean;
+		};
+		expect(body.name).toBe("demo");
+		expect(body.verdict.status).toBe("malicious");
+		expect(scoredTexts).toEqual([skillBody]);
+		expect(body.cached).toBe(false);
+		// The verdict was stamped into the cached descriptor.
+		const { readFileSync: rf } = await import("node:fs");
+		const descriptor = JSON.parse(
+			rf(join(home, "state", "skillcache", body.digest, "skill.json"), "utf8"),
+		) as { verdict: { status: string } };
+		expect(descriptor.verdict.status).toBe("malicious");
+		// A re-preview of the stamped cache reuses the first verdict —
+		// the gate is not re-run and the card cannot drift from what
+		// injection will inject.
+		d.skillFetch!.gate = {
+			decide: (async () => {
+				scoredTexts.push("RE-SCORED");
+				return {
+					answers: { injection: 0.0, severity: 0.0 },
+					tokens: { input: 1, output: 1 },
+					latencyMs: 5,
+					model: "gate",
+				};
+			}) as never,
+		};
+		const r2 = await (handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>);
+		expect(r2.status).toBe(200);
+		const body2 = (await r2.json()) as { verdict: { status: string }; cached: boolean };
+		expect(body2.verdict.status).toBe("malicious");
+		expect(body2.cached).toBe(true);
+		expect(scoredTexts).toEqual([skillBody]);
+		rmSync(src, { recursive: true, force: true });
+		rmSync(out, { recursive: true, force: true });
+	});
+
+	test("skills/preview without the gate is 503", async () => {
+		const res = handleOperatorRoute(
+			deps(),
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>;
+		expect((await res).status).toBe(503);
 	});
 
 	test("skills/file serves SKILL.md and rejects a bad name", async () => {

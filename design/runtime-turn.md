@@ -157,7 +157,13 @@ steer carries its own event seq on the queued member from the append
 that persisted it — the fold records exactly that seq, never a scan
 of the view matching message ids (two steers may share one id; only
 the one that converted is owned), and admission's pending exclusion
-is seq-based for the same reason. `resume_request_seqs` on the
+is seq-based for the same reason. Every queued member's seq comes
+from the append that persisted it (or the persisting caller's
+registry) — never a `lastUserSeq` rediscovery — and the attempt owns
+only the seqs its members carry: historical user entries stay in the
+model view as context but are never owned, so an owning-turn-only
+payload (a skill body) resolves for owned seqs alone (2026-10-21).
+`resume_request_seqs` on the
 interrupted source names the generated
 events that are this run's own — the same store transaction as the
 event append, which returns the real seq it wrote (never a
@@ -241,10 +247,10 @@ turn-structure change.
   and never re-runs for steered input; the reply's anchor, retention
   source, and reviewer evidence read the exchange as ended, bounded by
   the ownership mark. The #82 ruling — durability is not ownership —
-  means the `queuedIds` filter is **admission's**, not the view
-  builder's: the view receives already-owned entries and cannot express
-  "read what is merely durable", so the bug class cannot reappear as a
-  view-layer convenience.
+  means the `pendingSeqs` filter is **admission's**, not the view
+  builder's: the view receives historical context and admitted inputs,
+  never still-pending inputs. Its separate owned-input seq set names
+  only the current members, not every user entry in that context.
 - **The sink contract.** Exactly one `onDone` per submit — completed,
   fenced, or error — including drops by `/stop` and the drain crash
   guard. `notifyDone`'s `doneSent` guard stays runtime-owned; every

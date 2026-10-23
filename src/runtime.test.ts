@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -97,6 +97,158 @@ function submit(r: Rig, text: string, sink?: TurnSink): TurnSink {
 }
 
 const drain = (r: Rig) => waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+
+describe("skill body ownership across turns", () => {
+	test("the owning turn injects the body; a later turn sees only the marker", async () => {
+		const home = useHome("goblin-rt-skill-");
+		mkdirSync(join(home, "workspace/skills/rtdemo"), { recursive: true });
+		const skillPath = join(home, "workspace/skills/rtdemo/SKILL.md");
+		writeFileSync(skillPath, "---\nname: rtdemo\ndescription: d\n---\nRT-BODY-AAA");
+		const { model, prompts } = recordingModel(["ok"], 1);
+		const store = openStore(tmpDb("goblin-rt-j-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({ model, store, deps: { turnJournal: journal } });
+		try {
+			// Caller contract: append the durable user event, then submit
+			// with the append's seq.
+			const skill = userMessage([
+				{ type: "data-skill", data: { name: "rtdemo" } },
+				{ type: "text", text: "use it" },
+			] as never);
+			const firstSeq = r.store.append(r.conv.id, [skill])[0]!;
+			r.runtime.submitPersisted(r.conv, skill, new HeadlessSink(), firstSeq);
+			await drain(r);
+			expect(prompts[0]).toContain("RT-BODY-AAA");
+
+			// Explicit retry of that same input re-owns it — and now reads
+			// the EDITED body.
+			writeFileSync(skillPath, "---\nname: rtdemo\ndescription: d\n---\nRT-BODY-BBB");
+			r.runtime.submitPersisted(r.conv, skill, new HeadlessSink(), firstSeq);
+			await drain(r);
+			expect(prompts[1]).toContain("RT-BODY-BBB");
+
+			// An ordinary input reusing the skill message's id: ownership
+			// rides the durable seq, so the old invocation stays a marker.
+			const ordinary = {
+				id: skill.id,
+				role: "user",
+				parts: [{ type: "text", text: "just text" }],
+			} as unknown as UIMessage;
+			r.runtime.submit(r.conv, ordinary, new HeadlessSink());
+			await drain(r);
+			const secondSeq = r.store.lastUserSeq(r.conv.id)!;
+			expect(secondSeq).not.toBe(firstSeq);
+			expect(prompts[2]).toContain("[skill: rtdemo]");
+			expect(prompts[2]).not.toContain("RT-BODY-AAA");
+			expect(prompts[2]).not.toContain("RT-BODY-BBB");
+
+			const row = r.store.db
+				.query<{ run_id: string }, [number]>(
+					"SELECT run_id FROM turn_runs WHERE anchor_seq = ?",
+				)
+				.get(secondSeq);
+			expect(row).not.toBeNull();
+			expect(journal.get(row!.run_id)!.ownedInputSeqs).toEqual([secondSeq]);
+			expect(journal.get(row!.run_id)!.ownedInputSeqs).not.toContain(firstSeq);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a folded steer owns only its own durable seq — same message id, no history bleed", async () => {
+		const home = useHome("goblin-rt-steer-");
+		mkdirSync(join(home, "workspace/skills/rtdemo"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace/skills/rtdemo/SKILL.md"),
+			"---\nname: rtdemo\ndescription: d\n---\nSTEER-SKILL-UNIQUE",
+		);
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const probe = tool({
+			description: "probe",
+			inputSchema: z.object({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return "probe-result";
+			},
+		});
+		const { model, streamCalls } = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+			textParts("next"),
+		]);
+		const prompt = (i: number): string => JSON.stringify(streamCalls[i]!.prompt);
+		const store = openStore(tmpDb("goblin-rt-sj-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({ model, store, tools: { probe }, deps: { turnJournal: journal } });
+		try {
+			// A historical invocation — the SAME app id as the steer will
+			// carry, but a different durable seq.
+			const historical: UIMessage = {
+				id: "reused",
+				role: "user",
+				parts: [
+					{ type: "data-skill", data: { name: "rtdemo" } },
+					{ type: "text", text: "old invoke" },
+				],
+			} as UIMessage;
+			r.store.append(r.conv.id, [historical]);
+			const historicalSeq = r.store.lastUserSeq(r.conv.id)!;
+			r.store.append(
+				r.conv.id,
+				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as UIMessage],
+				{ anchorSeq: historicalSeq },
+			);
+			const head = new RecordingSink();
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "head" }]), head);
+			const headSeq = r.store.lastUserSeq(r.conv.id)!;
+			await entered.promise;
+			const steer = new RecordingSink();
+			r.runtime.submit(
+				r.conv,
+				{
+					id: "reused",
+					role: "user",
+					parts: [
+						{ type: "data-skill", data: { name: "rtdemo" } },
+						{ type: "text", text: "steered invoke" },
+					],
+				} as UIMessage,
+				steer,
+			);
+			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
+			release.resolve();
+			await Promise.all([head.done, steer.done]);
+			await drain(r);
+			// Step 1's prompt: the historical skill is a marker only —
+			// a duplicate id cannot re-own it.
+			expect(prompt(0)).toContain("[skill: rtdemo]");
+			expect(prompt(0)).not.toContain("STEER-SKILL-UNIQUE");
+			expect(r.store.history(r.conv.id)[0]!.id).toBe("reused");
+			expect(historicalSeq).not.toBe(steerSeq);
+			// Step 2 folded the steer: its body rides THIS owning turn — exactly once.
+			expect(prompt(1).split("STEER-SKILL-UNIQUE").length).toBe(2);
+			expect(prompt(1)).toContain("steered invoke");
+			const run = r.store.db
+				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
+				.all();
+			expect(run).toHaveLength(1);
+			expect(journal.get(run[0]!.run_id)!.ownedInputSeqs).toEqual([headSeq, steerSeq]);
+			expect(journal.get(run[0]!.run_id)!.steerMark).toBe(steerSeq);
+			// A later ordinary turn: marker only, body never re-injected.
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "later" }]), new HeadlessSink());
+			await drain(r);
+			expect(prompt(2)).toContain("[skill: rtdemo]");
+			expect(prompt(2)).not.toContain("STEER-SKILL-UNIQUE");
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+});
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 
@@ -2381,8 +2533,16 @@ describe("streaming lane boundary", () => {
 		// The drain loop is parked in the first turn's delivery completion —
 		// the two submits below only queue (lane still running).
 		await parked.done;
-		submit(r, "background beat", background);
-		submit(r, "client owns me", client);
+		r.runtime.submit(
+			r.conv,
+			{ id: "same-id", role: "user", parts: [{ type: "text", text: "background beat" }] } as UIMessage,
+			background,
+		);
+		r.runtime.submit(
+			r.conv,
+			{ id: "same-id", role: "user", parts: [{ type: "text", text: "client owns me" }] } as UIMessage,
+			client,
+		);
 		gate.resolve();
 		expect(await background.done).toEqual({ kind: "completed" });
 		expect(await client.done).toEqual({ kind: "completed" });
@@ -2390,6 +2550,7 @@ describe("streaming lane boundary", () => {
 		// background turn's model request never contained the client's
 		// message — ownership, not durability, bounds the view.
 		expect(prompts).toHaveLength(3);
+		expect(prompts[1]).toContain("background beat");
 		expect(prompts[1]).not.toContain("client owns me");
 		expect(prompts[2]).toContain("background beat");
 		expect(prompts[2]).toContain("client owns me");

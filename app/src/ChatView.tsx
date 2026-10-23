@@ -36,6 +36,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 import { ApprovalCard } from "./Approvals.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
@@ -250,8 +251,48 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 	);
 }
 
-// A stored note attachment — the server expanded it at intake, so the
-// chip carries title+rev as of that message.
+// An explicit skill invocation — the part is the durable record; the
+// body rode only the owning turn's model view.
+function SkillChip({ data }: { data: unknown }) {
+	const d = (typeof data === "object" && data !== null ? data : {}) as {
+		name?: string;
+		url?: string;
+		path?: string;
+	};
+	const temp = typeof d.url === "string";
+	// A temp part carries {url, path} only — the staged layout
+	// <digest>/<name>/SKILL.md yields the name the descriptor gave it.
+	const tempName =
+		typeof d.path === "string"
+			? (d.path.split("/").filter(Boolean).at(-2) ?? "unknown")
+			: "unknown";
+	let host = d.url ?? "";
+	if (temp && d.url !== undefined) {
+		try {
+			host = new URL(d.url).host;
+		} catch {
+			// The wire validated it; an unparseable survivor keeps the full form.
+		}
+	}
+	return (
+		<span
+			className="attachment note-chip"
+			title={
+				temp
+					? `Temp skill from ${d.url} — its body rode the turn that invoked it`
+					: `Skill ${d.name ?? ""} — its body rode the turn that invoked it`
+			}
+		>
+			<span aria-hidden="true">⚡</span>
+			<span className="attachment-name">
+				{temp ? "Temp skill · " : "Skill · "}
+				{temp ? tempName : (d.name ?? "unknown")}
+				{temp ? ` (${host})` : ""}
+			</span>
+		</span>
+	);
+}
+
 function NoteChip({
 	data,
 	onOpenNote,
@@ -370,6 +411,7 @@ export function MessageParts({
 					q.type === "data-attachment" ||
 					q.type === "data-note" ||
 					q.type === "data-approval" ||
+					q.type === "data-skill" ||
 					q.type === "file"
 				) {
 					break;
@@ -398,6 +440,8 @@ export function MessageParts({
 			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);
 		else if (p.type === "data-note")
 			out.push(<NoteChip key={i} data={p.data} onOpenNote={onOpenNote} />);
+		else if (p.type === "data-skill")
+			out.push(<SkillChip key={i} data={p.data} />);
 		else if (p.type === "file")
 			out.push(
 				<span key={i} className="attachment">
@@ -697,6 +741,15 @@ export interface StagedNote {
 	key: string;
 	id: string;
 	title: string;
+}
+
+// An explicit skill invocation (ruling 2026-10-21) — staged from the
+// picker, sent as a data-skill part. Catalog refs resolve at
+// admission; temp refs pin a fetched, verdict-stamped copy.
+export interface StagedSkill {
+	key: string;
+	name: string;
+	ref: { name: string } | { url: string; path: string };
 }
 
 // The composer's note picker — a search over the whole notes pool
@@ -1190,6 +1243,8 @@ export function Composer({
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	onSend,
 	onStop,
 	quote,
@@ -1210,6 +1265,8 @@ export function Composer({
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -1263,6 +1320,7 @@ export function Composer({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
+	const [skillPickerOpen, setSkillPickerOpen] = useState(false);
 	// Outside-press dismissal — the popover and its opener are both
 	// exempt, or pointerdown on the opener would close it before its
 	// own click could toggle.
@@ -1574,7 +1632,8 @@ export function Composer({
 		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
+		if (text === "" && ready.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0)
+			return;
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 		for (const e of ready)
@@ -1589,6 +1648,10 @@ export function Composer({
 				type: "data-note",
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
+		// Explicit invocations ride their own part; the server injects
+		// the body into the owning turn.
+		for (const s of stagedSkills)
+			parts.push({ type: "data-skill", data: s.ref } as UIMessage["parts"][number]);
 		// Clear only once the send is accepted — a compose wiped before
 		// a lazy-create failure leaves nothing to resend (blob URLs are
 		// unrecoverable). Typing that lands mid-flight survives: only
@@ -1620,6 +1683,7 @@ export function Composer({
 				for (const e of ready) dropEntry(e);
 				setStaged((p) => p.filter((e) => !ready.includes(e)));
 				setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
+				setStagedSkills((p) => p.filter((s) => !stagedSkills.includes(s)));
 			})
 			.catch((err: unknown) => {
 				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);
@@ -1676,7 +1740,7 @@ export function Composer({
 					Microphone {micError} — check the browser's permission for this page.
 				</div>
 			)}
-			{(staged.length > 0 || stagedNotes.length > 0) && (
+			{(staged.length > 0 || stagedNotes.length > 0 || stagedSkills.length > 0) && (
 				<div className="composer-attachments">
 					{staged.map((e, i) => (
 						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
@@ -1712,6 +1776,31 @@ export function Composer({
 								aria-label="Remove"
 								title="Remove"
 								onClick={() => setStagedNotes((p) => p.filter((e) => e.key !== n.key))}
+							>
+								×
+							</button>
+						</span>
+					))}
+					{stagedSkills.map((s) => (
+						<span
+							key={s.key}
+							className="attachment note-chip"
+							title={
+								"url" in s.ref
+									? `Temp skill from ${s.ref.url} — the fetched copy rides the next turn`
+									: `Skill ${s.name} — its SKILL.md rides the next turn`
+							}
+						>
+							<span aria-hidden="true">⚡</span>
+							<span className="attachment-name">
+								{"url" in s.ref ? "Temp skill · " : "Skill · "}
+								{s.name}
+							</span>
+							<button
+								type="button"
+								aria-label="Remove"
+								title="Remove"
+								onClick={() => setStagedSkills((p) => p.filter((e) => e.key !== s.key))}
 							>
 								×
 							</button>
@@ -1795,6 +1884,26 @@ export function Composer({
 						<polyline points="14 2 14 8 20 8" />
 						<line x1="9" y1="13" x2="15" y2="13" />
 						<line x1="9" y1="17" x2="13" y2="17" />
+					</svg>
+				</button>
+				<button
+					type="button"
+					className="icon-btn"
+					aria-label="Invoke a skill"
+					title="Invoke a skill"
+					onClick={() => setSkillPickerOpen(true)}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						strokeWidth="1.75"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+						width="16"
+						height="16"
+					>
+						<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
 					</svg>
 				</button>
 				{micSupported && (
@@ -1926,7 +2035,8 @@ export function Composer({
 						recording ||
 						(draft.trim() === "" &&
 							staged.every((e) => e.failed === true || e.uploading === true) &&
-							stagedNotes.length === 0)
+							stagedNotes.length === 0 &&
+							stagedSkills.length === 0)
 					}
 				>
 					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -1960,6 +2070,19 @@ export function Composer({
 						)
 					}
 					onClose={() => setNotePickerOpen(false)}
+				/>
+			)}
+			{skillPickerOpen && (
+				<SkillPickerSheet
+					token={token}
+					onClose={() => setSkillPickerOpen(false)}
+					onStage={(picked) =>
+						setStagedSkills((p) =>
+							p.some((e) => e.name === picked.name)
+								? p
+								: [...p, { key: crypto.randomUUID(), name: picked.name, ref: picked.ref }],
+						)
+					}
 				/>
 			)}
 		</form>
@@ -2016,6 +2139,8 @@ export function ChatView({
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
@@ -2035,6 +2160,9 @@ export function ChatView({
 	// carry into the new conversation's composer.
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	// Skill invocations staged before the first send carry the same way.
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	// The conversation's project — a note-card "New note" binds to it.
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
@@ -2080,6 +2208,8 @@ export function ChatView({
 			setStaged={setStaged}
 			stagedNotes={stagedNotes}
 			setStagedNotes={setStagedNotes}
+			stagedSkills={stagedSkills}
+			setStagedSkills={setStagedSkills}
 			noteProjectId={noteProjectId}
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
@@ -2100,6 +2230,8 @@ function Chat({
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
@@ -2116,6 +2248,8 @@ function Chat({
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
@@ -2422,6 +2556,8 @@ function Chat({
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}
 				setStagedNotes={setStagedNotes}
+				stagedSkills={stagedSkills}
+				setStagedSkills={setStagedSkills}
 				quote={quote}
 				onSend={(parts) => {
 					askNotifyPermission();

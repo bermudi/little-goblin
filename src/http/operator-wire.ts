@@ -244,6 +244,27 @@ export interface SkillDecideBody {
 	action: "install" | "discard";
 }
 
+// Temp-skill preview card (ruling 2026-10-21): everything the yes/no
+// decision needs — size and verdict especially. `path`/`dir` pin the
+// cached copy the staged part references.
+export interface SkillPreviewResponse {
+	name: string;
+	description: string;
+	sourceUrl: string;
+	path: string;
+	dir: string;
+	digest: string;
+	bodyBytes: number;
+	fileCount: number;
+	dirBytes: number;
+	cached: boolean;
+	verdict: {
+		status: "clean" | "suspicious" | "malicious" | "unavailable";
+		injection: number | null;
+		severity: number | null;
+	};
+}
+
 export interface SkillDecideResponse {
 	ok: true;
 	skill: string;

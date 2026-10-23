@@ -26,6 +26,7 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/skills": "skills",
 	"/api/app/skills/from": "skills/from",
 	"/api/app/skills/file": "skills/file",
+	"/api/app/skills/preview": "skills/preview",
 	"/api/app/skills/decide": "skills/decide",
 	"/api/app/attachments/file": "attachments/file",
 	"/api/app/identity": "identity",
@@ -59,6 +60,7 @@ export async function handleAppApi(
 		if (
 			(opTail === "config" ||
 				opTail === "secrets" ||
+				opTail === "skills/preview" ||
 				opTail === "skills/decide" ||
 				opTail === "memory/blocked") &&
 			req.method === "POST"

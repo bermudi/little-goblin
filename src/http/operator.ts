@@ -21,6 +21,14 @@ import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
 import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
+import { checkInjection } from "../injection.ts";
+import type { System1Client } from "../system1.ts";
+import {
+	fetchSkill,
+	SkillFetchError,
+	stampVerdict,
+} from "../agent/skill-fetch.ts";
+import { readFileSync } from "node:fs";
 import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
@@ -41,7 +49,7 @@ import {
 	SkillSources,
 	skillNameSchema,
 } from "../skill-provenance.ts";
-import type { SkillDecideResponse } from "./operator-wire.ts";
+import type { SkillDecideResponse, SkillPreviewResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
@@ -128,6 +136,14 @@ export interface OperatorDeps {
 	skillDecisions?: {
 		decide(skill: string, action: SkillAction): SkillDecision;
 	};
+	// Temp-skill preview (ruling 2026-10-21): the System One gate scores
+	// the fetched body; absent = the endpoint answers 503. fetchImpl and
+	// cacheRoot exist for tests.
+	skillFetch?: {
+		gate: Pick<System1Client, "decide">;
+		fetchImpl?: typeof fetch;
+		cacheRoot?: string;
+	};
 }
 
 export type OperatorActor = { via: "mini-app"; userId: number } | { via: "app" };
@@ -138,6 +154,7 @@ export interface OperatorSeamsDeps {
 	programs: ProgramsStore;
 	delegations: DelegationsStore | null;
 	skillSources: SkillSources;
+	skillFetch?: OperatorDeps["skillFetch"];
 	auth: WritableAuthStore;
 	paths: { auth(): string; skills(): string; skillsProposed(): string; workspace(): string };
 	version: string;
@@ -203,6 +220,7 @@ export function makeOperatorSeams(
 					action,
 				),
 		},
+		...(deps.skillFetch !== undefined ? { skillFetch: deps.skillFetch } : {}),
 	};
 }
 
@@ -1044,6 +1062,83 @@ export async function handleOperatorRoute(
 		if (file === null)
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 		return Response.json(file, { headers: NO_STORE });
+	}
+
+	if (tail === "skills/preview") {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const preview = deps.skillFetch;
+		if (preview === undefined)
+			return Response.json(
+				{ error: "temp skills unavailable — the System One gate is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = z
+			.object({ url: z.string().url().startsWith("https://").max(2048) })
+			.safeParse(raw);
+		if (!parsed.success)
+			return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+		try {
+			const fetched = await fetchSkill(parsed.data.url, {
+				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
+				...(preview.cacheRoot !== undefined ? { cacheRoot: preview.cacheRoot } : {}),
+			});
+			// Identical cached bytes keep their first verdict — a
+			// re-preview shows what injection will inject, and no second
+			// score can move an outstanding confirm's advisory.
+			let verdict: SkillPreviewResponse["verdict"];
+			if (fetched.descriptor.previewed) {
+				verdict = fetched.descriptor.verdict;
+			} else {
+				// Score exactly the bytes the part will pin: read back
+				// from the published copy, never an in-memory
+				// intermediate, and no head-cut sampling.
+				const body = readFileSync(fetched.path, "utf8");
+				const scored = await checkInjection(preview.gate, body, {
+					maxChars: body.length,
+				});
+				verdict = stampVerdict(
+					preview.cacheRoot ?? paths.skillcache(),
+					fetched.digest,
+					scored,
+				).verdict;
+			}
+			const responseBody: SkillPreviewResponse = {
+				name: fetched.descriptor.name,
+				description: fetched.descriptor.description,
+				sourceUrl: fetched.descriptor.sourceUrl,
+				path: fetched.path,
+				dir: fetched.dir,
+				digest: fetched.digest,
+				bodyBytes: fetched.bodyBytes,
+				fileCount: fetched.fileCount,
+				dirBytes: fetched.dirBytes,
+				cached: fetched.cached,
+				verdict,
+			};
+			log.info("skill preview served", {
+				...who,
+				via: actor.via,
+				url: parsed.data.url,
+				name: fetched.descriptor.name,
+				verdict: verdict.status,
+				cached: fetched.cached,
+			});
+			return Response.json(responseBody, { headers: NO_STORE });
+		} catch (err) {
+			if (err instanceof SkillFetchError) {
+				const status =
+					err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
+				return Response.json({ error: err.message }, { status, headers: NO_STORE });
+			}
+			throw err;
+		}
 	}
 
 	if (tail === "skills/decide") {

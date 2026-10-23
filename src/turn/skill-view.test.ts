@@ -1,0 +1,459 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ModelMessage, UIMessage } from "ai";
+import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
+import {
+	buildModelView,
+	convertSteeredMessage,
+	type ViewContext,
+} from "./view.ts";
+
+let dirs: string[] = [];
+afterEach(() => {
+	for (const d of dirs) rmSync(d, { recursive: true, force: true });
+	dirs = [];
+});
+
+const user = (id: string, text: string): UIMessage => ({
+	id,
+	role: "user",
+	parts: [{ type: "text", text }],
+});
+
+const skillMsg = (id: string, data: unknown, text = "do it"): UIMessage =>
+	({
+		id,
+		role: "user",
+		parts: [
+			{ type: SKILL_PART, data },
+			{ type: "text", text },
+		],
+	}) as unknown as UIMessage;
+
+const texts = (view: ModelMessage[]): string[] =>
+	view.flatMap((m) =>
+		typeof m.content === "string"
+			? [m.content]
+			: m.content.map((p) => (p as { text: string }).text),
+	);
+
+const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+
+describe("skill part data schema", () => {
+	test("catalog names follow the spec rule — 64 chars accepted, longer refused", () => {
+		const ok = (name: string) => skillPartDataSchema.safeParse({ name }).success;
+		expect(ok("a".repeat(64))).toBe(true);
+		expect(ok("a".repeat(65))).toBe(false);
+		expect(ok("a".repeat(256))).toBe(false);
+	});
+
+	test("an over-long stored name degrades to the placeholder — resolver untouched", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => {
+				throw new Error("resolver must not see malformed data");
+			},
+		};
+		const view = await buildModelView(ctx, {
+			entries: entries([skillMsg("s1", { name: "a".repeat(65) })]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		expect(texts(view).join("\n")).toContain("skill invocation could not be rendered");
+	});
+});
+
+describe("skill invocation in the model view", () => {
+	test("marker in every view; body only for the owning seq", async () => {
+		const bodyText = "SKILL BODY";
+		const seen: string[] = [];
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (ref) => {
+				if (!("name" in ref)) throw new Error("unexpected temp ref");
+				seen.push(ref.name);
+				return { name: ref.name, body: `wrapped ${bodyText}` };
+			},
+		};
+		const history = [skillMsg("s1", { name: "herdr" }), user("u2", "later")];
+
+		const owning = await buildModelView(ctx, {
+			entries: entries(history),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const owningTexts = texts(owning);
+		expect(owningTexts).toContain("[skill: herdr]");
+		// The body lands AFTER the invoking message's own content and
+		// before the next message.
+		const bodyIdx = owningTexts.findIndex((t) => t.includes(bodyText));
+		const markerIdx = owningTexts.findIndex((t) => t === "[skill: herdr]");
+		const laterIdx = owningTexts.indexOf("later");
+		expect(bodyIdx).toBeGreaterThan(markerIdx);
+		expect(bodyIdx).toBeLessThan(laterIdx);
+		expect(seen).toEqual(["herdr"]);
+
+		seen.length = 0;
+		const later = await buildModelView(ctx, {
+			entries: entries(history),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [2],
+			assertAuthority: () => {},
+		});
+		const laterTexts = texts(later);
+		expect(laterTexts).toContain("[skill: herdr]");
+		expect(laterTexts.some((t) => t.includes(bodyText))).toBe(false);
+	});
+
+	test("a refused body degrades to the marker alone", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => ({ name: "gone", body: null }),
+		};
+		const view = await buildModelView(ctx, {
+			entries: entries([skillMsg("s1", { name: "gone" })]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toContain("[skill: gone]");
+	});
+
+	test("malformed part data degrades to a placeholder, not a throw", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => {
+				throw new Error("resolver must not see malformed data");
+			},
+		};
+		const view = await buildModelView(ctx, {
+			entries: entries([skillMsg("s1", { nope: true })]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		expect(texts(view).join("\n")).toContain("skill invocation could not be rendered");
+	});
+
+	test("temp marker carries the descriptor's name and host", async () => {
+		// The wire schema pins temp paths to the real cache root — stage
+		// an actual copy for the part to reference.
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillmark-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const { mkdirSync: mkd } = await import("node:fs");
+		const cached = join(
+			home,
+			"state",
+			"skillcache",
+			"d".repeat(64),
+			"claude-api",
+			"SKILL.md",
+		);
+		mkd(join(cached, ".."), { recursive: true });
+		writeFileSync(cached, "x");
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => ({ name: "claude-api", body: "temp body" }),
+		};
+		const view = await buildModelView(ctx, {
+			entries: entries([
+				skillMsg("s1", {
+					url: "https://github.com/anthropics/skills/tree/main/skills/claude-api",
+					path: cached,
+				}),
+			]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const joined = texts(view).join("\n");
+		expect(joined).toContain("[temp skill: claude-api (github.com)]");
+		expect(joined).toContain("temp body");
+	});
+
+	test("steered invocation: the claiming turn owns the body", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (ref) =>
+				"name" in ref ? { name: ref.name, body: "steered body" } : { name: "x", body: null },
+		};
+		const view = await convertSteeredMessage(ctx, skillMsg("st1", { name: "mq" }));
+		const joined = texts(view).join("\n");
+		expect(joined).toContain("[skill: mq]");
+		expect(joined).toContain("steered body");
+	});
+
+	test("duplicate message ids cannot re-own a historical skill — seqs, not ids", async () => {
+		const calls: Array<{ ref: unknown; includeBody: boolean }> = [];
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (ref, includeBody) => {
+				calls.push({ ref, includeBody });
+				return { name: "dup", body: includeBody ? "DUP BODY" : null };
+			},
+		};
+		// Old skill and the current ordinary input share one app-chosen id —
+		// only the latest durable seq is owned; the old one stays a marker.
+		const history = [
+			skillMsg("dup-id", { name: "dup" }),
+			user("dup-id", "current input"),
+		];
+		const view = await buildModelView(ctx, {
+			entries: entries(history),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [2],
+			assertAuthority: () => {},
+		});
+		const ts = texts(view);
+		expect(ts).toContain("[skill: dup]");
+		expect(ts.some((t) => t.includes("DUP BODY"))).toBe(false);
+		expect(calls).toEqual([{ ref: { name: "dup" }, includeBody: false }]);
+	});
+
+	test("a non-user stored data-skill never injects a body even when owned", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: (_ref, includeBody) => ({
+				name: "planted",
+				body: includeBody ? "PLANTED BODY" : null,
+			}),
+		};
+		const assistantWithSkill = {
+			id: "a1",
+			role: "assistant",
+			parts: [
+				{ type: SKILL_PART, data: { name: "planted" } },
+				{ type: "text", text: "reply" },
+			],
+		} as unknown as UIMessage;
+		const view = await buildModelView(ctx, {
+			entries: entries([assistantWithSkill]),
+			prior: [],
+			current: null,
+			partial: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const ts = texts(view);
+		expect(ts.some((t) => t.includes("PLANTED BODY"))).toBe(false);
+	});
+
+	test("ownership survives inserted recall blocks and attachment materialization clones", async () => {
+		const ctx: ViewContext = {
+			convId: "dm:1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: () => ({ name: "mq", body: "shifted body" }),
+		};
+		const invoking = skillMsg("u0", { name: "mq" });
+		// Malformed attachment data forces materialization to clone the
+		// message. The duplicate id must still not transfer ownership.
+		invoking.parts.push({ type: "data-attachment", data: {} });
+		const history = [user("u0", "first"), invoking];
+		const withBlock = await buildModelView(ctx, {
+			entries: entries(history),
+			prior: [
+				{ anchorSeq: 1, content: "memory block rides before its anchor", sourceIds: ["e1"] },
+			],
+			current: null,
+			partial: null,
+			ownedSeqs: [2],
+			assertAuthority: () => {},
+		});
+		const joined = texts(withBlock).join("\n");
+		expect(joined).toContain("memory block rides before its anchor");
+		expect(joined.split("shifted body")).toHaveLength(2);
+	});
+});
+
+describe("resolveSkillRef (real fs)", () => {
+	test("catalog skill reads live; missing degrades to null body", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(join(home, "workspace", "skills", "mq"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace", "skills", "mq", "SKILL.md"),
+			"---\nname: mq\ndescription: d\n---\nbody here",
+		);
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const found = resolveSkillRef({ name: "mq" });
+		expect(found.name).toBe("mq");
+		expect(found.body).toContain("body here");
+		expect(resolveSkillRef({ name: "absent" }).body).toBeNull();
+		// A traversal-shaped name never reads the disk.
+		expect(resolveSkillRef({ name: "../escape" } as never).body).toBeNull();
+	});
+
+	test("temp skill refuses an unstamped verdict and rides a stamped one", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref2-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const { mkdirSync } = await import("node:fs");
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nT");
+		const { writeFileSync: wf } = await import("node:fs");
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const ref = {
+			url: "https://github.com/o/r/tree/main/demo",
+			path: join(digestDir, "demo", "SKILL.md"),
+		};
+		// No descriptor at all.
+		expect(resolveSkillRef(ref).body).toBeNull();
+		// Descriptor present, verdict unstamped.
+		wf(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: ref.url,
+				fetchedAt: "2026-10-21T00:00:00Z",
+				verdict: { status: "unavailable", injection: null, severity: null },
+			}),
+		);
+		const unstamped = resolveSkillRef(ref);
+		expect(unstamped.name).toBe("demo");
+		expect(unstamped.body).toBeNull();
+		// Stamped — the preamble names source, verdict, and the staged dir.
+		wf(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: ref.url,
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "clean", injection: 0.1, severity: 0.2 },
+			}),
+		);
+		const stamped = resolveSkillRef(ref);
+		expect(stamped.body).not.toBeNull();
+		expect(stamped.body).toContain(ref.url);
+		expect(stamped.body).toContain("injection check: clean");
+		expect(stamped.body).toContain(join(digestDir, "demo"));
+		expect(stamped.body).toContain("T");
+		// Stamped even when the gate was unavailable — the advisory
+		// preamble rides the injected body, not a refusal.
+		wf(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: ref.url,
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "unavailable", injection: null, severity: null },
+			}),
+		);
+		const advisory = resolveSkillRef(ref);
+		expect(advisory.body).not.toBeNull();
+		expect(advisory.body).toContain("injection check unavailable");
+	});
+
+	test("a temp ref naming a support file or sibling dir refuses the body", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref4-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), "SCORED");
+		writeFileSync(join(digestDir, "demo", "payload.txt"), "UNSCORED");
+		mkdirSync(join(digestDir, "sibling"), { recursive: true });
+		writeFileSync(join(digestDir, "sibling", "SKILL.md"), "SIBLING");
+		writeFileSync(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: "https://github.com/o/r/tree/main/demo",
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "clean", injection: 0.1, severity: 0.1 },
+			}),
+		);
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const url = "https://github.com/o/r/tree/main/demo";
+		// A support file under the digest dir is not the scored body.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "demo", "payload.txt") }).body,
+		).toBeNull();
+		// A same-named file in a sibling dir is not the descriptor's skill.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "sibling", "SKILL.md") }).body,
+		).toBeNull();
+		// The descriptor's own SKILL.md still injects.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "demo", "SKILL.md") }).body,
+		).toContain("SCORED");
+	});
+
+	test("a corrupt descriptor degrades like a missing one — the turn survives", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref3-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nT");
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const ref = {
+			url: "https://github.com/o/r/tree/main/demo",
+			path: join(digestDir, "demo", "SKILL.md"),
+		};
+		// Both corrupt shapes throw inside readDescriptor — malformed JSON
+		// and a schema violation. The view path degrades either way, for
+		// owning (body) and historical (marker-only) builds alike; the
+		// part replays with history, so a throw here would brick the
+		// conversation's every later turn.
+		writeFileSync(join(digestDir, "skill.json"), "{not json");
+		expect(resolveSkillRef(ref)).toEqual({ name: "unknown", body: null });
+		expect(resolveSkillRef(ref, false)).toEqual({ name: "unknown", body: null });
+		writeFileSync(join(digestDir, "skill.json"), JSON.stringify({ nope: true }));
+		expect(resolveSkillRef(ref)).toEqual({ name: "unknown", body: null });
+	});
+});

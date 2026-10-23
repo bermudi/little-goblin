@@ -14,7 +14,13 @@ import {
 	searchConversations,
 	telegramDoor,
 } from "./api.ts";
-import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
+import {
+	ChatView,
+	Composer,
+	type StagedNote,
+	type StagedSkill,
+	type StagedUpload,
+} from "./ChatView.tsx";
 import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
@@ -633,6 +639,8 @@ function AppShell() {
 	// Note chips ride beside the upload chips for the same reason —
 	// they must survive the empty-state → conversation composer swap.
 	const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
+	// Skill invocations staged from the picker — same lift, same reason.
+	const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -1493,6 +1501,8 @@ function AppShell() {
 										setStaged={setStaged}
 										stagedNotes={stagedNotes}
 										setStagedNotes={setStagedNotes}
+										stagedSkills={stagedSkills}
+										setStagedSkills={setStagedSkills}
 										draftRestore={draftRestores[currentProject.id] ?? null}
 										onDraftRestored={() => consumeRestore(currentProject.id)}
 										onSend={(parts) =>
@@ -1536,6 +1546,8 @@ function AppShell() {
 								setStaged={setStaged}
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
+								stagedSkills={stagedSkills}
+								setStagedSkills={setStagedSkills}
 								focusSignal={composerFocus}
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
@@ -1570,6 +1582,8 @@ function AppShell() {
 								setStaged={setStaged}
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
+								stagedSkills={stagedSkills}
+								setStagedSkills={setStagedSkills}
 								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
 								onTurnDone={() => void refresh()}

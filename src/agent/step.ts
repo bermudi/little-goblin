@@ -11,6 +11,7 @@ import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { contextLimit, inputModalities } from "./models-dev.ts";
+import { modelCallMaxRetries } from "./onemin.ts";
 import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { thinkingOptions } from "./thinking.ts";
@@ -43,11 +44,17 @@ export function makeStepBuilder(
 			]);
 			// Catalog truth alone once cost a thrown turn — openai-compatible
 			// < v3 rejected file parts its converter now carries.
-			const kind = cfg.providers[provider]?.kind;
+			const p = cfg.providers[provider];
+			const kind = p?.kind ?? "";
+			// Pipe truth is host-aware: 1min's relay carries no media at all.
+			const pipeBase = p !== undefined && "baseUrl" in p ? p.baseUrl : undefined;
 			const carries = (mediaType: string, position: MediaPosition): boolean =>
-				carriesMedia(kind ?? "", mediaType, position);
+				carriesMedia(kind, mediaType, position, pipeBase);
 			const level = conv.thinking as ThinkingLevel;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
+			// 1min bills every attempt — its chat calls carry no SDK retry
+			// budget.
+			const maxRetries = modelCallMaxRetries(cfg, modelRef);
 			const project = conv.projectId === null ? null : projects.get(conv.projectId);
 			const prompt = systemPromptFor(
 				store,
@@ -75,6 +82,7 @@ export function makeStepBuilder(
 				carries,
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
+				...(maxRetries !== undefined ? { maxRetries } : {}),
 			};
 		},
 		compaction: {
@@ -96,12 +104,16 @@ export function makeStepBuilder(
 					route: cacheRouteFor(cfg, modelRef),
 				});
 				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
+				// Same provider rule as the turn step — 1min sends no SDK
+				// retries.
+				const maxRetries = modelCallMaxRetries(cfg, modelRef);
 				const { text } = await generateText({
 					model,
 					instructions: system,
 					prompt,
 					abortSignal: signal,
 					...(providerOptions ? { providerOptions } : {}),
+					...(maxRetries !== undefined ? { maxRetries } : {}),
 				});
 				return text;
 			},

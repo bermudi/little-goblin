@@ -13,6 +13,7 @@ import type { AuthStore } from "../auth.ts";
 import type { Config, ConfigRef, TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
+import { oneminEngine } from "./onemin-speech.ts";
 import {
 	elevenlabsEngine,
 	geminiEngine,
@@ -83,6 +84,8 @@ export function speechEngine(
 			return mimoEngine(cfg, auth, deps);
 		case "logfare":
 			return logfareEngine(cfg, auth, deps);
+		case "onemin":
+			return oneminEngine(cfg, auth, deps);
 	}
 }
 
@@ -351,20 +354,27 @@ export function makeTranscriber(deps: {
 }
 
 // Voice replies and transcription die at runtime without ffmpeg;
-// transcription needs it only over the upload cap — except the
-// wav-profile kinds (whistle's ogg→wav decode, mimo's wav-only input),
-// which need it always. Probe failure on a configured tts block writes
-// configRef.ttsDown.
-export async function checkBootMedia(config: Config, configRef: ConfigRef): Promise<void> {
+// transcription needs it only over the upload cap — except wav-profile
+// engines (whistle's ogg→wav decode, mimo's wav-only input, onemin's
+// qwen3 transcode), which need it always. Probe failure on a configured
+// tts block writes configRef.ttsDown.
+export async function checkBootMedia(
+	config: Config,
+	configRef: ConfigRef,
+	auth: AuthStore,
+): Promise<void> {
 	if (config.transcription || config.tts) {
 		const chain = [config.transcription, ...(config.transcription?.fallbacks ?? [])].filter(
 			(c) => c !== undefined,
 		);
-		const wavKind = chain.find((c) => c.kind === "whistle" || c.kind === "mimo")?.kind;
+		// prep.container is the wav truth — kind-keying can't see
+		// onemin's per-model split. Descriptors cost nothing: engines
+		// resolve auth lazily inside transcribe, never at build.
+		const wav = chain.map((c) => speechEngine(c, auth)).find((e) => e.prep.container === "wav");
 		const feature = config.tts
 			? "tts"
-			: wavKind !== undefined
-				? `transcription (${wavKind})`
+			: wav !== undefined
+				? `transcription (${wav.id})`
 				: "transcription";
 		// Edge's remux is a stream copy; cloud kinds' mp3 must re-encode
 		// to opus — a libopus-less binary would die per chunk.

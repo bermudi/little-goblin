@@ -21,14 +21,16 @@ const MIMO_CHAT_URL = "https://api.xiaomimimo.com/v1/chat/completions";
 // guards a misbehaving gateway streaming garbage into memory.
 const RESPONSE_CAP = 32 * 1024 * 1024;
 const ERROR_BODY_CAP = 64 * 1024;
-// Audio lands only at request end, so the timeout must cover the
-// whole synthesis — scaled by input length, capped so a wedged
-// request can't hold the voice lane.
 const TIMEOUT_BASE_MS = 30_000;
 const TIMEOUT_PER_CHAR_MS = 40;
 const TIMEOUT_MAX_MS = 300_000;
 
-function timeoutMs(chars: number): number {
+// Audio lands only at request end, so the timeout must cover the
+// whole synthesis — scaled by input length, capped so a wedged
+// request can't hold the voice lane. Exported: onemin-speech.ts's
+// envelope budget rides the same scale (its POST + poll + download
+// are one voice-lane synthesis).
+export function timeoutMs(chars: number): number {
 	return Math.min(TIMEOUT_BASE_MS + chars * TIMEOUT_PER_CHAR_MS, TIMEOUT_MAX_MS);
 }
 

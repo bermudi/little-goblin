@@ -192,6 +192,9 @@ export interface StreamStep {
 	providerOptions?: ProviderOptions;
 	label?: string;
 	contextWindow?: number;
+	// Provider retry rule for the call — 1min carries 0, absent keeps
+	// the SDK default.
+	maxRetries?: number;
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -289,6 +292,10 @@ export async function driveStream<M extends WireMember>(
 		instructions: deps.step.system,
 		messages: deps.messages,
 		tools: deps.tools,
+		// Provider retry rules ride the step — 1min sends no SDK
+		// retries (its one-shot content-filter re-ask is separate and
+		// deliberate; model.md → Provider-filter recovery).
+		...(deps.step.maxRetries !== undefined ? { maxRetries: deps.step.maxRetries } : {}),
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
 			state.noteContextLanding(prevInput, deps.step.contextWindow);

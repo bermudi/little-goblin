@@ -444,6 +444,19 @@ describe("goblin.json5", () => {
 				voice: "b347db033a6549378b48d00acb0d06cd",
 			},
 		],
+		// 1min is the one cloud arm whose voice is REQUIRED on the wire —
+		// the schema materializes alloy (tts-1's own default) instead of
+		// leaving it optional like the /audio/speech kinds.
+		[
+			"onemin defaults model, auth, and materializes voice alloy",
+			`,tts:{kind:"onemin"}`,
+			{ kind: "onemin", model: "tts-1", auth: "onemin", voice: "alloy" },
+		],
+		[
+			"onemin parses explicit model, auth and voice",
+			`,tts:{kind:"onemin",model:"tts-1-hd",auth:"1min-tts",voice:"nova"}`,
+			{ kind: "onemin", model: "tts-1-hd", auth: "1min-tts", voice: "nova" },
+		],
 	]);
 	throwRows("tts", P_ZAI, [
 		[
@@ -454,6 +467,11 @@ describe("goblin.json5", () => {
 		["voice must be non-empty", `,tts:{kind:"edge",voice:""}`, "goblin.json5"],
 		["openrouter model must be non-empty", `,tts:{kind:"openrouter",model:""}`, "goblin.json5"],
 		["openrouter voice must be non-blank", `,tts:{kind:"openrouter",voice:" "}`, "goblin.json5"],
+		[
+			"onemin voice must be non-blank — it is required on the wire",
+			`,tts:{kind:"onemin",voice:" "}`,
+			"goblin.json5",
+		],
 	]);
 
 	valueRows("transcription", P_ZAI, (c) => c.transcription, [
@@ -474,6 +492,19 @@ describe("goblin.json5", () => {
 			`,transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}`,
 			{ kind: "whistle", keywords: ["goblin", "bermudi"], language: "es" },
 		],
+		// onemin takes the ISO code, qwen3's 3-letter codes, or the
+		// locale form the short/long/phone/telephony/medical models
+		// REQUIRE.
+		[
+			"onemin parses the locale form",
+			`,transcription:{kind:"onemin",language:"en-US"}`,
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: "en-US" },
+		],
+		[
+			"onemin parses qwen3's 3-letter codes",
+			`,transcription:{kind:"onemin",language:"yue"}`,
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: "yue" },
+		],
 	]);
 	throwRows("transcription", P_ZAI, [
 		// Whistle's language is an enum, not any 2-letter code.
@@ -482,6 +513,12 @@ describe("goblin.json5", () => {
 			`,transcription:{kind:"whistle",language:"ja"}`,
 			"goblin.json5",
 		],
+		[
+			"onemin rejects a lowercase region",
+			`,transcription:{kind:"onemin",language:"en-us"}`,
+			"goblin.json5",
+		],
+		["onemin rejects a non-code", `,transcription:{kind:"onemin",language:"esp"}`, "goblin.json5"],
 	]);
 
 	valueRows("memory", P_ZAI, (c) => c.memory, [

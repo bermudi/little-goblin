@@ -272,9 +272,9 @@ async function boot() {
 	};
 
 	// Voice replies and transcription die at runtime without ffmpeg —
-	// the probe, the wav-kind gate, and the ttsDown flag live in
+	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
-	await checkBootMedia(config, configRef);
+	await checkBootMedia(config, configRef, auth);
 
 	// Warm both catalogs: thinking options and the mini app see real
 	// levels, and the settings model picker gets names and API hosts

@@ -4,9 +4,14 @@ import type { AuthStore } from "../auth.ts";
 import type { ConfigRef, TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
+import { oneminSpeech } from "./onemin-speech.ts";
 import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const CHUNK_LIMIT = 10_000;
+// 1min's TTS caps text at 4096 characters (docs → OpenAI
+// Text-to-Speech → Parameters); 4k leaves margin for the merger's
+// trim behavior.
+const ONEMIN_CHUNK_LIMIT = 4_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_VERSION = "143.0.3650.75";
@@ -679,6 +684,10 @@ function defaultSynthesizer(config: TtsConfig, deps: SpeechDeps): ChunkSynthesiz
 			if (deps.auth === undefined) throw new Error("mimo tts needs an auth store");
 			return mimoSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
 		}
+		case "onemin": {
+			if (deps.auth === undefined) throw new Error("onemin tts needs an auth store");
+			return oneminSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
 	}
 }
 
@@ -687,7 +696,11 @@ export async function synthesizeSpeech(
 	config: TtsConfig,
 	deps: SpeechDeps = {},
 ): Promise<Uint8Array[]> {
-	const chunks = chunkSpeech(text, deps.chunkLimit ?? CHUNK_LIMIT);
+	// 1min's text cap is the one per-kind chunk limit — the global
+	// 10k would send the feature a request it rejects.
+	const chunkLimit =
+		deps.chunkLimit ?? (config.kind === "onemin" ? ONEMIN_CHUNK_LIMIT : CHUNK_LIMIT);
+	const chunks = chunkSpeech(text, chunkLimit);
 	if (chunks.length === 0) throw new Error("speech input is empty");
 	const synthesize = deps.synthesize ?? defaultSynthesizer(config, deps);
 	const remux = deps.remux ?? (config.kind === "edge" ? remuxWebmOgg : remuxMp3Ogg);

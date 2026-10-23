@@ -1663,7 +1663,7 @@ export function SettingsView({
 							<>
 								<Row
 									label="Engine"
-									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint, mimo through Xiaomi's chat-completions speech."
+									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint, mimo through Xiaomi's chat-completions speech, onemin through 1min.AI's feature API (audio fetched from a signed URL)."
 								>
 									<select
 										className="mono"
@@ -1688,6 +1688,7 @@ export function SettingsView({
 										<option value="openrouter">openrouter</option>
 										<option value="logfare">logfare</option>
 										<option value="mimo">mimo</option>
+										<option value="onemin">onemin</option>
 									</select>
 								</Row>
 								{draft.tts.kind !== "edge" && (
@@ -1740,7 +1741,9 @@ export function SettingsView({
 												? "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
 												: draft.tts.kind === "mimo"
 													? "A MiMo built-in voice — Mia, Chloe, Milo, Dean, or a Chinese name like 冰糖. Blank speaks mimo_default."
-													: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
+													: draft.tts.kind === "onemin"
+														? "A 1min voice — alloy, echo, fable, onyx, nova, or shimmer. Blank speaks alloy."
+														: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
 									}
 								/>
 								{draft.tts.kind === "edge" && (
@@ -1900,7 +1903,11 @@ export function SettingsView({
 										onChange={(v) => patchTranscription({ language: v })}
 										placeholder="detect"
 										mono
-										cap="An ISO code like es. Blank lets the engine detect it."
+										cap={
+											draft.transcription.kind === "onemin"
+												? "An ISO code like es (qwen3 adds fil/yue), or a locale like en-US — latest_short/latest_long and the phone/telephony/medical models require the locale form. Blank detects on whisper-1, qwen3, and elevenlabs."
+												: "An ISO code like es. Blank lets the engine detect it."
+										}
 									/>
 								)}
 								<div className="cap ops-cap">

@@ -88,12 +88,45 @@ Four kinds exist (the shipped example uses `responses` for Z.AI):
 For `codex`, run `codex login` first. The bot refreshes expired tokens
 itself and writes the rotated tokens back, so the CLI login keeps working.
 
+#### 1min.AI (OpenAI-compatible relay)
+
+```json5
+onemin: {
+  kind: "openai-compatible",
+  baseUrl: "https://api.1min.ai/openai/v1",
+  auth: "onemin",
+},
+```
+
+`auth` names your 1min.AI API key (`pass-keys add goblin-dev onemin
+Keys/<Item>`, then an `auth.jsonl` record
+`{"name": "onemin", "value": "!pass-keys get goblin-dev onemin"}`).
+Model ids come straight from 1min's catalog (`gpt-5.4`, `qwen3.6-plus`,
+`moonshotai/kimi-k2.6` — ids keep their slashes); the picker isn't
+pre-seeded for this relay, so use the typed-ref fallback and keep the
+relay's own `GET /openai/v1/models` as the source of truth. Pinned
+behavior (docs.1min.ai/docs/api/openai-compatible): every model is
+text-only (including the `vl` ids) — attachments stay path references
+and the `vision` tool answers image questions; requests cap at 200
+messages / 100,000 characters and a two-minute generation deadline;
+every attempt bills, so each chat call makes one POST — no SDK
+retries (the one deliberate exception is the content-filter re-ask,
+bounded to once per turn) — and `reasoning_effort` rides only the
+OpenAI reasoning models (GPT-5/6 and o3 — not the older gpt-4 ids,
+which reject it). `gpt-6-astra` cannot serve as the chat model (it
+rejects function tools).
+
+The same `onemin` auth record also serves the speech kinds —
+`tts: { kind: "onemin" }` and `transcription: { kind: "onemin" }` run
+through 1min's feature API (TEXT_TO_SPEECH / SPEECH_TO_TEXT) with
+`API-KEY`-header auth instead of Bearer; see [Voice](voice.md).
+
 ### Model selection
 
 ```json5
 model: "zai/glm-5.3-flash", // app default for new conversations
 telegram: { model: "zai/glm-5.3-flash", thinking: "high" }, // independent
-favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5"],
+favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5", "onemin/gpt-5.4"],
 ```
 
 A model is written `provider/model-id`, split at the **first** slash —
@@ -132,16 +165,20 @@ cloud speech models (`fish-audio/s2.1-pro-free:free` by default, needs the
 `openrouter` auth record), `kind: "logfare"` for Logfare's (Deepgram
 Aura, `aura-2-en` by default, needs the `logfare` auth record), or
 `kind: "mimo"` for Xiaomi's (`mimo-v2.5-tts` by default, needs the `mimo`
-auth record), or set `tts: ""` to turn it off. It powers
+auth record), or `kind: "onemin"` for 1min.AI's (`tts-1` by default,
+shares the `onemin` auth record with its chat provider), or set
+`tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`
 tool for other audio files on request. `kind: "whistle"` runs locally
 (keyless, private — artifacts auto-download once); groq, openai,
-openrouter, mistral, elevenlabs, gemini, mimo, and logfare are the cloud
-kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
+openrouter, mistral, elevenlabs, gemini, mimo, logfare, and onemin are
+the cloud kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
 whistle and mimo transcription need it always (their wav profile is the
-decoder), other cloud kinds only over the upload cap. Details in [Voice](voice.md).
+decoder), and onemin's `qwen3-asr-flash` too (every note transcodes to
+wav — its format table is the one without MP4); other cloud kinds only
+over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
 

@@ -10,6 +10,51 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   PII-scrubbed and logged for eval. The Codex CLI-wrapper can't drive our
   loop (no caller tools); our adapter must write the CLI's rotated refresh
   tokens back, or it invalidates the CLI's own login.
+- **1min.AI relay (2026-10-22).** The `openai-compatible` kind serves
+  `https://api.1min.ai/openai/v1`; its pipe truths are pinned in
+  `src/agent/onemin.ts` from the operator-supplied docs
+  (docs.1min.ai/docs/api/openai-compatible), following the z.ai
+  precedent of host-scoped relay truth. Three of them change wire
+  behavior: the endpoint is **text-only for every model it lists**
+  ("including models with vl in their names") — the carrier gate
+  rejects all media by host, so attachments stay path references and
+  the vision tool answers image questions in auto mode even when the
+  catalog's scan-fallback claims the model id sees images;
+  **`reasoning_effort` is OpenAI reasoning-models-only** — "OpenAI GPT-5,
+  GPT-6, and o3 models accept reasoning_effort" (value set
+  none|minimal|low|medium|high|xhigh — no `max`): the older
+  non-reasoning OpenAI ids (gpt-3.5/4/4.1/4o) join GLM, DeepSeek, Qwen,
+  Mistral, Kimi and Muse Spark in sending no knob at all and offering
+  only the "off" the relay's default backfills, while GPT-5.6* and
+  GPT-6 Sol/Luna — which demand `none` whenever a request carries
+  tools or tool history, and the loop always defines tools — offer the
+  disable alone (the review call carries tools too, so it rides the
+  same options on 1min routes); and **every POST is a billed
+  generation**, so all chat calls (turn steps, compaction summaries,
+  reviews, titles, vision answers) carry `maxRetries: 0` — the SDK
+  default of 2 would be a silent double charge. One deliberate
+  exception survives on purpose (model.md → Provider-filter recovery):
+  the one-shot content-filter re-ask — a blocked request reports no
+  output tokens, so the retry spends roughly one input pass, bounded
+  and logged. Streaming asks for
+  `include_usage` (the relay reports usage only under it), and
+  `gpt-6-astra` can't serve as a chat model (it rejects function
+  tools — fail loud, 400). Request caps live upstream and are not
+  compensated: 200 messages, 100,000 total characters, a 32,768-token
+  output cap, a two-minute generation deadline, 60 requests/minute —
+  a 400/429 fails loud. The character cap is the practical wall:
+  ~100k characters is ~25k tokens, so a long conversation breaches it
+  long before its model's token window, and compaction (token-driven)
+  cannot prevent the 400 — `/compact` proactively if 1min models run
+  the long lanes. The offered effort ladder is the relay's union
+  value set ("accepted values vary by model"); a model that rejects a
+  rung answers with a provider parameter error — fail loud, the
+  per-model value sets are not published anywhere goblin can read. The
+  relay has no models.dev entry, so the settings picker shows no
+  model list — the typed-ref fallback carries, context windows arrive
+  via the catalog's scan-fallback from the serving providers. Cache
+  contract: reviewed-unknown — the relay publishes no prompt-cache
+  lifetime, and upstream caching does not carry through the relay.
 - **Selection scope (2026-10-06).** Telegram uses one shared selection across
   all DMs/topics, and root-default changes must never leak into it. Admission
   freezes a turn's settings (capability gates included) through overflow

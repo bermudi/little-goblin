@@ -13,7 +13,16 @@ import { setLogFile } from "../log.ts";
 import { tmpDir } from "../testkit.ts";
 import { APICallError } from "ai";
 import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
-import { cacheRouteFor, carriesMedia, observedModel } from "./providers.ts";
+import type { AuthStore } from "../auth.ts";
+import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
+
+// resolveModel resolves auth through a literal-key fixture — no records,
+// no commands, nothing secret.
+const fixtureAuth = (key: string): AuthStore => ({
+	resolve: async () => key,
+	has: () => true,
+	names: () => [],
+});
 
 const cfg: Config = {
 	providers: {
@@ -25,6 +34,13 @@ const cfg: Config = {
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
 		// Dotted name — the shape the SDK's first-segment lookup rule exists for.
 		"z.ai": { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
+		// The 1min.AI relay — text-only for every model it lists
+		// (docs.1min.ai/docs/api/openai-compatible).
+		onemin: {
+			kind: "openai-compatible",
+			baseUrl: "https://api.1min.ai/openai/v1",
+			auth: "onemin",
+		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
 		codex: { kind: "codex" },
 	},
@@ -79,6 +95,90 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("mystery", "image/jpeg")).toBe(true);
 		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
+	});
+});
+
+describe("carriesMedia — 1min's relay is text-only", () => {
+	// "All models on this endpoint accept text only, including models
+	// with vl in their names" — the pipe gate must override the kind's
+	// shape and any catalog truth about the model id (models.dev lists
+	// qwen3-vl-plus under alibaba as image-capable; through this relay
+	// an image part would be a rejected field).
+	const base = "https://api.1min.ai/openai/v1";
+
+	test("no media rides the pipe in any position", () => {
+		expect(carriesMedia("openai-compatible", "image/jpeg", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "image/png", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "application/pdf", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "video/mp4", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "audio/mpeg", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "image/png", "tool-result", base)).toBe(false);
+	});
+
+	test("the same kind off the relay keeps its shape", () => {
+		expect(carriesMedia("openai-compatible", "image/png")).toBe(true);
+		expect(carriesMedia("openai-compatible", "application/pdf")).toBe(true);
+	});
+});
+
+describe("resolveModel — 1min streams ask for usage (includeUsage)", () => {
+	// The wire pin: what the provider the config builds actually POSTs.
+	// 1min reports stream usage only under stream_options.include_usage
+	// (docs.1min.ai/docs/api/openai-compatible → Streaming, errors, and
+	// retries); a fetch stub captures the request body and serves one
+	// complete SSE exchange so doStream settles.
+	async function captureWire(providerName: string): Promise<{
+		url: string;
+		authorization: unknown;
+		body: Record<string, unknown>;
+	}> {
+		const model = await resolveModel(cfg, fixtureAuth("fixture-key"), `${providerName}/gpt-5.4`);
+		let url = "";
+		let authorization: unknown = null;
+		let body: Record<string, unknown> = {};
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: unknown, init?: { headers?: unknown }) => {
+			url = String(input);
+			const headers = init?.headers;
+			// The SDK passes a plain record here; grab the bearer line only.
+			if (headers && typeof headers === "object" && "authorization" in headers) {
+				authorization = headers.authorization;
+			}
+			body = JSON.parse(String(init && "body" in init ? init.body : "{}"));
+			return new Response(
+				'data: {"id":"1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+					'data: {"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+					"data: [DONE]\n\n",
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		}) as typeof fetch;
+		try {
+			const stream = await (model as unknown as LanguageModelV4).doStream({
+				prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+			});
+			const reader = stream.stream.getReader();
+			for (;;) {
+				const { done } = await reader.read();
+				if (done) break;
+			}
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+		return { url, authorization, body };
+	}
+
+	test("a 1min provider POSTs chat/completions with stream_options.include_usage", async () => {
+		const wire = await captureWire("onemin");
+		expect(wire.url).toBe("https://api.1min.ai/openai/v1/chat/completions");
+		expect(wire.authorization).toBe("Bearer fixture-key");
+		expect(wire.body.stream).toBe(true);
+		expect(wire.body.stream_options).toEqual({ include_usage: true });
+	});
+
+	test("the same kind off the relay sends no stream_options at all", async () => {
+		const wire = await captureWire("other");
+		expect(wire.url).toBe("https://example.com/v1/chat/completions");
+		expect("stream_options" in wire.body).toBe(false);
 	});
 });
 

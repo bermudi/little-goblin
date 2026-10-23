@@ -20,6 +20,7 @@ import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
 import { codexModel, RESPONSES_URL } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
+import { isOneMinHost } from "./onemin.ts";
 import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 
@@ -39,6 +40,10 @@ export async function resolveModel(
 				name: provider,
 				baseURL: p.baseUrl,
 				apiKey: await auth.resolve(p.auth),
+				// 1min reports stream usage only under
+				// stream_options.include_usage — supported there, so ask for
+				// it: without it every usage log line is null.
+				...(isOneMinHost(p.baseUrl) ? { includeUsage: true } : {}),
 			}).chatModel(modelId);
 		case "responses":
 			// z.ai emits raw reasoning_text events the SDK's schema drops;
@@ -68,7 +73,13 @@ export function carriesMedia(
 	kind: string,
 	mediaType: string,
 	position: MediaPosition = "user",
+	baseUrl?: string,
 ): boolean {
+	// 1min's relay accepts text only — every model it lists, including
+	// the vl ids (docs → "All models on this endpoint accept text
+	// only"). The catalog gate may say a model id sees images; this
+	// pipe never carries them.
+	if (isOneMinHost(baseUrl)) return false;
 	switch (kind) {
 		case "responses":
 			// Responses maps file parts in user and function_call_output content.

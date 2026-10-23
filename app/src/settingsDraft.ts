@@ -78,7 +78,7 @@ export interface ProvDraft {
 	baseUrl: string;
 	auth: string;
 }
-export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo";
+export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo" | "onemin";
 // Widened like TrDraft: edge-only fields (rate/voices) and cloud-only
 // fields (model/auth) all ride the draft so a save never drops a hand
 // edit; bodyFromDraft emits each kind's own arm.
@@ -162,6 +162,15 @@ export function switchTranscriptionKind<T extends TrEntryDraft>(
 	// A stashed value is verbatim by construction — it was valid on
 	// that kind when it was stashed — so only carried text needs this.
 	if (back === undefined) {
+		// onemin accepts what other kinds reject: locales like "en-US"
+		// and qwen3's 3-letter codes. Carried text gets downgraded to
+		// the region-stripped ISO code (all cloud kinds take it) or
+		// blanked (nothing valid survives the strip); stashed values
+		// stay verbatim by construction.
+		if (t.kind === "onemin" && kind !== "onemin") {
+			if (/^[a-z]{2}-[A-Z]{2}$/.test(language)) language = language.slice(0, 2);
+			else if (!/^[a-z]{2}$/.test(language)) language = "";
+		}
 		if (
 			(kind === "mimo" && !["auto", "zh", "en"].includes(language)) ||
 			(t.kind === "mimo" && (language === "auto" || (kind === "whistle" && language === "zh")))

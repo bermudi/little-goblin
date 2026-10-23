@@ -4,7 +4,9 @@ Voice works in both directions: the bot listens (transcription) and speaks
 (text-to-speech). Transcription is opt-in; speech is on by default, but can
 be turned off independently with `tts: ""`. Speech needs `ffmpeg` in the
 bot's `PATH`; transcription needs it for whistle and mimo (always — it is
-the wav decoder/converter) and for cloud files over the provider upload cap.
+the wav decoder/converter), for onemin's `qwen3-asr-flash` (always —
+every note transcodes to wav), and for cloud files over the provider
+upload cap.
 
 ## Hearing you: transcription
 

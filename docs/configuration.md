@@ -176,7 +176,9 @@ tool for other audio files on request. `kind: "whistle"` runs locally
 openrouter, mistral, elevenlabs, gemini, mimo, logfare, and onemin are
 the cloud kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
 whistle and mimo transcription need it always (their wav profile is the
-decoder), other cloud kinds only over the upload cap. Details in [Voice](voice.md).
+decoder), and onemin's `qwen3-asr-flash` too (every note transcodes to
+wav — its format table is the one without MP4); other cloud kinds only
+over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
 

@@ -391,10 +391,17 @@ export function oneminEngine(
 				// The transcript is the resultObject entry itself (the
 				// qwen3-asr-flash example — the only STT response example
 				// in the docs, so the same shape is the working assumption
-				// for the whole family); empty is the orchestrator's
-				// "no speech" null, never an error here.
+				// for the whole family). An EMPTY array is the
+				// orchestrator's "no speech" null; a missing or
+				// object-shaped resultObject on SUCCESS is contract
+				// drift — "" would read as silence, so it names itself.
 				const results = record.aiRecordDetail?.resultObject;
-				const text = Array.isArray(results) ? (results[0] ?? "") : "";
+				if (!Array.isArray(results)) {
+					throw new Error(
+						`onemin: SUCCESS without a resultObject array (uuid ${record.uuid})`,
+					);
+				}
+				const text = results[0] ?? "";
 				log.debug("onemin transcription complete", {
 					model: cfg.model,
 					file: file.filename,

@@ -429,6 +429,70 @@ describe("onemin STT (SPEECH_TO_TEXT)", () => {
 		expect(out).toEqual({ text: "" });
 	});
 
+	test("a SUCCESS record with no resultObject names the drift, never silence", async () => {
+		// The documented SUCCESS shape populates resultObject — a record
+		// without it is contract drift, and "" would read as "no speech".
+		const d = dispatcher([
+			(call) =>
+				call.url.endsWith("/api/assets")
+					? jsonRes(JSON.stringify({ fileContent: { path: "a" } }))
+					: undefined,
+			(call) =>
+				call.url.endsWith("/api/features")
+					? jsonRes(
+							JSON.stringify({
+								aiRecord: { uuid: "u-drift", status: "SUCCESS", temporaryUrl: "" },
+							}),
+						)
+					: undefined,
+		]);
+		const engine = oneminEngine(
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: undefined },
+			auth,
+			{ fetchFn: d.fetchFn },
+		);
+		expect(engine.transcribe(await speechFile())).rejects.toThrow(
+			/SUCCESS without a resultObject array \(uuid u-drift\)/,
+		);
+	});
+
+	test("a SUCCESS record whose resultObject is the error-object shape fails loud too", async () => {
+		// The schema accepts the FAILURE error-object shape so failure
+		// records parse; that shape drifting onto SUCCESS is drift all
+		// the same — name it, never map it to "no speech".
+		const d = dispatcher([
+			(call) =>
+				call.url.endsWith("/api/assets")
+					? jsonRes(JSON.stringify({ fileContent: { path: "a" } }))
+					: undefined,
+			(call) =>
+				call.url.endsWith("/api/features")
+					? jsonRes(
+							JSON.stringify({
+								aiRecord: {
+									uuid: "u-obj",
+									status: "SUCCESS",
+									aiRecordDetail: {
+										resultObject: {
+											code: "PIAPI_TASK_RESPONSE_ERROR",
+											message: "busy",
+										},
+									},
+								},
+							}),
+						)
+					: undefined,
+		]);
+		const engine = oneminEngine(
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: undefined },
+			auth,
+			{ fetchFn: d.fetchFn },
+		);
+		expect(engine.transcribe(await speechFile())).rejects.toThrow(
+			/SUCCESS without a resultObject array \(uuid u-obj\)/,
+		);
+	});
+
 	test("a poll answering aiRecord null names the Not-Found case", async () => {
 		// Verbatim from docs → Get Result API → Not Found (200):
 		// an unknown/inaccessible uuid answers {"aiRecord": null} —

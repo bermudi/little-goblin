@@ -38,7 +38,8 @@ speech); a failure never mints a `transcript` field.
   own), and a fully failed chain throws one error naming each engine,
   so the recorded `transcriptionError` keeps every link's reason. Each
   link gets the full orchestration — cap check, segmentation — so a
-  wav-profile fallback (whistle, mimo) still transcodes first. The
+  wav-profile fallback (whistle, mimo, onemin's qwen3) still transcodes
+  first. The
   settings form edits the chain like the search/fetch chains — per-entry
   kind/model/auth/language plus order controls — and a save rewrites
   `goblin.json5` as the canonical parsed object (2026-10-19).
@@ -63,7 +64,9 @@ speech); a failure never mints a `transcript` field.
   error object in resultObject, unknown uuids answer
   `aiRecord: null`, both named loudly). The transcript is the
   `resultObject` entry itself — STT's `temporaryUrl` is empty, unlike
-  TTS where it is the audio. Caps: qwen3-asr-flash's 10 MB is the
+  TTS where it is the audio. An empty array is the orchestrator's
+  "no speech" null; a SUCCESS record with no resultObject array is
+  contract drift and throws — "" would read as silence. Caps: qwen3-asr-flash's 10 MB is the
   tightest published feature ceiling (whisper-1's page says ~25 MB
   effective, the Asset API takes 50 MB uploads), so keep-profile
   requests segment under it. One container split: qwen3's format table

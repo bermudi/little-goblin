@@ -13,6 +13,7 @@ import {
 } from "./runtime.ts";
 import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { SKILL_PART } from "./skill-part.ts";
 import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
@@ -589,11 +590,15 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const partial = seedPartial(run, calls);
 			// The resume is a NEW source-linked user event: the provenance
 			// prefix, then the original request and the owned post-anchor
-			// inputs verbatim — attachments and notes ride as parts. Only
-			// parts compaction already cut from the model view are copied:
-			// an event still visible reaches the model through its own
-			// entry, and re-copying would double the text in the prompt
-			// and in the retention document.
+			// inputs verbatim — attachments and notes ride as parts. Parts
+			// of an event still in the model view are NOT re-copied — it
+			// reaches the model through its own entry, and re-copying
+			// would double the text in the prompt and in the retention
+			// document — with one exception: a skill invocation's durable
+			// record is the reference alone (the body rides only the
+			// owning turn's view), so a still-visible invocation loses its
+			// body on resume unless the new event re-carries the ref for
+			// the new run to own.
 			// The compaction summary borrows boundarySeq, which can equal a
 			// folded event's seq — exclude it or it masquerades as the anchor.
 			const viewSeqs = new Set(
@@ -602,24 +607,50 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					.filter((e) => !isCompactionSummaryId(e.message.id))
 					.map((e) => e.seq),
 			);
+			// A folded event's whole content is revived; a visible event
+			// contributes only its skill-invocation refs (stale.owned
+			// starts past the anchor — the two never overlap).
+			const revive = (e: DetailEntry): { parts: UIMessage["parts"]; folded: boolean } =>
+				viewSeqs.has(e.seq)
+					? {
+							parts: e.message.parts.filter((p) => p.type === SKILL_PART),
+							folded: false,
+						}
+					: { parts: [...e.message.parts], folded: true };
+			const anchor = stale.anchor !== undefined ? revive(stale.anchor) : null;
+			const steered = stale.owned.map(revive);
+			// Journal-owned user events BEFORE the anchor (a coalesced
+			// claim) keep the same rule: their invocation refs re-ride the
+			// resume event — their ordinary content is never revived.
+			// Legacy NULL ownership adds nothing.
+			const ownedSeqs = new Set(run.ownedInputSeqs ?? []);
+			const revived = [
+				...store
+					.historyDetail(convId)
+					.filter(
+						(e) =>
+							run.anchorSeq !== null &&
+							e.seq < run.anchorSeq &&
+							e.message.role === "user" &&
+							ownedSeqs.has(e.seq),
+					)
+					.flatMap((e) => e.message.parts.filter((p) => p.type === SKILL_PART)),
+				...(anchor?.parts ?? []),
+				...steered.flatMap((s) => s.parts),
+			];
 			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
-			const revivedAnchor =
-				stale.anchor !== undefined && !triggerVisible ? stale.anchor.message.parts : [];
-			const revivedSteering = stale.owned
-				.filter((e) => !viewSeqs.has(e.seq))
-				.flatMap((e) => e.message.parts);
-			const revived = [...revivedAnchor, ...revivedSteering];
-			// Name exactly what the copied parts carry — the prefix must not
-			// claim the request follows when it is still in the model view,
-			// nor claim steering that was never folded.
-			const follows =
-				revivedAnchor.length > 0
-					? revivedSteering.length > 0
-						? "; original request and consumed steering follow"
-						: "; original request follows"
-					: revivedSteering.length > 0
-						? "; consumed steering follows"
-						: "";
+			// Name exactly what the copied parts carry — the prefix claims
+			// the request or consumed steering only when those folded
+			// contents actually ride along.
+			const requestCopied = anchor !== null && anchor.folded && anchor.parts.length > 0;
+			const steeringCopied = steered.some((s) => s.folded && s.parts.length > 0);
+			const follows = requestCopied
+				? steeringCopied
+					? "; original request and consumed steering follow"
+					: "; original request follows"
+				: steeringCopied
+					? "; consumed steering follows"
+					: "";
 			const parts: UIMessage["parts"] = [
 				{
 					type: "text",

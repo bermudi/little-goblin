@@ -136,7 +136,14 @@ original anchor's and the owned post-anchor inputs' parts verbatim,
 but only for events the model view no longer carries — never the
 original event re-appended. An event still in the view reaches the
 model through its own entry; re-copying it would double the text in
-the prompt and in the retention document. Visibility is measured at
+the prompt and in the retention document. One exception: a skill
+invocation's durable record is the reference alone — the body rides
+only the owning turn's view — so references from ALL journal-owned
+invocation messages are re-carried into the resume event for the new
+run to own and inject, including pre-anchor coalesced inputs, not
+merely the visible anchor; ordinary parts of a visible event stay
+visibility-filtered, and the prefix names folded request/steering
+only when those parts were actually copied. Visibility is measured at
 ops-admission, so the lane must hold still for the measurement to
 stay true: `Runtime.busy` counts queued and in-flight compactions as
 busy, and a resume offered while the lane holds work refuses — a

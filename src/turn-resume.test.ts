@@ -2,7 +2,7 @@
 // reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { makeTools as realMakeTools } from "./agent/tools/mod.ts";
 import { withScript } from "./agent/tools/script.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, type RuntimeDeps, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
+import { SKILL_PART } from "./skill-part.ts";
 import { makeDeliverySink } from "./tg/delivery.ts";
 import { fakeApi } from "./testkit/fake-api.ts";
 import {
@@ -1175,6 +1176,187 @@ describe("turn resume", () => {
 		expect(prompt.split("ORIGINAL-ASK").length - 1).toBe(1);
 		const reply = detail.at(-1)!;
 		expect(reply.anchorSeq).toBe(resumeEvent.seq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	const useSkill = (home: string, name: string, body: string) => {
+		mkdirSync(join(home, "workspace", "skills", name), { recursive: true });
+		writeFileSync(join(home, "workspace", "skills", name, "SKILL.md"), body);
+	};
+	const DEMO_SKILL =
+		"---\nname: demo\ndescription: Resume regression fixture\n---\nResume regression instruction.\n";
+	const resumeEventOf = (store: ConversationStore, convId: string, runId: string) =>
+		store
+			.historyDetail(convId)
+			.find(
+				(e) =>
+					(e.message.metadata as { goblinResume?: { sourceRunId?: string } } | undefined)
+						?.goblinResume?.sourceRunId === runId,
+			)!;
+	const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+	test("a still-visible skill anchor re-attaches its ref — the resumed turn injects the body once", async () => {
+		const home = useHome("goblin-trskill-");
+		useSkill(home, "demo", DEMO_SKILL);
+		useSkill(
+			home,
+			"other",
+			"---\nname: other\ndescription: unrelated fixture\n---\nUNRELATED-INSTRUCTION.\n",
+		);
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		// A historical invocation of a different skill — durable, visible,
+		// owned by no live run: marker only, never a body.
+		store.append(conv.id, [
+			userMessage([
+				{ type: "text", text: "older ask" },
+				{ type: SKILL_PART, data: { name: "other" } } as UIMessage["parts"][number],
+			]),
+		]);
+		const trigger = userMessage([
+			{ type: "text", text: "ORIGINAL-ASK" },
+			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+		]);
+		store.append(conv.id, [trigger]);
+		const anchorSeq = store.lastUserSeq(conv.id)!;
+		interruptedRun(store, journal, conv, "run-skill", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		expect(ops.resume(conv.id, "run-skill").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const resumeEvent = resumeEventOf(store, conv.id, "run-skill");
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		// The invocation reference re-rides the new event — the body was
+		// never durable, so only the new owning turn can inject it — but
+		// the still-visible request text is NOT copied, and the prefix
+		// does not claim it follows.
+		expect(parts).toContain('"type":"data-skill"');
+		expect(parts).toContain('"name":"demo"');
+		expect(parts).not.toContain("ORIGINAL-ASK");
+		expect(parts).toContain("[operator resumed interrupted run run-skill]");
+		expect(parts).not.toContain("original request follows");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(count(prompt, "ORIGINAL-ASK")).toBe(1);
+		expect(count(prompt, "Resume regression instruction.")).toBe(1);
+		expect(count(prompt, "explicitly invoked skill")).toBe(1);
+		// The unrelated historical invocation stays a bare marker.
+		expect(count(prompt, "UNRELATED-INSTRUCTION")).toBe(0);
+		expect(count(prompt, "[skill: other]")).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a still-visible consumed skill steer re-attaches its ref — steering text rides its own event", async () => {
+		useSkill(useHome("goblin-trskill-"), "demo", DEMO_SKILL);
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		const steer = userMessage([
+			{ type: "text", text: "STEERED-TEXT" },
+			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+		]);
+		store.append(conv.id, [steer]);
+		const steerSeq = store.lastUserSeq(conv.id)!;
+		interruptedRun(store, journal, conv, "run-steer-skill", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steerSeq],
+		});
+		expect(ops.resume(conv.id, "run-steer-skill").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const resumeEvent = resumeEventOf(store, conv.id, "run-steer-skill");
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain('"type":"data-skill"');
+		expect(parts).not.toContain("STEERED-TEXT");
+		expect(parts).not.toContain("ORIGINAL-ASK");
+		expect(parts).not.toContain("original request follows");
+		expect(parts).not.toContain("consumed steering follows");
+		expect(parts).toContain("[operator resumed interrupted run run-steer-skill]");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(count(prompt, "ORIGINAL-ASK")).toBe(1);
+		expect(count(prompt, "STEERED-TEXT")).toBe(1);
+		expect(count(prompt, "Resume regression instruction.")).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a pre-anchor coalesced owned invocation re-attaches its ref — ordinary content stays with its event", async () => {
+		const home = useHome("goblin-trskill-");
+		useSkill(home, "demo", DEMO_SKILL);
+		useSkill(
+			home,
+			"other",
+			"---\nname: other\ndescription: unrelated fixture\n---\nUNRELATED-INSTRUCTION.\n",
+		);
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		store.append(conv.id, [
+			userMessage([
+				{ type: "text", text: "older ask" },
+				{ type: SKILL_PART, data: { name: "other" } } as UIMessage["parts"][number],
+			]),
+		]);
+		const first = userMessage([
+			{ type: "text", text: "FIRST-COALESCED-TEXT" },
+			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+		]);
+		store.append(conv.id, [first]);
+		const firstSeq = store.lastUserSeq(conv.id)!;
+		const anchor = appendUserMsg(store, conv, "LAST-COALESCED-TEXT");
+		interruptedRun(store, journal, conv, "run-coal", {
+			anchorSeq: anchor.seq,
+			ownedInputSeqs: [firstSeq, anchor.seq],
+		});
+		expect(ops.resume(conv.id, "run-coal").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const resumeEvent = resumeEventOf(store, conv.id, "run-coal");
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain('"type":"data-skill"');
+		expect(parts).toContain('"name":"demo"');
+		expect(parts).not.toContain("FIRST-COALESCED-TEXT");
+		expect(parts).not.toContain("LAST-COALESCED-TEXT");
+		expect(parts).toContain("[operator resumed interrupted run run-coal]");
+		expect(parts).not.toContain("follows");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(count(prompt, "FIRST-COALESCED-TEXT")).toBe(1);
+		expect(count(prompt, "LAST-COALESCED-TEXT")).toBe(1);
+		expect(count(prompt, "Resume regression instruction.")).toBe(1);
+		expect(count(prompt, "UNRELATED-INSTRUCTION")).toBe(0);
+		expect(count(prompt, "[skill: other]")).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a compacted skill invocation revives verbatim — ref and request together", async () => {
+		useSkill(useHome("goblin-trskill-"), "demo", DEMO_SKILL);
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = userMessage([
+			{ type: "text", text: "ORIGINAL-ASK" },
+			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+		]);
+		store.append(conv.id, [trigger]);
+		const anchorSeq = store.lastUserSeq(conv.id)!;
+		interruptedRun(store, journal, conv, "run-folded-skill", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		store.setCompaction(conv.id, {
+			boundarySeq: anchorSeq,
+			summary: "folded past",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-folded-skill").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const resumeEvent = resumeEventOf(store, conv.id, "run-folded-skill");
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		// Folded out of the view entirely — every part revives, invocation
+		// ref included, and the prefix names the request.
+		expect(parts).toContain("ORIGINAL-ASK");
+		expect(parts).toContain('"type":"data-skill"');
+		expect(parts).toContain("original request follows");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(count(prompt, "ORIGINAL-ASK")).toBe(1);
+		expect(count(prompt, "Resume regression instruction.")).toBe(1);
 		await runtime.shutdown();
 		store.close();
 	});

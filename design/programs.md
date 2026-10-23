@@ -173,7 +173,17 @@ Rulings:
   Only staging needs a destination: on an addressless project turn the
   direct verbs still apply (rename, lateness, reschedule, hook disable),
   while a grant-shaped update refuses — its staged row would have no
-  lane to pin. `review` scopes a staged proposal by the grant it asks
+  lane to pin. The app channel's presentation target is likewise not
+  the program's `target` column: a responsibility-destination program's
+  approvals post into the responsibility's coordination conversation —
+  the route resolves `responsibility_id` → row →
+  `coordination_conversation_id` → `targetOf` (canonical; a rolling DM
+  pins `dm:<chat>`). The program row itself stays responsibility-
+  targeted. Missing responsibility wiring, a missing row, or a missing
+  coordination conversation refuses the grant-shaped op with the
+  readable no-destination answer — direct edits and hook disable still
+  apply, nothing falls back to a fabricated lane. `review` scopes a
+  staged proposal by the grant it asks
   for: the program it patches, or, on a create (no program row yet),
   the conversation its draft pins as its destination — a foreign lane's
   pending proposal reads as absent, so one project turn can never

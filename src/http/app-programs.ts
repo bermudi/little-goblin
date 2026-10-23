@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { log } from "../log.ts";
 import { PROPOSAL_CHARTER_MAX } from "../program-proposals.ts";
 import type { ProgramOpResult } from "../program-ops.ts";
-import type { Program } from "../programs.ts";
+import type { Program, ProgramAddress } from "../programs.ts";
+import { targetOf } from "../targets.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import type { AppProgramMutationResponse, AppProgramView } from "./app-wire.ts";
 
@@ -108,6 +110,37 @@ function resultResponse(result: ProgramOpResult): Response {
 	}
 }
 
+// The lane a staged approval presents in: a conversation-target
+// program presents at its own target; a responsibility-destination
+// program presents at the responsibility's coordination conversation —
+// its `resp:<id>` pseudo-address is a destination, never a lane a
+// proposal can pin (validTarget refuses it). Resolution is
+// presentation-only: a missing wire or row refuses the grant-shaped
+// op (ProgramOps' normal no-destination answer), never fabricates a
+// fallback, and never blocks the addressless paths ProgramOps permits
+// (safe edits, hook disable).
+function approvalAddress(current: Program, deps: AppChannelDeps): ProgramAddress | undefined {
+	if (current.responsibilityId === null) return { target: current.target };
+	const resp = deps.responsibilities?.resps.get(current.responsibilityId);
+	if (resp === null || resp === undefined) {
+		log.warn("program approval target refused — responsibility not resolvable", {
+			program: current.id,
+			responsibility: current.responsibilityId,
+		});
+		return undefined;
+	}
+	const conv = deps.store.get(resp.coordinationConversationId);
+	if (conv === null) {
+		log.warn("program approval target refused — coordination conversation missing", {
+			program: current.id,
+			responsibility: resp.responsibilityId,
+			conversation: resp.coordinationConversationId,
+		});
+		return undefined;
+	}
+	return { target: targetOf(conv) };
+}
+
 export async function handleProgramRoutes(
 	req: Request,
 	url: URL,
@@ -138,7 +171,7 @@ export async function handleProgramRoutes(
 		}
 		const body = await parsedJson(req, patchBody);
 		if (body instanceof Response) return body;
-		return resultResponse(await ops.update(id, body, { target: current.target }));
+		return resultResponse(await ops.update(id, body, approvalAddress(current, deps)));
 	}
 
 	if (req.method === "POST" && action === "/hook") {
@@ -148,7 +181,7 @@ export async function handleProgramRoutes(
 		}
 		const body = await parsedJson(req, hookBody);
 		if (body instanceof Response) return body;
-		return resultResponse(await ops.hook(id, body.op, { target: current.target }));
+		return resultResponse(await ops.hook(id, body.op, approvalAddress(current, deps)));
 	}
 
 	return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });

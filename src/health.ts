@@ -561,6 +561,8 @@ function expectedTables(config: Config | undefined): string[] {
 		"app_push_deliveries",
 		"turn_runs",
 		"turn_tool_calls",
+		"context_windows",
+		"context_window_state",
 	];
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");
@@ -1096,25 +1098,18 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 			throw new ProbeError("invalid-pod-metadata");
 		}
 		const podMeta = z
-			.array(
-				z.object({
-					InfraConfig: z
-						.object({
-							PortBindings: z
-								.record(
-									z.string(),
-									z.array(z.object({ HostIp: z.string(), HostPort: z.string() })),
-								)
-								.nullish(),
-						})
-						.nullish(),
-					Containers: z.array(z.object({ Name: z.string() })).nullish(),
-				}),
-			)
-			.min(1)
-			.max(1)
+			.object({
+				InfraConfig: z
+					.object({
+						PortBindings: z
+							.record(z.string(), z.array(z.object({ HostIp: z.string(), HostPort: z.string() })))
+							.nullish(),
+					})
+					.nullish(),
+				Containers: z.array(z.object({ Name: z.string() })).nullish(),
+			})
 			.safeParse(podParsed);
-		const podInfo = podMeta.success ? podMeta.data[0] : undefined;
+		const podInfo = podMeta.success ? podMeta.data : undefined;
 		const roster = new Set((podInfo?.Containers ?? []).map((c) => c.Name));
 		if (
 			!podInfo?.InfraConfig?.PortBindings?.["8888/tcp"]?.some(

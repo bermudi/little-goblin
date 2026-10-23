@@ -904,14 +904,12 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				running: true,
 				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
 			});
-			const podMeta = JSON.stringify([
-				{
-					InfraConfig: {
-						PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
-					},
-					Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+			const podMeta = JSON.stringify({
+				InfraConfig: {
+					PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
 				},
-			]);
+				Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+			});
 			const lowCapacity = mode.startsWith("low-");
 			if (lowCapacity) {
 				const statfs = spyOn(fs, "statfsSync").mockReturnValue({
@@ -983,6 +981,88 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 					);
 				}
 			}
+		});
+
+	for (const mode of ["array", "missing-roster", "wrong-binding"] as const)
+		test(`pod association refuses ${mode}`, async () => {
+			const f = fixture(),
+				cfg = join(f.root, ".config/goblin-memory");
+			const units = join(f.root, ".config/containers/systemd");
+			mkdirSync(cfg, { recursive: true });
+			mkdirSync(units, { recursive: true });
+			writeFileSync(
+				join(units, "goblin-memory-api.container"),
+				"ContainerName=goblin-memory-api\nPod=goblin-memory.pod\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+			);
+			writeFileSync(
+				join(units, "goblin-memory.pod"),
+				"PodName=goblin-memory\nPublishPort=127.0.0.1:8888:8888\n",
+			);
+			writeFileSync(
+				join(cfg, "hindsight.env"),
+				"HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai\nHINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL=http://127.0.0.1:11435/v1\nHINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL=fixture-model\n",
+			);
+			writeFileSync(
+				join(cfg, "embed-relay.env"),
+				"GOBLIN_EMBED_RELAY_ADDR=127.0.0.1\nGOBLIN_EMBED_MODEL=fixture-model\n",
+			);
+			writeFileSync(
+				join(f.home, "goblin.json5"),
+				JSON.stringify({
+					...f.config,
+					memory: { baseUrl: "http://127.0.0.1:8888", bankId: secret },
+				}),
+			);
+			const metadata = JSON.stringify({
+				running: true,
+				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
+			});
+			const podMeta =
+				mode === "array"
+					? JSON.stringify([
+							{
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+							},
+						])
+					: mode === "missing-roster"
+						? JSON.stringify({
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }],
+							})
+						: JSON.stringify({
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "0.0.0.0", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+							});
+			f.script(
+				"podman",
+				`printf '%s\\n' "$@" >> '${join(f.root, "argv")}'
+				if [ "$1" = pod ]; then printf '%s' '${podMeta}';
+				elif [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
+				else exit 1; fi`,
+			);
+			const fetch = spyOn(globalThis, "fetch").mockImplementation(
+				Object.assign(async () => new Response("ok"), {
+					preconnect: globalThis.fetch.preconnect,
+				}),
+			);
+			restorers.push(() => fetch.mockRestore());
+			const report = await runHealth(f.options);
+			expect(JSON.stringify(report)).not.toContain(secret);
+			expect(finding(report, "memory.local-association").status).toBe("warn");
+			expect(finding(report, "memory.local-association").detail).toContain(
+				"unverified-pod-API-association",
+			);
+			expect(finding(report, "memory.embedding").status).toBe("skip");
+			expect(readFileSync(join(f.root, "argv"), "utf8")).toContain(
+				"--format\n{{json .}}\ngoblin-memory",
+			);
 		});
 });
 

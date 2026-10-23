@@ -4,9 +4,10 @@
 // read_file tool) and an immutable published artifact (snapshot bytes in
 // the attachment store). Rendering is by kind: markdown through the
 // shared renderer (relative links navigate inside the modal, back
-// button walks the stack), HTML inside the same sandboxed srcdoc frame
-// as ui leaves, images/audio/video/pdf over object URLs, plain text for
-// the rest of the text kinds, and a download affordance for binaries.
+// button walks the stack), images/audio/video over object URLs, plain
+// text for the rest of the text kinds, and a download affordance for
+// pdf (Chromium refuses its built-in viewer inside sandboxed frames)
+// and for binaries.
 // All fetching goes through the conversation-scoped reader route —
 // containment, caps and refusals live server-side.
 
@@ -144,13 +145,21 @@ function baseOf(ref: DocRef): string | null {
 	return null;
 }
 
+// Resolve a decoded destination against this doc's directory. A ".."
+// that climbs past the workspace still resolves — as a literal ".." —
+// so the server's containment check sees the escape and refuses it;
+// dropping the excess would silently re-anchor the link onto a
+// different in-workspace file instead of showing the refusal.
+// Absolute destinations ride through untouched for the same reason.
 function resolveRelative(base: string, rel: string): string {
 	if (rel.startsWith("/")) return rel;
 	const parts = base === "" ? [] : base.split("/");
 	for (const seg of rel.split("/")) {
 		if (seg === "" || seg === ".") continue;
-		if (seg === "..") parts.pop();
-		else parts.push(seg);
+		if (seg === "..") {
+			if (parts.length > 0 && parts.at(-1) !== "..") parts.pop();
+			else parts.push("..");
+		} else parts.push(seg);
 	}
 	return parts.join("/");
 }
@@ -287,7 +296,9 @@ function DocBody({
 				if (render === "markdown" || render === "html" || render === "text") {
 					text = await blob.text();
 					if (!live) return;
-				} else if (render !== "download") {
+				} else if (render !== "download" && render !== "pdf") {
+					// Pdf needs no URL — it renders as a download, with the
+					// blob handed to the link component unmolested.
 					url = URL.createObjectURL(blob);
 					objectUrl = url;
 				}
@@ -332,7 +343,19 @@ function DocBody({
 		case "video":
 			return <video className="doc-media" controls src={url ?? undefined} />;
 		case "pdf":
-			return <iframe className="doc-frame" sandbox="" src={url ?? undefined} title={name} />;
+			// Chromium blocks its built-in PDF viewer inside an iframe with
+			// sandbox="" — rendering here shows "blocked by Chromium" and
+			// the frame is not negotiable for the same reason every other
+			// frame in the app is sandboxed. The review's sanctioned
+			// fallback: the download affordance, same as binaries.
+			return (
+				<div className="doc-note">
+					<p>
+						{name} — {bytes(blob.size)} · PDFs can't render inside the sandboxed viewer
+					</p>
+					<DownloadLink blob={blob} name={name} />
+				</div>
+			);
 		case "text":
 			return <pre className="doc-text">{text}</pre>;
 		case "download":

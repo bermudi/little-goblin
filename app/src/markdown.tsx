@@ -66,6 +66,23 @@ hljs.registerLanguage("yaml", yaml);
 const INLINE =
 	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|~~([^\s~](?:[^\n]*?[^\s~])?)~~|(https?:\/\/[^\s<>"')\]]+)|\[([^\]\n]+)\]\((?![A-Za-z][\w+.-]*:|#)([^\s)]+)\)/g;
 
+// The file a link destination names, as a URI: the fragment selects a
+// part of the document, not a filesystem location, so it splits off
+// BEFORE decoding — an escaped %23 stays inside a real name — then the
+// path percent-decodes, so `my%20report.md` opens the file with a
+// space. null = the destination has a malformed escape and cannot name
+// a file; the caller keeps the link literal (this module's declared
+// contract for anything unrecognizable, visible on the page).
+function fileDestination(dest: string): string | null {
+	const cut = dest.indexOf("#");
+	if (cut >= 0) dest = dest.slice(0, cut);
+	try {
+		return decodeURIComponent(dest);
+	} catch {
+		return null;
+	}
+}
+
 export function inline(text: string, onFileLink?: ((path: string) => void) | undefined): ReactNode[] {
 	const out: ReactNode[] = [];
 	let last = 0;
@@ -89,13 +106,21 @@ export function inline(text: string, onFileLink?: ((path: string) => void) | und
 					{m[8]}
 				</a>,
 			);
-		else if (m[9] !== undefined && onFileLink !== undefined)
-			out.push(
-				<button key={i} type="button" className="md-filelink" onClick={() => onFileLink(m[10]!)}>
-					{m[9]}
-				</button>,
-			);
-		else out.push(m[0]);
+		else if (m[9] !== undefined && onFileLink !== undefined) {
+			const dest = fileDestination(m[10]!);
+			if (dest === null) out.push(m[0]);
+			else
+				out.push(
+					<button
+						key={i}
+						type="button"
+						className="md-filelink"
+						onClick={() => onFileLink(dest)}
+					>
+						{m[9]}
+					</button>,
+				);
+		} else out.push(m[0]);
 		last = m.index + m[0].length;
 		i++;
 	}

@@ -385,6 +385,12 @@ thinking/tool-body expansion, a raw-JSON mode. App conversations only;
 the mini app door has no chat and gets no pages. A conversation with no
 captured window says so — the view never fabricates one.
 
+The row dies with the conversation: `context_windows` carries no FK, so
+it rides `deleteConversation`'s sweep — a re-minted id starts empty and
+never inherits the last generation's prompt (operator-chosen app ids
+re-mint freely; an inherited row would claim a capture that predates
+the conversation, the fabrication the view refuses).
+
 ## Reply ratings (ruling 2026-10-22)
 
 Assistant action bars carry record-only **helpful** / **bad** votes. The

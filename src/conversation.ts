@@ -16,6 +16,7 @@ import { retargetPruningMarker } from "./pruning-marker.ts";
 import { coordinationAnchors, ensureResponsibilitiesSchema } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { ensureWakeSchema, sweepConversationWakes } from "./wake-store.ts";
+import { ensureWindowSchema } from "./window-capture.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 
 // Routing discriminates on kind alone; the app member's zeros are fillers,
@@ -620,9 +621,11 @@ export function openStore(dbPath: string): ConversationStore {
 	// Companion schemas whose rows reference conversations: ensured here
 	// so deleteConversation's anchor check and wake sweep always find
 	// their tables on this handle, and the FK chain is complete from the
-	// first open.
+	// first open. context_windows carries no FK — the ensure keeps the
+	// sweep's delete unconditional on every handle.
 	ensureResponsibilitiesSchema(db);
 	ensureWakeSchema(db);
+	ensureWindowSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -1109,6 +1112,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDeleteEvents = db.query("DELETE FROM events WHERE conversation_id = ?");
 	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
+	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
 
 	function previousDmRow(chatId: number): Row | null {
@@ -1709,6 +1713,9 @@ export function openStore(dbPath: string): ConversationStore {
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);
 				qDeleteContexts.run(id);
+				// The captured window has no FK — it rides the sweep so a
+				// re-minted id never inherits the last generation's prompt.
+				qDeleteWindows.run(id);
 				qDeleteConv.run(id);
 				return counts;
 			})();

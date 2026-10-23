@@ -109,6 +109,19 @@ const rowSchema = z.object({
 	payload: z.instanceof(Uint8Array),
 });
 
+// Driven by openStore alongside the other companion schemas — no FK on
+// this table, so deleteConversation's sweep finds it only when every
+// handle creates it.
+export function ensureWindowSchema(db: Database): void {
+	db.run(`CREATE TABLE IF NOT EXISTS context_windows (
+		conversation_id TEXT PRIMARY KEY,
+		captured_ms INTEGER NOT NULL,
+		model TEXT NOT NULL,
+		step INTEGER NOT NULL,
+		payload BLOB NOT NULL
+	)`);
+}
+
 export function openWindowCapture(
 	db: Database,
 	options?: { now?: () => number },
@@ -120,13 +133,7 @@ export function openWindowCapture(
 	read(conversationId: string): StoredWindow | null;
 } {
 	const now = options?.now ?? Date.now;
-	db.run(`CREATE TABLE IF NOT EXISTS context_windows (
-		conversation_id TEXT PRIMARY KEY,
-		captured_ms INTEGER NOT NULL,
-		model TEXT NOT NULL,
-		step INTEGER NOT NULL,
-		payload BLOB NOT NULL
-	)`);
+	ensureWindowSchema(db);
 	const qPut = db.query(
 		`INSERT OR REPLACE INTO context_windows (conversation_id, captured_ms, model, step, payload)
 		VALUES (?, ?, ?, ?, ?)`,

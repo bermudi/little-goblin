@@ -279,10 +279,13 @@ export async function driveStream<M extends WireMember>(
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
 	let lastPromptChars: PromptSegments | null = null;
-	// The final step's outbound prompt, kept as the window record — the
-	// context-window view's "what the model saw" (window-capture.ts).
-	// References only; serialization happens once, when the runtime
-	// records the turn.
+	// The window record, captured in two stages — prepareStep stages the
+	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
+	// call never dispatched (abort, a doStream throw) is a prompt nothing
+	// saw and must never become the record; the promoted one is the last
+	// completed step, on either outcome rail. References only;
+	// serialization happens once, when the runtime records the turn.
+	let stagedWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
 	let lastWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
 	let stepCount = 0;
 	let rawError: unknown = null;
@@ -301,7 +304,7 @@ export async function driveStream<M extends WireMember>(
 	const notePrompt = (messages: readonly ModelMessage[]) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		lastPromptChars = segments;
-		lastWindow = { messages: [...messages], segments };
+		stagedWindow = { messages: [...messages], segments };
 	};
 	const result = streamText({
 		model: filterErrorStream(deps.step.model, convId),
@@ -456,6 +459,10 @@ export async function driveStream<M extends WireMember>(
 		},
 		onStepEnd: (step) => {
 			stepCount++;
+			// The step's request was dispatched and consumed — its staged
+			// prompt becomes the record ("last completed step"; an errored
+			// dispatch still counts, the model saw the prompt).
+			lastWindow = stagedWindow;
 			if (filterRetryPending && step.finishReason !== "error") {
 				filterRetryPending = false;
 				log.info("provider content filter retry recovered", {

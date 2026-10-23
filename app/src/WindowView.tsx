@@ -4,7 +4,7 @@
 // the model read it — plus the call lineage. Read-only; media bytes were
 // stubbed at capture and render as counts, never images.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getWindow } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import { bytes, describe, ts } from "./opsShared.tsx";
@@ -248,6 +248,14 @@ export function WindowView({
 	}, [token, conversationId]);
 	useEffect(load, [load]);
 
+	// The substring filter's haystacks serialize once per loaded view —
+	// re-stringifying every message per keystroke and toggle reads badly
+	// on the multi-megabyte payloads this view exists for.
+	const haystacks = useMemo(
+		() => (view?.messages ?? []).map((m) => JSON.stringify(m).toLowerCase()),
+		[view],
+	);
+
 	if (err !== null) {
 		return (
 			<div className="ops">
@@ -278,12 +286,18 @@ export function WindowView({
 	// type); every field below is read defensively.
 	const isMessage = (m: unknown): m is { role: string; content: unknown } =>
 		typeof m === "object" && m !== null && typeof (m as { role?: unknown }).role === "string";
+	// Each card keeps its index in the captured window — filtered views
+	// number honestly against the unfiltered list, not the subset.
 	const messages = (view.messages ?? [])
-		.filter(isMessage)
+		.map((message, index) => ({ message, index }))
 		.filter(
-			(m) =>
-				(role === "all" || m.role === role) &&
-				(q === "" || JSON.stringify(m).toLowerCase().includes(q)),
+			(e): e is { message: { role: string; content: unknown }; index: number } =>
+				isMessage(e.message),
+		)
+		.filter(
+			(e) =>
+				(role === "all" || e.message.role === role) &&
+				(q === "" || haystacks[e.index]!.includes(q)),
 		);
 	const segments = view.segments;
 	const totalChars =
@@ -313,6 +327,7 @@ export function WindowView({
 				<div className="chips" role="group" aria-label="role filter">
 					{ROLE_FILTERS.map((f) => (
 						<button
+							key={f.key}
 							type="button"
 							className={role === f.key ? "chip on" : "chip"}
 							aria-pressed={role === f.key}
@@ -436,8 +451,14 @@ export function WindowView({
 								` of ${(view.messages ?? []).length}`}
 						</h3>
 						<ul className="win-msgs">
-							{messages.map((m, i) => (
-								<MessageCard key={i} message={m} index={i} raw={raw} openBodies={openBodies} />
+							{messages.map((e) => (
+								<MessageCard
+									key={e.index}
+									message={e.message}
+									index={e.index}
+									raw={raw}
+									openBodies={openBodies}
+								/>
 							))}
 						</ul>
 						{messages.length === 0 && <p className="empty">nothing matches</p>}

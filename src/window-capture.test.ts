@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { listCalls, openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
+import { appAddress, openStore } from "./conversation.ts";
 import {
 	openWindowCapture,
 	serializeToolDefs,
@@ -106,6 +107,24 @@ describe("window capture", () => {
 		const blob = Bun.gzipSync(new TextEncoder().encode(JSON.stringify({ nope: true })));
 		db.query("UPDATE context_windows SET payload = ? WHERE conversation_id = ?").run(blob, "app/a");
 		expect(() => store.read("app/a")).toThrow();
+	});
+
+	test("the row rides deleteConversation — a re-minted id inherits nothing", () => {
+		const store = openStore(":memory:");
+		const windows = openWindowCapture(store.db);
+		const conv = store.resolve(appAddress("gone"), "/w");
+		windows.record(conv.id, { model: "m", step: 1, capture: capture() });
+		expect(windows.read(conv.id)).not.toBeNull();
+
+		store.deleteConversation(conv.id);
+		expect(windows.read(conv.id)).toBeNull();
+
+		// Operator-chosen ids re-mint freely; the new generation must not
+		// serve the deleted one's capture as its own.
+		const reminted = store.resolve(appAddress("gone"), "/w");
+		expect(reminted.id).toBe(conv.id);
+		expect(windows.read(reminted.id)).toBeNull();
+		store.close();
 	});
 });
 

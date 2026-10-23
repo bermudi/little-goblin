@@ -188,6 +188,12 @@ describe("WindowView", () => {
 		await act(async () => {});
 		await h.click(button("you"));
 		expect(container.querySelectorAll(".win-msg").length).toBe(2);
+		// Cards keep their index in the captured window — the second "you"
+		// message is #4 of the window, not #2 of the filtered subset.
+		expect([...container.querySelectorAll(".win-idx")].map((e) => e.textContent)).toEqual([
+			"#1",
+			"#4",
+		]);
 		await h.click(button("tools"));
 		expect(container.querySelectorAll(".win-msg").length).toBe(1);
 		await h.click(button("all"));

@@ -46,9 +46,6 @@ export function setup(
 					home: string;
 			  }) => AppChannelDeps["responsibilities"]);
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
-		// The runtime's window recorder defaults on — opt out for rigs
-		// asserting a turn that must store nothing.
-		recordWindows?: boolean;
 	} = {},
 ) {
 	const home = useHome("goblin-app-");
@@ -65,13 +62,9 @@ export function setup(
 	const runtime = new Runtime({
 		store,
 		turnJournal,
-		...(opts.recordWindows === false
-			? {}
-			: {
-					recordWindow: (conversationId, input) => {
-						windowCapture.record(conversationId, input);
-					},
-				}),
+		recordWindow: (conversationId, input) => {
+			windowCapture.record(conversationId, input);
+		},
 		buildStep: (conv) => ({
 			model: observedModel(
 				opts.model ??

@@ -1025,7 +1025,12 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind === "ok") return;
 		expect(outcome.steps).toBe(1);
+		// Step 2's prompt was staged in prepareStep but its doStream threw
+		// — nothing saw it. The window is step 1's: the user message only,
+		// not the tool-call history step 2 would have carried.
 		expect(outcome.window).not.toBeNull();
+		expect(outcome.window!.messages).toHaveLength(1);
+		expect((outcome.window!.messages[0] as { role: string }).role).toBe("user");
 
 		const stepless = rig([new Error("cold dead")]);
 		const deadOutcome = await driveStream(stepless.deps);

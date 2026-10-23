@@ -148,6 +148,7 @@ describe("deferred telegram boot", () => {
 				tg.releaseGetMe();
 				await child.waitLog("telegram channel attached");
 				await child.waitLog("long polling started");
+				await tg.waitMethod("getUpdates");
 				expect(tg.methods).toContain("getUpdates");
 				// Late-bound seams are live now: the held due program fires via
 				// the attach-time tick (sendMessage through delivery), and the

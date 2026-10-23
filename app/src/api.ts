@@ -50,6 +50,7 @@ import type {
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
+	AppWindowView,
 } from "../../src/http/app-wire.ts";
 import type {
 	AttachmentsResponse,
@@ -563,6 +564,12 @@ export function patchConversationMemory(
 // doesn't list the model), never zero.
 export function getContext(token: string | null, id: string): Promise<AppContextView> {
 	return request(token, `/api/app/conversations/${seg(id)}/context`);
+}
+
+// The context-window view — the newest model call's captured prompt
+// plus the call lineage. Null sections: no step has run yet.
+export function getWindow(token: string | null, id: string): Promise<AppWindowView> {
+	return request(token, `/api/app/conversations/${seg(id)}/window`);
 }
 
 const runCallSchema: z.ZodType<AppRunCall> = z.object({

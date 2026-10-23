@@ -22,6 +22,7 @@ import {
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
+import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import { measurePrompt, type PromptSegments } from "./itemize.ts";
@@ -246,6 +247,11 @@ export type StreamOutcome =
 			toolCalls: string[];
 			digestRing: { id: string; entry: ToolCallDigest }[];
 			steerMark: number;
+			// The final step's outbound prompt — null when no step ran.
+			window: WindowCapture | null;
+			// Window-row metadata: which model ran, how many steps.
+			model: string;
+			steps: number;
 	  }
 	| {
 			kind: "failed";
@@ -259,6 +265,11 @@ export type StreamOutcome =
 			loop: LoopTurnState;
 			steerMark: number;
 			filterRetryUsed: boolean;
+			// The last completed step's prompt — the call went out even
+			// when the turn failed on a later one.
+			window: WindowCapture | null;
+			model: string;
+			steps: number;
 	  };
 
 export async function driveStream<M extends WireMember>(
@@ -271,6 +282,15 @@ export async function driveStream<M extends WireMember>(
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
 	let lastPromptChars: PromptSegments | null = null;
+	// The window record, captured in two stages — prepareStep stages the
+	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
+	// call never dispatched (abort, a doStream throw) is a prompt nothing
+	// saw and must never become the record; the promoted one is the last
+	// completed step, on either outcome rail. References only;
+	// serialization happens once, when the runtime records the turn.
+	let stagedWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
+	let lastWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
+	let stepCount = 0;
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
@@ -285,7 +305,9 @@ export async function driveStream<M extends WireMember>(
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
 	const notePrompt = (messages: readonly ModelMessage[]) => {
-		lastPromptChars = measurePrompt(deps.step.system, deps.tools, messages);
+		const segments = measurePrompt(deps.step.system, deps.tools, messages);
+		lastPromptChars = segments;
+		stagedWindow = { messages: [...messages], segments };
 	};
 	const result = streamText({
 		model: filterErrorStream(deps.step.model, convId),
@@ -442,6 +464,11 @@ export async function driveStream<M extends WireMember>(
 			log.error("model stream error", error, { conversation: convId });
 		},
 		onStepEnd: (step) => {
+			stepCount++;
+			// The step's request was dispatched and consumed — its staged
+			// prompt becomes the record ("last completed step"; an errored
+			// dispatch still counts, the model saw the prompt).
+			lastWindow = stagedWindow;
 			if (filterRetryPending && step.finishReason !== "error") {
 				filterRetryPending = false;
 				log.info("provider content filter retry recovered", {
@@ -707,6 +734,21 @@ export async function driveStream<M extends WireMember>(
 		}
 	}
 
+	// The window record rides both outcome rails: an ok turn stores its
+	// final step, a failed one its last completed step. Gated on
+	// stepCount: a prompt built for a call that never completed a step
+	// is not a window anything saw — steps: 0 must read null.
+	const windowCapture = (): WindowCapture | null => {
+		if (lastWindow === null || stepCount === 0) return null;
+		return {
+			v: 1,
+			system: deps.step.system,
+			tools: serializeToolDefs(deps.tools),
+			messages: lastWindow.messages,
+			segments: lastWindow.segments,
+		};
+	};
+
 	deps.assertAuthority();
 	if (streamError !== null) {
 		return {
@@ -721,6 +763,9 @@ export async function driveStream<M extends WireMember>(
 			loop: state.snapshot(),
 			steerMark,
 			filterRetryUsed,
+			window: windowCapture(),
+			model: modelLabel,
+			steps: stepCount,
 		};
 	}
 	const usage = await Promise.resolve(result.usage).catch((err) => {
@@ -745,5 +790,8 @@ export async function driveStream<M extends WireMember>(
 		toolCalls,
 		digestRing,
 		steerMark,
+		window: windowCapture(),
+		model: modelLabel,
+		steps: stepCount,
 	};
 }

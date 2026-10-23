@@ -1,13 +1,16 @@
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
+import { openCacheObservation } from "../cache-observation.ts";
 import { type Config, type ConfigRef } from "../config.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
+import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
+import { openWindowCapture } from "../window-capture.ts";
 import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { startHttp } from "./mod.ts";
@@ -50,15 +53,26 @@ export function setup(
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const turnJournal = openTurnJournal(store.db);
+	// The context-window rows ride the same db — prod wires them
+	// unconditionally (src/index.ts), so the rig does too.
+	const windowCapture = openWindowCapture(store.db);
+	// Cache-call telemetry on the same seam prod's step builder uses, so
+	// lineage-reading surfaces see rows in tests.
+	const cacheObservations = openCacheObservation(store.db);
 	const runtime = new Runtime({
 		store,
 		turnJournal,
-		buildStep: () => ({
-			model:
+		recordWindow: (conversationId, input) => {
+			windowCapture.record(conversationId, input);
+		},
+		buildStep: (conv) => ({
+			model: observedModel(
 				opts.model ??
-				textModel(opts.deltas ?? ["hello", " app"], {
-					...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
-				}).model,
+					textModel(opts.deltas ?? ["hello", " app"], {
+						...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
+					}).model,
+				{ conversation: conv.id, observation: cacheObservations },
+			),
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
@@ -100,6 +114,7 @@ export function setup(
 		notes,
 		auth,
 		configRef,
+		windowCapture,
 		onConfigWritten: () => {
 			configWrites.count += 1;
 		},
@@ -149,6 +164,8 @@ export function setup(
 		home,
 		appDeps,
 		turnJournal,
+		windowCapture,
+		cacheObservations,
 	};
 }
 

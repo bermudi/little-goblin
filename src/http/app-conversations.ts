@@ -3,6 +3,7 @@ import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
+import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
 import { appAddress, appIdSchema, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -44,6 +45,7 @@ import type {
 	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
+	AppWindowView,
 } from "./app-wire.ts";
 
 const createBody = z.object({
@@ -670,6 +672,57 @@ export async function handleConversationsRoute(
 			input,
 			limit,
 			turns: body.turns,
+		});
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	const windowMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/window$/);
+	if (windowMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(windowMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const row = store.get(convId.id);
+		if (row === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		if (deps.windowCapture === undefined) {
+			return Response.json(
+				{ error: "the context window view is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const stored = deps.windowCapture.read(convId.id);
+		const body: AppWindowView = {
+			model: row.model ?? deps.configRef.current.model,
+			capturedAt: stored === null ? null : new Date(stored.capturedMs).toISOString(),
+			capturedModel: stored?.model ?? null,
+			steps: stored?.step ?? null,
+			segments: stored?.capture.segments ?? null,
+			system: stored?.capture.system ?? null,
+			tools: stored?.capture.tools ?? null,
+			messages: stored?.capture.messages ?? null,
+			calls: listCalls(store.db, convId.id).map((c) => ({
+				callId: c.callId,
+				purpose: c.purpose,
+				model: c.model,
+				startedMs: c.startedMs,
+				finishedMs: c.finishedMs,
+				status: c.status,
+				inputTokens: c.inputTokens,
+				outputTokens: c.outputTokens,
+				cacheRead: c.cacheRead,
+				cacheWrite: c.cacheWrite,
+				prefixRelation: c.prefixRelation,
+				sharedMessages: c.sharedMessages,
+			})),
+		};
+		log.debug("app window served", {
+			conversation: convId.id,
+			captured: stored !== null,
+			calls: body.calls.length,
+			messages: body.messages?.length ?? 0,
 		});
 		return Response.json(body, { headers: NO_STORE });
 	}

@@ -1010,6 +1010,78 @@ test("context prefers the final step's input and itemizes the window", async () 
 	}
 });
 
+test("the context window view serves the captured prompt and the call lineage", async () => {
+	const { http, call } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
+	try {
+		expect((await call("/api/app/conversations/nope/window")).status).toBe(404);
+		expect(
+			(
+				await call("/api/app/conversations/w-01/window", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				})
+			).status,
+		).toBe(405);
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "w-01" }),
+		});
+		// No turn yet: null sections, an empty lineage — the page says
+		// so instead of faking a window.
+		const empty = (await (await call("/api/app/conversations/w-01/window")).json()) as {
+			capturedAt: string | null;
+			messages: unknown[] | null;
+			calls: unknown[];
+		};
+		expect(empty.capturedAt).toBeNull();
+		expect(empty.messages).toBeNull();
+		expect(empty.calls).toEqual([]);
+
+		// A real turn: the runtime recorded its final step's prompt, and
+		// the observation logged the call.
+		await createAndChat(call, "hi", "w-01");
+		const body = (await (await call("/api/app/conversations/w-01/window")).json()) as {
+			model: string;
+			capturedAt: string | null;
+			capturedModel: string | null;
+			steps: number | null;
+			system: string | null;
+			tools: { name: string }[] | null;
+			messages: { role: string; content: unknown }[] | null;
+			segments: Record<string, number> | null;
+			calls: {
+				status: string;
+				inputTokens: number | null;
+				prefixRelation: string;
+			}[];
+		};
+		expect(body.capturedAt).not.toBeNull();
+		// The rig's buildStep sets no label, so the observed modelId is
+		// what the record carries — prod's stepBuilder labels with the ref.
+		expect(body.capturedModel).toBe("fake-1");
+		expect(body.steps).toBe(1);
+		expect(body.system).toBe("test");
+		expect(body.tools).toEqual([]);
+		expect(body.segments).not.toBeNull();
+		expect(body.segments!.history).toBeGreaterThan(0);
+		// The outbound of the turn's single step: the user message only —
+		// the reply is the response, never its own input.
+		expect(body.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);
+		expect(body.calls).toHaveLength(1);
+		expect(body.calls[0]).toMatchObject({
+			status: "completed",
+			prefixRelation: "first",
+		});
+		expect(body.calls[0]!.inputTokens).toBeGreaterThan(0);
+	} finally {
+		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
 test.each([
 	{ name: "legacy", final: {}, input: 900, cacheRead: 800 },
 	{

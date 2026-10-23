@@ -137,6 +137,9 @@ describe("failureFromStream", () => {
 		loop,
 		steerMark: 4,
 		filterRetryUsed: false,
+		window: null,
+		model: "test/model",
+		steps: 0,
 	};
 
 	test("a held failure becomes the overflow error carrying the resume payload", () => {

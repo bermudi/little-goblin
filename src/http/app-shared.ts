@@ -33,6 +33,9 @@ export interface AppChannelDeps {
 	onConfigWritten(): void;
 	transcribe?: (file: SpeechFile) => Promise<string | null>;
 	speak?: (text: string) => Promise<Uint8Array[] | null>;
+	// The context-window view's read handle (window-capture.ts); absent
+	// = the window route answers 503.
+	windowCapture?: ReturnType<typeof import("../window-capture.ts").openWindowCapture>;
 	titleFor?: (text: string) => Promise<string | null>;
 	rewriteNote?: (
 		noteId: string,

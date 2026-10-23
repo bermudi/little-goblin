@@ -25,6 +25,7 @@ import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
+import { WindowView } from "./WindowView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
 import { FilesView, SkillsView } from "./StateViews.tsx";
 import { AttentionView } from "./AttentionView.tsx";
@@ -54,7 +55,8 @@ type Page =
 	| "projects"
 	| "project"
 	| "notes"
-	| "note";
+	| "note"
+	| "window";
 
 const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] = [
 	{ key: "attention", label: "Attention" },
@@ -89,6 +91,12 @@ export function projectFromPath(pathname: string): string | null {
 function noteFromPath(pathname: string): string | null {
 	const m = /^\/app\/n\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
 	return m === null ? null : m[1]!;
+}
+
+// /app/c/<appId>/window — the context-window view of one conversation.
+function windowFromPath(pathname: string): string | null {
+	const m = /^\/app\/c\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/window$/.exec(pathname);
+	return m === null ? null : `app/${m[1]!}`;
 }
 
 function historyPosition(state: unknown): { index: number; segment: string } | null {
@@ -678,13 +686,18 @@ function AppShell() {
 				? "project"
 				: noteFromPath(window.location.pathname) !== null
 					? "note"
-					: "chat"),
+					: windowFromPath(window.location.pathname) !== null
+						? "window"
+						: "chat"),
 	);
 	useEffect(() => setSourcesOpen(false), [current, page]);
 	const [projectId, setProjectId] = useState<string | null>(() =>
 		projectFromPath(window.location.pathname),
 	);
 	const [noteId, setNoteId] = useState<string | null>(() => noteFromPath(window.location.pathname));
+	const [windowConv, setWindowConv] = useState<string | null>(() =>
+		windowFromPath(window.location.pathname),
+	);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
@@ -862,6 +875,7 @@ function AppShell() {
 				setPage(p);
 				setProjectId(null);
 				setNoteId(null);
+				setWindowConv(null);
 				return;
 			}
 			const pid = projectFromPath(window.location.pathname);
@@ -869,6 +883,7 @@ function AppShell() {
 				setPage("project");
 				setProjectId(pid);
 				setNoteId(null);
+				setWindowConv(null);
 				return;
 			}
 			const nid = noteFromPath(window.location.pathname);
@@ -876,12 +891,22 @@ function AppShell() {
 				setPage("note");
 				setProjectId(null);
 				setNoteId(nid);
+				setWindowConv(null);
+				return;
+			}
+			const wid = windowFromPath(window.location.pathname);
+			if (wid !== null) {
+				setPage("window");
+				setProjectId(null);
+				setNoteId(null);
+				setWindowConv(wid);
 				return;
 			}
 			const id = deepLinkConv(window.location.pathname);
 			setPage("chat");
 			setProjectId(null);
 			setNoteId(null);
+			setWindowConv(null);
 			setCurrent(id);
 		};
 		window.addEventListener("popstate", onPop);
@@ -981,6 +1006,7 @@ function AppShell() {
 		setPage("chat");
 		setProjectId(null);
 		setNoteId(null);
+		setWindowConv(null);
 		setCurrent(id);
 		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
 		if (path !== window.location.pathname) pushRoute(path);
@@ -992,6 +1018,7 @@ function AppShell() {
 		setPage("project");
 		setProjectId(id);
 		setNoteId(null);
+		setWindowConv(null);
 		setNavOpen(false);
 		pushRoute(`/app/p/${id}`);
 	};
@@ -1002,6 +1029,7 @@ function AppShell() {
 		setPage("projects");
 		setProjectId(null);
 		setNoteId(null);
+		setWindowConv(null);
 		setNavOpen(false);
 		pushRoute("/app/projects");
 	};
@@ -1012,6 +1040,7 @@ function AppShell() {
 		setPage("notes");
 		setProjectId(null);
 		setNoteId(null);
+		setWindowConv(null);
 		setNavOpen(false);
 		pushRoute("/app/notes");
 	};
@@ -1026,8 +1055,25 @@ function AppShell() {
 		setPage("note");
 		setProjectId(null);
 		setNoteId(id);
+		setWindowConv(null);
 		setNavOpen(false);
 		pushRoute(`/app/n/${id}`);
+	};
+
+	// The context-window view of one conversation — read-only, so the
+	// dirty guard has nothing to protect here.
+	const openWindow = (id: string) => {
+		if (page === "window" && windowConv === id) {
+			setNavOpen(false);
+			return;
+		}
+		clearStartFailure();
+		setPage("window");
+		setProjectId(null);
+		setNoteId(null);
+		setWindowConv(id);
+		setNavOpen(false);
+		pushRoute(`/app/c/${id.slice("app/".length)}/window`);
 	};
 
 	const rowRemoved = (id: string) => {
@@ -1044,6 +1090,7 @@ function AppShell() {
 		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage(p);
+		setWindowConv(null);
 		setNavOpen(false);
 		pushRoute(`/app/${p}`);
 	};
@@ -1344,7 +1391,32 @@ function AppShell() {
 					{page === "chat" && current !== null && (
 						<span className="header-title">{flatTitle(currentTitle)}</span>
 					)}
+					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
+					{page === "chat" && current !== null && (
+						<button
+							type="button"
+							className="header-action"
+							title="Context window"
+							aria-label="Context window — what the model's next prompt carries, captured at the last call"
+							onClick={() => openWindow(current)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								width="18"
+								height="18"
+							>
+								<rect x="3" y="4" width="18" height="16" rx="3" />
+								<path d="M3 9h18" />
+								<path d="M9 13l-3 3 3 3" />
+								<path d="M15 13l3 3-3 3" />
+							</svg>
+						</button>
+					)}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1598,6 +1670,19 @@ function AppShell() {
 					conversationId={current}
 					title={currentTitle}
 					onClose={() => setSourcesOpen(false)}
+				/>
+			)}
+			{page === "window" && windowConv !== null && (
+				<WindowView
+					token={token}
+					conversationId={windowConv}
+					title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
+					onBack={() => {
+						if (!leaveDirty()) return;
+						setPage("chat");
+						setWindowConv(null);
+						select(windowConv);
+					}}
 				/>
 			)}
 			{createProjectOpen && (

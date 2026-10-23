@@ -578,6 +578,30 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/window"))
+				return Promise.resolve(
+					jsonResponse({
+						model: "main/test",
+						capturedAt: "2026-10-22T10:00:00.000Z",
+						capturedModel: "main/test",
+						steps: 1,
+						segments: {
+							identity: 10,
+							environment: 0,
+							project: 0,
+							agentsMd: 0,
+							userMd: 0,
+							skills: 0,
+							toolDefs: 0,
+							history: 20,
+							toolResults: 0,
+						},
+						system: "You are goblin.",
+						tools: [],
+						messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+						calls: [],
+					}),
+				);
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
 				if (saveStatus !== 200)
@@ -822,6 +846,24 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/c/fixture");
 		expect(container.querySelector(".chat")).not.toBeNull();
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
+	});
+
+	test("the context-window button opens /app/c/<id>/window and Back returns to the chat", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		const action = container.querySelector('button[aria-label^="Context window"]');
+		expect(action).not.toBeNull();
+		await click(action);
+		await settle();
+		expect(win.location.pathname).toBe("/app/c/fixture/window");
+		expect(container.querySelector(".ops")?.textContent).toContain("You are goblin.");
+		expect(container.querySelector(".ops")?.textContent).toContain("Model calls · 0");
+
+		await traverse("back");
+		await settle();
+		expect(win.location.pathname).toBe("/app/c/fixture");
+		expect(container.querySelector(".chat")).not.toBeNull();
 	});
 
 	test("repeated conversation and empty-chat selection do not add history entries", async () => {

@@ -4443,3 +4443,200 @@ button.link:hover {
 	border: 1px solid var(--line, #ddd);
 	border-radius: 8px;
 }
+
+/* ---------- context window view (design/app.md → Context window view) ---------- */
+.win-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.6rem;
+	margin: 0.6rem 0.4rem;
+}
+.win-controls .chip {
+	cursor: pointer;
+	background: none;
+}
+.win-controls .chip.on {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.win-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.win-search {
+	min-width: 10rem;
+	flex: 1;
+	max-width: 18rem;
+}
+.win-cap {
+	margin: 0.4rem;
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+}
+.win-stale {
+	color: var(--app-warning, #d7a94b);
+}
+.win-bar {
+	display: flex;
+	height: 8px;
+	border-radius: 4px;
+	overflow: hidden;
+	margin: 0.4rem;
+	background: var(--app-divider);
+}
+/* Segment hues — nth-child, so order = builder order in the view. */
+.win-bar-seg {
+	min-width: 1px;
+}
+.win-bar-seg:nth-child(6n + 1) {
+	background: color-mix(in oklab, var(--app-fg) 70%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 2) {
+	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 3) {
+	background: color-mix(in oklab, var(--app-fg) 42%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 4) {
+	background: color-mix(in oklab, var(--app-fg) 32%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 5) {
+	background: color-mix(in oklab, var(--app-fg) 24%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 6) {
+	background: color-mix(in oklab, var(--app-fg) 17%, var(--app-bg));
+}
+.win-segments {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.3rem 1rem;
+	list-style: none;
+	margin: 0.2rem 0.4rem 0.6rem;
+	padding: 0;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.win-segments .win-dot {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	border-radius: 2px;
+	margin-right: 0.35rem;
+	background: var(--app-fg-muted);
+}
+.win-h3 {
+	margin: 0.8rem 0.4rem 0.3rem;
+	font-size: 13px;
+	color: var(--app-fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.win-json {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	background: var(--app-gray-950);
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	padding: 0.5rem;
+	margin: 0.3rem 0;
+	max-height: 24rem;
+	overflow: auto;
+}
+.win-system {
+	max-height: 32rem;
+}
+.win-text {
+	font-size: 13.5px;
+}
+.win-tools,
+.win-msgs {
+	list-style: none;
+	margin: 0;
+	padding: 0 0.4rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.win-tools details,
+.win-msg {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.45rem 0.6rem;
+}
+.win-tools summary,
+.win-parts summary {
+	cursor: pointer;
+	font-family: var(--font-mono);
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+.win-tooldesc {
+	margin: 0.4rem 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.win-msg-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	margin-bottom: 0.25rem;
+}
+.win-idx {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.win-role {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	padding: 0.05rem 0.4rem;
+	border-radius: 6px;
+	background: var(--app-hover);
+}
+.win-msg-user .win-role {
+	background: color-mix(in oklab, var(--app-fg) 18%, var(--app-bg));
+}
+.win-msg-tool .win-role {
+	background: var(--app-gray-100);
+	color: var(--app-fg-muted);
+}
+.win-size {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.win-parts {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.win-parts > .chip {
+	align-self: flex-start;
+}
+.win-tablewrap {
+	overflow-x: auto;
+	margin: 0.3rem 0.4rem;
+}
+.win-table {
+	border-collapse: collapse;
+	font-size: 12px;
+	font-family: var(--font-mono);
+	white-space: nowrap;
+}
+.win-table th,
+.win-table td {
+	text-align: left;
+	padding: 0.2rem 0.55rem;
+	border-bottom: 1px solid var(--app-divider);
+}
+.win-table th {
+	color: var(--app-fg-subtle);
+	font-weight: 500;
+}

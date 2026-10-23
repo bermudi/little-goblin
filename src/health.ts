@@ -1036,23 +1036,25 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 	let embedding: { address: string; model: string } | undefined;
 	try {
 		const cfg = join(homedir(), ".config/goblin-memory");
-		const unit = readBounded(
-			join(homedir(), ".config/containers/systemd/goblin-memory-api.container"),
-			64 * 1024,
-		).text;
+		const unitsDir = join(homedir(), ".config/containers/systemd");
+		const unit = readBounded(join(unitsDir, "goblin-memory-api.container"), 64 * 1024).text;
+		const pod = readBounded(join(unitsDir, "goblin-memory.pod"), 64 * 1024).text;
 		if (
 			!/^ContainerName=goblin-memory-api$/m.test(unit) ||
-			!/^PublishPort=127\.0\.0\.1:8888:8888$/m.test(unit) ||
-			!/^EnvironmentFile=%h\/\.config\/goblin-memory\/hindsight\.env$/m.test(unit)
+			!/^Pod=goblin-memory\.pod$/m.test(unit) ||
+			!/^EnvironmentFile=%h\/\.config\/goblin-memory\/hindsight\.env$/m.test(unit) ||
+			!/^PodName=goblin-memory$/m.test(pod) ||
+			!/^PublishPort=127\.0\.0\.1:8888:8888$/m.test(pod)
 		)
 			throw new ProbeError("unverified-installed-API-association");
-		// Only running flag, published bindings and mount sources are requested.
+		// Only running flag and mount sources are requested — in a pod the
+		// port lives on the infra container, never on the API itself.
 		const raw = await command(
 			[
 				"podman",
 				"inspect",
 				"--format",
-				'{"running":{{json .State.Running}},"ports":{{json .NetworkSettings.Ports}},"mounts":{{json .Mounts}}}',
+				'{"running":{{json .State.Running}},"mounts":{{json .Mounts}}}',
 				"goblin-memory-api",
 			],
 			2000,
@@ -1067,19 +1069,12 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 		const meta = z
 			.object({
 				running: z.boolean(),
-				ports: z.record(
-					z.string(),
-					z.array(z.object({ HostIp: z.string(), HostPort: z.string() })).nullable(),
-				),
 				mounts: z.array(z.object({ Source: z.string(), Destination: z.string() })).max(64),
 			})
 			.safeParse(parsed);
 		if (
 			!meta.success ||
 			!meta.data.running ||
-			!meta.data.ports["8888/tcp"]?.some(
-				(port) => port.HostIp === "127.0.0.1" && port.HostPort === "8888",
-			) ||
 			!meta.data.mounts.some(
 				(mount) =>
 					mount.Source === join(cfg, "start.py") &&
@@ -1087,6 +1082,48 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 			)
 		)
 			throw new ProbeError("unverified-running-API-association");
+		// The published binding belongs to the pod's infra container; the
+		// pod roster proves api+db share its loopback.
+		const podRaw = await command(
+			["podman", "pod", "inspect", "--format", "{{json .}}", "goblin-memory"],
+			2000,
+			probe,
+		);
+		let podParsed: unknown;
+		try {
+			podParsed = JSON.parse(podRaw);
+		} catch {
+			throw new ProbeError("invalid-pod-metadata");
+		}
+		const podMeta = z
+			.array(
+				z.object({
+					InfraConfig: z
+						.object({
+							PortBindings: z
+								.record(
+									z.string(),
+									z.array(z.object({ HostIp: z.string(), HostPort: z.string() })),
+								)
+								.nullish(),
+						})
+						.nullish(),
+					Containers: z.array(z.object({ Name: z.string() })).nullish(),
+				}),
+			)
+			.min(1)
+			.max(1)
+			.safeParse(podParsed);
+		const roster = new Set(podMeta.success ? (podMeta.data[0].Containers ?? []).map((c) => c.Name) : []);
+		if (
+			!podMeta.success ||
+			!podMeta.data[0].InfraConfig?.PortBindings?.["8888/tcp"]?.some(
+				(port) => port.HostIp === "127.0.0.1" && port.HostPort === "8888",
+			) ||
+			!roster.has("goblin-memory-api") ||
+			!roster.has("goblin-memory-db")
+		)
+			throw new ProbeError("unverified-pod-API-association");
 		const api = narrowEnv(join(cfg, "hindsight.env"), [
 			"HINDSIGHT_API_EMBEDDINGS_PROVIDER",
 			"HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",

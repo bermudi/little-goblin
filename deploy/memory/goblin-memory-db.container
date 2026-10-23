@@ -2,14 +2,19 @@
 Description=Optional Goblin memory PostgreSQL
 
 [Container]
-# pgvector 0.8.2, PostgreSQL 17, Debian bookworm (multi-arch index)
 Image=docker.io/pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
 ContainerName=goblin-memory-db
-Network=goblin-memory.network
-NetworkAlias=db
+Pod=goblin-memory.pod
 Volume=goblin-memory-db.volume:/var/lib/postgresql/data
-Environment=POSTGRES_USER=hindsight POSTGRES_DB=hindsight
-EnvironmentFile=%h/.config/goblin-memory/postgres.env
+# No password exists: the database listens on the pod's loopback only, so
+# pg_hba's stock loopback trust rules answer every connection it can ever
+# see (host all all 127.0.0.1/32 trust). HOST_AUTH_METHOD=trust only makes
+# a FRESH volume's initdb accept that posture without demanding a
+# POSTGRES_PASSWORD to generate; on the existing volume it is ignored.
+# The actual boundary is listen_addresses — never publish 5432 and never
+# widen it beyond 127.0.0.1.
+Environment=POSTGRES_USER=hindsight POSTGRES_DB=hindsight POSTGRES_HOST_AUTH_METHOD=trust
+Exec=postgres -c listen_addresses=127.0.0.1
 HealthCmd=pg_isready -h 127.0.0.1 -U hindsight -d hindsight
 HealthInterval=10s
 HealthTimeout=5s
@@ -21,4 +26,3 @@ LogDriver=journald
 [Service]
 Restart=on-failure
 RestartSec=10
-TimeoutStartSec=300

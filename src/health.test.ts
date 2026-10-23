@@ -879,7 +879,11 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 			mkdirSync(units, { recursive: true });
 			writeFileSync(
 				join(units, "goblin-memory-api.container"),
-				"ContainerName=goblin-memory-api\nPublishPort=127.0.0.1:8888:8888\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+				"ContainerName=goblin-memory-api\nPod=goblin-memory.pod\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+			);
+			writeFileSync(
+				join(units, "goblin-memory.pod"),
+				"PodName=goblin-memory\nPublishPort=127.0.0.1:8888:8888\n",
 			);
 			writeFileSync(
 				join(cfg, "hindsight.env"),
@@ -898,9 +902,16 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 			);
 			const metadata = JSON.stringify({
 				running: true,
-				ports: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
 				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
 			});
+			const podMeta = JSON.stringify([
+				{
+					InfraConfig: {
+						PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+					},
+					Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+				},
+			]);
 			const lowCapacity = mode.startsWith("low-");
 			if (lowCapacity) {
 				const statfs = spyOn(fs, "statfsSync").mockReturnValue({
@@ -922,7 +933,8 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 					: `printf '${secret}' >&2; exit 1`;
 			f.script(
 				"podman",
-				`if [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
+				`if [ "$1" = pod ]; then printf '%s' '${podMeta}';
+				elif [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
 				elif [ "$1" = volume ] && [ '${lowCapacity}' = true ]; then printf '%s' '${JSON.stringify(join(f.root, secret))}';
 				else ${mountFailure}; fi`,
 			);

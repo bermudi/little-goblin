@@ -7,8 +7,11 @@ the single authority on accepted wire configuration and is deliberately
 self-contained (it is bind-mounted alone into the container); this module
 owns everything only the installer needs.
 
-Secrets discipline: values from auth.jsonl travel file → memory →
-hindsight.env and are never printed, logged, or embedded in command lines.
+Secrets discipline: values from auth.jsonl travel file → memory only —
+resolved once for the live catalog fetch, never printed, logged, written
+to an env file, or embedded in a command line. What the container gets is
+the record's `!` command itself, stored verbatim as a podman shell
+secret's lookup: the credential lives in pass-keys alone.
 """
 from __future__ import annotations
 
@@ -226,13 +229,9 @@ def read_goblin_providers(goblin_home: Path,
     return registry, None
 
 
-def resolve_auth_key(goblin_home: Path, auth_name: str) -> str:
-    """Value of an auth.jsonl record, resolving "!cmd" records in-process.
-
-    The value goes file → memory → hindsight.env; it is never printed,
-    logged, or passed through a command line. Raises ValueError (message
-    without the value) when the store or record is unusable.
-    """
+def read_auth_record(goblin_home: Path, auth_name: str) -> str:
+    """Raw `value` of the named auth.jsonl record (may be a literal or a
+    "!command"). Raises ValueError naming the record — never the value."""
     path = goblin_home / "auth.jsonl"
     records: dict[str, str] = {}
     try:
@@ -251,7 +250,37 @@ def resolve_auth_key(goblin_home: Path, auth_name: str) -> str:
             records[record["name"]] = record["value"]
     if auth_name not in records:
         raise ValueError(f"no auth record named '{auth_name}'")
-    value = records[auth_name]
+    return records[auth_name]
+
+
+def auth_command_for(goblin_home: Path, auth_name: str) -> str:
+    """The `!` command behind an auth record — becomes a podman shell
+    secret's lookup verbatim, so the container resolves the value itself
+    at every start. Literal (non-`!`) records cannot be looked up:
+    credentials must live behind a command, normally `!pass-keys get …`.
+    """
+    value = read_auth_record(goblin_home, auth_name)
+    if not value.startswith("!"):
+        raise ValueError(
+            f"auth record '{auth_name}' stores a literal value — container "
+            "credentials must be a `!` command so the store can be queried "
+            "at every start (e.g. !pass-keys get goblin-dev NAME)")
+    command = value[1:]
+    if _INVOKES_PASS_CLI_DIRECTLY.search(command):
+        raise ValueError(
+            f"auth record '{auth_name}' invokes pass-cli directly — it "
+            "would run as the owner session; route it through pass-keys")
+    return command
+
+
+def resolve_auth_key(goblin_home: Path, auth_name: str) -> str:
+    """Value of an auth.jsonl record, resolving "!cmd" records in-process.
+
+    The value goes file → memory only; it is never printed, logged, or
+    written to disk. Raises ValueError (message without the value) when
+    the store or record is unusable.
+    """
+    value = read_auth_record(goblin_home, auth_name)
     if value.startswith("!"):
         # The same poison lint goblin's own loader enforces (src/auth.ts):
         # a `!` command invoking pass-cli would run as the OWNER session —

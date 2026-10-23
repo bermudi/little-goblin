@@ -4,6 +4,11 @@ import os
 import sys
 from urllib.parse import urlsplit
 
+# Podman type=mount secrets land here: one file per secret, named for the
+# env var it becomes. The value lives only on this in-container tmpfs;
+# podman itself stores only the lookup command, never the resolved value.
+SECRETS_DIR = "/run/secrets"
+
 # Model IDs belong to the operator; only verified wire mappings are allowed.
 LLM_PROVIDERS = {"zai", "openai", "openrouter"}
 EMBEDDING_PROVIDERS = {"openrouter", "openai"}
@@ -76,16 +81,34 @@ def validate(env: Mapping[str, str]) -> None:
             raise ValueError(f"{key}: conflicts with this launch profile")
     try:
         db = urlsplit(env["HINDSIGHT_API_DATABASE_URL"])
-        valid = (db.scheme == "postgresql" and db.hostname == "db" and db.port == 5432
-                 and db.username == "hindsight" and bool(db.password)
+        valid = (db.scheme == "postgresql" and db.hostname == "127.0.0.1"
+                 and db.port == 5432 and db.username == "hindsight"
+                 and db.password is None
                  and db.path == "/hindsight" and not db.query and not db.fragment)
     except ValueError:
         valid = False
     if not valid:
-        raise ValueError("HINDSIGHT_API_DATABASE_URL: expected private db:5432/hindsight URI")
+        raise ValueError("HINDSIGHT_API_DATABASE_URL: expected passwordless "
+                         "postgresql://hindsight@127.0.0.1:5432/hindsight — the "
+                         "database listens on the pod's loopback only")
+
+
+def load_mounted_secrets() -> None:
+    """Export each podman secret mount under its own file name as an env
+    var. Missing dir means no secrets were mounted — that is fine: every
+    required credential name is still enforced by validate() afterwards.
+    Trailing newlines are stripped; env values cannot carry them."""
+    if not os.path.isdir(SECRETS_DIR):
+        return
+    for name in sorted(os.listdir(SECRETS_DIR)):
+        path = os.path.join(SECRETS_DIR, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as handle:
+                os.environ[name] = handle.read().decode().rstrip("\r\n")
 
 
 if __name__ == "__main__":
+    load_mounted_secrets()
     try:
         validate(os.environ)
     except ValueError as error:

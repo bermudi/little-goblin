@@ -1,13 +1,20 @@
 """Interactive installer for the Goblin memory stack (Hindsight + PostgreSQL).
 
 One command. goblin's own registry is the source of truth: providers it
-already uses are proposed as defaults, and their keys are resolved from
-its auth store (in-process, never printed). Only genuinely-new providers
-prompt for a key (hidden input). Keys belong to providers, not roles —
-one key serves both Hindsight roles.
+already uses are proposed as defaults, and credentials come from its auth
+store as `!` command records — the command itself becomes a podman shell
+secret's lookup, so the container resolves the value at every start.
+Credentials are never written to env files, never printed, never stored
+by podman: only the lookup command is registered.
 
-- database password: generated with secrets.token_urlsafe (URL-safe by
-  construction), written to a 0600 env file, never printed
+- the database has NO password: api and db run in one quadlet pod, so the
+  API reaches Postgres over the pod's own loopback, which pg_hba already
+  trusts; Postgres listens on 127.0.0.1 inside the pod — no socket is
+  reachable from outside it
+- provider credentials are podman shell-driver secrets named for the env
+  var they feed (e.g. HINDSIGHT_API_LLM_API_KEY), mounted as tmpfs files
+  under /run/secrets and exported by start.py; the lookup command runs
+  `pass-keys get goblin-dev NAME` — the same auth record goblin uses
 - model selection: search the provider's LIVE /models catalog with the
   key just resolved — substring in, short numbered list out, exact ids
   accepted; if the catalog is unreachable the reason is shown (a 401 is
@@ -15,7 +22,8 @@ one key serves both Hindsight roles.
   free text with a verified example
 - endpoints fixed by the provider are derived silently; openai
   (compatible endpoints exist) asks, with its standard endpoint as the
-  default
+  default; a loopback or embed-relay base URL gets the `local-ollama`
+  sentinel — ollama ignores credentials — instead of a real secret
 - the assembled config is validated by the launch guard (start.validate)
   BEFORE anything is written — an invalid answer cannot produce a config
   the container would reject; embedding models in providers.EMBEDDING_PREFIXES
@@ -29,9 +37,8 @@ one key serves both Hindsight roles.
 
 Fail loud: every step reports what it is doing and aborts with context on
 the first failure. Idempotent for assets; refuses to touch existing env
-files unless --reconfigure (a new database password would NOT rotate an
-existing role — see docs/memory.md). Provider knowledge lives in
-providers.py; this file is the flow.
+files unless --reconfigure. Provider knowledge lives in providers.py;
+this file is the flow.
 
 Usage: uv run python deploy/memory/install.py [--no-start] [--reconfigure]
 """
@@ -49,17 +56,17 @@ import shutil
 import socket
 import subprocess
 import sys
-import secrets
 import shlex
 import time
 from typing import Callable, NoReturn
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import quote
+from urllib.parse import urlsplit
 
 from providers import (
     DEFAULT_OPENAI_BASE_URL,
     PROVIDERS,
+    auth_command_for,
     catalog_url_for,
     embedding_prefixes,
     example_for,
@@ -76,7 +83,7 @@ REPO_ROOT = MEMORY_DIR.parent.parent
 CFG_DIR = Path.home() / ".config" / "goblin-memory"
 SYSTEMD_DIR = Path.home() / ".config" / "containers" / "systemd"
 USER_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
-POSTGRES_ENV = CFG_DIR / "postgres.env"
+POSTGRES_ENV = CFG_DIR / "postgres.env"  # legacy: pre-pod installs only
 HINDSIGHT_ENV = CFG_DIR / "hindsight.env"
 MEMORY_API_URL = "http://127.0.0.1:8888"
 HEALTH_URL = MEMORY_API_URL + "/health/ready"
@@ -110,6 +117,22 @@ BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 # . _ ~ : / -. Anything else — %, $, whitespace, quotes, backslashes —
 # is a systemd-lexer or JSON-payload hazard in the pin unit's ExecStart.
 EMBED_MODEL_PATTERN = re.compile(r"[A-Za-z0-9._~:/-]+")
+# The database listens on the pod's loopback and pg_hba trusts loopback —
+# there is no password to issue, store, or keep in sync.
+DATABASE_URL = "postgresql://hindsight@127.0.0.1:5432/hindsight"
+# Sentinel for local embeddings (openai provider pointed at the embed
+# relay or loopback): ollama ignores credentials, but the launch guard
+# requires a non-empty value. This is a placeholder, not a secret.
+LOCAL_EMBED_KEY = "local-ollama"
+# A podman shell-driver secret stores COMMANDS, not the credential:
+# `lookup` resolves the value on every container start; the other three
+# verbs are deliberate no-ops because pass-keys owns the value lifecycle
+# (there is nothing external to enumerate, store, or delete).
+SECRET_DRIVER_TAIL = "store=cat >/dev/null,list=true,delete=true"
+# Region of the installed API Quadlet the installer rewrites when the
+# provider set changes. Both markers live inside [Container].
+SECRET_BLOCK_BEGIN = "# goblin:secrets-begin"
+SECRET_BLOCK_END = "# goblin:secrets-end"
 DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
     "Remember the operator's preferences, decisions, commitments, people, "
@@ -131,17 +154,33 @@ DEFAULT_OBSERVATIONS_MISSION = (
 
 
 @dataclass(frozen=True)
+class SecretSpec:
+    """A credential the container needs, delivered as a podman shell
+    secret named for the env var it feeds. `lookup` is the shell command
+    stored as the secret's only data — run at every container start."""
+    env_name: str
+    lookup: str
+
+
+@dataclass(frozen=True)
 class Answers:
     llm_provider: str
     llm_model: str
     llm_base_url: str
-    llm_api_key: str
+    llm_secret: SecretSpec
     emb_provider: str
     emb_model: str
-    emb_api_key: str
+    emb_secret: SecretSpec | None  # None → the LOCAL_EMBED_KEY sentinel
     emb_base_url: str | None  # required for (and only for) openai embeddings
     bank_id: str
     bank_mission: str
+
+
+def needed_secrets(answers: Answers) -> list[SecretSpec]:
+    specs = [answers.llm_secret]
+    if answers.emb_secret is not None:
+        specs.append(answers.emb_secret)
+    return specs
 
 
 def fail(message: str) -> NoReturn:
@@ -158,25 +197,22 @@ def info(message: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def build_database_uri(db_password: str) -> str:
-    # token_urlsafe output never needs encoding, but quote() keeps this
-    # correct for any operator-supplied password during --reconfigure reuse.
-    return "postgresql://hindsight:" + quote(db_password, safe="") + "@db:5432/hindsight"
-
-
-def build_hindsight_env(answers: Answers, db_password: str) -> dict[str, str]:
+def build_hindsight_env(answers: Answers) -> dict[str, str]:
+    """The FILE side of the container's environment — non-secret settings
+    only. Every credential arrives as a podman secret mount instead; the
+    launch guard still sees them, because validate() runs on the union."""
     prefix = f"HINDSIGHT_API_EMBEDDINGS_{answers.emb_provider.upper()}"
     env = {
-        "HINDSIGHT_API_DATABASE_URL": build_database_uri(db_password),
+        "HINDSIGHT_API_DATABASE_URL": DATABASE_URL,
         "HINDSIGHT_API_LLM_PROVIDER": answers.llm_provider,
         "HINDSIGHT_API_LLM_BASE_URL": answers.llm_base_url,
         "HINDSIGHT_API_LLM_MODEL": answers.llm_model,
-        "HINDSIGHT_API_LLM_API_KEY": answers.llm_api_key,
         "HINDSIGHT_API_EMBEDDINGS_PROVIDER": answers.emb_provider,
         "HINDSIGHT_API_RERANKER_PROVIDER": "rrf",
         f"{prefix}_MODEL": answers.emb_model,
-        f"{prefix}_API_KEY": answers.emb_api_key,
     }
+    if answers.emb_secret is None:
+        env[f"{prefix}_API_KEY"] = LOCAL_EMBED_KEY
     if answers.emb_provider == "openai":
         env[f"{prefix}_BASE_URL"] = answers.emb_base_url or ""
     prefixes = embedding_prefixes(answers.emb_model)
@@ -186,9 +222,13 @@ def build_hindsight_env(answers: Answers, db_password: str) -> dict[str, str]:
     for key, value in env.items():
         if "\n" in value or "\r" in value:
             raise ValueError(f"{key}: line breaks are not representable in env files")
-    # The launch guard is the single source of truth for a valid config.
-    # Raises ValueError before anything is written to disk.
-    validate(env)
+    # The launch guard is the single source of truth for a valid config —
+    # check it against what the container actually runs: file values plus
+    # the injected secret names.
+    runtime = dict(env)
+    for spec in needed_secrets(answers):
+        runtime[spec.env_name] = "injected-by-podman-secret"
+    validate(runtime)
     return env
 
 
@@ -198,10 +238,8 @@ def render_env_file(env: dict[str, str]) -> str:
         "HINDSIGHT_API_LLM_PROVIDER",
         "HINDSIGHT_API_LLM_BASE_URL",
         "HINDSIGHT_API_LLM_MODEL",
-        "HINDSIGHT_API_LLM_API_KEY",
         "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
         "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL",
-        "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY",
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
@@ -209,32 +247,18 @@ def render_env_file(env: dict[str, str]) -> str:
         "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX",
         "HINDSIGHT_API_RERANKER_PROVIDER",
     ]
+    # Hard rule: credentials never render into env files. The only
+    # *_API_KEY allowed is the documented local-embeddings sentinel —
+    # everything else arrives as a podman secret mount.
+    for key, value in env.items():
+        if re.search(r"_(API_KEY|PASSWORD)$", key) and value != LOCAL_EMBED_KEY:
+            raise ValueError(
+                f"{key}: credentials are podman secrets, not env-file values")
     lines = [f"{key}={env[key]}" for key in order if key in env]
     unexpected = set(env) - set(order)
     if unexpected:
         raise ValueError(f"unexpected keys: {sorted(unexpected)}")
     return "\n".join(lines) + "\n"
-
-
-def render_postgres_env(db_password: str) -> str:
-    return f"POSTGRES_PASSWORD={db_password}\n"
-
-
-def parse_postgres_env(text: str) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        key, sep, value = line.partition("=")
-        if not sep:
-            raise ValueError("postgres.env: line without '='")
-        key = key.strip()
-        if key in result:
-            raise ValueError(f"postgres.env: duplicate key {key}")
-        result[key] = value
-    if "POSTGRES_PASSWORD" not in result:
-        raise ValueError("postgres.env: POSTGRES_PASSWORD missing")
-    return result
 
 
 def parse_embed_relay_env(text: str) -> dict[str, str]:
@@ -387,7 +411,7 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     user_unit_dir.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
-    for pattern in ("*.container", "*.network", "*.volume"):
+    for pattern in ("*.container", "*.network", "*.volume", "*.pod"):
         for src in sorted(memory_dir.glob(pattern)):
             dst = systemd_dir / src.name
             if skip_existing_quadlets and dst.exists():
@@ -487,16 +511,111 @@ def deferred_start_commands(cfg_dir: Path) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], timeout: float = 600,
+        stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     info("$ " + " ".join(command))
     try:
-        proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+        proc = subprocess.run(command, text=True, capture_output=True,
+                              timeout=timeout, input=stdin)
     except subprocess.TimeoutExpired:
         fail(f"command timed out after {timeout}s: {' '.join(command)}")
     if proc.returncode != 0:
         output = (proc.stderr.strip() or proc.stdout.strip())[:2000]
         fail(f"command failed ({proc.returncode}): {' '.join(command)}\n{output}")
     return proc
+
+
+# --------------------------------------------------------------------------
+# Podman shell secrets — the store holds lookup commands, never values
+# --------------------------------------------------------------------------
+
+
+def secret_lookup(command: str) -> str:
+    """An auth record's `!` command becomes the secret's lookup verbatim,
+    under two fixes. Units run with PATH missing ~/.local/bin (pass-keys
+    lives there), so prepend it via $HOME — never a literal operator home.
+    And the shell driver returns stdout byte-exact, so defend against a
+    trailing newline breaking the credential."""
+    return f"env PATH=$HOME/.local/bin:$PATH {command} | tr -d '\\n'"
+
+
+def ensure_secret(spec: SecretSpec) -> None:
+    run(["podman", "secret", "create", "--replace", "--driver", "shell",
+         "--driver-opts", f"lookup={spec.lookup},{SECRET_DRIVER_TAIL}",
+         spec.env_name, "-"],
+        # The value piped at create is discarded by the no-op store: podman
+        # requires input syntactically, the lookup supplies the real one.
+        stdin="managed-by-goblin-auth-store\n")
+
+
+def managed_secrets() -> dict[str, dict[str, str]]:
+    """name → stored driver opts for our shell secrets (HINDSIGHT_API_*)."""
+    result = probe(["podman", "secret", "ls", "--format", "{{.Name}}\t{{.Driver}}"])
+    found: dict[str, dict[str, str]] = {}
+    if result is None or result.returncode != 0:
+        return found
+    for line in (result.stdout or "").splitlines():
+        name, _, driver = line.partition("\t")
+        if driver.strip() != "shell" or not name.startswith("HINDSIGHT_API_"):
+            continue
+        inspect = probe(["podman", "secret", "inspect", name,
+                         "--format", "{{json .Spec.Driver.Options}}"])
+        if inspect is not None and inspect.returncode == 0:
+            try:
+                found[name] = json.loads(inspect.stdout)
+            except ValueError:
+                found[name] = {}
+    return found
+
+
+def sync_secrets(needed: list[SecretSpec]) -> None:
+    """Create/replace the secrets the profile needs and unregister
+    HINDSIGHT_API_* secrets it no longer does (a provider switch leaves
+    an orphan registration otherwise)."""
+    for spec in needed:
+        ensure_secret(spec)
+        info(f"podman secret '{spec.env_name}' → lookup via auth store")
+    prune_secrets({s.env_name for s in needed})
+
+
+def prune_secrets(keep: set[str]) -> None:
+    """Unregister managed secrets the profile no longer needs (a provider
+    switch leaves an orphan registration otherwise)."""
+    for stale in sorted(set(managed_secrets()) - keep):
+        run(["podman", "secret", "rm", stale])
+        info(f"podman secret '{stale}' removed — no longer configured")
+
+
+def restore_secrets(previous: dict[str, dict[str, str]]) -> None:
+    """Rollback helper: recreate the pre-change secret registrations and
+    drop names the previous set did not have."""
+    for name, opts in previous.items():
+        lookup = opts.get("lookup")
+        if not lookup:
+            continue
+        run(["podman", "secret", "create", "--replace", "--driver", "shell",
+             "--driver-opts", f"lookup={lookup},{SECRET_DRIVER_TAIL}", name, "-"],
+            stdin="managed-by-goblin-auth-store\n")
+    for extra in set(managed_secrets()) - set(previous):
+        run(["podman", "secret", "rm", extra])
+
+
+def apply_secret_block(path: Path, env_names: list[str]) -> None:
+    """Write the provider-scoped Secret= lines into the installed API
+    Quadlet's marked region. Lines carry no values — each names a secret
+    whose mount start.py exports."""
+    text = path.read_text()
+    lines = [f"Secret={name},type=mount" for name in env_names]
+    block = SECRET_BLOCK_BEGIN + "\n" + "\n".join(lines)
+    block += ("\n" if lines else "") + SECRET_BLOCK_END
+    if SECRET_BLOCK_BEGIN not in text or SECRET_BLOCK_END not in text:
+        fail(f"{path} has no managed-secrets markers — the installed "
+             "Quadlet predates podman secrets; copy the shipped file first "
+             "(docs/memory.md → migration)")
+    before, _, rest = text.partition(SECRET_BLOCK_BEGIN)
+    _, _, after = rest.partition(SECRET_BLOCK_END)
+    write_file_atomic(path, before + block + after,
+                      path.stat().st_mode & 0o777)
 
 
 def probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -865,6 +984,30 @@ def ask_url(prompt: str, hint: str) -> str:
     return ask(f"{prompt} [default: {hint}]", check)
 
 
+def relay_address() -> str | None:
+    """The embed relay's bind address when the operator opted in — the
+    non-loopback endpoint that still means 'local ollama, no real key'.
+    The switch was validated before any prompt; a parse failure can only
+    mean it vanished mid-run — treat as no relay rather than guess."""
+    path = CFG_DIR / EMBED_RELAY_ENV.name
+    if not path.is_file():
+        return None
+    try:
+        return parse_embed_relay_env(path.read_text())["GOBLIN_EMBED_RELAY_ADDR"]
+    except (OSError, ValueError):
+        return None
+
+
+def is_local_embeddings_endpoint(base_url: str) -> bool:
+    """True when the embeddings base URL terminates on this host — the
+    loopback case and the embed-relay case both reach ollama, which
+    ignores credentials, so no secret is needed (sentinel instead)."""
+    host = urlsplit(base_url).hostname
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return True
+    return host is not None and host == relay_address()
+
+
 def ask_model_search(label: str, catalog: list[str] | None, example: str) -> str:
     """Search-then-pick over the live catalog. Numbers are good UX when
     the list is filtered to a handful; typing a substring any time
@@ -899,7 +1042,7 @@ def ask_model_search(label: str, catalog: list[str] | None, example: str) -> str
 
 
 def load_catalog(role: str, provider: str, base_url: str | None,
-                 api_key: str) -> list[str] | None:
+                 api_key: str | None) -> list[str] | None:
     url = catalog_url_for(provider, role, base_url)
     if url is None:
         return None
@@ -910,30 +1053,6 @@ def load_catalog(role: str, provider: str, base_url: str | None,
     catalog = filter_catalog(provider, role, catalog)
     info(f"fetched {len(catalog)} {provider} models")
     return catalog
-
-
-# A value that renders losslessly as an unquoted KEY=value line in
-# hindsight.env (systemd EnvironmentFile parses it): quote characters,
-# whitespace and backslashes change how the line parses, so the stored
-# credential would silently differ from the pasted one. API keys are
-# opaque tokens — letters, digits and a handful of separators cover
-# every provider in the registry.
-UNQUOTED_ENV_VALUE = re.compile(r"[A-Za-z0-9._~+/:=-]+")
-
-
-def ask_secret(prompt: str) -> str:
-    while True:
-        value = getpass.getpass(f"{prompt} (hidden): ").strip()
-        if not value:
-            print("  ✗ empty value; try again")
-            continue
-        # Never echo the value — the message names the character classes,
-        # not the offending characters.
-        if not UNQUOTED_ENV_VALUE.fullmatch(value):
-            print("  ✗ value has characters an env file can't carry verbatim "
-                  "(quotes, spaces, backslashes, non-ASCII…) — re-paste the key")
-            continue
-        return value
 
 
 def ask_yes(prompt: str, default: bool) -> bool:
@@ -976,51 +1095,63 @@ def prompt_answers(goblin_home: Path) -> Answers:
         info(f"{problem} — entering providers manually")
     elif goblin_providers:
         info("goblin already uses " + ", ".join(sorted(goblin_providers))
-             + " — keys will be reused from its auth store")
+             + " — credentials come from its auth store")
 
-    # Keys belong to providers, not roles: resolved once (auth store
-    # first, hidden input otherwise) and shared by both Hindsight roles.
-    keys: dict[str, str] = {}
-
-    def key_for(provider: str) -> str:
-        if provider in keys:
-            return keys[provider]
+    # Credentials belong to providers, not roles. Each must be a `!`
+    # command record — the command becomes the container's secret lookup,
+    # and the value is resolved once, in-process, for the catalog fetch.
+    def credential_for(provider: str, env_name: str) -> tuple[SecretSpec, str | None]:
         auth_name = goblin_providers.get(provider)
-        if auth_name is not None:
-            try:
-                resolved = resolve_auth_key(goblin_home, auth_name)
-                # The same charset gate pasted keys pass: an env file
-                # must carry the value verbatim or the boot silently
-                # mangles it (a misleading 401, not a clean refusal).
-                if not UNQUOTED_ENV_VALUE.fullmatch(resolved):
-                    raise ValueError(
-                        "value has characters an env file can't carry verbatim")
-                keys[provider] = resolved
-                info(f"{provider}: reusing goblin's stored key '{auth_name}'")
-                return keys[provider]
-            except ValueError as error:
-                info(f"{provider}: stored key unusable ({error}) — enter it now")
-        keys[provider] = ask_secret("API key")
-        return keys[provider]
+        if auth_name is None:
+            fail(f"{provider}: not in goblin's provider registry — the key must "
+                 "live behind an auth-store `!` command before it can reach the "
+                 f"container. Run: pass-keys add goblin-dev <NAME> Keys/<item>, "
+                 f"then set providers.{provider}.auth in goblin.json5 and re-run")
+        try:
+            command = auth_command_for(goblin_home, auth_name)
+        except ValueError as error:
+            fail(f"{provider}: {error}")
+        try:
+            value = resolve_auth_key(goblin_home, auth_name)
+        except ValueError as error:
+            # The secret does not need the value — only the catalog does.
+            # Keep going; free-text model entry covers an unlocked-later key.
+            info(f"{provider}: key '{auth_name}' not resolvable now ({error}) "
+                 "— model search falls back to free text")
+            value = None
+        info(f"{provider}: container resolves '{auth_name}' at every start "
+             "(podman secret; value never touches a file)")
+        return SecretSpec(env_name, secret_lookup(command)), value
 
-    print("\n— Providers — one key per provider; Hindsight's two roles draw from them")
+    print("\n— Providers — credentials come from goblin's auth store, one per provider")
     llm_provider = ask_provider("extraction/consolidation LLM", "llm", goblin_providers)
     emb_provider = ask_provider("embeddings", "emb", goblin_providers)
     llm_base_url = PROVIDERS[llm_provider].llm_base_url \
         or ask_url("base URL", DEFAULT_OPENAI_BASE_URL)
     emb_base_url: str | None = None
+    emb_secret: SecretSpec | None = None
+    emb_value: str | None = None
     if emb_provider == "openai":
         emb_base_url = ask_url("base URL (OpenAI or compatible endpoint)",
                                DEFAULT_OPENAI_BASE_URL)
-    llm_api_key = key_for(llm_provider)
-    emb_api_key = key_for(emb_provider)
+        if is_local_embeddings_endpoint(emb_base_url):
+            info(f"local embeddings endpoint — the '{LOCAL_EMBED_KEY}' "
+                 "sentinel is written; no credential needed")
+        else:
+            emb_secret, emb_value = credential_for(
+                "openai", "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY")
+    else:
+        emb_secret, emb_value = credential_for(
+            "openrouter", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY")
+    llm_secret, llm_value = credential_for(
+        llm_provider, "HINDSIGHT_API_LLM_API_KEY")
 
     print("\n— LLM model —")
-    catalog = load_catalog("llm", llm_provider, llm_base_url, llm_api_key)
+    catalog = load_catalog("llm", llm_provider, llm_base_url, llm_value)
     llm_model = ask_model_search("model", catalog, example_for(llm_provider, "llm"))
 
     print("\n— Embeddings model —")
-    catalog = load_catalog("emb", emb_provider, emb_base_url, emb_api_key)
+    catalog = load_catalog("emb", emb_provider, emb_base_url, emb_value)
     emb_model = ask_model_search("model", catalog, example_for(emb_provider, "emb"))
     if embedding_prefixes(emb_model) is not None:
         info(f"{emb_model} is an asymmetric embedder — its task prefixes "
@@ -1033,10 +1164,10 @@ def prompt_answers(goblin_home: Path) -> Answers:
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_base_url=llm_base_url,
-        llm_api_key=llm_api_key,
+        llm_secret=llm_secret,
         emb_provider=emb_provider,
         emb_model=emb_model,
-        emb_api_key=emb_api_key,
+        emb_secret=emb_secret,
         emb_base_url=emb_base_url,
         bank_id=DEFAULT_BANK_ID,
         bank_mission=DEFAULT_MISSION,
@@ -1068,8 +1199,9 @@ def print_summary(answers: Answers, bank_id: str) -> None:
   Embeddings: {answers.emb_provider} / {answers.emb_model}{embeddings_endpoint}
 {prefix_line}  Reranker:   rrf (model-free)
   Bank:       {bank_id}
-  Files:      {POSTGRES_ENV} (generated password)
-              {HINDSIGHT_ENV} (0600, contains your API keys)
+  Secrets:    podman shell secrets {sorted(s.env_name for s in needed_secrets(answers))}
+              (each stores a lookup command; pass-keys owns the values)
+  Files:      {HINDSIGHT_ENV} (0600, no secrets — the pod has no DB password)
               {SYSTEMD_DIR}/goblin-memory-*""")
 
 
@@ -1100,8 +1232,12 @@ def existing_install_status() -> str:
     """Print the installed stack's status. Returns the API unit's
     is-active state — main keys the watch-timer enablement off it."""
     info("existing installation detected:")
-    for path in (POSTGRES_ENV, HINDSIGHT_ENV):
-        print(f"  {'✓' if path.is_file() else '✗'} {path}")
+    print(f"  {'✓' if HINDSIGHT_ENV.is_file() else '✗'} {HINDSIGHT_ENV}")
+    if POSTGRES_ENV.is_file():
+        print(f"  ! {POSTGRES_ENV} — dead config from a pre-pod install; "
+              "the database has no password now, delete this file")
+    secrets = managed_secrets()
+    print(f"  podman secrets: {', '.join(sorted(secrets)) or 'none registered'}")
     api_state = "unknown"
     for unit in (DB_UNIT, API_UNIT):
         result = probe(["systemctl", "--user", "is-active", unit])
@@ -1138,10 +1274,12 @@ def main(argv: list[str] | None = None) -> None:
                              "(enablement rides the confirmed first start)")
     parser.add_argument("--reconfigure", action="store_true",
                         help="re-prompt LLM/embeddings and rewrite hindsight.env "
-                             "(keeps database, volume, bank, goblin config)")
+                             "(keeps database, volume, bank, goblin config; "
+                             "pod-era installs only — a postgres.env install "
+                             "needs migration per docs/memory.md)")
     parser.add_argument("--resume", action="store_true",
-                        help="finish a partial install whose env files already "
-                             "exist: start the stack, create the bank, wire goblin")
+                        help="finish a partial install whose config already "
+                             "exists: start the stack, create the bank, wire goblin")
     parser.add_argument("--goblin-home", type=Path,
                         default=Path(os.environ.get("GOBLIN_HOME", str(Path.home() / "goblin"))))
     args = parser.parse_args(argv)
@@ -1159,31 +1297,40 @@ def main(argv: list[str] | None = None) -> None:
     validate_embed_relay_config(CFG_DIR)
 
     if args.reconfigure:
-        # Check BEFORE prompting: collecting two hidden keys and then
-        # failing on a missing file is hostile.
-        if not POSTGRES_ENV.is_file():
-            fail(f"--reconfigure needs {POSTGRES_ENV}; run a fresh install instead")
+        # Check BEFORE prompting: walking providers and then failing on a
+        # missing file is hostile. A pre-pod install (no registered
+        # secrets, env files carrying credentials) is not reconfigurable —
+        # it needs the migration path, not a config rewrite.
+        if not HINDSIGHT_ENV.is_file() or not managed_secrets():
+            fail("--reconfigure needs a pod-era install (hindsight.env plus "
+                 "registered podman secrets); migrate per docs/memory.md "
+                 "→ Migration, then re-run")
         answers = prompt_answers(args.goblin_home)
         try:
-            db_password = parse_postgres_env(POSTGRES_ENV.read_text())["POSTGRES_PASSWORD"]
-        except (OSError, ValueError) as error:
-            fail(f"cannot reuse database password: {error}")
-        try:
-            env = build_hindsight_env(answers, db_password)
+            env = build_hindsight_env(answers)
         except ValueError as error:
             fail(f"launch guard rejected the configuration: {error}")
 
         # The rewrite replaces the API's live configuration. Keep the
-        # previous file (and its mode) so a failed restart or health
-        # check can put the working stack back instead of exiting with
-        # the new — possibly broken — env left installed.
+        # previous file, quadlet block and secret registrations so a
+        # failed restart or health check puts the working stack back
+        # instead of exiting with the new — possibly broken — config live.
         previous_text: str | None = None
         previous_mode = 0o600
         if HINDSIGHT_ENV.is_file():
             previous_text = HINDSIGHT_ENV.read_text()
             previous_mode = HINDSIGHT_ENV.stat().st_mode & 0o777
+        quadlet_path = SYSTEMD_DIR / "goblin-memory-api.container"
+        previous_quadlet = quadlet_path.read_text() if quadlet_path.is_file() else None
+        previous_quadlet_mode = (quadlet_path.stat().st_mode & 0o777
+                                 if quadlet_path.is_file() else 0o644)
+        previous_secrets = managed_secrets()
 
         def rollback(reason: str) -> NoReturn:
+            restore_secrets(previous_secrets)
+            if previous_quadlet is not None:
+                write_file_atomic(quadlet_path, previous_quadlet,
+                                  previous_quadlet_mode)
             text = previous_text
             if text is None:
                 # No config existed before this run (half-install
@@ -1192,6 +1339,7 @@ def main(argv: list[str] | None = None) -> None:
                 fail(f"{reason}; removed the new hindsight.env — no previous "
                      "configuration existed to restore")
             write_file_atomic(HINDSIGHT_ENV, text, previous_mode)
+            probe(["systemctl", "--user", "daemon-reload"])
             restart = probe(["systemctl", "--user", "restart", API_UNIT])
             recovered = (restart is not None and restart.returncode == 0
                          and api_healthy(120))
@@ -1213,6 +1361,11 @@ def main(argv: list[str] | None = None) -> None:
         install_embed_units(MEMORY_DIR, CFG_DIR, USER_UNIT_DIR)
         enable_embed_relay(CFG_DIR)
         write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
+        apply_secret_block(quadlet_path,
+                           [s.env_name for s in needed_secrets(answers)])
+        run(["systemctl", "--user", "daemon-reload"])
+        for spec in needed_secrets(answers):
+            ensure_secret(spec)
         info(f"rewrote {HINDSIGHT_ENV}; restarting API")
         restart = probe(["systemctl", "--user", "restart", API_UNIT])
         if restart is None or restart.returncode != 0:
@@ -1221,9 +1374,11 @@ def main(argv: list[str] | None = None) -> None:
             rollback(f"API restart command failed ({output})")
         if not api_healthy(120):
             rollback("API not healthy after restart")
-        # The stack is confirmed live on the new config — same asset
-        # refresh a fresh install gets, so a reconfigure on an older box
-        # also picks up the watch units. (--no-start is rejected above.)
+        # The stack is confirmed live on the new config — prune secrets a
+        # provider switch orphaned, then the same asset refresh a fresh
+        # install gets so a reconfigure on an older box picks up the
+        # watch units. (--no-start is rejected above.)
+        prune_secrets({s.env_name for s in needed_secrets(answers)})
         refresh_assets(enable_watch=True)
         info("done — bank and goblin config unchanged")
         return
@@ -1233,10 +1388,9 @@ def main(argv: list[str] | None = None) -> None:
         # rerun on the status path — bank creation and goblin wiring
         # unreachable without hand-deleting 0600 files. Resume finishes
         # exactly that tail; each step is idempotent.
-        if not POSTGRES_ENV.is_file() or not HINDSIGHT_ENV.is_file():
-            fail(f"--resume needs both env files a partial install left "
-                 f"({POSTGRES_ENV}, {HINDSIGHT_ENV}); run without flags for "
-                 "a fresh install")
+        if not HINDSIGHT_ENV.is_file():
+            fail(f"--resume needs the config a partial install left "
+                 f"({HINDSIGHT_ENV}); run without flags for a fresh install")
         bank_id, mission = prompt_bank()
         state = probe(["systemctl", "--user", "is-active", API_UNIT])
         if ((state.stdout if state else "") or "").strip() != "active":
@@ -1262,14 +1416,12 @@ def main(argv: list[str] | None = None) -> None:
                   "bank creation / goblin wiring")
         return
 
-    # Regenerating the password would silently desync PostgreSQL auth on
-    # an initialized volume (a new password never rotates the role); if
-    # hindsight.env was removed but this file survived, the stack exists.
-    # Check BEFORE prompting — collecting two hidden keys and only then
-    # refusing a stray file is hostile (the --reconfigure ordering rule).
+    # A stray postgres.env means a pre-pod install's dead file survived —
+    # it carries a password nothing reads anymore. Warn, don't refuse:
+    # fresh installs past that era legitimately have neither file.
     if POSTGRES_ENV.is_file():
-        fail(f"{POSTGRES_ENV} already exists — refusing to regenerate the "
-             "database password; run with --reconfigure to change models/keys")
+        info(f"{POSTGRES_ENV} is dead config from a pre-pod install — the "
+             "database has no password now; delete it after this run")
 
     answers = prompt_answers(args.goblin_home)
     bank_id, mission = prompt_bank()
@@ -1277,16 +1429,20 @@ def main(argv: list[str] | None = None) -> None:
     if not ask_yes("write config and install assets?", default=False):
         fail("aborted before writing anything")
 
-    db_password = secrets.token_urlsafe(24)
     try:
-        env = build_hindsight_env(answers, db_password)
+        env = build_hindsight_env(answers)
     except ValueError as error:
         fail(f"launch guard rejected the configuration: {error}")
-    write_file_atomic(POSTGRES_ENV, render_postgres_env(db_password), 0o600)
     write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
     installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR)
     for path in installed:
         info(f"installed {path}")
+    # The shipped quadlet carries the marker region; fill it for this
+    # provider set and register the shell secrets BEFORE the first start
+    # — podman resolves the lookup at container create.
+    apply_secret_block(SYSTEMD_DIR / "goblin-memory-api.container",
+                       [s.env_name for s in needed_secrets(answers)])
+    sync_secrets(needed_secrets(answers))
 
     if args.no_start:
         print("\nAssets installed, stack NOT started (and NOT enabled at boot —\n"

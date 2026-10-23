@@ -549,22 +549,38 @@ def ensure_secret(spec: SecretSpec) -> None:
 
 
 def managed_secrets() -> dict[str, dict[str, str]]:
-    """name → stored driver opts for our shell secrets (HINDSIGHT_API_*)."""
+    """name → stored driver opts for our shell secrets (HINDSIGHT_API_*).
+
+    Fail closed: callers act on this snapshot (prune orphans, restore on
+    rollback), so an indeterminate answer must not read as 'no managed
+    registrations'. Every failure path names the operation and the
+    secret name only — never raw output, options, or a lookup.
+    """
     result = probe(["podman", "secret", "ls", "--format", "{{.Name}}\t{{.Driver}}"])
-    found: dict[str, dict[str, str]] = {}
     if result is None or result.returncode != 0:
-        return found
+        fail("cannot list podman secrets — refusing to snapshot the "
+             "managed registrations (is `podman secret` reachable?)")
+    found: dict[str, dict[str, str]] = {}
     for line in (result.stdout or "").splitlines():
         name, _, driver = line.partition("\t")
         if driver.strip() != "shell" or not name.startswith("HINDSIGHT_API_"):
             continue
         inspect = probe(["podman", "secret", "inspect", name,
                          "--format", "{{json .Spec.Driver.Options}}"])
-        if inspect is not None and inspect.returncode == 0:
-            try:
-                found[name] = json.loads(inspect.stdout)
-            except ValueError:
-                found[name] = {}
+        if inspect is None or inspect.returncode != 0:
+            fail(f"cannot inspect podman secret '{name}'")
+        try:
+            options = json.loads(inspect.stdout)
+        except ValueError:
+            fail(f"podman secret '{name}' driver options did not decode")
+        if not isinstance(options, dict):
+            fail(f"podman secret '{name}' driver options are not an object")
+        if not all(isinstance(k, str) and isinstance(v, str)
+                   for k, v in options.items()):
+            fail(f"podman secret '{name}' driver options are not string pairs")
+        if not isinstance(options.get("lookup"), str) or not options["lookup"].strip():
+            fail(f"podman secret '{name}' has no usable lookup registration")
+        found[name] = options
     return found
 
 
@@ -719,6 +735,92 @@ def start_stack() -> None:
     info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
 
+def _env_assignment(text: str, key: str) -> str | None:
+    """One KEY=value assignment's value, shlex-parsed (never evaluated).
+    None when the key is absent, malformed, multi-token, or assigned
+    more than once — the live environment would read the last value,
+    so a duplicate can never prove compatibility."""
+    found: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name, sep, value = stripped.partition("=")
+        if sep and name.strip() == key:
+            if found is not None:
+                return None
+            try:
+                parts = shlex.split(value)
+            except ValueError:
+                return None
+            if len(parts) != 1:
+                return None
+            found = parts[0]
+    return found
+
+
+def _quadlet_pod(text: str) -> str | None:
+    """The [Container] section's Pod= value, shlex-parsed. None when the
+    section lacks it or names it twice — a Pod in [Unit] or elsewhere is
+    not a pod binding."""
+    section = ""
+    found: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            continue
+        name, sep, value = stripped.partition("=")
+        if sep and name.strip() == "Pod" and section == "Container":
+            if found is not None:
+                return None
+            try:
+                parts = shlex.split(value)
+            except ValueError:
+                return None
+            if len(parts) != 1:
+                return None
+            found = parts[0]
+    return found
+
+
+def _compatible_install_problem() -> str | None:
+    """Why this installed stack cannot take an asset refresh, else None.
+
+    A refresh lands only on the pod-era, passwordless profile: the
+    installed env's database URI must be exactly the supported
+    DATABASE_URL and an incumbent API Quadlet must live in
+    goblin-memory.pod. Anything else is a legacy or hand-rolled stack —
+    copying fresh assets over it would silently half-migrate it."""
+    try:
+        env_text = HINDSIGHT_ENV.read_text()
+    except OSError as error:
+        return f"cannot read {HINDSIGHT_ENV.name}: {error}"
+    if _env_assignment(env_text, "HINDSIGHT_API_DATABASE_URL") != DATABASE_URL:
+        return ("the installed database URI is not this profile's "
+                "passwordless pod loopback")
+    quadlet = SYSTEMD_DIR / "goblin-memory-api.container"
+    if quadlet.is_file():
+        try:
+            quadlet_text = quadlet.read_text()
+        except OSError as error:
+            return f"cannot read {quadlet.name}: {error}"
+        if _quadlet_pod(quadlet_text) != "goblin-memory.pod":
+            return (f"{quadlet.name} is not bound to goblin-memory.pod — a "
+                    "non-pod Quadlet needs migration, not a refresh")
+    return None
+
+
+def assert_compatible_install() -> None:
+    """Refuse a refresh/reconfigure against a non-pod-era install."""
+    problem = _compatible_install_problem()
+    if problem is not None:
+        fail(f"unsupported installed memory stack: {problem} — migrate "
+             "per docs/memory.md → Migration, then re-run")
+
+
 def refresh_assets(enable_watch: bool) -> None:
     """Idempotent asset install + manager reload for boxes that already
     have a stack. install_assets() is otherwise reached only on a fresh
@@ -728,6 +830,8 @@ def refresh_assets(enable_watch: bool) -> None:
     Quadlets are never overwritten: the operator may have tuned them
     (TimeoutStartSec), and this path only needs to deliver new assets
     and the watch units."""
+    if HINDSIGHT_ENV.is_file():
+        assert_compatible_install()
     installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR,
                                skip_existing_quadlets=True)
     for path in installed:
@@ -1305,6 +1409,7 @@ def main(argv: list[str] | None = None) -> None:
             fail("--reconfigure needs a pod-era install (hindsight.env plus "
                  "registered podman secrets); migrate per docs/memory.md "
                  "→ Migration, then re-run")
+        assert_compatible_install()
         answers = prompt_answers(args.goblin_home)
         try:
             env = build_hindsight_env(answers)
@@ -1327,19 +1432,29 @@ def main(argv: list[str] | None = None) -> None:
         previous_secrets = managed_secrets()
 
         def rollback(reason: str) -> NoReturn:
-            restore_secrets(previous_secrets)
             if previous_quadlet is not None:
                 write_file_atomic(quadlet_path, previous_quadlet,
                                   previous_quadlet_mode)
-            text = previous_text
-            if text is None:
+            if previous_text is None:
                 # No config existed before this run (half-install
                 # recovery): back to clean is the honest state.
                 HINDSIGHT_ENV.unlink(missing_ok=True)
                 fail(f"{reason}; removed the new hindsight.env — no previous "
                      "configuration existed to restore")
-            write_file_atomic(HINDSIGHT_ENV, text, previous_mode)
-            probe(["systemctl", "--user", "daemon-reload"])
+            write_file_atomic(HINDSIGHT_ENV, previous_text, previous_mode)
+            try:
+                restore_secrets(previous_secrets)
+            except (Exception, SystemExit, KeyboardInterrupt):
+                fail(f"{reason}; restored the previous hindsight.env and "
+                     "Quadlet but secret restoration failed — the API was "
+                     "not restarted onto an incomplete rollback; "
+                     f"journalctl --user -u {API_UNIT}")
+            reload = probe(["systemctl", "--user", "daemon-reload"])
+            if reload is None or reload.returncode != 0:
+                fail(f"{reason}; restored the previous hindsight.env and "
+                     "Quadlet but the rollback daemon-reload failed — the "
+                     "API was not restarted against an unverified unit set; "
+                     f"journalctl --user -u {API_UNIT}")
             restart = probe(["systemctl", "--user", "restart", API_UNIT])
             recovered = (restart is not None and restart.returncode == 0
                          and api_healthy(120))
@@ -1351,29 +1466,48 @@ def main(argv: list[str] | None = None) -> None:
         # the compatible guard before changing config; keep it on rollback
         # because it also accepts the previous env's launch profile.
         start_dst = CFG_DIR / "start.py"
-        write_file_atomic(start_dst, (MEMORY_DIR / "start.py").read_text(), 0o644)
-        info(f"installed {start_dst}")
+        failed_stage: str | None = None
+        try:
+            stage = "installed launch guard"
+            write_file_atomic(start_dst, (MEMORY_DIR / "start.py").read_text(), 0o644)
+            info(f"installed {start_dst}")
 
-        # A reconfigure that adopts local embeddings needs the relay live
-        # BEFORE the API restarts on the new env — it test-embeds during
-        # init and refuses to boot on a dead endpoint. refresh_assets
-        # below runs after the restart, too late; land the units here.
-        install_embed_units(MEMORY_DIR, CFG_DIR, USER_UNIT_DIR)
-        enable_embed_relay(CFG_DIR)
-        write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
-        apply_secret_block(quadlet_path,
-                           [s.env_name for s in needed_secrets(answers)])
-        run(["systemctl", "--user", "daemon-reload"])
-        for spec in needed_secrets(answers):
-            ensure_secret(spec)
-        info(f"rewrote {HINDSIGHT_ENV}; restarting API")
-        restart = probe(["systemctl", "--user", "restart", API_UNIT])
-        if restart is None or restart.returncode != 0:
-            output = ("systemctl probe failed" if restart is None
-                      else (restart.stderr or "").strip()[:500])
-            rollback(f"API restart command failed ({output})")
-        if not api_healthy(120):
-            rollback("API not healthy after restart")
+            # A reconfigure that adopts local embeddings needs the relay live
+            # BEFORE the API restarts on the new env — it test-embeds during
+            # init and refuses to boot on a dead endpoint. refresh_assets
+            # below runs after the restart, too late; land the units here.
+            stage = "embed relay units"
+            install_embed_units(MEMORY_DIR, CFG_DIR, USER_UNIT_DIR)
+            enable_embed_relay(CFG_DIR)
+            stage = "hindsight.env rewrite"
+            write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
+            stage = "API Quadlet secret block"
+            apply_secret_block(quadlet_path,
+                               [s.env_name for s in needed_secrets(answers)])
+            stage = "systemd daemon-reload"
+            run(["systemctl", "--user", "daemon-reload"])
+            stage = "podman secret registration"
+            for spec in needed_secrets(answers):
+                ensure_secret(spec)
+            info(f"rewrote {HINDSIGHT_ENV}; restarting API")
+            stage = "API restart"
+            restart = probe(["systemctl", "--user", "restart", API_UNIT])
+            if restart is None or restart.returncode != 0:
+                output = ("systemctl probe failed" if restart is None
+                          else (restart.stderr or "").strip()[:500])
+                fail(f"API restart command failed ({output})")
+            stage = "API health check"
+            if not api_healthy(120):
+                fail("API not healthy after restart")
+        except (Exception, SystemExit, KeyboardInterrupt) as error:
+            if isinstance(error, OSError):
+                detail = (f"{type(error).__name__}: "
+                          f"{os.strerror(error.errno) if error.errno is not None else 'unknown'}")
+            else:
+                detail = type(error).__name__
+            failed_stage = f"reconfigure {stage} failed ({detail})"
+        if failed_stage is not None:
+            rollback(failed_stage)
         # The stack is confirmed live on the new config — prune secrets a
         # provider switch orphaned, then the same asset refresh a fresh
         # install gets so a reconfigure on an older box picks up the

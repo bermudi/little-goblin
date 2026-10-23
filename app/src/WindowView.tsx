@@ -301,7 +301,7 @@ export function WindowView({
 		);
 	const segments = view.segments;
 	const totalChars =
-		segments === null ? null : Object.values(segments).reduce((sum, n) => sum + n, 0);
+		segments === null ? null : SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
 
 	return (
 		<div className="ops">

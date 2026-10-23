@@ -181,6 +181,22 @@ describe("WindowView", () => {
 		expect(text).toContain("3,100");
 		// The segment bar names the biggest slice.
 		expect(text).toContain("history · 2,000");
+		expect(text).toContain("3,700 chars serialized");
+		expect(text).toContain("incl. 500 in tool results");
+	});
+
+	test("a null segments row keeps the no-window and no-model states working", async () => {
+		mount({
+			capturedModel: null,
+			segments: null,
+			system: null,
+			tools: null,
+			messages: null,
+		});
+		await act(async () => {});
+		const text = container.textContent ?? "";
+		expect(text).not.toContain("chars serialized");
+		expect(text).toContain("Model calls · 1");
 	});
 
 	test("role filters narrow the message list, raw JSON swaps the rendering", async () => {

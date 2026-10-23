@@ -156,7 +156,14 @@ Rulings:
   pi-vs-devin), not a same-kind replacement — accepted (probed
   2026-10-14, throwaway session). A prompt refuses before any bytes
   reach the pane (missing/non-agent, pane mismatch, kind mismatch —
-  nothing sent); a send-time error leaves delivery uncertain, and a
+  nothing sent); ANY failure inside read-only preflight — topology
+  list, agent get, abort — is the same "nothing sent" refusal class
+  (HerdrRefusal: agent_not_found, mismatches, fenced, or
+  `preflight-failed` carrying the cause), never the uncertain
+  delivery a post-dispatch error means. A new attachment binding
+  requires both `terminal_id` and `agent_session`; without a harness
+  session a same-kind replacement is undetectable, so session-less
+  agents are refused. A send-time error leaves delivery uncertain, and a
   timeout is not non-delivery: no retry, in code or by the model, and
   no post-send reads that could turn delivery into an error. This
   module never logs the prompt text (the per-turn tool line records

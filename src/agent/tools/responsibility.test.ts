@@ -162,6 +162,39 @@ describe("responsibility tool", () => {
 		r.store.close();
 	});
 
+	test("accept, attach and reattach refuse an agent reporting no agent_session", async () => {
+		const r = rig();
+		r.agents = [agent({ agent_session: null })];
+		const out = await r.execute({
+			action: "accept",
+			understanding,
+			attachments: [{ pane: "w1:p1" }],
+		});
+		expect(String(out.error)).toStartWith("<herdr>\n");
+		expect(String(out.error)).toContain("agent_session");
+		expect(r.resps.forProject(r.projectId)).toHaveLength(0);
+		// A healthy bind first, then the listing drops the session —
+		// attach mints nothing and reattach leaves the row untouched.
+		r.agents = [agent()];
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const before = { generation: att.generation, health: att.health, target: att.target };
+		r.agents = [agent({ agent_session: null })];
+		const att2 = await r.execute({ action: "attach", attachments: [{ pane: "w1:p1" }] });
+		expect(String(att2.error)).toStartWith("<herdr>\n");
+		expect(String(att2.error)).toContain("agent_session");
+		expect(r.resps.attachmentsFor(resp.responsibilityId)).toHaveLength(1);
+		const re = await r.execute({ action: "reattach", attachment: att.attachmentId });
+		expect(String(re.error)).toStartWith("<herdr>\n");
+		expect(String(re.error)).toContain("agent_session");
+		const after = r.resps.getAttachment(att.attachmentId)!;
+		expect(after.generation).toBe(before.generation);
+		expect(after.health).toBe(before.health);
+		expect(after.target).toEqual(before.target);
+		r.store.close();
+	});
+
 	test("send refuses identity-unenforceable while no guarded send exists — and records it", async () => {
 		const r = rig();
 		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });

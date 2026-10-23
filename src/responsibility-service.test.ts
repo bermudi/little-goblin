@@ -825,6 +825,112 @@ describe("managed send edge", () => {
 	});
 });
 
+describe("real adapter preflight failures", () => {
+	const wire = (body: unknown): HerdrRunResult => ({
+		code: 0,
+		stdout: JSON.stringify(body),
+		stderr: "",
+	});
+	const wireFail = (code: string, message: string): HerdrRunResult => ({
+		code: 1,
+		stdout: "",
+		stderr: JSON.stringify({ error: { code, message }, id: "cli:x" }),
+	});
+	const AGENT = {
+		agent: "pi",
+		agent_status: "working",
+		pane_id: "w1:p1",
+		workspace_id: "w1",
+		tab_id: "w1:t1",
+		terminal_id: "term-9",
+		agent_session: { value: "sess-1" },
+	};
+
+	const prepRig = () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "k1",
+			understanding: understanding(),
+			attachments: [
+				{
+					target: {
+						server: "local",
+						session: "default",
+						agentName: "w1:p1",
+						paneId: "w1:p1",
+						terminalId: "term-9",
+						agentSession: "sess-1",
+						kind: "pi",
+						cwd: "/w",
+					},
+					baseline: {},
+				},
+			],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		return { r, resp, att };
+	};
+
+	test.each(["workspace list", "tab list", "agent get"] as const)(
+		"a %s failure refuses the op — nothing dispatched, and a fresh op sends when the edge recovers",
+		async (failAt) => {
+			const { r, resp, att } = prepRig();
+			let broken = true;
+			const calls: string[] = [];
+			const run: HerdrRunner = async (args) => {
+				const verb = args.slice(2, 4).join(" ");
+				calls.push(verb);
+				if (verb === "workspace list") {
+					if (broken && failAt === "workspace list")
+						return wireFail("server_gone", "socket refused");
+					return wire({ result: { workspaces: [{ workspace_id: "w1", label: "m" }] } });
+				}
+				if (verb === "tab list") {
+					if (broken && failAt === "tab list") return wireFail("server_gone", "socket refused");
+					return wire({
+						result: { tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: "t" }] },
+					});
+				}
+				if (verb === "agent get") {
+					if (broken && failAt === "agent get") return wireFail("server_gone", "socket refused");
+					return wire({ result: { agent: AGENT } });
+				}
+				if (verb === "agent prompt") return wire({ result: { agent: AGENT } });
+				throw new Error(`unexpected herdr call: ${verb}`);
+			};
+			const edge = makeManagedSendEdge(makeOperatorHerdr(run));
+			const prepared = r.resps.prepareOperation({
+				responsibilityId: resp.responsibilityId,
+				attachmentId: att.attachmentId,
+				brief: "first brief",
+			});
+			if (!("operation" in prepared)) throw new Error("expected prepared");
+			const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+			// Pre-dispatch failure is a named refusal — the op is refused,
+			// never uncertain, and no bytes reached a pane.
+			expect(out).toEqual({ refused: "preflight-failed" });
+			expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("refused");
+			expect(calls).not.toContain("agent prompt");
+			// A refused op fences nothing: the next prepare succeeds and,
+			// once the edge recovers, the fresh op dispatches.
+			const retry = r.resps.prepareOperation({
+				responsibilityId: resp.responsibilityId,
+				attachmentId: att.attachmentId,
+				brief: "fresh brief",
+			});
+			if (!("operation" in retry)) throw new Error("expected prepared after refusal");
+			broken = false;
+			const sent = await r.svc.dispatch(retry.operation.operationId, edge);
+			expect(sent).toEqual({ sent: true });
+			expect(calls).toContain("agent prompt");
+			expect(r.resps.getOperation(retry.operation.operationId)!.state).toBe("acknowledged");
+			r.store.close();
+		},
+	);
+});
+
 describe("ensureFollowup enable semantics", () => {
 	const acceptRig = (r: ReturnType<typeof rig>) =>
 		r.svc.accept({

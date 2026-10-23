@@ -195,6 +195,12 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 							`agent ${a.name ?? a.pane_id} reports no terminal_id — binding without stable identity is refused`,
 						),
 					};
+				if (a.agent_session === null)
+					return {
+						error: fenceMetadata(
+							`agent ${a.name ?? a.pane_id} reports no agent_session — a same-kind replacement would be undetectable, binding is refused`,
+						),
+					};
 				return {
 					target: {
 						server: "local",

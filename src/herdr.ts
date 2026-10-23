@@ -400,8 +400,8 @@ const OPERATOR_PROMPT_BUDGET_MS = 125_000;
  *  (`timeout`, `agent_prompt_stalled`) leave delivery uncertain. */
 export class HerdrRefusal extends Error {
 	readonly code: string;
-	constructor(code: string, message: string) {
-		super(message);
+	constructor(code: string, message: string, options?: { cause?: unknown }) {
+		super(message, options);
 		this.name = "HerdrRefusal";
 		this.code = code;
 	}
@@ -589,20 +589,58 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 		},
 
 		async prompt(pane, expect, text, signal, guard) {
-			// An abort the `agent get` read observes — before spawn or
+			// An abort observed anywhere in preflight — before spawn or
 			// after a runner that ignored the signal — means nothing
 			// reached the PTY: it refuses the send, never an uncertain
-			// delivery. Earlier reads (topology) keep the raw abort so a
-			// stopped turn still unwinds as an abort.
+			// delivery.
 			const abortRefusal = (err: unknown): HerdrRefusal =>
 				new HerdrRefusal(
 					"fenced",
 					`send aborted before dispatch: ${err instanceof Error ? err.message : String(err)}`,
 				);
+			// Every failure inside read-only preflight is a refusal, never
+			// an uncertain delivery: nothing was dispatched, and callers
+			// must be able to say so. The phase names the read that failed
+			// (never prompt contents or raw pane output); the underlying
+			// error rides as the cause.
+			const preflightRefusal = (phase: string, err: unknown): HerdrRefusal => {
+				if (err instanceof HerdrRefusal) return err;
+				// `agent get` resolves pane targets only onto panes hosting
+				// an agent — a bare pane is agent_not_found, same as gone.
+				if (err instanceof HerdrError && err.code === "agent_not_found") {
+					log.info("herdr prompt preflight", {
+						pane,
+						session: OPERATOR_SESSION,
+						expect,
+						outcome: "refuse:agent_not_found",
+					});
+					return new HerdrRefusal("agent_not_found", `pane ${pane} does not host an agent`);
+				}
+				if (signal?.aborted) return abortRefusal(err);
+				const cause = err instanceof Error ? err.message : String(err);
+				log.info("herdr prompt preflight", {
+					pane,
+					session: OPERATOR_SESSION,
+					expect,
+					phase,
+					outcome: "refuse:preflight-failed",
+					error: cause.slice(0, FALLBACK_EXCERPT),
+				});
+				return new HerdrRefusal(
+					"preflight-failed",
+					`send preflight failed at ${phase}: ${cause.slice(0, FALLBACK_EXCERPT)}`,
+					{ cause: err },
+				);
+			};
 			// Labels first; `agent get` is the LAST read before the send
 			// and nothing is read after it — post-submit churn must not
 			// turn a delivered prompt into an error.
-			const topo = await topology(signal);
+			let topo: OperatorTopology;
+			try {
+				topo = await topology(signal);
+			} catch (err) {
+				throw preflightRefusal("topology", err);
+			}
 			let record: OperatorAgentWire;
 			try {
 				record = (
@@ -615,19 +653,7 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 					)
 				).result.agent;
 			} catch (err) {
-				// `agent get` resolves pane targets only onto panes hosting
-				// an agent — a bare pane is agent_not_found, same as gone.
-				if (err instanceof HerdrError && err.code === "agent_not_found") {
-					log.info("herdr prompt preflight", {
-						pane,
-						session: OPERATOR_SESSION,
-						expect,
-						outcome: "refuse:agent_not_found",
-					});
-					throw new HerdrRefusal("agent_not_found", `pane ${pane} does not host an agent`);
-				}
-				if (signal?.aborted) throw abortRefusal(err);
-				throw err;
+				throw preflightRefusal("agent get", err);
 			}
 			// One preflight boundary line: what was verified at get time —
 			// never the text.
@@ -689,7 +715,12 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 				});
 			}
 			log.info("herdr prompt preflight", { ...preflight, outcome: "allow" });
-			guard?.beforeSend?.();
+			try {
+				guard?.beforeSend?.();
+			} catch (err) {
+				if (err instanceof HerdrRefusal) throw err;
+				throw preflightRefusal("beforeSend", err);
+			}
 			// Flags precede `--` so a leading-dash prompt body stays a
 			// literal positional, never a parsed flag.
 			return viewAgent(

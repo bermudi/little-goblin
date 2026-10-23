@@ -516,7 +516,15 @@ describe("operator herdr adapter", () => {
 				]);
 				const h = makeOperatorHerdr(f.run);
 				const result = verb === "list" ? h.list() : h.prompt("w1:p1", "pi", "hello");
-				if (failure.code !== 0) await expect(result).rejects.toMatchObject({ code: "timeout" });
+				if (verb === "prompt") {
+					// Inside prompt, a topology failure is pre-dispatch: a
+					// named preflight refusal, never an uncertain send.
+					await expect(result).rejects.toMatchObject({
+						name: "HerdrRefusal",
+						code: "preflight-failed",
+					});
+				} else if (failure.code !== 0)
+					await expect(result).rejects.toMatchObject({ code: "timeout" });
 				else await expect(result).rejects.toThrow();
 				expect(f.calls.map((c) => verbOf(c.args))).toEqual([
 					...(verb === "list" ? ["agent list"] : []),
@@ -625,10 +633,74 @@ describe("operator herdr adapter", () => {
 		expect(prompts(f.calls)).toEqual([]);
 	});
 
-	test("a malformed get fails loud — nothing is sent", async () => {
+	test("a malformed get fails loud as a preflight refusal — nothing is sent", async () => {
 		const f = opRunner([...TOPOLOGY, { code: 0, stdout: "not json", stderr: "" }]);
 		const h = makeOperatorHerdr(f.run);
-		await expect(h.prompt("w1:p1", "pi", "text")).rejects.toThrow(/not JSON/);
+		try {
+			await h.prompt("w1:p1", "pi", "text");
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrRefusal);
+			expect((err as HerdrRefusal).code).toBe("preflight-failed");
+			expect((err as Error).message).toContain("agent get");
+			expect((err as Error).message).toContain("not JSON");
+		}
+		expect(prompts(f.calls)).toEqual([]);
+	});
+
+	test.each([
+		["workspace list", [opFail("timeout", "server went away")]],
+		["agent get", [...TOPOLOGY, opFail("server_gone", "socket refused")]],
+	] as const)(
+		"a %s failure is a named preflight refusal — never uncertain",
+		async (phase, script) => {
+			const f = opRunner([...script]);
+			const h = makeOperatorHerdr(f.run);
+			try {
+				await h.prompt("w1:p1", "pi", "text");
+				expect.unreachable();
+			} catch (err) {
+				expect(err).toBeInstanceOf(HerdrRefusal);
+				expect((err as HerdrRefusal).code).toBe("preflight-failed");
+				expect((err as Error).message).toContain(phase);
+			}
+			expect(prompts(f.calls)).toEqual([]);
+		},
+	);
+
+	test("an abort during topology refuses fenced — nothing is sent", async () => {
+		const mid = new AbortController();
+		const f = opRunner([
+			(args) => {
+				mid.abort();
+				return opOk({ result: { workspaces: [] } });
+			},
+		]);
+		const h = makeOperatorHerdr(f.run);
+		try {
+			await h.prompt("w1:p1", "pi", "text", mid.signal);
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrRefusal);
+			expect((err as HerdrRefusal).code).toBe("fenced");
+		}
+		expect(prompts(f.calls)).toEqual([]);
+	});
+
+	test("a non-refusal beforeSend failure is a preflight refusal — nothing is sent", async () => {
+		const f = opRunner([...TOPOLOGY, opOk({ result: { agent: OP_AGENT } })]);
+		const h = makeOperatorHerdr(f.run);
+		try {
+			await h.prompt("w1:p1", "pi", "text", undefined, {
+				beforeSend: () => {
+					throw new Error("authority revoked");
+				},
+			});
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrRefusal);
+			expect((err as HerdrRefusal).code).toBe("preflight-failed");
+		}
 		expect(prompts(f.calls)).toEqual([]);
 	});
 

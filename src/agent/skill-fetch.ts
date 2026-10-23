@@ -32,6 +32,7 @@ import {
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { log } from "../log.ts";
+import { boundedRun } from "../proc.ts";
 import { durableWriteBytes, durableWriteFile } from "../durable.ts";
 import { NAME_RE as SKILL_NAME_RE, parseSkill, readHead } from "./skills.ts";
 import type { CachedSkillDescriptor } from "../skill-part.ts";
@@ -51,6 +52,11 @@ const DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
 // hostile archive cannot trade file-count for listing size.
 const LISTING_MAX_BYTES = 8 * 1024 * 1024;
 const LISTING_ERR_BYTES = 64 * 1024;
+// One application deadline covers the whole download — headers and the
+// complete streamed body — and each tar subprocess gets its own. A
+// trickling response cannot evade a per-chunk timeout by resetting it.
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+const TAR_TIMEOUT_MS = 60_000;
 
 // GitHub URL forms (verified against anthropics/skills):
 //   github.com/{o}/{r}/tree/{ref}/{dir}             directory
@@ -143,6 +149,10 @@ export interface SkillFetchDeps {
 	/** Overrides state/skillcache — tests only. */
 	cacheRoot?: string;
 	now?: () => Date;
+	/** Download (fetch + body) deadline override — tests only. */
+	downloadTimeoutMs?: number;
+	/** tar listing/extraction deadline override — tests only. */
+	tarTimeoutMs?: number;
 }
 
 export class SkillFetchError extends Error {
@@ -162,10 +172,7 @@ function sha256hex(data: Uint8Array | string): string {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-export async function fetchSkill(
-	rawUrl: string,
-	deps: SkillFetchDeps = {},
-): Promise<FetchedSkill> {
+export async function fetchSkill(rawUrl: string, deps: SkillFetchDeps = {}): Promise<FetchedSkill> {
 	const started = Date.now();
 	const source = normalizeGithubSkillUrl(rawUrl);
 	if (source === null) {
@@ -181,7 +188,7 @@ export async function fetchSkill(
 
 	// One download serves both the identity digest and the extraction —
 	// never a second fetch that could race a changed upstream.
-	const bytes = await download(source, fetchImpl);
+	const bytes = await download(source, fetchImpl, deps.downloadTimeoutMs ?? DOWNLOAD_TIMEOUT_MS);
 	const archiveDigest = sha256hex(bytes);
 	const digest = sha256hex(`${archiveDigest}\0${canonicalSourceUrl(source)}`);
 	const finalDir = join(cacheRoot, digest);
@@ -221,7 +228,13 @@ export async function fetchSkill(
 	// dir is never touched by a loser.
 	const stagingRoot = mkdtempSync(join(cacheRoot, ".fetch-"));
 	try {
-		const extracted = await extract(source, bytes, stagingRoot, now);
+		const extracted = await extract(
+			source,
+			bytes,
+			stagingRoot,
+			now,
+			deps.tarTimeoutMs ?? TAR_TIMEOUT_MS,
+		);
 		let descriptor = extracted.descriptor;
 		let walked: Walked = {
 			bodyBytes: extracted.bodyBytes,
@@ -347,24 +360,51 @@ export function readDescriptor(dir: string): CachedSkillDescriptor | null {
 	return parsed.data;
 }
 
-async function download(source: GithubSkillSource, fetchImpl: typeof fetch): Promise<Uint8Array> {
+async function download(
+	source: GithubSkillSource,
+	fetchImpl: typeof fetch,
+	timeoutMs: number,
+): Promise<Uint8Array> {
 	const tarballUrl = `https://codeload.github.com/${source.owner}/${source.repo}/tar.gz/${source.ref}`;
-	let response: Response;
+	// One deadline for headers AND the complete body: the controller
+	// aborts the fetch and (via the reader wiring in sizeCapped)
+	// cancels the body stream — a ReadableStream that ignores fetch's
+	// signal still settles.
+	const controller = new AbortController();
+	const deadline = new SkillFetchError(
+		`tarball download exceeded the ${timeoutMs}ms deadline for ${tarballUrl}`,
+		"unreachable",
+	);
+	const timer = setTimeout(() => controller.abort(deadline), timeoutMs);
 	try {
-		response = await fetchImpl(tarballUrl, { redirect: "follow" });
+		let response: Response;
+		try {
+			response = await fetchImpl(tarballUrl, {
+				redirect: "follow",
+				signal: controller.signal,
+			});
+		} catch (err) {
+			if (controller.signal.aborted) throw deadline;
+			throw new SkillFetchError(`tarball fetch failed: ${stringify(err)}`, "unreachable");
+		}
+		if (!response.ok) {
+			throw new SkillFetchError(
+				`tarball fetch returned ${response.status} for ${source.owner}/${source.repo}@${source.ref}` +
+					(source.ref.includes("/")
+						? " (slash-bearing refs are ambiguous in tree/blob URLs — paste the raw.githubusercontent form)"
+						: ""),
+				response.status === 404 ? "invalid" : "unreachable",
+			);
+		}
+		return await sizeCapped(response, DOWNLOAD_MAX_BYTES, controller.signal, deadline);
 	} catch (err) {
-		throw new SkillFetchError(`tarball fetch failed: ${stringify(err)}`, "unreachable");
+		if (err instanceof SkillFetchError) {
+			log.warn("skill download rejected", { url: tarballUrl, reason: err.message });
+		}
+		throw err;
+	} finally {
+		clearTimeout(timer);
 	}
-	if (!response.ok) {
-		throw new SkillFetchError(
-			`tarball fetch returned ${response.status} for ${source.owner}/${source.repo}@${source.ref}` +
-				(source.ref.includes("/")
-					? " (slash-bearing refs are ambiguous in tree/blob URLs — paste the raw.githubusercontent form)"
-					: ""),
-			response.status === 404 ? "invalid" : "unreachable",
-		);
-	}
-	return sizeCapped(response, DOWNLOAD_MAX_BYTES);
 }
 
 // GNU tar's verbose listing, pinned by env LC_ALL=C + TAR_OPTIONS="":
@@ -417,57 +457,34 @@ function parseListing(text: string): TarEntry[] {
 	return entries;
 }
 
-async function readCapped(stream: ReadableStream<Uint8Array>, cap: number): Promise<Uint8Array> {
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	for await (const chunk of stream) {
-		total += chunk.length;
-		// The for-await cleanup cancels the reader on throw — no
-		// explicit cancel needed (and none wanted: it masks the type).
-		if (total > cap) {
-			throw new SkillFetchError(`tar output exceeds the ${cap}-byte cap`, "oversized");
-		}
-		chunks.push(chunk);
-	}
-	const out = new Uint8Array(total);
-	let at = 0;
-	for (const c of chunks) {
-		out.set(c, at);
-		at += c.length;
-	}
-	return out;
-}
-
 // List the archive before a single payload byte is written: discover
 // the real top-level prefix (never the synthesized repo-ref), require
 // canonical paths inside the selected subtree, and count declared
 // sizes against the resource caps. The extraction command runs only
-// on success.
-async function listEntries(ballPath: string): Promise<TarEntry[]> {
+// on success. detached:new-group so boundedRun's kill takes the whole
+// group; the deadline is the listing's own.
+async function listEntries(ballPath: string, timeoutMs: number): Promise<TarEntry[]> {
 	const tar = Bun.spawn(
 		["tar", "-tvzf", ballPath, "--numeric-owner", "--full-time", "--quoting-style=escape"],
-		{ stdout: "pipe", stderr: "pipe", env: TAR_ENV },
+		{ stdout: "pipe", stderr: "pipe", env: TAR_ENV, detached: true },
 	);
-	try {
-		// Both pipes drain concurrently — a large stderr can otherwise
-		// stall the listing under a full stdout pipe.
-		const [stdout, stderr, code] = await Promise.all([
-			readCapped(tar.stdout, LISTING_MAX_BYTES),
-			readCapped(tar.stderr, LISTING_ERR_BYTES),
-			tar.exited,
-		]);
-		if (code !== 0) {
-			throw new SkillFetchError(
-				`tar listing failed (exit ${code}): ${new TextDecoder().decode(stderr).trim().slice(0, 200)}`,
-				"invalid",
-			);
-		}
-		return parseListing(new TextDecoder().decode(stdout));
-	} catch (err) {
-		tar.kill();
-		await tar.exited.catch(() => {});
-		throw err;
+	const r = await boundedRun(tar, { timeoutMs, maxOutput: LISTING_MAX_BYTES });
+	if (r.timedOut) {
+		throw new SkillFetchError(`tar listing exceeded the ${timeoutMs}ms deadline`, "oversized");
 	}
+	if (r.truncated || r.killed || r.exitCode === null) {
+		throw new SkillFetchError(
+			`tar listing output exceeds the ${LISTING_MAX_BYTES}-byte cap`,
+			"oversized",
+		);
+	}
+	if (r.exitCode !== 0) {
+		throw new SkillFetchError(
+			`tar listing failed (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 200)}`,
+			"invalid",
+		);
+	}
+	return parseListing(r.stdout);
 }
 
 interface Preflight {
@@ -494,7 +511,10 @@ function preflight(entries: TarEntry[], source: GithubSkillSource): Preflight {
 		}
 		const top = e.path.split("/")[0]!;
 		if (!safeSegment(top)) {
-			throw new SkillFetchError(`unsafe top-level entry in tarball: ${top.slice(0, 80)}`, "invalid");
+			throw new SkillFetchError(
+				`unsafe top-level entry in tarball: ${top.slice(0, 80)}`,
+				"invalid",
+			);
 		}
 		if (prefix === null) prefix = top;
 		else if (prefix !== top) {
@@ -525,7 +545,10 @@ function preflight(entries: TarEntry[], source: GithubSkillSource): Preflight {
 			const rel = path.slice(member.length + 1);
 			for (const seg of rel.split("/")) {
 				if (seg === "" || seg === "." || seg === ".." || /[\x00-\x1f\x7f\\]/.test(seg)) {
-					throw new SkillFetchError(`unsafe path in selected skill: ${path.slice(0, 120)}`, "invalid");
+					throw new SkillFetchError(
+						`unsafe path in selected skill: ${path.slice(0, 120)}`,
+						"invalid",
+					);
 				}
 			}
 		}
@@ -571,7 +594,14 @@ function preflight(entries: TarEntry[], source: GithubSkillSource): Preflight {
 			"invalid",
 		);
 	}
-	return { prefix: prefix!, member, declaredSkillBytes, declaredFiles, declaredDirs, declaredDirBytes };
+	return {
+		prefix: prefix!,
+		member,
+		declaredSkillBytes,
+		declaredFiles,
+		declaredDirs,
+		declaredDirBytes,
+	};
 }
 
 async function extract(
@@ -579,6 +609,7 @@ async function extract(
 	bytes: Uint8Array,
 	stagingRoot: string,
 	now: () => Date,
+	tarTimeoutMs: number,
 ): Promise<
 	{
 		publishDir: string;
@@ -593,7 +624,7 @@ async function extract(
 
 		// Pre-flight: the archive's own listing decides whether a single
 		// payload byte is ever written.
-		const entries = await listEntries(ballPath);
+		const entries = await listEntries(ballPath, tarTimeoutMs);
 		const flight = preflight(entries, source);
 
 		const extractDir = join(stagingRoot, "x");
@@ -612,23 +643,23 @@ async function extract(
 				"--",
 				flight.member,
 			],
-			{ stdout: "ignore", stderr: "pipe", env: TAR_ENV },
+			{ stdout: "pipe", stderr: "pipe", env: TAR_ENV, detached: true },
 		);
-		let stderr = "";
-		let code: number;
-		try {
-			const [stderrBytes, exitCode] = await Promise.all([
-				readCapped(tar.stderr, LISTING_ERR_BYTES),
-				tar.exited,
-			]);
-			stderr = new TextDecoder().decode(stderrBytes);
-			code = exitCode;
-		} catch (err) {
-			tar.kill();
-			await tar.exited.catch(() => {});
-			throw err;
+		const run = await boundedRun(tar, { timeoutMs: tarTimeoutMs, maxOutput: LISTING_ERR_BYTES });
+		if (run.timedOut) {
+			throw new SkillFetchError(
+				`tar extraction exceeded the ${tarTimeoutMs}ms deadline`,
+				"oversized",
+			);
 		}
-		if (code !== 0) {
+		if (run.truncated || run.killed || run.exitCode === null) {
+			throw new SkillFetchError(
+				`tar extraction output exceeds the ${LISTING_ERR_BYTES}-byte cap`,
+				"oversized",
+			);
+		}
+		const stderr = run.stderr;
+		if (run.exitCode !== 0) {
 			throw new SkillFetchError(
 				`skill directory ${source.dir === "" ? "(repo root)" : source.dir} not found in ${source.owner}/${source.repo}@${source.ref}` +
 					(stderr.trim() ? ` (tar: ${stderr.trim().slice(0, 200)})` : ""),
@@ -696,7 +727,11 @@ interface Walked {
 // tampered-with cache fails loudly instead of injecting oversize bytes.
 function rewalk(dir: string): Walked {
 	const walked = walkSubtree(realpathSync(dir));
-	if (walked.bodyBytes > BODY_MAX_BYTES || walked.fileCount > FILES_MAX || walked.dirBytes > DIR_MAX_BYTES) {
+	if (
+		walked.bodyBytes > BODY_MAX_BYTES ||
+		walked.fileCount > FILES_MAX ||
+		walked.dirBytes > DIR_MAX_BYTES
+	) {
 		throw new SkillFetchError("cached skill no longer within caps", "oversized");
 	}
 	return walked;
@@ -722,7 +757,10 @@ function walkSubtree(root: string): Walked {
 			return;
 		}
 		if (!stats.isFile()) {
-			throw new SkillFetchError(`non-regular file inside fetched skill: ${basename(path)}`, "invalid");
+			throw new SkillFetchError(
+				`non-regular file inside fetched skill: ${basename(path)}`,
+				"invalid",
+			);
 		}
 		fileCount++;
 		dirBytes += stats.size;
@@ -740,18 +778,53 @@ function walkSubtree(root: string): Walked {
 	return { bodyBytes, fileCount, dirBytes };
 }
 
-async function sizeCapped(response: Response, cap: number): Promise<Uint8Array> {
+async function sizeCapped(
+	response: Response,
+	cap: number,
+	signal: AbortSignal,
+	deadline: SkillFetchError,
+): Promise<Uint8Array> {
+	const body = response.body;
+	if (body === null) return new Uint8Array(0);
+	const reader = body.getReader();
+	// A plain ReadableStream ignores fetch's signal — the abort listener
+	// cancels the reader directly so a stalled body still settles the
+	// pending read. Cancel cleanup is never awaited: a slow or failed
+	// cancel is logged, never allowed to replace the typed deadline.
+	const onAbort = () => {
+		void reader.cancel(signal.reason).catch((err: unknown) => {
+			log.warn("skill download body cancel failed", { error: stringify(err) });
+		});
+	};
+	if (signal.aborted) onAbort();
+	else signal.addEventListener("abort", onAbort, { once: true });
 	const chunks: Uint8Array[] = [];
 	let total = 0;
-	for await (const chunk of response.body ?? []) {
-		const bytes = chunk as Uint8Array;
-		total += bytes.length;
-		if (total > cap) {
-			// Throwing out of the for-await releases the reader — the
-			// stream's own cleanup path owns cancellation.
-			throw new SkillFetchError(`download exceeds the ${cap}-byte cap`, "oversized");
+	try {
+		for (;;) {
+			let done: boolean;
+			let value: Uint8Array | undefined;
+			try {
+				({ done, value } = await reader.read());
+			} catch (err) {
+				if (signal.aborted) throw deadline;
+				throw new SkillFetchError(`tarball body read failed: ${stringify(err)}`, "unreachable");
+			}
+			if (signal.aborted) throw deadline;
+			if (done) break;
+			total += value!.byteLength;
+			if (total > cap) {
+				throw new SkillFetchError(`download exceeds the ${cap}-byte cap`, "oversized");
+			}
+			chunks.push(value!);
 		}
-		chunks.push(bytes);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+		// Any early exit leaves buffered bytes behind — release them.
+		void reader.cancel().catch((err: unknown) => {
+			log.warn("skill download body cancel failed", { error: stringify(err) });
+		});
+		reader.releaseLock();
 	}
 	const out = new Uint8Array(total);
 	let at = 0;

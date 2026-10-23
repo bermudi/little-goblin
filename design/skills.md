@@ -75,6 +75,9 @@ marker stands alone; the turn never dies for a missing body. For a
 non-owning turn the resolver excludes the body outright: historical
 invocations resolve the marker name only, never re-reading SKILL.md.
 A temp marker still reads its descriptor for the display name.
+Operator resume copies a still-visible invocation's reference into the
+generated resume event — the body was never persisted, so only the new
+owning turn can inject it (design/runtime-turn.md → Operator resume).
 An injected body is a
 log line (`skill invoked`: conversation, skill or source host, bytes)
 plus the durable part — activation stays answerable from the log,
@@ -96,7 +99,12 @@ forms; a SKILL.md leaf takes its parent dir — a skill is a directory)
 fetches server-side: one capped tarball download from codeload (public
 repos — private fails loud), and the fetched bytes are both the cache
 identity input and the extraction input — never a second fetch that
-could race a changed upstream. Cache identity is
+could race a changed upstream. The download runs under one 60s
+application deadline covering headers AND the complete streamed body
+(a trickle can't reset it) — expiry, like any transport failure, is a
+typed `unreachable` refusal; the tar listing and the tar extraction
+each run under their own 60s deadline, and a kill/timeout/truncated
+pipe is a typed `oversized` refusal, never partial output. Cache identity is
 `sha256(sha256(tarball) + "\0" + canonicalSourceUrl)`, so equivalent
 tree/blob/raw forms of one skill share `state/skillcache/<digest>/`
 while sibling subtrees of the same tarball do not (cache, not state —

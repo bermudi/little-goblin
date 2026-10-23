@@ -42,14 +42,19 @@ describe("normalizeGithubSkillUrl", () => {
 
 	test("tree SKILL.md leaf takes the parent dir", () => {
 		expect(
-			normalizeGithubSkillUrl("https://github.com/anthropics/skills/tree/main/skills/claude-api/SKILL.md"),
+			normalizeGithubSkillUrl(
+				"https://github.com/anthropics/skills/tree/main/skills/claude-api/SKILL.md",
+			),
 		).toEqual({ owner: "anthropics", repo: "skills", ref: "main", dir: "skills/claude-api" });
 	});
 
 	test("blob file takes the parent dir", () => {
-		expect(
-			normalizeGithubSkillUrl("https://github.com/o/r/blob/v1.2/lib/SKILL.md"),
-		).toEqual({ owner: "o", repo: "r", ref: "v1.2", dir: "lib" });
+		expect(normalizeGithubSkillUrl("https://github.com/o/r/blob/v1.2/lib/SKILL.md")).toEqual({
+			owner: "o",
+			repo: "r",
+			ref: "v1.2",
+			dir: "lib",
+		});
 	});
 
 	test("repo root is a skill dir", () => {
@@ -74,9 +79,9 @@ describe("normalizeGithubSkillUrl", () => {
 	});
 
 	test("query and fragment are stripped", () => {
-		expect(
-			normalizeGithubSkillUrl("https://github.com/o/r/tree/main/skills/x?plain=1#L1"),
-		).toEqual({ owner: "o", repo: "r", ref: "main", dir: "skills/x" });
+		expect(normalizeGithubSkillUrl("https://github.com/o/r/tree/main/skills/x?plain=1#L1")).toEqual(
+			{ owner: "o", repo: "r", ref: "main", dir: "skills/x" },
+		);
 	});
 
 	test("refusals", () => {
@@ -189,9 +194,7 @@ describe("fetchSkill", () => {
 		expect(fetched.fileCount).toBe(2);
 		expect(fetched.cached).toBe(false);
 		// The digest is the cache-identity recipe, not the tarball hash.
-		const expected = sha256hex(
-			`${sha256hex(ball)}\0https://github.com/o/r/tree/main/skills/demo`,
-		);
+		const expected = sha256hex(`${sha256hex(ball)}\0https://github.com/o/r/tree/main/skills/demo`);
 		expect(fetched.digest).toBe(expected);
 		const digestDir = join(cache, fetched.digest);
 		expect(statSync(join(digestDir, "demo", "scripts", "run.sh")).isFile()).toBe(true);
@@ -248,10 +251,7 @@ describe("fetchSkill", () => {
 		const cache = useCache();
 		// codeload for tag v5.3.0 roots the tree at r-5.3.0 — dots in the
 		// version, not the synthesized "r-v5.3.0".
-		const ball = await makeTarball(
-			{ "r-5.3.0/demo/SKILL.md": demoBody },
-			"r-5.3.0",
-		);
+		const ball = await makeTarball({ "r-5.3.0/demo/SKILL.md": demoBody }, "r-5.3.0");
 		const fetched = await fetchSkill("https://github.com/o/r/tree/v5.3.0/demo", {
 			fetchImpl: tarballFetch(ball),
 			cacheRoot: cache,
@@ -261,9 +261,9 @@ describe("fetchSkill", () => {
 
 	test("a repo-root skill extracts under the real top too", async () => {
 		const cache = useCache();
-		const ball = await makeTarball(
-			{ "r-main/SKILL.md": "---\nname: r\ndescription: root skill\n---\nR" },
-		);
+		const ball = await makeTarball({
+			"r-main/SKILL.md": "---\nname: r\ndescription: root skill\n---\nR",
+		});
 		const fetched = await fetchSkill("https://github.com/o/r/tree/main", {
 			fetchImpl: tarballFetch(ball),
 			cacheRoot: cache,
@@ -480,7 +480,11 @@ describe("fetchSkill pre-flight refusals", () => {
 		dirs.push(src);
 		mkdirSync(join(src, "r-main/demo"), { recursive: true });
 		writeFileSync(join(src, "r-main/demo/SKILL.md"), demoBody);
-		const proc = Bun.spawn(["ln", join(src, "r-main/demo/SKILL.md"), join(src, "r-main/demo/again")]);
+		const proc = Bun.spawn([
+			"ln",
+			join(src, "r-main/demo/SKILL.md"),
+			join(src, "r-main/demo/again"),
+		]);
 		if ((await proc.exited) !== 0) throw new Error("fixture hardlink failed");
 		const ballPath = join(useCache(), "ball.tgz");
 		const tar = Bun.spawn(["tar", "-czf", ballPath, "r-main"], {
@@ -641,4 +645,147 @@ describe("descriptor integrity", () => {
 		expect(readFileSync(a.path, "utf8")).toBe(demoBody);
 		expect(readFileSync(b.path, "utf8")).toBe(demoBody);
 	});
+});
+
+describe("download deadline", () => {
+	test("headers stalled past the deadline reject unreachable — the signal aborted", async () => {
+		const cache = useCache();
+		let signal: AbortSignal | undefined;
+		const fetchImpl = ((_: unknown, opts?: { signal?: AbortSignal }) => {
+			signal = opts?.signal;
+			return new Promise<Response>((_res, rej) => {
+				signal!.addEventListener("abort", () => rej(signal!.reason));
+			});
+		}) as unknown as typeof fetch;
+		try {
+			await fetchSkill(DEMO_URL, { fetchImpl, cacheRoot: cache, downloadTimeoutMs: 50 });
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(SkillFetchError);
+			expect((err as SkillFetchError).status).toBe("unreachable");
+			expect((err as SkillFetchError).message).toContain("deadline");
+			expect((err as SkillFetchError).message).toContain("codeload.github.com/o/r");
+		}
+		expect(signal!.aborted).toBe(true);
+		expect(readdirSync(cache)).toHaveLength(0);
+	});
+
+	test("a stalled body settles unreachable — the reader is cancelled", async () => {
+		const cache = useCache();
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start() {
+				// Never enqueues — the deadline must do the settling.
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const fetchImpl = (async () => new Response(stream)) as unknown as typeof fetch;
+		try {
+			await fetchSkill(DEMO_URL, { fetchImpl, cacheRoot: cache, downloadTimeoutMs: 50 });
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(SkillFetchError);
+			expect((err as SkillFetchError).status).toBe("unreachable");
+		}
+		expect(cancelled).toBe(true);
+		expect(readdirSync(cache)).toHaveLength(0);
+	});
+
+	test("a trickling body cannot evade the single deadline", async () => {
+		const cache = useCache();
+		const stream = new ReadableStream<Uint8Array>({
+			async pull(c) {
+				await new Promise((r) => setTimeout(r, 20));
+				c.enqueue(new Uint8Array(8));
+			},
+		});
+		const fetchImpl = (async () => new Response(stream)) as unknown as typeof fetch;
+		try {
+			await fetchSkill(DEMO_URL, { fetchImpl, cacheRoot: cache, downloadTimeoutMs: 60 });
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(SkillFetchError);
+			expect((err as SkillFetchError).status).toBe("unreachable");
+		}
+		expect(readdirSync(cache)).toHaveLength(0);
+	});
+
+	test("a mid-body transport error maps to unreachable", async () => {
+		const cache = useCache();
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new Uint8Array(4));
+				c.error(new Error("socket died"));
+			},
+		});
+		const fetchImpl = (async () => new Response(stream)) as unknown as typeof fetch;
+		try {
+			await fetchSkill(DEMO_URL, { fetchImpl, cacheRoot: cache, downloadTimeoutMs: 5_000 });
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(SkillFetchError);
+			expect((err as SkillFetchError).status).toBe("unreachable");
+		}
+	});
+
+	test("a completed body is never aborted after the deadline — the timer cleared", async () => {
+		const cache = useCache();
+		let signal: AbortSignal | undefined;
+		const ball = await makeTarball({ "r-main/demo/SKILL.md": demoBody });
+		const fetchImpl = ((_: unknown, opts?: { signal?: AbortSignal }) => {
+			signal = opts?.signal;
+			return Promise.resolve(new Response(ball as never));
+		}) as unknown as typeof fetch;
+		const fetched = await fetchSkill(DEMO_URL, {
+			fetchImpl,
+			cacheRoot: cache,
+			downloadTimeoutMs: 40,
+		});
+		expect(fetched.descriptor.name).toBe("demo");
+		await new Promise((r) => setTimeout(r, 100));
+		expect(signal!.aborted).toBe(false);
+	});
+});
+
+describe("tar phase deadlines", () => {
+	test.each(["-tvzf", "-xzf"] as const)(
+		"a hung %s child is killed at the deadline and typed oversized",
+		async (flag) => {
+			const cache = useCache();
+			const ball = await makeTarball({ "r-main/demo/SKILL.md": demoBody });
+			const real = Bun.spawn;
+			const spawned: Bun.Subprocess[] = [];
+			const spy = spyOn(Bun, "spawn").mockImplementation(((argv: string[], opts: unknown) => {
+				if (argv[0] === "tar" && argv.includes(flag)) {
+					const proc = real(["sleep", "60"], opts as Parameters<typeof Bun.spawn>[1]);
+					spawned.push(proc);
+					return proc;
+				}
+				return (real as (...a: unknown[]) => Bun.Subprocess)(argv, opts);
+			}) as never);
+			try {
+				await fetchSkill(DEMO_URL, {
+					fetchImpl: tarballFetch(ball),
+					cacheRoot: cache,
+					tarTimeoutMs: 100,
+				});
+				expect.unreachable();
+			} catch (err) {
+				expect(err).toBeInstanceOf(SkillFetchError);
+				const e = err as SkillFetchError;
+				expect(e.status).toBe("oversized");
+				expect(e.message).toContain(
+					flag === "-tvzf" ? "tar listing exceeded" : "tar extraction exceeded",
+				);
+			} finally {
+				spy.mockRestore();
+			}
+			expect(spawned).toHaveLength(1);
+			// The deadline's kill reaped the child — exit collected.
+			expect(await spawned[0]!.exited).not.toBe(0);
+			expect(readdirSync(cache)).toHaveLength(0);
+		},
+	);
 });

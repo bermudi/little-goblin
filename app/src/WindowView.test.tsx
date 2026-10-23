@@ -11,12 +11,15 @@ describe("WindowView", () => {
 	let win: Window;
 	let container: HTMLElement;
 	let root: Root | null = null;
-	let installed: string[] = [];
+	// The fixture owns the globals it installs for one test: capture each
+	// prior descriptor at install time so afterEach can restore it (deleting
+	// only properties that were previously absent).
+	let installed: { name: string; prev: PropertyDescriptor | undefined }[] = [];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
+		installed.push({ name, prev: Reflect.getOwnPropertyDescriptor(globalThis, name) });
 		Reflect.set(globalThis, name, value);
-		installed.push(name);
 	};
 
 	const json = (body: unknown, status = 200): Response =>
@@ -107,7 +110,7 @@ describe("WindowView", () => {
 		installGlobal("localStorage", win.localStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
-		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 	});
 
 	afterEach(async () => {
@@ -119,8 +122,10 @@ describe("WindowView", () => {
 		}
 		await win.happyDOM.close();
 		globalThis.fetch = realFetch;
-		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		for (const { name, prev } of installed) {
+			if (prev === undefined) Reflect.deleteProperty(globalThis, name);
+			else Object.defineProperty(globalThis, name, prev);
+		}
 		installed = [];
 	});
 

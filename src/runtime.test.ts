@@ -21,6 +21,10 @@ import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
+import { openWindowCapture } from "./window-capture.ts";
+import type { HindsightClient } from "./memory/hindsight.ts";
+import { forgetDocument } from "./memory/forget.ts";
+import { memoryConfigSchema } from "./config.ts";
 import {
 	Runtime,
 	type ModelStep,
@@ -65,7 +69,15 @@ function rig(
 		tools?: ToolSet;
 		makeTools?: RuntimeDeps["makeTools"];
 		deps?: Partial<
-			Pick<RuntimeDeps, "compaction" | "captureConversation" | "memory" | "turnJournal">
+			Pick<
+				RuntimeDeps,
+				| "compaction"
+				| "captureConversation"
+				| "memory"
+				| "turnJournal"
+				| "recordWindow"
+				| "windowVersion"
+			>
 		>;
 		addr?: Parameters<Store["resolve"]>[0];
 		store?: Store;
@@ -244,6 +256,171 @@ describe("skill body ownership across turns", () => {
 			expect(prompt(2)).not.toContain("STEER-SKILL-UNIQUE");
 		} finally {
 			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+	test("a folded steer becomes the durable source; a still-queued input never does", async () => {
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const gate = tool({
+			description: "held",
+			inputSchema: z.object({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return "done";
+			},
+		});
+		const edge = scriptedEdge([
+			[toolCallPart("c1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+			textParts("queued answer"),
+		]);
+		const store = openStore(tmpDb("goblin-rt-src-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({
+			model: edge.model,
+			store,
+			tools: { probe: gate },
+			deps: { turnJournal: journal },
+		});
+		try {
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "head" }]), new HeadlessSink());
+			const headSeq = r.store.lastUserSeq(r.conv.id)!;
+			await entered.promise;
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "steer" }]), new HeadlessSink());
+			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
+			const queued = new RecordingSink();
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "queued" }]), queued);
+			const queuedSeq = r.store.lastUserSeq(r.conv.id)!;
+			release.resolve();
+			await drain(r);
+			const runs = r.store.db
+				.query<{ run_id: string; source_input_seq: number | null }, []>(
+					"SELECT run_id, source_input_seq FROM turn_runs ORDER BY rowid",
+				)
+				.all();
+			expect(runs).toHaveLength(2);
+			expect(runs[0]!.source_input_seq).toBe(steerSeq);
+			expect(runs[0]!.source_input_seq).not.toBe(headSeq);
+			expect(runs[0]!.source_input_seq).not.toBe(queuedSeq);
+			expect(runs[1]!.source_input_seq).toBe(queuedSeq);
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a forget landing mid-call fences the turn's late window record", async () => {
+		const store = openStore(tmpDb("goblin-rt-win-"));
+		const windows = openWindowCapture(store.db);
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const prompts: string[] = [];
+		const inner = fakeModel(["a", "b"], {
+			beforeDelta: async (_d, i) => {
+				if (i === 1) {
+					entered.resolve();
+					await release.promise;
+				}
+			},
+		}) as unknown as {
+			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
+		};
+		const model = {
+			...inner,
+			doStream(o: { prompt: unknown }) {
+				prompts.push(JSON.stringify(o.prompt));
+				return inner.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		const recalled = "the operator's cat is named ORION-9z7w";
+		const deleted: string[] = [];
+		const memoryClient = {
+			target: "a".repeat(64),
+			async recall() {
+				return [{ id: "f-1", text: recalled, document_id: "exchange/dm:1/1/a" }];
+			},
+			async operation() {
+				return null;
+			},
+			async deleteDocument(id: string) {
+				deleted.push(id);
+			},
+		};
+		const r = rig({
+			model,
+			store,
+			deps: {
+				recordWindow: (id, input) => windows.record(id, input),
+				windowVersion: () => windows.version(),
+				memory: {
+					client: memoryClient as unknown as HindsightClient,
+					config: memoryConfigSchema.parse({
+						baseUrl: "http://127.0.0.1:1",
+						bankId: "g",
+					}),
+					contexts: store.memoryContexts,
+					noteRecall: () => {},
+				},
+			},
+		});
+		try {
+			const sink = submit(r, "hi");
+			await entered.promise;
+			expect(prompts[0]).toContain(recalled);
+			const result = await forgetDocument(
+				{
+					client: memoryClient,
+					contexts: store.memoryContexts,
+					queue: store.memoryQueue,
+					withWorkerPaused: (fn) => fn(),
+					settleTiming: { pollMs: 5, budgetMs: 2_000 },
+				},
+				"exchange/dm:1/1/a",
+				{ channel: "app", conversation: r.conv.id },
+			);
+			expect(result.outcome).toBe("forgotten");
+			expect(result.outcome === "forgotten" ? result.redacted : 0).toBe(1);
+			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
+			expect(windows.version()).toBe(1);
+			release.resolve();
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(windows.read(r.conv.id)).toBeNull();
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("an unreadable recall version disables capture for the attempt, never the turn", async () => {
+		const store = openStore(tmpDb("goblin-rt-win-"));
+		const windows = openWindowCapture(store.db);
+		let recorded = 0;
+		const r = rig({
+			model: fakeModel(["still answers"]),
+			store,
+			deps: {
+				recordWindow: (id, input) => {
+					recorded++;
+					windows.record(id, input);
+				},
+				windowVersion: () => {
+					throw new Error("synthetic version read failure");
+				},
+			},
+		});
+		try {
+			const sink = submit(r, "hi");
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(recorded).toBe(0);
+			expect(windows.read(r.conv.id)).toBeNull();
+		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
 		}

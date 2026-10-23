@@ -13,6 +13,7 @@
 import type { Database } from "bun:sqlite";
 import { asSchema, type ToolSet } from "ai";
 import { z } from "zod";
+import { log } from "./log.ts";
 import type { PromptSegments } from "./turn/itemize.ts";
 
 export interface WindowTool {
@@ -111,7 +112,10 @@ const rowSchema = z.object({
 
 // Driven by openStore alongside the other companion schemas — no FK on
 // this table, so deleteConversation's sweep finds it only when every
-// handle creates it.
+// handle creates it. The singleton state row carries recall_version:
+// a forget bumps it globally, fencing any in-flight capture built on
+// pre-forget evidence (the compressed payload has no reliable source
+// ids, so staleness is judged by version, not attribution).
 export function ensureWindowSchema(db: Database): void {
 	db.run(`CREATE TABLE IF NOT EXISTS context_windows (
 		conversation_id TEXT PRIMARY KEY,
@@ -120,6 +124,25 @@ export function ensureWindowSchema(db: Database): void {
 		step INTEGER NOT NULL,
 		payload BLOB NOT NULL
 	)`);
+	db.run(`CREATE TABLE IF NOT EXISTS context_window_state (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		recall_version INTEGER NOT NULL
+	)`);
+	db.run("INSERT OR IGNORE INTO context_window_state (id, recall_version) VALUES (1, 0)");
+}
+
+export function invalidateWindowCaptures(db: Database): number {
+	ensureWindowSchema(db);
+	db.transaction(() => {
+		db.run("DELETE FROM context_windows");
+		db.run("UPDATE context_window_state SET recall_version = recall_version + 1 WHERE id = 1");
+	})();
+	const row = db
+		.query<{ recall_version: number }, []>(
+			"SELECT recall_version FROM context_window_state WHERE id = 1",
+		)
+		.get();
+	return row?.recall_version ?? 0;
 }
 
 export function openWindowCapture(
@@ -128,20 +151,30 @@ export function openWindowCapture(
 ): {
 	record(
 		conversationId: string,
-		input: { model: string; step: number; capture: WindowCapture },
+		input: { model: string; step: number; capture: WindowCapture; recallVersion: number },
 	): void;
 	read(conversationId: string): StoredWindow | null;
+	version(): number;
 } {
 	const now = options?.now ?? Date.now;
 	ensureWindowSchema(db);
 	const qPut = db.query(
 		`INSERT OR REPLACE INTO context_windows (conversation_id, captured_ms, model, step, payload)
-		VALUES (?, ?, ?, ?, ?)`,
+		SELECT ?, ?, ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM context_window_state WHERE id = 1 AND recall_version = ?
+		)`,
 	);
 	const qGet = db.query(
 		"SELECT captured_ms, model, step, payload FROM context_windows WHERE conversation_id = ?",
 	);
+	const qVersion = db.query<{ recall_version: number }, []>(
+		"SELECT recall_version FROM context_window_state WHERE id = 1",
+	);
 	return {
+		version() {
+			return qVersion.get()?.recall_version ?? 0;
+		},
 		record(conversationId, input) {
 			// The stub lands here, not at the caller: a raw byte array must
 			// never reach JSON, and the stub is what keeps rows bounded.
@@ -150,13 +183,20 @@ export function openWindowCapture(
 				messages: stubBinary(input.capture.messages) as unknown[],
 			};
 			const json = JSON.stringify(capture);
-			qPut.run(
+			const written = qPut.run(
 				conversationId,
 				now(),
 				input.model,
 				input.step,
 				Bun.gzipSync(new TextEncoder().encode(json)),
+				input.recallVersion,
 			);
+			if (written.changes === 0) {
+				log.info("context window capture skipped — stale recall version", {
+					conversation: conversationId,
+					recallVersion: input.recallVersion,
+				});
+			}
 		},
 		read(conversationId) {
 			const raw = rowSchema.nullable().parse(qGet.get(conversationId));

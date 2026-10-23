@@ -213,6 +213,27 @@ describe("turn journal", () => {
 		store.close();
 	});
 
+	test("source_input_seq round-trips through begin and checkpoint", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		journal.beginRun({
+			runId: "run-src",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: { model: "z.ai/glm-5", thinking: "low" },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:00:00.000Z",
+			sourceInputSeq: 7,
+		});
+		expect(journal.get("run-src")!.sourceInputSeq).toBe(7);
+		journal.checkpoint("run-src", { sourceInputSeq: 9 });
+		expect(journal.get("run-src")!.sourceInputSeq).toBe(9);
+		store.close();
+	});
+
 	test("deleting a conversation cascades its runs and calls", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -407,6 +428,7 @@ describe("turn journal", () => {
 		// Whether a pre-column grant was spent is unknowable — every
 		// migrated row reads consumed and fails closed.
 		expect(migrated.find((c) => c.toolCallId === "c-legacy")!.retryConsumed).toBe(true);
+		expect(journal.get("run-1")!.sourceInputSeq).toBeNull();
 		expect(migrated.find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(true);
 		expect(migrated.find((c) => c.toolCallId === "c-legacy")!.retryFromKnown).toBe(false);
 		// The legacy grant is terminal: no second authorization, no

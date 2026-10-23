@@ -405,6 +405,7 @@ async function boot() {
 			cachePruning.pruneConversation(convId);
 		},
 		recordWindow: windowCapture.record,
+		windowVersion: windowCapture.version,
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),

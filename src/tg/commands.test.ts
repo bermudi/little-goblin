@@ -1069,6 +1069,7 @@ describe("recovery commands", () => {
 		partial: null,
 		loopState: null,
 		ownedInputSeqs: null,
+		sourceInputSeq: null,
 		ownedInputSeqsUnreadable: false,
 		resumeRequestSeqs: null,
 		resumeRequestSeqsUnreadable: false,

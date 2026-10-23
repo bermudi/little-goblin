@@ -65,6 +65,7 @@ export function setup(
 		recordWindow: (conversationId, input) => {
 			windowCapture.record(conversationId, input);
 		},
+		windowVersion: windowCapture.version,
 		buildStep: (conv) => ({
 			model: observedModel(
 				opts.model ??

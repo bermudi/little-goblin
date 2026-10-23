@@ -356,10 +356,13 @@ Forgetting indexed knowledge is distinct from erasing original Telegram
 messages or Goblin history. Explain that distinction. Stored recall
 snapshots and tool results can also contain forgotten information;
 remove or redact those projections and intentionally reset the affected
-request prefix. Never claim complete erasure while originals, backups,
-or provider retention still exist. Document that restoring an older
-backup can restore forgotten data and requires suppression
-reconciliation before serving it.
+request prefix. Context-window captures are such a projection: the same
+transaction that redacts recall contexts purges every stored capture
+(recall bytes ride them unattributed) and bumps the recall version that
+fences captures still in flight. Never claim complete erasure while
+originals, backups, or provider retention still exist. Document that
+restoring an older backup can restore forgotten data and requires
+suppression reconciliation before serving it.
 
 ### Operations and verification
 

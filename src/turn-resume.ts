@@ -668,9 +668,17 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				...userMessage(parts),
 				metadata: { goblinResume: { sourceRunId: run.runId } },
 			};
+			const legacySeqs = [
+				...(stale.anchor !== undefined ? [stale.anchor.seq] : []),
+				...stale.owned.map((e) => e.seq),
+			];
+			const sourceInputSeq =
+				run.sourceInputSeq ??
+				(run.resumedFrom === null && legacySeqs.length > 0 ? Math.max(...legacySeqs) : null);
 			const seed: ResumeSeed = {
 				conversation: captured,
 				partial,
+				sourceInputSeq,
 				// The watchdog judges progress against the operator's real
 				// request — the run's anchor, or its first owned input when
 				// no anchor was recorded. The head event's marker text names

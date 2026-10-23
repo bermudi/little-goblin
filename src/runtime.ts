@@ -115,7 +115,11 @@ export interface RuntimeDeps {
 		// Filled after buildStep so fetch can render stored PDF references with
 		// this turn's media capabilities.
 		accepts?: { current: AcceptsMedia },
-		context?: { runId: string; sourceMessageId(): string },
+		context?: {
+			runId: string;
+			sourceMessageId(): string;
+			sourceInputSeq(): number | null;
+		},
 	): ToolSet;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
@@ -187,8 +191,9 @@ export interface RuntimeDeps {
 	// feeds the view).
 	recordWindow?(
 		conversationId: string,
-		input: { model: string; step: number; capture: WindowCapture },
+		input: { model: string; step: number; capture: WindowCapture; recallVersion: number },
 	): void;
+	windowVersion?(): number;
 }
 
 export class FencedError extends Error {
@@ -875,6 +880,20 @@ export class Runtime {
 		live: LiveChunks,
 	): Promise<AttemptOutcome> {
 		const { store } = this.deps;
+		let recallVersion: number | null;
+		if (recovery !== undefined && recovery.recallVersion !== undefined) {
+			recallVersion = recovery.recallVersion;
+		} else {
+			try {
+				recallVersion = this.deps.windowVersion?.() ?? 0;
+			} catch (err) {
+				log.warn("recall version unreadable — window capture disabled for this attempt", {
+					conversation: convId,
+					error: String(err),
+				});
+				recallVersion = null;
+			}
+		}
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// Preserve loop history across overflow, while attempt-scoped state resets.
 		// Completed tool calls stay in the recovery package as evidence —
@@ -976,6 +995,14 @@ export class Runtime {
 		// and inherits its calls as evidence: a re-asked effect conflicts
 		// unless an operator grant names it.
 		const sourceRunId = recovery?.resumedFrom;
+		const sourceInputSeq = (): number | null => {
+			let max: number | null = null;
+			for (const [i, t] of turns.entries()) {
+				if (i === 0 && sourceRunId !== undefined) continue;
+				if (max === null || t.seq > max) max = t.seq;
+			}
+			return max ?? recovery?.sourceInputSeq ?? null;
+		};
 		let runId: string | null = null;
 		// A thrown journal write anywhere in the fence lands here — the
 		// catch below aborts the turn instead of letting the SDK report a
@@ -1047,6 +1074,7 @@ export class Runtime {
 			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
 				runId,
 				sourceMessageId: () => turns[turns.length - 1]!.message.id,
+				sourceInputSeq,
 			});
 			journal?.beginRun({
 				runId,
@@ -1058,6 +1086,7 @@ export class Runtime {
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
 				ownedInputSeqs: snapshot.ownedInputSeqs,
+				sourceInputSeq: sourceInputSeq(),
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
@@ -1152,6 +1181,7 @@ export class Runtime {
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: snapshot.ownedInputSeqs,
+				sourceInputSeq,
 				partial: recovery?.partial ?? null,
 				seenText: recovery?.seenText ?? false,
 				toolCalls: recovery ? [...recovery.toolCalls] : [],
@@ -1165,12 +1195,13 @@ export class Runtime {
 			});
 			// Record the window on both rails — the failed rail throws its
 			// recovery/error below, and the request went out either way.
-			if (outcome.window !== null) {
+			if (outcome.window !== null && recallVersion !== null) {
 				try {
 					this.deps.recordWindow?.(convId, {
 						model: outcome.model,
 						step: outcome.steps,
 						capture: outcome.window,
+						recallVersion,
 					});
 				} catch (err) {
 					log.error("context window record failed — turn continues", err, {
@@ -1301,6 +1332,8 @@ export class Runtime {
 					resumedFrom: sourceRunId,
 					failedRunId: runId ?? undefined,
 					operatorRequest: recovery?.operatorRequest,
+					recallVersion,
+					sourceInputSeq: sourceInputSeq(),
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),

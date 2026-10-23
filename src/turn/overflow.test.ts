@@ -80,6 +80,7 @@ function harness(
 		holdsAuthority?: boolean;
 		assertAuthority?: () => void;
 		aborted?: boolean;
+		recallVersion?: number | null;
 	} = {},
 ): Harness {
 	const live: LiveChunks = { chunks: [], subscribers: new Set(), ended: false };
@@ -93,6 +94,8 @@ function harness(
 		startedAt: 1234,
 		live,
 		filterRetryUsed: true,
+		recallVersion: "recallVersion" in over ? over.recallVersion : 7,
+		sourceInputSeq: 42,
 		members: ["m1"],
 		compact: async () => {
 			compactCalls++;
@@ -228,8 +231,18 @@ describe("recoverFromOverflow", () => {
 		expect(outcome.recovery.startedAt).toBe(h.deps.startedAt);
 		expect(outcome.recovery.live).toBe(h.deps.live);
 		expect(outcome.recovery.filterRetryUsed).toBe(h.deps.filterRetryUsed);
+		expect(outcome.recovery.recallVersion).toBe(h.deps.recallVersion);
+		expect(outcome.recovery.sourceInputSeq).toBe(h.deps.sourceInputSeq);
 		expect(outcome.members).toBe(h.deps.members);
 		expect(h.compacted()).toBe(1);
+	});
+
+	test("a disabled capture token carries through as null, never a fresh read", async () => {
+		const h = harness({ recallVersion: null });
+		const outcome = await recoverFromOverflow(h.deps);
+		expect(outcome.kind).toBe("resume");
+		if (outcome.kind !== "resume") return;
+		expect(outcome.recovery.recallVersion).toBeNull();
 	});
 
 	test("a partial of step-start markers alone packages as null", async () => {

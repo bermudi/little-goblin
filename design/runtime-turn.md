@@ -191,6 +191,17 @@ with no durable users stay resumable); a malformed column — either
 `owned_input_seqs` or `resume_request_seqs` — is a readable refusal,
 never a silent policy change.
 
+`source_input_seq` is the durable handover identity: the newest owned
+input's event seq, persisted at begin and at the same steer checkpoint
+as `owned_input_seqs` so a folded steer genuinely moves who the turn
+answers for (a still-queued input is never a member and never wins).
+An operator-resume seed carries the source run's own journaled value —
+the generated resume marker is never a source — and a legacy row
+without it falls back to the max seq staleness validated (anchor or
+latest owned input), except a legacy already-resumed row, which keeps
+NULL: a handover on missing durable identity refuses rather than key
+on a client message id.
+
 ## What must not change
 
 Durable wake delivery (`wake-store.ts`, `wake-dispatcher.ts`) follows

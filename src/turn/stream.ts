@@ -223,6 +223,7 @@ export interface StreamDeps<M extends WireMember> {
 	// The durable user-input seqs owned at admission; successfully folded
 	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
+	sourceInputSeq?(): number | null;
 	partial: UIMessage | null;
 	seenText: boolean;
 	toolCalls: string[];
@@ -421,6 +422,7 @@ export async function driveStream<M extends WireMember>(
 			deps.journal?.checkpoint(deps.runId, {
 				ownedInputSeqs: [...ownedInputSeqs],
 				steerMark,
+				sourceInputSeq: deps.sourceInputSeq?.(),
 			});
 			log.info("steered into turn", {
 				conversation: convId,

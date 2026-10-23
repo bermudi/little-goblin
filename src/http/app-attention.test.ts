@@ -70,6 +70,7 @@ function interruptedRun(conversationId: string): { run: TurnRun; calls: TurnTool
 			partial: null,
 			loopState: null,
 			ownedInputSeqs: null,
+			sourceInputSeq: null,
 			ownedInputSeqsUnreadable: false,
 			resumeRequestSeqs: null,
 			resumeRequestSeqsUnreadable: false,

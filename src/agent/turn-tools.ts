@@ -264,7 +264,13 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 								if (context === undefined) {
 									throw new Error("responsibility accept needs a turn run context");
 								}
-								return `handover:${conv.id}:${context.sourceMessageId()}`;
+								const seq = context.sourceInputSeq();
+								if (seq === null) {
+									throw new Error(
+										"responsibility accept has no durable source input — a client message id never keys a handover",
+									);
+								}
+								return `handover:${conv.id}:seq:${seq}`;
 							},
 							listFor: responsibilitySvc.listFor,
 							// The accepted-risk send edge (responsibility-service):

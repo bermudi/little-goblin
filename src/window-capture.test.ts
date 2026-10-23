@@ -4,7 +4,9 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { listCalls, openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
 import { appAddress, openStore } from "./conversation.ts";
+import { tmpDb } from "./testkit.ts";
 import {
+	invalidateWindowCaptures,
 	openWindowCapture,
 	serializeToolDefs,
 	stubBinary,
@@ -36,13 +38,14 @@ describe("window capture", () => {
 	test("record then read round-trips the payload; latest wins", () => {
 		const db = new Database(":memory:");
 		const store = openWindowCapture(db, { now: () => 1_000 });
-		store.record("app/a", { model: "z/glm", step: 1, capture: capture() });
+		store.record("app/a", { model: "z/glm", step: 1, capture: capture(), recallVersion: 0 });
 		store.record("app/a", {
 			model: "z/glm",
 			step: 2,
 			capture: capture({ system: "second window" }),
+			recallVersion: 0,
 		});
-		store.record("app/b", { model: "o/other", step: 1, capture: capture() });
+		store.record("app/b", { model: "o/other", step: 1, capture: capture(), recallVersion: 0 });
 
 		const read = store.read("app/a");
 		expect(read).not.toBeNull();
@@ -63,6 +66,7 @@ describe("window capture", () => {
 		store.record("app/a", {
 			model: "z/glm",
 			step: 1,
+			recallVersion: 0,
 			capture: capture({
 				messages: [
 					{
@@ -102,7 +106,7 @@ describe("window capture", () => {
 	test("a payload of the wrong shape fails loud, never parses as empty", () => {
 		const db = new Database(":memory:");
 		const store = openWindowCapture(db);
-		store.record("app/a", { model: "m", step: 1, capture: capture() });
+		store.record("app/a", { model: "m", step: 1, capture: capture(), recallVersion: 0 });
 		// Overwrite with valid gzip of a shapeless object.
 		const blob = Bun.gzipSync(new TextEncoder().encode(JSON.stringify({ nope: true })));
 		db.query("UPDATE context_windows SET payload = ? WHERE conversation_id = ?").run(blob, "app/a");
@@ -113,7 +117,7 @@ describe("window capture", () => {
 		const store = openStore(":memory:");
 		const windows = openWindowCapture(store.db);
 		const conv = store.resolve(appAddress("gone"), "/w");
-		windows.record(conv.id, { model: "m", step: 1, capture: capture() });
+		windows.record(conv.id, { model: "m", step: 1, capture: capture(), recallVersion: 0 });
 		expect(windows.read(conv.id)).not.toBeNull();
 
 		store.deleteConversation(conv.id);
@@ -124,6 +128,123 @@ describe("window capture", () => {
 		const reminted = store.resolve(appAddress("gone"), "/w");
 		expect(reminted.id).toBe(conv.id);
 		expect(windows.read(reminted.id)).toBeNull();
+		store.close();
+	});
+});
+
+describe("recall-version fencing", () => {
+	test("a forget clears stored windows and fences a pre-forget version", () => {
+		const store = openStore(":memory:");
+		const windows = openWindowCapture(store.db);
+		const conv = store.resolve(appAddress("gone"), "/w");
+		const other = store.resolve(appAddress("other"), "/w");
+		store.memoryContexts.save(conv.id, 1, "[recall]", ["exchange/x/1/a"]);
+		store.memoryContexts.save(other.id, 5, "[unrelated]", ["exchange/y/2/b"]);
+		windows.record(conv.id, { model: "m", step: 1, capture: capture(), recallVersion: 0 });
+		windows.record(other.id, { model: "m", step: 2, capture: capture(), recallVersion: 0 });
+		expect(windows.version()).toBe(0);
+
+		const removed = store.memoryContexts.deleteByDocument("exchange/x/1/a");
+		expect(removed).toBe(1);
+		expect(store.memoryContexts.load(conv.id)).toEqual([]);
+		expect(store.memoryContexts.load(other.id)).toHaveLength(1);
+		expect(windows.read(conv.id)).toBeNull();
+		expect(windows.read(other.id)).toBeNull();
+		expect(windows.version()).toBe(1);
+
+		windows.record(conv.id, {
+			model: "m",
+			step: 3,
+			capture: capture(),
+			recallVersion: 0,
+		});
+		expect(windows.read(conv.id)).toBeNull();
+		windows.record(conv.id, {
+			model: "m",
+			step: 3,
+			capture: capture(),
+			recallVersion: 1,
+		});
+		expect(windows.read(conv.id)).not.toBeNull();
+		store.close();
+	});
+
+	test("the version fence holds across separate handles on one database file", () => {
+		const dbPath = tmpDb("goblin-wc-");
+		const dbA = new Database(dbPath);
+		const dbB = new Database(dbPath);
+		try {
+			const a = openWindowCapture(dbA);
+			const b = openWindowCapture(dbB);
+			a.record("app/c", {
+				model: "m",
+				step: 1,
+				capture: capture(),
+				recallVersion: a.version(),
+			});
+			expect(b.read("app/c")).not.toBeNull();
+			invalidateWindowCaptures(dbB);
+			expect(b.version()).toBe(1);
+			expect(a.version()).toBe(1);
+			expect(a.read("app/c")).toBeNull();
+			a.record("app/c", {
+				model: "m",
+				step: 1,
+				capture: capture({ system: "revived" }),
+				recallVersion: 0,
+			});
+			expect(a.read("app/c")).toBeNull();
+			expect(b.read("app/c")).toBeNull();
+			b.record("app/c", {
+				model: "m",
+				step: 1,
+				capture: capture({ system: "revived" }),
+				recallVersion: b.version(),
+			});
+			expect(b.read("app/c")).not.toBeNull();
+		} finally {
+			dbA.close();
+			dbB.close();
+		}
+	});
+
+	test("a real forget of a recall in another conversation clears stored windows", async () => {
+		const store = openStore(":memory:");
+		const windows = openWindowCapture(store.db);
+		const conv = store.resolve(appAddress("one"), "/w");
+		const other = store.resolve(appAddress("two"), "/w");
+		const fact = "the operator's cat is named ORION-9z7w";
+		store.memoryContexts.save(conv.id, 1, `[recall] ${fact}`, ["exchange/dm:1/1/a"]);
+		store.memoryContexts.save(other.id, 9, "[other recall]", ["exchange/dm:2/3/b"]);
+		windows.record(conv.id, {
+			model: "m",
+			step: 1,
+			capture: capture({ messages: [{ role: "user", content: `turn sees ${fact}` }] }),
+			recallVersion: 0,
+		});
+		expect(JSON.stringify(windows.read(conv.id)!.capture.messages)).toContain(fact);
+
+		const { forgetDocument } = await import("./memory/forget.ts");
+		const remote = {
+			target: "a".repeat(64),
+			operation: async () => null,
+			deleteDocument: async () => {},
+		};
+		const result = await forgetDocument(
+			{
+				client: remote,
+				contexts: store.memoryContexts,
+				queue: store.memoryQueue,
+				withWorkerPaused: (fn) => fn(),
+			},
+			"exchange/dm:1/1/a",
+			{ channel: "telegram" },
+		);
+		expect(result.outcome).toBe("forgotten");
+		expect(windows.read(conv.id)).toBeNull();
+		expect(store.memoryContexts.load(conv.id)).toEqual([]);
+		expect(store.memoryContexts.load(other.id)).toHaveLength(1);
+		expect(windows.version()).toBe(1);
 		store.close();
 	});
 });

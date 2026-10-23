@@ -53,8 +53,30 @@ const ACCEPT = JSON.stringify({
 	attachments: [{ pane: "w1:p1" }],
 });
 
+const AGENT2: OperatorAgent = {
+	...AGENT,
+	pane_id: "w2:p2",
+	workspace_id: "w2",
+	tab_id: "w2:t2",
+	name: "worker-2",
+	terminal_id: "term-10",
+	agent_session: "sess-2",
+};
+
+const ACCEPT2 = JSON.stringify({
+	action: "accept",
+	understanding: {
+		outcome: "land the second fix",
+		situation: "another agent mid-task",
+		nextAction: "check the other diff",
+		checkpoints: [],
+		completionEvidence: ["its ci green"],
+	},
+	attachments: [{ pane: "w2:p2" }],
+});
+
 describe("turn-tools responsibility composition", () => {
-	test("accepts dedup on the owned source message; a later message hands over a new responsibility", async () => {
+	function rig(attempts: Parameters<typeof scriptedModel>[0], agents: OperatorAgent[] = [AGENT]) {
 		const home = useHome(`goblin-tt-${tmpDir().slice(-6)}-`);
 		mkdirSync(join(home, "state"), { recursive: true });
 		const store = openStore(join(home, "state", "goblin.sqlite"));
@@ -87,7 +109,7 @@ describe("turn-tools responsibility composition", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: { list: async () => [AGENT] } as unknown as OperatorHerdr,
+			operatorHerdr: { list: async () => agents } as unknown as OperatorHerdr,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -95,10 +117,20 @@ describe("turn-tools responsibility composition", () => {
 			subagents: () => null,
 			desktops: () => null,
 			subagentsBoot: () => undefined,
-			responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
+			responsibility: () => ({ resps, service, listFor: async () => agents }),
 			filterGuests: (_conv, tools) => tools,
 		});
-		const edge = scriptedModel([
+		const edge = scriptedModel(attempts);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: toolsFor,
+		});
+		return { store, conv, project, resps, runtime };
+	}
+
+	test("accepts dedup on the owned source message; a later message hands over a new responsibility", async () => {
+		const { store, conv, project, resps, runtime } = rig([
 			[
 				toolCallPart("a1", "responsibility", ACCEPT),
 				toolCallPart("a2", "responsibility", ACCEPT),
@@ -108,11 +140,6 @@ describe("turn-tools responsibility composition", () => {
 			[toolCallPart("b1", "responsibility", ACCEPT), finishPart("tool-calls")],
 			[...textParts("also taken"), finishPart("stop", 10)],
 		]);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: edge.model, system: "test" }),
-			makeTools: toolsFor,
-		});
 		const msg1 = userMessage([{ type: "text", text: "handle this one" }]);
 		const first = new HeadlessSink();
 		runtime.submit(conv, msg1, first);
@@ -120,7 +147,8 @@ describe("turn-tools responsibility composition", () => {
 		await waitUntil(() => resps.forProject(project.id).length === 1, "accept lands");
 		const all = resps.forProject(project.id);
 		expect(all).toHaveLength(1);
-		expect(all[0]!.handoverKey).toBe(`handover:${conv.id}:${msg1.id}`);
+		const seq1 = store.lastUserSeq(conv.id);
+		expect(all[0]!.handoverKey).toBe(`handover:${conv.id}:seq:${seq1}`);
 		expect(resps.attachmentsFor(all[0]!.responsibilityId)).toHaveLength(1);
 
 		resps.setStatus(all[0]!.responsibilityId, "completed");
@@ -132,8 +160,57 @@ describe("turn-tools responsibility composition", () => {
 		const after = resps.forProject(project.id);
 		expect(after).toHaveLength(2);
 		const keys = after.map((x) => x.handoverKey);
-		expect(keys).toContain(`handover:${conv.id}:${msg1.id}`);
-		expect(keys).toContain(`handover:${conv.id}:${msg2.id}`);
+		const seq2 = store.lastUserSeq(conv.id);
+		expect(seq2).not.toBe(seq1);
+		expect(keys).toContain(`handover:${conv.id}:seq:${seq1}`);
+		expect(keys).toContain(`handover:${conv.id}:seq:${seq2}`);
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		store.close();
+	});
+
+	test("two events with one client message id still get distinct handover keys", async () => {
+		const { store, conv, project, resps, runtime } = rig(
+			[
+				[toolCallPart("a1", "responsibility", ACCEPT), finishPart("tool-calls")],
+				[...textParts("taken"), finishPart("stop", 10)],
+				[toolCallPart("b1", "responsibility", ACCEPT2), finishPart("tool-calls")],
+				[...textParts("also taken"), finishPart("stop", 10)],
+			],
+			[AGENT, AGENT2],
+		);
+		const msg = (text: string): ReturnType<typeof userMessage> => ({
+			id: "dup",
+			role: "user",
+			parts: [{ type: "text", text }],
+		});
+		const first = new HeadlessSink();
+		runtime.submit(conv, msg("handle this one"), first);
+		expect(await first.done).toEqual({ kind: "completed" });
+		const seq1 = store.lastUserSeq(conv.id);
+		await waitUntil(() => resps.forProject(project.id).length === 1, "accept lands");
+
+		resps.setStatus(resps.forProject(project.id)[0]!.responsibilityId, "completed");
+		const second = new HeadlessSink();
+		runtime.submit(conv, msg("and this one"), second);
+		expect(await second.done).toEqual({ kind: "completed" });
+		const seq2 = store.lastUserSeq(conv.id);
+		await waitUntil(() => resps.forProject(project.id).length === 2, "second handover");
+		const rows = resps.forProject(project.id);
+		const keys = rows.map((x) => x.handoverKey);
+		expect(seq2).not.toBe(seq1);
+		expect(keys).toContain(`handover:${conv.id}:seq:${seq1}`);
+		expect(keys).toContain(`handover:${conv.id}:seq:${seq2}`);
+		const byKey = new Map(rows.map((x) => [x.handoverKey, x]));
+		const firstRow = byKey.get(`handover:${conv.id}:seq:${seq1}`)!;
+		const secondRow = byKey.get(`handover:${conv.id}:seq:${seq2}`)!;
+		expect(firstRow.understanding.outcome).toBe("land the fix");
+		expect(secondRow.understanding.outcome).toBe("land the second fix");
+		expect(resps.attachmentsFor(firstRow.responsibilityId).map((a) => a.target.paneId)).toEqual([
+			"w1:p1",
+		]);
+		expect(resps.attachmentsFor(secondRow.responsibilityId).map((a) => a.target.paneId)).toEqual([
+			"w2:p2",
+		]);
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		store.close();
 	});

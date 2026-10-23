@@ -14,6 +14,7 @@ import {
 	type RecalledFact,
 } from "./hindsight.ts";
 import { OutageTracker } from "./outage.ts";
+import { invalidateWindowCaptures } from "../window-capture.ts";
 import {
 	type BlockedRetention,
 	type MemoryQueue,
@@ -463,15 +464,24 @@ export class MemoryContexts {
 
 	deleteByDocument(documentId: string): number {
 		let removed = 0;
-		for (const ctx of this.loadAll()) {
-			if (ctx.corrupt || ctx.sourceIds.includes(documentId)) {
-				this.db.run("DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq = ?", [
-					ctx.conversationId,
-					ctx.anchorSeq,
-				]);
-				removed++;
+		let recallVersion = 0;
+		this.db.transaction(() => {
+			for (const ctx of this.loadAll()) {
+				if (ctx.corrupt || ctx.sourceIds.includes(documentId)) {
+					this.db.run("DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq = ?", [
+						ctx.conversationId,
+						ctx.anchorSeq,
+					]);
+					removed++;
+				}
 			}
-		}
+			recallVersion = invalidateWindowCaptures(this.db);
+		})();
+		log.info("context window captures invalidated on forget", {
+			document: documentId,
+			removed,
+			recallVersion,
+		});
 		return removed;
 	}
 

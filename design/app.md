@@ -374,6 +374,16 @@ there is no reconstruction path, so none can drift.
   window route serves that lineage per conversation, bounded, newest
   first. Together they answer "what hit the window" for every call,
   not just the newest.
+- **A forget purges every capture, globally.** Stored windows embed
+  recall bytes with no reliable source attribution, so the forget
+  boundary clears `context_windows` and bumps a singleton
+  `recall_version` in the same transaction as the recall-context
+  redaction. Attempts read the version before their memory/view/model
+  preparation and write the record only when it still matches — a
+  turn in flight across the boundary is fenced, never served back a
+  projection of forgotten evidence. An overflow continuation reuses
+  its failed attempt's version, matching the memory it carried; an
+  operator resume reads the current one.
 
 **Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
 bearer/trust gate as every `/api/app/*` route; the window is

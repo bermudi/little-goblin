@@ -128,6 +128,7 @@ function interruptedRun(
 		snapshot?: { model: string | null; thinking: string | null };
 		toolNames?: string[];
 		ownedInputSeqs?: number[];
+		sourceInputSeq?: number | null;
 	} = {},
 ) {
 	journal.beginRun({
@@ -140,6 +141,7 @@ function interruptedRun(
 		toolNames: opts.toolNames ?? ["probe"],
 		startedAt: "2026-10-11T00:00:00.000Z",
 		...(opts.ownedInputSeqs !== undefined ? { ownedInputSeqs: opts.ownedInputSeqs } : {}),
+		...(opts.sourceInputSeq !== undefined ? { sourceInputSeq: opts.sourceInputSeq } : {}),
 	});
 	store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
 }
@@ -2375,6 +2377,113 @@ describe("turn resume", () => {
 		expect(journal.get("run-src")!.status).toBe("interrupted");
 		expect(ops.abandon(conv.id, "run-src")).toEqual({ kind: "ok" });
 		expect(journal.get("run-src")!.status).toBe("abandoned");
+		await runtime.shutdown();
+		store.close();
+	});
+});
+
+describe("resume durable source identity", () => {
+	test("a resume keeps the source run's identity across generated markers, twice", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const anchorSeq = appendUser(store, conv, "run the tool");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq,
+			sourceInputSeq: anchorSeq,
+		});
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		await waitUntil(() => journal.get("run-dead")!.status === "resumed", "source consumed");
+		const second = successorRunId(store, "run-dead");
+		expect(journal.get(second)!.sourceInputSeq).toBe(anchorSeq);
+
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [second]);
+		expect(ops.resume(conv.id, second).kind).toBe("resumed");
+		await waitUntil(() => journal.get(second)!.status === "resumed", "second consumed");
+		const third = successorRunId(store, second);
+		expect(journal.get(third)!.sourceInputSeq).toBe(anchorSeq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a steer folded mid-resume moves the source to its own durable seq", async () => {
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const gate = tool({
+			inputSchema: z.object({ q: z.number() }),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return "done";
+			},
+		}) as unknown as ReturnType<typeof tool>;
+		const { store, conv, journal, ops, runtime } = setup({
+			attempts: [
+				[toolCallPart("g1", "gate", '{"q":1}'), finishPart("tool-calls")],
+				textParts("resumed answer"),
+			],
+			tools: { gate },
+		});
+		const anchorSeq = appendUser(store, conv, "run it");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq,
+			sourceInputSeq: anchorSeq,
+		});
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		await entered.promise;
+		runtime.submit(
+			conv,
+			userMessage([{ type: "text", text: "new direction" }]),
+			new RecordingSink(),
+		);
+		const steerSeq = store.lastUserSeq(conv.id)!;
+		release.resolve();
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		expect(steerSeq).not.toBe(anchorSeq);
+		expect(journal.get(successorRunId(store, "run-dead"))!.sourceInputSeq).toBe(steerSeq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a legacy never-resumed run derives its source from the validated anchor", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const anchorSeq = appendUser(store, conv, "run it");
+		interruptedRun(store, journal, conv, "run-dead", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		expect(ops.resume(conv.id, "run-dead").kind).toBe("resumed");
+		await waitUntil(() => journal.get("run-dead")!.status === "resumed", "source consumed");
+		expect(journal.get(successorRunId(store, "run-dead"))!.sourceInputSeq).toBe(anchorSeq);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a legacy already-resumed row keeps a null identity rather than inventing one", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const anchorSeq = appendUser(store, conv, "original ask");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			sourceInputSeq: anchorSeq,
+		});
+		journal.beginRun({
+			runId: "run-legacy",
+			conversationId: conv.id,
+			epoch: conv.epoch,
+			anchorSeq: null,
+			steerMark: null,
+			convSnapshot: { model: conv.model, thinking: conv.thinking },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:00:00.000Z",
+			resumedFrom: "run-src",
+			ownedInputSeqs: [anchorSeq],
+		});
+		journal.noteToolInput("run-legacy", "c1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-legacy", "c1", "probe", { q: 1 });
+		journal.noteToolResult("run-legacy", "c1", { out: "landed" });
+		store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = 'run-legacy'");
+		expect(ops.resume(conv.id, "run-legacy").kind).toBe("resumed");
+		await waitUntil(() => journal.get("run-legacy")!.status === "resumed", "consumed");
+		expect(journal.get(successorRunId(store, "run-legacy"))!.sourceInputSeq).toBeNull();
 		await runtime.shutdown();
 		store.close();
 	});

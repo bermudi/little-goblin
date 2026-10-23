@@ -1495,6 +1495,20 @@ function AppShell() {
 				{page === "skills" && <SkillsView token={token} />}
 				{page === "files" && <FilesView token={token} />}
 				{page === "log" && <LogView token={token} />}
+				{page === "window" && windowConv !== null && (
+					<WindowView
+						key={windowConv}
+						token={token}
+						conversationId={windowConv}
+						title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
+						onBack={() => {
+							if (!leaveDirty()) return;
+							setPage("chat");
+							setWindowConv(null);
+							select(windowConv);
+						}}
+					/>
+				)}
 				{page === "projects" && (
 					<ProjectsIndex
 						token={token}
@@ -1670,19 +1684,6 @@ function AppShell() {
 					conversationId={current}
 					title={currentTitle}
 					onClose={() => setSourcesOpen(false)}
-				/>
-			)}
-			{page === "window" && windowConv !== null && (
-				<WindowView
-					token={token}
-					conversationId={windowConv}
-					title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
-					onBack={() => {
-						if (!leaveDirty()) return;
-						setPage("chat");
-						setWindowConv(null);
-						select(windowConv);
-					}}
 				/>
 			)}
 			{createProjectOpen && (

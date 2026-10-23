@@ -116,6 +116,11 @@ OpenAI reasoning models (GPT-5/6 and o3 — not the older gpt-4 ids,
 which reject it). `gpt-6-astra` cannot serve as the chat model (it
 rejects function tools).
 
+The same `onemin` auth record also serves the speech kinds —
+`tts: { kind: "onemin" }` and `transcription: { kind: "onemin" }` run
+through 1min's feature API (TEXT_TO_SPEECH / SPEECH_TO_TEXT) with
+`API-KEY`-header auth instead of Bearer; see [Voice](voice.md).
+
 ### Model selection
 
 ```json5
@@ -160,14 +165,16 @@ cloud speech models (`fish-audio/s2.1-pro-free:free` by default, needs the
 `openrouter` auth record), `kind: "logfare"` for Logfare's (Deepgram
 Aura, `aura-2-en` by default, needs the `logfare` auth record), or
 `kind: "mimo"` for Xiaomi's (`mimo-v2.5-tts` by default, needs the `mimo`
-auth record), or set `tts: ""` to turn it off. It powers
+auth record), or `kind: "onemin"` for 1min.AI's (`tts-1` by default,
+shares the `onemin` auth record with its chat provider), or set
+`tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`
 tool for other audio files on request. `kind: "whistle"` runs locally
 (keyless, private — artifacts auto-download once); groq, openai,
-openrouter, mistral, elevenlabs, gemini, mimo, and logfare are the cloud
-kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
+openrouter, mistral, elevenlabs, gemini, mimo, logfare, and onemin are
+the cloud kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
 whistle and mimo transcription need it always (their wav profile is the
 decoder), other cloud kinds only over the upload cap. Details in [Voice](voice.md).
 

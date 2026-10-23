@@ -532,7 +532,11 @@ export function renderError(kind: string, status: number, body: string): Error {
 	return new Error(`${kind}: HTTP ${status} — ${message}`);
 }
 
-function parseBody<T extends z.ZodTypeAny>(kind: string, body: string, schema: T): z.output<T> {
+export function parseBody<T extends z.ZodTypeAny>(
+	kind: string,
+	body: string,
+	schema: T,
+): z.output<T> {
 	let json: unknown;
 	try {
 		json = JSON.parse(body);

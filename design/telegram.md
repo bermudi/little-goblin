@@ -59,7 +59,10 @@ apply next turn without interrupting the current answer.
   ruling**: nothing consumes the rows — model view, history, FTS, memory,
   reviewer; a consumer needs a ruling first.
 - **TTS**: default-on; `tts: ""` is explicit off. `edge` is unofficial
-  read-aloud (can break); `logfare`/`mimo` doc-pinned, unverified live.
+  read-aloud (can break); `logfare`/`mimo`/`onemin` doc-pinned, unverified
+  live (1min's TEXT_TO_SPEECH feature: envelope answer, audio fetched
+  from the signed temporaryUrl, chunks at 4k of their 4,096-char cap —
+  onemin-speech.ts).
   Failures warn + a short chat message, never a turn failure; the tap
   answers immediately (callbacks expire in seconds). The boot ffmpeg/libopus
   probe failing takes TTS down for the run (boot warning; install ffmpeg,

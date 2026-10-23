@@ -44,7 +44,12 @@ export interface ConfigPostBody {
 	tts:
 		| ""
 		| { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined }
-		| { kind: "openrouter" | "logfare" | "mimo"; model?: string; auth?: string; voice?: string };
+		| {
+				kind: "openrouter" | "logfare" | "mimo" | "onemin";
+				model?: string;
+				auth?: string;
+				voice?: string;
+		  };
 	transcription:
 		| ""
 		| {

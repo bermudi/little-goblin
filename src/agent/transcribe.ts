@@ -13,6 +13,7 @@ import type { AuthStore } from "../auth.ts";
 import type { Config, ConfigRef, TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
+import { oneminEngine } from "./onemin-speech.ts";
 import {
 	elevenlabsEngine,
 	geminiEngine,
@@ -83,6 +84,8 @@ export function speechEngine(
 			return mimoEngine(cfg, auth, deps);
 		case "logfare":
 			return logfareEngine(cfg, auth, deps);
+		case "onemin":
+			return oneminEngine(cfg, auth, deps);
 	}
 }
 

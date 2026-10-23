@@ -275,6 +275,8 @@ function refreshDoctorShim(): void {
 // "the kind's record", never "no key": jina is deliberately absent
 // because it works keyless, so its blank must stay keyless. Served to
 // both settings clients so placeholders and saves derive from one source.
+// "onemin" serves the /api speech kinds AND the openai-compatible chat
+// provider's auth name by convention — one 1min key, two doors.
 export const authDefaults = {
 	brave: "brave",
 	exa: "exa",
@@ -284,6 +286,7 @@ export const authDefaults = {
 	openrouter: "openrouter",
 	logfare: "logfare",
 	mimo: "mimo",
+	onemin: "onemin",
 } as const;
 
 // Single source: config.test.ts pins this array against the schema
@@ -414,6 +417,9 @@ export const ttsCloudDefaults = {
 	openrouter: { model: "fish-audio/s2.1-pro-free:free", auth: authDefaults.openrouter },
 	logfare: { model: "aura-2-en", auth: authDefaults.logfare },
 	mimo: { model: "mimo-v2.5-tts", auth: authDefaults.mimo },
+	// 1min's /api door (tts-1/tts-1-hd; voices alloy/echo/fable/onyx/
+	// nova/shimmer — see onemin-speech.ts).
+	onemin: { model: "tts-1", auth: authDefaults.onemin },
 } as const;
 
 // Delegation to external harnesses via herdr — absent = no delegate
@@ -609,7 +615,10 @@ export const system1ConfigSchema = z
 	.strict();
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
-const cloudTtsSchema = (kind: keyof typeof ttsCloudDefaults) =>
+// The OpenAI /audio/speech shape (voice optional). 1min is not on
+// this list by design: its /api envelope REQUIRES a voice, so its
+// ttsConfigSchema entry materializes one instead — see the union.
+const cloudTtsSchema = (kind: "openrouter" | "logfare" | "mimo") =>
 	z
 		.object({
 			kind: z.literal(kind),
@@ -646,6 +655,18 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 	// tts-cloud.ts), not the /audio/speech shape. voice is a built-in
 	// id (mimo_default, Mia, Chloe, Milo, Dean, 冰糖, 茉莉, 苏打, 白桦).
 	cloudTtsSchema("mimo"),
+	// 1min.AI's /api door — the aiRecord envelope, audio fetched from
+	// the signed temporaryUrl (onemin-speech.ts). voice is REQUIRED on
+	// the wire, so the schema materializes one — alloy is tts-1's own
+	// default (docs → OpenAI Text-to-Speech → Voice Options).
+	z
+		.object({
+			kind: z.literal("onemin"),
+			model: z.string().min(1).default(ttsCloudDefaults.onemin.model),
+			auth: z.string().min(1).default(ttsCloudDefaults.onemin.auth),
+			voice: z.string().trim().min(1).default("alloy"),
+		})
+		.strict(),
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
@@ -662,6 +683,7 @@ export const transcriptionKinds = [
 	"gemini",
 	"mimo",
 	"logfare",
+	"onemin",
 ] as const;
 
 // Cloud-kind defaults — model is the UI's placeholder, auth defaults to
@@ -676,6 +698,9 @@ export const transcriptionDefaults = {
 	mimo: { model: "mimo-v2.5-asr", auth: "mimo" },
 	// Logfare's transcription catalog is Whisper and Deepgram Nova.
 	logfare: { model: "whisper-large-v3-turbo", auth: "logfare" },
+	// 1min's /api door — SPEECH_TO_TEXT feature; whisper-1 is the
+	// auto-detect generalist (onemin-speech.ts).
+	onemin: { model: "whisper-1", auth: authDefaults.onemin },
 } as const;
 
 const transcriptionLanguage = z
@@ -722,6 +747,25 @@ const mimoEntry = z
 	})
 	.strict();
 const logfareEntry = cloudTranscriptionSchema("logfare");
+// 1min's /api door — the SPEECH_TO_TEXT feature (onemin-speech.ts).
+// language takes what the model family wants: whisper-1's ISO code
+// ("en") or the latest_short/latest_long BCP-47 tag ("en-US") those
+// models REQUIRE — a missing one fails loud upstream, never faked
+// here. qwen3-asr-flash and elevenlabs auto-detect without it.
+const oneminEntry = z
+	.object({
+		kind: z.literal("onemin"),
+		model: z.string().min(1).default(transcriptionDefaults.onemin.model),
+		auth: z.string().min(1).default(transcriptionDefaults.onemin.auth),
+		language: z
+			.string()
+			.regex(
+				/^(?:[a-z]{2}|fil|yue)(?:-[A-Z]{2})?$/,
+				'language must be an ISO code like "es" (qwen3-asr-flash adds fil/yue), optionally regioned like "en-US"',
+			)
+			.optional(),
+	})
+	.strict();
 
 const transcriptionEntrySchema = z.union([
 	whistleEntry,
@@ -733,6 +777,7 @@ const transcriptionEntrySchema = z.union([
 	geminiEntry,
 	mimoEntry,
 	logfareEntry,
+	oneminEntry,
 ]);
 export type TranscriptionEntry = z.infer<typeof transcriptionEntrySchema>;
 
@@ -756,6 +801,7 @@ export const transcriptionSchema = z.union([
 	geminiEntry.extend(fallbackField),
 	mimoEntry.extend(fallbackField),
 	logfareEntry.extend(fallbackField),
+	oneminEntry.extend(fallbackField),
 ]);
 
 // Chain-entry kinds for search/fetch builders — config.test.ts pins

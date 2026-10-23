@@ -509,6 +509,25 @@ describe("transcription block", () => {
 		});
 	});
 
+	// onemin's language vocabulary is the widest in the app (locales for
+	// latest_short/long, fil/yue for qwen3) — carried text must fit the
+	// target kind's narrower regex or the save 422s.
+	test("leaving onemin downgrades the locale and drops un-fittable codes", () => {
+		const locale = { ...emptyTranscription("onemin"), language: "en-US" };
+		expect(switchTranscriptionKind(locale, "groq")).toMatchObject({ language: "en" });
+		const qwen = { ...emptyTranscription("onemin"), language: "yue" };
+		expect(switchTranscriptionKind(qwen, "groq").language).toBe("");
+		// A stashed value restores verbatim — the guard only touches
+		// carried text.
+		const stash: TrKindStash = {};
+		switchTranscriptionKind(locale, "groq", stash);
+		expect(
+			switchTranscriptionKind({ ...emptyTranscription("groq") }, "onemin", stash),
+		).toMatchObject({
+			language: "en-US",
+		});
+	});
+
 	// A model and secret name belong to one vendor. Carrying them across a
 	// cloud-to-cloud switch saved groq's secret name under openai, and the
 	// adapter then sent that credential to openai.

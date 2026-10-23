@@ -61,6 +61,29 @@ describe("tts", () => {
 		for (const chunk of chunks) expect(loneSurrogates(chunk)).toEqual([]);
 	});
 
+	test("an onemin config chunks at 1min's 4,096-char text cap, not the global 10k", async () => {
+		// 1min's TTS feature rejects text over 4,096 characters — the
+		// per-kind limit (4k, with margin) must apply without a caller
+		// passing chunkLimit.
+		const calls: string[] = [];
+		const synth = async (text: string) => {
+			calls.push(text);
+			return new Uint8Array([1]);
+		};
+		const text = `${"Filler words to carry the sentence along. ".repeat(120)}End.`;
+		await synthesizeSpeech(
+			text,
+			{ kind: "onemin", model: "tts-1", auth: "onemin", voice: "alloy" },
+			{
+				synthesize: synth,
+				remux: async () => new Uint8Array([79, 103, 103, 83]),
+			},
+		);
+		expect(calls.length).toBeGreaterThan(1);
+		expect(calls.every((chunk) => chunk.length <= 4_000)).toBe(true);
+		expect(calls.join(" ")).toBe(text);
+	});
+
 	test("button speech strips the status tail and markdown", () => {
 		// Built with the shared marker — this test is the cross-file
 		// contract: what delivery appends, speakable strips.

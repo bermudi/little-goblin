@@ -145,10 +145,14 @@ file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts` and
 it, full-suite runs leaked ~86k mkdtemp dirs until /tmp hit ENOSPC,
 2026-10-22). Run `bun test` from the repo root so the preload loads;
 new fixture helpers must not rely on their own module-level hooks.
-`testkit.ts` also sweeps `goblin-*` dirs in tmpdir older than an hour
-at import — crash/interrupt leftovers self-heal on the next run, and
-runtime scratch the tests leave behind (desk shots, codex, ~180 dirs
-per run) stays bounded.
+`testkit.ts` also runs an import-time sweep over a test-owned
+namespace: every fixture it hands out lives under a per-process root
+`goblin-test-fixtures-<pid>-<random>` in tmpdir, and the sweep removes
+only those roots — older than an hour AND with the named owner PID
+provably dead (`kill(pid, 0)` → ESRCH; alive, EPERM, symlinks, and
+every other name or error preserve). Legacy `goblin-*` dirs and
+foreign scratch are never touched. Crash/interrupt leftovers of tracked
+fixture roots self-heal on the next run.
 
 ## Process
 

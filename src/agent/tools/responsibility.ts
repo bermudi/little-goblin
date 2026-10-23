@@ -19,7 +19,11 @@ import type {
 	Responsibility,
 	ResponsibilityStore,
 } from "../../responsibilities.ts";
-import { ReconciliationConflict, understandingSchema } from "../../responsibilities.ts";
+import {
+	ReconciliationConflict,
+	StaleAttachmentError,
+	understandingSchema,
+} from "../../responsibilities.ts";
 import { cursorFromAgent } from "../../responsibility-observer.ts";
 import type { ManagedSend, ResponsibilityService } from "../../responsibility-service.ts";
 import { fenceUntrusted } from "./web.ts";
@@ -345,10 +349,22 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					checkAuthority();
 					if (t.error !== undefined) return { error: t.error };
 					try {
-						const again = deps.resps.reattach(att.attachmentId, t.target!, t.baseline, t.cursor);
+						// `att` predates the listing await — a binding that
+						// moved since refuses rather than overwriting the win.
+						const again = deps.resps.reattach(
+							att.attachmentId,
+							t.target!,
+							t.baseline,
+							t.cursor,
+							att,
+						);
 						done({ attachment: att.attachmentId, generation: again.generation, outcome: "ok" });
 						return { attachment: fenceMetadata(again) };
 					} catch (err) {
+						if (err instanceof StaleAttachmentError) {
+							done({ attachment: att.attachmentId, outcome: "refused:stale-attachment" });
+							return { refused: "stale-attachment" };
+						}
 						if (err instanceof ReconciliationConflict) {
 							done({ attachment: att.attachmentId, outcome: "refused:delivery-uncertain" });
 							return {

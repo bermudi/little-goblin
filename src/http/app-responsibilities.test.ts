@@ -17,6 +17,7 @@ import {
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
+import { deferred } from "../testkit.ts";
 import type { AppResponsibilityDeps } from "./app-responsibilities.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ProjectStore } from "../projects.ts";
@@ -30,7 +31,7 @@ interface Rig {
 
 function depsFor(
 	ctx: { store: ConversationStore; projects: ProjectStore; home: string },
-	opts: { agents?: OperatorAgent[] } = {},
+	opts: { agents?: OperatorAgent[]; listAgents?: () => Promise<OperatorAgent[]> } = {},
 ): Rig {
 	const resps = openResponsibilities(ctx.store.db);
 	const wakes = openWakeStore(ctx.store.db);
@@ -46,7 +47,7 @@ function depsFor(
 			conversations: ctx.store,
 			pump: () => {},
 		}),
-		listAgents: () => Promise.resolve(opts.agents ?? []),
+		listAgents: opts.listAgents ?? (() => Promise.resolve(opts.agents ?? [])),
 	};
 	return { resps, programs, store: ctx.store, responsibilities };
 }
@@ -393,6 +394,166 @@ for (const scenario of [
 		}
 	});
 }
+
+// The reattach route snapshots the attachment, then awaits the live
+// listing — a binding that moves in that window (a detach, another
+// reattach, a health write) must refuse 409, never overwrite the win.
+describe("reattach mid-listing races", () => {
+	const gated = (live: OperatorAgent[]) => {
+		const started = deferred<void>();
+		const release = deferred<void>();
+		return {
+			started,
+			release,
+			listAgents: async () => {
+				started.resolve();
+				await release.promise;
+				return live;
+			},
+		};
+	};
+
+	test("a detach landing mid-listing refuses 409 and stays detached", async () => {
+		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		let rig!: Rig;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				return rig.responsibilities;
+			},
+		});
+		try {
+			const project = projects.create({ name: "rig" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = rig.resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "k1",
+				understanding,
+			});
+			const att = rig.resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: target(),
+				baseline: {},
+			});
+			const pending = call(
+				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
+				{ method: "POST" },
+			);
+			await gate.started.promise;
+			const det = await call(
+				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/detach`,
+				{ method: "POST" },
+			);
+			expect(det.status).toBe(200);
+			const detached = rig.resps.getAttachment(att.attachmentId)!;
+			gate.release.resolve();
+			const res = await pending;
+			expect(res.status).toBe(409);
+			expect(await res.json()).toHaveProperty("error");
+			// The delayed request wrote nothing — the detach wins whole.
+			expect(rig.resps.getAttachment(att.attachmentId)!).toEqual(detached);
+			expect(rig.resps.getAttachment(att.attachmentId)!.generation).toBe(att.generation);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a competing reattach landing first wins; the delayed request 409s", async () => {
+		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		let rig!: Rig;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				return rig.responsibilities;
+			},
+		});
+		try {
+			const project = projects.create({ name: "rig" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = rig.resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "k1",
+				understanding,
+			});
+			const att = rig.resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: target(),
+				baseline: {},
+			});
+			const pending = call(
+				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
+				{ method: "POST" },
+			);
+			await gate.started.promise;
+			const winner = rig.resps.reattach(att.attachmentId, target({ agentSession: "sess-winner" }), {
+				won: true,
+			});
+			gate.release.resolve();
+			const res = await pending;
+			expect(res.status).toBe(409);
+			const after = rig.resps.getAttachment(att.attachmentId)!;
+			expect(after.generation).toBe(winner.generation);
+			expect(after.target.agentSession).toBe("sess-winner");
+			expect(after.baseline).toEqual({ won: true });
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a health write landing mid-listing refuses 409", async () => {
+		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		let rig!: Rig;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				return rig.responsibilities;
+			},
+		});
+		try {
+			const project = projects.create({ name: "rig" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = rig.resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "k1",
+				understanding,
+			});
+			const att = rig.resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: target(),
+				baseline: {},
+			});
+			const pending = call(
+				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
+				{ method: "POST" },
+			);
+			await gate.started.promise;
+			rig.resps.setHealth(att.attachmentId, "missing");
+			gate.release.resolve();
+			const res = await pending;
+			expect(res.status).toBe(409);
+			const after = rig.resps.getAttachment(att.attachmentId)!;
+			expect(after.health).toBe("missing");
+			expect(after.generation).toBe(att.generation);
+		} finally {
+			http.stop();
+		}
+	});
+});
 
 test("reattach to the same agent with an unresolved delivery is a 409, not a crash", async () => {
 	// The live agent still reports the bound identity — same dispatch

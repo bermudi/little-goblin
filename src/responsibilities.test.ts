@@ -12,6 +12,7 @@ import { openProjects, type ProjectStore } from "./projects.ts";
 import {
 	openResponsibilities,
 	ReconciliationConflict,
+	StaleAttachmentError,
 	type AttachmentTarget,
 	type Responsibility,
 	type ResponsibilityStore,
@@ -149,6 +150,65 @@ describe("responsibility store", () => {
 		expect(again.health).toBe("attached");
 		expect(again.cursor).toBeNull();
 		expect(again.target.agentSession).toBe("sess-new");
+		r.store.close();
+	});
+
+	test("reattach's expected snapshot refuses a moved binding — cursor refresh alone does not", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+		});
+		const att = r.resps.attach({
+			responsibilityId: responsibility.responsibilityId,
+			target: target(),
+			baseline: {},
+			cursor: { completionSeq: 1 },
+		});
+		// An observer cursor refresh is not a binding change — the
+		// compare covers generation and lifecycle fields only.
+		r.resps.updateCursor(att.attachmentId, { completionSeq: 9 });
+		const again = r.resps.reattach(
+			att.attachmentId,
+			target({ agentSession: "sess-new" }),
+			{},
+			undefined,
+			att,
+		);
+		expect(again.generation).toBe(2);
+		expect(again.cursor).toBeNull();
+		// A lifecycle move underneath the caller refuses — nothing writes.
+		const moved = r.resps.getAttachment(att.attachmentId)!;
+		r.resps.detach(att.attachmentId);
+		expect(() => r.resps.reattach(att.attachmentId, target(), {}, undefined, moved)).toThrow(
+			StaleAttachmentError,
+		);
+		const after = r.resps.getAttachment(att.attachmentId)!;
+		expect(after.health).toBe("detached");
+		expect(after.generation).toBe(moved.generation);
+		// A competing reattach landing first wins; the stale caller refuses.
+		const detached = r.resps.getAttachment(att.attachmentId)!;
+		const winner = r.resps.reattach(
+			att.attachmentId,
+			target({ agentSession: "sess-winner" }),
+			{},
+			undefined,
+			detached,
+		);
+		expect(() => r.resps.reattach(att.attachmentId, target(), {}, undefined, detached)).toThrow(
+			StaleAttachmentError,
+		);
+		expect(r.resps.getAttachment(att.attachmentId)!.generation).toBe(winner.generation);
+		expect(r.resps.getAttachment(att.attachmentId)!.target.agentSession).toBe("sess-winner");
+		// Health drift alone refuses too.
+		const cur = r.resps.getAttachment(att.attachmentId)!;
+		r.resps.setHealth(att.attachmentId, "missing");
+		expect(() => r.resps.reattach(att.attachmentId, target(), {}, undefined, cur)).toThrow(
+			StaleAttachmentError,
+		);
+		expect(r.resps.getAttachment(att.attachmentId)!.health).toBe("missing");
 		r.store.close();
 	});
 

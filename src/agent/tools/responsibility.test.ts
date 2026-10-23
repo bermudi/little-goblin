@@ -13,7 +13,7 @@ import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
 import { makeResponsibilityService, type ManagedSend } from "../../responsibility-service.ts";
 import { FencedError } from "../../runtime.ts";
-import { tmpDir, useHome, waitUntil } from "../../testkit.ts";
+import { deferred, tmpDir, useHome, waitUntil } from "../../testkit.ts";
 import { openWakeStore } from "../../wake-store.ts";
 import { responsibilityTool } from "./responsibility.ts";
 
@@ -727,6 +727,37 @@ describe("reattach same-identity guard (tool)", () => {
 		r.agents = [agent({ agent_session: "sess-new" })];
 		const again = await r.execute({ action: "reattach", attachment: att.attachmentId });
 		expect(again.refused).toBeUndefined();
+		r.store.close();
+	});
+
+	test("a detach landing mid-lookup refuses stale-attachment — never delivery-uncertain", async () => {
+		let entered = false;
+		let delay = false;
+		const gate = deferred<void>();
+		const r = rig({
+			listFor: async () => {
+				if (delay) {
+					entered = true;
+					await gate.promise;
+				}
+				return [agent()];
+			},
+		});
+		await r.execute({ action: "accept", understanding, attachments: [{ pane: "w1:p1" }] });
+		const resp = r.resps.forProject(r.projectId)[0]!;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		delay = true;
+		const pending = r.execute({ action: "reattach", attachment: att.attachmentId });
+		await waitUntil(() => entered, "target lookup entered");
+		// The binding moves while the tool awaits the live listing — the
+		// snapshot the tool took before the await no longer holds.
+		r.resps.detach(att.attachmentId);
+		gate.resolve();
+		const out = await pending;
+		expect(out.refused).toBe("stale-attachment");
+		const after = r.resps.getAttachment(att.attachmentId)!;
+		expect(after.health).toBe("detached");
+		expect(after.generation).toBe(1);
 		r.store.close();
 	});
 });

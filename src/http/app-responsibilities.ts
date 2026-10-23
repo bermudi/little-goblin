@@ -13,6 +13,7 @@ import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.
 import { cursorFromAgent } from "../responsibility-observer.ts";
 import {
 	ReconciliationConflict,
+	StaleAttachmentError,
 	understandingSchema,
 	type Attachment,
 	type AttachmentTarget,
@@ -226,8 +227,21 @@ export async function handleResponsibilitiesRoute(
 		};
 		let rebound: Attachment;
 		try {
-			rebound = respsDeps.resps.reattach(attachmentId, target, live, cursorFromAgent(live));
+			// `att` is the pre-listing snapshot — the row must not have
+			// moved (detach, another reattach, a health change) while the
+			// live-agent read was in flight.
+			rebound = respsDeps.resps.reattach(attachmentId, target, live, cursorFromAgent(live), att);
 		} catch (err) {
+			if (err instanceof StaleAttachmentError) {
+				log.warn("app attachment reattach refused — binding moved mid-listing", {
+					attachment: attachmentId,
+					responsibility: att.responsibilityId,
+				});
+				return Response.json(
+					{ error: "attachment changed while reattaching — reload and retry" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
 			if (err instanceof ReconciliationConflict) {
 				log.warn("app attachment reattach refused — unresolved delivery", {
 					attachment: attachmentId,

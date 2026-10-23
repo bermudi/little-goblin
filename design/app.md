@@ -606,6 +606,17 @@ section: same file.
   `ReconciliationConflict` naming the op (tool: `delivery-uncertain`;
   HTTP: 409). A genuinely changed identity is a deliberate adoption and
   bumps generation normally.
+- **Reattach is conditional on the caller's snapshot.** The app route
+  and the coordination tool both snapshot the attachment before
+  awaiting the live-agent listing; `resps.reattach` compares that
+  snapshot's binding fields — generation, health, `detachedAt` —
+  against the current row inside the same immediate transaction as the
+  write. Any drift throws `StaleAttachmentError` (HTTP: 409; tool:
+  `refused:"stale-attachment"`) and writes nothing — a detach, a
+  competing reattach's generation bump, or a health write that landed
+  mid-listing wins whole instead of being overwritten. An observer
+  cursor refresh alone is not a binding change and never conflicts;
+  callers without a snapshot keep the unconditional behavior.
 - **Responsibility-destination programs are durable enqueues.** If the
   `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
   the occurrence stays due and the next scan retries the same source

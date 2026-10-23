@@ -154,6 +154,18 @@ export class ReconciliationConflict extends Error {
 	}
 }
 
+// A reattach whose caller snapshotted the attachment before an await
+// (the live-agent listing) found the row moved underneath it — a
+// detach, another reattach's generation bump, or a health change.
+// Refusing preserves the winner's write instead of overwriting it
+// with a snapshot that is no longer true.
+export class StaleAttachmentError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "StaleAttachmentError";
+	}
+}
+
 export interface ResponsibilityStore {
 	/** Idempotent on handoverKey: a duplicate handover returns the
 	 *  existing responsibility instead of doubling the setup. */
@@ -193,12 +205,17 @@ export interface ResponsibilityStore {
 	 *  under the old generation refuse before dispatch. The supplied
 	 *  baseline/cursor snapshot is the new generation's observation
 	 *  reference — seeding the cursor keeps the observer from adopting
-	 *  whatever it first sees as a silent baseline. */
+	 *  whatever it first sees as a silent baseline. `expected` is the
+	 *  caller's pre-await snapshot of the row's binding generation and
+	 *  lifecycle fields: if the row moved since (generation, health, or
+	 *  detachedAt differ — a cursor refresh alone does not count), the
+	 *  call throws StaleAttachmentError and writes nothing. */
 	reattach(
 		attachmentId: number,
 		target: AttachmentTarget,
 		baseline: unknown,
 		cursor?: unknown,
+		expected?: Pick<Attachment, "generation" | "health" | "detachedAt">,
 	): Attachment;
 
 	/** Prepare a managed send: validates the live responsibility and
@@ -798,14 +815,27 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			qAttDetach.run(now(), attachmentId);
 			log.info("attachment detached", { attachment: attachmentId });
 		},
-		reattach(attachmentId, target, baseline, cursor) {
+		reattach(attachmentId, target, baseline, cursor, expected) {
 			// A reattach to the SAME dispatch identity is not a replacement —
 			// it must not mint a fresh generation past an unresolved
 			// delivery. A genuinely changed identity (new agent_session,
 			// terminal, server…) is a deliberate adoption and proceeds.
 			let out!: Attachment;
+			// Immediate: the compare and the write hold one lock — a
+			// deferred transaction could let a competing write land
+			// between the snapshot check and the update.
 			db.transaction(() => {
 				const current = requireAtt(attachmentId);
+				if (
+					expected !== undefined &&
+					(current.generation !== expected.generation ||
+						current.health !== expected.health ||
+						current.detachedAt !== expected.detachedAt)
+				) {
+					throw new StaleAttachmentError(
+						`attachment ${attachmentId} changed while reattaching — the bound generation or lifecycle no longer matches the caller's snapshot`,
+					);
+				}
 				const sameIdentity =
 					current.target.server === target.server &&
 					current.target.session === target.session &&
@@ -835,7 +865,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					attachmentId,
 				);
 				out = requireAtt(attachmentId);
-			})();
+			}).immediate();
 			log.info("attachment reattached", {
 				attachment: attachmentId,
 				generation: out.generation,

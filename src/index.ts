@@ -392,7 +392,7 @@ async function boot() {
 		turnJournal,
 		runOwnership: {
 			begin: (e) => wakeDispatcher?.hooks.begin(e),
-			members: (runId, ids) => wakeDispatcher?.hooks.members(runId, ids),
+			members: (runId, convId, seqs) => wakeDispatcher?.hooks.members(runId, convId, seqs),
 			end: (runId, status, delivery) => wakeDispatcher?.hooks.end(runId, status, delivery),
 			preRunFailure: (e) => wakeDispatcher?.hooks.preRunFailure?.(e),
 		},

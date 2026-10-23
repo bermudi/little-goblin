@@ -472,7 +472,7 @@ describe("operator correction authority", () => {
 			makeTools: toolsFor,
 			runOwnership: {
 				begin: (e) => dispatcher.hooks.begin(e),
-				members: (r, ids) => dispatcher.hooks.members(r, ids),
+				members: (r, c, s) => dispatcher.hooks.members(r, c, s),
 				end: (r, s, d) => dispatcher.hooks.end(r, s, d),
 			},
 		});
@@ -660,7 +660,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		makeTools: toolsFor,
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
-			members: (r, ids) => dispatcher.hooks.members(r, ids),
+			members: (r, c, s) => dispatcher.hooks.members(r, c, s),
 			end: (r, s, d) => dispatcher.hooks.end(r, s, d),
 		},
 	});

@@ -126,9 +126,11 @@ export interface WakeStore {
 	pending(conversationId?: string): WakeRecord[];
 	/** Wakes linked to a journal run. */
 	forRun(runId: string): WakeRecord[];
-	/** Claimed wakes whose trigger message id is in the set — the run
-	 *  membership lookup the dispatcher's link hooks use. */
-	claimedForMessages(messageIds: string[]): WakeRecord[];
+	/** Claimed wakes in one conversation whose trigger's durable event
+	 *  seq is in the set — the run membership lookup the dispatcher's
+	 *  link hooks use. Seq-scoped, never message-id-scoped: client ids
+	 *  may repeat across events and conversations. */
+	claimedForEvents(conversationId: string, eventSeqs: number[]): WakeRecord[];
 	/** The atomic append: compose the trigger, run `append` in the same
 	 *  transaction, verify it landed, stamp its seq, claim the wake.
 	 *  A wake past pending is returned unchanged, never appended twice. */
@@ -435,14 +437,14 @@ export function openWakeStore(db: Database): WakeStore {
 			return qByRun.all(runId).map(rowToRecord);
 		},
 
-		claimedForMessages(messageIds) {
-			if (messageIds.length === 0) return [];
-			const marks = messageIds.map(() => "?").join(",");
+		claimedForEvents(conversationId, eventSeqs) {
+			if (eventSeqs.length === 0) return [];
+			const marks = eventSeqs.map(() => "?").join(",");
 			const rows = db
-				.query<WakeRow, string[]>(
-					`SELECT * FROM wake_deliveries WHERE state = 'claimed' AND message_id IN (${marks})`,
+				.query<WakeRow, [string, ...number[]]>(
+					`SELECT * FROM wake_deliveries WHERE state = 'claimed' AND conversation_id = ? AND history_seq IN (${marks})`,
 				)
-				.all(...messageIds);
+				.all(conversationId, ...eventSeqs);
 			return rows.map(rowToRecord);
 		},
 

@@ -81,12 +81,21 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			// Overflow withholds delivery while the same admitted messages
 			// move to a successor. Its failed attempt is terminal, but its
 			// wake is not. Admission (and the epoch) bounds this hold: stop,
-			// failed continuation admission, or process death ends it.
+			// failed continuation admission, or process death ends it. The
+			// admission check is seq-scoped — a different event reusing the
+			// trigger's client id is not this wake, and an unknown seq can
+			// never prove admission.
 			if (
 				run.status === "error" &&
 				run.delivery === "undelivered" &&
 				store.get(run.conversationId)?.epoch === run.epoch &&
-				wakes.forRun(cur).some((w) => runtime.isAdmitted(w.conversationId, w.messageId))
+				wakes
+					.forRun(cur)
+					.some(
+						(w) =>
+							w.historySeq !== null &&
+							runtime.isAdmitted(w.conversationId, w.messageId, w.historySeq),
+					)
 			)
 				return "running";
 			if (run.status !== "resumed") return run.status;
@@ -172,15 +181,18 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			return;
 		}
 		if (!runtime.accepting()) return; // shutdown — the next boot owns it
-		if (runtime.isAdmitted(conv.id, rec.messageId)) {
-			log.debug("wake submit skipped — already admitted", {
+		if (rec.historySeq === null) {
+			log.error("wake submit fenced — trigger history seq unknown", undefined, {
 				wake: rec.wakeId,
 				conversation: rec.conversationId,
 			});
 			return;
 		}
-		if (rec.historySeq === null) {
-			log.error("wake submit fenced — trigger history seq unknown", undefined, {
+		// Dedup by the durable event, not the client-visible id: an
+		// unrelated admitted message reusing the trigger's id must not
+		// suppress this wake's own admission.
+		if (runtime.isAdmitted(conv.id, rec.messageId, rec.historySeq)) {
+			log.debug("wake submit skipped — already admitted", {
 				wake: rec.wakeId,
 				conversation: rec.conversationId,
 			});
@@ -262,8 +274,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 	// terminal write fences reconcile's resubmission, and this process
 	// -local map fences the submit path for as long as even that write
 	// refuses. The run itself proceeds untouched either way.
-	function linkMessages(runId: string, messageIds: string[]): void {
-		for (const w of wakes.claimedForMessages(messageIds)) {
+	function linkEvents(runId: string, conversationId: string, memberSeqs: number[]): void {
+		for (const w of wakes.claimedForEvents(conversationId, memberSeqs)) {
 			try {
 				wakes.linkRun(w.wakeId, runId);
 				// A prior attempt's fence lifts only when the link lands.
@@ -371,11 +383,11 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 							guard("retarget", () => wakes.retargetRun(w.wakeId, from, e.runId));
 						}
 					}
-					linkMessages(e.runId, e.memberMessageIds);
+					linkEvents(e.runId, e.conversationId, e.memberSeqs);
 				});
 			},
-			members(runId, messageIds) {
-				guard("run members", () => linkMessages(runId, messageIds));
+			members(runId, conversationId, memberSeqs) {
+				guard("run members", () => linkEvents(runId, conversationId, memberSeqs));
 			},
 			preRunFailure(e) {
 				// A terminal failure before the run row began — admission,
@@ -387,7 +399,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				// and a refusing store fences the wake rather than letting
 				// the next pump submit it again.
 				guard("pre-run failure", () => {
-					for (const w of wakes.claimedForMessages(e.memberMessageIds)) {
+					for (const w of wakes.claimedForEvents(e.conversationId, e.memberSeqs)) {
 						if (w.runId !== null) continue; // linked — reconcile owns it
 						closeUnlinked(w.wakeId, `turn failed before its run started: ${e.error}`);
 					}

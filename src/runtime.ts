@@ -143,21 +143,24 @@ export interface RuntimeDeps {
 	// Durable wake ownership (wake-dispatcher.ts): the composition's
 	// window into which journal run processes which submitted message.
 	// `begin` fires after the run row exists and before the stream can
-	// reach a tool — the admitted members' message ids plus the run
-	// rows this attempt continues (explicit resume) or inherits
+	// reach a tool — the admitted members' durable event seqs plus the
+	// run rows this attempt continues (explicit resume) or inherits
 	// (overflow). `members` fires when a steered submit joins the
 	// membership mid-run. `end` fires at the run's terminal journal
-	// stamp. Only meaningful when turnJournal exists; hooks must not
-	// throw (they observe the turn, they never gate it).
+	// stamp. Membership is named by event seq, never by client message
+	// id — ids are untrusted and may repeat across events, so an id
+	// match could hand a wake to a run that never processed it. Only
+	// meaningful when turnJournal exists; hooks must not throw (they
+	// observe the turn, they never gate it).
 	runOwnership?: {
 		begin(event: {
 			runId: string;
 			conversationId: string;
-			memberMessageIds: string[];
+			memberSeqs: number[];
 			resumedFrom?: string;
 			inheritFrom?: string[];
 		}): void;
-		members(runId: string, messageIds: string[]): void;
+		members(runId: string, conversationId: string, memberSeqs: number[]): void;
 		end(
 			runId: string,
 			status: "fenced" | "completed" | "error",
@@ -169,11 +172,7 @@ export interface RuntimeDeps {
 		 *  pre-run terminal path (a refused admission, an overflow that
 		 *  will NOT resume — a resuming attempt's fresh run links
 		 *  normally). Hooks must not throw, like the rest. */
-		preRunFailure?(event: {
-			conversationId: string;
-			memberMessageIds: string[];
-			error: string;
-		}): void;
+		preRunFailure?(event: { conversationId: string; memberSeqs: number[]; error: string }): void;
 	};
 }
 
@@ -347,12 +346,16 @@ export class Runtime {
 		return this.admit(conv, message, sink, seq, seed);
 	}
 
-	isAdmitted(conversationId: string, messageId: string): boolean {
+	// A live admission by client-visible id — loose matching for
+	// callers that only carry the id. `eventSeq` tightens it to one
+	// durable event: a different admitted event reusing the same client
+	// id must not stand in for the seq the caller actually means.
+	isAdmitted(conversationId: string, messageId: string, eventSeq?: number): boolean {
 		return (
 			this.lanes
 				.get(conversationId)
 				?.admitted.get(messageId)
-				?.some((t) => !t.doneSent) ?? false
+				?.some((t) => !t.doneSent && (eventSeq === undefined || t.seq === eventSeq)) ?? false
 		);
 	}
 
@@ -891,7 +894,7 @@ export class Runtime {
 			if (ownershipBegun) return;
 			this.deps.runOwnership?.preRunFailure?.({
 				conversationId: convId,
-				memberMessageIds: turns.map((t) => t.message.id),
+				memberSeqs: turns.map((t) => t.seq),
 				error: err instanceof Error ? err.message : String(err),
 			});
 		};
@@ -1050,7 +1053,7 @@ export class Runtime {
 				this.deps.runOwnership?.begin({
 					runId,
 					conversationId: convId,
-					memberMessageIds: turns.map((t) => t.message.id),
+					memberSeqs: turns.map((t) => t.seq),
 					...(sourceRunId !== undefined ? { resumedFrom: sourceRunId } : {}),
 					...(recovery?.predecessorRun !== undefined
 						? { inheritFrom: [recovery.predecessorRun] }
@@ -1108,11 +1111,14 @@ export class Runtime {
 				journal,
 				runId,
 				// A steer that joins mid-run is processed by this run — the
-				// wake hook hears only the joined ids (converts that failed
+				// wake hook hears only the joined seqs (converts that failed
 				// were settled, never joined). Journaled turns only.
 				...(journal === undefined
 					? {}
-					: { noteRunMembers: (ids: string[]) => this.deps.runOwnership?.members(runId!, ids) }),
+					: {
+							noteRunMembers: (seqs: number[]) =>
+								this.deps.runOwnership?.members(runId!, convId, seqs),
+						}),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
 					if (journalFault.current !== undefined) throw journalFault.current;

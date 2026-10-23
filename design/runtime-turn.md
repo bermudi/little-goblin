@@ -181,12 +181,19 @@ never a silent policy change.
 ## What must not change
 
 Durable wake delivery (`wake-store.ts`, `wake-dispatcher.ts`) follows
-the journal's ownership hooks, not submit callbacks. Claiming a trigger
+the journal's ownership hooks, not submit callbacks. The hooks name
+members by conversation + durable event seq — never by client message
+id, which is untrusted and may repeat across events and lanes: a
+foreign event reusing the trigger's id can neither link the wake to a
+run that never processed it nor fail it closed. The link lookup
+(`claimedForEvents`) matches claimed wakes on
+`conversation_id + history_seq` for the same reason. Claiming a trigger
 also records the conversation epoch: an unlinked claim may recover
 after a crash only while that authority still matches. Legacy unlinked
 claims without a recorded epoch fail closed. An overflow attempt's
 `error/undelivered` stamp is not a terminal wake failure while its
-message is still admitted under the same epoch; the successor's begin
+message is still admitted under the same epoch — the admission check
+is seq-scoped too; the successor's begin
 hook transfers ownership. A stop, lost admission, or process death
 ends that temporary hold. A terminal failure BEFORE the begin hook —
 no run row exists, so reconcile would read the claimed wake as

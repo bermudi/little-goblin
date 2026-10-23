@@ -70,7 +70,7 @@ function rig(
 			: { captureConversation: opts.captureConversation }),
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
-			members: (r, ids) => dispatcher.hooks.members(r, ids),
+			members: (r, c, s) => dispatcher.hooks.members(r, c, s),
 			end: (r, s, d) => dispatcher.hooks.end(r, s, d),
 			preRunFailure: (e) => dispatcher.hooks.preRunFailure?.(e),
 		},
@@ -583,7 +583,7 @@ describe("wake dispatcher", () => {
 		r.dispatcher.hooks.begin({
 			runId: "r2",
 			conversationId: r.conv.id,
-			memberMessageIds: [claimed.messageId],
+			memberSeqs: [claimed.historySeq!],
 			resumedFrom: "r1",
 		});
 		expect(wake(r, claimed.wakeId).runId).toBe("r2");
@@ -739,23 +739,194 @@ describe("wake dispatcher", () => {
 		store.close();
 	});
 
-	test("claimedForMessages finds only claimed wakes by trigger id", () => {
+	test("claimedForEvents matches seq + conversation — never a reused client id", () => {
 		const r = rig();
 		const claimed = claimedOnly(r, "poll:1");
+		// A second conversation's claimed wake — seq namespaces are
+		// per-conversation, so the values coincide deliberately.
+		const otherConv = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const foreign = r.wakes.record({
+			sourceKey: "poll:foreign",
+			conversationId: otherConv.id,
+			kind: "done-candidate",
+			text: "elsewhere",
+			facts: {},
+			origin: "observer",
+		});
+		const foreignClaimed = r.wakes.commit(foreign.wakeId, (t) => {
+			r.store.append(otherConv.id, [
+				{ id: t.id, role: "user", parts: [{ type: "text", text: t.text }] },
+			]);
+		});
+		expect(foreignClaimed.historySeq).toBe(claimed.historySeq);
+		// A different event in the same conversation reuses the trigger's
+		// client-visible id — a distinct seq, so it cannot name the wake.
+		const impostorSeqs = r.store.append(r.conv.id, [
+			{ id: claimed.messageId, role: "user", parts: [{ type: "text", text: "impostor" }] },
+		]);
+		// Terminal — excluded alongside pending.
+		const settled = claimedOnly(r, "poll:settled");
+		r.wakes.settle(settled.wakeId, "settled");
+		// Still pending — recorded AFTER the settle so nothing coalesces
+		// into it; the query is claimed-only.
 		const pending = r.wakes.record({
-			sourceKey: "poll:2",
+			sourceKey: "poll:pending",
 			conversationId: r.conv.id,
 			kind: "done-candidate",
 			text: "other",
 			facts: {},
 			origin: "observer",
 		});
-		const hits = r.wakes.claimedForMessages([claimed.messageId, "nope"]);
-		expect(hits.map((w) => w.wakeId)).toEqual([claimed.wakeId]);
-		expect(r.wakes.claimedForMessages([])).toEqual([]);
-		const all = r.wakes.claimedForMessages([claimed.messageId]);
-		expect(all).toHaveLength(1);
+		expect(wake(r, pending.wakeId).state).toBe("pending");
+
+		expect(
+			r.wakes
+				.claimedForEvents(r.conv.id, [claimed.historySeq!, impostorSeqs[0]!, settled.historySeq!])
+				.map((w) => w.wakeId),
+		).toEqual([claimed.wakeId]);
+		expect(
+			r.wakes.claimedForEvents(otherConv.id, [foreignClaimed.historySeq!]).map((w) => w.wakeId),
+		).toEqual([foreign.wakeId]);
+		expect(r.wakes.claimedForEvents("conv-gone", [claimed.historySeq!])).toEqual([]);
+		expect(r.wakes.claimedForEvents(r.conv.id, [])).toEqual([]);
+		expect(r.wakes.claimedForEvents(r.conv.id, [999])).toEqual([]);
 		expect(pending.wakeId).not.toBe(claimed.wakeId);
+		r.store.close();
+	});
+
+	test("a same-id message completing in another lane never owns the queued wake", async () => {
+		// Lane A is held mid final response — no prepareStep left — so
+		// the wake's trigger queues behind it as an admitted member of
+		// the lane, not a steer into the running turn.
+		const laneHeld = deferred<void>();
+		const laneStarted = deferred<void>();
+		const edge = scriptedModel([
+			{
+				drive: async (ctx) => {
+					laneStarted.resolve();
+					await laneHeld.promise;
+					for (const p of textParts("first answer")) ctx.enqueue(p);
+					ctx.close();
+				},
+			},
+			textParts("unrelated done"),
+		]);
+		const r = rig({ model: edge.model });
+		const conv2 = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "start" }]), new HeadlessSink());
+		await laneStarted.promise;
+		const rec = dev(r, "poll:1", "queued wake trigger");
+		expect(wake(r, rec.wakeId).state).toBe("claimed");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		// One user event fills lane B's seq space so the impostor below
+		// lands on the SAME seq value as the wake's history_seq —
+		// conversation scoping is what saves it.
+		r.store.append(conv2.id, [userMessage([{ type: "text", text: "filler" }])]);
+		const impostor = new HeadlessSink();
+		r.runtime.submit(
+			conv2,
+			{
+				id: wake(r, rec.wakeId).messageId,
+				role: "user",
+				parts: [{ type: "text", text: "unrelated" }],
+			},
+			impostor,
+		);
+		expect(await impostor.done).toEqual({ kind: "completed" });
+		const impostorSeq = r.store
+			.historyEntries(conv2.id)
+			.find((e) => e.message.id === wake(r, rec.wakeId).messageId)!.seq;
+		expect(impostorSeq).toBe(wake(r, rec.wakeId).historySeq!);
+		// The other lane's run began and completed: the wake it never
+		// processed was never linked and never settled.
+		expect(wake(r, rec.wakeId).state).toBe("claimed");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		// Stopping the original lane drops the queued trigger unrun —
+		// the wake fails closed; it never settles on a foreign run.
+		r.runtime.stop(r.conv.id);
+		r.dispatcher.pump();
+		expect(wake(r, rec.wakeId).state).toBe("failed");
+		expect(wake(r, rec.wakeId).runId).toBeNull();
+		// The trigger never reached the original lane's model.
+		expect(edge.streamCalls).toHaveLength(2);
+		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).not.toContain("queued wake trigger");
+		laneHeld.resolve();
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("an admitted same-id event in the same conversation cannot stand in for the wake", async () => {
+		const laneHeld = deferred<void>();
+		const laneStarted = deferred<void>();
+		const edge = scriptedModel([
+			{
+				drive: async (ctx) => {
+					laneStarted.resolve();
+					await laneHeld.promise;
+					ctx.close();
+				},
+			},
+		]);
+		const r = rig({ model: edge.model });
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "start" }]), new HeadlessSink());
+		await laneStarted.promise;
+		// Claimed-but-never-submitted: the crash window, staged directly.
+		const claimed = claimedOnly(r, "poll:1", "same-conversation collision");
+		// An unrelated admitted turn in the SAME conversation reuses the
+		// trigger's client id — a different event (different seq).
+		r.runtime.submit(
+			r.conv,
+			{
+				id: claimed.messageId,
+				role: "user",
+				parts: [{ type: "text", text: "not the wake" }],
+			},
+			new HeadlessSink(),
+		);
+		// Loose matching calls the wake admitted — seq matching does not.
+		expect(r.runtime.isAdmitted(r.conv.id, claimed.messageId)).toBe(true);
+		expect(r.runtime.isAdmitted(r.conv.id, claimed.messageId, claimed.historySeq!)).toBe(false);
+		// The pump admits the wake's own event — an id-only dedup would
+		// have suppressed it behind the impostor's admission.
+		r.dispatcher.pump();
+		expect(r.runtime.isAdmitted(r.conv.id, claimed.messageId, claimed.historySeq!)).toBe(true);
+		laneHeld.resolve();
+		await r.runtime.shutdown();
+		r.store.close();
+	});
+
+	test("a same-conversation event reusing the trigger id cannot link or fail the wake", async () => {
+		const r = rig();
+		const claimed = claimedOnly(r, "poll:1", "wake line");
+		// A different event in the same conversation reuses the trigger's
+		// client-visible id — negative seq matching across all three
+		// ownership seams.
+		const impostorSeqs = r.store.append(r.conv.id, [
+			{ id: claimed.messageId, role: "user", parts: [{ type: "text", text: "impostor" }] },
+		]);
+		expect(impostorSeqs[0]).not.toBe(claimed.historySeq);
+		r.dispatcher.hooks.begin({
+			runId: "other-run",
+			conversationId: r.conv.id,
+			memberSeqs: impostorSeqs,
+		});
+		expect(wake(r, claimed.wakeId).runId).toBeNull();
+		r.dispatcher.hooks.members("other-run", r.conv.id, impostorSeqs);
+		expect(wake(r, claimed.wakeId).runId).toBeNull();
+		r.dispatcher.hooks.preRunFailure?.({
+			conversationId: r.conv.id,
+			memberSeqs: impostorSeqs,
+			error: "dead before run",
+		});
+		expect(wake(r, claimed.wakeId).state).toBe("claimed");
+		expect(wake(r, claimed.wakeId).runId).toBeNull();
+		// The real seq still links and settles the wake normally.
+		r.dispatcher.hooks.begin({
+			runId: "real-run",
+			conversationId: r.conv.id,
+			memberSeqs: [claimed.historySeq!],
+		});
+		expect(wake(r, claimed.wakeId).runId).toBe("real-run");
 		r.store.close();
 	});
 });

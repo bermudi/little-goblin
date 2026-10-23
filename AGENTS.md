@@ -138,6 +138,18 @@ means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its
 design-doc ruling (delegation.md, mail.md, sandbox.md).
 
+Fixture hygiene: bun runs all files of one invocation in a single
+process and scopes a module-level `afterEach` to the first-importing
+file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts` and
+`src/subagents/testing.ts` makes their cleanup hooks global (without
+it, full-suite runs leaked ~86k mkdtemp dirs until /tmp hit ENOSPC,
+2026-10-22). Run `bun test` from the repo root so the preload loads;
+new fixture helpers must not rely on their own module-level hooks.
+`testkit.ts` also sweeps `goblin-*` dirs in tmpdir older than an hour
+at import — crash/interrupt leftovers self-heal on the next run, and
+runtime scratch the tests leave behind (desk shots, codex, ~180 dirs
+per run) stays bounded.
+
 ## Process
 
 `bun run doctor` is read-only diagnosis — no repair, no restart

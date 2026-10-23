@@ -1,9 +1,17 @@
 // Importing registers an afterEach that removes every tracked temp dir
 // and restores GOBLIN_HOME — test files must not also restore it by
 // hand for dirs obtained here. Test-only: production never imports this.
+//
+// Bun runs all test files of one invocation in a single process and
+// scopes a module-level afterEach to the file whose import first ran
+// this module: without bunfig.toml's [test] preload of this file,
+// every later file would share trackedDirs without ever firing the
+// hook (observed 2026-10-22: full-suite runs leaked ~86k mkdtemp dirs,
+// ~15GB, until /tmp hit ENOSPC). The preload makes this hook global;
+// the import-time sweep below heals what killed runs leave behind.
 
 import { afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -30,6 +38,43 @@ afterEach(() => {
 		homeSaved = false;
 	}
 });
+
+/** Fixture dirs older than this are assumed abandoned and swept. */
+export const STALE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove goblin-* dirs in tmpdir() older than STALE_MS. Runs once per
+ * test process at import. Best effort by design: entries raced away by
+ * a concurrent sweeper are fine (rmSync force ignores ENOENT); only a
+ * persistent failure gets a stderr line so hygiene never reddens a
+ * suite. Anything legitimately live — a concurrent suite's fixtures,
+ * prod's transcribe/runtime scratch — is minutes old, far inside the
+ * gate.
+ */
+export function sweepStaleFixtureDirs(now = Date.now()): void {
+	const root = tmpdir();
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	const cut = now - STALE_MS;
+	for (const e of entries) {
+		if (!e.name.startsWith("goblin-") || !e.isDirectory()) continue;
+		const dir = join(root, e.name);
+		try {
+			if (statSync(dir).mtimeMs >= cut) continue;
+			rmSync(dir, { recursive: true, force: true });
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				console.error(`testkit stale sweep skipped ${dir}: ${String(err)}`);
+			}
+		}
+	}
+}
+
+sweepStaleFixtureDirs();
 
 /** A fresh temp dir, removed after the test. */
 export function tmpDir(prefix = "goblin-test-"): string {

@@ -1,0 +1,8 @@
+# Bun runs every test file of one invocation in a single process, and
+# scopes a module-level afterEach to the file whose import first
+# registered it: without this preload, files after the first leak all
+# of their testkit/subagents fixture dirs (2026-10-22 /tmp ENOSPC
+# incident — 86k leaked dirs, ~15GB). Loading both fixture modules
+# before any test file makes their cleanup hooks global to the run.
+[test]
+preload = ["./src/testkit.ts", "./src/subagents/testing.ts"]

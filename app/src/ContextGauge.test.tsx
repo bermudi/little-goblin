@@ -455,21 +455,28 @@ describe("ContextGauge", () => {
 				?.querySelector("dd")?.textContent;
 
 		// A turn starts — before its first step report lands the label
-		// counts the turn after the settled ones.
+		// counts the turn after the settled ones. The occupancy itself
+		// is unknown: the settled read is a turn stale and never stands
+		// in, so ring, hero, and rows all read "no number yet".
 		await act(async () => {
 			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={true} live={null} />);
 		});
 		expect(label()).toBe("turn 3 in flight");
+		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
 
-		// The popover's cache-hit row follows the same ownership: the
-		// live step's split when it reports, the settled rate otherwise.
 		act(() => {
 			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
 		});
+		expect(container.querySelector(".ctx-head .mono")?.textContent).toBe("—");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
+		expect(popRow("Input")).toBe("—");
+		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 0%;");
+		// The cache-hit row keeps its own fallback — a rate the settled
+		// read still owns, unlike the occupancy.
 		expect(popRow("Cache hit")).toBe("50.0%");
 
-		// A step the provider didn't meter is unknown, not zero — the
-		// popover keeps the settled figures as its fallback.
+		// A step the provider didn't meter is the same unknown — the
+		// popover's occupancy never falls back to the settled figures.
 		await act(async () => {
 			root?.render(
 				<ContextGauge
@@ -481,9 +488,10 @@ describe("ContextGauge", () => {
 			);
 		});
 		expect(label()).toBe("ctx ?");
+		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
+		expect(popRow("Input")).toBe("—");
 		expect(popRow("Cache hit")).toBe("50.0%");
-		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
-		expect(popRow("Input")).toBe("5k tok");
 
 		// Then step usage lands — the wire's number reads like the
 		// settled label, against the last known limit.
@@ -507,6 +515,38 @@ describe("ContextGauge", () => {
 		expect(container.querySelector(".ctx-hero")?.textContent).toBe("234.2%");
 		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 100%;");
 		expect(popRow("Input")).toBe("23.4k tok");
+
+		// A later step that reports no usage reverts to unknown — the
+		// last live figure doesn't linger.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={true}
+					live={{ input: null, cacheRead: null }}
+				/>,
+			);
+		});
+		expect(label()).toBe("ctx ?");
+		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
+		expect(popRow("Input")).toBe("—");
+
+		// A reported zero is a number, not an unknown — it meters at 0%.
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={true}
+					live={{ input: 0, cacheRead: null }}
+				/>,
+			);
+		});
+		expect(label()).toBe("0/10k · 0%");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("0%");
+		expect(popRow("Input")).toBe("0 tok");
 
 		// The turn settles — the read's settled view takes over again.
 		await act(async () => {

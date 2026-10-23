@@ -752,6 +752,15 @@ export interface StagedSkill {
 	ref: { name: string } | { url: string; path: string };
 }
 
+// Staging dedups by reference, never display name — a catalog skill
+// and a fetched copy that named itself the same are distinct skills,
+// and two temp refs pin different sources. Catalog refs equal by
+// name; temp refs by url and path together.
+const skillRefEquals = (a: StagedSkill["ref"], b: StagedSkill["ref"]): boolean =>
+	"name" in a
+		? "name" in b && a.name === b.name
+		: "url" in b && a.url === b.url && a.path === b.path;
+
 // The composer's note picker — a search over the whole notes pool
 // (project "all"), debounced like the rail's.
 function NotePicker({
@@ -1003,10 +1012,12 @@ export function ContextGauge({
 		(model === undefined || ctx.model === model)
 			? ctx.limit
 			: null;
-	// The figures every face shows — the streaming turn's latest
-	// reported step while it runs, the last read's otherwise. Label,
-	// ring, and popover all derive from these, so they cannot disagree.
-	const viewInput = busy && live?.input != null ? live.input : (ctx?.input ?? null);
+	// The figures every face shows — the streaming turn's current step
+	// while it runs, the last read's otherwise. Label, ring, and
+	// popover all derive from these, so they cannot disagree. A turn
+	// whose step hasn't reported occupancy reads as unknown — the
+	// settled read is a turn stale and never stands in.
+	const viewInput = busy ? (live?.input ?? null) : (ctx?.input ?? null);
 	const viewPct =
 		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
 	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));
@@ -1035,7 +1046,7 @@ export function ContextGauge({
 			: {
 					...ctx,
 					limit,
-					input: viewInput ?? ctx.input,
+					input: viewInput,
 					pct: viewPct,
 				};
 	// The wire's cacheRead/input pair is the same numerator and
@@ -1372,6 +1383,7 @@ export function Composer({
 		if (!editedAfterSend.current) setDraft(text);
 		const uploads: StagedUpload[] = [];
 		const notes: StagedNote[] = [];
+		const skills: StagedSkill[] = [];
 		for (const p of draftRestore.parts) {
 			if (p.type === "data-attachment") {
 				const data = p.data as AttachmentRef & { speech?: boolean };
@@ -1383,6 +1395,17 @@ export function Composer({
 			} else if (p.type === "data-note") {
 				const data = p.data as { id: string; title: string };
 				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+			} else if (p.type === "data-skill") {
+				// The ref rides verbatim for the resend — the chip's display
+				// name derives like SkillChip's: the catalog name, or the
+				// staged <digest>/<name>/SKILL.md layout's parent directory.
+				const data = p.data as StagedSkill["ref"];
+				skills.push({
+					key: crypto.randomUUID(),
+					name:
+						"name" in data ? data.name : (data.path.split("/").filter(Boolean).at(-2) ?? "unknown"),
+					ref: data,
+				});
 			}
 		}
 		if (uploads.length > 0)
@@ -1392,6 +1415,16 @@ export function Composer({
 			]);
 		if (notes.length > 0)
 			setStagedNotes((prev) => [...prev, ...notes.filter((n) => !prev.some((e) => e.id === n.id))]);
+		if (skills.length > 0)
+			// Dedup against the growing merged list, not just prev — a
+			// repeat inside the payload is the same duplicate as a staged
+			// one.
+			setStagedSkills((prev) => {
+				const merged = [...prev];
+				for (const s of skills)
+					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) merged.push(s);
+				return merged;
+			});
 		onDraftRestored?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -2078,7 +2111,7 @@ export function Composer({
 					onClose={() => setSkillPickerOpen(false)}
 					onStage={(picked) =>
 						setStagedSkills((p) =>
-							p.some((e) => e.name === picked.name)
+							p.some((e) => skillRefEquals(e.ref, picked.ref))
 								? p
 								: [...p, { key: crypto.randomUUID(), name: picked.name, ref: picked.ref }],
 						)

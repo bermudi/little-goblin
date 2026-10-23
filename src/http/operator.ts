@@ -1045,21 +1045,30 @@ export async function handleOperatorRoute(
 				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
 				...(preview.cacheRoot !== undefined ? { cacheRoot: preview.cacheRoot } : {}),
 			});
-			// Score exactly the bytes the part will pin: read back from the
-			// published copy, never from an in-memory intermediate.
-			const body = readFileSync(fetched.path, "utf8");
-			// The whole body is scored — no head-cut sampling on the
-			// bytes the part pins.
-			const verdict = await checkInjection(preview.gate, body, { maxChars: body.length });
-			const stamped = stampVerdict(
-				preview.cacheRoot ?? paths.skillcache(),
-				fetched.digest,
-				verdict,
-			);
+			// Identical cached bytes keep their first verdict — a
+			// re-preview shows what injection will inject, and no second
+			// score can move an outstanding confirm's advisory.
+			let verdict: SkillPreviewResponse["verdict"];
+			if (fetched.descriptor.previewed) {
+				verdict = fetched.descriptor.verdict;
+			} else {
+				// Score exactly the bytes the part will pin: read back
+				// from the published copy, never an in-memory
+				// intermediate, and no head-cut sampling.
+				const body = readFileSync(fetched.path, "utf8");
+				const scored = await checkInjection(preview.gate, body, {
+					maxChars: body.length,
+				});
+				verdict = stampVerdict(
+					preview.cacheRoot ?? paths.skillcache(),
+					fetched.digest,
+					scored,
+				).verdict;
+			}
 			const responseBody: SkillPreviewResponse = {
-				name: stamped.name,
-				description: stamped.description,
-				sourceUrl: stamped.sourceUrl,
+				name: fetched.descriptor.name,
+				description: fetched.descriptor.description,
+				sourceUrl: fetched.descriptor.sourceUrl,
 				path: fetched.path,
 				dir: fetched.dir,
 				digest: fetched.digest,
@@ -1073,7 +1082,7 @@ export async function handleOperatorRoute(
 				...who,
 				via: actor.via,
 				url: parsed.data.url,
-				name: stamped.name,
+				name: fetched.descriptor.name,
 				verdict: verdict.status,
 				cached: fetched.cached,
 			});

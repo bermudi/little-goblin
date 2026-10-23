@@ -6,7 +6,7 @@
 // part persists with history; the body rides only the owning turn's
 // model view.
 
-import { resolve, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { paths } from "./config.ts";
 import { NAME_RE as SKILL_NAME_RE } from "./agent/skills.ts";
@@ -15,12 +15,24 @@ export { SKILL_NAME_RE };
 
 export const SKILL_PART = "data-skill";
 
-// A temp skill's cached copy: the fetch pipeline wrote it, keyed by the
-// tarball digest. The path check mirrors the attachment gate — resolve
-// before the prefix check so absolute paths and `..` cannot escape.
+// A temp skill's cached copy: the fetch pipeline wrote it, keyed by
+// the tarball digest. The wire ref must name that entry's own SKILL.md
+// — <cache>/<digest>/<name>/SKILL.md — not merely a file under the
+// cache root: a support file is unscored and unbounded by the body
+// cap. Resolve before the shape check so absolute paths and `..`
+// cannot escape (the attachment gate's precedent).
+const DIGEST_RE = /^[0-9a-f]{64}$/;
+
 export function isCachedSkillPath(path: string): boolean {
-	const dir = resolve(paths.skillcache());
-	return resolve(path).startsWith(dir + sep);
+	const rel = relative(resolve(paths.skillcache()), resolve(path));
+	const segs = rel.split(sep);
+	return (
+		segs.length === 3 &&
+		DIGEST_RE.test(segs[0]!) &&
+		SKILL_NAME_RE.test(segs[1]!) &&
+		segs[1]!.length <= 64 &&
+		segs[2] === "SKILL.md"
+	);
 }
 
 export const skillPartDataSchema = z.union([

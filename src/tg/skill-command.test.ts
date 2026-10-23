@@ -88,6 +88,7 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 			submitPersisted: (_conv: unknown, message: UIMessage, sink: TurnSink) => {
 				h.submitted.push(message);
 				h.sinks.push(sink);
+				return true;
 			},
 		} as never,
 		// The real conversation-configured sink — the same construction
@@ -188,6 +189,15 @@ describe("/skill", () => {
 		await handleSkillCommand(harnessDeps(h), conv(), "/skill nope");
 		expect(h.submitted).toHaveLength(0);
 		expect(sent(h)).toContain("no skill named");
+	});
+
+	test("a fenced admission answers plainly — durable message, no run", async () => {
+		const h = harness();
+		const d = harnessDeps(h);
+		d.runtime = { submitPersisted: () => false } as never;
+		await handleSkillCommand(d, conv(), "/skill herdr");
+		expect(h.appended).toHaveLength(1);
+		expect(sent(h)).toContain("not invoked");
 	});
 
 	test("a group-target invocation prepends the shared-chat note; a DM does not", async () => {
@@ -330,6 +340,59 @@ describe("/skill <url> (temp)", () => {
 		expect(data.path).toContain(join(h.home, "state", "skillcache"));
 		const edits = h.api.calls.filter((c) => c.method === "editMessageText");
 		expect(edits.at(-1)!.args[2] as string).toContain("invoked into the conversation");
+	});
+
+	test("a fenced invoke stamps failure on the preview, not success", async () => {
+		const h = harness();
+		const fetchImpl = (async () =>
+			new Response((await fixtureTarball()) as never)) as unknown as typeof fetch;
+		const deps = depsWithFetch(h, fetchImpl);
+		await handleSkillCommand(deps, conv(), "/skill https://github.com/o/r/tree/main/demo");
+		const invokeData = (lastMarkup(h)[0] as { callback_data: string }).callback_data;
+		// Shutdown fenced the lane: submitPersisted refuses, the sink hears fenced.
+		deps.runtime = {
+			submitPersisted: (_c: unknown, _m: unknown, s: TurnSink) => {
+				void s.onDone({ kind: "fenced" });
+				return false;
+			},
+		} as never;
+		await handleTempSkillCallback(deps, {
+			id: "q9",
+			data: invokeData,
+			message: { message_id: 42, chat: { id: 1 } },
+		});
+		expect(h.appended).toHaveLength(1);
+		const edits = h.api.calls.filter((c) => c.method === "editMessageText");
+		const stampedText = edits.at(-1)!.args[2] as string;
+		expect(stampedText).toContain("not invoked");
+		expect(stampedText).not.toContain("✅");
+	});
+
+	test("a second preview of a stamped cache reuses the first verdict — no rescore", async () => {
+		const h = harness();
+		const fetchImpl = (async () =>
+			new Response((await fixtureTarball()) as never)) as unknown as typeof fetch;
+		const deps = depsWithFetch(h, fetchImpl);
+		await handleSkillCommand(deps, conv(), "/skill https://github.com/o/r/tree/main/demo");
+		expect(sent(h)).toContain("injection check: clean");
+		expect(h.gateDecisions).toHaveLength(1);
+		// The gate now calls it malicious — the stamped verdict cannot move.
+		deps.gate = {
+			decide: (async () => {
+				h.gateDecisions.push({ injection: 0.95 });
+				return {
+					answers: { injection: 0.95, severity: 0.9 },
+					tokens: { input: 1, output: 1 },
+					latencyMs: 5,
+					model: "gate",
+				};
+			}) as never,
+		};
+		await handleSkillCommand(deps, conv(), "/skill https://github.com/o/r/tree/main/demo");
+		const previews = sends(h).filter((t) => t.includes("temp skill: demo"));
+		expect(previews.at(-1)).toContain("injection check: clean");
+		expect(previews.at(-1)).not.toContain("malicious");
+		expect(h.gateDecisions).toHaveLength(1);
 	});
 
 	test("drop submits nothing and stamps the preview", async () => {

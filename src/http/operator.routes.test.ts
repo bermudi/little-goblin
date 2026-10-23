@@ -168,6 +168,36 @@ describe("state viewer routes", () => {
 			rf(join(home, "state", "skillcache", body.digest, "skill.json"), "utf8"),
 		) as { verdict: { status: string } };
 		expect(descriptor.verdict.status).toBe("malicious");
+		// A re-preview of the stamped cache reuses the first verdict —
+		// the gate is not re-run and the card cannot drift from what
+		// injection will inject.
+		d.skillFetch!.gate = {
+			decide: (async () => {
+				scoredTexts.push("RE-SCORED");
+				return {
+					answers: { injection: 0.0, severity: 0.0 },
+					tokens: { input: 1, output: 1 },
+					latencyMs: 5,
+					model: "gate",
+				};
+			}) as never,
+		};
+		const r2 = await (handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>);
+		expect(r2.status).toBe(200);
+		const body2 = (await r2.json()) as { verdict: { status: string }; cached: boolean };
+		expect(body2.verdict.status).toBe("malicious");
+		expect(body2.cached).toBe(true);
+		expect(scoredTexts).toEqual([skillBody]);
 		rmSync(src, { recursive: true, force: true });
 		rmSync(out, { recursive: true, force: true });
 	});

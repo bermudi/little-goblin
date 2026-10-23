@@ -28,7 +28,7 @@ import { checkInjection } from "../injection.ts";
 import type { System1Client } from "../system1.ts";
 import { log } from "../log.ts";
 import { paths } from "../config.ts";
-import { SKILL_PART, type SkillRef } from "../skill-part.ts";
+import { SKILL_PART, type CachedSkillDescriptor, type SkillRef } from "../skill-part.ts";
 import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
@@ -158,7 +158,8 @@ export async function handleSkillCommand(
 		await replyLines([`no skill named "${shown}" —`, ...catalogLines()]);
 		return true;
 	}
-	submitSkillTurn(deps, target, { name }, rest);
+	const invoked = submitSkillTurn(deps, target, { name }, rest);
+	if (!invoked) await reply("not invoked — the turn was not admitted.");
 	return true;
 }
 
@@ -179,12 +180,16 @@ function catalogLines(): string[] {
 	];
 }
 
+// Returns whether the runtime admitted the turn — submitPersisted
+// fences instead of throwing on shutdown, and the caller must not
+// report an invocation nothing will run. The message is durable
+// either way.
 function submitSkillTurn(
 	deps: SkillCommandDeps,
 	target: Conversation,
 	ref: SkillRef,
 	text: string,
-): void {
+): boolean {
 	const audience = sharedChatPart(target.id, target.chatId);
 	const parts: UIMessage["parts"] = [
 		...(audience === null ? [] : [audience]),
@@ -195,17 +200,25 @@ function submitSkillTurn(
 	deps.store.append(target.id, [message]);
 	const sink = deps.delivery(target);
 	try {
-		deps.runtime.submitPersisted(target, message, sink);
+		if (!deps.runtime.submitPersisted(target, message, sink)) {
+			log.info("skill turn fenced at admission — runtime closed", {
+				conversation: target.id,
+				temp: "url" in ref,
+			});
+			return false;
+		}
 		log.info("skill invoked via /skill", {
 			conversation: target.id,
 			temp: "url" in ref,
 		});
+		return true;
 	} catch (err) {
 		log.error("skill turn submit failed", err, { conversation: target.id });
 		void sink.onDone({
 			kind: "error",
 			message: err instanceof Error ? err.message : String(err),
 		});
+		return false;
 	}
 }
 
@@ -263,17 +276,29 @@ async function previewTempSkill(
 		await reply("cancelled — the conversation moved on.");
 		return;
 	}
-	const body = readFileSync(fetched.path, "utf8");
-	// The whole body is scored — no head-cut sampling on the bytes the
-	// part pins.
-	const verdict = await checkInjection(deps.gate, body, { maxChars: body.length });
-	// Probe, stamp, pending, reply — one synchronous run past the last
-	// real await; nothing may interpose between them.
-	if (previewFenced(deps, target, "scored", epoch)) {
-		await reply("cancelled — the conversation moved on.");
-		return;
+	// The verdict rides the descriptor, stamped once — identical cached
+	// bytes keep their first verdict, so re-previewing can never change
+	// what an outstanding confirm's card showed (and runs no gate call).
+	let verdict: CachedSkillDescriptor["verdict"];
+	if (fetched.descriptor.previewed) {
+		verdict = fetched.descriptor.verdict;
+	} else {
+		const body = readFileSync(fetched.path, "utf8");
+		// The whole body is scored — no head-cut sampling on the bytes
+		// the part pins.
+		const scored = await checkInjection(deps.gate, body, { maxChars: body.length });
+		// Probe, stamp, pending, reply — one synchronous run past the
+		// last real await; nothing may interpose between them.
+		if (previewFenced(deps, target, "scored", epoch)) {
+			await reply("cancelled — the conversation moved on.");
+			return;
+		}
+		verdict = stampVerdict(
+			deps.cacheRoot ?? paths.skillcache(),
+			fetched.digest,
+			scored,
+		).verdict;
 	}
-	stampVerdict(deps.cacheRoot ?? paths.skillcache(), fetched.digest, verdict);
 
 	const token = randomUUID().slice(0, 8);
 	const now = deps.now ?? (() => new Date());
@@ -388,8 +413,14 @@ export async function handleTempSkillCallback(
 		await answer("stale");
 		return;
 	}
-	submitSkillTurn(deps, conv, p.ref, p.text);
-	await stamp(deps, query, `✅ temp skill ${p.name} invoked into the conversation.`);
+	const invoked = submitSkillTurn(deps, conv, p.ref, p.text);
+	await stamp(
+		deps,
+		query,
+		invoked
+			? `✅ temp skill ${p.name} invoked into the conversation.`
+			: `⚠ temp skill ${p.name} not invoked — the turn was not admitted.`,
+	);
 	await answer();
 }
 

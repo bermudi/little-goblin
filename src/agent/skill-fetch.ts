@@ -277,7 +277,9 @@ export async function fetchSkill(
 // "unavailable": the check ran (consent is the channel's confirm, not
 // this stamp). The descriptor is the only place the verdict lives —
 // the part carries just {url, path}, and injection reads what the
-// operator saw.
+// operator saw. The stamp is immutable: identical cached bytes keep
+// their first verdict, so a later preview can never change what an
+// outstanding confirmation's card showed — the fresh score drops.
 export function stampVerdict(
 	cacheRoot: string,
 	digest: string,
@@ -288,7 +290,23 @@ export function stampVerdict(
 	if (existing === null) {
 		throw new Error(`cannot stamp a verdict — no descriptor at ${dir}/skill.json`);
 	}
-	const stamped: CachedSkillDescriptor = { ...existing, previewed: true, verdict };
+	if (existing.previewed) {
+		log.info("skill verdict already stamped — the first verdict stands", {
+			digest,
+			kept: existing.verdict.status,
+			dropped: verdict.status,
+		});
+		return existing;
+	}
+	const stamped: CachedSkillDescriptor = {
+		...existing,
+		previewed: true,
+		verdict: {
+			status: verdict.status,
+			injection: verdict.injection,
+			severity: verdict.severity,
+		},
+	};
 	durableWriteFile(join(dir, "skill.json"), JSON.stringify(stamped, null, "\t"));
 	return stamped;
 }

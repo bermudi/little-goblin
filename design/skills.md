@@ -54,7 +54,12 @@ naming it IS the operator's override of `disable-model-invocation`);
 part persists, replays, and copies with history, and renders as a chip
 on the message — the transcript never lies. Validation is zod at the
 wire, mirroring the attachment-ref gate: a name matches the spec name
-rule; a temp path must name a file the fetch pipeline wrote.
+rule; a temp path must name the descriptor's own cached SKILL.md —
+`<cache>/<digest>/<name>/SKILL.md`, not merely a descendant of the
+cache root (refined 2026-10-22: a support file is unscored, unbounded
+by the body cap, and never an injectable body; the resolver re-checks
+the binding against the descriptor so stored parts degrade the same
+way).
 
 **Owning-turn injection.** Every model view renders the part as a
 one-line marker (`[skill: name]` / `[temp skill: name (host)]`), so
@@ -123,7 +128,11 @@ verdict is advisory, not a gate: a skill may legitimately instruct,
 and the operator may accept it. The route stamps the verdict onto the
 descriptor before the card renders — `previewed` marks the check
 *completed* (including `unavailable`), not consent; consent is the
-channel's confirm/tap on the preview card. Injection gates on
+channel's confirm/tap on the preview card. The stamp is immutable:
+identical cached bytes (one digest) keep their first verdict — a
+re-preview shows the persisted verdict and runs no second score, so
+no outstanding confirmation's advisory can change under it (ruling
+2026-10-22). Injection gates on
 `previewed`, and a stamped `unavailable` rides the body as advisory
 preamble text, never a silent clean. On the app the card is the confirm; on Telegram `/skill <url>`
 replies with the preview and a ✅/🚫 row (pending keyed by a short

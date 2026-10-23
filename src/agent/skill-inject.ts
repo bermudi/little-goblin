@@ -8,7 +8,7 @@
 // view build.
 
 import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import {
@@ -57,6 +57,16 @@ export function resolveSkillRef(
 	// The descriptor still names the historical marker — but a
 	// non-owning turn gets no body, whatever the verdict was.
 	if (!includeBody) return { name: descriptor.name, body: null };
+	// The ref must pin this descriptor's own SKILL.md — any other file
+	// under the digest dir is an unscored support file (and can be far
+	// over the body cap), never the body the operator previewed.
+	if (basename(ref.path) !== "SKILL.md" || basename(skillDir) !== descriptor.name) {
+		log.warn("temp skill body refused — path is not the descriptor's SKILL.md", {
+			name: descriptor.name,
+			path: ref.path,
+		});
+		return { name: descriptor.name, body: null };
+	}
 	if (!descriptor.previewed) {
 		log.warn("temp skill body refused — verdict never stamped", {
 			name: descriptor.name,

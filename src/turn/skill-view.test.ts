@@ -168,7 +168,14 @@ describe("skill invocation in the model view", () => {
 		dirs.push(home);
 		process.env.GOBLIN_HOME = home;
 		const { mkdirSync: mkd } = await import("node:fs");
-		const cached = join(home, "state", "skillcache", "d1", "claude-api", "SKILL.md");
+		const cached = join(
+			home,
+			"state",
+			"skillcache",
+			"d".repeat(64),
+			"claude-api",
+			"SKILL.md",
+		);
 		mkd(join(cached, ".."), { recursive: true });
 		writeFileSync(cached, "x");
 		const ctx: ViewContext = {
@@ -328,7 +335,7 @@ describe("resolveSkillRef (real fs)", () => {
 		dirs.push(home);
 		process.env.GOBLIN_HOME = home;
 		const { mkdirSync } = await import("node:fs");
-		const digestDir = join(home, "state", "skillcache", "d1");
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
 		mkdirSync(join(digestDir, "demo"), { recursive: true });
 		writeFileSync(join(digestDir, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nT");
 		const { writeFileSync: wf } = await import("node:fs");
@@ -389,11 +396,48 @@ describe("resolveSkillRef (real fs)", () => {
 		expect(advisory.body).toContain("injection check unavailable");
 	});
 
+	test("a temp ref naming a support file or sibling dir refuses the body", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skillref4-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), "SCORED");
+		writeFileSync(join(digestDir, "demo", "payload.txt"), "UNSCORED");
+		mkdirSync(join(digestDir, "sibling"), { recursive: true });
+		writeFileSync(join(digestDir, "sibling", "SKILL.md"), "SIBLING");
+		writeFileSync(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: "https://github.com/o/r/tree/main/demo",
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "clean", injection: 0.1, severity: 0.1 },
+			}),
+		);
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const url = "https://github.com/o/r/tree/main/demo";
+		// A support file under the digest dir is not the scored body.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "demo", "payload.txt") }).body,
+		).toBeNull();
+		// A same-named file in a sibling dir is not the descriptor's skill.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "sibling", "SKILL.md") }).body,
+		).toBeNull();
+		// The descriptor's own SKILL.md still injects.
+		expect(
+			resolveSkillRef({ url, path: join(digestDir, "demo", "SKILL.md") }).body,
+		).toContain("SCORED");
+	});
+
 	test("a corrupt descriptor degrades like a missing one — the turn survives", async () => {
 		const home = mkdtempSync(join(tmpdir(), "goblin-skillref3-"));
 		dirs.push(home);
 		process.env.GOBLIN_HOME = home;
-		const digestDir = join(home, "state", "skillcache", "d1");
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
 		mkdirSync(join(digestDir, "demo"), { recursive: true });
 		writeFileSync(join(digestDir, "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nT");
 		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");

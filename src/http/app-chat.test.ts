@@ -140,10 +140,22 @@ describe("app chat", () => {
 				(await chat({ url: "https://github.com/o/r/tree/main/demo", path: "/etc/passwd" }))
 					.status,
 			).toBe(422);
-			// A staged copy under this home's skillcache passes and persists.
-			const cached = join(home, "state", "skillcache", "d1", "demo", "SKILL.md");
+			// A support file under the cache is not the descriptor's
+			// SKILL.md — only the exact cached body shape passes.
+			const digestDir = join(home, "state", "skillcache", "d".repeat(64));
 			const { mkdirSync, writeFileSync } = await import("node:fs");
-			mkdirSync(join(cached, ".."), { recursive: true });
+			mkdirSync(join(digestDir, "demo"), { recursive: true });
+			writeFileSync(join(digestDir, "demo", "payload.txt"), "x");
+			expect(
+				(
+					await chat({
+						url: "https://github.com/o/r/tree/main/demo",
+						path: join(digestDir, "demo", "payload.txt"),
+					})
+				).status,
+			).toBe(422);
+			// A staged copy under this home's skillcache passes and persists.
+			const cached = join(digestDir, "demo", "SKILL.md");
 			writeFileSync(cached, "x");
 			const ok = await chat({
 				url: "https://github.com/o/r/tree/main/demo",

@@ -567,6 +567,30 @@ describe("descriptor integrity", () => {
 		expect(readDescriptor(join(cache, fetched.digest))?.previewed).toBe(true);
 	});
 
+	test("a stamped verdict is immutable — a later stamp keeps the first", async () => {
+		const cache = useCache();
+		const ball = await makeTarball({ "r-main/demo/SKILL.md": demoBody });
+		const fetched = await fetchSkill(DEMO_URL, {
+			fetchImpl: tarballFetch(ball),
+			cacheRoot: cache,
+		});
+		const first = stampVerdict(cache, fetched.digest, {
+			status: "malicious",
+			injection: 0.9,
+			severity: 0.9,
+		});
+		// A second preview's different score must not overwrite what an
+		// outstanding confirmation's card showed.
+		const second = stampVerdict(cache, fetched.digest, {
+			status: "clean",
+			injection: 0,
+			severity: 0,
+		});
+		expect(second).toEqual(first);
+		expect(second.verdict.status).toBe("malicious");
+		expect(readDescriptor(join(cache, fetched.digest))?.verdict.status).toBe("malicious");
+	});
+
 	test("a corrupt descriptor after a good publish fails the cache hit, incumbent untouched", async () => {
 		const cache = useCache();
 		const ball = await makeTarball({ "r-main/demo/SKILL.md": demoBody });

@@ -513,12 +513,22 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 	// would re-key an unresolved send onto whatever the row points at
 	// now. Legacy rows backfill from the bound attachment: the same
 	// read the fence made before the snapshot existed.
-	const opCols = new Set(
-		(db.query("PRAGMA table_info(prompt_operations)").all() as { name: string }[]).map(
-			(c) => c.name,
-		),
-	);
-	if (!opCols.has("dispatch_server")) {
+	// Introspection, the missing-column ALTERs, and the backfill are
+	// ONE immediate transaction — a crash between an autocommitted
+	// ALTER and the UPDATE once left a half-migrated table the
+	// dispatch_server sentinel could never finish. Columns are checked
+	// individually (not just the sentinel) so a partial schema
+	// completes, and only rows never snapshotted backfill — server is
+	// required on every attachment, so NULL marks "unsnapshotted" and
+	// real snapshots are never rewritten on reopen or reattach.
+	let addedColumns = 0;
+	let backfilled = 0;
+	db.transaction(() => {
+		const opCols = new Set(
+			(db.query("PRAGMA table_info(prompt_operations)").all() as { name: string }[]).map(
+				(c) => c.name,
+			),
+		);
 		for (const col of [
 			"dispatch_server",
 			"dispatch_session",
@@ -526,16 +536,33 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			"dispatch_agent_session",
 			"dispatch_kind",
 		]) {
+			if (opCols.has(col)) continue;
 			db.run(`ALTER TABLE prompt_operations ADD COLUMN ${col} TEXT`);
+			addedColumns++;
 		}
+		const pending = (
+			db
+				.query<{ n: number }, []>(
+					"SELECT COUNT(*) AS n FROM prompt_operations WHERE dispatch_server IS NULL",
+				)
+				.get() ?? { n: 0 }
+		).n;
+		if (pending === 0) return;
 		db.run(`
 			UPDATE prompt_operations SET
 				dispatch_server = (SELECT server FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
 				dispatch_session = (SELECT session FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
 				dispatch_terminal_id = (SELECT terminal_id FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
 				dispatch_agent_session = (SELECT agent_session FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id),
-				dispatch_kind = (SELECT kind FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id)`);
-		log.info("prompt operation dispatch identity columns added — rows backfilled from attachments");
+				dispatch_kind = (SELECT kind FROM attachments a WHERE a.attachment_id = prompt_operations.attachment_id)
+			WHERE dispatch_server IS NULL`);
+		backfilled = pending;
+	}).immediate();
+	if (addedColumns > 0 || backfilled > 0) {
+		log.info("prompt operation dispatch identity migrated", {
+			columnsAdded: addedColumns,
+			rowsBackfilled: backfilled,
+		});
 	}
 }
 

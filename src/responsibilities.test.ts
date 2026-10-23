@@ -3,7 +3,7 @@
 // identity-bound attachments with generation fencing, and managed
 // prompt operations that refuse by name instead of dispatching stale.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
@@ -731,6 +731,150 @@ describe("unresolved delivery fence", () => {
 		});
 		if (!("refused" in again)) throw new Error("expected refusal after migration");
 		expect(again.refused).toBe("delivery-uncertain");
+		r.store.close();
+	});
+
+	test.each(["mid-ALTER", "backfill"] as const)(
+		"a crash during the dispatch-column migration leaves nothing half-applied (%s)",
+		(phase) => {
+			const r = rig();
+			const { resp, attId } = setup(r);
+			const first = prep(r, resp, attId, "b");
+			if (!("operation" in first)) throw new Error("expected prepared");
+			r.resps.claimForSend(first.operation.operationId);
+			r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+				outcome: { error: "io" },
+				from: "sent",
+			});
+			for (const col of [
+				"dispatch_server",
+				"dispatch_session",
+				"dispatch_terminal_id",
+				"dispatch_agent_session",
+				"dispatch_kind",
+			]) {
+				r.store.db.run(`ALTER TABLE prompt_operations DROP COLUMN ${col}`);
+			}
+			const realRun = r.store.db.run.bind(r.store.db);
+			let alters = 0;
+			const spy = spyOn(r.store.db, "run").mockImplementation((sql: string, ...rest: unknown[]) => {
+				if (sql.includes("ALTER TABLE prompt_operations")) {
+					alters++;
+					if (phase === "mid-ALTER" && alters === 3) {
+						throw new Error("injected crash mid-ALTER");
+					}
+				}
+				if (phase === "backfill" && sql.includes("UPDATE prompt_operations SET")) {
+					throw new Error("injected crash during backfill");
+				}
+				return realRun(sql, ...(rest as never[]));
+			});
+			try {
+				expect(() => openResponsibilities(r.store.db)).toThrow(/injected crash/);
+			} finally {
+				spy.mockRestore();
+			}
+			// One transaction: the failed migration committed nothing —
+			// no partial columns, no half-written rows.
+			const cols = (
+				r.store.db.query("PRAGMA table_info(prompt_operations)").all() as {
+					name: string;
+				}[]
+			).map((c) => c.name);
+			expect(cols.filter((c) => c.startsWith("dispatch_"))).toEqual([]);
+			// Reopening completes columns and backfill together; the
+			// unresolved-delivery fence survives.
+			const resps2 = openResponsibilities(r.store.db);
+			expect(resps2.getOperation(first.operation.operationId)!.dispatch).toEqual({
+				server: "local",
+				session: "goblin-probe",
+				terminalId: "term-9",
+				agentSession: "sess-abc",
+				kind: "pi",
+			});
+			const again = resps2.prepareOperation({
+				responsibilityId: resp.responsibilityId,
+				attachmentId: attId,
+				brief: "post-crash",
+			});
+			if (!("refused" in again)) throw new Error("expected refusal after migration");
+			expect(again.refused).toBe("delivery-uncertain");
+			r.store.close();
+		},
+	);
+
+	test("interrupted partial column and all-NULL migrations recover on reopen", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const first = prep(r, resp, attId, "b");
+		if (!("operation" in first)) throw new Error("expected prepared");
+		r.resps.claimForSend(first.operation.operationId);
+		r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		// The pre-transaction crash state: the sentinel's ALTER committed
+		// and the rest never landed; every row is NULL.
+		for (const col of ["dispatch_terminal_id", "dispatch_agent_session", "dispatch_kind"]) {
+			r.store.db.run(`ALTER TABLE prompt_operations DROP COLUMN ${col}`);
+		}
+		r.store.db.run("UPDATE prompt_operations SET dispatch_server = NULL, dispatch_session = NULL");
+		const resps2 = openResponsibilities(r.store.db);
+		expect(resps2.getOperation(first.operation.operationId)!.dispatch).toEqual({
+			server: "local",
+			session: "goblin-probe",
+			terminalId: "term-9",
+			agentSession: "sess-abc",
+			kind: "pi",
+		});
+		// The other crash window: every column exists, the backfill
+		// never ran. NULL dispatch_server marks unsnapshotted rows.
+		r.store.db.run(
+			"UPDATE prompt_operations SET dispatch_server = NULL, dispatch_session = NULL, dispatch_terminal_id = NULL, dispatch_agent_session = NULL, dispatch_kind = NULL",
+		);
+		const resps3 = openResponsibilities(r.store.db);
+		expect(resps3.getOperation(first.operation.operationId)!.dispatch).toEqual({
+			server: "local",
+			session: "goblin-probe",
+			terminalId: "term-9",
+			agentSession: "sess-abc",
+			kind: "pi",
+		});
+		const again = resps3.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: attId,
+			brief: "post-recovery",
+		});
+		if (!("refused" in again)) throw new Error("expected refusal after recovery");
+		expect(again.refused).toBe("delivery-uncertain");
+		r.store.close();
+	});
+
+	test("a valid snapshot is never rewritten by reopen — even after the attachment moves", () => {
+		const r = rig();
+		const { resp, attId } = setup(r);
+		const first = prep(r, resp, attId, "b");
+		if (!("operation" in first)) throw new Error("expected prepared");
+		r.resps.claimForSend(first.operation.operationId);
+		r.resps.transitionOperation(first.operation.operationId, "uncertain", {
+			outcome: { error: "io" },
+			from: "sent",
+		});
+		r.resps.reattach(
+			attId,
+			target({ agentName: "worker-2", terminalId: "term-b", agentSession: "sess-b" }),
+			{},
+		);
+		// Reopen: the backfill touches only unsnapshotted rows — the
+		// op keeps the identity it actually sent to.
+		const resps2 = openResponsibilities(r.store.db);
+		expect(resps2.getOperation(first.operation.operationId)!.dispatch).toEqual({
+			server: "local",
+			session: "goblin-probe",
+			terminalId: "term-9",
+			agentSession: "sess-abc",
+			kind: "pi",
+		});
 		r.store.close();
 	});
 

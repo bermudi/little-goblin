@@ -354,6 +354,39 @@ whether to set `HINDSIGHT_API_RERANKER_PROVIDER=rrf`. Key rotation is a
 pass-keys operation only — no file or secret metadata changes; the lookup
 resolves whatever is current at the next start.
 
+### Migration from the env-file stack (2026-10-19 redesign)
+
+Pre-pod installs keep plaintext keys in `hindsight.env`, a `postgres.env`
+password, and the `…@db:5432` URI. `--reconfigure` refuses one outright;
+`--resume` gets as far as a container that the passwordless guard rejects.
+Migrate by hand, once:
+
+```sh
+systemctl --user stop goblin-memory-api.service goblin-memory-db.service
+# podman rm both OLD containers; the NAMED VOLUME carries every byte of
+# memory state — do not touch it. No pod exists yet to remove.
+install -m 644 deploy/memory/*.pod deploy/memory/*.container \
+  deploy/memory/*.network deploy/memory/*.volume \
+  "$HOME/.config/containers/systemd/"
+install -m 644 deploy/memory/start.py deploy/memory/healthcheck.py \
+  "$HOME/.config/goblin-memory/"
+# Register each credential as a shell secret (Manual path block above),
+# one per auth record in use. Then rewrite hindsight.env from the new
+# example: same provider/model/endpoint choices, passwordless
+# postgresql://hindsight@127.0.0.1:5432/hindsight, no keys. Keep a copy
+# until verified.
+systemctl --user daemon-reload
+systemctl --user start goblin-memory-api.service   # pod + db come up via deps
+curl --fail http://127.0.0.1:8888/health/ready
+```
+
+Then `trash` `postgres.env` and the old `hindsight.env` copy — nothing
+references either anymore (the pre-existing volume ignores
+`POSTGRES_HOST_AUTH_METHOD`; its stored password is simply never used,
+which is fine — the only port it could serve is now unreachable).
+A pre-existing `postgres.env` seen by the installer earns a warning,
+not a read.
+
 Config paths use systemd `%h` (the user manager's home), not a fixed operator
 home. If using another layout or port, edit installed assets deliberately.
 SELinux bind-mount relabeling is scoped to the installed launch script (`:Z`).

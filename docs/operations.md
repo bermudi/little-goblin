@@ -341,7 +341,11 @@ they're operator-editable). Quadlet changes apply by hand: edit the
 installed file in `~/.config/containers/systemd/`, then
 `systemctl --user daemon-reload`, `podman rm -f goblin-memory-api`,
 `systemctl --user restart goblin-memory-api` — the `podman rm` is what
-recreates the container under the new spec.
+recreates the container under the new spec. Pod topology changes
+(`goblin-memory.pod`, the `Pod=` lines, the published port) are bigger:
+stop both members, `podman pod rm -f goblin-memory`, daemon-reload, then
+start `goblin-memory-api` — the pod and its containers come back under
+the new spec.
 
 ## Program proposals
 

@@ -214,6 +214,8 @@ models. Existing deployments keep their old image until an approved migration.
 
 The launch guard rejects missing settings, provider chains, per-operation
 and unknown overrides before initialization, preventing silent upstream defaults.
+Every `*_API_KEY` variable reaches the container as a mounted podman secret
+that `start.py` exports — the env file itself carries none (Operator setup).
 Changing model IDs or supported endpoints/providers requires only operator config,
 not a code change. This profile supports only the mappings above and model-free
 `rrf`; wider provider or learned-reranker choices belong in an operator-managed
@@ -251,27 +253,33 @@ uv run python deploy/memory/install.py
 ```
 
 It reads goblin's own registry first: providers goblin already uses are
-proposed as Enter-accepting defaults, and their API keys are resolved
-directly from its auth store — file to env file, never printed, never
-retyped. Only new providers prompt for a key (hidden input). Model
-selection searches the provider's live /models catalog (fetched with
-the just-resolved key; failures print the reason and fall back to free
-text). It then generates the database password (`secrets.token_urlsafe`,
-written to a 0600 env file, never printed), validates the whole
-configuration against the launch guard **before** anything is written,
-installs the Quadlet assets and the health-watch timer, pre-pulls the
-pinned images, starts the stack, enables it at boot (a healthy stack
-survives reboots like goblin itself), creates the bank, adds the
-`memory` block to `goblin.json5` (with
-a backup and automatic rollback if goblin fails to boot), and restarts
-goblin. Provider knowledge (roles, endpoints, catalogs, key resolution)
-lives in `deploy/memory/providers.py`. `--no-start` stops after
-installing config and assets (nothing is enabled until the confirmed
-first start); `--reconfigure` re-prompts models and
-keys, rewrites `hindsight.env` only (the database password is reused
-from `postgres.env` — a new one would not rotate the existing role),
-and restarts the API. Running it again on an installed stack prints
-status.
+proposed as Enter-accepting defaults, and every credential must live
+behind an auth-store `!` record (normally `!pass-keys get goblin-dev
+NAME`). The record's **command** — never its value — becomes a podman
+shell-driver secret's lookup: the container resolves the key itself at
+every start and mounts it as a tmpfs file under `/run/secrets`, which
+`start.py` exports before the launch guard runs. No provider key or
+database password is ever written to an env file. Model selection
+searches the provider's live /models catalog (the key resolved once,
+in-process, for that fetch only; failures print the reason and fall
+back to free text). There is **no database password**: the API and
+PostgreSQL containers share one quadlet pod, so the API reaches Postgres
+over the pod's loopback, which `pg_hba.conf` already trusts; Postgres
+listens on `127.0.0.1` inside the pod and publishes no port. The
+installer validates the whole configuration against the launch guard
+**before** anything is written, installs the Quadlet assets and the
+health-watch timer, registers the podman secrets, pre-pulls the pinned
+images, starts the stack, enables it at boot (a healthy stack survives
+reboots like goblin itself), creates the bank, adds the `memory` block to
+`goblin.json5` (with a backup and automatic rollback if goblin fails to
+boot), and restarts goblin. Provider knowledge (roles, endpoints,
+catalogs, key resolution) lives in `deploy/memory/providers.py`.
+`--no-start` stops after installing config, secrets and assets (nothing
+is enabled until the confirmed first start); `--reconfigure` re-prompts
+models and providers, rewrites `hindsight.env`, resyncs the podman
+secrets and the Quadlet's managed `Secret=` block, and restarts the API —
+rolling env, quadlet block and secret registrations back together if the
+restart fails. Running it again on an installed stack prints status.
 
 ### Manual path (advanced)
 
@@ -292,7 +300,7 @@ install -d -m 700 "$HOME/.config/containers/systemd"
 install -d -m 755 "$HOME/.config/systemd/user"
 install -m 644 deploy/memory/start.py "$HOME/.config/goblin-memory/start.py"
 install -m 644 deploy/memory/*.container deploy/memory/*.network \
-  deploy/memory/*.volume "$HOME/.config/containers/systemd/"
+  deploy/memory/*.volume deploy/memory/*.pod "$HOME/.config/containers/systemd/"
 install -m 644 deploy/memory/goblin-memory-watch.service \
   deploy/memory/goblin-memory-watch.timer "$HOME/.config/systemd/user/"
 ```
@@ -308,20 +316,43 @@ systemctl --user show -p Wants default.target  # must include goblin-memory-api.
 systemctl --user enable --now goblin-memory-watch.timer  # 5-min health watch
 ```
 
-Create `~/.config/goblin-memory/postgres.env` and `hindsight.env` privately, mode
-0600, using the example files as a **schema**, not as working credentials. Never
+Create `~/.config/goblin-memory/hindsight.env` privately, mode 0600, using the
+example file as a **schema**. It carries **no credentials**: the database URI
+is the fixed passwordless `postgresql://hindsight@127.0.0.1:5432/hindsight`
+(the pod's loopback only), and provider keys never appear in the file. Never
 put real values in this repository, shell history, chat, Goblin config or its
-tool environment. Do not source these files. Podman reads literal `KEY=value`;
-there is no shell expansion. Use the operator's secret-management workflow.
+tool environment. Do not source the file. Podman reads literal `KEY=value`;
+there is no shell expansion.
 
-`postgres.env` supplies only `POSTGRES_PASSWORD`. In `hindsight.env`, set the
-provider keys and a database URI of the form
-`postgresql://hindsight:<percent-encoded-password>@db:5432/hindsight`, matching
-the database password. Choose models and endpoints using the mappings above.
-Explicitly decide whether to set `HINDSIGHT_API_RERANKER_PROVIDER=rrf`. No auth
-secret is supplied or generated by these assets. Database password variables
-initialize a **new** volume only; changing the file does not rotate an existing
-role's password. Coordinate SQL password rotation and the URI while API is stopped.
+Provider credentials reach the container as **podman shell-driver secrets**
+named for the env var they feed (`HINDSIGHT_API_LLM_API_KEY`, and
+`HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` when embeddings use a non-local
+`openai` endpoint). Each secret stores only a lookup command — the auth.jsonl
+record's `!` command, `pass-keys get goblin-dev NAME` under the hood — which
+podman runs at every container start. Register/update them with:
+
+```sh
+# Pass any value on stdin; the no-op store discards it — the lookup is
+# what matters. Repeat per credential name.
+printf 'x\n' | podman secret create --replace --driver shell \
+  --driver-opts 'lookup=env PATH=$HOME/.local/bin:$PATH pass-keys get goblin-dev OPENROUTER_API_KEY | tr -d "\n",store=cat >/dev/null,list=true,delete=true' \
+  HINDSIGHT_API_LLM_API_KEY -
+```
+
+Then add one `Secret=<NAME>,type=mount` line per credential inside the API
+Quadlet's `# goblin:secrets-begin` / `# goblin:secrets-end` markers; the
+installer manages that region on reconfigure. `start.py` exports each
+mounted file under its own name. For a **local** embeddings endpoint
+(loopback or the embed relay) set `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY=local-ollama`
+in hindsight.env instead — the documented sentinel, not a secret; ollama
+ignores credentials. If pass-keys or the wallet is unavailable, the lookup
+fails and the container refuses to start — loud, never a missing-credential
+boot.
+
+Choose models and endpoints using the mappings above. Explicitly decide
+whether to set `HINDSIGHT_API_RERANKER_PROVIDER=rrf`. Key rotation is a
+pass-keys operation only — no file or secret metadata changes; the lookup
+resolves whatever is current at the next start.
 
 Config paths use systemd `%h` (the user manager's home), not a fixed operator
 home. If using another layout or port, edit installed assets deliberately.
@@ -373,16 +404,20 @@ systemctl --user stop goblin-memory-api.service goblin-memory-db.service
 ```
 
 Do not dump full container inspection or env files into logs/support chats:
-container environment includes credentials. Upstream logs may include sensitive
-errors or memory content; treat journal access and retention as sensitive.
+`hindsight.env` itself is now credential-free, but the mounted secrets are not
+and upstream logs may include sensitive errors or memory content; treat journal
+access and retention as sensitive.
 Monitor disk capacity, DB/API health and restart failures; keep PostgreSQL
 autovacuum enabled. No automatic volume pruning, cleanup or auto-update is set.
 
 ## Exposure and data ownership
 
-The private bridge has only these two containers; PostgreSQL publishes **no**
-host port. Outbound networking is intentionally available for HTTPS providers.
-Only `127.0.0.1:8888` is published. No Hindsight API authentication is provisioned:
+API and database share one quadlet pod (`goblin-memory`), so they meet
+over pod-local loopback: PostgreSQL listens on `127.0.0.1` inside the pod
+— `pg_hba.conf` trusts it, which is why no `POSTGRES_PASSWORD` or
+`postgres.env` exists — and publishes **no** host port. Outbound
+networking is intentionally available for HTTPS providers. The pod
+publishes only `127.0.0.1:8888`. No Hindsight API authentication is provisioned:
 loopback is not authentication against other local users, same-network
 containers or untrusted tools running as this user. Use a trusted single-operator
 host. Do not bind publicly or proxy remotely without deliberately designed TLS
@@ -458,8 +493,11 @@ operator has verified recovery and chosen its retention policy.
 ## Benchmarking
 
 `deploy/memory/bench.py` measures the stack's two tuning surfaces without
-mutating anything. Both subcommands read the live service and hindsight.env;
-keys stay in process memory and are never printed.
+mutating anything. `hindsight.env` is read for provider/model/endpoint
+structure only — it carries no credentials anymore. Keys come from
+`pass-keys run goblin-dev -- uv run deploy/memory/bench.py …` env
+injection, or the provider's auth.jsonl record resolved in-process;
+values are never printed.
 
 - `uv run deploy/memory/bench.py llm` — renders the bank's exact retain
   prompts and response schema via `prompts/preview`, then replays them
@@ -546,8 +584,9 @@ Setup (or re-add on another box): write
 `deploy/memory/embed-relay.env.example` (`GOBLIN_EMBED_RELAY_ADDR`,
 `GOBLIN_EMBED_MODEL`), run `uv run python deploy/memory/install.py` so
 the units land, then `--reconfigure` choosing provider `openai`, model
-`embeddinggemma`, the relay base URL (`http://<addr>:11435/v1`), and any
-non-empty dummy key — ollama ignores it. embeddinggemma's task prefixes
+`embeddinggemma`, the relay base URL (`http://<addr>:11435/v1`) — a local
+endpoint gets the `local-ollama` sentinel in hindsight.env instead of a
+registered secret; ollama ignores credentials. embeddinggemma's task prefixes
 (`HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX` / `_PASSAGE_PREFIX`) are written
 automatically from `EMBEDDING_PREFIXES` in `deploy/memory/providers.py`.
 

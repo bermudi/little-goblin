@@ -135,9 +135,21 @@ Unterminated quoted string`, and the watch restart-looped a healthy
 API, while g7's podman 6.1.3 re-quoted it correctly. Mounted scripts
 survive; `python -c` one-liners do not.
 
-Provider/model/key choices are explicit installer prompts (secrets
-hidden); the launch guard validates before anything is written, and the
-generated database password is never printed.
+Provider/model choices are explicit installer prompts; the launch guard
+validates before anything is written. Ruling (2026-10-19): **no
+credential is ever written to an env file.** The API and PostgreSQL
+share one quadlet pod, so the database has no password at all —
+Postgres listens on the pod's loopback (`127.0.0.1`, trusted by
+`pg_hba.conf`) and publishes no port; the URI is the fixed
+passwordless `postgresql://hindsight@127.0.0.1:5432/hindsight`.
+Provider keys become podman shell-driver secrets whose stored
+`lookup` is the auth.jsonl record's `!` command (`pass-keys get
+goblin-dev NAME`); podman resolves them per container start and mounts
+them under `/run/secrets`, which `start.py` exports. One OpenRouter key
+serves Goblin and Hindsight; rotation is a pass-keys operation only.
+The earlier design — generated DB password plus resolved keys copied
+into `hindsight.env`/`postgres.env` — duplicated the auth store's keys
+in plaintext and was rejected.
 
 Goblin accepts a configured Hindsight base URL and bank identity — the
 supplied local stack or an existing service. Remote services require an

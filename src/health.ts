@@ -1114,10 +1114,10 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 			.min(1)
 			.max(1)
 			.safeParse(podParsed);
-		const roster = new Set(podMeta.success ? (podMeta.data[0].Containers ?? []).map((c) => c.Name) : []);
+		const podInfo = podMeta.success ? podMeta.data[0] : undefined;
+		const roster = new Set((podInfo?.Containers ?? []).map((c) => c.Name));
 		if (
-			!podMeta.success ||
-			!podMeta.data[0].InfraConfig?.PortBindings?.["8888/tcp"]?.some(
+			!podInfo?.InfraConfig?.PortBindings?.["8888/tcp"]?.some(
 				(port) => port.HostIp === "127.0.0.1" && port.HostPort === "8888",
 			) ||
 			!roster.has("goblin-memory-api") ||

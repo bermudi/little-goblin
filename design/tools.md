@@ -18,6 +18,17 @@ root-level oneOf that some providers cannot generate arguments against —
 every call arrives as `{}` and fails validation (it took out mail Sep 28);
 the per-action contract is a discriminated union enforced inside `execute`.
 
+**Tool-call repair is rule-based, never a model re-ask** (ruling
+2026-10-24): `streamText`'s `repairToolCall` (`src/agent/tool-repair.ts`)
+rewrites an invalid call only when a rule applies — JSON5-strict syntax
+slips, and a top-level property whose schema type is object/array
+(anyOf/oneOf included) holding a JSON string gets parsed into place.
+`NoSuchToolError` and unparseable (truncated) input are declined; a
+repair that still doesn't validate surfaces as the usual tool error.
+Every attempt logs `tool call repaired`/`tool call not repaired` with
+the fixes or the reason. Per-tool input repair (e.g. `ui`'s
+`normalizeUiInput`) stays the tool's own validator concern.
+
 `speak` synthesizes and hands the bytes to the turn's delivery sink — it
 does not send; the sink owns the Telegram call, so "Telegram send is
 delivery, not a tool" stays true and voice notes ride the same serialized

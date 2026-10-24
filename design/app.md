@@ -659,22 +659,46 @@ ack — nothing runs. Store format = wire format: the tool part persists in
 UIMessage history, so reload, resume, and spin-off copies carry the UI, and
 the model sees its past interface as a past tool call.
 
-- **No recursion, two levels** (containers hold leaf children only): a
-  recursive zod schema emits `$ref`/`$defs`, which OpenAI-compatible
-  providers handle unevenly, and a rejected schema breaks every app turn.
+- **Flat element map** (ruling 2026-10-24): json-render's spec shape
+  adopted — shape only, not the package, its `$state`/`$bindState`/
+  `visible`/`repeat`/actions runtime, or its inline JSONL-patch
+  protocol. `{title?, root, elements}` maps each id to
+  `{type, props, children}` where `children` lists child ids, so depth
+  is unbounded without a recursive schema — a recursive zod schema
+  emits `$ref`/`$defs`, which OpenAI-compatible providers handle
+  unevenly, and a rejected schema breaks every app turn (the emitted
+  schema also strips zod's `propertyNames`). Structural rules live in a
+  superRefine naming the ids: root exists, every child id exists, tree
+  not DAG (single parent), no cycles, tabs hold only `tab` elements and
+  columns only `column` (inversely a tab needs a tabs parent, a column
+  a columns parent), leaves are childless, ≤200 elements. Streaming
+  renders root first, skeletons pending ids (an element failing its
+  schema skeletons only when it's the raw tail), and orphans render in
+  arrival order while root is unwritten; html still mounts only once
+  complete. Legacy `{blocks}` parts are not converted — they fail the
+  schema and render as the generic tool row (operator call — little
+  history to preserve). Evidence: json-render-agent-bench,
+  `glm-5.3-flash`, oneshot 82% pass@1 / 98% structurally valid; the
+  failures were in the dynamic-state layer goblin excludes.
 - **Progressive render.** The AI SDK surfaces partially parsed tool input;
-  the client renders every block that validates plus a skeleton for the
+  the client renders every element that validates plus a skeleton for the
   arriving one. Without provider tool-input deltas the UI lands whole at
   completion — degraded, not failed.
 - **Placement.** `ui` parts render inline, never inside the Worked fold;
   validation failures render as the normal tool error row.
-- **Type repair, both sides.** Probed live, `zai/glm-5.3-flash` broke 9 of
-  22 comparison-style answers, mostly by dropping a block's `type`
-  discriminator; after repair 3 of 22 still failed. A typeless object is
-  re-typed by exact key-set match (a tie meaning no repair); invented keys
-  are not repaired — the model sees the tool error and may retry. Server and
-  client both validate/render through the same repair, so history renders
-  as accepted.
+- **Type repair, both sides.** `normalizeUiInput` repairs, each rule
+  only when exactly one interpretation exists: `elements`/element
+  `props` given as JSON strings parse into place; content fields on an
+  element's top level with no `props` hoist into it; a typeless element
+  re-types by exact props key-set match (`{label}` → `tab`, the one
+  inferable container; a tie or invented keys mean no repair); inline
+  child objects hoist into the map as `<parent>.<index>`; an array root
+  synthesizes a `stack`; a missing root picks the single unreferenced
+  element; numeric-string chart series values coerce; and elements
+  unreachable from root are pruned. What no rule fixes surfaces as a
+  tool error — the model sees it and may retry. Server and client both
+  validate/render through the same repair, so history renders as
+  accepted.
 - **Judgment lives in the description.** Goblin's models are prompted, not
   trained: the description says text is the default and names when layout
   carries meaning.

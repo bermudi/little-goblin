@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { goblinHome } from "./config.ts";
 import { healthReportSchema, runHealth, type HealthReport } from "./health.ts";
+import { setLogStream } from "./log.ts";
 import { boundedRun, killProc, spawnProc } from "./proc.ts";
 
 const optionsSchema = z.object({
@@ -110,6 +111,11 @@ export async function collectDoctorReport(options: {
 }
 
 async function main(): Promise<number> {
+	// stdout is exactly one report in every mode (the worker's JSON line,
+	// --json, or the formatted text): any runtime diagnostic this process
+	// emits belongs on stderr (design/doctor.md — a scoped exception to
+	// ordinary runtime stdout logging).
+	setLogStream(process.stderr);
 	let options: DoctorOptions;
 	try {
 		options = parseDoctorArgs(process.argv.slice(2));

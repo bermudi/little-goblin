@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { log, setLogFile, setLogLevel, setLogWriter, type LogLevel } from "./log.ts";
+import { log, setLogFile, setLogLevel, setLogStream, setLogWriter, type LogLevel } from "./log.ts";
 
 let dirs: string[] = [];
 function tmpHome(): string {
@@ -23,6 +23,7 @@ function tmpHome(): string {
 afterEach(() => {
 	setLogFile(null);
 	setLogWriter(null);
+	setLogStream(null);
 	setLogLevel("info");
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
@@ -212,6 +213,77 @@ describe("error parity", () => {
 			chat: 42,
 			cause: [{ message: "root failure", stack: root.stack }],
 		});
+	});
+});
+
+describe("report-stream routing", () => {
+	test("routed emissions land on stderr, never stdout; the file sink is unaffected", () => {
+		// Doctor's worker and collector must keep stdout to exactly one
+		// report (design/doctor.md): proc.ts's pipe cancel/drain warns are
+		// the live leak, so the routing channel — not their racy trigger —
+		// is what gets pinned here.
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const out = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+			stdout.push(String(chunk));
+			return true;
+		});
+		const err = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+			stderr.push(String(chunk));
+			return true;
+		});
+		try {
+			setLogStream(process.stderr);
+			// The proc.ts warn shapes: err-overload and fields-only.
+			log.warn("process pipe cancel failed", new Error("fixture cancel"));
+			log.warn("process pipe drain failed", { error: "fixture drain" });
+			log.info("ordinary info");
+		} finally {
+			err.mockRestore();
+			out.mockRestore();
+		}
+		expect(stdout).toEqual([]);
+		const records = stderr.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(records.map((record) => record.msg)).toEqual([
+			"process pipe cancel failed",
+			"process pipe drain failed",
+			"ordinary info",
+		]);
+		expect(records[0]).toMatchObject({ level: "warn", error: "fixture cancel" });
+		expect(records[1]).toMatchObject({ level: "warn", error: "fixture drain" });
+		expect(lines(target).map((record) => record.msg)).toEqual([
+			"process pipe cancel failed",
+			"process pipe drain failed",
+			"ordinary info",
+		]);
+	});
+
+	test("null restores default stdout routing", () => {
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const out = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+			stdout.push(String(chunk));
+			return true;
+		});
+		const err = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+			stderr.push(String(chunk));
+			return true;
+		});
+		try {
+			setLogStream(process.stderr);
+			setLogStream(null);
+			log.info("back to stdout");
+		} finally {
+			err.mockRestore();
+			out.mockRestore();
+		}
+		expect(stderr).toEqual([]);
+		expect(stdout.map((line) => (JSON.parse(line) as { msg: unknown }).msg)).toEqual([
+			"back to stdout",
+		]);
 	});
 });
 

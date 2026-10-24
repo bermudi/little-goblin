@@ -30,6 +30,7 @@ const required = {
 		"pinned_at",
 		"project_id",
 		"previous_dm_id",
+		"seq_highwater",
 	],
 	events: [
 		"id",

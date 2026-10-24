@@ -366,6 +366,59 @@ deletes the fork. The ack goes once per replying chat (coalescing can merge
 replies). Deep links apply once after the first list load; an unknown id
 falls back to `/app/`.
 
+## Editing a prompt & branching (ruling 2026-10-24, operator ask)
+
+The PWA gets the two chat affordances the operator expects from ChatGPT:
+rewrite one of his own messages, and fork the conversation at a reply.
+
+**Edit is a rewind in place, not a version tree.** The edited user event and
+everything causally after it are deleted; the replacement is appended as a
+fresh turn in the same chat, and the same assistant lane answers. A tail the
+edit will drop is confirmed client-side first — `branch` is the
+non-destructive path, so the prompt names it. Nothing keeps the old tail:
+that is the point, and it is why the write is one transaction. Rendering is
+the bubble's own inline textarea; non-text parts (attachments, note and
+skill chips) ride into the replacement, only text is rewritten.
+
+**The cut is causal, not positional.** Events are cut at
+`COALESCE(anchor_seq, seq)`: a late answer to an earlier question belongs to
+that question's span and survives an edit below it, exactly like the
+compaction boundary rule. The dependent sweep is part of the same
+transaction — compactions whose `boundary_seq` reaches the cut,
+`memory_contexts` at or after it, `event_projections` at or after it, app
+`reply_ratings` addressing an event or anchor at or after it. Queued
+retention for the dropped exchanges is cancelled after commit
+(`cancelAnchoredFrom`); **already-retained memory is out of scope** — the
+memory service owns it, and the store cannot unpublish what has landed. An
+archived chat auto-unarchives, like any other activity.
+
+**Seqs are never reused.** `conversations.seq_highwater` records the highest
+seq the conversation ever wrote; an append starts above `MAX(seq)` and the
+high-water mark. Without it, a rewind would re-mint the deleted tail's seqs
+and silently re-bind stale rating and journal rows to new events.
+
+**Branch is a copy through one durable message.** `POST
+/api/app/conversations/:id/branch` with `{messageId}` creates a new app
+conversation holding the source's causal prefix through the selected event,
+then returns 201 and the client opens it. The source is never modified. A
+branch copies the source's project binding (fixed at creation, like every
+app conversation), its memory exclusion, its settings, contexts and
+projections at or below the cut, and its compaction only when
+`boundary_seq < throughSeq` — a summary reaching past the cut describes
+events the branch does not hold. Ratings never copy. The title is
+`<title> (branch)` and explicit, so the auto-title path leaves it alone; an
+untitled source keeps a null title.
+
+Both writes refuse while a turn is running (`runtime.busy` → 409): an edit
+would race the lane's tail, and a branch would copy a half-written exchange
+or an answer still owed to an interrupted run. Editing also abandons
+interrupted runs whose anchor the cut drops before the store write, and
+refuses 409 if one cannot be abandoned; runs anchored before the cut
+survive. A project-bound source refuses to branch into an archived project
+(422) rather than creating a chat the project page would hide. Telegram is
+not in scope: `editMessageId` names a durable event, which only the app
+channel addresses.
+
 ## The app wire must never idle — SSE heartbeat
 
 Ruling 2026-10-07, from a failed operator turn: the app showed "The turn

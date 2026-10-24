@@ -1,19 +1,20 @@
-import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
+import { pruningReplacement } from "./cache-pruning.ts";
 import {
 	appAddress,
 	appIdOf,
+	type ConversationStore,
 	channelOf,
 	formatAddress,
 	openStore,
-	parseAddress,
-	type ConversationStore,
 	type ParsedAddress,
+	parseAddress,
 } from "./conversation.ts";
-import { pruningReplacement } from "./cache-pruning.ts";
+import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
 
 const msg = (text: string): UIMessage => ({
@@ -570,6 +571,277 @@ describe("forkToApp (Spin-off)", () => {
 		// The FTS triggers index the copied rows regardless — the flag
 		// is what keeps them out of search, so it had to come along.
 		expect(store.searchHistory("secret", 10)).toEqual([]);
+		store.close();
+	});
+});
+
+describe("forkToApp (branch)", () => {
+	const user = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const asst = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+	const app = (store: ConversationStore, id: string) =>
+		store.resolve({ kind: "app", appId: id, chatId: 0, threadId: 0 }, "/w");
+	const projection = (seq: number, toolCallId: string, replacement: string) => ({
+		seq,
+		toolCallId,
+		replacement,
+		routeKey: "a".repeat(64),
+		settingsHash: "b".repeat(64),
+	});
+
+	test("copies only the causal prefix, with its compaction/contexts/projections — source untouched", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "first")]); // 1
+		store.append(src.id, [asst("a1", "first answer")], { anchorSeq: 1 }); // 2
+		store.append(src.id, [user("q2", "second")]); // 3
+		store.append(src.id, [asst("a2", "second answer")], { anchorSeq: 3 }); // 4
+		store.setCompaction(src.id, {
+			boundarySeq: 1,
+			summary: "one fold",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		store.memoryContexts.save(src.id, 1, "early recall", ["doc-1"]);
+		store.memoryContexts.save(src.id, 3, "late recall", ["doc-2"]);
+		store.applyEventProjections(src.id, [
+			projection(2, "t1", "early marker"),
+			projection(4, "t2", "late marker"),
+		]);
+		const copied = store.forkToApp(src.id, "branch-1", "/w", "first answer (branch)", undefined, {
+			throughSeq: 2,
+			titleImplicit: false,
+		});
+		expect(copied.id).toBe("app/branch-1");
+		expect(copied.title).toBe("first answer (branch)");
+		expect(copied.titleImplicit).toBe(false);
+		// The cut is causal: events 1 and 2 only, same seqs and payloads.
+		expect(store.historyDetail(copied.id)).toEqual(
+			store.historyDetail(src.id).filter((e) => e.seq <= 2),
+		);
+		// Dependents past the cut describe events the branch lacks.
+		expect(store.getCompaction(copied.id)).toMatchObject({ boundarySeq: 1, summary: "one fold" });
+		expect(store.memoryContexts.load(copied.id)).toEqual([
+			{ anchorSeq: 1, content: "early recall", sourceIds: ["doc-1"] },
+		]);
+		expect(store.eventProjections(copied.id)).toEqual([
+			{ seq: 2, toolCallId: "t1", replacement: "early marker" },
+		]);
+		// The source keeps every row it had.
+		expect(store.history(src.id)).toHaveLength(4);
+		expect(store.getCompaction(src.id)?.summary).toBe("one fold");
+		expect(store.memoryContexts.load(src.id)).toHaveLength(2);
+		expect(store.eventProjections(src.id)).toHaveLength(2);
+		store.close();
+	});
+
+	test("a compaction whose boundary reaches past the cut is not copied", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "first")]); // 1
+		store.append(src.id, [asst("a1", "first answer")], { anchorSeq: 1 }); // 2
+		store.setCompaction(src.id, {
+			boundarySeq: 2,
+			summary: "folds the branch point",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const copied = store.forkToApp(src.id, "branch-2", "/w", null, undefined, {
+			throughSeq: 1,
+		});
+		expect(store.getCompaction(copied.id)).toBeNull();
+		// A null title leaves the branch's title implicit — nothing to
+		// remember but the store's own default.
+		expect(copied.title).toBeNull();
+		expect(copied.titleImplicit).toBe(true);
+		store.close();
+	});
+
+	test("a late answer anchored before the cut rides with its question", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "first")]); // 1
+		store.append(src.id, [user("q2", "second")]); // 2
+		store.append(src.id, [asst("a1", "late answer to first")], { anchorSeq: 1 }); // 3
+		const copied = store.forkToApp(src.id, "branch-3", "/w", "b", undefined, { throughSeq: 2 });
+		expect(store.historyDetail(copied.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
+			[1, "q1", null],
+			[3, "a1", 1],
+			[2, "q2", null],
+		]);
+		store.close();
+	});
+
+	test("the project binding copies as creation-fixed state", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		store.db.run(
+			`INSERT INTO projects (id, name, slug, home, dir, instructions, memory, created_at)
+			 VALUES ('proj-1', 'p', 'p', '/tmp/p', '/tmp/p', '', 'shared', '2026-01-01T00:00:00Z')`,
+		);
+		const src = app(store, "branch-src");
+		store.bindProject(src.id, "proj-1");
+		store.append(src.id, [user("q1", "first")]);
+		const copied = store.forkToApp(src.id, "branch-4", "/w", null, undefined, {
+			throughSeq: 1,
+			projectId: "proj-1",
+		});
+		expect(copied.projectId).toBe("proj-1");
+		expect(store.get(copied.id)?.projectId).toBe("proj-1");
+		store.close();
+	});
+});
+
+describe("editUserMessage (rewind)", () => {
+	const user = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const asst = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+	const app = (store: ConversationStore, id: string) =>
+		store.resolve({ kind: "app", appId: id, chatId: 0, threadId: 0 }, "/w");
+	const projection = (seq: number, toolCallId: string, replacement: string) => ({
+		seq,
+		toolCallId,
+		replacement,
+		routeKey: "a".repeat(64),
+		settingsHash: "b".repeat(64),
+	});
+
+	test("drops the event and its causal tail, sweeps dependents, and never reuses a seq", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-1");
+		store.append(c.id, [user("q1", "first")]); // 1
+		store.append(c.id, [asst("a1", "first answer")], { anchorSeq: 1 }); // 2
+		store.append(c.id, [user("q2", "second")]); // 3
+		store.append(c.id, [asst("a2", "second answer")], { anchorSeq: 3 }); // 4
+		store.setCompaction(c.id, {
+			boundarySeq: 3,
+			summary: "fold through the edited message",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		store.memoryContexts.save(c.id, 1, "early recall", ["doc-1"]);
+		store.memoryContexts.save(c.id, 3, "late recall", ["doc-2"]);
+		store.applyEventProjections(c.id, [
+			projection(2, "t1", "early marker"),
+			projection(4, "t2", "late marker"),
+		]);
+		const ratings = openRatings(store.db);
+		ratings.recordApp({
+			conversationId: c.id,
+			anchorSeq: 1,
+			eventSeq: 2,
+			rating: "up",
+		});
+		ratings.recordApp({
+			conversationId: c.id,
+			anchorSeq: 3,
+			eventSeq: 4,
+			rating: "down",
+		});
+
+		const edit = store.editUserMessage(c.id, "q2", user("q2b", "second, rewritten"));
+		// The cut is the edited event's seq; the new event lands above
+		// every seq this conversation ever wrote (4), not above the
+		// surviving 2.
+		expect(edit).toEqual({
+			cutSeq: 3,
+			seq: 5,
+			events: 2,
+			compactions: 1,
+			contexts: 1,
+			projections: 1,
+			ratings: 1,
+		});
+		expect(store.historyDetail(c.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
+			[1, "q1", null],
+			[2, "a1", 1],
+			[5, "q2b", null],
+		]);
+		// Every dependent derived from the dropped tail went with it.
+		expect(store.getCompaction(c.id)).toBeNull();
+		expect(store.memoryContexts.load(c.id)).toEqual([
+			{ anchorSeq: 1, content: "early recall", sourceIds: ["doc-1"] },
+		]);
+		expect(store.eventProjections(c.id)).toEqual([
+			{ seq: 2, toolCallId: "t1", replacement: "early marker" },
+		]);
+		expect(ratings.listApp(c.id).map((r) => [r.eventSeq, r.rating])).toEqual([[2, "up"]]);
+		// The old id is gone, and a later append continues above the
+		// high-water mark instead of colliding with a spent seq.
+		expect(store.messageEvent(c.id, "q2")).toBeNull();
+		expect(store.messageEvent(c.id, "q2b")).toEqual({ seq: 5, role: "user" });
+		expect(store.append(c.id, [user("q3", "third")])).toEqual([6]);
+		store.close();
+	});
+
+	test("refuses an assistant event, an unknown id, and another chat's id", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-2");
+		const other = app(store, "rewind-other");
+		store.append(c.id, [user("q1", "first")]); // 1
+		store.append(c.id, [asst("a1", "answer")], { anchorSeq: 1 }); // 2
+		store.append(other.id, [user("elsewhere", "other chat")]);
+		expect(store.editUserMessage(c.id, "a1", user("a1", "rewritten"))).toBeNull();
+		expect(store.editUserMessage(c.id, "ghost", user("ghost", "rewritten"))).toBeNull();
+		expect(store.editUserMessage(c.id, "elsewhere", user("elsewhere", "rewritten"))).toBeNull();
+		expect(store.history(c.id)).toHaveLength(2);
+		expect(store.history(other.id)).toHaveLength(1);
+		store.close();
+	});
+
+	test("a rewind unarchives the conversation", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-3");
+		store.append(c.id, [user("q1", "first")]);
+		store.setMeta(c.id, { archived: true });
+		expect(store.get(c.id)?.archivedAt).not.toBeNull();
+		store.editUserMessage(c.id, "q1", user("q1b", "rewritten"));
+		expect(store.get(c.id)?.archivedAt).toBeNull();
+		store.close();
+	});
+
+	test("a late answer anchored before the cut survives it", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-4");
+		store.append(c.id, [user("q1", "first")]); // 1
+		store.append(c.id, [user("q2", "second")]); // 2
+		store.append(c.id, [asst("a1", "late answer to first")], { anchorSeq: 1 }); // 3
+		store.editUserMessage(c.id, "q2", user("q2b", "second, rewritten"));
+		expect(store.historyDetail(c.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
+			[1, "q1", null],
+			[3, "a1", 1],
+			[4, "q2b", null],
+		]);
+		store.close();
+	});
+
+	test("lastSeq is null only when no event exists — the high-water mark is not an event", () => {
+		// A spin-off discard reads null as "the operator never wrote here":
+		// the seq high-water mark must not turn an empty conversation into
+		// one that looks written, and an edit must not hide its new event.
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-5");
+		expect(store.lastSeq(c.id)).toBeNull();
+		store.append(c.id, [user("q1", "first")]); // 1
+		store.append(c.id, [asst("a1", "answer")], { anchorSeq: 1 }); // 2
+		store.editUserMessage(c.id, "q1", user("q1b", "rewritten")); // 3, high-water 2
+		expect(store.lastSeq(c.id)).toBe(3);
 		store.close();
 	});
 });

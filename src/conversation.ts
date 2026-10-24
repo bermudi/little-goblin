@@ -221,6 +221,19 @@ export interface Compaction {
 // What a caller writes — summaryEligible is store-computed, never input.
 export type CompactionWrite = Omit<Compaction, "summaryEligible">;
 
+// The observable shape of an edit's sweep: the cut is the edited event's
+// seq, seq is the new event's (never-reused) position, and the counts
+// name every dependent the delete removed.
+export interface MessageEdit {
+	seq: number;
+	cutSeq: number;
+	events: number;
+	compactions: number;
+	contexts: number;
+	projections: number;
+	ratings: number;
+}
+
 export interface ConversationStore {
 	// Shared handle — the memory/outage modules each own tables in this file.
 	readonly db: Database;
@@ -252,17 +265,40 @@ export interface ConversationStore {
 	// Highest event seq. The spin-off discard compares it against
 	// fork-time seq: a change means operator input arrived.
 	lastSeq(id: string): number | null;
-	// Spin-off: copy model state into a fresh app conversation, one
+	// Spin-off/branch: copy model state into a fresh app conversation, one
 	// transaction — every event verbatim, the latest compaction pointer,
 	// every memory_contexts row. The memory queue is NOT replayed (copies
-	// are already retained); the caller owns the `spin-off` log line.
+	// are already retained); the caller owns the `spin-off`/`branched` log
+	// line. throughSeq cuts a branch at a causal position (a branch never
+	// rewrites the source); projectId is the binding branch copies from
+	// the source, fixed at creation like every other app conversation.
 	forkToApp(
 		fromId: string,
 		appId: string,
 		defaultCwd: string,
-		title: string,
+		title: string | null,
 		defaults?: ModelSettings,
+		opts?: {
+			throughSeq?: number;
+			projectId?: string | null;
+			// A branch copies a real title; a spin-off's provisional name
+			// stays implicit so the retitle path can improve it.
+			titleImplicit?: boolean;
+		},
 	): Conversation;
+	// Resolve a durable event by its message id — the edit/branch routes'
+	// handle onto an append-only seq. Null when this conversation never
+	// stored that id (a client id, a deleted event, another chat).
+	messageEvent(id: string, messageId: string): { seq: number; role: string } | null;
+	// Edit a user message: drop it and every causally later event in one
+	// transaction, sweep their compaction/recall/projection/rating
+	// dependents, then append the edited message at a seq no event has
+	// ever used. One transaction, so an interrupted write cannot leave a
+	// hole where the transcript was. Null when the id is not a user event
+	// of this conversation; the caller fences live work and owns the log
+	// line. Queued retention for the dropped tail is cancelled after the
+	// commit (an already-retained memory is not recalled here).
+	editUserMessage(id: string, messageId: string, message: UIMessage): MessageEdit | null;
 	// Initialize missing app settings once, no reset, no epoch fence;
 	// missing/non-app ids throw.
 	initializeAppSettings(
@@ -650,6 +686,13 @@ export function openStore(dbPath: string): ConversationStore {
 	if (!convCols.has("pinned_at")) {
 		db.run("ALTER TABLE conversations ADD COLUMN pinned_at TEXT");
 	}
+	// The highest seq this conversation has ever written. An edit deletes
+	// a tail and appends again; MAX(seq) alone would re-mint every seq the
+	// tail spent, silently re-binding stale rating and journal rows to new
+	// events. Appends therefore start above both this mark and MAX(seq).
+	if (!convCols.has("seq_highwater")) {
+		db.run("ALTER TABLE conversations ADD COLUMN seq_highwater INTEGER NOT NULL DEFAULT 0");
+	}
 	// Written once by bindProject — deliberately not on
 	// ConversationMetaPatch.
 	if (!convCols.has("project_id")) {
@@ -978,14 +1021,20 @@ export function openStore(dbPath: string): ConversationStore {
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string]
 	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
+	const qLastEventSeq = db.query<{ seq: number | null }, [string]>(
+		"SELECT MAX(seq) AS seq FROM events WHERE conversation_id = ?",
+	);
 	const qLastUserSeq = db.query<{ seq: number }, [string]>(
 		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
 	);
 	const qLastReplyAnchor = db.query<{ anchor_seq: number | null }, [string]>(
 		"SELECT anchor_seq FROM events WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
 	);
-	const qNextSeq = db.query<{ n: number | null }, [string]>(
-		"SELECT MAX(seq) AS n FROM events WHERE conversation_id = ?",
+	const qNextSeq = db.query<{ n: number }, [string]>(
+		`SELECT MAX(
+			COALESCE((SELECT MAX(seq) FROM events WHERE conversation_id = ?1), 0),
+			COALESCE((SELECT seq_highwater FROM conversations WHERE id = ?1), 0)
+		) AS n`,
 	);
 	// Memory-bound filter inputs: eligible seqs + folded-span ineligible
 	// count.
@@ -1017,6 +1066,23 @@ export function openStore(dbPath: string): ConversationStore {
 	>(
 		"SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
+	// A branch's copy source: the causal prefix, cut exactly where the
+	// compaction cut reads — a late answer to an earlier question rides
+	// with its question, never past the branch point.
+	const qEventsThrough = db.query<
+		{
+			seq: number;
+			role: string;
+			data: string;
+			anchor_seq: number | null;
+			created_at: string;
+			memory_eligible: number;
+		},
+		[string, number]
+	>(
+		`SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events
+		 WHERE conversation_id = ? AND COALESCE(anchor_seq, seq) <= ? ORDER BY seq`,
+	);
 	const qContextsFor = db.query<
 		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
 		[string]
@@ -1025,6 +1091,13 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qInsertContext = db.query(
 		"INSERT INTO memory_contexts (conversation_id, anchor_seq, content, source_ids, created_at) VALUES (?, ?, ?, ?, ?)",
+	);
+	// A branch keeps the recall slices that still describe its own prefix.
+	const qContextsThrough = db.query<
+		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
+		[string, number]
+	>(
+		"SELECT anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? AND anchor_seq <= ? ORDER BY anchor_seq",
 	);
 	// The overlay read and the fork's verbatim copy source.
 	const qProjections = db.query<
@@ -1048,6 +1121,19 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qInsertProjection = db.query(
 		"INSERT OR IGNORE INTO event_projections (conversation_id, seq, tool_call_id, replacement, route_key, settings_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	);
+	const qProjectionsThrough = db.query<
+		{
+			seq: number;
+			tool_call_id: string;
+			replacement: string;
+			route_key: string;
+			settings_hash: string;
+			created_at: string;
+		},
+		[string, number]
+	>(
+		"SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at FROM event_projections WHERE conversation_id = ? AND seq <= ? ORDER BY seq",
 	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
@@ -1114,6 +1200,49 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
 	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
+	// An edit's targeted deletes, all keyed by the same causal cut or the
+	// raw seq. Each dependent was derived from events at or after the cut,
+	// so keeping it would let the model (or the rail) read a transcript
+	// that no longer exists.
+	const qRewindEvents = db.query(
+		`DELETE FROM events WHERE conversation_id = ?1
+		 AND ((anchor_seq IS NOT NULL AND anchor_seq >= ?2) OR (anchor_seq IS NULL AND seq >= ?2))`,
+	);
+	const qRewindCompactions = db.query(
+		"DELETE FROM compactions WHERE conversation_id = ? AND boundary_seq >= ?",
+	);
+	const qRewindContexts = db.query(
+		"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq >= ?",
+	);
+	const qRewindProjections = db.query(
+		"DELETE FROM event_projections WHERE conversation_id = ? AND seq >= ?",
+	);
+	const qRewindRatings = db.query(
+		`DELETE FROM reply_ratings WHERE channel = 'app' AND conversation_id = ?1
+		 AND (event_seq >= ?2 OR anchor_seq >= ?2)`,
+	);
+	const qRaiseSeqHighwater = db.query(
+		`UPDATE conversations SET seq_highwater = MAX(seq_highwater,
+			COALESCE((SELECT MAX(seq) FROM events WHERE conversation_id = ?1), 0))
+		 WHERE id = ?1`,
+	);
+
+	// The message id is the only identity the client and the store share;
+	// resolve it by decoding rows (the JSON envelope is not a column the
+	// wire can address). Corrupt rows decode to null and simply never
+	// match.
+	function findEvent(
+		id: string,
+		messageId: string,
+	): { seq: number; role: string; anchorSeq: number | null } | null {
+		for (const row of qHistory.all(id)) {
+			const message = parseEvent(id, row.seq, row.role, row.data);
+			if (message !== null && message.id === messageId) {
+				return { seq: row.seq, role: row.role, anchorSeq: row.anchor_seq };
+			}
+		}
+		return null;
+	}
 
 	function previousDmRow(chatId: number): Row | null {
 		if (!privateChatIdSchema.safeParse(chatId).success) return null;
@@ -1383,7 +1512,10 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		lastSeq(id) {
-			return qNextSeq.get(id)?.n ?? null;
+			// The highest extant event seq, null when none exists. The
+			// spin-off discard treats null as "nothing written yet"; the
+			// append high-water mark is not an event.
+			return qLastEventSeq.get(id)?.seq ?? null;
 		},
 
 		initializeAppSettings(id, defaults) {
@@ -1394,21 +1526,31 @@ export function openStore(dbPath: string): ConversationStore {
 			return readSettings(id, defaults);
 		},
 
-		forkToApp(fromId, appId, defaultCwd, title, defaults) {
+		forkToApp(fromId, appId, defaultCwd, title, defaults, opts) {
 			return db.transaction(() => {
 				const id = formatAddress(appAddress(appId));
+				const through = opts?.throughSeq;
 				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
 				// The memory opt-out is copied state — an excluded DM's text
 				// stays unsearchable and unretained in the fork too.
 				applyPatch(id, {
-					title,
-					titleImplicit: true,
+					...(title === null ? {} : { title }),
+					titleImplicit: title === null ? true : (opts?.titleImplicit ?? true),
 					memoryExcluded: qGet.get(fromId)?.memory_excluded === 1,
 					...(defaults === undefined ? {} : modelSettingsSchema.parse(defaults)),
 				});
+				if (opts?.projectId !== undefined && opts.projectId !== null) {
+					const bound = db.run("UPDATE conversations SET project_id = ? WHERE id = ?", [
+						opts.projectId,
+						id,
+					]);
+					if (bound.changes !== 1) throw new Error(`conversation ${id} project bind failed`);
+				}
 				// The FTS triggers fire on these inserts — correct: the app
 				// pool's search should see the copied exchange.
-				for (const e of qAllEvents.all(fromId)) {
+				const events =
+					through === undefined ? qAllEvents.all(fromId) : qEventsThrough.all(fromId, through);
+				for (const e of events) {
 					qInsertEvent.run(
 						id,
 						e.seq,
@@ -1421,9 +1563,11 @@ export function openStore(dbPath: string): ConversationStore {
 				}
 				// Only the latest pointer copies — it alone steers the model
 				// view — and its eligibility with it: the fork's memory-bound
-				// view must match the source's.
+				// view must match the source's. A branch drops a pointer whose
+				// boundary lies past its cut: the summary would describe events
+				// the branch does not hold.
 				const compaction = qCompaction.get(fromId);
-				if (compaction !== null) {
+				if (compaction !== null && (through === undefined || compaction.boundary_seq < through)) {
 					qInsertCompaction.run(
 						id,
 						compaction.boundary_seq,
@@ -1434,7 +1578,9 @@ export function openStore(dbPath: string): ConversationStore {
 						compaction.created_at,
 					);
 				}
-				for (const c of qContextsFor.all(fromId)) {
+				for (const c of through === undefined
+					? qContextsFor.all(fromId)
+					: qContextsThrough.all(fromId, through)) {
 					qInsertContext.run(id, c.anchor_seq, c.content, c.source_ids, c.created_at);
 				}
 				// Committed projections ride along — the fork's model view
@@ -1443,7 +1589,11 @@ export function openStore(dbPath: string): ConversationStore {
 				// recovery address names the source id, so point it at the
 				// fork or recovery would read another conversation's events
 				// (refused for an excluded fork) and die with the source.
-				for (const p of qAllProjections.all(fromId)) {
+				const projections =
+					through === undefined
+						? qAllProjections.all(fromId)
+						: qProjectionsThrough.all(fromId, through);
+				for (const p of projections) {
 					qInsertProjection.run(
 						id,
 						p.seq,
@@ -1458,6 +1608,66 @@ export function openStore(dbPath: string): ConversationStore {
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);
 			})();
+		},
+
+		messageEvent(id, messageId) {
+			const found = findEvent(id, messageId);
+			return found === null ? null : { seq: found.seq, role: found.role };
+		},
+
+		editUserMessage(id, messageId, message) {
+			let unarchived = false;
+			const edit = db.transaction((): MessageEdit | null => {
+				const found = findEvent(id, messageId);
+				if (found === null || found.role !== "user") return null;
+				const conv = qGet.get(id);
+				if (!conv) throw new Error(`conversation ${id} not found`);
+				const cut = found.seq;
+				// Spend every seq this conversation ever wrote before the
+				// delete: a rating or journal row addressed past the cut must
+				// never re-bind to the event the edit appends.
+				qRaiseSeqHighwater.run(id);
+				const events = Number(qRewindEvents.run(id, cut).changes);
+				const compactions = Number(qRewindCompactions.run(id, cut).changes);
+				const contexts = Number(qRewindContexts.run(id, cut).changes);
+				const projections = Number(qRewindProjections.run(id, cut).changes);
+				const ratings = Number(qRewindRatings.run(id, cut).changes);
+				const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
+				qInsertEvent.run(
+					id,
+					seq,
+					message.role,
+					JSON.stringify({ v: 1, message }),
+					null,
+					new Date().toISOString(),
+					conv.memory_excluded === 0 ? 1 : 0,
+				);
+				if (
+					conv.archived_at !== null &&
+					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0
+				) {
+					unarchived = true;
+				}
+				return { seq, cutSeq: cut, events, compactions, contexts, projections, ratings };
+			})();
+			if (edit === null) return null;
+			// Queued retention follows the events out. The purge waits for
+			// the commit — cancelling first and then rolling back would
+			// strand rows forever — and an already-retained memory is out of
+			// scope: the service owns it, this store can only stop new work.
+			try {
+				const purged = memoryQueue.cancelAnchoredFrom(id, edit.cutSeq);
+				if (purged > 0) {
+					log.info("retention purged with edited tail", {
+						conversation: id,
+						documents: purged,
+					});
+				}
+			} catch (err) {
+				log.warn("retention purge failed during message edit", err, { conversation: id });
+			}
+			if (unarchived) log.info("conversation unarchived on activity", { conversation: id });
+			return edit;
 		},
 
 		setMeta(id, patch) {

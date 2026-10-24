@@ -2064,7 +2064,7 @@ export function Composer({
 													title={ref}
 													onClick={() => {
 														setModelMenuOpen(false);
-														setKnob({ model: ref });
+														if (ref !== cfg.model) setKnob({ model: ref });
 													}}
 												>
 													<span className="mi">
@@ -2129,7 +2129,7 @@ export function Composer({
 								provNames={cfg.catalog.map((g) => g.provider)}
 								onPick={(ref) => {
 									setModelSheetOpen(false);
-									setKnob({ model: ref });
+									if (ref !== cfg.model) setKnob({ model: ref });
 								}}
 								onToggleFavorite={starModel}
 								onClose={() => setModelSheetOpen(false)}

@@ -195,6 +195,20 @@ spellings owned by src/tags.ts) at a block start renders fenced as
 `status`, not as a transcript paragraph — it is the event envelope, and
 the prose after it in the same paragraph continues as text.
 
+**Box-drawing runs (ruling 2026-10-24, operator paste rendered as
+proportional-font noise).** A pasted ╔═╗ table, a file tree, a
+diagram — alignment-dependent art that collapses in proportional
+type. Two box chars open a run, any box char extends it, and a lone
+stray stays prose. A run that tabulates cleanly (every rule line
+agrees on column edges; every body line carries a vertical on each —
+the right border alone may fall past a trimmed end) renders through
+the same `.md-table` path as pipe tables: mid-rules name the first
+band the header, a band's physical lines merge into wrapped cells,
+and a separator-less table renders headerless rows where an empty
+first cell marks a continuation. Any other run keeps its fixed-width
+shape inside a `text` fence — scrollable, clippable, intact.
+Render-side only; history text is never rewritten.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

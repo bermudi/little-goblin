@@ -42,6 +42,55 @@ describe("Markdown", () => {
 		expect(html).toContain("<td>1</td>");
 	});
 
+	// A pasted ╔═╗ table is alignment-dependent art — the mid-rule
+	// names the first band the header, and a cell the drawing wrapped
+	// across physical lines rejoins. An unclosed tail (no bottom
+	// border) still parses.
+	test("a box-drawn table renders as a real table, wrapped cells rejoined", () => {
+		const html = renderToStaticMarkup(
+			<Markdown
+				text={[
+					" ┌────────┬───────┐",
+					" │ Name   │ Note  │",
+					" ├────────┼───────┤",
+					" │ a      │ one   │",
+					" │        │ two   │",
+					" ├────────┼───────┤",
+					" │ b      │ three │",
+				].join("\n")}
+			/>,
+		);
+		expect(html).toContain('class="md-tablewrap"');
+		expect(html).toContain("<th>Name</th>");
+		expect(html).toContain("<th>Note</th>");
+		expect(html).toContain("<td>one two</td>");
+		expect(html).toContain("<td>three</td>");
+	});
+
+	test("a box table without a mid rule renders rows without a header", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"┌───┬───┐\n│ a │ b │\n│ 1 │ 2 │\n└───┴───┘"} />,
+		);
+		expect(html).toContain('class="md-tablewrap"');
+		expect(html).not.toContain("<th>");
+		expect(html).toContain("<td>a</td>");
+		expect(html).toContain("<td>2</td>");
+	});
+
+	test("box art that is not a table keeps its fixed-width shape in a fence", () => {
+		const html = renderToStaticMarkup(<Markdown text={"tree\n├── a.ts\n└── b.ts"} />);
+		expect(html).toContain("codeblock");
+		expect(html).toContain("├── a.ts");
+		expect(html).not.toContain("<table");
+	});
+
+	test("a lone box-char line stays prose", () => {
+		const html = renderToStaticMarkup(<Markdown text={"a ── b\nplain line"} />);
+		expect(html).toContain("<p>");
+		expect(html).not.toContain("codeblock");
+		expect(html).not.toContain("<table");
+	});
+
 	// Delegation and program notices open with a machinery tag line —
 	// machine speech that must read as an envelope, not transcript prose.
 	test("a machinery tag line renders fenced, following prose stays text", () => {

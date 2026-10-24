@@ -227,6 +227,108 @@ function splitRow(line: string): string[] {
 	return t.split("|").map((c) => c.trim());
 }
 
+// Box-drawing runs (U+2500–U+257F): a pasted ╔═╗ table, a file tree,
+// a diagram — alignment-dependent art that collapses into noise in
+// proportional type. A run that tabulates cleanly renders through the
+// same .md-table path as pipe tables; anything else keeps its
+// fixed-width shape inside a fence, scrollable and intact.
+const BOX_ANY = /[\u2500-\u257F]/;
+const BOX_RUN = /[\u2500-\u257F].*[\u2500-\u257F]/;
+const BOX_HORIZ = /[─━═]/;
+const BOX_VERT = /[│┃║]/;
+
+// A rule line holds only box chars and whitespace with at least one
+// horizontal stroke — a table's border or row separator. Its column
+// edges are the x-positions of the non-horizontal chars. A line that
+// isn't a pure rule returns null.
+function ruleEdges(line: string): number[] | null {
+	if (!/^[\s\u2500-\u257F]+$/.test(line) || !BOX_HORIZ.test(line)) return null;
+	const edges: number[] = [];
+	for (let i = 0; i < line.length; i++) {
+		const ch = line[i]!;
+		if (BOX_ANY.test(ch) && !BOX_HORIZ.test(ch)) edges.push(i);
+	}
+	return edges;
+}
+
+// null = the run isn't one clean grid (spanning cells, ragged edges,
+// no rules at all) — the caller keeps it as fixed-width art instead.
+function boxTable(run: string[]): { head: string[] | null; rows: string[][] } | null {
+	const rules = run.map(ruleEdges);
+	const edges = rules.find((e) => e !== null);
+	if (edges === undefined || edges.length < 2) return null;
+	if (
+		!rules.every(
+			(e) => e === null || (e.length === edges.length && e.every((v, i) => v === edges[i])),
+		)
+	)
+		return null;
+	// Every non-rule line is a body line: a vertical on every edge — a
+	// gap is a spanning cell this doesn't pretend to parse. The right
+	// border alone may fall past a line's trimmed end (an unbordered
+	// last cell).
+	const body = (l: string) =>
+		BOX_VERT.test(l) &&
+		edges.every((e, i) =>
+			e < l.length && BOX_VERT.test(l[e]!)
+				? true
+				: i === edges.length - 1 && l.trimEnd().length <= e,
+		);
+	// Bands of body lines between rules; a band is one logical row and
+	// its physical lines merge — a cell wrapped by the drawing rejoins.
+	const bands: string[][] = [];
+	let cur: string[] = [];
+	for (let i = 0; i < run.length; i++) {
+		if (rules[i] !== null) {
+			if (cur.length > 0) {
+				bands.push(cur);
+				cur = [];
+			}
+			continue;
+		}
+		if (!body(run[i]!)) return null;
+		cur.push(run[i]!);
+	}
+	if (cur.length > 0) bands.push(cur);
+	const cellsOf = (l: string) =>
+		edges.slice(0, -1).map((e, c) => l.slice(e + 1, edges[c + 1]).trim());
+	const cols = (band: string[]) =>
+		edges
+			.slice(0, -1)
+			.map((e, c) =>
+				band
+					.map((l) => l.slice(e + 1, edges[c + 1]).trim())
+					.filter((s) => s !== "")
+					.join(" "),
+			);
+	// One band means no mid-rules: each physical line is its own row,
+	// and a line with an empty first cell continues the row above —
+	// the shape a wrapped cell takes without separators delimiting
+	// rows.
+	if (bands.length === 1) {
+		const rows: string[][] = [];
+		for (const l of bands[0]!) {
+			const cell = cellsOf(l);
+			const prev = rows[rows.length - 1];
+			if (prev !== undefined && cell[0] === "")
+				cell.forEach((s, ci) => {
+					if (s !== "")
+						prev[ci] = prev[ci] === undefined || prev[ci] === "" ? s : `${prev[ci]} ${s}`;
+				});
+			else rows.push(cell);
+		}
+		const kept = rows.filter((r) => r.some((c) => c !== ""));
+		return kept.length === 0 ? null : { head: null, rows: kept };
+	}
+	// With mid-rules the first band is the header row.
+	const head = cols(bands[0]!);
+	const rows = bands
+		.slice(1)
+		.map(cols)
+		.filter((r) => r.some((c) => c !== ""));
+	return rows.length === 0 ? null : { head, rows };
+}
+
 interface ListItem {
 	depth: number;
 	ordered: boolean;
@@ -542,6 +644,54 @@ export function Markdown({
 				</blockquote>,
 			);
 			continue;
+		}
+
+		// Box-drawing run — two box chars open it, any box char extends
+		// it, and a lone stray stays prose. A run that tabulates cleanly
+		// renders as a real table; anything else keeps its fixed-width
+		// shape fenced, never proportional-font noise.
+		if (BOX_RUN.test(line)) {
+			const run: string[] = [];
+			let j = i;
+			while (j < lines.length && BOX_ANY.test(lines[j]!)) {
+				run.push(lines[j]!);
+				j++;
+			}
+			if (run.length >= 2) {
+				flushPara();
+				const t = boxTable(run);
+				if (t === null)
+					blocks.push(
+						<CodeBlock key={key++} lang="" code={run.join("\n")} clip={clipFences} />,
+					);
+				else
+					blocks.push(
+						<div key={key++} className="md-tablewrap">
+							<table className="md-table">
+								{t.head !== null && (
+									<thead>
+										<tr>
+											{t.head.map((h, c) => (
+												<th key={c}>{inline(h, onFileLink)}</th>
+											))}
+										</tr>
+									</thead>
+								)}
+								<tbody>
+									{t.rows.map((r, ri) => (
+										<tr key={ri}>
+											{r.map((c, ci) => (
+												<td key={ci}>{inline(c, onFileLink)}</td>
+											))}
+										</tr>
+									))}
+								</tbody>
+							</table>
+						</div>,
+					);
+				i = j;
+				continue;
+			}
 		}
 
 		if (line.includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]!)) {

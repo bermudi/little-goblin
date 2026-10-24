@@ -1241,9 +1241,13 @@ function AppShell() {
 
 	// Mobile (M): /app is the chats list, a thread or the staged composer
 	// is full-bleed, and the thumb bar stands down while either is open.
+	// A project page stands down too — its composer is pinned to the
+	// viewport bottom, where the fixed bar would paint over it.
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
 	const chatSurfaceOpen =
-		(page === "chat" && (current !== null || composeStaged)) || page === "window";
+		(page === "chat" && (current !== null || composeStaged)) ||
+		page === "window" ||
+		page === "project";
 	// The More sheet carries every system surface except Attention, which
 	// owns its own bar slot.
 	const MORE_TAB_KEYS = [
@@ -1434,7 +1438,8 @@ function AppShell() {
 				<header>
 					{/* Phone-widths-only back doors: a thread and the staged
 						composer both stand down for the chats list, which is the
-						home surface on a phone. Desktop never renders them. */}
+						home surface on a phone; a project stands down for the
+						projects index it came from. Desktop never renders them. */}
 					{phone && page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1444,7 +1449,9 @@ function AppShell() {
 							onClick={() => {
 								if (!leaveDirty()) return;
 								setComposeStaged(false);
-								select(null);
+								// The guard above settled the question — select's
+								// own guard must not ask it again.
+								select(null, { skipDirtyGuard: true });
 							}}
 						>
 							<svg
@@ -1468,6 +1475,28 @@ function AppShell() {
 							aria-label="Back to chats"
 							title="Chats"
 							onClick={() => setComposeStaged(false)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
+					{phone && page === "project" && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to projects"
+							title="Projects"
+							onClick={openProjectsIndex}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1837,8 +1866,9 @@ function AppShell() {
 					))}
 			</main>
 			{/* Mobile (M): the thumb bar — every surface one tap away. It
-				stands down inside a thread or the staged composer, where the
-				composer owns the bottom edge. Desktop never renders it. */}
+				stands down inside a thread, the staged composer, a project, or
+				the context-window view, where the open surface owns the
+				bottom edge. Desktop never renders it. */}
 			{phone && !chatSurfaceOpen && (
 				<nav className="tabbar" aria-label="Surfaces">
 					<button
@@ -1849,7 +1879,10 @@ function AppShell() {
 							if (page === "chat") return;
 							if (!leaveDirty()) return;
 							setComposeStaged(false);
-							select(null);
+							// The guard above settled the question — select's own
+							// guard must not ask again (a decline there would
+							// silently cancel an approved navigation).
+							select(null, { skipDirtyGuard: true });
 						}}
 					>
 						<svg
@@ -1869,8 +1902,10 @@ function AppShell() {
 					</button>
 					<button
 						type="button"
-						className={page === "projects" || page === "project" ? "tab on" : "tab"}
-						aria-current={page === "projects" || page === "project" ? "page" : undefined}
+						// The bar is stood down on a project page, so the tab can
+						// only be current for the index.
+						className={page === "projects" ? "tab on" : "tab"}
+						aria-current={page === "projects" ? "page" : undefined}
 						onClick={openProjectsIndex}
 					>
 						<svg

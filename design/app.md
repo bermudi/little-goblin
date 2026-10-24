@@ -431,9 +431,12 @@ slide-in drawer is retired on the app channel. Navigation is a fixed thumb
 bar — Chats · Projects · Notes · Attention · More — and one surface fills
 the screen.
 
-- The bar stands down inside a thread, the staged composer, and the
-  context-window view: the composer owns the bottom edge there. The header
-  carries a phone-only back door to the chats list for those states.
+- The bar stands down inside a thread, the staged composer, a project
+  page, and the context-window view: a full-bleed surface with its own
+  bottom edge owns the screen there. The header carries a phone-only
+  back door to the chats list for the chat states and to the projects
+  index for a project page. The context-window view needs no door — its
+  own in-page back returns to the thread on every width.
 - `/app` on a phone is the chats list — the rail's list, not the
   empty-state composer. "New conversation" stages the composer as its own
   screen (`composeStaged`); on desktop `select(null)` still is the

@@ -1,17 +1,45 @@
 // Mobile (M): phone widths retire the drawer — /app is the chats screen,
-// a thread or the staged composer stands it down, and the thumb bar owns
-// navigation with the More sheet carrying the system surfaces. The matchMedia
-// stub is what makes this realm a phone; everything else rides the same
-// fetch-at-the-edge fakes as App.test.tsx.
+// a thread, the staged composer, or a project page stands it down, and
+// the thumb bar owns navigation with the More sheet carrying the system
+// surfaces. The matchMedia stub is what makes this realm a phone;
+// everything else rides the same fetch-at-the-edge fakes as App.test.tsx.
 import { describe, beforeEach, afterEach, test, expect } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import type { AppConversationList } from "../../src/http/app-wire.ts";
+import {
+	authDefaults,
+	parseConfig,
+	transcriptionDefaults,
+	transcriptionKinds,
+} from "../../src/config.ts";
+import type { AppConversationList, AppProject } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const SETTINGS = parseConfig({
+	providers: {
+		main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
+	},
+	model: "main/test",
+	operators: [111],
+	allowedUsers: [111],
+	telegram: { model: "main/test", thinking: "medium" },
+});
+
+const projRow = (name: string): AppProject => ({
+	id: `p-${name.split(" ")[0]!.toLowerCase()}`,
+	name,
+	slug: name.toLowerCase().replaceAll(" ", "-"),
+	dir: `/tmp/${name}`,
+	managed: true,
+	instructions: "",
+	memory: "shared",
+	createdAt: "2026-10-08T00:00:00.000Z",
+	archivedAt: null,
+});
 
 describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let win: Window;
@@ -20,6 +48,11 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let installed: string[] = [];
 	let phone: boolean;
 	let conversations: AppConversationList["conversations"];
+	let projects: AppProject[];
+	let settings: typeof SETTINGS;
+	let confirmAnswer = false;
+	let confirmCalls = 0;
+	let confirmMessages: string[] = [];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -34,6 +67,11 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		container = div as unknown as HTMLElement;
 		installed = [];
 		phone = true;
+		projects = [];
+		settings = SETTINGS;
+		confirmAnswer = false;
+		confirmCalls = 0;
+		confirmMessages = [];
 		conversations = [
 			{
 				id: "app/fixture",
@@ -65,6 +103,11 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		Reflect.set(win, "confirm", (message: string) => {
+			confirmCalls += 1;
+			confirmMessages.push(message);
+			return confirmAnswer;
+		});
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		// The realm's width: the stub is what puts the realm on a phone.
 		Reflect.set(win, "matchMedia", (query: string) => ({
@@ -80,7 +123,26 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 					json({ id: "app/created", title: null, createdAt: "2026-10-10T00:00:00Z" }),
 				);
 			if (url === "/api/app/conversations") return Promise.resolve(json({ conversations }));
-			if (url === "/api/app/projects") return Promise.resolve(json({ projects: [] }));
+			if (url === "/api/app/projects") return Promise.resolve(json({ projects }));
+			if (url.startsWith("/api/app/notes"))
+				return Promise.resolve(json({ notes: [] }));
+			if (url === "/api/app/settings")
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							config: settings,
+							providerKinds: ["openai-compatible", "responses", "openrouter", "codex"],
+							searchKinds: ["ddg", "brave", "jina"],
+							fetchKinds: ["local", "firecrawl", "jina"],
+							transcriptionKinds,
+							transcriptionDefaults,
+							authDefaults,
+							authNames: ["main", "groq"],
+							modelCatalog: [],
+						}),
+						{ headers: { "content-type": "application/json", etag: '"v1"' } },
+					),
+				);
 			if (url === "/api/app/conversations/fixture/messages")
 				return Promise.resolve(json({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url === "/api/app/conversations/fixture/stream")
@@ -243,6 +305,81 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		expect(container.querySelector(".chat .composer")).toBeTruthy();
 
 		await click(container.querySelector(".mobile-back"));
+		await waitFor(
+			() => container.querySelector(".chatlist-screen") !== null,
+			"chats screen to return",
+		);
+	});
+
+	test("phone: a project page stands the bar down; back returns to the projects index", async () => {
+		projects = [projRow("Goblin Work")];
+		await mount();
+
+		await click(tab("Projects"));
+		await waitFor(
+			() =>
+					[...container.querySelectorAll("button.idx")].some((b) =>
+						b.textContent?.includes("Goblin Work"),
+					),
+			"projects index",
+		);
+		await click(
+				[...container.querySelectorAll("button.idx")].find((b) =>
+					b.textContent?.includes("Goblin Work"),
+				),
+		);
+		await waitFor(
+			() => container.querySelector(".tabbar") === null,
+			"thumb bar to stand down on a project page",
+		);
+		// The project composer owns the bottom edge — the fixed bar must
+		// not paint over it, and a back door must exist or the operator is
+		// stranded with no bar and no other navigation.
+		expect(container.querySelector(".chat form.composer")).toBeTruthy();
+		const back = container.querySelector(".mobile-back");
+		expect(back?.getAttribute("aria-label")).toBe("Back to projects");
+
+		await click(back);
+		await waitFor(
+			() => container.querySelector(".tabbar") !== null,
+			"thumb bar to return with the projects index",
+		);
+		expect(win.location.pathname).toBe("/app/projects");
+	});
+
+	test("phone: the Chats tab asks once about a dirty settings editor", async () => {
+		await mount();
+
+		await click(tab("More"));
+		await click(
+				[...container.querySelectorAll(".sheet-row")].find(
+					(b) => b.textContent === "Settings",
+				),
+		);
+		await waitFor(
+			() => container.querySelector(".settings") !== null,
+			"settings page",
+		);
+		await click(
+				[...container.querySelectorAll("button.idx")].find((b) =>
+					b.textContent?.includes("Access"),
+			),
+		);
+		// An invalid edit — dropping the only operator — can never
+		// autosave, so the editor stays dirty: exactly the state the
+		// navigation guard must question.
+		await click(container.querySelector(".chip button"));
+		await waitFor(
+			() => container.textContent?.includes("unsaved") === true,
+			"dirty editor",
+		);
+
+		confirmAnswer = true;
+		await click(tab("Chats"));
+		// One question, one answer — a second confirm declining here
+		// would silently cancel a navigation just approved.
+		expect(confirmCalls).toBe(1);
+		expect(confirmMessages).toEqual(["Discard unsaved settings changes?"]);
 		await waitFor(
 			() => container.querySelector(".chatlist-screen") !== null,
 			"chats screen to return",

@@ -68,6 +68,8 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	tts: "text to speech",
 	transcription: "speech to text",
 	vision: "vision",
+	image: "image generation",
+	capabilities: "capabilities",
 	search: "search chain",
 	fetch: "fetch chain",
 	operators: "operators",

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { authDefaults, type Config, memoryConfigSchema, parseConfig } from "../../src/config.ts";
 import {
 	bodyFromDraft,
+	capabilityFlags,
 	displayLevel,
 	draftFromConfig,
 	emptyTranscription,
@@ -68,6 +69,8 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	tts: null,
 	transcription: null,
 	vision: null,
+	image: null,
+	capabilities: capabilityFlags(),
 	search: null,
 	fetch: null,
 	operators: [111],

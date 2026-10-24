@@ -89,9 +89,10 @@ export interface ConfigPostBody {
 					engine?: string | undefined;
 					weights?: string | undefined;
 				}[];
-		  };
-	vision?: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
-	image?: "" | { model: string; size?: string };
+		  }
+		| undefined;
+	vision?: "" | { model: string; maxTokens: number; mode?: "auto" | "always" } | undefined;
+	image?: "" | { model: string; size?: string } | undefined;
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
@@ -116,7 +117,8 @@ export interface ConfigPostBody {
 				budget: "low" | "mid" | "high";
 				maxTokens: number | undefined;
 				recallTimeoutMs: number | undefined;
-		  };
+		  }
+		| undefined;
 	logLevel: "debug" | "info" | "warn" | "error";
 	/** On/off flips for the parkable blocks — applied to the normalized
 	 *  disk config before the rest of the body merges. */

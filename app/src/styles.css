@@ -2403,16 +2403,16 @@ a.hit-title {
 	display: flex;
 	flex-direction: column;
 	gap: 0.45rem;
-	padding: 0.5rem 0;
 	border-top: 1px solid var(--app-divider);
 }
 .chain-card:first-of-type {
 	border-top: 0;
-	padding-top: 0.1rem;
 }
 .chain-head {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
+	row-gap: 0.35rem;
 }
 .chain-num {
 	font-family: var(--font-mono);
@@ -4803,11 +4803,16 @@ button.link:hover {
 	background: var(--app-bg);
 	color: var(--app-fg);
 }
-/* Model popover rows: label stack left, check pinned right, never wraps. */
-.model-pop li button {
+/* Model popover rows: label stack left, check pinned right, never
+   wraps. The menu also carries .note-pick, whose li button is
+   display:block — out-rank it. */
+.note-pick.model-pop li button {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
 	flex-wrap: nowrap;
 }
-.model-pop .check {
+.note-pick.model-pop .check {
 	flex: none;
 	margin-left: auto;
 }

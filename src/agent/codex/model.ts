@@ -159,6 +159,34 @@ async function* sseEvents(
 	const reader = body.getReader();
 	const decoder = new TextDecoder();
 	let buf = "";
+	// Dispatch one SSE frame: yields its parsed data payload, returns
+	// true when the frame was [DONE] — the stream stops there. A frame
+	// may carry several data: lines (join per the SSE spec); event:/id:/
+	// comment lines drop.
+	const frameEvents = function* (
+		frame: string,
+		eof = false,
+	): Generator<Record<string, unknown>, boolean> {
+		const data = frame
+			.split("\n")
+			.filter((l) => l.startsWith("data:"))
+			.map((l) => l.slice(5).trimStart())
+			.join("\n");
+		if (!data) return false;
+		if (data === "[DONE]") return true;
+		try {
+			yield JSON.parse(data) as Record<string, unknown>;
+		} catch (err) {
+			// Mid-stream a malformed frame is a protocol break — die on it.
+			// At EOF it is a connection cut mid-frame; the loop-end guard's
+			// "ended before a terminal response" is the honest diagnosis,
+			// so let it fire instead of masking it with a parse error.
+			if (!eof) {
+				throw new Error("codex stream contained a malformed SSE data frame", { cause: err });
+			}
+		}
+		return false;
+	};
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
@@ -170,22 +198,15 @@ async function* sseEvents(
 		while ((idx = buf.indexOf("\n\n")) !== -1) {
 			const frame = buf.slice(0, idx);
 			buf = buf.slice(idx + 2);
-			// A frame may carry several data: lines (join per the SSE
-			// spec); event:/id:/comment lines drop.
-			const data = frame
-				.split("\n")
-				.filter((l) => l.startsWith("data:"))
-				.map((l) => l.slice(5).trimStart())
-				.join("\n");
-			if (!data) continue;
-			if (data === "[DONE]") return;
-			try {
-				yield JSON.parse(data) as Record<string, unknown>;
-			} catch {
-				throw new Error("codex stream contained a malformed SSE data frame");
-			}
+			if (yield* frameEvents(frame)) return;
 		}
 	}
+	// EOF flush (the sibling zai adapter flushes the same case): a final
+	// frame without its terminating blank line still dispatches — a
+	// complete answer must not die as "ended before a terminal response"
+	// because a proxy trimmed the last separator or the backend closed.
+	buf += decoder.decode();
+	if (buf.length > 0 && (yield* frameEvents(buf, true))) return;
 }
 
 interface StreamState {

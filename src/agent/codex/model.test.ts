@@ -206,4 +206,41 @@ describe("CodexLanguageModel — request shape", () => {
 		);
 		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
 	});
+
+	test("a complete final frame without its terminating blank line still dispatches", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		const model = new CodexLanguageModel("gpt-6-astra", path, async () => {
+			// The completed frame's last byte is EOF — no trailing blank
+			// line. A proxy trimming the final separator must not kill a
+			// turn whose whole answer is on the wire.
+			const body = [
+				`data: ${JSON.stringify({
+					type: "response.output_item.added",
+					item: { type: "message", id: "m1" },
+				})}\n\n`,
+				`data: ${JSON.stringify({
+					type: "response.output_text.delta",
+					delta: "the answer",
+				})}\n\n`,
+				`data: ${JSON.stringify({
+					type: "response.completed",
+					response: { status: "completed", usage: {} },
+				})}`,
+			].join("");
+			return new Response(new TextEncoder().encode(body));
+		});
+		const r = await model.doGenerate({
+			prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+		});
+		expect(r.finishReason).toEqual({ unified: "stop", raw: "completed" });
+		expect(r.content).toEqual([{ type: "text", text: "the answer" }]);
+	});
+
+	test("a connection cut mid-frame still fails as an ended stream, not a parse error", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		const model = new CodexLanguageModel("gpt-6-astra", path, async () =>
+			new Response(new TextEncoder().encode(`data: {"type":"response.compl`)),
+		);
+		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
+	});
 });

@@ -2864,6 +2864,49 @@ describe("loop landings", () => {
 		store.close();
 	});
 
+	test("schema-rejected calls feed the same repeat detector — warns at 10, cuts at 20", async () => {
+		// A tool whose schema the model cannot satisfy plus a model that
+		// retries the identical invalid args is a loop like any other: the
+		// SDK maps the rejection to tool-input-error AND a following
+		// tool-output-error (id only — name+input were recorded at the
+		// input seam), which lands in noteCompletedCall.
+		const { model, requests } = loopModel({ input: () => ({}) });
+		let executions = 0;
+		const r = rig({
+			model,
+			addr: appAddress("loop"),
+			tools: {
+				probe: tool({
+					inputSchema: z.object({ q: z.string() }),
+					execute: async () => {
+						executions++;
+						return "never runs";
+					},
+				}),
+			},
+		});
+		const sink = new RecordingSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "spin" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed", forced: "repeat" });
+		await waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+		await r.runtime.shutdown();
+		expect(executions).toBe(0);
+		// Same ladder as completed calls: warn appended at the request
+		// after the 10th rejection, cut lands tools-off after the 20th.
+		expect(requests).toHaveLength(21);
+		expect(requests.slice(0, 10).every((req) => !req.prompt.includes(WARN_BIT))).toBe(true);
+		for (const req of requests.slice(10)) {
+			expect(occurrences(req.prompt, WARN_BIT)).toBe(1);
+		}
+		expect(requests[20]!.toolChoice).toBe("none");
+		expect(occurrences(requests[20]!.prompt, CUT_BIT)).toBe(1);
+		const md = (r.store.history(r.conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("repeat");
+		r.store.close();
+	});
+
 	test("same call with changing results never trips the detector", async () => {
 		const { model, requests } = loopModel({ calls: 25, input: () => ({ poll: true }) });
 		const { store, conv, runtime } = loopSetup(model, { execute: () => `fresh ${Math.random()}` });

@@ -221,10 +221,10 @@ bun run typecheck
 
 # --- 4. Refresh the served bundle -------------------------------------------
 if [ "$interrupted" = true ] ||
-	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
-	# The bundle inlines dependencies and the shared UI schema, not just
-	# app/. Build stages into app/dist.next; publish flips the app/dist
-	# symlink.
+	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$|src/tags\.ts$)' <<< "$changed_paths"; then
+	# The bundle inlines dependencies, the shared UI schema and the shared
+	# tags module, not just app/. Build stages into app/dist.next; publish
+	# flips the app/dist symlink.
 	bun run app:build
 	bash scripts/publish-app.sh
 fi
@@ -271,6 +271,12 @@ elif [ -n "$goblin_home" ] && [ -f "$goblin_home/state/goblin.log" ]; then
 	goblin_log="$goblin_home/state/goblin.log"
 else
 	echo "deploy: WARNING — goblin.log not resolvable (GOBLIN_HOME='${goblin_home:-unset}'); restart will read unexplained" >&2
+fi
+# The startup watcher reads the channel config (telegram is a boot-pinned
+# switch gating its acceptance evidence): point it at the unit's home
+# when it was resolvable, never at an empty value.
+if [ -n "$goblin_home" ]; then
+	export GOBLIN_HOME="$goblin_home"
 fi
 annotate_log "restarting goblin" "${old_rev:-none}"
 systemctl --user restart goblin

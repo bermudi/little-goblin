@@ -1,14 +1,21 @@
-// The ui block renderers — one component per leaf type, plus the two
-// containers. Every rendered root
+// The ui element renderers — one component per leaf type, plus the
+// containers. The input is a flat id→element map; `render(id)` resolves
+// children so the tree is walked lazily — the streaming surface swaps
+// in a render that skeletons pending ids instead. Every rendered root
 // carries ui-<type>. Local state (the open tab, form values — read
 // from the DOM at submit, never stored server-side, and the picked
 // choice row) lives and dies here; actions are the only way out —
 // they post a [ui] message through the composer's own sendMessage,
 // never a hidden channel.
 
-import { createContext, useContext, useState, type CSSProperties } from "react";
+import { createContext, Fragment, useContext, useState, type CSSProperties, type ReactNode } from "react";
 import type { UIMessage } from "ai";
-import type { UiBlock, UiLeaf, UiInput } from "../../../src/agent/tools/ui-schema.ts";
+import type {
+	UiElement,
+	UiInput,
+	UiLeaf,
+	UiLeafProps,
+} from "../../../src/agent/tools/ui-schema.ts";
 import { Markdown, type MarkdownNoteContext } from "../markdown.tsx";
 import { Skeleton } from "../tools/bits.tsx";
 import { Chart } from "./Chart.tsx";
@@ -25,6 +32,11 @@ export interface UiActionProps extends MarkdownNoteContext {
 	// partial srcdoc re-executes its scripts on every delta.
 	streaming?: boolean | undefined;
 }
+
+// Resolves an element id to rendered output — complete surfaces render
+// straight through; the streaming surface wraps it with skeletons for
+// pending ids and a visited guard for partial cycles.
+export type UiRender = (id: string) => ReactNode;
 
 function actionsOff({ onAction, busy }: UiActionProps): boolean {
 	return busy === true || onAction === undefined;
@@ -45,7 +57,7 @@ const PickContext = createContext<{ picked: string | null; pick: (label: string)
 function Text({
 	leaf,
 	...note
-}: { leaf: Extract<UiLeaf, { type: "text" }> } & MarkdownNoteContext) {
+}: { leaf: UiLeafProps<"text"> } & MarkdownNoteContext) {
 	return (
 		<div className="ui-text">
 			<Markdown text={leaf.md} {...note} />
@@ -56,7 +68,7 @@ function Text({
 function Callout({
 	leaf,
 	...note
-}: { leaf: Extract<UiLeaf, { type: "callout" }> } & MarkdownNoteContext) {
+}: { leaf: UiLeafProps<"callout"> } & MarkdownNoteContext) {
 	return (
 		<div className={`ui-callout ui-callout-${leaf.tone ?? "info"}`}>
 			{leaf.title !== undefined && <div className="ui-callout-title">{leaf.title}</div>}
@@ -65,7 +77,7 @@ function Callout({
 	);
 }
 
-function Stats({ leaf }: { leaf: Extract<UiLeaf, { type: "stats" }> }) {
+function Stats({ leaf }: { leaf: UiLeafProps<"stats"> }) {
 	return (
 		<div className="ui-stats">
 			{leaf.items.map((item, i) => (
@@ -79,7 +91,7 @@ function Stats({ leaf }: { leaf: Extract<UiLeaf, { type: "stats" }> }) {
 	);
 }
 
-function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
+function Table({ leaf }: { leaf: UiLeafProps<"table"> }) {
 	const { picked } = useContext(PickContext);
 	return (
 		<div className="ui-table">
@@ -108,7 +120,7 @@ function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
 function Steps({
 	leaf,
 	...note
-}: { leaf: Extract<UiLeaf, { type: "steps" }> } & MarkdownNoteContext) {
+}: { leaf: UiLeafProps<"steps"> } & MarkdownNoteContext) {
 	return (
 		<ol className="ui-steps">
 			{leaf.items.map((item, i) => (
@@ -129,7 +141,7 @@ function Choices({
 	leaf,
 	onAction,
 	busy,
-}: { leaf: Extract<UiLeaf, { type: "choices" }> } & UiActionProps) {
+}: { leaf: UiLeafProps<"choices"> } & UiActionProps) {
 	const { pick } = useContext(PickContext);
 	const disabled = actionsOff({ onAction, busy });
 	return (
@@ -159,7 +171,7 @@ function Form({
 	leaf,
 	onAction,
 	busy,
-}: { leaf: Extract<UiLeaf, { type: "form" }> } & UiActionProps) {
+}: { leaf: UiLeafProps<"form"> } & UiActionProps) {
 	const disabled = actionsOff({ onAction, busy });
 	return (
 		<form
@@ -227,73 +239,65 @@ function Form({
 	);
 }
 
+// A tab element that hasn't fully arrived may carry no label yet —
+// "…" is a placeholder, never emitted on a complete surface.
+function tabLabel(el: UiElement | undefined): string {
+	return el?.type === "tab" ? el.props.label : "…";
+}
+
 function Tabs({
-	block,
+	element,
+	elements,
+	render,
 	onAction,
 	busy,
 	streaming,
 	...note
-}: { block: Extract<UiBlock, { type: "tabs" }> } & UiActionProps) {
+}: {
+	element: Extract<UiElement, { type: "tabs" }>;
+	elements: Record<string, UiElement>;
+	render: UiRender;
+} & UiActionProps) {
 	const [active, setActive] = useState(0);
-	const tab = block.tabs[Math.min(active, block.tabs.length - 1)]!;
+	const ids = element.children;
+	const current = Math.min(active, ids.length - 1);
 	return (
 		<div className="ui-tabs">
 			<div className="ui-tab-bar" role="tablist">
-				{block.tabs.map((t, i) => (
+				{ids.map((id, i) => (
 					<button
-						key={i}
+						key={id}
 						type="button"
 						role="tab"
-						aria-selected={i === active}
-						className={i === active ? "ui-tab active" : "ui-tab"}
+						aria-selected={i === current}
+						className={i === current ? "ui-tab active" : "ui-tab"}
 						onClick={() => setActive(i)}
 					>
-						{t.label}
+						{tabLabel(elements[id])}
 					</button>
 				))}
 			</div>
 			{/* The active tab is part of the panel's key: leaf indexes alone
 			    collide across tabs, and uncontrolled form inputs would carry
 			    one tab's DOM values into another's submit. */}
-			<div className="ui-tab-panel" role="tabpanel" key={active}>
-				{tab.blocks.map((leaf, i) => (
-					<Leaf
-						key={i}
-						leaf={leaf}
-						onAction={onAction}
-						busy={busy}
-						streaming={streaming}
-						{...note}
-					/>
-				))}
+			<div className="ui-tab-panel" role="tabpanel" key={current}>
+				{render(ids[current]!)}
 			</div>
 		</div>
 	);
 }
 
 function Columns({
-	block,
-	onAction,
-	busy,
-	streaming,
-	...note
-}: { block: Extract<UiBlock, { type: "columns" }> } & UiActionProps) {
+	element,
+	render,
+}: { element: Extract<UiElement, { type: "columns" }>; render: UiRender }) {
 	return (
-		<div className="ui-columns" style={{ "--ui-cols": block.columns.length } as CSSProperties}>
-			{block.columns.map((col, i) => (
-				<div key={i} className="ui-column">
-					{col.title !== undefined && <div className="ui-column-title">{col.title}</div>}
-					{col.blocks.map((leaf, j) => (
-						<Leaf
-							key={j}
-							leaf={leaf}
-							onAction={onAction}
-							busy={busy}
-							streaming={streaming}
-							{...note}
-						/>
-					))}
-				</div>
+		<div
+			className="ui-columns"
+			style={{ "--ui-cols": element.children.length } as CSSProperties}
+		>
+			{element.children.map((id) => (
+				<Fragment key={id}>{render(id)}</Fragment>
 			))}
 		</div>
 	);
@@ -308,44 +312,95 @@ export function Leaf({
 }: { leaf: UiLeaf } & UiActionProps) {
 	switch (leaf.type) {
 		case "text":
-			return <Text leaf={leaf} streaming={streaming} {...note} />;
+			return <Text leaf={leaf.props} streaming={streaming} {...note} />;
 		case "callout":
-			return <Callout leaf={leaf} streaming={streaming} {...note} />;
+			return <Callout leaf={leaf.props} streaming={streaming} {...note} />;
 		case "stats":
-			return <Stats leaf={leaf} />;
+			return <Stats leaf={leaf.props} />;
 		case "table":
-			return <Table leaf={leaf} />;
+			return <Table leaf={leaf.props} />;
 		case "steps":
-			return <Steps leaf={leaf} streaming={streaming} {...note} />;
+			return <Steps leaf={leaf.props} streaming={streaming} {...note} />;
 		case "chart":
-			return <Chart leaf={leaf} />;
+			return <Chart leaf={leaf.props} />;
 		case "choices":
-			return <Choices leaf={leaf} onAction={onAction} busy={busy} />;
+			return <Choices leaf={leaf.props} onAction={onAction} busy={busy} />;
 		case "form":
-			return <Form leaf={leaf} onAction={onAction} busy={busy} />;
+			return <Form leaf={leaf.props} onAction={onAction} busy={busy} />;
 		case "html":
-			return streaming === true ? <Skeleton /> : <HtmlFrame leaf={leaf} />;
+			return streaming === true ? <Skeleton /> : <HtmlFrame leaf={leaf.props} />;
 	}
 }
 
-export function Block({
-	block,
+// One element of the map by id. tab/column render their own children —
+// their parents consume them (tabs for the bar+panel, columns for the
+// grid) — while a stray mid-stream tab/column still shows its content.
+export function Node({
+	id,
+	elements,
+	render,
 	onAction,
 	busy,
 	streaming,
 	...note
-}: { block: UiBlock } & UiActionProps) {
-	if (block.type === "tabs")
-		return <Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />;
-	if (block.type === "columns")
-		return (
-			<Columns block={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />
-		);
-	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />;
+}: {
+	id: string;
+	elements: Record<string, UiElement>;
+	render: UiRender;
+} & UiActionProps) {
+	const el = elements[id];
+	if (el === undefined) return null;
+	switch (el.type) {
+		case "stack":
+			return (
+				<div className="ui-stack">
+					{el.children.map((c) => (
+						<Fragment key={c}>{render(c)}</Fragment>
+					))}
+				</div>
+			);
+		case "tabs":
+			return (
+				<Tabs
+					element={el}
+					elements={elements}
+					render={render}
+					onAction={onAction}
+					busy={busy}
+					streaming={streaming}
+					{...note}
+				/>
+			);
+		case "tab":
+			return (
+				<>
+					{el.children.map((c) => (
+						<Fragment key={c}>{render(c)}</Fragment>
+					))}
+				</>
+			);
+		case "columns":
+			return <Columns element={el} render={render} />;
+		case "column":
+			return (
+				<div className="ui-column">
+					{el.props?.title !== undefined && (
+						<div className="ui-column-title">{el.props.title}</div>
+					)}
+					{el.children.map((c) => (
+						<Fragment key={c}>{render(c)}</Fragment>
+					))}
+				</div>
+			);
+		default:
+			return (
+				<Leaf leaf={el} onAction={onAction} busy={busy} streaming={streaming} {...note} />
+			);
+	}
 }
 
 // One complete interface — the wrapper shared by the finished render
-// and (block-by-block) the streaming one.
+// and (element-by-element) the streaming one.
 export function Surface({
 	input,
 	onAction,
@@ -359,21 +414,24 @@ export function Surface({
 	// is the only record, and it is already persisted.
 	const [tapped, setTapped] = useState<string | null>(null);
 	const picked =
-		tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input.blocks)) : null);
+		tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input)) : null);
+	const elements = input.elements;
+	const render: UiRender = (id) => (
+		<Node
+			id={id}
+			elements={elements}
+			render={render}
+			onAction={onAction}
+			busy={busy}
+			streaming={streaming}
+			{...note}
+		/>
+	);
 	return (
 		<PickContext.Provider value={{ picked, pick: setTapped }}>
 			<div className="ui">
 				{input.title !== undefined && <div className="ui-title">{input.title}</div>}
-				{input.blocks.map((block, i) => (
-					<Block
-						key={i}
-						block={block}
-						onAction={onAction}
-						busy={busy}
-						streaming={streaming}
-						{...note}
-					/>
-				))}
+				{render(input.root)}
 			</div>
 		</PickContext.Provider>
 	);

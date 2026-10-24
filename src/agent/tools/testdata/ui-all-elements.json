@@ -1,0 +1,172 @@
+{
+	"title": "Every element",
+	"root": "main",
+	"elements": {
+		"main": {
+			"type": "stack",
+			"children": ["intro", "warn", "kpis", "tbl", "plan", "bars", "temps", "spend", "pick", "ride", "pack", "bytype", "side", "calc"]
+		},
+		"intro": {
+			"type": "text",
+			"props": { "md": "Some **markdown** prose inside the interface." }
+		},
+		"warn": {
+			"type": "callout",
+			"props": {
+				"tone": "warn",
+				"title": "Heads up",
+				"md": "Watch the third row — it moved."
+			}
+		},
+		"kpis": {
+			"type": "stats",
+			"props": {
+				"items": [
+					{ "label": "Commute time", "value": "34 min", "note": "door to door" },
+					{ "label": "Monthly cost", "value": "$41" },
+					{ "label": "Flat tires", "value": "2", "note": "last year" }
+				]
+			}
+		},
+		"tbl": {
+			"type": "table",
+			"props": {
+				"columns": ["Bike", "Speed", "Comfort"],
+				"rows": [["Road", "fast", "low"], ["Gravel", "medium", "high"], ["Hybrid", "medium", "high"]]
+			}
+		},
+		"plan": {
+			"type": "steps",
+			"props": {
+				"items": [
+					{ "title": "Check tire pressure", "md": "Sidewall PSI, cold." },
+					{ "title": "Lube the chain" },
+					{ "title": "Test both brakes" }
+				]
+			}
+		},
+		"bars": {
+			"type": "chart",
+			"props": {
+				"kind": "bar",
+				"x": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+				"series": [
+					{ "name": "km ridden", "values": [12, 18, 9, 22, 15] },
+					{ "name": "km walked", "values": [4, 2, 6, 1, 5] }
+				],
+				"unit": "km"
+			}
+		},
+		"temps": {
+			"type": "chart",
+			"props": {
+				"kind": "line",
+				"x": ["6am", "9am", "12pm", "3pm", "6pm"],
+				"series": [{ "name": "temp", "values": [8, 14, 19, 21, 17] }],
+				"unit": "°C"
+			}
+		},
+		"spend": {
+			"type": "chart",
+			"props": {
+				"kind": "pie",
+				"x": ["VPS", "Domains + net"],
+				"series": [{ "name": "spend", "values": [219, 71] }],
+				"unit": "€"
+			}
+		},
+		"pick": {
+			"type": "choices",
+			"props": {
+				"prompt": "Which ride this weekend?",
+				"options": [{ "label": "Road loop" }, { "label": "Gravel trail" }, { "label": "Stay home" }]
+			}
+		},
+		"ride": {
+			"type": "form",
+			"props": {
+				"fields": [
+					{ "name": "distance", "label": "Distance (km)", "kind": "number" },
+					{ "name": "terrain", "label": "Terrain", "kind": "select", "options": ["flat", "hilly", "mixed"] },
+					{ "name": "notes", "label": "Notes", "kind": "text" }
+				],
+				"submit": "Plan ride"
+			}
+		},
+		"pack": {
+			"type": "form",
+			"props": {
+				"fields": [
+					{ "name": "water", "label": "Water (2L)", "kind": "checkbox" },
+					{ "name": "tent", "label": "Tent", "kind": "checkbox" },
+					{ "name": "notes", "label": "Notes", "kind": "textarea" },
+					{ "name": "leave", "label": "Leave on", "kind": "date" }
+				],
+				"submit": "Done packing"
+			}
+		},
+		"bytype": {
+			"type": "tabs",
+			"children": ["tpros", "tcons"]
+		},
+		"tpros": {
+			"type": "tab",
+			"props": { "label": "Pros" },
+			"children": ["pros-t"]
+		},
+		"pros-t": {
+			"type": "text",
+			"props": { "md": "Light, fast, efficient." }
+		},
+		"tcons": {
+			"type": "tab",
+			"props": { "label": "Cons" },
+			"children": ["cons-t", "cons-c"]
+		},
+		"cons-t": {
+			"type": "text",
+			"props": { "md": "Harsh on rough roads." }
+		},
+		"cons-c": {
+			"type": "callout",
+			"props": { "tone": "info", "md": "Skinny tires puncture more." }
+		},
+		"side": {
+			"type": "columns",
+			"children": ["croad", "cgravel"]
+		},
+		"croad": {
+			"type": "column",
+			"props": { "title": "Road" },
+			"children": ["cr-t", "cr-s"]
+		},
+		"cr-t": {
+			"type": "text",
+			"props": { "md": "Best on smooth tarmac." }
+		},
+		"cr-s": {
+			"type": "stats",
+			"props": { "items": [{ "label": "Weight", "value": "8.2 kg" }] }
+		},
+		"cgravel": {
+			"type": "column",
+			"props": { "title": "Gravel" },
+			"children": ["cg-t", "cg-s"]
+		},
+		"cg-t": {
+			"type": "text",
+			"props": { "md": "Goes anywhere." }
+		},
+		"cg-s": {
+			"type": "stats",
+			"props": { "items": [{ "label": "Weight", "value": "10.1 kg" }] }
+		},
+		"calc": {
+			"type": "html",
+			"props": {
+				"title": "Tip calculator",
+				"html": "<h3>Tip calculator</h3><label>Bill <input id=\"b\" type=\"number\" value=\"50\"></label> <label>Tip % <input id=\"p\" type=\"number\" value=\"15\"></label> <p>Tip: <b id=\"t\">$7.50</b> — total <b id=\"o\">$57.50</b></p><script>function c(){var b=parseFloat(document.getElementById('b').value)||0;var p=parseFloat(document.getElementById('p').value)||0;var t=b*p/100;document.getElementById('t').textContent='$'+t.toFixed(2);document.getElementById('o').textContent='$'+(b+t).toFixed(2)}document.getElementById('b').oninput=c;document.getElementById('p').oninput=c;c()</script>"
+			}
+		}
+	}
+}

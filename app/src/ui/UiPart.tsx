@@ -1,55 +1,83 @@
 // UiPart — the tool-part boundary for "ui". The part's input IS the
-// interface: streaming input
-// renders every block that validates with a skeleton tail (html mounts
-// only once complete), complete input renders all-or-nothing — a bad
-// payload falls back to the generic tool row, never a blank.
+// interface: streaming input renders the elements that have arrived
+// (root first, pending ids as skeletons, orphans in arrival order
+// while root is unwritten; html mounts only once complete), complete
+// input renders all-or-nothing — a bad payload falls back to the
+// generic tool row, never a blank.
 
 import type { DynamicToolUIPart, ToolUIPart, UIMessage } from "ai";
+import type { ReactNode } from "react";
 import {
 	normalizeUiInput,
-	uiBlockSchema,
+	uiElementSchema,
 	uiInputSchema,
+	type UiElement,
 } from "../../../src/agent/tools/ui-schema.ts";
 import type { MarkdownNoteContext } from "../markdown.tsx";
 import { Skeleton } from "../tools/bits.tsx";
 import { ToolRun } from "../tools/mod.tsx";
-import { Block, Surface, type UiActionProps } from "./blocks.tsx";
+import { Node, Surface, type UiActionProps, type UiRender } from "./blocks.tsx";
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
 function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteContext) {
-	const rawIn = (typeof input === "object" && input !== null ? input : {}) as Record<
-		string,
-		unknown
-	>;
-	const normalized = normalizeUiInput(input).value;
-	const raw = (typeof normalized === "object" && normalized !== null ? normalized : {}) as Record<
-		string,
-		unknown
-	>;
-	const title = typeof raw.title === "string" ? raw.title : null;
-	const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
-	// A bare {type} tail is dropped as a fragment by normalize — but
-	// mid-stream it IS the in-flight block, so it still gets a skeleton.
-	const rawTail = Array.isArray(rawIn.blocks) ? rawIn.blocks.at(-1) : undefined;
-	const tailFragment =
-		typeof rawTail === "object" &&
-		rawTail !== null &&
-		!Array.isArray(rawTail) &&
-		Object.keys(rawTail).length === 1 &&
-		"type" in rawTail;
+	// Tail semantics ride the RAW write order (the model's last-open
+	// element), while the map itself is the normalized one — hoisted
+	// inline children are complete objects anyway.
+	const rawIn = isPlainObject(input) ? input : {};
+	const rawElements = isPlainObject(rawIn.elements) ? rawIn.elements : {};
+	const tailId = Object.keys(rawElements).at(-1);
+	const normalized = normalizeUiInput(input, { prune: false }).value;
+	const norm = isPlainObject(normalized) ? normalized : {};
+	const normElements = isPlainObject(norm.elements) ? norm.elements : {};
+	const title = typeof norm.title === "string" ? norm.title : null;
+	const root = typeof norm.root === "string" ? norm.root : null;
+
+	// The map Node reads holds only schema-valid elements; invalid ones
+	// fall to the render wrapper's skeleton/nothing split below.
+	const elements: Record<string, UiElement> = {};
+	for (const [id, v] of Object.entries(normElements)) {
+		const parsed = uiElementSchema.safeParse(v);
+		if (parsed.success) elements[id] = parsed.data;
+	}
+
+	const visited = new Set<string>();
+	const render: UiRender = (id) => {
+		// A partial map can hold cycles or shared children — a revisit
+		// renders nothing and must never recurse forever.
+		if (visited.has(id)) return null;
+		visited.add(id);
+		const el = elements[id];
+		if (el === undefined) {
+			if (!(id in normElements)) return <Skeleton key={id} />;
+			// Present but invalid: only the still-writing tail gets a
+			// skeleton; earlier invalids are skipped, never skeletons.
+			return id === tailId ? <Skeleton key={id} /> : null;
+		}
+		return <Node key={id} id={id} elements={elements} render={render} streaming {...note} />;
+	};
+
+	let body: ReactNode[];
+	if (root !== null) {
+		body = [render(root)];
+	} else {
+		// No root yet: unreferenced elements in arrival order.
+		const referenced = new Set<string>();
+		for (const v of Object.values(normElements)) {
+			if (!isPlainObject(v) || !Array.isArray(v.children)) continue;
+			for (const c of v.children) if (typeof c === "string") referenced.add(c);
+		}
+		body = Object.keys(normElements)
+			.filter((id) => !referenced.has(id))
+			.map((id) => render(id));
+	}
 	return (
 		<div className="ui">
 			{title !== null && <div className="ui-title">{title}</div>}
-			{blocks.length === 0 && !tailFragment && <Skeleton />}
-			{blocks.map((b, i) => {
-				const last = i === blocks.length - 1;
-				const parsed = uiBlockSchema.safeParse(b);
-				// Only the tail may legitimately be mid-write — earlier
-				// invalid blocks are skipped, never skeletons.
-				if (!parsed.success) return last && !tailFragment ? <Skeleton key={i} /> : null;
-				// streaming pins html leaves to skeletons at any depth.
-				return <Block key={i} block={parsed.data} streaming {...note} />;
-			})}
-			{tailFragment && <Skeleton />}
+			{body.every((b) => b === null) && <Skeleton />}
+			{body}
 		</div>
 	);
 }

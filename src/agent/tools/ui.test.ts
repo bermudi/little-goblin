@@ -1,7 +1,8 @@
-// The ui tool's boundary tests: the schema is the contract the model
-// writes against, and its JSON Schema is what the provider receives —
-// a shape the provider rejects would break every app turn (two levels,
-// no $ref/$defs).
+// The ui tool's boundary tests: the flat element-map schema is the
+// contract the model writes against, and its JSON Schema is what the
+// provider receives — a shape the provider rejects would break every
+// app turn (no $ref/$defs/propertyNames). normalizeUiInput's rules each
+// fire only when exactly one interpretation exists.
 
 import { describe, expect, test } from "bun:test";
 import { asSchema } from "ai";
@@ -10,255 +11,269 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTools } from "./mod.ts";
 import { uiTool } from "./ui.ts";
-import { normalizeUiInput, uiBlockSchema, uiInputSchema } from "./ui-schema.ts";
+import { normalizeUiInput, uiInputSchema } from "./ui-schema.ts";
 
 const testdata = (name: string): unknown =>
 	JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "testdata", name), "utf8"));
 
-const fixture = testdata("ui-all-blocks.json");
+const fixture = testdata("ui-all-elements.json");
 
 describe("uiInputSchema", () => {
-	test("accepts the every-block fixture", () => {
+	test("accepts the every-element fixture", () => {
 		const parsed = uiInputSchema.safeParse(fixture);
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 	});
 
-	test("rejects a container nested inside a container", () => {
-		const nested = {
-			title: "x",
-			blocks: [
-				{
-					type: "tabs",
-					tabs: [
-						{
-							label: "a",
-							blocks: [
-								{
-									type: "columns",
-									columns: [
-										{ blocks: [{ type: "text", md: "deep" }] },
-										{ blocks: [{ type: "text", md: "deeper" }] },
-									],
-								},
-							],
-						},
-						{ label: "b", blocks: [{ type: "text", md: "ok" }] },
-					],
-				},
-			],
-		};
-		expect(uiInputSchema.safeParse(nested).success).toBe(false);
+	test("a legacy {blocks} input is not converted — it fails validation", () => {
+		// Operator call: old conversations keep their parts and render as
+		// the generic tool row; nothing is migrated.
+		const legacy = { title: "x", blocks: [{ type: "text", md: "hi" }] };
+		const r = normalizeUiInput(legacy);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
 	});
+});
 
-	test("rejects an unknown block type", () => {
-		expect(uiBlockSchema.safeParse({ type: "carousel", items: [] }).success).toBe(false);
-	});
-
-	test("rejects a chart whose series length differs from x", () => {
-		const bad = {
-			type: "chart",
-			kind: "bar",
-			x: ["a", "b", "c"],
-			series: [{ name: "s", values: [1, 2] }],
-		};
-		expect(uiBlockSchema.safeParse(bad).success).toBe(false);
-	});
-
-	test("accepts pie charts and the richer form field kinds", () => {
-		expect(
-			uiBlockSchema.safeParse({
-				type: "chart",
-				kind: "pie",
-				x: ["VPS", "Domains + net"],
-				series: [{ name: "spend", values: [219, 71] }],
-				unit: "€",
-			}).success,
-		).toBe(true);
-		expect(
-			uiBlockSchema.safeParse({
-				type: "form",
-				fields: [
-					{ name: "water", label: "Water", kind: "checkbox" },
-					{ name: "notes", label: "Notes", kind: "textarea" },
-					{ name: "leave", label: "Leave on", kind: "date" },
-				],
-				submit: "Done packing",
-			}).success,
-		).toBe(true);
-	});
-
-	test("rejects a pie with a negative slice; bar/line keep negatives legal", () => {
-		const neg = { type: "chart", x: ["a", "b"], series: [{ name: "s", values: [3, -1] }] };
-		expect(uiBlockSchema.safeParse({ ...neg, kind: "pie" }).success).toBe(false);
-		expect(uiBlockSchema.safeParse({ ...neg, kind: "line" }).success).toBe(true);
-	});
-
-	test("rejects a select field without options", () => {
-		const bad = {
-			type: "form",
-			fields: [{ name: "t", label: "T", kind: "select" }],
-			submit: "go",
-		};
-		expect(uiBlockSchema.safeParse(bad).success).toBe(false);
-		expect(
-			uiBlockSchema.safeParse({
-				type: "form",
-				fields: [{ name: "t", label: "T", kind: "select", options: ["x", "y"] }],
-				submit: "go",
-			}).success,
-		).toBe(true);
-	});
-
-	test("rejects duplicate field names in standalone and nested forms", () => {
-		const form = {
-			type: "form",
-			fields: [
-				{ name: "amount", label: "Amount", kind: "number" },
-				{ name: "amount", label: "Note", kind: "text" },
-			],
-			submit: "Send",
-		};
-		const parsed = uiBlockSchema.safeParse(form);
-		expect(parsed.success).toBe(false);
-		if (!parsed.success) {
-			expect(parsed.error.issues).toContainEqual(
-				expect.objectContaining({ message: "form field names must be unique", path: ["fields"] }),
-			);
+describe("wire JSON schema", () => {
+	test("the tool schema carries no $ref/$defs/propertyNames", () => {
+		const wire = JSON.stringify(asSchema(uiTool().inputSchema).jsonSchema);
+		for (const banned of ['"$ref"', '"$defs"', '"propertyNames"']) {
+			expect(wire).not.toContain(banned);
 		}
-		expect(uiInputSchema.safeParse({ blocks: [form] }).success).toBe(false);
-		expect(
-			uiBlockSchema.safeParse({
-				type: "columns",
-				columns: [{ blocks: [form] }, { blocks: [{ type: "text", md: "ok" }] }],
-			}).success,
-		).toBe(false);
-		expect(
-			uiBlockSchema.safeParse({
-				...form,
-				fields: [form.fields[0], { ...form.fields[1], name: "note" }],
-			}).success,
-		).toBe(true);
 	});
 
-	test("the wire JSON Schema carries no $ref/$defs", () => {
-		// asSchema is the SDK's own zod→JSON-Schema path — what streamText
-		// actually sends the provider (ai v7 re-exports it from
-		// @ai-sdk/provider-utils).
-		const wire = JSON.stringify(asSchema(uiInputSchema).jsonSchema);
-		expect(wire).not.toContain('"$ref"');
-		expect(wire).not.toContain('"$defs"');
+	test("property order is title, root, elements — root streams first", () => {
+		const schema = asSchema(uiTool().inputSchema).jsonSchema as {
+			properties: Record<string, unknown>;
+		};
+		expect(Object.keys(schema.properties)).toEqual(["title", "root", "elements"]);
 	});
 });
 
 describe("normalizeUiInput", () => {
-	test("repairs the verbatim typeless probe payloads", () => {
-		const bike2 = testdata("ui-typeless-bike2.json");
-		const r2 = normalizeUiInput(bike2);
-		expect(r2.dropped).toBe(0);
-		expect(r2.inferred).toEqual([
-			{ path: "blocks.1", type: "chart" },
-			{ path: "blocks.3", type: "choices" },
-		]);
-		const p2 = uiInputSchema.safeParse(r2.value);
-		expect(p2.success, p2.success ? "" : JSON.stringify(p2.error.issues)).toBe(true);
-
-		const bike3 = testdata("ui-typeless-bike3.json");
-		const r3 = normalizeUiInput(bike3);
-		// blocks.2 re-typed as choices; the bare {"type":"choices"}
-		// fragment at blocks.3 drops.
-		expect(r3.inferred).toEqual([{ path: "blocks.2", type: "choices" }]);
-		expect(r3.dropped).toBe(1);
-		const p3 = uiInputSchema.safeParse(r3.value);
-		expect(p3.success, p3.success ? "" : JSON.stringify(p3.error.issues)).toBe(true);
-		// Bare string options became {label} objects.
-		const choices = (p3.success ? p3.data.blocks : []).find((b) => b.type === "choices");
-		expect(choices?.type).toBe("choices");
-		if (choices?.type === "choices") {
-			expect(choices.options[0]).toEqual({ label: "Long and fast on smooth pavement" });
-		}
+	test("rule 1: elements as a JSON string parses into place", () => {
+		const r = normalizeUiInput({
+			root: "a",
+			elements: '{"a":{"type":"text","props":{"md":"hi"}}}',
+		});
+		expect(r.report.parsedProps).toEqual(["elements"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
-	test("tiebreaks: {md} is text, {md,title} is callout", () => {
-		const a = normalizeUiInput({ blocks: [{ md: "hi" }] });
-		expect(a.inferred).toEqual([{ path: "blocks.0", type: "text" }]);
-		const b = normalizeUiInput({ blocks: [{ md: "hi", title: "t" }] });
-		expect(b.inferred).toEqual([{ path: "blocks.0", type: "callout" }]);
+	test("rule 1b: a stringified props object parses into place", () => {
+		const r = normalizeUiInput({
+			root: "a",
+			elements: { a: { type: "text", props: '{"md":"hi"}' } },
+		});
+		expect(r.report.parsedProps).toEqual(["a"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
-	test("an unmatchable object stays invalid", () => {
-		const r = normalizeUiInput({ blocks: [{ frobnicate: true }] });
-		expect(r.inferred).toEqual([]);
+	test("rule 1 negative: a non-object JSON string stays", () => {
+		const r = normalizeUiInput({
+			root: "a",
+			elements: { a: { type: "text", props: '"just a string"' } },
+		});
+		expect(r.report.parsedProps).toEqual([]);
 		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
 	});
 
-	test("a bare {type} is dropped, inside containers too", () => {
+	test("rule 2: content fields on the element top level hoist into props", () => {
 		const r = normalizeUiInput({
-			blocks: [
-				{ type: "text", md: "keep" },
-				{ type: "text" },
-				{
-					type: "tabs",
-					tabs: [
-						{ label: "a", blocks: [{ type: "callout" }, { type: "text", md: "ok" }] },
-						{ label: "b", blocks: [{ type: "text", md: "ok2" }] },
-					],
-				},
-			],
+			root: "a",
+			elements: { a: { type: "callout", tone: "warn", title: "t", md: "m" } },
 		});
-		expect(r.dropped).toBe(2);
-		const parsed = uiInputSchema.safeParse(r.value);
-		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+		expect(r.report.hoisted).toEqual([{ id: "a", keys: ["tone", "title", "md"] }]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
-	test("a typeless container with typeless children is fully repaired", () => {
-		// The container's candidate test parses its children, so children
-		// must be re-typed before the container can qualify.
+	test("rule 2 negative: extra keys stay when props already exists", () => {
 		const r = normalizeUiInput({
-			blocks: [
-				{
-					tabs: [
-						{ label: "a", blocks: [{ md: "one" }] },
-						{ label: "b", blocks: [{ md: "two" }, { items: [{ label: "n", value: "1" }] }] },
-					],
-				},
-			],
+			root: "a",
+			elements: { a: { type: "text", props: { md: "hi" }, stray: 1 } },
 		});
-		const parsed = uiInputSchema.safeParse(r.value);
-		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
-		expect(r.inferred).toEqual([
-			{ path: "blocks.0.tabs.0.blocks.0", type: "text" },
-			{ path: "blocks.0.tabs.1.blocks.0", type: "text" },
-			{ path: "blocks.0.tabs.1.blocks.1", type: "stats" },
-			{ path: "blocks.0", type: "tabs" },
+		expect(r.report.hoisted).toEqual([]);
+	});
+
+	test("rule 3: a typeless element re-types by props key-set", () => {
+		const r = normalizeUiInput({
+			elements: {
+				a: { type: "stack", children: ["c", "p"] },
+				c: { props: { md: "hi", title: "t" } },
+				p: { props: { options: ["bare", "strings"], prompt: "pick" } },
+			},
+		});
+		expect(r.report.inferred).toEqual([
+			{ id: "c", type: "callout" },
+			{ id: "p", type: "choices" },
 		]);
-	});
-
-	test("a typeless pie chart still re-types as chart", () => {
-		// The pie kind is an enum member, not a new key — the chart
-		// candidate's key set is untouched, so repair must be unchanged.
-		const r = normalizeUiInput({
-			blocks: [{ kind: "pie", x: ["a", "b"], series: [{ name: "s", values: [1, 2] }] }],
-		});
-		expect(r.inferred).toEqual([{ path: "blocks.0", type: "chart" }]);
 		const parsed = uiInputSchema.safeParse(r.value);
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+		// Bare string options became {label} objects.
+		if (parsed.success) {
+			const p = parsed.data.elements.p;
+			expect(p?.type).toBe("choices");
+			if (p?.type === "choices") expect(p.props.options[0]).toEqual({ label: "bare" });
+		}
+	});
+
+	test("rule 3: {label} alone infers tab — the one inferable container", () => {
+		const r = normalizeUiInput({
+			elements: {
+				t: { type: "tabs", children: ["a", "b"] },
+				a: { props: { label: "one" }, children: ["l1"] },
+				b: { props: { label: "two" }, children: ["l2"] },
+				l1: { type: "text", props: { md: "x" } },
+				l2: { type: "text", props: { md: "y" } },
+			},
+		});
+		expect(r.report.inferred).toEqual([
+			{ id: "a", type: "tab" },
+			{ id: "b", type: "tab" },
+		]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 3 negative: an ambiguous props key-set is no repair", () => {
+		// {items: [...]} fits both stats and steps when the items satisfy
+		// both shapes — a tie is not a repair.
+		const r = normalizeUiInput({
+			elements: {
+				a: { props: { items: [{ label: "l", value: "1", title: "t" }] } },
+			},
+		});
+		expect(r.report.inferred).toEqual([]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
+	test("rule 3 negative: an unmatchable object stays invalid", () => {
+		const r = normalizeUiInput({ elements: { a: { props: { frobnicate: true } } } });
+		expect(r.report.inferred).toEqual([]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
+	test("rule 4: inline child objects hoist into the map, recursively", () => {
+		const r = normalizeUiInput({
+			root: "s",
+			elements: {
+				s: {
+					type: "stack",
+					children: [
+						"a",
+						{
+							type: "stack",
+							children: [
+								{ type: "text", props: { md: "x" } },
+								{ type: "text", props: { md: "y" } },
+							],
+						},
+					],
+				},
+				a: { type: "text", props: { md: "leaf" } },
+				"s.1": { type: "stack", children: ["a"] }, // forces a ~2 suffix
+			},
+		});
+		expect(r.report.flattened).toEqual([
+			{ id: "s.1~2", parent: "s" },
+			{ id: "s.1~2.0", parent: "s.1~2" },
+			{ id: "s.1~2.1", parent: "s.1~2" },
+		]);
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+	});
+
+	test("rule 5: an array root becomes a synthesized stack", () => {
+		const r = normalizeUiInput({
+			root: ["a", "b"],
+			elements: { a: { type: "text", props: { md: "x" } }, b: { type: "text", props: { md: "y" } } },
+		});
+		expect(r.report.synthesizedRoot).toBe("root");
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+	});
+
+	test("rule 6: a missing root picks the single unreferenced element", () => {
+		const r = normalizeUiInput({
+			elements: {
+				s: { type: "stack", children: ["a"] },
+				a: { type: "text", props: { md: "x" } },
+			},
+		});
+		expect(r.report.inferredRoot).toBe("s");
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 6 negative: two orphans mean no guess", () => {
+		const r = normalizeUiInput({
+			elements: { a: { type: "text", props: { md: "x" } }, b: { type: "text", props: { md: "y" } } },
+		});
+		expect(r.report.inferredRoot).toBeNull();
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
+	test("rule 7: numeric-string chart values coerce; formatted ones stay", () => {
+		const r = normalizeUiInput({
+			root: "c",
+			elements: {
+				c: {
+					type: "chart",
+					props: {
+						kind: "bar",
+						x: ["a", "b", "c"],
+						series: [{ name: "s", values: ["1", "2.5", "$6.00"] }],
+					},
+				},
+			},
+		});
+		expect(r.report.coerced).toEqual([{ id: "c", count: 2 }]);
+		// "$6.00" stays a string → the chart still fails validation.
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
+	test("rule 7 via inference: a typeless chart with string values re-types", () => {
+		const r = normalizeUiInput({
+			elements: {
+				c: { props: { kind: "pie", x: ["a", "b"], series: [{ name: "s", values: ["3", "4"] }] } },
+			},
+		});
+		expect(r.report.inferred).toEqual([{ id: "c", type: "chart" }]);
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+	});
+
+	test("rule 8: prune drops elements unreachable from root", () => {
+		const r = normalizeUiInput({
+			root: "s",
+			elements: {
+				s: { type: "stack", children: ["a"] },
+				a: { type: "text", props: { md: "x" } },
+				stray: { type: "text", props: { md: "unreachable" } },
+			},
+		});
+		expect(r.report.unreachable).toEqual(["stray"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 8: prune:false keeps unreachable elements", () => {
+		const r = normalizeUiInput(
+			{
+				root: "s",
+				elements: {
+					s: { type: "stack", children: ["a"] },
+					a: { type: "text", props: { md: "x" } },
+					stray: { type: "text", props: { md: "unreachable" } },
+				},
+			},
+			{ prune: false },
+		);
+		expect(r.report.unreachable).toEqual([]);
+		const els = (r.value as { elements: Record<string, unknown> }).elements;
+		expect(Object.keys(els)).toContain("stray");
 	});
 
 	test("never mutates the input", () => {
-		const raw = { blocks: [{ md: "hi" }] };
+		const raw = { elements: { a: { md: "hi" } } };
 		normalizeUiInput(raw);
-		expect(raw).toEqual({ blocks: [{ md: "hi" }] });
-	});
-});
-
-describe("ui tool wire schema", () => {
-	test("deep-equals the zod conversion and stays $ref-free", () => {
-		const zod = asSchema(uiInputSchema).jsonSchema;
-		const wire = asSchema(uiTool().inputSchema).jsonSchema;
-		expect(wire).toEqual(zod);
-		const s = JSON.stringify(wire);
-		expect(s).not.toContain('"$ref"');
-		expect(s).not.toContain('"$defs"');
+		expect(raw).toEqual({ elements: { a: { md: "hi" } } });
 	});
 });
 

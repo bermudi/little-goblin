@@ -12,7 +12,7 @@
 // location assignment from script remains the accepted residual.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
+import type { UiLeafProps } from "../../../src/agent/tools/ui-schema.ts";
 
 // base-uri 'none' pins resolution as belt: the click guard sets
 // location.hash verbatim without resolving hrefs, but no static or
@@ -75,7 +75,7 @@ export function srcdoc(html: string): string {
 	return `<!doctype html>${CSP}${baseStyle()}${RESIZE}${NAVIGATION_GUARD}${body}`;
 }
 
-export function HtmlFrame({ leaf }: { leaf: Extract<UiLeaf, { type: "html" }> }) {
+export function HtmlFrame({ leaf }: { leaf: UiLeafProps<"html"> }) {
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [height, setHeight] = useState(360);
 	const doc = useMemo(() => srcdoc(leaf.html), [leaf.html]);

@@ -3098,6 +3098,13 @@ button.pathchip:hover svg {
 	margin: 0;
 }
 
+/* stack — a vertical group of children, same rhythm as containers */
+.ui-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
 .ui-callout {
 	border-left: 2px solid var(--app-accent);
 	background: var(--app-hover);

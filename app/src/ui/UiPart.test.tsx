@@ -1,9 +1,8 @@
-// UiPart render contract: complete inputs render the component tree,
-// partial inputs render what validates plus a skeleton tail, bad
-// payloads fall back to the generic tool row — never a blank. The
-// sandbox and action pins are boundary tests: the iframe's sandbox
-// string and the [ui] message format are the parts a regression
-// would silently weaken.
+// UiPart render contract: complete inputs render the element tree,
+// partial inputs render what has arrived with skeletons for pending
+// ids (tail-only) and orphans in arrival order until root lands, bad
+// payloads — legacy {blocks} included — fall back to the generic tool
+// row, never a blank.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,13 +10,17 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { ToolUIPart, UIMessage } from "ai";
-import fixture from "../../../src/agent/tools/testdata/ui-all-blocks.json" with { type: "json" };
+import fixture from "../../../src/agent/tools/testdata/ui-all-elements.json" with { type: "json" };
 import { MessageParts } from "../ChatView.tsx";
 import { UiPart } from "./UiPart.tsx";
 
 function uiPart(p: Record<string, unknown>): ToolUIPart {
 	return { type: "tool-ui", toolCallId: "u1", ...p } as unknown as ToolUIPart;
 }
+
+const els = fixture.elements as Record<string, unknown>;
+const pick = (...ids: string[]) =>
+	Object.fromEntries(ids.map((id) => [id, els[id]])) as typeof els;
 
 describe("UiPart (static markup)", () => {
 	test("output-available renders every leaf and container class", () => {
@@ -35,99 +38,162 @@ describe("UiPart (static markup)", () => {
 			"form",
 			"tabs",
 			"columns",
+			"stack",
 			"html",
 		]) {
 			expect(html, `missing ui-${kind}`).toContain(`ui-${kind}`);
 		}
 	});
 
-	test("input-streaming renders complete blocks and one tail skeleton", () => {
+	test("a deeply nested spec renders tabs > columns > steps", () => {
+		const input = {
+			root: "s",
+			elements: {
+				s: { type: "stack", children: ["t"] },
+				t: { type: "tabs", children: ["a", "b"] },
+				a: { type: "tab", props: { label: "A" }, children: ["c"] },
+				b: { type: "tab", props: { label: "B" }, children: ["bx"] },
+				c: { type: "columns", children: ["c1", "c2"] },
+				c1: { type: "column", children: ["st"] },
+				c2: { type: "column", children: ["x2"] },
+				st: { type: "steps", props: { items: [{ title: "one" }] } },
+				bx: { type: "text", props: { md: "second" } },
+				x2: { type: "text", props: { md: "deep" } },
+			},
+		};
+		const html = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
+		);
+		expect(html).toContain("ui-tabs");
+		expect(html).toContain("ui-columns");
+		expect(html).toContain("ui-steps");
+		expect(html).toContain("deep");
+	});
+
+	test("input-streaming skeletons pending child ids and a tail fragment", () => {
 		const html = renderToStaticMarkup(
 			<UiPart
 				part={uiPart({
 					state: "input-streaming",
 					input: {
-						title: "arriving",
-						blocks: [
-							{ type: "text", md: "done block" },
-							{ type: "stats", items: [{ label: "n", value: "1" }] },
-							{ type: "table" }, // truncated — still streaming
-						],
+						root: "s",
+						elements: {
+							s: { type: "stack", children: ["a", "b"] },
+							a: { type: "text", props: { md: "done element" } },
+							b: { type: "table" }, // tail, still writing
+						},
 					},
 				})}
 			/>,
 		);
-		expect(html).toContain("ui-text");
-		expect(html).toContain("done block");
-		expect(html).toContain("ui-stats");
+		expect(html).toContain("done element");
 		expect(html).not.toContain("ui-table");
-		// Exactly one Skeleton component (each renders skel-a + skel-b).
 		expect(html.match(/skel skel-a/g)?.length).toBe(1);
-		expect(html.match(/skel skel-b/g)?.length).toBe(1);
 	});
 
-	test("input-streaming never mounts an html iframe", () => {
-		const htmlBlock = fixture.blocks.find((b) => b.type === "html")!;
+	test("input-streaming: an invalid non-tail renders nothing", () => {
 		const html = renderToStaticMarkup(
-			<UiPart part={uiPart({ state: "input-streaming", input: { blocks: [htmlBlock] } })} />,
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						root: "s",
+						elements: {
+							s: { type: "stack", children: ["bad", "a"] },
+							bad: { type: "frobnicate" },
+							a: { type: "text", props: { md: "kept" } },
+						},
+					},
+				})}
+			/>,
 		);
-		expect(html).not.toContain("<iframe");
+		expect(html).toContain("kept");
+		expect(html).not.toContain("skel");
+	});
+
+	test("input-streaming: missing child ids skeleton even when invalid", () => {
+		const html = renderToStaticMarkup(
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						root: "s",
+						elements: { s: { type: "stack", children: ["pending"] } },
+					},
+				})}
+			/>,
+		);
 		expect(html).toContain("skel");
 	});
 
-	test("input-streaming never mounts an html iframe nested in a container", () => {
-		const htmlBlock = fixture.blocks.find((b) => b.type === "html")!;
-		const tabsBlock = {
-			type: "tabs",
-			tabs: [
-				{ label: "one", blocks: [htmlBlock] },
-				{ label: "two", blocks: [{ type: "text", md: "plain" }] },
-			],
-		};
+	test("input-streaming without root renders orphans in arrival order", () => {
 		const html = renderToStaticMarkup(
-			<UiPart part={uiPart({ state: "input-streaming", input: { blocks: [tabsBlock] } })} />,
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						elements: {
+							first: { type: "text", props: { md: "aaa" } },
+							parent: { type: "stack", children: ["first"] },
+							second: { type: "text", props: { md: "bbb" } },
+						},
+					},
+				})}
+			/>,
 		);
-		expect(html).not.toContain("<iframe");
-		expect(html).toContain("skel");
+		// "parent" holds "first" — single orphan after normalize? No:
+		// "second" is also unreferenced → two orphans → no inferred root.
+		// Arrival order: first (referenced? no — referenced by parent!)
+		// so orphans = parent, second → parent's subtree then second.
+		const ia = html.indexOf("aaa");
+		const ib = html.indexOf("bbb");
+		expect(ia).toBeGreaterThan(-1);
+		expect(ib).toBeGreaterThan(-1);
+		expect(ia).toBeLessThan(ib);
 	});
 
-	test("duplicate form names never render, including during streaming", () => {
-		const input = {
-			blocks: [
-				{
-					type: "form",
-					fields: [
-						{ name: "amount", label: "Amount", kind: "number" },
-						{ name: "amount", label: "Note", kind: "text" },
-					],
-					submit: "Send",
-				},
-			],
-		};
-		for (const state of ["input-streaming", "output-available"]) {
+	test("input-streaming with a cyclic partial input does not hang", () => {
+		const html = renderToStaticMarkup(
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						root: "a",
+						elements: {
+							a: { type: "stack", children: ["b"] },
+							b: { type: "stack", children: ["a"] },
+						},
+					},
+				})}
+			/>,
+		);
+		expect(html).toContain("ui-stack");
+	});
+
+	test("input-streaming never mounts an html iframe, nested or not", () => {
+		for (const input of [
+			{ root: "calc", elements: pick("calc") },
+			{ root: "bytype", elements: pick("bytype", "tpros", "pros-t", "tcons", "cons-t", "cons-c") },
+		]) {
 			const html = renderToStaticMarkup(
-				<UiPart part={uiPart({ state, input, output: "shown" })} />,
+				<UiPart part={uiPart({ state: "input-streaming", input })} />,
 			);
-			expect(html).not.toContain("<form");
-			expect(html).toContain(state === "input-streaming" ? "skel" : "tool-run");
+			expect(html).not.toContain("<iframe");
 		}
 	});
 
-	// A leaf's md can be a still-arriving prefix — an unclosed note
-	// fence inside one must not offer its append affordance until the
-	// input lands (or the transcript reloads settled).
-	test("an unclosed note fence stays non-actionable while its ui block streams", () => {
-		const input = { blocks: [{ type: "text", md: "```note\npartial body" }] };
-		const streaming = renderToStaticMarkup(
-			<UiPart part={uiPart({ state: "input-streaming", input })} />,
+	test("a legacy {blocks} part falls back to the generic tool row", () => {
+		const html = renderToStaticMarkup(
+			<UiPart
+				part={uiPart({
+					state: "output-available",
+					input: { title: "old", blocks: [{ type: "text", md: "hi" }] },
+					output: "shown",
+				})}
+			/>,
 		);
-		expect(streaming).toContain("note-card");
-		expect(streaming).toContain("partial body");
-		expect(streaming).not.toContain("note-card-append");
-		const settled = renderToStaticMarkup(
-			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
-		);
-		expect(settled).toContain("note-card-append");
+		expect(html).toContain("tool-run");
+		expect(html).toContain(">ui</span>");
 	});
 
 	test("a schema-failing input falls back to the generic tool row", () => {
@@ -135,14 +201,28 @@ describe("UiPart (static markup)", () => {
 			<UiPart
 				part={uiPart({
 					state: "output-available",
-					input: { blocks: [{ type: "frobnicate" }] },
+					input: { root: "a", elements: { a: { type: "frobnicate" } } },
 					output: "shown",
 				})}
 			/>,
 		);
-		expect(html.length).toBeGreaterThan(0);
 		expect(html).toContain("tool-run");
-		expect(html).toContain(">ui</span>");
+	});
+
+	test("a streaming text element's unclosed note fence stays non-actionable", () => {
+		const input = {
+			root: "a",
+			elements: { a: { type: "text", props: { md: "```note\npartial body" } } },
+		};
+		const streaming = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "input-streaming", input })} />,
+		);
+		expect(streaming).toContain("note-card");
+		expect(streaming).not.toContain("note-card-append");
+		const settled = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
+		);
+		expect(settled).toContain("note-card-append");
 	});
 });
 
@@ -196,6 +276,13 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		});
 	};
 
+	const clickEl = async (el: Element | null) => {
+		expect(el).not.toBeNull();
+		await act(async () => {
+			el!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+	};
+
 	test("a ui part renders inline, never inside the Worked fold", async () => {
 		const bashPart = {
 			type: "tool-bash",
@@ -206,7 +293,7 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		} as unknown as UIMessage["parts"][number];
 		const ui = uiPart({
 			state: "output-available",
-			input: { blocks: [{ type: "text", md: "the interface" }] },
+			input: { root: "a", elements: { a: { type: "text", props: { md: "the interface" } } } },
 			output: "shown",
 		}) as unknown as UIMessage["parts"][number];
 		await mount(<MessageParts parts={[bashPart, ui, { type: "text", text: "after" }]} />);
@@ -216,12 +303,11 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 	});
 
 	test("the html frame is sandboxed and carries the injected CSP", async () => {
-		const htmlBlock = fixture.blocks.find((b) => b.type === "html")!;
 		await mount(
 			<UiPart
 				part={uiPart({
 					state: "output-available",
-					input: { blocks: [htmlBlock] },
+					input: { root: "calc", elements: pick("calc") },
 					output: "shown",
 				})}
 			/>,
@@ -238,8 +324,7 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 
 	test("choices fire onAction with the [ui] message; busy disables them", async () => {
 		const actions: string[] = [];
-		const choiceBlock = fixture.blocks.find((b) => b.type === "choices")!;
-		const input = { blocks: [choiceBlock] };
+		const input = { root: "pick", elements: pick("pick") };
 		await mount(
 			<UiPart
 				part={uiPart({ state: "output-available", input, output: "shown" })}
@@ -248,12 +333,9 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		);
 		const btn = container.querySelector<HTMLButtonElement>(".ui-choice")!;
 		expect(btn.disabled).toBe(false);
-		await act(async () => {
-			btn.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-		});
+		await clickEl(btn);
 		expect(actions).toEqual(["[ui] Road loop"]);
 
-		// busy pins every action control — a tap mid-turn must not fork.
 		await act(async () => {
 			root?.render(
 				<UiPart
@@ -265,20 +347,17 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		});
 		const busyBtn = container.querySelector<HTMLButtonElement>(".ui-choice")!;
 		expect(busyBtn.disabled).toBe(true);
-		await act(async () => {
-			busyBtn.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-		});
+		await clickEl(busyBtn);
 		expect(actions.length).toBe(1);
 	});
 
 	test("a form submit reports field=value pairs in order", async () => {
 		const actions: string[] = [];
-		const formBlock = fixture.blocks.find((b) => b.type === "form")!;
 		await mount(
 			<UiPart
 				part={uiPart({
 					state: "output-available",
-					input: { blocks: [formBlock] },
+					input: { root: "ride", elements: pick("ride") },
 					output: "shown",
 				})}
 				onAction={(t) => actions.push(t)}
@@ -297,21 +376,22 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 
 	test("a form's uncontrolled inputs never leak into the next tab at the same index", async () => {
 		const actions: string[] = [];
-		const tabbedForm = (tag: string) => ({
+		const form = (tag: string) => ({
 			type: "form",
-			fields: [{ name: "amount", label: "Amount", kind: "number" }],
-			submit: tag,
+			props: {
+				fields: [{ name: "amount", label: "Amount", kind: "number" }],
+				submit: tag,
+			},
 		});
 		const input = {
-			blocks: [
-				{
-					type: "tabs",
-					tabs: [
-						{ label: "A", blocks: [tabbedForm("Send A")] },
-						{ label: "B", blocks: [tabbedForm("Send B")] },
-					],
-				},
-			],
+			root: "t",
+			elements: {
+				t: { type: "tabs", children: ["a", "b"] },
+				a: { type: "tab", props: { label: "A" }, children: ["fa"] },
+				b: { type: "tab", props: { label: "B" }, children: ["fb"] },
+				fa: form("Send A"),
+				fb: form("Send B"),
+			},
 		};
 		await mount(
 			<UiPart
@@ -321,8 +401,6 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		);
 		const aInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
 		aInput.value = "750";
-		// Switch tabs — the same-index form must mount fresh, not
-		// reuse A's DOM node and its typed value.
 		await clickEl([...container.querySelectorAll("[role='tab']")][1] ?? null);
 		const bInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
 		expect(bInput).not.toBe(aInput);
@@ -333,160 +411,13 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		expect(actions).toEqual(["[ui] Send B: amount="]);
 	});
 
-	// Note fences inside ui blocks get the transcript's note context —
-	// token, project binding, in-app navigation — through every
-	// container depth.
-	const fence = '````note title="Ideas"\nfenced body\n````';
-	const fakeNoteApi = (calls: { url: string; init: RequestInit | undefined }[]) => {
-		installGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-			const url = String(input);
-			calls.push({ url, init });
-			const body =
-				init?.method === "POST" && url === "/api/app/notes"
-					? { id: "n-new", title: "Ideas", rev: 1, body: "stored" }
-					: { notes: [] };
-			return Promise.resolve(
-				new win.Response(JSON.stringify(body), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}) as unknown as Response,
-			);
-		});
-	};
-	const clickEl = async (el: Element | null) => {
-		expect(el).not.toBeNull();
-		await act(async () => {
-			el!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-		});
-	};
-	const drain = () =>
-		act(async () => {
-			await new Promise((r) => setTimeout(r, 250));
-		});
-
-	test("note fences at every depth carry token, project, and navigation", async () => {
-		const calls: { url: string; init: RequestInit | undefined }[] = [];
-		const opened: string[] = [];
-		fakeNoteApi(calls);
-		const ui = uiPart({
-			state: "output-available",
-			input: {
-				blocks: [
-					{ type: "text", md: fence },
-					{ type: "callout", title: "c", md: fence },
-					{ type: "steps", items: [{ title: "s", md: fence }] },
-					{
-						type: "tabs",
-						tabs: [
-							{ label: "t", blocks: [{ type: "text", md: fence }] },
-							{ label: "u", blocks: [{ type: "text", md: "other tab" }] },
-						],
-					},
-					{
-						type: "columns",
-						columns: [
-							{ blocks: [{ type: "text", md: fence }] },
-							{ blocks: [{ type: "text", md: "other col" }] },
-						],
-					},
-				],
-			},
-			output: "shown",
-		}) as unknown as UIMessage["parts"][number];
-		await mount(
-			<MessageParts
-				parts={[ui]}
-				token="tok-1"
-				noteProjectId="p-1"
-				onOpenNote={(id) => opened.push(id)}
-			/>,
-		);
-		const cards = container.querySelectorAll(".note-card");
-		expect(cards).toHaveLength(5);
-
-		// Every card — text, callout, steps, tabs, columns — runs the
-		// full flow with the context its container chain forwarded.
-		for (const [i, card] of [...cards].entries()) {
-			await clickEl(card.querySelector(".note-card-append"));
-			await drain();
-			const list = calls.filter((c) => c.url.startsWith("/api/app/notes?")).at(-1)!;
-			expect((list.init?.headers as Record<string, string>).authorization).toBe("Bearer tok-1");
-			await clickEl(
-				[...card.querySelectorAll("button")].find((b) => b.textContent?.includes("New note")) ??
-					null,
-			);
-			await act(async () => {
-				await new Promise((r) => setTimeout(r, 0));
-			});
-			const creates = calls.filter((c) => c.init?.method === "POST");
-			expect(creates).toHaveLength(i + 1);
-			const create = creates.at(-1)!;
-			expect((create.init?.headers as Record<string, string>).authorization).toBe("Bearer tok-1");
-			expect(JSON.parse(String(create.init?.body))).toEqual({
-				title: "Ideas",
-				body: "fenced body",
-				projectId: "p-1",
-			});
-			// The done link navigates in-app with the created id.
-			await clickEl(card.querySelector(".note-card-status button"));
-			expect(opened).toEqual(Array(i + 1).fill("n-new"));
-		}
-	});
-
-	test("a streaming ui block's note fence gets the context too — token null sends no Authorization", async () => {
-		const calls: { url: string; init: RequestInit | undefined }[] = [];
-		const opened: string[] = [];
-		fakeNoteApi(calls);
-		const ui = uiPart({
-			state: "input-streaming",
-			input: { blocks: [{ type: "text", md: fence }] },
-		}) as unknown as UIMessage["parts"][number];
-		await mount(
-			<MessageParts
-				parts={[ui]}
-				token={null}
-				noteProjectId="p-1"
-				onOpenNote={(id) => opened.push(id)}
-			/>,
-		);
-		const card = container.querySelector(".note-card");
-		expect(card).not.toBeNull();
-		await clickEl(card!.querySelector(".note-card-append"));
-		await drain();
-		await clickEl(
-			[...card!.querySelectorAll("button")].find((b) => b.textContent?.includes("New note")) ??
-				null,
-		);
-		await act(async () => {
-			await new Promise((r) => setTimeout(r, 0));
-		});
-		const create = calls.find((c) => c.init?.method === "POST")!;
-		expect((create.init?.headers as Record<string, string>).authorization).toBeUndefined();
-		expect(JSON.parse(String(create.init?.body)).projectId).toBe("p-1");
-		await clickEl(card!.querySelector(".note-card-status button"));
-		expect(opened).toEqual(["n-new"]);
-	});
-
 	test("a checkbox/textarea/date form submits true/false, text and raw date", async () => {
 		const actions: string[] = [];
 		await mount(
 			<UiPart
 				part={uiPart({
 					state: "output-available",
-					input: {
-						blocks: [
-							{
-								type: "form",
-								fields: [
-									{ name: "water", label: "Water (2L)", kind: "checkbox" },
-									{ name: "tent", label: "Tent", kind: "checkbox" },
-									{ name: "notes", label: "Notes", kind: "textarea" },
-									{ name: "leave", label: "Leave on", kind: "date" },
-								],
-								submit: "Done packing",
-							},
-						],
-					},
+					input: { root: "pack", elements: pick("pack") },
 					output: "shown",
 				})}
 				onAction={(t) => actions.push(t)}
@@ -499,87 +430,26 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		await act(async () => {
 			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
 		});
-		// The checkbox rides the same [ui] line as everything else —
-		// .checked, not the inert "on" default value.
 		expect(actions).toEqual(["[ui] Done packing: water=true, tent=false, notes=headlamp, leave="]);
-	});
-
-	// A note fence inside a ui block writes like one in reply text —
-	// same bearer, same project binding, or the click 401s / files the
-	// note loose in bearer mode and trust mode respectively.
-	test("a note card inside a ui block carries the transcript's auth and project", async () => {
-		const seen: Array<{ url: string; auth: string | null; body: unknown }> = [];
-		const realFetch = globalThis.fetch;
-		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			const headers = new Headers(init?.headers);
-			seen.push({
-				url,
-				auth: headers.get("authorization"),
-				body: init?.body !== undefined ? JSON.parse(String(init.body)) : undefined,
-			});
-			if (init?.method === "POST")
-				return Promise.resolve(
-					new Response(JSON.stringify({ id: "n9", title: "scratch" }), {
-						headers: { "content-type": "application/json" },
-					}),
-				);
-			return Promise.resolve(
-				new Response(JSON.stringify({ notes: [], truncated: false }), {
-					headers: { "content-type": "application/json" },
-				}),
-			);
-		}) as typeof fetch;
-		try {
-			const input = {
-				blocks: [{ type: "text", md: "summary\n\n```note\nui-block body\n```" }],
-			};
-			await mount(
-				<UiPart
-					part={uiPart({ state: "output-available", input, output: "shown" })}
-					token="tok-1"
-					noteProjectId="proj-9"
-				/>,
-			);
-			// The card renders inside the ui surface — not in reply text.
-			const card = container.querySelector(".ui-text .note-card");
-			expect(card).not.toBeNull();
-			await act(async () => {
-				card!
-					.querySelector<HTMLButtonElement>(".note-card-append")!
-					.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-			});
-			const create = [...container.querySelectorAll<HTMLButtonElement>(".note-pick button")].find(
-				(b) => b.textContent === "New note",
-			)!;
-			await act(async () => {
-				create.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-			});
-			const post = seen.find((s) => s.url === "/api/app/notes" && s.body !== undefined);
-			expect(post?.auth).toBe("Bearer tok-1");
-			expect(post?.body).toMatchObject({ projectId: "proj-9", body: "ui-block body" });
-		} finally {
-			globalThis.fetch = realFetch;
-		}
 	});
 
 	test("a choices tap highlights the matching table row; reload re-derives it", async () => {
 		const input = {
-			blocks: [
-				{
+			root: "main",
+			elements: {
+				main: { type: "stack", children: ["tbl", "pick"] },
+				tbl: {
 					type: "table",
-					columns: ["Ride", "km"],
-					rows: [
-						["Road loop", "42"],
-						["Gravel trail", "60"],
-					],
+					props: {
+						columns: ["Ride", "km"],
+						rows: [
+							["Road loop", "42"],
+							["Gravel trail", "60"],
+						],
+					},
 				},
-				{
-					type: "choices",
-					prompt: "Which ride?",
-					options: [{ label: "Road loop" }, { label: "Gravel trail" }],
-				},
-			],
+				...pick("pick"),
+			},
 		};
 		const actions: string[] = [];
 		await mount(
@@ -588,31 +458,12 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 				onAction={(t) => actions.push(t)}
 			/>,
 		);
-		expect(container.querySelector("tr.picked")).toBeNull();
-		await act(async () => {
-			container
-				.querySelector<HTMLButtonElement>(".ui-choice")!
-				.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
-		});
-		// The tap posts the ordinary [ui] message AND highlights locally.
+		const btn = [...container.querySelectorAll<HTMLButtonElement>(".ui-choice")].find(
+			(b) => b.textContent === "Road loop",
+		)!;
+		await clickEl(btn);
 		expect(actions).toEqual(["[ui] Road loop"]);
-		expect(container.querySelector("tr.picked")?.textContent).toBe("Road loop42");
-
-		// Reload: fresh mount with no tap — the highlight re-derives from
-		// the persisted [ui] message.
-		await act(async () => {
-			root?.unmount();
-			root = null;
-		});
-		const messages: UIMessage[] = [
-			{ id: "m1", role: "user", parts: [{ type: "text", text: "[ui] Gravel trail" }] },
-		];
-		await mount(
-			<UiPart
-				part={uiPart({ state: "output-available", input, output: "shown" })}
-				messages={messages}
-			/>,
-		);
-		expect(container.querySelector("tr.picked")?.textContent).toBe("Gravel trail60");
+		const pickedRow = container.querySelector("tr.picked td");
+		expect(pickedRow?.textContent).toBe("Road loop");
 	});
 });

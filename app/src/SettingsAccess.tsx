@@ -46,19 +46,21 @@ export function SettingsAccess({ ctx }: { ctx: SettingsCtx }) {
 						}
 					/>
 				</Row>
-				{draft.capabilities.guest === true && (
-					<ChipsEditor
-						values={draft.allowedUsers.map(String)}
-						onAdd={(v) => addId("allowedUsers", v)}
-						onRemove={(i) =>
-							patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
-						}
-						placeholder="telegram user id"
-						ariaLabel="add allowed user"
-						numeric
-						cap="Telegram user ids that may talk to goblin sandboxed — DM them directly or @mention in groups; everyone else gets a refusal line."
-					/>
-				)}
+				<ChipsEditor
+					values={draft.allowedUsers.map(String)}
+					onAdd={(v) => addId("allowedUsers", v)}
+					onRemove={(i) =>
+						patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
+					}
+					placeholder="telegram user id"
+					ariaLabel="add allowed user"
+					numeric
+					cap={
+						draft.capabilities.guest === true
+							? "Telegram user ids that may talk to goblin sandboxed — DM them directly or @mention in groups; everyone else gets a refusal line."
+							: "Off — allowed users get no replies."
+					}
+				/>
 			</div>
 		</>
 	);

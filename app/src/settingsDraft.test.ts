@@ -842,3 +842,120 @@ describe("tts block", () => {
 		expect(stash.openrouter).toEqual({ voice: "", model: "fish-x", auth: "or-key" });
 	});
 });
+
+describe("opaque round-trip", () => {
+	// Every field the UI doesn't render still rides the draft — a save
+	// must write them back byte-for-byte. If a new input is added for one
+	// of these, it's still covered (the save just may change it).
+	test("file-only fields survive draftFromConfig → bodyFromDraft", () => {
+		const c = parseConfig({
+			providers: {
+				main: {
+					kind: "openai-compatible",
+					baseUrl: "https://api.example.test",
+					auth: "main-record",
+				},
+				zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
+				or: { kind: "openrouter", auth: "or-record" },
+				dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+			},
+			model: "main/gpt-5",
+			operators: [111],
+			allowedUsers: [111],
+			telegram: {
+				model: "main/gpt-5",
+				apiRoot: "https://tg-proxy.example.test",
+				dmGapMinutes: 30,
+			},
+			publicUrl: "https://goblin.example.test",
+			http: { port: 9999 },
+			search: [{ kind: "brave", auth: "brave-record" }, { kind: "jina" }],
+			fetch: [{ kind: "parallel", auth: "parallel-record" }],
+			tts: { kind: "onemin", model: "tts-1", auth: "onemin-record", voice: "onyx" },
+			transcription: {
+				kind: "whistle",
+				engine: "whisper.cpp",
+				weights: "/models/ggml-large.bin",
+				keywords: ["goblin"],
+				language: "en",
+				fallbacks: [{ kind: "groq", model: "whisper-x", auth: "groq-record", language: "de" }],
+			},
+			vision: { model: "main/vlm", maxTokens: 4321, mode: "always" },
+			image: { model: "main/dalle", size: "1024x1536" },
+			memory: {
+				baseUrl: "https://mem.example.test",
+				bankId: "bank-one",
+				auth: "mem-record",
+				budget: "high",
+				maxTokens: 2048,
+				recallTimeoutMs: 3000,
+				preferObservations: false,
+				minScores: { semantic: 0.7 },
+				searchMaxTokens: 999,
+				searchBudget: "low",
+				searchTimeoutMs: 1500,
+				searchMinScores: { semantic: 0.4 },
+				reflectMaxTokens: 1111,
+				reflectBudget: "high",
+				reflectTimeoutMs: 9000,
+			},
+		});
+		const { draft, providers } = draftFromConfig(c);
+		const body = bodyFromDraft(draft, providers, authDefaults);
+		// Non-form fields: verbatim.
+		expect(body.telegram.apiRoot).toBe("https://tg-proxy.example.test");
+		expect(body.http).toEqual({ port: 9999 });
+		expect(body.publicUrl).toBe("https://goblin.example.test");
+		// Provider identities — preset base url, every auth record,
+		// codex's authFile — all preserved.
+		expect(body.providers).toEqual({
+			main: {
+				kind: "openai-compatible",
+				baseUrl: "https://api.example.test",
+				auth: "main-record",
+			},
+			zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
+			or: { kind: "openrouter", auth: "or-record" },
+			dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+		});
+		// Chain auth records ride through untouched.
+		expect(body.search).toEqual([{ kind: "brave", auth: "brave-record" }, { kind: "jina" }]);
+		expect(body.fetch).toEqual([{ kind: "parallel", auth: "parallel-record" }]);
+		// Voice blocks: model/auth/voice and whistle's engine/weights.
+		expect(body.tts).toEqual({
+			kind: "onemin",
+			model: "tts-1",
+			auth: "onemin-record",
+			voice: "onyx",
+		});
+		expect(body.transcription).toMatchObject({
+			kind: "whistle",
+			engine: "whisper.cpp",
+			weights: "/models/ggml-large.bin",
+			keywords: ["goblin"],
+			language: "en",
+			fallbacks: [{ kind: "groq", model: "whisper-x", auth: "groq-record", language: "de" }],
+		});
+		// Helpers keep their tuning.
+		expect(body.vision).toEqual({ model: "main/vlm", maxTokens: 4321, mode: "always" });
+		expect(body.image).toEqual({ model: "main/dalle", size: "1024x1536" });
+		// Memory: the installer-owned connection plus every tuning knob.
+		expect(body.memory).toEqual({
+			baseUrl: "https://mem.example.test",
+			bankId: "bank-one",
+			auth: "mem-record",
+			budget: "high",
+			maxTokens: 2048,
+			recallTimeoutMs: 3000,
+			preferObservations: false,
+			minScores: { semantic: 0.7 },
+			searchMaxTokens: 999,
+			searchBudget: "low",
+			searchTimeoutMs: 1500,
+			searchMinScores: { semantic: 0.4 },
+			reflectMaxTokens: 1111,
+			reflectBudget: "high",
+			reflectTimeoutMs: 9000,
+		});
+	});
+});

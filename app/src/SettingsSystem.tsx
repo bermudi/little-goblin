@@ -44,12 +44,7 @@ export function SettingsSystem({ ctx }: { ctx: SettingsCtx }) {
 						{ctx.hasAppToken ? "Bearer token required" : "Trust mode — tailnet only"}
 					</span>
 				</Row>
-				<Row
-					label="Config file"
-					cap="For advanced edits — the file wins over anything this page can't express."
-				>
-					<span className="cap mono">goblin.json5 in goblin's home</span>
-				</Row>
+				<div className="cap ops-cap">Advanced: edit goblin.json5 in goblin's home.</div>
 			</div>
 		</>
 	);

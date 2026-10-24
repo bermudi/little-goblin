@@ -62,7 +62,7 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 						</Row>
 					</>
 				) : (
-					<div className="cap ops-cap">Telegram is off.</div>
+					<div className="cap ops-cap">Telegram is off — turn it on under Telegram.</div>
 				)}
 			</div>
 			{/* Helpers run on every surface — Telegram turns included — so

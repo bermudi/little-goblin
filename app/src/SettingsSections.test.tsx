@@ -24,6 +24,8 @@ let container: HTMLElement;
 let root: Root | null = null;
 let savedBodies: ConfigPostBody[] = [];
 let settings: ReturnType<typeof parseConfig>;
+let caps: ReturnType<typeof CAPS>;
+let chatgptStatus: Record<string, unknown>;
 const realFetch = globalThis.fetch;
 const globals = new Map<string, PropertyDescriptor | undefined>();
 
@@ -77,6 +79,16 @@ beforeEach(() => {
 	container = div as unknown as HTMLElement;
 	savedBodies = [];
 	settings = BASE;
+	caps = CAPS();
+	chatgptStatus = {
+		state: "signed-out",
+		source: null,
+		email: null,
+		plan: null,
+		pending: null,
+		error: null,
+		pinned: false,
+	};
 	for (const [name, value] of [
 		["window", win],
 		["document", win.document],
@@ -118,11 +130,17 @@ beforeEach(() => {
 								provider: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
 							},
 						],
-						capabilities: CAPS(),
+						capabilities: caps,
 						modelCatalog: [],
 					}),
 					{ headers: { "content-type": "application/json", etag: '"v1"' } },
 				),
+			);
+		if (url.includes("/api/app/accounts/chatgpt"))
+			return Promise.resolve(
+				new Response(JSON.stringify(chatgptStatus), {
+					headers: { "content-type": "application/json" },
+				}),
 			);
 		if (url === "/api/app/status")
 			return Promise.resolve(
@@ -447,15 +465,56 @@ describe("Capabilities + memory", () => {
 	});
 
 	test("a needs-setup capability renders disabled with the hint", async () => {
-		settings = BASE;
+		caps = CAPS({
+			subagents: {
+				state: "needs-setup",
+				hint: "set it up in goblin.json5 first (docs/configuration.md)",
+			},
+		});
 		await mountSettings();
-		// The GET fixture flags subagents needs-setup for this mount.
-		// (Overriding the fixture per-test would complicate the fetch;
-		// instead mount a fresh view whose capabilities claim it.)
 		await openSection("Capabilities");
-		// All-off fixture: every switch enabled. The needs-setup path is
-		// covered by SettingsView's GET wiring — verified in the draft tests.
-		expect(container.textContent).toContain("Sandboxed shell");
+		const sw = container.querySelector(
+			'[aria-label="Subagents & computer use"]',
+		) as HTMLButtonElement;
+		expect(sw.disabled).toBe(true);
+		expect(container.textContent).toContain("set it up in goblin.json5 first");
+	});
+
+	test("chatgpt pending → signed-in reloads the settings GET when clean", async () => {
+		chatgptStatus = {
+			state: "pending",
+			source: null,
+			email: null,
+			plan: null,
+			pending: {
+				userCode: "ZZZZ-9999",
+				verificationUrl: "https://auth.openai.com/codex/device",
+				expiresAt: new Date(Date.now() + 600_000).toISOString(),
+			},
+			error: null,
+			pinned: false,
+		};
+		let settingsGets = 0;
+		const inner = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/settings" && init?.method !== "POST") settingsGets++;
+			return inner(input, init);
+		}) as typeof fetch;
+		await mountSettings();
+		await openSection("Accounts & keys");
+		const before = settingsGets;
+		// Flip the scripted status — the card's next poll sees signed-in.
+		chatgptStatus = {
+			state: "signed-in",
+			source: "goblin",
+			email: "op@example.test",
+			plan: null,
+			pending: null,
+			error: null,
+			pinned: false,
+		};
+		await waitFor(() => settingsGets > before, "the settings reload after sign-in");
 	});
 
 	test("switching memory off parks the block", async () => {

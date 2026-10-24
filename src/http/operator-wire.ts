@@ -5,6 +5,7 @@ import type {
 	authDefaults,
 	CapabilityName,
 	Config,
+	MemoryConfig,
 	ProviderConfig,
 	ThinkingLevel,
 	transcriptionDefaults,
@@ -108,16 +109,20 @@ export interface ConfigPostBody {
 	};
 	publicUrl: string;
 	http: { port: number };
+	// The six form fields are always sent; the client's emit also
+	// spreads the installer-owned tuning fields (MemoryConfig keys the
+	// form never edits), which the server reparses through
+	// memoryConfigSchema.
 	memory?:
 		| ""
-		| {
+		| ({
 				baseUrl: string;
 				bankId: string;
 				auth: string | undefined;
 				budget: "low" | "mid" | "high";
 				maxTokens: number | undefined;
 				recallTimeoutMs: number | undefined;
-		  }
+		  } & Partial<Record<keyof MemoryConfig, unknown>>)
 		| undefined;
 	logLevel: "debug" | "info" | "warn" | "error";
 	/** On/off flips for the parkable blocks — applied to the normalized

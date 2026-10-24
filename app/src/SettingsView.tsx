@@ -606,7 +606,18 @@ export function SettingsView({
 		addId,
 		setSheet,
 		setNotice,
-		reload: () => setReloadTick((t) => t + 1),
+		// A completed ChatGPT sign-in may have added a codex provider —
+		// reload clean drafts; a dirty one keeps its edits and reports.
+		reload: () => {
+			if (departureDirty) {
+				setNotice({
+					text: "ChatGPT connected — its models appear after this page reloads",
+					kind: "ok",
+				});
+			} else {
+				setReloadTick((t) => t + 1);
+			}
+		},
 		toggleFavoriteDraft,
 		moveFavorite,
 		last,

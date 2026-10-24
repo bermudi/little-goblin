@@ -55,19 +55,6 @@ export interface LastStash {
 	memory: MemDraft | null;
 }
 
-// One datalist of auth.jsonl's record names as loaded at boot. An
-// unknown name never blocks a save (config-before-key is legitimate
-// order) — it only flags typos. openrouter is required because
-// providers materialize blank auth from it.
-export type AuthDefaults = Record<string, string> & { openrouter: string };
-export const AUTH_DL = "goblin-auth-names";
-export const authWarn = (name: string, known: readonly string[]): string | undefined => {
-	const t = name.trim();
-	return known.length > 0 && t !== "" && !known.includes(t)
-		? `"${t}" is not in the saved keys (as loaded at boot)`
-		: undefined;
-};
-
 // What the sections see — every piece of editor state plus its
 // patchers. Sections destructure what they use.
 export interface SettingsCtx {

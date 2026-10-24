@@ -11,7 +11,6 @@ import {
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
-	APICallError,
 	DefaultChatTransport,
 	getToolName,
 	isToolUIPart,
@@ -2509,9 +2508,9 @@ function Chat({
 	);
 	// Rewriting a prompt is a rewind: everything from that message onward
 	// is dropped on the server before the edited text becomes the next
-	// turn. The backup exists only so a refused request (a turn started
-	// meanwhile, a vanished event) can restore the view; a landed edit
-	// keeps the truncated transcript and history is the truth on failure.
+	// turn. The backup exists only for an edit that fails while the
+	// transcript refresh cannot reach the server; in every other failure
+	// the durable history reconciles the view.
 	const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
 	const editRestore = useRef<UIMessage[] | null>(null);
 	// A branch is a copy in a new chat; the click opens it via the host's
@@ -2590,35 +2589,39 @@ function Chat({
 				const num = (v: unknown) => (typeof v === "number" ? v : null);
 				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
 			},
-			onFinish: ({ message, isAbort }) => {
+			onFinish: ({ message, isAbort, isError }) => {
 				// The edit's server-side answer is final now — a later
-				// onError must not resurrect the pre-edit transcript.
+				// onError must not resurrect the pre-edit transcript. The
+				// SDK fires this on errored turns too, so the done-bell
+				// waits for a real finish and the re-sync covers both.
 				editRestore.current = null;
 				// An aborted reader (stop, or the drop before a steer) is not a
 				// finished reply — the bell belongs to the real finish.
-				if (!isAbort) notifyDone(title ?? "", messageText(message));
+				if (!isAbort && !isError) notifyDone(title ?? "", messageText(message));
 				onTurnDone();
 				refreshTranscript();
 			},
-			onError: (err) => {
-				// An HTTP refusal (a turn started meanwhile, the message is
-				// gone) never reached the store: put the dropped tail back.
-				// A provider failure arrives after the server committed the
-				// edit, so the truncated view stands and onFinish re-syncs it.
+			onError: () => {
+				// The durable transcript is the truth in every failure mode: a
+				// refused request never reached the store (the tail stands
+				// there), and a post-commit failure already deleted it — only
+				// the server knows which, so reconcile from it. The pre-edit
+				// backup covers a refresh that cannot get there.
 				const backup = editRestore.current;
 				editRestore.current = null;
-				if (backup !== null && err instanceof APICallError) setMessages(backup);
+				if (backup === null) return;
+				refreshTranscript(() => setMessages(backup));
 			},
 		});
-	const refreshTranscript = () => {
-		void getMessages(token, conversationId).then(
-			(r) => {
-				setMessages((current) => mergeTranscript(current, r.messages));
-				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
-			},
-			() => {},
-		);
-	};
+		const refreshTranscript = (onUnavailable?: () => void) => {
+			void getMessages(token, conversationId).then(
+				(r) => {
+					setMessages((current) => mergeTranscript(current, r.messages));
+					applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+				},
+				() => onUnavailable?.(),
+			);
+		};
 	// A failed /stop means the client dropped its stream but the turn
 	// keeps running server-side and will write the reply the operator
 	// asked to stop — that has to be visible, not swallowed.

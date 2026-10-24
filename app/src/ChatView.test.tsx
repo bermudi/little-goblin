@@ -956,6 +956,48 @@ describe("ChatView edit and branch", () => {
 			);
 		});
 	};
+	const confirmAll = () => {
+		Reflect.set(dom.win, "confirm", () => true);
+	};
+	const mountChat = async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+	};
+	const editFirstMessage = async (text: string) => {
+		const editBtn = dom.container.querySelector<HTMLButtonElement>(
+			'button[aria-label="Edit message"]',
+		)!;
+		await act(async () => {
+			editBtn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		const ta = dom.container.querySelector<HTMLTextAreaElement>(
+			'textarea[aria-label="Edit message"]',
+		)!;
+		await setText(ta, text);
+		const save = [...dom.container.querySelectorAll("button")].find((b) =>
+			b.textContent?.includes("save & resend"),
+		)!;
+		await act(async () => {
+			save.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+	};
 
 	test("edit opens the bubble editor, confirms the dropped tail, and sends the durable id", async () => {
 		const chatPosts: {
@@ -1057,6 +1099,136 @@ describe("ChatView edit and branch", () => {
 		expect(dom.container.textContent).not.toContain("hi there");
 		expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(1);
 		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
+	});
+
+	test("an edit that fails after the server committed keeps the committed transcript — the dropped tail stays dropped", async () => {
+		let messagesCalls = 0;
+		let editedId: string | null = null;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) {
+					messagesCalls += 1;
+					// Before the edit: the untouched chat. After it: the rewind
+					// committed before the turn failed to start — the
+					// replacement stands, the old tail is gone.
+					return jsonResponse(
+						editedId === null
+							? {
+									messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+									ratings: [],
+									rateableMessageIds: ["a1"],
+								}
+							: {
+									messages: [userMsg(editedId, "hello, edited")],
+									ratings: [],
+									rateableMessageIds: [],
+								},
+					);
+				}
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					editedId = (JSON.parse(String(init?.body)) as { message: UIMessage }).message.id;
+					return jsonResponse({ error: "turn could not be started" }, 500);
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		confirmAll();
+		await mountChat();
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+
+		await editFirstMessage("hello, edited");
+		await settle(() => dom.container.textContent?.includes("The turn failed") ?? false);
+		// The error path reconciled with durable history, not the backup:
+		// the server kept the committed edit, so the pre-edit tail must not
+		// come back on top of it.
+		await settle(() => messagesCalls >= 2);
+		expect(dom.container.textContent).toContain("hello, edited");
+		expect(dom.container.textContent).not.toContain("hi there");
+	});
+
+	test("an edit request that never reached the server reconciles the tail back from history", async () => {
+		let chatAttempts = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) {
+					// The request never landed: durable history still holds the
+					// tail the view optimistically dropped.
+					return jsonResponse({
+						messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					});
+				}
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					chatAttempts += 1;
+					throw new TypeError("fetch failed");
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		confirmAll();
+		await mountChat();
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+
+		await editFirstMessage("hello, edited");
+		// The optimistic rewind dropped the tail locally…
+		await settle(() => !(dom.container.textContent?.includes("hi there") ?? true));
+		// …the send never reached the server, so the error path's refresh
+		// brings the tail back from the durable transcript instead of
+		// leaving it hidden behind the failure.
+		await settle(
+			() =>
+				chatAttempts > 0 &&
+				(dom.container.textContent?.includes("The turn failed") ?? false) &&
+				(dom.container.textContent?.includes("hi there") ?? false),
+		);
+		expect(dom.container.textContent).toContain("hi there");
+	});
+
+	test("an edit that fails while history is unreachable restores the pre-edit view from the backup", async () => {
+		let networkDown = false;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) {
+					if (networkDown) throw new TypeError("fetch failed");
+					return jsonResponse({
+						messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					});
+				}
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					networkDown = true;
+					throw new TypeError("fetch failed");
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		confirmAll();
+		await mountChat();
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+
+		await editFirstMessage("hello, edited");
+		// The refresh cannot reach the server either — the pre-edit backup
+		// stands in so the tail is not silently hidden while offline.
+		await settle(
+			() =>
+				(dom.container.textContent?.includes("The turn failed") ?? false) &&
+				(dom.container.textContent?.includes("hi there") ?? false),
+		);
+		expect(dom.container.textContent).toContain("hi there");
 	});
 
 	test("an edit with nothing after it skips the confirm", async () => {

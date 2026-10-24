@@ -690,6 +690,45 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			complete.close();
 		}
 	});
+	test("telegram channel tables leave the expectation when the channel is disabled", async () => {
+		// tg_inbox/tg_inbox_archives/guest_dedup are created only by
+		// startBot, which runs only while telegram.enabled — a healthy
+		// telegram-disabled install must not warn (design/doctor.md:
+		// config-gated tables only while their block exists).
+		const f = fixture();
+		installLayout(f.home);
+		assets(f.checkout);
+		const path = join(f.home, "state/goblin.sqlite");
+		const bootSansTelegram = (): { close(): void } => {
+			const store = openStore(path);
+			const extras = [openPrograms(path), openOutbox(path), openSandboxes(path)];
+			openCacheObservation(store.db);
+			openPings(store.db);
+			openTurnJournal(store.db);
+			return {
+				close() {
+					for (const extra of extras) extra.close();
+					store.close();
+				},
+			};
+		};
+		const partial = bootSansTelegram();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, operators: [], telegram: { enabled: false } }),
+		);
+		const disabled = await runHealth({ ...f.options, phase: "installed" });
+		expect(finding(disabled, "sqlite.subsystems").status).toBe("pass");
+		// The same store against an enabled channel still warns by name.
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(f.config));
+		const enabled = await runHealth({ ...f.options, phase: "installed" });
+		const subsystems = finding(enabled, "sqlite.subsystems");
+		expect(subsystems.status).toBe("warn");
+		for (const table of ["tg_inbox", "tg_inbox_archives", "guest_dedup"])
+			expect(subsystems.detail).toContain(table);
+		partial.close();
+	});
+
 	test("sandbox probes stay skip until configured; engine and image readiness split", async () => {
 		const f = fixture();
 		expect(finding(await runHealth(f.options), "sandbox.engine").status).toBe("skip");

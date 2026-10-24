@@ -533,8 +533,10 @@ function capacity(path: string, id: string, scope: string): HealthResult {
 
 // Feature tables join the expectation only while their config block
 // exists — delegations needs `delegation`, memory_outage needs
-// `memory`. Lazy tables (forget_listings, tg_dm_navigation*) are
-// deliberately absent: they appear on first use, not at boot.
+// `memory`, and the telegram channel tables need the boot-pinned
+// `telegram.enabled` (startBot, which creates them, is gated on it).
+// Lazy tables (forget_listings, tg_dm_navigation*) are deliberately
+// absent: they appear on first use, not at boot.
 function expectedTables(config: Config | undefined): string[] {
 	const boot = [
 		"projects",
@@ -552,9 +554,6 @@ function expectedTables(config: Config | undefined): string[] {
 		"mail_outbox",
 		"sandboxes",
 		"tg_pings",
-		"tg_inbox",
-		"tg_inbox_archives",
-		"guest_dedup",
 		"model_cache_calls",
 		"event_projections",
 		"app_push_subscriptions",
@@ -564,6 +563,7 @@ function expectedTables(config: Config | undefined): string[] {
 		"context_windows",
 		"context_window_state",
 	];
+	if (config?.telegram.enabled) boot.push("tg_inbox", "tg_inbox_archives", "guest_dedup");
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");
 	return boot;

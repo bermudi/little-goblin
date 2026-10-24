@@ -1643,6 +1643,63 @@ a.hit-title {
 	background: var(--app-bg);
 	color: var(--app-fg);
 }
+/* The model knob's button twin — reads like the flat selects. */
+.knob-btn {
+	font: inherit;
+	font-size: 11px;
+	font-family: var(--font-mono);
+	color: var(--app-fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: 6px;
+	padding: 0.3rem 0.45rem;
+	cursor: pointer;
+	outline: none;
+}
+.knob-btn:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.knob-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+/* The model popover floats above the bar, right-anchored toward the knob. */
+.model-knob {
+	display: inline-flex;
+}
+.model-pop {
+	left: auto;
+	right: 0.5rem;
+	min-width: 15rem;
+}
+.model-pop li button {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+.model-pop .mi {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.model-pop .mi-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.model-pop .check {
+	color: var(--app-fg);
+}
+.model-pop .menu-div {
+	border-top: 1px solid var(--app-divider);
+	margin: 0.15rem 0;
+}
 
 /* Context gauge — the composer's window-utilization readout. Reads as
    a knob until clicked; the popover floats above the bar like the
@@ -2139,8 +2196,45 @@ a.hit-title {
 	background: var(--app-hover);
 }
 .valuebtn .val {
-	font-family: var(--font-mono);
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	overflow: hidden;
+	text-align: left;
+}
+.valuebtn .val-name {
 	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.valuebtn .val-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* A favorite row in Settings — friendly name over the raw ref, with
+   the chain-btns reorder/remove controls. */
+.fav-cell {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.fav-name {
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.fav-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -2567,6 +2661,41 @@ a.hit-title {
 .mrow .check {
 	color: var(--app-fg);
 	font-size: 12px;
+}
+/* A model row plus its star — the star is a sibling button, not
+   nested in the pick target. */
+.mline {
+	display: flex;
+	align-items: center;
+	border-radius: 8px;
+}
+.mline:hover {
+	background: var(--app-hover);
+}
+.mline .mrow {
+	flex: 1;
+	min-width: 0;
+}
+.mline:hover .mrow {
+	background: transparent;
+}
+.mline .mrow.sel {
+	background: var(--app-active);
+}
+.mstar {
+	flex: none;
+	font-size: 14px;
+	line-height: 1;
+	padding: 0.35rem 0.45rem;
+	border-radius: 6px;
+	color: var(--app-fg-subtle);
+}
+.mstar:hover {
+	color: var(--app-warning);
+	background: var(--app-hover);
+}
+.mstar.on {
+	color: var(--app-warning);
 }
 .mgroup {
 	font-size: 10.5px;

@@ -36,6 +36,16 @@ JSON5 object with defaults materialized: comments and key order do not
 survive, and a config with unknown keys (or malformed JSON5) is refused
 rather than overwritten. The mini app sends the version it loaded
 (`If-Match`); a stale page's save is refused, never merged over newer bytes.
+
+Telegram attaches *after* the app channel and core services stand: one
+bounded init attempt (token resolve, `getMe`, seam attach, inbox replay,
+polling). If it fails — bad token, unreachable Bot API — the service
+stays up with the Telegram channel **degraded**: `/app` and `/api/app/*`
+keep serving, every Telegram seam answers unavailable, and the mini-app
+door refuses. A `getUpdates` dying mid-run detaches the same way. There
+is no retry loop: repair the credential or config, then do an approved
+restart to reattach.
+
 Before deploying a revision with stricter validation, run Doctor from that
 revision against the existing home: unknown fields must be corrected
 explicitly, not dropped during a save. Reopen Settings after any file edit.
@@ -108,6 +118,17 @@ calls (completed/failed/recorded outcomes) under `known:`:
   tracking columns read consumed and fail closed — they can neither
   execute nor take a new decision. Decide the call fresh on the
   interrupted run, or re-ask in a new turn.
+- **`/resume` refuses input the dead run never owned.** A durable user
+  message after the run's trigger that it never consumed — steering it
+  crashed before folding in, or anything sent after it died — blocks
+  the resume with a labeled conflict. Continue from the current
+  conversation as a new request, or `/abandon <run>` the run.
+- **A successful resume appends a new source-linked user event.** It
+  carries a provenance prefix — `[operator resumed interrupted run
+  …]` — plus the original request verbatim when the model view no
+  longer carries it (e.g. after compaction). It shows in history and
+  the app as its own message, re-feeds the model, and anchors the new
+  reply; the original event is never re-appended or duplicated.
 
 ## Diagnostics and first-start acceptance
 
@@ -320,7 +341,11 @@ they're operator-editable). Quadlet changes apply by hand: edit the
 installed file in `~/.config/containers/systemd/`, then
 `systemctl --user daemon-reload`, `podman rm -f goblin-memory-api`,
 `systemctl --user restart goblin-memory-api` — the `podman rm` is what
-recreates the container under the new spec.
+recreates the container under the new spec. Pod topology changes
+(`goblin-memory.pod`, the `Pod=` lines, the published port) are bigger:
+stop both members, `podman pod rm -f goblin-memory`, daemon-reload, then
+start `goblin-memory-api` — the pod and its containers come back under
+the new spec.
 
 ## Program proposals
 

@@ -1,4 +1,5 @@
 import type { UIMessageChunk } from "ai";
+import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 
@@ -11,11 +12,13 @@ export function appSseWriter(
 	body: ReadableStream<Uint8Array>;
 	write(chunk: UIMessageChunk): void;
 	finish(done: TurnDone): void;
+	wireDied(): boolean;
 	dispose(): void;
 } {
 	const enc = new TextEncoder();
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
 	let closed = false;
+	let wireDied = false;
 	let lastByte = Date.now();
 	let beat: ReturnType<typeof setInterval> | undefined;
 	const stopBeat = () => {
@@ -29,6 +32,7 @@ export function appSseWriter(
 			lastByte = Date.now();
 		} catch (err) {
 			closed = true;
+			wireDied = true;
 			stopBeat();
 			log.warn("app stream wire died mid-turn — writes dropped, turn continues", err, {
 				conversation: convId,
@@ -50,6 +54,7 @@ export function appSseWriter(
 		},
 		cancel() {
 			closed = true;
+			wireDied = true;
 			stopBeat();
 			log.warn("app stream client gone — wire closed, turn continues", {
 				conversation: convId,
@@ -75,40 +80,55 @@ export function appSseWriter(
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
+		},
+		wireDied() {
+			return wireDied;
 		},
 		dispose() {
 			stopBeat();
 			closed = true;
 			try {
 				controller.close();
-			} catch {
-			}
+			} catch {}
 		},
 	};
 }
 
-export function appStreamSink(convId: string): {
+export function appStreamSink(
+	convId: string,
+	media?: AppMediaDeps,
+	onDoneDisconnected?: (done: TurnDone) => Promise<void>,
+): {
 	sink: TurnSink;
 	body: ReadableStream<Uint8Array>;
 	dispose(): void;
 } {
 	const writer = appSseWriter(convId);
+	const stream: TurnSink = {
+		onTextDelta() {},
+		onReasoningDelta() {},
+		onToolCall() {},
+		onStreamChunk(chunk) {
+			writer.write(chunk);
+		},
+		async onDone(done) {
+			const disconnectedBefore = writer.wireDied();
+			writer.finish(done);
+			const disconnected = disconnectedBefore || writer.wireDied();
+			log.info("app stream finish", { conversation: convId, outcome: done.kind });
+			if (disconnected) await onDoneDisconnected?.(done);
+		},
+	};
 	return {
 		body: writer.body,
 		dispose: writer.dispose,
-		sink: {
-			onTextDelta() {},
-			onReasoningDelta() {},
-			onToolCall() {},
-			onStreamChunk(chunk) {
-				writer.write(chunk);
-			},
-			onDone(done) {
-				writer.finish(done);
-				log.info("app stream finish", { conversation: convId, outcome: done.kind });
-			},
-		},
+		sink:
+			media === undefined
+				? stream
+				: composeTurnSinks(
+						stream,
+						appMediaSink(convId, media, (chunk) => writer.write(chunk)),
+					),
 	};
 }

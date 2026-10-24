@@ -12,7 +12,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
-import { parseConfig } from "../config.ts";
+import { loadConfig, parseConfig } from "../config.ts";
+import { openStore } from "../conversation.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
 import type { UIMessage } from "ai";
 
@@ -68,15 +70,150 @@ function getWithQuery(tail: string, query: string): Promise<Response> {
 describe("state viewer routes", () => {
 	test("skills lists the fixture catalog", () => {
 		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
-		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "d");
+		writeFileSync(
+			join(home, "workspace/skills/weather/SKILL.md"),
+			"---\nname: weather\ndescription: forecast\n---\nsun",
+		);
 		mkdirSync(join(home, "workspace/skills-proposed"), { recursive: true });
 		const res = get("skills");
 		return res.then(async (r) => {
 			expect(r.status).toBe(200);
-			const body = (await r.json()) as { skills: unknown[]; proposed: unknown[] };
+			const body = (await r.json()) as {
+				skills: unknown[];
+				proposed: unknown[];
+				catalog: Array<{ name: string; manualOnly: boolean; bodyBytes: number }>;
+			};
 			expect(body.skills.length).toBe(1);
 			expect(body.proposed).toEqual([]);
+			// The picker's catalog view rides the same response.
+			expect(body.catalog).toHaveLength(1);
+			expect(body.catalog[0]!.name).toBe("weather");
+			expect(body.catalog[0]!.bodyBytes).toBeGreaterThan(0);
 		});
+	});
+	test("skills/catalog includes manual-only entries", () => {
+		mkdirSync(join(home, "workspace/skills/secret"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace/skills/secret/SKILL.md"),
+			"---\nname: secret\ndescription: shh\ndisable-model-invocation: true\n---\nx",
+		);
+		const res = get("skills");
+		return res.then(async (r) => {
+			const body = (await r.json()) as {
+				catalog: Array<{ name: string; manualOnly: boolean }>;
+			};
+			expect(body.catalog.map((c) => c.name)).toEqual(["secret"]);
+			expect(body.catalog[0]!.manualOnly).toBe(true);
+		});
+	});
+
+	test("skills/preview fetches, scores, stamps, and answers the card", async () => {
+		// Build a canonical tarball fixture — body past the shared
+		// checker's default sampling cap, sentinel at the tail, so the
+		// gate must see ALL the scored bytes.
+		const src = mkdtempSync(join(tmpdir(), "preview-src-"));
+		mkdirSync(join(src, "r-main/demo"), { recursive: true });
+		const skillBody =
+			"---\nname: demo\ndescription: the demo\n---\n" + "pad ".repeat(2500) + "TAIL_SENTINEL";
+		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
+		const out = mkdtempSync(join(tmpdir(), "preview-ball-"));
+		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
+		await proc.exited;
+		const ball = await Bun.file(join(out, "b.tgz")).bytes();
+
+		const scoredTexts: string[] = [];
+		const d = deps();
+		d.skillFetch = {
+			gate: {
+				decide: (async (text: string) => {
+					scoredTexts.push(text);
+					return {
+						answers: { injection: 0.9, severity: 0.1 },
+						tokens: { input: 1, output: 1 },
+						latencyMs: 5,
+						model: "gate",
+					};
+				}) as never,
+			},
+			fetchImpl: (async () => new Response(ball as never)) as unknown as typeof fetch,
+		};
+		const res = handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>;
+		const r = await res;
+		expect(r.status).toBe(200);
+		const body = (await r.json()) as {
+			name: string;
+			verdict: { status: string };
+			path: string;
+			digest: string;
+			cached: boolean;
+		};
+		expect(body.name).toBe("demo");
+		expect(body.verdict.status).toBe("malicious");
+		expect(scoredTexts).toEqual([skillBody]);
+		expect(body.cached).toBe(false);
+		// The verdict was stamped into the cached descriptor.
+		const { readFileSync: rf } = await import("node:fs");
+		const descriptor = JSON.parse(
+			rf(join(home, "state", "skillcache", body.digest, "skill.json"), "utf8"),
+		) as { verdict: { status: string } };
+		expect(descriptor.verdict.status).toBe("malicious");
+		// A re-preview of the stamped cache reuses the first verdict —
+		// the gate is not re-run and the card cannot drift from what
+		// injection will inject.
+		d.skillFetch!.gate = {
+			decide: (async () => {
+				scoredTexts.push("RE-SCORED");
+				return {
+					answers: { injection: 0.0, severity: 0.0 },
+					tokens: { input: 1, output: 1 },
+					latencyMs: 5,
+					model: "gate",
+				};
+			}) as never,
+		};
+		const r2 = await (handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>);
+		expect(r2.status).toBe(200);
+		const body2 = (await r2.json()) as { verdict: { status: string }; cached: boolean };
+		expect(body2.verdict.status).toBe("malicious");
+		expect(body2.cached).toBe(true);
+		expect(scoredTexts).toEqual([skillBody]);
+		rmSync(src, { recursive: true, force: true });
+		rmSync(out, { recursive: true, force: true });
+	});
+
+	test("skills/preview without the gate is 503", async () => {
+		const res = handleOperatorRoute(
+			deps(),
+			ACTOR,
+			new Request("http://x/skills/preview", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ url: "https://github.com/o/r/tree/main/demo" }),
+			}),
+			"skills/preview",
+			new URL("http://x/skills/preview"),
+		) as Promise<Response>;
+		expect((await res).status).toBe(503);
 	});
 
 	test("skills/file serves SKILL.md and rejects a bad name", async () => {
@@ -450,5 +587,259 @@ describe("secrets route", () => {
 			new URL("http://x/secrets"),
 		);
 		expect(noSeam?.status).toBe(503);
+	});
+});
+
+describe("config save", () => {
+	async function postConfig(d: OperatorDeps, body: unknown): Promise<Response | null> {
+		const view = await handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config"),
+			"config",
+			new URL("http://x/config"),
+		);
+		const etag = view?.headers.get("etag") ?? "";
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config", {
+				method: "POST",
+				headers: { "content-type": "application/json", "if-match": etag },
+				body: JSON.stringify(body),
+			}),
+			"config",
+			new URL("http://x/config"),
+		);
+	}
+
+	test.each([
+		["vision", { model: "new/m" }],
+		["image", { model: "new/m" }],
+		["transcription", { kind: "openai", auth: "speech" }],
+	] as const)(
+		"first-time %s enablement accepts and persists its supplied block",
+		async (key, block) => {
+			const d = deps();
+			expect(d.configRef.current[key]).toBeUndefined();
+			expect(d.configRef.current.parked?.[key]).toBeUndefined();
+			// Models may name a provider added by the same save: validation
+			// must see the resulting config, not just the incumbent.
+			const res = await postConfig(d, {
+				providers: {
+					...d.configRef.current.providers,
+					new: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "new" },
+				},
+				capabilities: { [key]: true },
+				[key]: block,
+			});
+			expect(res?.status).toBe(200);
+			expect(d.configRef.current[key]).toMatchObject(block);
+			expect(loadConfig()?.[key]).toEqual(d.configRef.current[key]);
+			expect(d.configRef.current.parked?.[key]).toBeUndefined();
+		},
+	);
+
+	test.each([
+		["vision", { model: "missing/m" }, "vision"],
+		["image", { model: "test/m" }, "image"],
+		["transcription", { kind: "not-an-engine" }, "transcription"],
+	] as const)(
+		"first-time %s enablement validates its supplied block before writing",
+		async (key, block, error) => {
+			const d = deps();
+			const before = d.configRef.current;
+			const res = await postConfig(d, { capabilities: { [key]: true }, [key]: block });
+			expect(res?.status).toBe(422);
+			const detail = (await res?.json()) as { error: string };
+			expect(detail.error).toContain(error);
+			expect(detail.error).not.toContain("pick an engine/model");
+			expect(d.configRef.current).toBe(before);
+			expect(loadConfig()).toBeNull();
+		},
+	);
+
+	test.each(["vision", "image", "transcription"] as const)(
+		"first-time %s enablement still requires a block",
+		async (key) => {
+			const d = deps();
+			const res = await postConfig(d, { capabilities: { [key]: true } });
+			expect(res?.status).toBe(422);
+			expect((await res?.json()) as { error: string }).toHaveProperty(
+				"error",
+				expect.stringContaining("pick an engine/model"),
+			);
+			expect(d.configRef.current[key]).toBeUndefined();
+			expect(loadConfig()).toBeNull();
+		},
+	);
+
+	test("the write persists the rung the model's ladder can express", async () => {
+		const d = deps();
+		const res = await postConfig(d, { model: "test/glm-5.3", thinking: "xhigh" });
+		expect(res?.status).toBe(200);
+		// glm-5.3's ladder is low|high|max — xhigh lands where the wire
+		// clamp would send it, and the pinned telegram pair (its own
+		// model, where medium is real) is untouched.
+		expect(d.configRef.current.model).toBe("test/glm-5.3");
+		expect(d.configRef.current.thinking).toBe("max");
+		expect(d.configRef.current.telegram).toMatchObject({
+			model: "test/m",
+			thinking: "medium",
+		});
+		// "off" on a forced-thinking model lands on its floor.
+		expect((await postConfig(d, { thinking: "off" }))?.status).toBe(200);
+		expect(d.configRef.current.thinking).toBe("low");
+		// The telegram pin clamps against its own model's ladder too.
+		expect(
+			(await postConfig(d, { telegram: { model: "test/glm-5.3", thinking: "xhigh" } }))?.status,
+		).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			model: "test/glm-5.3",
+			thinking: "max",
+		});
+	});
+
+	test("provider removal under a disabled telegram keeps its pin; re-enable needs it back", async () => {
+		const gone = {
+			kind: "openai-compatible" as const,
+			baseUrl: "https://api.example.org",
+			auth: "ref",
+		};
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" }, gone },
+					model: "test/m",
+					operators: [],
+					allowedUsers: [],
+					telegram: { enabled: false, model: "gone/glm-5.3", thinking: "xhigh" },
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		// Removing the dormant pin's provider is fine while the channel is
+		// off — and the dormant model/thinking ride through unclamped even
+		// though glm-5.3's ladder can't express xhigh.
+		expect(
+			(
+				await postConfig(d, {
+					providers: { test: { kind: "codex" }, gone },
+					model: "test/glm-5.3",
+				})
+			)?.status,
+		).toBe(200);
+		expect((await postConfig(d, { providers: { test: { kind: "codex" } } }))?.status).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			enabled: false,
+			model: "gone/glm-5.3",
+			thinking: "xhigh",
+		});
+		// Re-enabling without the provider is a 422 until it is restored.
+		expect(
+			(
+				await postConfig(d, {
+					telegram: { enabled: true },
+					operators: [7],
+				})
+			)?.status,
+		).toBe(422);
+		expect(
+			(
+				await postConfig(d, {
+					providers: { test: { kind: "codex" }, gone },
+					telegram: { enabled: true },
+					operators: [7],
+				})
+			)?.status,
+		).toBe(200);
+		expect(d.configRef.current.telegram).toMatchObject({
+			enabled: true,
+			model: "gone/glm-5.3",
+		});
+	});
+});
+
+describe("memory/blocked route", () => {
+	function postBlocked(body: unknown, d: OperatorDeps): Promise<Response | null> {
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/memory/blocked", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}),
+			"memory/blocked",
+			new URL("http://x/memory/blocked"),
+		);
+	}
+
+	function memoryDeps(): { d: OperatorDeps; store: ReturnType<typeof openStore>; target: string } {
+		const store = openStore(join(home, "goblin.sqlite"));
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const d = deps();
+		d.configRef.current = parseConfig({
+			providers: { test: { kind: "codex" } },
+			model: "test/m",
+			operators: [7],
+			allowedUsers: [],
+			memory: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+		});
+		d.memory = {
+			target: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+			client,
+			queue: store.memoryQueue,
+			counts: () => store.memoryQueue.counts(client.target),
+			deletingAll: () => store.memoryQueue.deletingCount(),
+			blockedDetail: () => store.memoryQueue.blockedDetail(client.target),
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
+		};
+		return { d, store, target: client.target };
+	}
+
+	test("retry and dismiss act on the durable blocked rows", async () => {
+		const { d, store, target } = memoryDeps();
+		try {
+			const enqueueBlocked = (id: string) => {
+				const op = store.memoryQueue.enqueue(target, {
+					id,
+					content: "Operator: hi\nGoblin: hello",
+					timestamp: new Date().toISOString(),
+					conversationId: "app/chat-01",
+					sourceIds: ["u1", "a1"],
+				});
+				const item = store.memoryQueue.get(op);
+				if (item === null) throw new Error("expected queued memory");
+				store.memoryQueue.update(item, "blocked", 0, "Hindsight http failure (HTTP 429)");
+			};
+			enqueueBlocked("exchange/app/chat-01/1/a");
+
+			const retried = await postBlocked({ action: "retry" }, d);
+			expect(retried?.status).toBe(200);
+			expect(await retried?.json()).toEqual({ ok: true, action: "retry", affected: 1 });
+			expect(store.memoryQueue.counts(target).blocked).toBe(0);
+			expect(store.memoryQueue.counts(target).pending).toBe(1);
+
+			enqueueBlocked("exchange/app/chat-01/2/a");
+			const dismissed = await postBlocked({ action: "dismiss" }, d);
+			expect(dismissed?.status).toBe(200);
+			expect(await dismissed?.json()).toEqual({ ok: true, action: "dismiss", affected: 1 });
+			expect(store.memoryQueue.counts(target).blocked).toBe(0);
+			expect(store.memoryQueue.counts(target).dismissed).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("bad actions and unwired memory get typed refusals", async () => {
+		const { d, store } = memoryDeps();
+		try {
+			expect((await postBlocked({ action: "maybe" }, d))?.status).toBe(422);
+		} finally {
+			store.close();
+		}
+		expect((await postBlocked({ action: "retry" }, deps()))?.status).toBe(503);
 	});
 });

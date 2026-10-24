@@ -16,7 +16,7 @@ export interface OutgoingFile {
 
 export class DeliveryUncertainError extends Error {
 	constructor(original: unknown) {
-		super("delivery uncertain — the file may have arrived; check Telegram before retrying");
+		super("delivery uncertain — the file may have arrived; check the destination before retrying");
 		this.name = "DeliveryUncertainError";
 		this.cause = original;
 	}
@@ -40,7 +40,7 @@ export const sendFileInputSchema = z.object({
 export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promise<void>) {
 	return tool({
 		description:
-			"Send a file from the workspace to the operator via Telegram. Images arrive as photo previews, everything else as documents. Use this whenever the operator should receive a file — never paste file bytes into chat.",
+			"Send a file from the workspace to the operator. Channels show image previews when they support them, otherwise they attach the document. Use this whenever the operator should receive a file — never paste file bytes into chat.",
 		inputSchema: sendFileInputSchema,
 		execute: async ({ path, caption, as_file }) => {
 			const abs = resolvePath(cwd, path);
@@ -79,7 +79,7 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 					log.warn("send_file delivery uncertain", err);
 					return {
 						error:
-							"delivery uncertain — the file may have arrived on Telegram; check it there before retrying, never resend it",
+							"delivery uncertain — the file may have arrived; check the destination before retrying, never resend it",
 					};
 				}
 				log.warn("send_file delivery failed", err);

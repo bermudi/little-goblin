@@ -3,6 +3,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 	utimesSync,
@@ -10,12 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	attachmentContentType,
 	attachmentPath,
 	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
+	listPickerSkills,
 	listSkillDir,
 	listSkills,
 	readAttachmentBytes,
@@ -152,6 +155,76 @@ describe("listSkills", () => {
 			}
 		},
 	);
+});
+
+describe("listPickerSkills", () => {
+	test("rows carry the real SKILL.md size, manual-only included", () => {
+		writeRel("skills/tiny/SKILL.md", "---\nname: tiny\ndescription: t\n---\nx");
+		writeRel(
+			"skills/secret/SKILL.md",
+			`---\nname: secret\ndescription: s\ndisable-model-invocation: true\n---\n${"y".repeat(100)}`,
+		);
+		const items = listPickerSkills(join(home, "skills"));
+		const byName = new Map(items.map((i) => [i.name, i]));
+		expect(byName.get("tiny")?.bodyBytes).toBe(
+			statSync(join(home, "skills", "tiny", "SKILL.md")).size,
+		);
+		expect(byName.get("secret")?.manualOnly).toBe(true);
+	});
+
+	// The race between the catalog scan and the picker's per-row stat
+	// can't interpose inside a synchronous call — except through the
+	// catalog's own post-scan signal: past MAX_ENTRIES it warns "skill
+	// catalog capped" after reading every SKILL.md, before the picker
+	// stats one. The designed log-writer seam fires the mutation there.
+	function cappedCatalog(mutate: (victimDir: string) => void): () => void {
+		const skills = join(home, "skills");
+		mkdirSync(join(skills, "a0victim"), { recursive: true });
+		writeFileSync(
+			join(skills, "a0victim", "SKILL.md"),
+			"---\nname: a0victim\ndescription: gone soon\n---\nbody",
+		);
+		for (let i = 0; i < 129; i++) {
+			const name = `filler-${String(i).padStart(3, "0")}`;
+			mkdirSync(join(skills, name), { recursive: true });
+			writeFileSync(
+				join(skills, name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: f\n---\nx`,
+			);
+		}
+		setLogFile(join(home, "test.log"));
+		setLogWriter((_path, line) => {
+			if (line.includes('"skill catalog capped"')) mutate(join(skills, "a0victim"));
+		});
+		return () => {
+			setLogFile(null);
+			setLogWriter(null);
+		};
+	}
+
+	test("a skill that vanishes between scan and stat is omitted, not zero-sized", () => {
+		const undo = cappedCatalog((dir) => rmSync(dir, { recursive: true, force: true }));
+		try {
+			const items = listPickerSkills(join(home, "skills"));
+			expect(items.some((i) => i.name === "a0victim")).toBe(false);
+			expect(items.length).toBe(127);
+			expect(items.every((i) => i.bodyBytes > 0)).toBe(true);
+		} finally {
+			undo();
+		}
+	});
+
+	test("a non-ENOENT stat failure propagates — never a synthesized 0 B row", () => {
+		const undo = cappedCatalog((dir) => {
+			rmSync(dir, { recursive: true, force: true });
+			writeFileSync(dir, "occupied");
+		});
+		try {
+			expect(() => listPickerSkills(join(home, "skills"))).toThrow(/ENOTDIR/);
+		} finally {
+			undo();
+		}
+	});
 });
 
 describe("readStateFile containment", () => {

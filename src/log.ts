@@ -47,6 +47,18 @@ export function setLogWriter(fn: AppendFn | null): void {
 	appendImpl = fn ?? ((path, line) => appendFileSync(path, line));
 }
 
+// Where emitted lines land. Doctor's worker and collector redirect this
+// to stderr: their stdout must be exactly one JSON report, and a
+// runtime diagnostic interleaved into it (boundedRun's pipe
+// cancel/drain warns in particular) breaks every consumer
+// (design/doctor.md — "operational diagnostics belong on stderr").
+let stream: NodeJS.WriteStream = process.stdout;
+
+// Injectable for tests — null restores the default stdout routing.
+export function setLogStream(target: NodeJS.WriteStream | null): void {
+	stream = target ?? process.stdout;
+}
+
 // stdout warn that bypasses emit() — the file sink's own health must
 // never route through the machinery whose failure it is reporting.
 function warnStdout(msg: string, fields: Record<string, unknown>): void {
@@ -99,7 +111,7 @@ function emit(level: LogLevel, msg: string, fields?: Fields, startup = false): v
 			msg,
 			...fields,
 		}) + "\n";
-	process.stdout.write(line);
+	stream.write(line);
 	writeFile(line);
 }
 

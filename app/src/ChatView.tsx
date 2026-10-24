@@ -25,15 +25,22 @@ import {
 	getConfig,
 	getContext,
 	getConversationConfig,
+	getConversationMemory,
 	getMessages,
 	listNotes,
 	patchConfig,
 	patchConversationConfig,
+	patchConversationMemory,
+	rateReply,
 	stopConversation,
+	toggleFavorite,
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { ApprovalCard } from "./Approvals.tsx";
 import { ArtifactCard, DocViewerProvider } from "./docview.tsx";
+import { ModelPicker } from "./ModelPicker.tsx";
+import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
@@ -50,7 +57,11 @@ import {
 import type {
 	AppConfigView,
 	AppContextView,
+	AppConversationMemoryView,
+	AppLiveContext,
 	AppNoteSummary,
+	AppRatedReply,
+	AppReplyRating,
 	TurnMetadata,
 } from "../../src/http/app-wire.ts";
 
@@ -133,11 +144,12 @@ function FileIcon() {
 
 // Read-back for a stored attachment — bearer header, blob, object URL;
 // the server confines reads to workspace/attachments/.
-// Raster formats keep their type for inline rendering (<img> and a
-// top-level image document run no script). Everything else — SVG
-// carries script, and blob: URLs execute in this origin — is
-// re-wrapped as octet-stream so opening it downloads, never executes.
+// Raster and audio formats keep their type for inline rendering (<img>,
+// <audio>, and their top-level documents run no script). Everything else —
+// SVG carries script, and blob: URLs execute in this origin — is re-wrapped
+// as octet-stream so opening it downloads, never executes.
 const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
+const INLINE_AUDIO = /^audio\//;
 async function fetchAttachmentUrl(token: string | null, path: string): Promise<string> {
 	const name = path.split("/").pop() ?? "";
 	const res = await fetch(`/api/app/attachments/${encodeURIComponent(name)}`, {
@@ -145,27 +157,30 @@ async function fetchAttachmentUrl(token: string | null, path: string): Promise<s
 	});
 	if (!res.ok) throw new Error(`http ${res.status}`);
 	const bytes = await res.blob();
-	if (INLINE_IMAGE.test(bytes.type)) return URL.createObjectURL(bytes);
+	if (INLINE_IMAGE.test(bytes.type) || INLINE_AUDIO.test(bytes.type)) {
+		return URL.createObjectURL(bytes);
+	}
 	return URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
 }
 
 function AttachmentChip({ data, token }: { data: unknown; token: string | null }) {
 	const ref = (typeof data === "object" && data !== null ? data : {}) as AttachmentRef;
 	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
+	const isAudio = typeof ref.mediaType === "string" && ref.mediaType.startsWith("audio/");
 	const path = typeof ref.path === "string" ? ref.path : "";
-	const [thumb, setThumb] = useState<string | null>(null);
+	const [inlineUrl, setInlineUrl] = useState<string | null>(null);
 	// A failed download surfaces as a chip message — a missing
 	// attachment or expired credential otherwise reads as a dead button.
 	const [dlError, setDlError] = useState<string | null>(null);
 	useEffect(() => {
-		if (!isImage || path === "") return;
+		if ((!isImage && !isAudio) || path === "") return;
 		let live = true;
 		let url: string | null = null;
 		void fetchAttachmentUrl(token, path)
 			.then((u) => {
 				if (live) {
 					url = u;
-					setThumb(u);
+					setInlineUrl(u);
 				} else {
 					// Unmounted mid-fetch — the cleanup already ran, so
 					// revoke here or the blob pins until page unload.
@@ -181,15 +196,27 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			live = false;
 			if (url !== null) URL.revokeObjectURL(url);
 		};
-	}, [isImage, path, token]);
+	}, [isImage, isAudio, path, token]);
 	if (typeof ref.filename !== "string") return null;
-	if (isImage && thumb !== null) {
+	if (isImage && inlineUrl !== null) {
 		return (
-			<a className="attachment image" href={thumb} target="_blank" rel="noreferrer">
-				<img src={thumb} alt={ref.filename} />
+			<a className="attachment image" href={inlineUrl} target="_blank" rel="noreferrer">
+				<img src={inlineUrl} alt={ref.filename} />
 				<span className="attachment-name">{ref.filename}</span>
 				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
 			</a>
+		);
+	}
+	if (isAudio && inlineUrl !== null) {
+		return (
+			<span className="attachment audio">
+				<audio controls preload="metadata" src={inlineUrl} />
+				<span className="attachment-name">{ref.filename}</span>
+				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
+				{ref.speech === true && ref.transcript !== undefined && (
+					<span className="attachment-transcript">“{ref.transcript}”</span>
+				)}
+			</span>
 		);
 	}
 	return (
@@ -232,8 +259,48 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 	);
 }
 
-// A stored note attachment — the server expanded it at intake, so the
-// chip carries title+rev as of that message.
+// An explicit skill invocation — the part is the durable record; the
+// body rode only the owning turn's model view.
+function SkillChip({ data }: { data: unknown }) {
+	const d = (typeof data === "object" && data !== null ? data : {}) as {
+		name?: string;
+		url?: string;
+		path?: string;
+	};
+	const temp = typeof d.url === "string";
+	// A temp part carries {url, path} only — the staged layout
+	// <digest>/<name>/SKILL.md yields the name the descriptor gave it.
+	const tempName =
+		typeof d.path === "string"
+			? (d.path.split("/").filter(Boolean).at(-2) ?? "unknown")
+			: "unknown";
+	let host = d.url ?? "";
+	if (temp && d.url !== undefined) {
+		try {
+			host = new URL(d.url).host;
+		} catch {
+			// The wire validated it; an unparseable survivor keeps the full form.
+		}
+	}
+	return (
+		<span
+			className="attachment note-chip"
+			title={
+				temp
+					? `Temp skill from ${d.url} — its body rode the turn that invoked it`
+					: `Skill ${d.name ?? ""} — its body rode the turn that invoked it`
+			}
+		>
+			<span aria-hidden="true">⚡</span>
+			<span className="attachment-name">
+				{temp ? "Temp skill · " : "Skill · "}
+				{temp ? tempName : (d.name ?? "unknown")}
+				{temp ? ` (${host})` : ""}
+			</span>
+		</span>
+	);
+}
+
 function NoteChip({
 	data,
 	onOpenNote,
@@ -322,6 +389,16 @@ export function MessageParts({
 			);
 			continue;
 		}
+		if (p.type === "data-approval") {
+			const data =
+				typeof p.data === "object" && p.data !== null
+					? (p.data as { kind?: unknown; id?: unknown })
+					: null;
+			if ((data?.kind === "program" || data?.kind === "mail") && typeof data.id === "number") {
+				out.push(<ApprovalCard key={i} token={token ?? null} kind={data.kind} id={data.id} />);
+			}
+			continue;
+		}
 		if (isActivityPart(p)) {
 			const run: ActivityPart[] = [];
 			let j = i;
@@ -338,7 +415,13 @@ export function MessageParts({
 					if (q.text.trim() !== "") run.push(q);
 				} else if (q.type === "text") {
 					if (q.text.trim() !== "") break;
-				} else if (q.type === "data-attachment" || q.type === "data-note" || q.type === "file") {
+				} else if (
+					q.type === "data-attachment" ||
+					q.type === "data-note" ||
+					q.type === "data-approval" ||
+					q.type === "data-skill" ||
+					q.type === "file"
+				) {
 					break;
 				}
 				// step-start, sources, and any future plumbing render as
@@ -382,6 +465,8 @@ export function MessageParts({
 			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);
 		else if (p.type === "data-note")
 			out.push(<NoteChip key={i} data={p.data} onOpenNote={onOpenNote} />);
+		else if (p.type === "data-skill")
+			out.push(<SkillChip key={i} data={p.data} />);
 		else if (p.type === "file")
 			out.push(
 				<span key={i} className="attachment">
@@ -462,18 +547,28 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
-function ActionBar({
+export function ActionBar({
 	message,
 	isLastAssistant,
 	busy,
 	onRetry,
 	token,
+	rateable,
+	rating,
+	ratingPending,
+	ratingError,
+	onRate,
 }: {
 	message: UIMessage;
 	isLastAssistant: boolean;
 	busy: boolean;
 	onRetry: () => void;
 	token: string | null;
+	rateable: boolean;
+	rating: AppReplyRating | null;
+	ratingPending: boolean;
+	ratingError: string | null;
+	onRate: (rating: AppReplyRating) => void;
 }) {
 	const text = messageText(message);
 	const { copied, failed, copy } = useCopy();
@@ -494,13 +589,38 @@ function ActionBar({
 					<button
 						type="button"
 						onClick={() => (open ? speech.stop() : void speech.start(text))}
-						aria-label="Read aloud"
+						aria-label={speech.phase === "open" ? "Stop reading aloud" : "Read aloud"}
 						disabled={speech.phase === "loading"}
 					>
-						{open ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
+						{speech.phase === "open" ? "■ stop" : speech.phase === "loading" ? "…" : "▶ read"}
 					</button>
 				)}
+				{rateable && (
+					<>
+						<button
+							type="button"
+							className={rating === "up" ? "on" : undefined}
+							onClick={() => onRate("up")}
+							aria-label="Rate reply helpful"
+							aria-pressed={rating === "up"}
+							disabled={ratingPending}
+						>
+							helpful
+						</button>
+						<button
+							type="button"
+							className={rating === "down" ? "on" : undefined}
+							onClick={() => onRate("down")}
+							aria-label="Rate reply bad"
+							aria-pressed={rating === "down"}
+							disabled={ratingPending}
+						>
+							bad
+						</button>
+					</>
+				)}
 				{speech.err !== null && <span className="msg-err">{speech.err}</span>}
+				{ratingError !== null && <span className="msg-err">{ratingError}</span>}
 				{isLastAssistant && !busy && (
 					<button type="button" onClick={onRetry} aria-label="Retry">
 						↻ retry
@@ -648,6 +768,24 @@ export interface StagedNote {
 	title: string;
 }
 
+// An explicit skill invocation (ruling 2026-10-21) — staged from the
+// picker, sent as a data-skill part. Catalog refs resolve at
+// admission; temp refs pin a fetched, verdict-stamped copy.
+export interface StagedSkill {
+	key: string;
+	name: string;
+	ref: { name: string } | { url: string; path: string };
+}
+
+// Staging dedups by reference, never display name — a catalog skill
+// and a fetched copy that named itself the same are distinct skills,
+// and two temp refs pin different sources. Catalog refs equal by
+// name; temp refs by url and path together.
+const skillRefEquals = (a: StagedSkill["ref"], b: StagedSkill["ref"]): boolean =>
+	"name" in a
+		? "name" in b && a.name === b.name
+		: "url" in b && a.url === b.url && a.path === b.path;
+
 // The composer's note picker — a search over the whole notes pool
 // (project "all"), debounced like the rail's.
 function NotePicker({
@@ -786,10 +924,21 @@ export function ContextGauge({
 	token,
 	conversationId,
 	busy,
+	live,
+	model,
 }: {
 	token: string | null;
 	conversationId: string | undefined;
 	busy: boolean;
+	// The in-flight turn's window occupancy, streamed over the chat
+	// wire — the gauge's numbers while a turn runs. The settled view
+	// is one turn behind then.
+	live?: AppLiveContext | null | undefined;
+	// The conversation's configured model — what the next turn runs.
+	// A read carries the model it was made for; when this one differs,
+	// the read's limit says nothing about the live window and only the
+	// bare token count shows until the re-read lands.
+	model?: string | undefined;
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -847,8 +996,12 @@ export function ContextGauge({
 	};
 	useEffect(() => {
 		read();
+		// The model knob rides along: a model change between turns must
+		// re-read, or the gauge would keep utilizing against the previous
+		// model's limit. cfg resolving after mount re-fires this once —
+		// a duplicate GET the seq retires.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [token, conversationId, busy]);
+	}, [token, conversationId, busy, model]);
 	// Dismiss on any outside press or Escape — the gauge button's own
 	// toggle stays the open path. Escape hands focus back to the control
 	// that opened it.
@@ -871,11 +1024,68 @@ export function ContextGauge({
 		};
 	}, [open]);
 	if (conversationId === undefined) return null;
-	const barPct =
-		ctx?.pct === null || ctx?.pct === undefined ? 0 : Math.min(100, Math.max(0, ctx.pct));
+	// The limit the gauge's arithmetic may use — the read's figure only
+	// when the read belongs to the conversation's live model. A model
+	// change between turns outdates it (the token count survives, the
+	// window doesn't), and until the fresh read lands only the count is
+	// known. Without the live model the caller can't know better, so
+	// the read stands.
+	const limit =
+		ctx !== null &&
+		ctx.limit !== null &&
+		ctx.limit > 0 &&
+		(model === undefined || ctx.model === model)
+			? ctx.limit
+			: null;
+	// The figures every face shows — the streaming turn's current step
+	// while it runs, the last read's otherwise. Label, ring, and
+	// popover all derive from these, so they cannot disagree. A turn
+	// whose step hasn't reported occupancy reads as unknown — the
+	// settled read is a turn stale and never stands in.
+	const viewInput = busy ? (live?.input ?? null) : (ctx?.input ?? null);
+	const viewPct =
+		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
+	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));
+	// While a turn streams, the gauge reads the wire's data-context
+	// parts — the settled view is a turn behind. A step whose usage the
+	// provider didn't report says "ctx ?", never zero, never "no turns
+	// yet"; before the first step report lands the label names the turn
+	// in flight.
+	const busyLabel =
+		live !== null && live !== undefined
+			? live.input !== null
+				? limit !== null
+					? `${contextCount(live.input)}/${contextCount(limit)} · ${viewPct}%`
+					: `${contextCount(live.input)} tok`
+				: "ctx ?"
+			: // The settled view holds the count when it has landed —
+				// on a switch-in-mid-turn it hasn't, so no number.
+				ctx === null
+				? "turn in flight"
+				: `turn ${ctx.turns + 1} in flight`;
+	// The read wearing the figures above — the settled label and the
+	// popover render this, so a streamed step moves them with the ring.
+	const shown: AppContextView | null =
+		ctx === null
+			? null
+			: {
+					...ctx,
+					limit,
+					input: viewInput,
+					pct: viewPct,
+				};
+	// The wire's cacheRead/input pair is the same numerator and
+	// denominator the server reports for a settled turn — while one
+	// runs, the freshest metered step's rate wins; a step whose split
+	// the provider didn't report falls back to the settled figure.
+	const liveHitRate =
+		live != null && live.input !== null && live.input > 0 && live.cacheRead !== null
+			? live.cacheRead / live.input
+			: null;
+	const hitRate = busy && liveHitRate !== null ? liveHitRate : (ctx?.cacheHitRate ?? null);
 	// 85% is the ring's red line — the button and the popover's bar wear
 	// the same state so every face of the gauge agrees.
-	const hot = barPct >= 85;
+	const hot = viewPct !== null && viewPct >= 85;
 	// A failed read has no numbers to show and the popover won't open —
 	// the label carries it on wide screens, the reddened ring on narrow.
 	// The click becomes the retry, with the reason on the tooltip.
@@ -895,17 +1105,21 @@ export function ContextGauge({
 				aria-label={
 					failedRead
 						? "Context window usage — read failed, activate to retry"
-						: ctx === null
-							? "Context window usage"
-							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+						: busy
+							? `Context window: ${busyLabel}`
+							: ctx === null
+								? "Context window usage"
+								: `Context window: ${contextLabel(shown)} — ${ctx.model}`
 				}
 				aria-expanded={open && ctx !== null}
 				title={
 					failedRead
 						? `Context window usage — read failed: ${lastError ?? "unknown error"}`
-						: ctx === null
-							? "Context window usage"
-							: `Context window: ${contextLabel(ctx)} — ${ctx.model}`
+						: busy
+							? `Context window: ${busyLabel} — turn in flight`
+							: ctx === null
+								? "Context window usage"
+								: `Context window: ${contextLabel(shown)} — ${ctx.model}`
 				}
 				onClick={() => {
 					if (failedRead) {
@@ -917,9 +1131,9 @@ export function ContextGauge({
 			>
 				<svg className="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
 					<circle className="ctx-ring-track" cx="8" cy="8" r="6.5" />
-					{barPct > 0 && (
+					{viewPct !== null && viewPct > 0 && (
 						<circle
-							className={barPct >= 85 ? "ctx-ring-fill hot" : "ctx-ring-fill"}
+							className={hot ? "ctx-ring-fill hot" : "ctx-ring-fill"}
 							cx="8"
 							cy="8"
 							r="6.5"
@@ -928,29 +1142,31 @@ export function ContextGauge({
 						/>
 					)}
 				</svg>
-				<span className="ctx-label">{failedRead ? "ctx failed" : contextLabel(ctx)}</span>
+				<span className="ctx-label">
+					{failedRead ? "ctx failed" : busy ? busyLabel : contextLabel(shown)}
+				</span>
 			</button>
-			{open && ctx !== null && (
+			{open && shown !== null && (
 				<div className="note-pick composer-pick ctx-pop">
 					<div className="ctx-head">
 						<span>Context window</span>
 						<span className="mono">
-							{ctx.input === null || ctx.limit === null
+							{shown.input === null || shown.limit === null
 								? "—"
-								: `${contextCount(ctx.input)}/${contextCount(ctx.limit)}`}
+								: `${contextCount(shown.input)}/${contextCount(shown.limit)}`}
 						</span>
 					</div>
 					<div className="ctx-hero">
-						{ctx.limit === null
-							? ctx.input === null
+						{shown.limit === null
+							? shown.input === null
 								? "—"
-								: `${contextCount(ctx.input)} tok`
-							: ctx.pct === null
+								: `${contextCount(shown.input)} tok`
+							: shown.pct === null
 								? "?"
-								: `${ctx.pct}%`}
+								: `${shown.pct}%`}
 					</div>
 					<div
-						className={ctx?.pct == null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
+						className={shown.pct === null ? "ctx-bar bare" : hot ? "ctx-bar hot" : "ctx-bar"}
 						aria-hidden="true"
 					>
 						<span style={{ width: `${barPct}%` }} />
@@ -988,21 +1204,22 @@ export function ContextGauge({
 						<div>
 							<dt>Input</dt>
 							<dd className="mono">
-								{ctx.input === null ? "—" : `${contextCount(ctx.input)} tok`}
+								{shown.input === null ? "—" : `${contextCount(shown.input)} tok`}
 							</dd>
 						</div>
 						<div>
 							<dt>Cache hit</dt>
-							<dd className="mono">{contextRate(ctx.cacheHitRate)}</dd>
+							<dd className="mono">{contextRate(hitRate)}</dd>
 						</div>
 						<div>
 							<dt>Avg cache hit</dt>
-							<dd className="mono">{contextRate(ctx.avgCacheHitRate)}</dd>
+							<dd className="mono">{contextRate(shown.avgCacheHitRate)}</dd>
 						</div>
 					</dl>
 					<p className="empty">
-						{ctx.model} · {ctx.turns} {ctx.turns === 1 ? "turn" : "turns"}
-						{ctx.limit === null ? " · limit unknown" : ""}
+						{shown.model} · {shown.turns} {shown.turns === 1 ? "turn" : "turns"}
+						{busy ? " · turn in flight" : ""}
+						{shown.limit === null ? " · limit unknown" : ""}
 					</p>
 					<button
 						type="button"
@@ -1057,10 +1274,13 @@ export function Composer({
 	conversationId,
 	draftScope,
 	busy,
+	liveCtx,
 	staged,
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	onSend,
 	onStop,
 	quote,
@@ -1074,10 +1294,15 @@ export function Composer({
 	// the project id, "new" for the empty start state.
 	draftScope: string;
 	busy: boolean;
+	// The in-flight turn's window occupancy, streamed over the chat
+	// wire — the gauge's numbers while a turn runs.
+	liveCtx?: AppLiveContext | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -1131,6 +1356,7 @@ export function Composer({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
+	const [skillPickerOpen, setSkillPickerOpen] = useState(false);
 	// Outside-press dismissal — the popover and its opener are both
 	// exempt, or pointerdown on the opener would close it before its
 	// own click could toggle.
@@ -1182,6 +1408,7 @@ export function Composer({
 		if (!editedAfterSend.current) setDraft(text);
 		const uploads: StagedUpload[] = [];
 		const notes: StagedNote[] = [];
+		const skills: StagedSkill[] = [];
 		for (const p of draftRestore.parts) {
 			if (p.type === "data-attachment") {
 				const data = p.data as AttachmentRef & { speech?: boolean };
@@ -1193,6 +1420,17 @@ export function Composer({
 			} else if (p.type === "data-note") {
 				const data = p.data as { id: string; title: string };
 				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+			} else if (p.type === "data-skill") {
+				// The ref rides verbatim for the resend — the chip's display
+				// name derives like SkillChip's: the catalog name, or the
+				// staged <digest>/<name>/SKILL.md layout's parent directory.
+				const data = p.data as StagedSkill["ref"];
+				skills.push({
+					key: crypto.randomUUID(),
+					name:
+						"name" in data ? data.name : (data.path.split("/").filter(Boolean).at(-2) ?? "unknown"),
+					ref: data,
+				});
 			}
 		}
 		if (uploads.length > 0)
@@ -1202,6 +1440,16 @@ export function Composer({
 			]);
 		if (notes.length > 0)
 			setStagedNotes((prev) => [...prev, ...notes.filter((n) => !prev.some((e) => e.id === n.id))]);
+		if (skills.length > 0)
+			// Dedup against the growing merged list, not just prev — a
+			// repeat inside the payload is the same duplicate as a staged
+			// one.
+			setStagedSkills((prev) => {
+				const merged = [...prev];
+				for (const s of skills)
+					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) merged.push(s);
+				return merged;
+			});
 		onDraftRestored?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -1226,10 +1474,16 @@ export function Composer({
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
 	const [configError, setConfigError] = useState<string | null>(null);
 	const [configSaving, setConfigSaving] = useState(false);
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [modelSheetOpen, setModelSheetOpen] = useState(false);
+	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
+	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
 	useEffect(() => {
 		let live = true;
 		setCfg(null);
 		setConfigError(null);
+		setModelMenuOpen(false);
+		setModelSheetOpen(false);
 		const load =
 			conversationId === undefined
 				? getConfig(token)
@@ -1257,6 +1511,75 @@ export function Composer({
 			.finally(() => setConfigSaving(false));
 	};
 
+	// Dismiss the model menu on any outside press or Escape — mirrors
+	// the context gauge's popover; Escape hands focus back to the knob.
+	useEffect(() => {
+		if (!modelMenuOpen) return;
+		const onPointer = (e: Event) => {
+			if (modelKnobRef.current?.contains(e.target as Node | null) === true) return;
+			setModelMenuOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setModelMenuOpen(false);
+			modelBtnRef.current?.focus();
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [modelMenuOpen]);
+
+	// ref → catalog display name; the fallbacks are the ref's last path
+	// segment, then the ref itself for single-segment ids.
+	const modelNames = useMemo(() => {
+		const names = new Map<string, string>();
+		for (const group of cfg?.catalog ?? [])
+			for (const m of group.models)
+				if (m.name != null) names.set(`${group.provider}/${m.id}`, m.name);
+		return names;
+	}, [cfg?.catalog]);
+	const friendly = (ref: string) => modelNames.get(ref) ?? ref.split("/").pop() ?? ref;
+
+	// The star writes immediately — one POST, the response's list is
+	// truth. A failure surfaces like every other knob error.
+	const starModel = (ref: string, on: boolean) => {
+		void toggleFavorite(token, ref, on).then(
+			(res) => setCfg((c) => (c === null ? c : { ...c, favorites: res.favorites })),
+			(err: unknown) => setConfigError(String(err)),
+		);
+	};
+
+	const [memory, setMemory] = useState<AppConversationMemoryView | null>(null);
+	const [memorySaving, setMemorySaving] = useState(false);
+	const [memoryError, setMemoryError] = useState<string | null>(null);
+	useEffect(() => {
+		let live = true;
+		setMemory(null);
+		setMemoryError(null);
+		if (conversationId === undefined) return;
+		void getConversationMemory(token, conversationId).then(
+			(view) => live && setMemory(view),
+			(err: unknown) => live && setMemoryError(String(err)),
+		);
+		return () => {
+			live = false;
+		};
+	}, [token, conversationId]);
+	const toggleMemory = () => {
+		if (conversationId === undefined || memory === null) return;
+		setMemorySaving(true);
+		setMemoryError(null);
+		void patchConversationMemory(token, conversationId, !memory.memoryExcluded)
+			.then(
+				(view) => setMemory(view),
+				(err: unknown) => setMemoryError(String(err)),
+			)
+			.finally(() => setMemorySaving(false));
+	};
+
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
 	// transcribes speech:true attachments at intake. Release sends —
 	// the same shape Telegram voice notes take in this channel.
@@ -1270,6 +1593,23 @@ export function Composer({
 		return () => clearInterval(t);
 	}, [recording]);
 	const recStart = useRef(0);
+	// Leaving the view mid-recording must tear the capture down: the
+	// composer's stop affordances unmount with it, so the unmount itself
+	// stops the recorder — its onstop then releases the tracks and, with
+	// recCancel set, skips the send. recDead covers the getUserMedia
+	// window: a permission grant landing after unmount releases the
+	// fresh tracks immediately instead of opening a mic nobody owns.
+	const recDead = useRef(false);
+	useEffect(() => {
+		recDead.current = false;
+		return () => {
+			recDead.current = true;
+			recCancel.current = true;
+			const r = recorder.current;
+			recorder.current = null;
+			if (r !== null && r.state !== "inactive") r.stop();
+		};
+	}, []);
 	// The recorder's onstop runs after render — read the live busy flag
 	// through a ref, not the prop captured when recording started.
 	const busyRef = useRef(busy);
@@ -1283,6 +1623,12 @@ export function Composer({
 		setMicError(null);
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			if (recDead.current) {
+				// Unmounted while the permission prompt was up — release the
+				// device we just received; nobody is recording into it.
+				for (const t of stream.getTracks()) t.stop();
+				return;
+			}
 			const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/mp4"].find((m) =>
 				MediaRecorder.isTypeSupported(m),
 			);
@@ -1414,7 +1760,8 @@ export function Composer({
 		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
+		if (text === "" && ready.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0)
+			return;
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 		for (const e of ready)
@@ -1429,6 +1776,10 @@ export function Composer({
 				type: "data-note",
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
+		// Explicit invocations ride their own part; the server injects
+		// the body into the owning turn.
+		for (const s of stagedSkills)
+			parts.push({ type: "data-skill", data: s.ref } as UIMessage["parts"][number]);
 		// Clear only once the send is accepted — a compose wiped before
 		// a lazy-create failure leaves nothing to resend (blob URLs are
 		// unrecoverable). Typing that lands mid-flight survives: only
@@ -1439,6 +1790,20 @@ export function Composer({
 			.then(() => onSend(parts) ?? true)
 			.then((accepted) => {
 				if (accepted === false) return;
+				// The accept continuation can outlive this composer — a lazy
+				// create swaps the view before it runs, and an unmounted
+				// composer's persist effect never fires. Write the post-send
+				// remainder to storage directly, against the stored text.
+				try {
+					const stored = loadComposerDraft(draftScope) ?? "";
+					saveComposerDraft(
+						draftScope,
+						stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
+					);
+				} catch {
+					// Unreadable records stay put, and a mounted composer's
+					// effect still reports its own save failures.
+				}
 				setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
 				// Entries that weren't sent — uploads still in flight, failed
 				// chips — stay staged. Clearing them would drop files the
@@ -1446,6 +1811,7 @@ export function Composer({
 				for (const e of ready) dropEntry(e);
 				setStaged((p) => p.filter((e) => !ready.includes(e)));
 				setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
+				setStagedSkills((p) => p.filter((s) => !stagedSkills.includes(s)));
 			})
 			.catch((err: unknown) => {
 				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);
@@ -1454,8 +1820,6 @@ export function Composer({
 				sendingRef.current = false;
 			});
 	};
-
-	const modelName = cfg === null ? null : (cfg.model.split("/").pop() ?? cfg.model);
 
 	return (
 		<form
@@ -1492,12 +1856,17 @@ export function Composer({
 					Model settings failed: {configError}
 				</div>
 			)}
+			{memoryError !== null && (
+				<div className="error" role="alert">
+					Memory setting failed: {memoryError}
+				</div>
+			)}
 			{micError !== null && (
 				<div className="error" role="alert">
 					Microphone {micError} — check the browser's permission for this page.
 				</div>
 			)}
-			{(staged.length > 0 || stagedNotes.length > 0) && (
+			{(staged.length > 0 || stagedNotes.length > 0 || stagedSkills.length > 0) && (
 				<div className="composer-attachments">
 					{staged.map((e, i) => (
 						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
@@ -1533,6 +1902,31 @@ export function Composer({
 								aria-label="Remove"
 								title="Remove"
 								onClick={() => setStagedNotes((p) => p.filter((e) => e.key !== n.key))}
+							>
+								×
+							</button>
+						</span>
+					))}
+					{stagedSkills.map((s) => (
+						<span
+							key={s.key}
+							className="attachment note-chip"
+							title={
+								"url" in s.ref
+									? `Temp skill from ${s.ref.url} — the fetched copy rides the next turn`
+									: `Skill ${s.name} — its SKILL.md rides the next turn`
+							}
+						>
+							<span aria-hidden="true">⚡</span>
+							<span className="attachment-name">
+								{"url" in s.ref ? "Temp skill · " : "Skill · "}
+								{s.name}
+							</span>
+							<button
+								type="button"
+								aria-label="Remove"
+								title="Remove"
+								onClick={() => setStagedSkills((p) => p.filter((e) => e.key !== s.key))}
 							>
 								×
 							</button>
@@ -1618,6 +2012,26 @@ export function Composer({
 						<line x1="9" y1="17" x2="13" y2="17" />
 					</svg>
 				</button>
+				<button
+					type="button"
+					className="icon-btn"
+					aria-label="Invoke a skill"
+					title="Invoke a skill"
+					onClick={() => setSkillPickerOpen(true)}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						strokeWidth="1.75"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+						width="16"
+						height="16"
+					>
+						<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
+					</svg>
+				</button>
 				{micSupported && (
 					<button
 						type="button"
@@ -1642,35 +2056,88 @@ export function Composer({
 						</svg>
 					</button>
 				)}
+				{memory !== null && (
+					<button
+						type="button"
+						className="ctx-btn"
+						aria-label={
+							memory.memoryExcluded
+								? "Enable memory for this conversation"
+								: "Exclude this conversation from memory"
+						}
+						title={
+							memory.projectMemory === "off"
+								? "This project's memory is off"
+								: memory.memoryExcluded
+									? "Memory is excluded — click to include this conversation"
+									: "Memory is included — click to exclude this conversation"
+						}
+						disabled={
+							busy || memorySaving || (memory.projectMemory === "off" && memory.memoryExcluded)
+						}
+						onClick={toggleMemory}
+					>
+						memory {memory.memoryExcluded ? "off" : "on"}
+					</button>
+				)}
 				{cfg !== null && (
 					<>
-						<label
-							className="knob"
-							title={
-								conversationId === undefined
-									? "Default model for new app chats"
-									: "Model for this conversation"
-							}
-						>
-							<select
+						<span className="knob model-knob" ref={modelKnobRef}>
+							<button
+								ref={modelBtnRef}
+								type="button"
+								className="knob-btn"
 								aria-label={
 									conversationId === undefined ? "New app chat model" : "Conversation model"
 								}
-								value={cfg.model}
-								onChange={(e) => setKnob({ model: e.target.value })}
+								title={cfg.model}
+								aria-haspopup="menu"
+								aria-expanded={modelMenuOpen}
 								disabled={busy || configSaving}
+								onClick={() => setModelMenuOpen((v) => !v)}
 							>
-								{cfg.favorites.length === 0 ? (
-									<option value={cfg.model}>{modelName}</option>
-								) : (
-									[...new Set([cfg.model, ...cfg.favorites])].map((m) => (
-										<option key={m} value={m}>
-											{m.split("/").pop()}
-										</option>
-									))
-								)}
-							</select>
-						</label>
+								{friendly(cfg.model)}
+							</button>
+							{modelMenuOpen && (
+								<div className="note-pick composer-pick model-pop" role="menu">
+									<ul>
+										{[...new Set([cfg.model, ...cfg.favorites])].map((ref) => (
+											<li key={ref}>
+												<button
+													type="button"
+													role="menuitemradio"
+													aria-checked={ref === cfg.model}
+													title={ref}
+													onClick={() => {
+														setModelMenuOpen(false);
+														if (ref !== cfg.model) setKnob({ model: ref });
+													}}
+												>
+													<span className="mi">
+														<span>{friendly(ref)}</span>
+														{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
+													</span>
+													{ref === cfg.model && <span className="check">✓</span>}
+												</button>
+											</li>
+										))}
+										<li className="menu-div" aria-hidden="true" />
+										<li>
+											<button
+												type="button"
+												role="menuitem"
+												onClick={() => {
+													setModelMenuOpen(false);
+													setModelSheetOpen(true);
+												}}
+											>
+												All models…
+											</button>
+										</li>
+									</ul>
+								</div>
+							)}
+						</span>
 						<label
 							className="knob"
 							title={
@@ -1694,9 +2161,35 @@ export function Composer({
 								))}
 							</select>
 						</label>
+						{modelSheetOpen && (
+							<ModelPicker
+								title={
+									conversationId === undefined
+										? "Default model for new app chats"
+										: "Model for this conversation"
+								}
+								current={cfg.model}
+								allowOff={false}
+								favorites={cfg.favorites}
+								catalog={cfg.catalog}
+								provNames={cfg.catalog.map((g) => g.provider)}
+								onPick={(ref) => {
+									setModelSheetOpen(false);
+									if (ref !== cfg.model) setKnob({ model: ref });
+								}}
+								onToggleFavorite={starModel}
+								onClose={() => setModelSheetOpen(false)}
+							/>
+						)}
 					</>
 				)}
-				<ContextGauge token={token} conversationId={conversationId} busy={busy} />
+				<ContextGauge
+					token={token}
+					conversationId={conversationId}
+					busy={busy}
+					live={liveCtx}
+					model={cfg?.model}
+				/>
 				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
@@ -1717,7 +2210,8 @@ export function Composer({
 						recording ||
 						(draft.trim() === "" &&
 							staged.every((e) => e.failed === true || e.uploading === true) &&
-							stagedNotes.length === 0)
+							stagedNotes.length === 0 &&
+							stagedSkills.length === 0)
 					}
 				>
 					<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -1734,7 +2228,11 @@ export function Composer({
 					{sendError}
 				</p>
 			)}
-			{draftError !== null && <p className="error" role="alert">{draftError}</p>}
+			{draftError !== null && (
+				<p className="error" role="alert">
+					{draftError}
+				</p>
+			)}
 			{notePickerOpen && (
 				<NotePicker
 					pickRef={notePickRef}
@@ -1747,6 +2245,19 @@ export function Composer({
 						)
 					}
 					onClose={() => setNotePickerOpen(false)}
+				/>
+			)}
+			{skillPickerOpen && (
+				<SkillPickerSheet
+					token={token}
+					onClose={() => setSkillPickerOpen(false)}
+					onStage={(picked) =>
+						setStagedSkills((p) =>
+							p.some((e) => skillRefEquals(e.ref, picked.ref))
+								? p
+								: [...p, { key: crypto.randomUUID(), name: picked.name, ref: picked.ref }],
+						)
+					}
 				/>
 			)}
 		</form>
@@ -1803,6 +2314,8 @@ export function ChatView({
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
@@ -1822,6 +2335,9 @@ export function ChatView({
 	// carry into the new conversation's composer.
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	// Skill invocations staged before the first send carry the same way.
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	// The conversation's project — a note-card "New note" binds to it.
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
@@ -1829,12 +2345,22 @@ export function ChatView({
 	// Note chips + fenced note cards navigate to the note page in-app.
 	onOpenNote?: ((id: string) => void) | undefined;
 }) {
-	const [initial, setInitial] = useState<UIMessage[] | null>(null);
+	const [initial, setInitial] = useState<{
+		messages: UIMessage[];
+		ratings: AppRatedReply[];
+		rateableMessageIds: string[];
+	} | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	useEffect(() => {
 		let live = true;
 		getMessages(token, conversationId).then(
-			(r) => live && setInitial(r.messages),
+			(r) =>
+				live &&
+				setInitial({
+					messages: r.messages,
+					ratings: r.ratings,
+					rateableMessageIds: r.rateableMessageIds,
+				}),
 			(err) => live && setLoadError(err instanceof Error ? err.message : "history failed to load"),
 		);
 		return () => {
@@ -1849,12 +2375,16 @@ export function ChatView({
 			conversationId={conversationId}
 			title={title}
 			token={token}
-			initial={initial}
+			initial={initial.messages}
+			initialRatings={initial.ratings}
+			initialRateableIds={initial.rateableMessageIds}
 			seed={seed}
 			staged={staged}
 			setStaged={setStaged}
 			stagedNotes={stagedNotes}
 			setStagedNotes={setStagedNotes}
+			stagedSkills={stagedSkills}
+			setStagedSkills={setStagedSkills}
 			noteProjectId={noteProjectId}
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
@@ -1868,11 +2398,15 @@ function Chat({
 	conversationId,
 	title,
 	initial,
+	initialRatings,
+	initialRateableIds,
 	seed,
 	staged,
 	setStaged,
 	stagedNotes,
 	setStagedNotes,
+	stagedSkills,
+	setStagedSkills,
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
@@ -1882,11 +2416,15 @@ function Chat({
 	conversationId: string;
 	title: string | null;
 	initial: UIMessage[];
+	initialRatings: AppRatedReply[];
+	initialRateableIds: string[];
 	seed: UIMessage["parts"] | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	stagedNotes: StagedNote[];
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	stagedSkills: StagedSkill[];
+	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
@@ -1905,6 +2443,18 @@ function Chat({
 	// below useChat — the reconnect's answer resolves after a network
 	// round-trip, so it can never beat that effect's assignment.
 	const idleReconnect = useRef<() => void>(() => {});
+	const [ratings, setRatings] = useState<Record<string, AppRatedReply>>(() =>
+		Object.fromEntries(initialRatings.map((r) => [r.messageId, r])),
+	);
+	const [ratingPending, setRatingPending] = useState<string | null>(null);
+	const [ratingErrors, setRatingErrors] = useState<Record<string, string>>({});
+	const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
+		() => new Set(initialRateableIds),
+	);
+	const applyRatingSnapshot = (next: AppRatedReply[], nextIds: string[]) => {
+		setRatings(Object.fromEntries(next.map((rating) => [rating.messageId, rating])));
+		setRateableIds(new Set(nextIds));
+	};
 	const transport = useMemo<ChatTransport<UIMessage>>(() => {
 		const base = new DefaultChatTransport({
 			api: "/api/app/chat",
@@ -1944,6 +2494,11 @@ function Chat({
 			},
 		};
 	}, [token, conversationId]);
+	// The running turn's window occupancy — each model step pushes it over
+	// the wire as a transient data-context part (never persisted). The
+	// gauge shows it while busy; cleared when a new turn starts so a fresh
+	// turn never wears the previous turn's last figure.
+	const [liveCtx, setLiveCtx] = useState<AppLiveContext | null>(null);
 	const { messages, sendMessage, regenerate, status, error, stop, setMessages, resumeStream } =
 		useChat({
 			id: conversationId,
@@ -1953,17 +2508,61 @@ function Chat({
 			// in-flight reply instead of showing a finished-looking chat whose
 			// next send would steer a ghost turn.
 			resume: true,
+			onData: (part) => {
+				if (part.type !== "data-context") return;
+				const d = (typeof part.data === "object" && part.data !== null ? part.data : {}) as Record<
+					string,
+					unknown
+				>;
+				const num = (v: unknown) => (typeof v === "number" ? v : null);
+				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
+			},
 			onFinish: ({ message, isAbort }) => {
 				// An aborted reader (stop, or the drop before a steer) is not a
 				// finished reply — the bell belongs to the real finish.
 				if (!isAbort) notifyDone(title ?? "", messageText(message));
 				onTurnDone();
+				refreshTranscript();
 			},
 		});
+	const refreshTranscript = () => {
+		void getMessages(token, conversationId).then(
+			(r) => {
+				setMessages((current) => mergeTranscript(current, r.messages));
+				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+			},
+			() => {},
+		);
+	};
 	// A failed /stop means the client dropped its stream but the turn
 	// keeps running server-side and will write the reply the operator
 	// asked to stop — that has to be visible, not swallowed.
 	const [stopError, setStopError] = useState<string | null>(null);
+	useEffect(() => {
+		setRatings(Object.fromEntries(initialRatings.map((r) => [r.messageId, r])));
+		setRatingPending(null);
+		setRatingErrors({});
+		setRateableIds(new Set(initialRateableIds));
+	}, [initialRatings, initialRateableIds]);
+	const rate = (messageId: string, rating: AppReplyRating) => {
+		if (ratingPending !== null) return;
+		setRatingPending(messageId);
+		setRatingErrors((errors) => {
+			const next = { ...errors };
+			delete next[messageId];
+			return next;
+		});
+		void rateReply(token, conversationId, messageId, rating)
+			.then(
+				(res) => setRatings((current) => ({ ...current, [messageId]: res.rating })),
+				(err: unknown) =>
+					setRatingErrors((errors) => ({
+						...errors,
+						[messageId]: err instanceof Error ? err.message : "rating failed",
+					})),
+			)
+			.finally(() => setRatingPending(null));
+	};
 
 	// Reload-window reconciliation: a turn that completed between the
 	// history snapshot and the idle reconnect is durably stored but
@@ -1974,7 +2573,11 @@ function Chat({
 	useEffect(() => {
 		idleReconnect.current = () => {
 			void getMessages(token, conversationId).then(
-				(r) => setMessages((current) => mergeTranscript(current, r.messages)),
+				(r) => {
+					setMessages((current) => mergeTranscript(current, r.messages));
+					setRatings(Object.fromEntries(r.ratings.map((rating) => [rating.messageId, rating])));
+					setRateableIds(new Set(r.rateableMessageIds));
+				},
 				() => {},
 			);
 		};
@@ -2003,6 +2606,7 @@ function Chat({
 	// no stop button, and the next send forks a second writer.
 	const submit = async (message: Parameters<typeof sendMessage>[0]) => {
 		pinned.current = true;
+		setLiveCtx(null);
 		if (busy) await stop();
 		await sendMessage(message);
 	};
@@ -2055,6 +2659,18 @@ function Chat({
 									/>
 								</div>
 							);
+						if (m.role === "system")
+							return (
+								<div key={m.id} className="msg system">
+									<MessageParts
+										parts={m.parts}
+										token={token}
+										noteProjectId={noteProjectId}
+										messages={messages}
+										onOpenNote={onOpenNote}
+									/>
+								</div>
+							);
 						const meta = turnMeta(m);
 						return (
 							<div key={m.id} className="msg assistant">
@@ -2072,8 +2688,16 @@ function Chat({
 									message={m}
 									isLastAssistant={m.id === lastAssistantId}
 									busy={busy}
-									onRetry={() => void regenerate()}
+									onRetry={() => {
+										setLiveCtx(null);
+										void regenerate();
+									}}
 									token={token}
+									rateable={rateableIds.has(m.id)}
+									rating={ratings[m.id]?.rating ?? null}
+									ratingPending={ratingPending === m.id}
+									ratingError={ratingErrors[m.id] ?? null}
+									onRate={(vote) => rate(m.id, vote)}
 								/>
 								{meta !== null && <MetaLine meta={meta} />}
 							</div>
@@ -2103,10 +2727,13 @@ function Chat({
 				conversationId={conversationId}
 				draftScope={conversationId}
 				busy={busy}
+				liveCtx={liveCtx}
 				staged={staged}
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}
 				setStagedNotes={setStagedNotes}
+				stagedSkills={stagedSkills}
+				setStagedSkills={setStagedSkills}
 				quote={quote}
 				onSend={(parts) => {
 					askNotifyPermission();

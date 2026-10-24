@@ -12,8 +12,13 @@ async function startupFixture(
 	// (it can never be accepted), "restarted" measures then restarts
 	// again mid-watch.
 	floor?: "dead" | "stale" | "restarted",
+	// Written to $GOBLIN_HOME/goblin.json5 when present — the watcher
+	// reads the boot-pinned telegram switch from it. Absent: no config
+	// file, the watcher keeps the strict legacy expectation.
+	config?: unknown,
 ): Promise<{ exit: number; output: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-startup-test-"));
+	if (config !== undefined) writeFileSync(join(dir, "goblin.json5"), JSON.stringify(config));
 	const bin = join(dir, "bin");
 	mkdirSync(bin);
 	const server = Bun.serve({
@@ -123,7 +128,7 @@ process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:'ddddddddddddddddddd
 					: `import {acceptStartup} from ${JSON.stringify(checkStartup)};\ntry { await acceptStartup(${mode === "generated" || mode === "missing-port" ? 0 : server.port}, 900); process.stdout.write('accepted'); } catch(error) { process.stderr.write(error instanceof Error ? error.message : 'failed'); process.exitCode=1; }`,
 		);
 		const proc = Bun.spawn([process.execPath, "--no-install", runner], {
-			env: { PATH: `${bin}:/usr/bin`, HOME: dir },
+			env: { PATH: `${bin}:/usr/bin`, HOME: dir, GOBLIN_HOME: dir },
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -192,6 +197,37 @@ describe("invocation-specific startup acceptance", () => {
 			expect(result.exit).toBe(1);
 			expect(result.output).not.toContain("accepted");
 		});
+	test("a telegram-disabled boot accepts on up/active/port/assets without polling evidence", async () => {
+		// enabled is a boot-pinned channel switch: long polling never starts
+		// under it, so demanding the line would time out every legal
+		// app-only install (design/doctor.md → startup-aware acceptance).
+		const result = await startupFixture("no-polling", "healthy", "accept", undefined, {
+			providers: { fake: { kind: "codex" } },
+			model: "fake/model",
+			operators: [],
+			telegram: { enabled: false },
+		});
+		expect(result.exit).toBe(0);
+		expect(result.output).toBe("accepted");
+	});
+	test("a present config with telegram enabled still demands long-polling evidence", async () => {
+		const result = await startupFixture("no-polling", "healthy", "accept", undefined, {
+			providers: { fake: { kind: "codex" } },
+			model: "fake/model",
+			operators: [1],
+			telegram: { enabled: true },
+		});
+		expect(result.exit).toBe(1);
+		expect(result.output).not.toContain("accepted");
+	});
+	test("an unreadable config fails as its own category, not raw config content", async () => {
+		const result = await startupFixture("no-polling", "healthy", "accept", undefined, {
+			telegram: { enabled: false },
+		});
+		expect(result.exit).toBe(1);
+		expect(result.output).toContain("startup config unreadable");
+		expect(result.output).not.toContain("accepted");
+	});
 	test("watch mode accepts the already-started invocation a deploy restart created", async () => {
 		const result = await startupFixture("healthy", "healthy", "watch");
 		expect(result.exit).toBe(0);

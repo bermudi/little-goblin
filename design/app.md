@@ -36,6 +36,13 @@ unavailable, including cache-hit ratios and segment estimates.
 The gauge's denominator never stalls
 on the network: a cold models.dev memory falls back to a one-time
 disk-cache parse (`contextLimitCached`), memory wins once a turn warms it.
+While a turn streams the settled view is a turn behind (ruling 2026-10-21:
+a visibly streaming first turn must never read "no turns yet"): each
+model step pushes its window occupancy to the chat wire as a transient
+`data-context` part — `useChat`'s `onData` sees it, message parts and
+durable history never do, and the live-stream replay hands the last
+figure to a late joiner. A step the provider didn't meter reads "ctx ?",
+and before the first report lands the label names the turn in flight.
 
 **Auth.** No `initData` exists outside Telegram; the lock is a bearer token,
 optional since 2026-09-30 by operator ruling, on the collie precedent:
@@ -88,11 +95,23 @@ demanded. TWA is rejected on mechanism: assetlinks verification cannot pass
 on a tailnet-only domain. PWA and APK are one channel in two shells; the
 server can't tell which talks.
 
+**App-native Web Push (ruling 2026-10-22, operator ask: closed-app app
+turns must ring without Telegram).** Enablement is explicit per browser on
+the Attention page — it is device state, not server-wide configuration.
+The VAPID pair is generated lazily and lives only in `auth.jsonl`;
+subscriptions and sent markers live in SQLite; API state exposes endpoint
+hashes, never endpoints or subscription keys. Payloads are generic
+(title/body + `/app/c/<id>`) and contain no reply text or authority.
+Background app turns notify on terminal success or failure; fenced turns
+stay silent. An interactive turn notifies only if its SSE wire died before
+the terminal callback — a live app reply never double-rings. `404`/`410`
+prune an endpoint; transient send failures keep it retryable. Telegram
+stays the bell for its own conversations and still rings app turns as the
+companion channel; Web Push is the app-owned path, not a replacement.
+
 **Out, explicitly:** mirroring or cross-channel reading of any kind (revisit
 needs a ruling here — Spin-off is the one ruled crossing: a copy plus a
-bell, not mirroring), app-side push (Telegram stays the bell for its own
-conversations and, since Spin-off, app background turns; app-native pushes
-wait until demanded), home-screen widgets, in-app voice mode, iOS.
+bell, not mirroring), home-screen widgets, in-app voice mode, iOS.
 (In-transcript interface blocks are a different thing — Intelligent UI
 below.)
 
@@ -103,7 +122,15 @@ the wrong client for long reads and state edits. Two doors onto one surface
 share validation and persistence — a write lands identically either way —
 and differ only in the self-lockout guard: the mini app refuses to remove
 the *requesting* Telegram id from `operators`, the app door (no requester)
-an empty list.
+an empty list while Telegram is enabled. With `telegram.enabled: false`,
+the app door may save `operators: []`.
+
+**Boot independence (ruling 2026-10-22).** The app channel is the primary
+door and never waits on Telegram: boot stands HTTP and every `/api/app/*`
+surface before the deferred Telegram init task even resolves the bot
+token — a held or rejected `getMe`, or a poll that dies mid-run, leaves
+the PWA fully usable. The mini-app door (`/t/`, initData validation)
+fails closed with 503 until a live `botToken` attaches.
 
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
@@ -144,6 +171,23 @@ can never land over newer text; the one-shot restore rulings stand
 unchanged beside it. An unreadable record stays in place behind an
 error line until the first write replaces it. Text only — staged
 chips are uploads, not prose.
+
+**Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
+the column, the column wastes the desktop, machinery tags read as
+prose).** Three transcript fixes, all render-side — history text is
+never rewritten. Pipe tables render inside a scroll wrapper whose cells
+carry `overflow-wrap: anywhere`, so an unbreakable cell (a sha256 in
+code) shrinks the table's min-content and fits, and a genuinely wide
+table scrolls instead of pushing the transcript column past its width —
+the ui tool's tables already had the wrapper. The chat column width is
+a selector, not a fixed cap: narrow (46rem, the default) and wide
+(72rem) in the chat header, persisted per device in localStorage — a
+phone and the desktop PWA legitimately want different columns; the mini
+app door honors the stored choice read-only and the selector hides on
+phone widths. A machinery tag line (`[delegation: …]`, `[program: …]`,
+spellings owned by src/tags.ts) at a block start renders fenced as
+`status`, not as a transcript paragraph — it is the event envelope, and
+the prose after it in the same paragraph continues as text.
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
@@ -196,6 +240,83 @@ bump, abort, or interrupted answer. Running turns keep their captured
 settings, queued successors use the latest, manual compaction resolves at
 its lane job; a model change legitimately makes the next turn's cache cold.
 
+**Model picker (ruling 2026-10-21).** The settings sheet lists the
+models.dev catalog for every configured provider — matched by exact
+provider name, the openrouter kind, else the catalog provider's API host —
+with favorites and the current ref pinned, newest release first and the
+friendly name above its exact ref. One search field filters favorites and
+catalog across id, name, and full ref; Enter picks the exact match or the
+first hit. The typed `provider/model-id` path survives as the fallback for
+anything the catalog doesn't know or when it is cold. The catalog is a
+memory-or-disk read served on the settings response, never waited on:
+opening settings cannot stall on models.dev (the boot warm refreshes the
+catalog like it already does for openrouter), and a failed or stale
+catalog degrades to the typed fallback rather than blocking a save.
+
+**Favorites are stars (ruling 2026-10-23).** The shared `ModelPicker`
+sheet (Settings and composer) carries a star on every model row; a star
+never picks. The composer's model knob is a menu — current model,
+favorites by friendly name, then "All models…" opening the sheet — so
+switching to an unfavorited model never needs a Settings round-trip.
+Composer stars write one ref through `POST /api/app/favorites`
+(`{ref, on}`, idempotent; adding requires a configured provider,
+removing accepts anything so a stale entry can always leave). Settings
+stars edit the draft instead, so its autosave never races its own etag.
+The app config view carries the cached catalog for friendly names.
+
+## Settings shape (ruling 2026-10-23)
+
+Supersedes the form-mirrors-the-file layout. Operator rule: **anything
+changed in normal use gets a form; everything else is goblin-managed** —
+not shown as an input, round-tripped untouched by every save, and edited
+in `goblin.json5` only by advanced operators. Managed values may appear
+as read-only text (System, the memory card).
+
+- **No credential plumbing in the UI.** Record names (`auth` fields) never
+  render as inputs; each service shows key status instead — no key
+  needed / from pass-keys (command records, never replaced from the UI) /
+  key saved / key missing, with paste-to-store. Kind ids render through
+  the server-served `serviceNames`. The naming discipline in
+  `design/auth.md` still decides what a blank derives to; it just stops
+  being visible.
+- **Model services come from presets** (`providerPresets`, base URLs the
+  docs already carry); "custom endpoint" is the only place protocol and
+  base URL appear. ChatGPT is an account, not a provider type.
+- **ChatGPT sign-in is in-app** — the Codex CLI's device-code flow
+  (`src/agent/codex/login.ts`, wire pinned from codex-rs
+  `device_code_auth.rs`/`server.rs`; `login.live.test.ts` is its drift
+  check). Tokens land in goblin's own `state/codex-auth.json` (0600);
+  `~/.codex/auth.json` stays the CLI's. Resolution: explicit `authFile`
+  (pinned — in-app sign-in refused) > goblin's file > the CLI's file (the
+  legacy path keeps an existing install working until its first in-app
+  sign-in). Sign-out removes only goblin's file. A first sign-in adds
+  a codex provider under the first unused name (`codex`, `codex-2`, …)
+  when none exists; an existing service named `codex` is never replaced.
+  A sign-in action returning pending starts status polling immediately;
+  completion reloads clean settings so the new provider is visible.
+- **Off parks, never deletes.** Switching off memory, transcription,
+  vision, image, sandbox, subagents, scripting, delegation, guest or
+  reviewer moves the block under `parked`; on restores it whole, file-only
+  fields included. Runtime consumers and `authReferences` never read
+  `parked`. A block with no parked copy and no safe default reports
+  `needs-setup` with its hint; a bare switch cannot invent config. A save
+  may supply the block together with its enable switch (including a
+  first-time vision, image or transcription setup). Supplied blocks win
+  over parked copies and defaults; the whole resulting config, including
+  provider changes in that save, must validate before anything is written.
+  The editor hydrates its restoration stash from parked content on load;
+  enabling transcription or memory restores that content into the draft,
+  so its switch and subsequent saves reflect the requested state.
+- Sections: Models · Accounts & keys · Web · Voice · Memory · Telegram ·
+  Access · Capabilities · System. Boot-pinned changes surface as one
+  restart banner from the config-pins restart hints, not per-field
+  captions. This includes all reviewer changes: its switch persists and
+  parks/restores config, but the reviewer itself is wired only at boot;
+  enabling or disabling it takes an approved restart (design/skills.md →
+  Skill reviewer). Failed status checks preserve last-known restart hints
+  and show explicit uncertainty; unavailable status never confirms that
+  a saved change needs no restart.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: durable work — something that runs,
@@ -219,7 +340,8 @@ the title and link, so the DM reply says where the work went.
 **Background turns.** Notices (done, blocked, a question) wake headless
 turns in the app conversation — they run and persist like client-driven
 ones, nothing streaming; the app shows them on next open. For this, the
-app channel gains the `delegate` tool; `program`/`mail` stay Telegram-only.
+app channel mounts `delegate`; `program` and configured `mail` mount too,
+with their decisions routed through the shared approval owners.
 
 **Telegram rings.** Every completed background turn pings the *current* DM
 — `<title>: <head of the reply>` plus a link, appended as an assistant
@@ -273,6 +395,93 @@ fail-loud broken.
   plus the resumable attach stream mean a reload re-watches it. Only the
   wire is lost, and now it says so.
 
+## Context window view (ruling 2026-10-22, operator ask)
+
+Operator ask, after pi-mono's `/share` session viewer: a per-conversation
+view of everything that hits the context window — system prompt, tool
+schemas, every message — with toggles and filters, one button away from
+the chat.
+
+**Captured at the source, never reconstructed.** The shareable artifact
+in pi is the session log plus a trailing entry carrying the system
+prompt and tool schemas; the viewer renders what *was*, never a
+re-derivation. Goblin takes the same mechanism one seam deeper:
+`prepareStep` already holds the exact outbound prompt of every model
+call (the gauge's `promptChars` itemization reads the same capture), so
+the final step's prompt — system, tool definitions, every
+`ModelMessage` — is serialized once and stored per conversation
+(`context_windows`, latest wins, gzip). The record is the last model
+call's input, verbatim. A parallel assembler in an HTTP handler would
+have drifted from admission's pipeline the first time either changed;
+there is no reconstruction path, so none can drift.
+
+- **Media bytes are stubbed to counts at capture** (`{omitted: bytes,
+  count}`); the transcript already shows the media, and a second
+  megabyte store per turn buys nothing. Everything textual is verbatim.
+- **The record rides both outcome rails** — an ok turn stores its final
+  step, a failed one its last completed step; gated on completed steps,
+  so a call that never finished a step records nothing (`steps: 0`
+  reads as no window, never as a prompt nothing saw). A failed record
+  write is logged and the turn proceeds — observability, never turn
+  state; the journal owns what must be honest.
+- **The window is the model's input, not the transcript.** It ends
+  where the final call's prompt ended — a single-step turn's window
+  holds the operator message only; steers, warnings and landing nudges
+  appear exactly when they rode the captured step. The reply is never
+  in its own prompt.
+- **Staleness is stated, not hidden.** The view carries the captured
+  model beside the conversation's current one; a mismatch reads "the
+  next turn rebuilds the window" — true by the frozen-snapshot and
+  model-edit rulings, not an error.
+- **The call lineage is the historical half.** `model_cache_calls`
+  already records every call (usage, cache split, prefix relation); the
+  window route serves that lineage per conversation, bounded, newest
+  first. Together they answer "what hit the window" for every call,
+  not just the newest.
+- **A forget purges every capture, globally.** Stored windows embed
+  recall bytes with no reliable source attribution, so the forget
+  boundary clears `context_windows` and bumps a singleton
+  `recall_version` in the same transaction as the recall-context
+  redaction. Attempts read the version before their memory/view/model
+  preparation and write the record only when it still matches — a
+  turn in flight across the boundary is fenced, never served back a
+  projection of forgotten evidence. An overflow continuation reuses
+  its failed attempt's version, matching the memory it carried; an
+  operator resume reads the current one.
+
+**Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
+bearer/trust gate as every `/api/app/*` route; the window is
+operator-private like the transcript and never leaves the process). In
+the PWA, the chat header's context-window action opens
+`/app/c/<id>/window` — a full page, linkable like pi's share URL, not a
+sheet. Filters are client-side: role chips, a substring filter,
+thinking/tool-body expansion, a raw-JSON mode. App conversations only;
+the mini app door has no chat and gets no pages. A conversation with no
+captured window says so — the view never fabricates one.
+
+The row dies with the conversation: `context_windows` carries no FK, so
+it rides `deleteConversation`'s sweep — a re-minted id starts empty and
+never inherits the last generation's prompt (operator-chosen app ids
+re-mint freely; an inherited row would claim a capture that predates
+the conversation, the fabrication the view refuses).
+
+## Reply ratings (ruling 2026-10-22)
+
+Assistant action bars carry record-only **helpful** / **bad** votes. The
+store is channel-neutral `reply_ratings`: Telegram callback rows keep
+chat/message identity; app rows key the durable assistant event's `seq`.
+Votes append and reads are latest-wins. Nothing consumes the rows — model
+view, history, FTS, memory, reviewer — matching the Telegram ruling; a
+consumer needs a new ruling.
+
+An app turn can persist several assistant events for one user anchor
+(generated media, then its prose reply). The server, not the client,
+chooses the voteable event: the last assistant event for each anchor, and
+the last event in each contiguous unanchored assistant run. `/messages`
+returns that list with the ratings, and POSTing any other id is refused.
+The action bar refreshes the list after reconnect reconciliation and turn
+finish, so a newly committed reply gets controls without a manual reload.
+
 ## Interrupted turn recovery (ruling 2026-10-17)
 
 A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md →
@@ -309,6 +518,89 @@ turn finishes into history either way. And **any appended event
 auto-unarchives**: a delegation notice or a message sent via the ping link
 brings a shelved spin-off back to the rail instead of accumulating replies
 unseen.
+
+## Deletion's dependents (ruling 2026-10-19)
+
+`deleteConversation` must sweep every FK child or the row delete throws a
+bare constraint error — the app rail's delete was unreachable for any
+conversation that had ever carried a wake. Two shapes, two rulings:
+
+- **Wake rows ride the delete** (same transaction): deliveries, work
+  events, and their joins are the conversation's delivery bookkeeping;
+  they mean nothing without it. `openStore` ensures the wake and
+  responsibilities schemas alongside projects/notes so the sweep and the
+  anchor check always find their tables.
+- **A coordination surface outlives its responsibility, never the reverse.**
+  While any responsibility (open or closed) anchors the conversation,
+  delete refuses, naming them — the handover loop and wake delivery stand
+  on that surface, and closed records keep their history. The refusal is
+  the operator's to resolve, not the delete's to cascade.
+
+Reconcile treats a wake whose conversation row is gone (out-of-band
+surgery only — the FK chain and the sweep keep them together) exactly
+like a ghost run link: that wake fails loudly and terminally;
+classification continues for every other wake.
+
+The feed consequence (2026-10-19): unprunable history means the wire,
+not the table, carries the bound. `feedEvents` serves each
+responsibility's newest `FEED_EVENT_WINDOW` (50) developments ascending
+plus `eventsTruncated` — the count of older durable rows omitted —
+while the app polls the read model every 15s. Durable rows are never
+pruned by the feed; `work_events (responsibility_id, event_id DESC)`
+is the index the window walks.
+
+## Delivery and arm truth (ruling 2026-10-20)
+
+Three fences close the gaps review found in the handover loop's
+delivery edges:
+
+- **Wake ownership is gate-or-fail-closed, never optimistic.** The
+  runtime's ownership hooks observe turns and never gate them, so a
+  `begin` hook that cannot persist the wake→run link cannot abort the
+  run — but an unlinked claim is indistinguishable from a
+  never-admitted one, and reconcile would resubmit a trigger the live
+  or finished run already processed. A failed link therefore fails the
+  *wake* closed (`failUnlinked`: CAS on claimed AND run_id IS NULL) and
+  the dispatcher fences that wake's submit for the process lifetime,
+  retrying the durable closure every pump. The turn always completes;
+  only the resubmission is impossible. The same closure+fence covers
+  every terminal failure *before* `begin` (refused admission,
+  makeTools, the journal row itself): the runtime announces it through
+  `preRunFailure`, because no run row exists for reconcile to read —
+  and while even the closure write refuses, the process-local fence
+  holds the resubmission and each pump retries the write.
+- **The unresolved-delivery fence binds to dispatch identity, not row
+  identity.** Prepare, claim, and fresh `attach` all fence per dispatch
+  identity — server, session, terminal, harness session, kind, within
+  one responsibility — never per (attachment, generation) alone, which
+  a duplicate binding of the same agent could have walked around:
+  after A's send went `uncertain`, a prepare or claim via B would have
+  reached the same agent without reconciliation. `attach` additionally
+  refuses a second live binding of one identity outright (plain error;
+  detach it or reattach), so the duplicate state stops being minted;
+  the prepare/claim fence still covers rows that predate the refusal.
+  The identity an operation answers for is persisted **on the
+  operation** at prepare: reattach rewrites the attachment row's
+  copies, so joining it would re-key an unresolved send onto whatever
+  destination the row holds now — fencing the replacement that never
+  received it and freeing the agent that did. A genuinely changed
+  identity remains a deliberate adoption, same as reattach's ruling;
+  the fence never reaches across responsibilities.
+- **Arm truth is the linked program.** The persisted `armed` flags are
+  a cache `ensureFollowup` writes; the `program` tool can disable or
+  delete the follow-up behind the responsibility's back. Every armed
+  reader — the app feed and the agent-facing `status` action alike —
+  recomputes from the linked program row (armed = exists ∧ enabled ∧
+  active), sharing one `armedView`.
+  The app feed additionally keeps its polls honest (2026-10-20): a
+  refresh failure alongside loaded rows renders a stale-state banner
+  instead of standing mute, and each response carries the refresh's
+  sequence — an older poll resolving after a mutation's refresh is
+  dropped, never restored to obsolete state. Ordinary polls also
+  serialize (2026-10-22): the interval skips while a fetch is in
+  flight, so sustained latency above the interval degrades the cadence
+  instead of stacking requests whose every response arrives stale by
+  sequence and gets discarded — the feed would never have rendered.
 
 ## Pinning (ruling 2026-10-10)
 
@@ -466,3 +758,69 @@ origin.
 
 App-channel only, like `ui`: the tool mounts on app turns, the routes sit
 behind app auth, and Telegram/guests get neither.
+
+**Parked candidate (2026-10-22): json-render.** Vercel Labs' framework for
+this same idea (`@json-render/core`, `@json-render/react`), layered on the AI
+SDK. Not adopted — see the pin and the reviewer criteria at the bottom of
+`docs/generative-ui.md`. Operator-facing plain-language walkthrough of this
+section: same file.
+
+## Coordination fences & delivery evidence (ruling 2026-10-20)
+
+- **Corrections fence the whole project, not one lane.** Every
+  conversation bound to the project can reach the coordination tools,
+  so `service.correct()` bumps the epoch of every bound lane plus the
+  coordination conversation inside the same commit as the revision and
+  the durable event — one commit, one rollback unit. The commit hook
+  (`onCorrectionCommitted`, wired to `runtime.cancelFenced`) then
+  cancels each fenced lane before the correction wake is pumped; a hook
+  failure on one lane never skips the rest and never undoes the commit.
+- **Unresolved delivery fences the attachment generation.** While any
+  operation on an attachment generation is `sent`/`uncertain`, no new
+  operation prepares (check+insert atomic) and no sibling prepared op
+  can claim — regardless of brief, revision, tool-call id, or restart.
+  The only way out is `reconcile {operation, delivery, evidence}`:
+  inspected evidence closes the op `acknowledged`/`refused`, records
+  verdict+evidence+prior outcome, is idempotent on identical replay,
+  and conflicts by name. A live in-process dispatch refuses reconcile;
+  a crashed `sent` row reconciles freely. Settlements CAS from `sent`
+  so a reconciled row is never overwritten.
+- **Same-identity reattach skips reconciliation — refused.** A reattach
+  whose target equals the bound dispatch identity (server, session,
+  terminal, agent_session, kind) while a delivery is unresolved throws
+  `ReconciliationConflict` naming the op (tool: `delivery-uncertain`;
+  HTTP: 409). A genuinely changed identity is a deliberate adoption and
+  bumps generation normally.
+- **Reattach is conditional on the caller's snapshot.** The app route
+  and the coordination tool both snapshot the attachment before
+  awaiting the live-agent listing; `resps.reattach` compares that
+  snapshot's binding fields — generation, health, `detachedAt` —
+  against the current row inside the same immediate transaction as the
+  write. Any drift throws `StaleAttachmentError` (HTTP: 409; tool:
+  `refused:"stale-attachment"`) and writes nothing — a detach, a
+  competing reattach's generation bump, or a health write that landed
+  mid-listing wins whole instead of being overwritten. An observer
+  cursor refresh alone is not a binding change and never conflicts;
+  callers without a snapshot keep the unconditional behavior.
+- **Responsibility-destination programs are durable enqueues.** If the
+  `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
+  the occurrence stays due and the next scan retries the same source
+  key onto the same work event. Generic Telegram fires keep
+  attempt-once.
+
+
+## Skill picker & temp skills (ruling 2026-10-21)
+
+Composer skill button → sheet with the catalog (every valid entry,
+manual-only included, description + body size) and a from-link field.
+A link runs the fetch pipeline server-side
+(`POST /api/app/skills/preview`) and renders a preview card — name,
+description, body size, source repo, System One injection verdict —
+where yes stages the chip and no drops it; nothing is fetched into a
+send the card didn't approve. The staged chip rides the composer's
+existing staged-chip rows; send appends the `data-skill` part
+(ruling: design/skills.md → Skill invocation), and the transcript
+renders it as a chip on the user message, like attachments and notes.
+Drafts stay text-only — staged skills are references, not prose
+(Composer drafts, above). The listing endpoint's response gains the
+picker's catalog view; the operator Skills page is unchanged.

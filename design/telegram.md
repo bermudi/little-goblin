@@ -3,6 +3,30 @@
 Part of the goblin design spec; the core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md), read first.
 
+## Channel availability (ruling 2026-10-22)
+
+`telegram.enabled` is an explicit boot-pinned channel switch; absent stays
+`true` for legacy configs. When `false`, startup resolves no bot token,
+constructs no bot, starts no polling or Mini-App authentication, and mounts
+no Telegram delivery/private-DM seam. `/app` and `/api/app/*` remain live;
+Telegram-targeted wakes, notices, approvals, mail presentation, and resume
+requests return an explicit channel-disabled result rather than submitting a
+turn without an output door. `operators: []` is legal only in this mode.
+
+When `true`, the channel attaches *deferred*: boot builds the runtime,
+mail/program owners, wake/resume seams, HTTP, the scheduler and the mail
+watcher on `tg = null` first, then runs one bounded init task — token
+resolve, `getMe` (30s deadline), seam attach, interrupted-run notices,
+inbox replay, polling. A failed attempt logs the channel degraded and
+leaves every Telegram seam answering *unavailable*; recovery is a
+credential/config repair plus an approved restart — there is no retry
+loop. A `getUpdates` ending mid-run (grammy rethrows 401/409) detaches
+the same seams and keeps the app up. The mini-app door and `botToken`
+fail closed until attach. A disabled channel keeps its saved
+`telegram.model`/`thinking` pin dormant: the ref's syntax still
+validates, provider membership and the thinking clamp apply only once
+the channel is re-enabled.
+
 ## Shared model/thinking selection (ruling 2026-10-06)
 
 All Telegram conversations (rolling DMs, group topics) share one
@@ -29,11 +53,16 @@ apply next turn without interrupting the current answer.
   likewise stops voice, no text fallback. Flood control: a 429's
   `retry_after` is waited out once (bounded), then the 429 propagates.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
-  bubble; errors, fenced, voice-mode, and guest replies get none.
-  **Record-only by ruling**: nothing consumes the rows — model view,
-  history, FTS, memory, reviewer; a consumer needs a ruling first.
+  bubble; errors, fenced, voice-mode, and guest replies get none. The
+  callback is only the Telegram adapter over the shared record-only
+  `reply_ratings` store (design/app.md → Reply ratings). **Record-only by
+  ruling**: nothing consumes the rows — model view, history, FTS, memory,
+  reviewer; a consumer needs a ruling first.
 - **TTS**: default-on; `tts: ""` is explicit off. `edge` is unofficial
-  read-aloud (can break); `logfare`/`mimo` doc-pinned, unverified live.
+  read-aloud (can break); `logfare`/`mimo`/`onemin` doc-pinned, unverified
+  live (1min's TEXT_TO_SPEECH feature: envelope answer, audio fetched
+  from the signed temporaryUrl, chunks at 4k of their 4,096-char cap —
+  onemin-speech.ts).
   Failures warn + a short chat message, never a turn failure; the tap
   answers immediately (callbacks expire in seconds). The boot ffmpeg/libopus
   probe failing takes TTS down for the run (boot warning; install ffmpeg,
@@ -165,7 +194,8 @@ it's on.
 ## Roles and permissions (ruling 2026-10-11)
 
 The unit of trust is the person, not the chat. Two config lists: `operators`
-(min 1) and `allowedUsers` (may be empty). Everyone else is a stranger,
+(min 1 while `telegram.enabled`; may be empty when the channel is off) and
+`allowedUsers` (may be empty). Everyone else is a stranger,
 never served: **every summons gets one short refusal line and nothing else**
 — no turn, no conversation, no state, no meter — on every summons surface
 (bot DM, member-chat @mention or reply-to-goblin, guest surface — settled
@@ -340,3 +370,45 @@ Effects are premium-gated at the receiving chat — the first
 definite, nothing landed) and drops effects for the process lifetime;
 restart re-probes. Multi-image sends share one album; documents never wait;
 a group timeout means the album may be live (uncertain, never resent).
+
+## /skill (ruling 2026-10-21, operator ask)
+
+The Telegram door onto explicit skill invocation (mechanism ruling:
+design/skills.md → Skill invocation). `/skill <name>` submits the turn
+with a `data-skill` part plus any accompanying text; the name resolves
+against the catalog including manual-only ones — naming it is the
+operator's override. A name the catalog doesn't know, or a bare
+`/skill`, replies with the catalog (name, one-line description,
+manual-only marked). `/skill <github-url> [text…]` runs the temp-skill
+pipeline at intake and replies with the preview — name, size, source,
+System One verdict — and a ✅/🚫 row; yes submits the held turn (part +
+held text), no drops it. The pending confirm is keyed by a short token
+(the URL cannot ride the 64-byte callback cap), lives in process
+memory only — a restart or `/stop`-adjacent epoch change loses it, and
+the command re-runs instantly off the skillcache.
+
+Invariants:
+
+- **Operators only.** `/skill` rides the privileged-command set —
+  sender-gated before routing, catalog read, or fetch, like `/memory`
+  and `/voice`. The callback tap is refused the same way.
+- **Shared delivery.** A `/skill` turn is indistinguishable from a
+  typed one: the durable message starts with the shared-chat audience
+  note in group lanes (never in DM/guest lanes), and the turn gets the
+  same conversation-configured sink ordinary intake builds (voice,
+  rating, rich drafts) — both doors construct it through one helper.
+- **Bounded replies.** Every reply — the catalog and the unknown-name
+  answer alike — is chunked under Telegram's message cap, packed at
+  newline boundaries; a pathological line splits rather than
+  truncates, and the echoed name is bounded independently. Replies are
+  awaited, so a failed send is a failed command.
+- **Epoch fencing.** The conversation's epoch is captured before the
+  fetch and re-probed synchronously after the fetch and after scoring
+  — a `/stop` or `/new` landing mid-flight cancels to a plain reply,
+  never an actionable card. Between a successful probe and the
+  pending+preview publish there is no await: nothing can interpose.
+- **Single-use, expiring confirms.** A pending confirm is deleted when
+  tapped regardless of outcome, checked against its 15-minute TTL at
+  tap time, and invokes only when the conversation still exists and
+  its epoch still matches the capture — anything else is stamped
+  stale/gone, never submitted.

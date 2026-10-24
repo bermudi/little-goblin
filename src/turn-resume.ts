@@ -11,7 +11,10 @@ import {
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { SKILL_PART } from "./skill-part.ts";
+import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
 import type { WakeDeps } from "./wake.ts";
@@ -60,7 +63,9 @@ export interface ResumeDeps {
 	runtime: Runtime;
 	captureConversation(conv: Conversation): Conversation;
 	makeTools: RuntimeDeps["makeTools"];
-	sinkFor(conv: Conversation): TurnSink;
+	// Null means the lane's delivery channel is unavailable — refuse after
+	// validation builds its tool surface, before any sink or submission.
+	sinkFor(conv: Conversation): TurnSink | null;
 	sinkHooks(conv: Conversation): { voice: boolean; recording: boolean; file: boolean };
 	notifyDone?(conv: Conversation, sourceRunId: string, done: TurnDone): void;
 }
@@ -68,7 +73,7 @@ export interface ResumeDeps {
 export interface ResumeSinkDeps {
 	wake: Pick<WakeDeps, "bell" | "delivery">;
 	operators(): number[];
-	sendDm(chatId: number, text: string): Promise<unknown>;
+	sendDm?(chatId: number, text: string): Promise<unknown>;
 }
 
 export function makeResumeSinks(
@@ -76,13 +81,26 @@ export function makeResumeSinks(
 ): Pick<ResumeDeps, "sinkFor" | "sinkHooks" | "notifyDone"> {
 	return {
 		sinkFor: (conv) =>
-			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : deps.wake.delivery(conv),
+			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : (deps.wake.delivery?.(conv) ?? null),
 		sinkHooks: (conv) =>
+			// The app bell composes appMediaSink — durable file and voice-note
+			// delivery (no recording indicator) — so its surface carries
+			// send_file and speak like telegram's, minus the recording hook.
 			channelOf(conv.id) === "app"
-				? { voice: false, recording: false, file: false }
-				: { voice: true, recording: true, file: true },
+				? { voice: true, recording: false, file: true }
+				: deps.wake.delivery === undefined
+					? { voice: false, recording: false, file: false }
+					: { voice: true, recording: true, file: true },
 		notifyDone: (conv, sourceRunId, done) => {
 			if (channelOf(conv.id) === "app") return;
+			if (deps.sendDm === undefined) {
+				log.warn("resumed turn notice skipped — telegram channel disabled", {
+					conversation: conv.id,
+					run: sourceRunId,
+					outcome: done.kind,
+				});
+				return;
+			}
 			const text =
 				`resumed turn ${sourceRunId.slice(0, 8)} in ${conv.title ?? conv.id}: ${done.kind}` +
 				(done.kind === "error" ? ` — ${done.message}` : "");
@@ -119,8 +137,7 @@ export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
 	// shift every ambiguous call's number. Grants on ambiguous rows and
 	// recorded outcomes keep theirs.
 	return calls.filter(
-		(c) =>
-			(c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
+		(c) => (c.state === "dispatched" || c.state.startsWith("resolved-")) && !c.retryFromKnown,
 	);
 }
 
@@ -211,9 +228,7 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 				} else if (c.error !== null) {
 					note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
 				} else {
-					note = c.retryConsumed
-						? `[turn-journal decision: ${grant}]`
-						: RESOLVED_RETRY_NOTE;
+					note = c.retryConsumed ? `[turn-journal decision: ${grant}]` : RESOLVED_RETRY_NOTE;
 				}
 			}
 			parts.push({
@@ -284,8 +299,7 @@ type DetailEntry = { seq: number; anchorSeq: number | null; message: UIMessage }
 
 function isOwnResumeRequest(e: DetailEntry, run: TurnRun): boolean {
 	return (
-		(run.resumeRequestSeqs?.includes(e.seq) ?? false) &&
-		resumeEventSource(e.message) === run.runId
+		(run.resumeRequestSeqs?.includes(e.seq) ?? false) && resumeEventSource(e.message) === run.runId
 	);
 }
 
@@ -302,11 +316,19 @@ function stalenessRefusal(
 	store: ConversationStore,
 	convId: string,
 	run: TurnRun,
-): { refuse: string; code: ResumeRefusalCode } | { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
+):
+	| { refuse: string; code: ResumeRefusalCode }
+	| { anchor: DetailEntry | undefined; owned: DetailEntry[] } {
 	if (run.ownedInputSeqsUnreadable) {
 		return {
 			code: "invalid",
 			refuse: "the recorded input ownership is unreadable — not resumed",
+		};
+	}
+	if (run.resumeRequestSeqsUnreadable) {
+		return {
+			code: "invalid",
+			refuse: "the recorded resume-request registry is unreadable — not resumed",
 		};
 	}
 	const detail = store.historyDetail(convId);
@@ -338,11 +360,17 @@ function stalenessRefusal(
 			postAnchorOwned.push(e);
 			continue;
 		}
+		// The offending event did not necessarily arrive after the
+		// interruption — steering sent while the turn ran is durable but
+		// never folded — and an anchorless run has no anchor to compare
+		// against at all.
 		return {
 			code: "conflict",
 			refuse:
-				"newer input arrived after the interruption that this run never owned — not resumed; " +
-				"continue from the current conversation as a new request or abandon the interrupted run",
+				(run.anchorSeq === null
+					? "this run recorded no anchor and the conversation holds input it never owned"
+					: "input after this run's anchor was never owned by it — it arrived while the turn ran or after it died") +
+				" — not resumed; continue from the current conversation as a new request or abandon the interrupted run",
 		};
 	}
 	return { anchor, owned: postAnchorOwned };
@@ -545,7 +573,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			if (runtime.busy(convId)) {
 				return refused(
 					"conflict",
-					"a turn is running or queued — stop it or wait for it to finish",
+					"a turn or compaction is running or queued — stop it or wait for it to finish",
 				);
 			}
 			// Tail-only staleness: a durable user event the dead turn never
@@ -562,17 +590,75 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			const partial = seedPartial(run, calls);
 			// The resume is a NEW source-linked user event: the provenance
 			// prefix, then the original request and the owned post-anchor
-			// inputs verbatim — attachments and notes ride as parts, so a
-			// compacted trigger reaches the model again.
+			// inputs verbatim — attachments and notes ride as parts. Parts
+			// of an event still in the model view are NOT re-copied — it
+			// reaches the model through its own entry, and re-copying
+			// would double the text in the prompt and in the retention
+			// document — with one exception: a skill invocation's durable
+			// record is the reference alone (the body rides only the
+			// owning turn's view), so a still-visible invocation loses its
+			// body on resume unless the new event re-carries the ref for
+			// the new run to own.
+			// The compaction summary borrows boundarySeq, which can equal a
+			// folded event's seq — exclude it or it masquerades as the anchor.
+			const viewSeqs = new Set(
+				store
+					.modelEntries(convId)
+					.filter((e) => !isCompactionSummaryId(e.message.id))
+					.map((e) => e.seq),
+			);
+			// A folded event's whole content is revived; a visible event
+			// contributes only its skill-invocation refs (stale.owned
+			// starts past the anchor — the two never overlap).
+			const revive = (e: DetailEntry): { parts: UIMessage["parts"]; folded: boolean } =>
+				viewSeqs.has(e.seq)
+					? {
+							parts: e.message.parts.filter((p) => p.type === SKILL_PART),
+							folded: false,
+						}
+					: { parts: [...e.message.parts], folded: true };
+			const anchor = stale.anchor !== undefined ? revive(stale.anchor) : null;
+			const steered = stale.owned.map(revive);
+			// Journal-owned user events BEFORE the anchor (a coalesced
+			// claim) keep the same rule: their invocation refs re-ride the
+			// resume event — their ordinary content is never revived.
+			// Legacy NULL ownership adds nothing.
+			const ownedSeqs = new Set(run.ownedInputSeqs ?? []);
+			const revived = [
+				...store
+					.historyDetail(convId)
+					.filter(
+						(e) =>
+							run.anchorSeq !== null &&
+							e.seq < run.anchorSeq &&
+							e.message.role === "user" &&
+							ownedSeqs.has(e.seq),
+					)
+					.flatMap((e) => e.message.parts.filter((p) => p.type === SKILL_PART)),
+				...(anchor?.parts ?? []),
+				...steered.flatMap((s) => s.parts),
+			];
+			const triggerVisible = stale.anchor !== undefined && viewSeqs.has(stale.anchor.seq);
+			// Name exactly what the copied parts carry — the prefix claims
+			// the request or consumed steering only when those folded
+			// contents actually ride along.
+			const requestCopied = anchor !== null && anchor.folded && anchor.parts.length > 0;
+			const steeringCopied = steered.some((s) => s.folded && s.parts.length > 0);
+			const follows = requestCopied
+				? steeringCopied
+					? "; original request and consumed steering follow"
+					: "; original request follows"
+				: steeringCopied
+					? "; consumed steering follows"
+					: "";
 			const parts: UIMessage["parts"] = [
 				{
 					type: "text",
-					text: `[operator resumed interrupted run ${run.runId}; original request and consumed steering follow]`,
+					text: `[operator resumed interrupted run ${run.runId}${follows}]`,
 				},
-				...(stale.anchor?.message.parts ?? []),
-				...stale.owned.flatMap((e) => e.message.parts),
+				...revived,
 			];
-			if (parts.length === 1 && partial === null) {
+			if (!triggerVisible && revived.length === 0 && partial === null) {
 				return refused(
 					"invalid",
 					"the trigger message and the journaled progress are both gone — nothing to resume",
@@ -582,9 +668,27 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				...userMessage(parts),
 				metadata: { goblinResume: { sourceRunId: run.runId } },
 			};
+			const legacySeqs = [
+				...(stale.anchor !== undefined ? [stale.anchor.seq] : []),
+				...stale.owned.map((e) => e.seq),
+			];
+			const sourceInputSeq =
+				run.sourceInputSeq ??
+				(run.resumedFrom === null && legacySeqs.length > 0 ? Math.max(...legacySeqs) : null);
 			const seed: ResumeSeed = {
 				conversation: captured,
 				partial,
+				sourceInputSeq,
+				// The watchdog judges progress against the operator's real
+				// request — the run's anchor, or its first owned input when
+				// no anchor was recorded. The head event's marker text names
+				// provenance only and must not take its place.
+				operatorRequest:
+					stale.anchor !== undefined
+						? messageText(stale.anchor.message)
+						: stale.owned[0] !== undefined
+							? messageText(stale.owned[0].message)
+							: undefined,
 				seenText: partial !== null && partial.parts.some((p) => p.type === "text"),
 				toolCalls: calls
 					.filter((c) => c.name !== "" && (c.state === "completed" || c.state === "resolved-done"))
@@ -595,7 +699,16 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				filterRetryUsed: run.filterRetryUsed,
 				resumedFrom: run.runId,
 			};
+			// The sink is the last thing built — every refusal above must not
+			// create it: a real delivery sink starts its typing interval at
+			// construction, and only admission or an explicit fence stops it.
 			const inner = deps.sinkFor(conv);
+			if (inner === null) {
+				return refused(
+					"unavailable",
+					"telegram channel is unavailable — the interrupted turn cannot resume",
+				);
+			}
 			// A prototype clone still splits the receiver — getters and private state belong to the real instance, so forward through it; only onDone is overridden.
 			const onDone = async (done: TurnDone) => {
 				try {
@@ -627,6 +740,21 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				}
 			} catch (err) {
 				claimed.delete(run.runId);
+				// The attempt was never admitted — nobody else will settle this
+				// sink, so fence it here (its typing interval is already live).
+				try {
+					void Promise.resolve(inner.onDone({ kind: "fenced" })).catch((disposeErr: unknown) => {
+						log.warn("resume sink disposal failed", disposeErr, {
+							conversation: convId,
+							run: run.runId,
+						});
+					});
+				} catch (disposeErr) {
+					log.warn("resume sink disposal failed", disposeErr, {
+						conversation: convId,
+						run: run.runId,
+					});
+				}
 				log.error("resume event could not be recorded", err, {
 					conversation: convId,
 					run: run.runId,

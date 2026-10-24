@@ -38,7 +38,8 @@ speech); a failure never mints a `transcript` field.
   own), and a fully failed chain throws one error naming each engine,
   so the recorded `transcriptionError` keeps every link's reason. Each
   link gets the full orchestration — cap check, segmentation — so a
-  wav-profile fallback (whistle, mimo) still transcodes first. The
+  wav-profile fallback (whistle, mimo, onemin's qwen3) still transcodes
+  first. The
   settings form edits the chain like the search/fetch chains — per-entry
   kind/model/auth/language plus order controls — and a save rewrites
   `goblin.json5` as the canonical parsed object (2026-10-19).
@@ -52,9 +53,34 @@ speech); a failure never mints a `transcript` field.
 - `mimo` is a dedicated ASR model on Xiaomi's first-party Open Platform API
   (api.xiaomimimo.com) — the audio part alone is the request; billing is per
   input-audio hour, reported back as `usage.seconds`.
-- `language` passthrough is ISO-639-1 (elevenlabs also accepts 639-3);
-  omitted = detect everywhere.
-- **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are doc-pinned,
+- `onemin` is 1min.AI's /api door — a different wire family from its
+  OpenAI-compatible chat door (onemin-speech.ts owns both speech
+  directions, one module): audio uploads to the Asset API first
+  (multipart field `asset`, `API-KEY` header — not Bearer), the
+  SPEECH_TO_TEXT feature takes the returned storage path as
+  `promptObject.audioUrl`, and the answer may need polling
+  (GET /api/results/:uuid while PROCESSING; STT rides `"async": true`,
+  the documented 524-immune door — FAILURE answers carry the provider's
+  error object in resultObject, unknown uuids answer
+  `aiRecord: null`, both named loudly). The transcript is the
+  `resultObject` entry itself — STT's `temporaryUrl` is empty, unlike
+  TTS where it is the audio. An empty array is the orchestrator's
+  "no speech" null; a SUCCESS record with no resultObject array is
+  contract drift and throws — "" would read as silence. Caps: qwen3-asr-flash's 10 MB is the
+  tightest published feature ceiling (whisper-1's page says ~25 MB
+  effective, the Asset API takes 50 MB uploads), so keep-profile
+  requests segment under it. One container split: qwen3's format table
+  is the only one without MP4 — Telegram video notes arrive as MP4, so
+  qwen3 rides the wav profile (16 kHz mono pcm_s16le, 280 s ≈ 9 MB
+  segments) while the other documented models keep native containers
+  (their tables list both OGG and MP4).
+- `language` passthrough is ISO-639-1 (elevenlabs also accepts 639-3;
+  onemin takes the ISO code, qwen3's `fil`/`yue`, or the BCP-47 locale
+  that latest_short/latest_long and the phone/telephony/medical models
+  REQUIRE — every documented 1min STT page documents the knob, a
+  missing one fails loud upstream, never faked here); omitted =
+  detect everywhere else.
+- **Unverified:** `gemini`, `mimo`, `mistral`, `logfare`, and `onemin` are doc-pinned,
   not live-probed (no local key at implementation time). Logfare is an
   OpenAI-compatible relay — its docs note requests may be logged
   (PII-scrubbed) for eval, so it is not the kind to pick for audio you want
@@ -172,5 +198,9 @@ playback, 2026-10-19); an error before any sound names its MediaError code.
 
 External request/response and error bodies are pinned verbatim in the engine
 test fixtures; probed live 2026-10-09 (openrouter's `ogg` input format
-2026-10-10), and the doc-pinned arms (gemini, mimo, mistral, logfare) stay
-**Unverified** until an operator provisions their keys.
+2026-10-10), and the doc-pinned arms (gemini, mimo, mistral, logfare,
+onemin) stay **Unverified** until an operator provisions their keys.
+One 1min generalization is labeled as such in the fixtures: qwen3-asr-flash's
+page carries the only STT response example, so "the transcript is
+`resultObject[0]`" is pinned from it and assumed for the family —
+whisper-1's page documents no response example.

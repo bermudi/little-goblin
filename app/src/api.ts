@@ -9,16 +9,23 @@
 // silently.
 
 import type {
+	AppApprovalDecisionResponse,
+	AppApprovalsResponse,
 	AppAttachmentResponse,
+	AppAttentionResponse,
 	AppCompactResponse,
 	AppConfigPatch,
 	AppConfigView,
 	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationMemoryResponse,
+	AppConversationMemoryView,
 	AppConversationPatch,
 	AppDecideRequest,
 	AppDecideResponse,
+	AppFavoriteToggleRequest,
+	AppFavoritesResponse,
 	AppInterruptedList,
 	AppInterruptedRun,
 	AppMessageList,
@@ -28,13 +35,24 @@ import type {
 	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
+	AppProgramMutationResponse,
 	AppProject,
+	AppReplyRating,
+	AppReplyRatingResponse,
 	AppProjectList,
+	AppCorrectRequest,
+	AppPushPublicKeyResponse,
+	AppPushRegisterResponse,
+	AppPushStatus,
+	AppPushSubscriptionRequest,
+	AppPushUnregisterResponse,
+	AppResponsibilityFeed,
 	AppResumeResponse,
 	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
+	AppWindowView,
 } from "../../src/http/app-wire.ts";
 import type {
 	AttachmentsResponse,
@@ -42,17 +60,20 @@ import type {
 	ConfigResponse,
 	IdentityResponse,
 	LogTailResponse,
+	MemoryBlockedResponse,
 	MemoryDocDetailResponse,
 	MemoryForgetResponse,
 	MemoriesListResponse,
 	MemoryStatusResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
+	ChatGptStatus,
 	OperatorStatusResponse,
 	SecretStoreResponse,
 	SkillDecideBody,
 	SkillDecideResponse,
 	SkillFileResponse,
+	SkillPreviewResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
 	ThreadSkillsResponse,
@@ -170,6 +191,72 @@ export function createConversation(
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(opts ?? {}),
+	});
+}
+
+export function listApprovals(token: string | null): Promise<AppApprovalsResponse> {
+	return request(token, "/api/app/approvals");
+}
+
+export function getAttention(token: string | null): Promise<AppAttentionResponse> {
+	return request(token, "/api/app/attention");
+}
+
+export function getPushStatus(token: string | null): Promise<AppPushStatus> {
+	return request(token, "/api/app/push");
+}
+
+export function getPushPublicKey(token: string | null): Promise<AppPushPublicKeyResponse> {
+	return request(token, "/api/app/push/public-key", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+	});
+}
+
+export function registerPushSubscription(
+	token: string | null,
+	subscription: AppPushSubscriptionRequest,
+): Promise<AppPushRegisterResponse> {
+	return request(token, "/api/app/push/subscription", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(subscription),
+	});
+}
+
+export function unregisterPushSubscription(
+	token: string | null,
+	endpoint: string,
+): Promise<AppPushUnregisterResponse> {
+	return request(token, "/api/app/push/subscription", {
+		method: "DELETE",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ endpoint }),
+	});
+}
+
+export function decideProgramApproval(
+	token: string | null,
+	id: number,
+	action: "approve" | "reject",
+): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/program/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
+}
+
+export function decideMailApproval(
+	token: string | null,
+	id: number,
+	action: "send" | "cancel",
+): Promise<AppApprovalDecisionResponse> {
+	return request(token, `/api/app/approvals/mail/${id}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
 	});
 }
 
@@ -393,6 +480,19 @@ export async function fetchConversationFile(
 	return res;
 }
 
+export function rateReply(
+	token: string | null,
+	id: string,
+	messageId: string,
+	rating: AppReplyRating,
+): Promise<AppReplyRatingResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/ratings`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ messageId, rating }),
+	});
+}
+
 // /stop rides the runtime's own stop — abort the turn server-side, not
 // just this client's stream (history keeps whatever the turn wrote).
 export function stopConversation(token: string | null, id: string): Promise<AppStopResponse> {
@@ -467,11 +567,49 @@ export function patchConversationConfig(
 	});
 }
 
+// One favorite at a time — the picker's star writes directly, no draft.
+export function toggleFavorite(
+	token: string | null,
+	ref: string,
+	on: boolean,
+): Promise<AppFavoritesResponse> {
+	return request(token, "/api/app/favorites", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ ref, on } satisfies AppFavoriteToggleRequest),
+	});
+}
+
+export function getConversationMemory(
+	token: string | null,
+	id: string,
+): Promise<AppConversationMemoryView> {
+	return request(token, `/api/app/conversations/${seg(id)}/memory`);
+}
+
+export function patchConversationMemory(
+	token: string | null,
+	id: string,
+	memoryExcluded: boolean,
+): Promise<AppConversationMemoryResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/memory`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ memoryExcluded }),
+	});
+}
+
 // The composer's context gauge — last-turn window utilization for one
 // conversation. Null fields mean unknown (no turns yet, or the catalog
 // doesn't list the model), never zero.
 export function getContext(token: string | null, id: string): Promise<AppContextView> {
 	return request(token, `/api/app/conversations/${seg(id)}/context`);
+}
+
+// The context-window view — the newest model call's captured prompt
+// plus the call lineage. Null sections: no step has run yet.
+export function getWindow(token: string | null, id: string): Promise<AppWindowView> {
+	return request(token, `/api/app/conversations/${seg(id)}/window`);
 }
 
 const runCallSchema: z.ZodType<AppRunCall> = z.object({
@@ -617,6 +755,22 @@ export function storeSecret(
 	});
 }
 
+export function getChatGptStatus(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt");
+}
+
+export function startChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "POST" });
+}
+
+export function cancelChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "DELETE" });
+}
+
+export function signOutChatGpt(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/logout", { method: "POST" });
+}
+
 export function getThinkingLevels(
 	token: string | null,
 	kind: string,
@@ -631,6 +785,17 @@ export function getThinkingLevels(
 
 export function getMemoryStatus(token: string | null): Promise<MemoryStatusResponse> {
 	return request(token, "/api/app/memory/status");
+}
+
+export function decideBlockedMemory(
+	token: string | null,
+	action: "retry" | "dismiss",
+): Promise<MemoryBlockedResponse> {
+	return request(token, "/api/app/memory/blocked", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action }),
+	});
 }
 
 export function listMemoryDocuments(
@@ -675,6 +840,50 @@ export function listPrograms(token: string | null): Promise<OperatorProgramsResp
 	return request(token, "/api/app/programs");
 }
 
+export function updateProgram(
+	token: string | null,
+	id: number,
+	patch: {
+		name?: string;
+		charter?: string;
+		cron?: string | null;
+		maxLatenessMinutes?: number | null;
+		mailFilter?: string | null;
+	},
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
+	});
+}
+
+export function toggleProgram(
+	token: string | null,
+	id: number,
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}/toggle`, { method: "POST" });
+}
+
+export function deleteProgram(
+	token: string | null,
+	id: number,
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}`, { method: "DELETE" });
+}
+
+export function programHook(
+	token: string | null,
+	id: number,
+	op: "enable" | "rotate" | "disable",
+): Promise<AppProgramMutationResponse> {
+	return request(token, `/api/app/programs/${id}/hook`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ op }),
+	});
+}
+
 export function listDelegations(token: string | null): Promise<OperatorDelegationsResponse> {
 	return request(token, "/api/app/delegations");
 }
@@ -685,6 +894,16 @@ export function getServiceStatus(token: string | null): Promise<OperatorStatusRe
 
 export function listSkills(token: string | null): Promise<SkillsResponse> {
 	return request(token, "/api/app/skills");
+}
+
+// Temp-skill preview (ruling 2026-10-21): the server fetches, scores,
+// stamps the verdict; the card decides.
+export function previewSkill(token: string | null, url: string): Promise<SkillPreviewResponse> {
+	return request(token, "/api/app/skills/preview", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ url }),
+	});
 }
 
 // The same mechanical decision the Telegram ✅/🚫 row runs.
@@ -744,4 +963,50 @@ export async function fetchAttachment(token: string | null, name: string): Promi
 	});
 	if (!res.ok) throw new ApiError(res.status, `http ${res.status}`);
 	return res.blob();
+}
+
+export function listResponsibilities(token: string | null): Promise<AppResponsibilityFeed> {
+	return request(token, "/api/app/responsibilities");
+}
+
+export function listProjectResponsibilities(
+	token: string | null,
+	projectId: string,
+): Promise<AppResponsibilityFeed> {
+	return request(token, `/api/app/projects/${encodeURIComponent(projectId)}/responsibilities`);
+}
+
+export function correctResponsibility(
+	token: string | null,
+	id: string,
+	body: AppCorrectRequest,
+): Promise<{ ok: true }> {
+	return request(token, `/api/app/responsibilities/${encodeURIComponent(id)}/correct`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function responsibilityAction(
+	token: string | null,
+	id: string,
+	action: "pause" | "resume" | "cancel",
+): Promise<{ ok: true }> {
+	return request(token, `/api/app/responsibilities/${encodeURIComponent(id)}/${action}`, {
+		method: "POST",
+	});
+}
+
+export function attachmentAction(
+	token: string | null,
+	responsibilityId: string,
+	attachmentId: number,
+	action: "detach" | "reattach",
+): Promise<{ ok?: true; generation?: number }> {
+	return request(
+		token,
+		`/api/app/responsibilities/${encodeURIComponent(responsibilityId)}/attachments/${attachmentId}/${action}`,
+		{ method: "POST" },
+	);
 }

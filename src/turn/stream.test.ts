@@ -16,6 +16,7 @@ import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
+import type { TurnJournal } from "../turn-journal.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
@@ -131,14 +132,17 @@ const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
 
 // A turn member with the wire's view of a sink: records every chunk it
-// receives (replay or live).
+// receives (replay or live). `seq` defaults past the range tests assign
+// by hand so incidental members never collide with crafted entries.
+let memberSeq = 100;
 interface RecMember extends WireMember {
 	chunks: UIMessageChunk[];
 }
 
-function member(text: string, streaming = true): RecMember {
+function member(text: string, streaming = true, seq = memberSeq++): RecMember {
 	const chunks: UIMessageChunk[] = [];
 	return {
+		seq,
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
 		sink: streaming ? { onStreamChunk: (c) => chunks.push(c) } : {},
 		chunks,
@@ -179,7 +183,6 @@ function rig(
 	const queue: RecMember[] = [];
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const unrequeued: RecMember[][] = [];
-	const entries: Array<{ seq: number; message: UIMessage }> = [];
 	const deps: StreamDeps<RecMember> = {
 		convId: "c1",
 		epoch: 1,
@@ -192,11 +195,18 @@ function rig(
 		step: { model, system: "test" },
 		messages: [{ role: "user", content: "run the thing" }],
 		tools: {},
-		view: { convId: "c1", tools: {}, modalities: new Set(["text"]), carries: () => true },
+		view: {
+			convId: "c1",
+			tools: {},
+			modalities: new Set(["text"]),
+			carries: () => true,
+			skillRef: () => {
+				throw new Error("no skill parts expected in this fixture");
+			},
+		},
 		claimSteers: () => queue.splice(0, queue.length),
 		unrequeueSteers: (steered) => unrequeued.push(steered),
 		settle: (m, done) => settlements.push({ m, done }),
-		modelEntries: () => entries,
 		steerMarkSeed: 0,
 		ownedInputSeqs: [],
 		partial: null,
@@ -219,7 +229,6 @@ function rig(
 		queue,
 		settlements,
 		unrequeued,
-		entries,
 		prompts,
 		toolChoices,
 	};
@@ -323,6 +332,40 @@ describe("membership seam", () => {
 
 // ---------- the driver ----------
 
+describe("driveStream — the provider retry budget (1min)", () => {
+	// docs.1min.ai/docs/api/openai-compatible: "Automatic retries are
+	// disabled upstream. Set maxRetries: 0 in your client too: retrying a
+	// POST is a new generation and may incur another charge." The step
+	// carries the provider's rule; without it the SDK's default of 2
+	// retries applies (3 attempts total on a retryable 5xx).
+	const retryable = () =>
+		new APICallError({
+			message: "upstream had a hiccup",
+			url: "https://api.1min.ai/openai/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 503,
+			// Zero the SDK's backoff waits (retry-after-ms is the honored
+			// short-delay header) so the default-budget case settles inside
+			// the test timeout.
+			responseHeaders: { "retry-after-ms": "0" },
+		});
+
+	test("without a step budget the SDK default retries twice", async () => {
+		const r = rig([retryable(), retryable(), retryable()]);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		expect(r.prompts.length).toBe(3);
+	});
+
+	test("a 1min step (maxRetries 0) POSTs exactly once — every attempt bills", async () => {
+		const failing = scriptedModel([retryable(), retryable(), retryable()]);
+		const r = rig([], { step: { model: failing.model, system: "test", maxRetries: 0 } });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		expect(failing.prompts.length).toBe(1);
+	});
+});
+
 describe("driveStream", () => {
 	test("deltas reach the head, chunks fan out to every streaming member, the wire logs them", async () => {
 		const r = rig([textReply("the answer")]);
@@ -403,26 +446,63 @@ describe("driveStream", () => {
 		expect(md.promptChars!["identity"]).toBe("test".length);
 	});
 
+	test("each step pushes its window occupancy onto the wire as transient data-context", async () => {
+		const probe = probeTool();
+		const r = rig([
+			toolCallStep("c1", 10),
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "done" },
+				{ type: "text-end", id: "t1" },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 50, noCache: undefined, cacheRead: 40, cacheWrite: undefined },
+						outputTokens: { total: 5, text: undefined, reasoning: undefined },
+					},
+				},
+			],
+		]);
+		r.deps.tools = { probe };
+		const watcher = member("watcher");
+		r.members.push(watcher);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		// One data-context per step, carrying that step's prompt tokens —
+		// the gauge's live numbers while the turn runs.
+		const ctx = r.live.chunks.filter((c) => c.type === "data-context");
+		expect(ctx).toEqual([
+			{ type: "data-context", transient: true, data: { input: 10, cacheRead: null } },
+			{ type: "data-context", transient: true, data: { input: 50, cacheRead: 40 } },
+		]);
+		expect(watcher.chunks.filter((c) => c.type === "data-context")).toEqual(ctx);
+		// Transient: it never lands in the response message's parts.
+		expect(outcome.responseMessage?.parts.some((p) => p.type === "data-context")).toBe(false);
+	});
+
+	test("a fenced epoch pushes no live context onto the wire", async () => {
+		const probe = probeTool();
+		const r = rig([toolCallStep("c1", 10), textReply("done")], {
+			holdsAuthority: () => false,
+		});
+		r.deps.tools = { probe };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		expect(r.live.chunks.some((c) => c.type === "data-context")).toBe(false);
+	});
+
 	test("a submit landing mid-turn folds into the next request, joins, and is replayed", async () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 1), textReply("folded answer")]);
 		r.deps.tools = { probe };
-		const steered = member("steered mid-turn");
+		const steered = member("steered mid-turn", true, 7);
 		r.queue.push(steered);
-		// Durable history: the steered message at seq 7, an unclaimed
-		// submit above it at seq 9 — the mark advances by identity, not
-		// position.
-		r.entries.push(
-			{ seq: 7, message: steered.message },
-			{
-				seq: 9,
-				message: {
-					id: "u-other",
-					role: "user",
-					parts: [{ type: "text", text: "queued not steered" }],
-				},
-			},
-		);
+		// The member carries its own durable seq — ownership advances by
+		// that seq, never by rediscovering ids in history.
+		expect(steered.seq).toBe(7);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
@@ -473,6 +553,44 @@ describe("driveStream", () => {
 		expect(r.prompts[0]).not.toContain("read this");
 	});
 
+	test("steering ownership names the converted event's seq — a duplicate id never owns a failed conversion", async () => {
+		// Two steers share one client message id; only the first converts.
+		// The ownership checkpoint must name seq 2 alone — an id-based scan
+		// sweeps the failed seq 3 in with it, and a crash-resume would then
+		// accept input this turn never folded.
+		const checkpoints: Array<{ ownedInputSeqs?: number[]; steerMark?: number }> = [];
+		const r = rig([textReply("answer")], {
+			journal: {
+				checkpoint: (_runId: string, patch: { ownedInputSeqs?: number[]; steerMark?: number }) =>
+					checkpoints.push(patch),
+			} as unknown as TurnJournal,
+		});
+		const ok = member("converts", true, 2);
+		ok.message = { ...ok.message, id: "dup" };
+		const poison = member("poison", true, 3);
+		poison.message = {
+			id: "dup",
+			role: "user",
+			parts: [
+				{ type: "text", text: "read this" },
+				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+			],
+		} as UIMessage;
+		r.queue.push(ok, poison);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		// The failed steer settled with an error and never joined the wire.
+		expect(r.settlements.length).toBe(1);
+		expect(r.settlements[0]!.m).toBe(poison);
+		expect(r.settlements[0]!.done.kind).toBe("error");
+		// The ownership checkpoint names only the converted event.
+		const ownership = checkpoints.find((c) => c.ownedInputSeqs !== undefined);
+		expect(ownership?.ownedInputSeqs).toEqual([2]);
+		expect(ownership?.steerMark).toBe(2);
+		expect(outcome.steerMark).toBe(2);
+	});
+
 	test("a fence landing mid-conversion settles the successful steer — no join, no fold (#115)", async () => {
 		// The steer is a photo whose conversion parks reading a FIFO — the
 		// deterministic window for the epoch to die mid-await. The
@@ -490,6 +608,9 @@ describe("driveStream", () => {
 				tools: {},
 				modalities: new Set(["text", "image"]),
 				carries: () => true,
+				skillRef: () => {
+					throw new Error("no skill parts expected in this fixture");
+				},
 			},
 		});
 		const steer = member("photo steer");
@@ -896,5 +1017,58 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		expect(recorded).toEqual([{ conversationId: "c1", skill: "nested" }]);
+	});
+
+	// The window record: the final prepareStep capture, carried on both
+	// outcome rails for the runtime to store (window-capture.ts).
+	test("the outcome carries the final step's outbound prompt as the window record", async () => {
+		const probe = probeTool();
+		const r = rig([toolCallStep("c1", 10), textReply("done")], {
+			tools: { probe: probe },
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		expect(outcome.steps).toBe(2);
+		expect(typeof outcome.model).toBe("string");
+		const w = outcome.window;
+		expect(w).not.toBeNull();
+		expect(w!.v).toBe(1);
+		expect(w!.system).toBe("test");
+		expect(w!.tools.map((t) => t.name)).toEqual(["probe"]);
+		// The prompt as sent — the outbound of the FINAL step, so it ends
+		// with the tool result the model was answering; the reply itself
+		// is history, not its own input.
+		expect(w!.messages.map((m) => (m as { role: string }).role)).toEqual([
+			"user",
+			"assistant",
+			"tool",
+		]);
+		// The itemization of that same prompt rides along.
+		expect(w!.segments.history).toBeGreaterThan(0);
+		expect(w!.segments.toolResults).toBeGreaterThan(0);
+	});
+
+	test("a failed run still carries its last completed step's window; a stepless failure carries none", async () => {
+		const r = rig([toolCallStep("c1", 10), new Error("provider died")], {
+			tools: { probe: probeTool() },
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind === "ok") return;
+		expect(outcome.steps).toBe(1);
+		// Step 2's prompt was staged in prepareStep but its doStream threw
+		// — nothing saw it. The window is step 1's: the user message only,
+		// not the tool-call history step 2 would have carried.
+		expect(outcome.window).not.toBeNull();
+		expect(outcome.window!.messages).toHaveLength(1);
+		expect((outcome.window!.messages[0] as { role: string }).role).toBe("user");
+
+		const stepless = rig([new Error("cold dead")]);
+		const deadOutcome = await driveStream(stepless.deps);
+		expect(deadOutcome.kind).toBe("failed");
+		if (deadOutcome.kind === "ok") return;
+		expect(deadOutcome.steps).toBe(0);
+		expect(deadOutcome.window).toBeNull();
 	});
 });

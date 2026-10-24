@@ -108,9 +108,16 @@ export function openCachePruning(deps: CachePruningDeps): {
 			profileHash,
 		);
 		if (suspension !== null) {
-			notice("contradicted", "cache policy contradicted — pruning suspended", convId, routeKey, {
-				observedMs: suspension.observedMs,
-			});
+			// The dedupe key carries the profile hash — a fresh
+			// contradiction under a revised profile is a new finding, not a
+			// repeat of the old one (mirrors the expiry deadline below).
+			notice(
+				`contradicted:${profileHash}`,
+				"cache policy contradicted — pruning suspended",
+				convId,
+				routeKey,
+				{ observedMs: suspension.observedMs },
+			);
 			return { pruned: 0, reason: "drift-contradiction" };
 		}
 		if (Date.parse(profile.validUntil) <= now()) {
@@ -173,10 +180,17 @@ export function openCachePruning(deps: CachePruningDeps): {
 				profileHash,
 				reason: "drift-contradiction",
 			});
-			notice("contradicted", "cache policy contradicted — pruning suspended", convId, routeKey, {
-				idleMs: contradiction.idleMs,
-				idleAfterMs: profile.idleAfterMs,
-			});
+			// Same profile-sensitive key as the already-suspended path.
+			notice(
+				`contradicted:${profileHash}`,
+				"cache policy contradicted — pruning suspended",
+				convId,
+				routeKey,
+				{
+					idleMs: contradiction.idleMs,
+					idleAfterMs: profile.idleAfterMs,
+				},
+			);
 			return { pruned: 0, reason: "drift-contradiction" };
 		}
 		if (idleMs < profile.idleAfterMs) return undefined;

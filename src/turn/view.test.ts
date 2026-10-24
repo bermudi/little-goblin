@@ -37,7 +37,15 @@ const texts = (view: ModelMessage[]): string[] =>
 			: m.content.map((p) => (p as { text: string }).text),
 	);
 
-const ctx: ViewContext = { convId: "dm:1", tools: {}, modalities: undefined, carries: () => false };
+const ctx: ViewContext = {
+	convId: "dm:1",
+	tools: {},
+	modalities: undefined,
+	carries: () => false,
+	skillRef: () => {
+		throw new Error("no skill parts expected in this fixture");
+	},
+};
 
 const build = async (
 	entriesList: { seq: number; message: UIMessage }[],

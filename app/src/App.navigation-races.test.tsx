@@ -231,7 +231,8 @@ describe("navigation races: late completions", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
@@ -259,6 +260,7 @@ describe("navigation races: late completions", () => {
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main"],
+							modelCatalog: [],
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
@@ -303,6 +305,7 @@ describe("navigation races: late completions", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -397,8 +400,7 @@ describe("navigation races: late completions", () => {
 		await submitNewProject("Side Hustle");
 		expect(posts.some((p) => p.url === "/api/app/projects")).toBe(true);
 
-		// Dismiss mid-flight, then open Settings and dirty the editor —
-		// publicUrl is serialized dirty without needing a save POST.
+		// Dismiss mid-flight, then open Settings and dirty the editor.
 		await click(container.querySelector('.msheet-head button[aria-label="Close"]'));
 		expect(container.querySelector(".msheet")).toBeNull();
 		await openPage("Settings");
@@ -406,13 +408,13 @@ describe("navigation races: late completions", () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
 		);
-		const field = [...container.querySelectorAll(".frow")].find(
-			(r) => r.querySelector(".flabel")?.textContent === "Public url",
-		)!;
-		await typeInto(
-			field.querySelector("input")!,
-			"https://x.example.test",
-			win.HTMLInputElement.prototype,
+		// Dropping the only operator can never validate, so the draft
+		// stays dirty without a save POST.
+		await click(
+			container
+				.querySelector('[aria-label="add operator"]')
+				?.closest(".frow")
+				?.querySelector(".chip button"),
 		);
 		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty marker");
 
@@ -486,13 +488,13 @@ describe("navigation races: late completions", () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
 		);
-		const field = [...container.querySelectorAll(".frow")].find(
-			(r) => r.querySelector(".flabel")?.textContent === "Public url",
-		)!;
-		await typeInto(
-			field.querySelector("input")!,
-			"https://x.example.test",
-			win.HTMLInputElement.prototype,
+		// Dropping the only operator can never validate, so the draft
+		// stays dirty without a save POST.
+		await click(
+			container
+				.querySelector('[aria-label="add operator"]')
+				?.closest(".frow")
+				?.querySelector(".chip button"),
 		);
 		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty marker");
 

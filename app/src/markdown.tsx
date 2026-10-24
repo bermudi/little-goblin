@@ -5,6 +5,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
+// Machinery-speech spellings have one owner; the transcript renders
+// their prefix, it doesn't re-spell it.
+import { isMachineryText } from "../../src/tags.ts";
 // core + the languages a chat model actually fences — the /common
 // bundle is ~40 grammars the client doesn't need.
 import hljs from "highlight.js/lib/core";
@@ -485,6 +488,16 @@ export function Markdown({
 			continue;
 		}
 
+		// A machinery tag line ([delegation: …], [program: …]) opens an
+		// event notice — machine speech, not transcript prose. Fenced at
+		// a block start, it reads as the envelope it is; any prose that
+		// follows in the same paragraph still renders as text.
+		if (para.length === 0 && isMachineryText(line)) {
+			blocks.push(<CodeBlock key={key++} lang="status" code={line.trim()} />);
+			i++;
+			continue;
+		}
+
 		const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
 		if (heading) {
 			flushPara();
@@ -540,25 +553,30 @@ export function Markdown({
 				rows.push(splitRow(lines[i]!));
 				i++;
 			}
+			// The wrapper owns horizontal overflow — an unbreakable cell
+			// (a sha256 in code) must scroll the table, never blow the
+			// transcript column past its width.
 			blocks.push(
-				<table key={key++} className="md-table">
-					<thead>
-						<tr>
-							{header.map((h, c) => (
-								<th key={c}>{inline(h, onFileLink)}</th>
-							))}
-						</tr>
-					</thead>
-					<tbody>
-						{rows.map((r, ri) => (
-							<tr key={ri}>
-								{r.map((c, ci) => (
-									<td key={ci}>{inline(c, onFileLink)}</td>
+				<div key={key++} className="md-tablewrap">
+					<table className="md-table">
+						<thead>
+							<tr>
+								{header.map((h, c) => (
+									<th key={c}>{inline(h, onFileLink)}</th>
 								))}
 							</tr>
-						))}
-					</tbody>
-				</table>,
+						</thead>
+						<tbody>
+							{rows.map((r, ri) => (
+								<tr key={ri}>
+									{r.map((c, ci) => (
+										<td key={ci}>{inline(c, onFileLink)}</td>
+									))}
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>,
 			);
 			continue;
 		}

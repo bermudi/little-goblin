@@ -105,6 +105,7 @@ describe("model setting scopes", () => {
 					model: "test/chat",
 					thinking: "high",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["high"],
 				});
 			},
@@ -132,6 +133,7 @@ describe("model setting scopes", () => {
 					model: "test/default",
 					thinking: "low",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["low"],
 				});
 			},
@@ -265,7 +267,13 @@ describe("operator surface", () => {
 			fetch: "",
 			operators: [1],
 			allowedUsers: [1],
-			telegram: { apiRoot: "", dmGapMinutes: 45, richReplies: true, showReasoning: false },
+			telegram: {
+				enabled: true,
+				apiRoot: "",
+				dmGapMinutes: 45,
+				richReplies: true,
+				showReasoning: false,
+			},
 			publicUrl: "",
 			http: { port: 8787 },
 			memory: "",

@@ -10,9 +10,14 @@ export interface BootPins {
 	memory: Config["memory"];
 	// Resolved auth name — the appToken name, not the secret.
 	appToken: string | undefined;
+	telegramEnabled: boolean;
 	apiRoot: Config["telegram"]["apiRoot"];
 	delegation: Config["delegation"];
 	subagents: Config["subagents"];
+	// Bun.serve binds the port once at boot — a mid-run edit rewrites the
+	// file and applies nothing, so it warns like the other pins.
+	http: Config["http"];
+	reviewer: Config["reviewer"];
 }
 
 const eq = (a: unknown, b: unknown): boolean =>
@@ -22,9 +27,12 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 	const diffs: string[] = [];
 	if (!eq(cur.memory, pins.memory)) diffs.push("memory");
 	if (cur.appToken !== pins.appToken) diffs.push("appToken");
+	if (cur.telegram.enabled !== pins.telegramEnabled) diffs.push("telegram.enabled");
 	if (cur.telegram.apiRoot !== pins.apiRoot) diffs.push("telegram.apiRoot");
 	if (!eq(cur.delegation, pins.delegation)) diffs.push("delegation");
 	if (!eq(cur.subagents, pins.subagents)) diffs.push("subagents");
+	if (!eq(cur.http, pins.http)) diffs.push("http");
+	if (!eq(cur.reviewer, pins.reviewer)) diffs.push("reviewer");
 	return diffs;
 }
 
@@ -34,6 +42,8 @@ const PIN_LABEL: Record<string, string> = {
 	memory: "memory config",
 	delegation: "delegation config",
 	subagents: "subagents config",
+	http: "http config",
+	reviewer: "reviewer config",
 };
 
 // Counts as configured only as an object — a bare `false` disables
@@ -94,7 +104,10 @@ export function wireConfigWrite(deps: ConfigWriteDeps): ConfigWrite {
 			sandboxInSet = sandboxNow;
 			// Memory is a boot-time snapshot (queue rows bind to the
 			// endpoint+bank hash); delegation and subagents are boot-frozen
-			// adapters and pool limits — all warned by the shared pin diff.
+			// adapters and pool limits. Reviewer wiring (including presence,
+			// gate thresholds and evidence limits) is also boot-bound — a
+			// save never creates, replaces or removes the running reviewer.
+			// All are warned by the shared pin diff.
 			for (const key of bootPinnedDiffs(pins, cur)) {
 				log.warn(`${PIN_LABEL[key] ?? key} changed — restart to apply`);
 			}

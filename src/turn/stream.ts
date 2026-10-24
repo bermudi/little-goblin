@@ -15,12 +15,14 @@ import {
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { z } from "zod";
 import { filterErrorStream } from "../agent/filter-stream.ts";
+import type { AppLiveContext } from "../http/app-wire.ts";
 import {
 	isContentFilter,
 	isContextOverflow,
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
+import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import { measurePrompt, type PromptSegments } from "./itemize.ts";
@@ -191,6 +193,9 @@ export interface StreamStep {
 	providerOptions?: ProviderOptions;
 	label?: string;
 	contextWindow?: number;
+	// Provider retry rule for the call — 1min carries 0, absent keeps
+	// the SDK default.
+	maxRetries?: number;
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -209,11 +214,16 @@ export interface StreamDeps<M extends WireMember> {
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
 	settle(m: M, done: MemberSettlement): void;
-	modelEntries(): { seq: number; message: UIMessage }[];
+	// The durable-wake seam: after a steer fold, the durable event seqs
+	// that actually joined the membership (converted + replayed, not
+	// merely claimed). The runtime wires it to the wake dispatcher's
+	// run link; absent = no wake tracking.
+	noteRunMembers?(memberSeqs: number[]): void;
 	steerMarkSeed: number;
 	// The durable user-input seqs owned at admission; successfully folded
 	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
+	sourceInputSeq?(): number | null;
 	partial: UIMessage | null;
 	seenText: boolean;
 	toolCalls: string[];
@@ -238,6 +248,11 @@ export type StreamOutcome =
 			toolCalls: string[];
 			digestRing: { id: string; entry: ToolCallDigest }[];
 			steerMark: number;
+			// The final step's outbound prompt — null when no step ran.
+			window: WindowCapture | null;
+			// Window-row metadata: which model ran, how many steps.
+			model: string;
+			steps: number;
 	  }
 	| {
 			kind: "failed";
@@ -251,6 +266,11 @@ export type StreamOutcome =
 			loop: LoopTurnState;
 			steerMark: number;
 			filterRetryUsed: boolean;
+			// The last completed step's prompt — the call went out even
+			// when the turn failed on a later one.
+			window: WindowCapture | null;
+			model: string;
+			steps: number;
 	  };
 
 export async function driveStream<M extends WireMember>(
@@ -263,9 +283,22 @@ export async function driveStream<M extends WireMember>(
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
 	let lastPromptChars: PromptSegments | null = null;
+	// The window record, captured in two stages — prepareStep stages the
+	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
+	// call never dispatched (abort, a doStream throw) is a prompt nothing
+	// saw and must never become the record; the promoted one is the last
+	// completed step, on either outcome rail. References only;
+	// serialization happens once, when the runtime records the turn.
+	let stagedWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
+	let lastWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
+	let stepCount = 0;
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
+	// Read inside streamText's onStepEnd, so it must be declared before
+	// the factory call — an await inserted between the two leaves every
+	// step end in the TDZ while still compiling.
+	let holdForRecovery = false;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
 	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
@@ -273,13 +306,19 @@ export async function driveStream<M extends WireMember>(
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
 	const notePrompt = (messages: readonly ModelMessage[]) => {
-		lastPromptChars = measurePrompt(deps.step.system, deps.tools, messages);
+		const segments = measurePrompt(deps.step.system, deps.tools, messages);
+		lastPromptChars = segments;
+		stagedWindow = { messages: [...messages], segments };
 	};
 	const result = streamText({
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,
 		messages: deps.messages,
 		tools: deps.tools,
+		// Provider retry rules ride the step — 1min sends no SDK
+		// retries (its one-shot content-filter re-ask is separate and
+		// deliberate; model.md → Provider-filter recovery).
+		...(deps.step.maxRetries !== undefined ? { maxRetries: deps.step.maxRetries } : {}),
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
 			state.noteContextLanding(prevInput, deps.step.contextWindow);
@@ -324,7 +363,11 @@ export async function driveStream<M extends WireMember>(
 				return undefined;
 			}
 			const injected: ModelMessage[] = [];
-			const claimedIds = new Set<string>();
+			// Claimed by event seq, never by message id — ids are
+			// client-controlled and may repeat, so an id match could claim a
+			// steer that failed conversion as owned input. The wake link's
+			// identity is the same seq set.
+			const claimedSeqs = new Set<number>();
 			let admittedCount = 0;
 			for (const t of steered) {
 				try {
@@ -335,7 +378,7 @@ export async function driveStream<M extends WireMember>(
 					}
 					injected.push(...converted);
 					joinMember(convId, live, members, t);
-					claimedIds.add(t.message.id);
+					claimedSeqs.add(t.seq);
 					admittedCount++;
 				} catch (err) {
 					if (!deps.holdsAuthority()) {
@@ -353,6 +396,10 @@ export async function driveStream<M extends WireMember>(
 					});
 				}
 			}
+			// Joined members are this run's input now — the wake link
+			// lands before the request does, so a completion can't settle
+			// a delivery it never owned.
+			if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0) {
 					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
@@ -364,14 +411,18 @@ export async function driveStream<M extends WireMember>(
 			}
 			// Ownership and the mark persist together — a crash after the
 			// fold must still name these steered inputs the attempt's own.
-			for (const e of deps.modelEntries()) {
-				if (!claimedIds.has(e.message.id)) continue;
-				if (e.seq > steerMark) steerMark = e.seq;
-				ownedInputSeqs.add(e.seq);
+			// Each seq came through conversion with its event, so only the
+			// steers this attempt actually folded are recorded as owned.
+			// Ownership is the member's own durable seq, never a rediscovery
+			// through app-controlled message ids.
+			for (const seq of claimedSeqs) {
+				if (seq > steerMark) steerMark = seq;
+				ownedInputSeqs.add(seq);
 			}
 			deps.journal?.checkpoint(deps.runId, {
 				ownedInputSeqs: [...ownedInputSeqs],
 				steerMark,
+				sourceInputSeq: deps.sourceInputSeq?.(),
 			});
 			log.info("steered into turn", {
 				conversation: convId,
@@ -415,6 +466,11 @@ export async function driveStream<M extends WireMember>(
 			log.error("model stream error", error, { conversation: convId });
 		},
 		onStepEnd: (step) => {
+			stepCount++;
+			// The step's request was dispatched and consumed — its staged
+			// prompt becomes the record ("last completed step"; an errored
+			// dispatch still counts, the model saw the prompt).
+			lastWindow = stagedWindow;
 			if (filterRetryPending && step.finishReason !== "error") {
 				filterRetryPending = false;
 				log.info("provider content filter retry recovered", {
@@ -438,6 +494,20 @@ export async function driveStream<M extends WireMember>(
 				cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
 				outputTokens: step.usage.outputTokens ?? null,
 			});
+			// The composer's context gauge reads settled turns only — the
+			// wire carries this step's window occupancy as a transient data
+			// part so a streaming client can show it while the turn runs.
+			if (deps.holdsAuthority() && !holdForRecovery) {
+				const liveContext: AppLiveContext = {
+					input: lastStepInputTokens,
+					cacheRead: lastStepCacheRead,
+				};
+				emitChunk(convId, members, live, {
+					type: "data-context",
+					transient: true,
+					data: liveContext,
+				});
+			}
 		},
 	});
 
@@ -466,7 +536,6 @@ export async function driveStream<M extends WireMember>(
 	let seenText = deps.seenText;
 	let pendingStep = false;
 	let streamError: string | null = null;
-	let holdForRecovery = false;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,
@@ -667,6 +736,21 @@ export async function driveStream<M extends WireMember>(
 		}
 	}
 
+	// The window record rides both outcome rails: an ok turn stores its
+	// final step, a failed one its last completed step. Gated on
+	// stepCount: a prompt built for a call that never completed a step
+	// is not a window anything saw — steps: 0 must read null.
+	const windowCapture = (): WindowCapture | null => {
+		if (lastWindow === null || stepCount === 0) return null;
+		return {
+			v: 1,
+			system: deps.step.system,
+			tools: serializeToolDefs(deps.tools),
+			messages: lastWindow.messages,
+			segments: lastWindow.segments,
+		};
+	};
+
 	deps.assertAuthority();
 	if (streamError !== null) {
 		return {
@@ -681,6 +765,9 @@ export async function driveStream<M extends WireMember>(
 			loop: state.snapshot(),
 			steerMark,
 			filterRetryUsed,
+			window: windowCapture(),
+			model: modelLabel,
+			steps: stepCount,
 		};
 	}
 	const usage = await Promise.resolve(result.usage).catch((err) => {
@@ -705,5 +792,8 @@ export async function driveStream<M extends WireMember>(
 		toolCalls,
 		digestRing,
 		steerMark,
+		window: windowCapture(),
+		model: modelLabel,
+		steps: stepCount,
 	};
 }

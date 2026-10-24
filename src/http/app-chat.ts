@@ -10,6 +10,8 @@ import { appIdOf } from "../conversation.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
+import type { TurnDone } from "../runtime.ts";
+import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { appStreamSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
@@ -31,6 +33,31 @@ const chatBody = z
 					.min(1)
 					.superRefine((parts, ctx) => {
 						for (const [i, p] of parts.entries()) {
+							// The model pipeline consumes text/file payloads
+							// verbatim: a wrong-typed field converts cleanly,
+							// is persisted, then fails every later turn at
+							// standardizePrompt — the poison-pill shape the
+							// boundary must refuse before persistence.
+							if (p.type === "text") {
+								if (typeof p.text !== "string") {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "text"],
+										message: "a text part carries a string text",
+									});
+								}
+								continue;
+							}
+							if (p.type === "file") {
+								if (typeof p.mediaType !== "string" || typeof p.url !== "string") {
+									ctx.addIssue({
+										code: "custom",
+										path: [i],
+										message: "a file part carries string mediaType and url",
+									});
+								}
+								continue;
+							}
 							if (p.type === NOTE_PART) {
 								const id =
 									typeof p.data === "object" && p.data !== null
@@ -41,6 +68,17 @@ const chatBody = z
 										code: "custom",
 										path: [i, "data", "id"],
 										message: "a note attachment carries only the note id",
+									});
+								}
+								continue;
+							}
+							if (p.type === SKILL_PART) {
+								const ref = skillPartDataSchema.safeParse(p.data);
+								if (!ref.success) {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "data"],
+										message: `invalid skill invocation: ${z.prettifyError(ref.error)}`,
 									});
 								}
 								continue;
@@ -168,6 +206,9 @@ export async function handleChatRoute(
 				{ status: 503, headers: { ...NO_STORE, "retry-after": "30" } },
 			);
 		}
+		const push = deps.push;
+		const notifyDisconnected =
+			push === undefined ? undefined : (done: TurnDone) => push.notifyDone(conv, done);
 
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {
@@ -176,14 +217,20 @@ export async function handleChatRoute(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			const lastUser = store.history(convId).findLast((m) => m.role === "user");
+			const lastUser = store.historyEntries(convId).findLast((e) => e.message.role === "user");
 			if (lastUser === undefined) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
-			log.info("app retry", { conversation: convId, message: lastUser.id });
-			const { sink, body, dispose } = appStreamSink(convId);
+			log.info("app retry", { conversation: convId, message: lastUser.message.id });
+			const { sink, body, dispose } = appStreamSink(
+				convId,
+				{
+					append: (messages, opts) => store.append(convId, messages, opts),
+				},
+				notifyDisconnected,
+			);
 			try {
-				runtime.submitPersisted(conv, lastUser, sink);
+				runtime.submitPersisted(conv, lastUser.message, sink, lastUser.seq);
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
 				dispose();
@@ -287,7 +334,13 @@ export async function handleChatRoute(
 		}
 
 		log.info("app intake", { conversation: convId, message: message.id });
-		const { sink, body, dispose } = appStreamSink(convId);
+		const { sink, body, dispose } = appStreamSink(
+			convId,
+			{
+				append: (messages, opts) => store.append(convId, messages, opts),
+			},
+			notifyDisconnected,
+		);
 		try {
 			runtime.submit(conv, message as UIMessage, sink);
 		} catch (err) {

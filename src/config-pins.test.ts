@@ -33,9 +33,12 @@ function pinsFor(c: Config): BootPins {
 	return {
 		memory: c.memory,
 		appToken: c.appToken,
+		telegramEnabled: c.telegram.enabled,
 		apiRoot: c.telegram.apiRoot,
 		delegation: c.delegation,
 		subagents: c.subagents,
+		http: c.http,
+		reviewer: c.reviewer,
 	};
 }
 
@@ -74,12 +77,28 @@ describe("bootPinnedDiffs", () => {
 	test.each([
 		["memory", `memory:{baseUrl:"http://127.0.0.1:8888",bankId:"b"}`, "memory"],
 		["appToken", `appToken:"other"`, "appToken"],
+		["telegram.enabled", `telegram:{enabled:false}`, "telegram.enabled"],
 		["apiRoot", `telegram:{apiRoot:"http://127.0.0.1:9"}`, "telegram.apiRoot"],
 		["delegation", `delegation:{harnesses:{a:{kind:"x"}}}`, "delegation"],
 		["subagents", `subagents:{maxRuns:2}`, "subagents"],
+		["http", `http:{port:9999}`, "http"],
+		["reviewer", `reviewer:{auth:"openrouter"}`, "reviewer"],
 	])("a %s change reports its key", (_label, extra, key) => {
 		const boot = loadExtra("");
 		expect(bootPinnedDiffs(pinsFor(boot), loadExtra(extra))).toEqual([key]);
+	});
+
+	test.each([
+		["removal", ""],
+		["auth", `reviewer:{auth:"other"}`],
+		["threshold", `reviewer:{auth:"openrouter",threshold:0.6}`],
+		["per-trigger thresholds", `reviewer:{auth:"openrouter",thresholds:{correction:0.9}}`],
+		["queue cap", `reviewer:{auth:"openrouter",queueCap:2}`],
+		["evidence", `reviewer:{auth:"openrouter",evidence:{calls:12}}`],
+		["model", `reviewer:{auth:"openrouter",model:"zai/review"}`],
+	])("reviewer %s requires restart", (_label, extra) => {
+		const boot = loadExtra(`reviewer:{auth:"openrouter"}`);
+		expect(bootPinnedDiffs(pinsFor(boot), loadExtra(extra))).toEqual(["reviewer"]);
 	});
 
 	test("multiple diffs report in pin order, not diff order", () => {
@@ -142,6 +161,32 @@ describe("wireConfigWrite", () => {
 		w.ref.current = loadExtra(`sandbox:{}`);
 		w.onConfigWritten();
 		expect(w.calls.stranded).toBe(1);
+	});
+
+	test("reviewer parking warns and needs restart until the boot block is restored", () => {
+		const cap = capture();
+		try {
+			const boot = loadExtra(`reviewer:{auth:"openrouter",threshold:0.6,queueCap:2}`);
+			const w = wire(boot, boot);
+			w.ref.current = loadExtra(`parked:{reviewer:{auth:"openrouter",threshold:0.6,queueCap:2}}`);
+			w.onConfigWritten();
+			expect(cap.lines.some((l) => l.includes("reviewer config changed — restart to apply"))).toBe(
+				true,
+			);
+			expect(w.restartHints()).toEqual(["reviewer"]);
+			w.ref.current = boot;
+			w.onConfigWritten();
+			expect(w.restartHints()).toEqual([]);
+		} finally {
+			cap.stop();
+		}
+	});
+
+	test("enabling reviewer reports a restart even though the block is now present", () => {
+		const boot = loadExtra("");
+		const w = wire(boot, loadExtra(`reviewer:{auth:"openrouter"}`));
+		w.onConfigWritten();
+		expect(w.restartHints()).toEqual(["reviewer"]);
 	});
 
 	test("a pin diff warns per key and restartHints reports the live read", () => {

@@ -7,9 +7,12 @@
 // restart can never activate twice. Update proposals bind to an
 // immutable base fingerprint of the exact active configuration they
 // were shown against — run/cursor accounting excluded, so a landed
-// fire or a mail checkpoint never stales one — and a new proposal for
-// the same target supersedes the older pending ones. History is
-// append-only: no mutation of stored payloads, no deletion.
+// fire or a mail checkpoint never stales one — and store the
+// renderable snapshot of that base, so an approval card re-posted at
+// any time shows the candidate the fingerprint binds to, never a merge
+// onto the live row. A new proposal for the same target supersedes the
+// older pending ones. History is append-only: no mutation of stored
+// payloads, no deletion.
 //
 // This helper composes into ProgramsStore on the SAME connection:
 // programs.ts injects the core get/create/update and the definition
@@ -19,6 +22,13 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import type { CreateProgram, Program, ProgramAddress, ProgramPatch } from "./programs.ts";
+import {
+	telegramActor,
+	telegramAddressOf,
+	telegramTarget,
+	validTarget,
+	type ConversationTarget,
+} from "./targets.ts";
 
 // The approval post shows the complete candidate, chunked but never
 // truncated — the charter bound lives here so "approve what you saw"
@@ -54,6 +64,20 @@ export interface ProgramPatchRequest {
 
 export type ProposalState = "pending" | "approved" | "rejected" | "superseded";
 
+/** The immutable base configuration an update proposal was shown against —
+ *  the fingerprint's fields minus the fingerprint's own bookkeeping (id,
+ *  address, hookHash, enabled), kept so any later re-post renders the
+ *  exact candidate the operator first saw, never a merge onto whatever
+ *  the live row happens to say today. */
+export interface ProgramBaseSnapshot {
+	name: string;
+	charter: string;
+	cron: string | null;
+	maxLatenessMinutes: number | null;
+	hook: boolean;
+	mailFilter: string | null;
+}
+
 export interface ProgramProposal {
 	id: number;
 	kind: "create" | "update";
@@ -65,15 +89,20 @@ export interface ProgramProposal {
 	patch: ProgramPatchRequest | null;
 	/** kind === "update" — the fingerprinted base configuration. */
 	base: string | null;
-	/** The requester's pinned Telegram address — where the approval
+	/** kind === "update" — the renderable base snapshot; null on creates
+	 *  and on legacy rows staged before the column existed. */
+	baseSnapshot: ProgramBaseSnapshot | null;
+	/** The requester's pinned conversation address — where the approval
 	 *  posts, and where a created program answers. */
+	target: ConversationTarget;
+	/** Legacy transport projection derived from `target`; app rows use 0/null. */
 	chatId: number;
 	threadId: number | null;
 	state: ProposalState;
 	createdAt: string;
 	decidedAt: string | null;
-	/** The tapping operator's Telegram user id; null when superseded. */
-	decidedBy: number | null;
+	/** The authenticated decision lane ("app" or "telegram:<user>"). */
+	decidedBy: string | null;
 	/** The program the approval activated; null until then. */
 	activatedId: number | null;
 }
@@ -126,8 +155,12 @@ export interface ProgramProposals {
 	 *  failure rolls activation and decision back together. `hookHash`
 	 *  is the freshly minted credential a hook-requesting proposal
 	 *  needs — absent when requested, the approval refuses. */
-	approve(id: number, decidedBy: number, opts?: { hookHash?: string; now?: Date }): ApproveOutcome;
-	reject(id: number, decidedBy: number, now?: Date): RejectOutcome;
+	approve(
+		id: number,
+		decidedBy: string | number,
+		opts?: { hookHash?: string; now?: Date },
+	): ApproveOutcome;
+	reject(id: number, decidedBy: string | number, now?: Date): RejectOutcome;
 }
 
 /** The trusted low-level operations a decision activates through —
@@ -154,10 +187,12 @@ export interface ProgramProposalsDeps {
 // excluded: a landed fire or a checkpoint move never stales a
 // proposal. Fixed key order makes this canonical.
 export function programFingerprint(p: Program): string {
+	const telegram = telegramAddressOf(p.target);
 	return JSON.stringify({
 		id: p.id,
-		chatId: p.chatId,
-		threadId: p.threadId,
+		...(telegram === null
+			? { target: p.target }
+			: { chatId: telegram.chatId, threadId: telegram.threadId }),
 		name: p.name,
 		charter: p.charter,
 		cron: p.cron,
@@ -166,6 +201,19 @@ export function programFingerprint(p: Program): string {
 		mailFilter: p.mailFilter,
 		enabled: p.enabled,
 	});
+}
+
+// The renderable half of the fingerprint: what an approval card needs to
+// show the base configuration. Stored at staging, read at every render.
+export function snapshotProgram(p: Program): ProgramBaseSnapshot {
+	return {
+		name: p.name,
+		charter: p.charter,
+		cron: p.cron,
+		maxLatenessMinutes: p.maxLatenessMinutes,
+		hook: p.hookHash !== null,
+		mailFilter: p.mailFilter,
+	};
 }
 
 const draftSchema = z
@@ -199,20 +247,43 @@ const patchSchema = z
 		message: "a proposal needs at least one requested field",
 	});
 
+function actorOf(actor: string | number): string {
+	return typeof actor === "number" ? telegramActor(actor) : actor;
+}
+
+function proposalTarget(address: ProgramAddress): ConversationTarget {
+	return "target" in address ? address.target : telegramTarget(address.chatId, address.threadId);
+}
+
 const rowSchema = z.object({
 	id: z.number(),
 	kind: z.enum(["create", "update"]),
 	target_id: z.number().nullable(),
 	payload: z.string(),
 	base: z.string().nullable(),
-	chat_id: z.number(),
-	thread_id: z.number().nullable(),
+	base_snapshot: z.string().nullable(),
+	target: z.string().refine(validTarget),
 	state: z.enum(["pending", "approved", "rejected", "superseded"]),
 	created_at: z.string(),
 	decided_at: z.string().nullable(),
-	decided_by: z.number().nullable(),
+	decided_by: z.union([z.string(), z.number()]).nullable(),
 	activated_id: z.number().nullable(),
 });
+
+// The snapshot copies an existing program row, so its bounds are the
+// trusted store's — never proposal-input limits: a grandfathered or
+// pre-limit charter, name, or filter longer than a new proposal allows
+// must still stage, read, and decide.
+const baseSnapshotSchema = z
+	.object({
+		name: z.string(),
+		charter: z.string(),
+		cron: z.string().nullable(),
+		maxLatenessMinutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+		hook: z.boolean(),
+		mailFilter: z.string().nullable(),
+	})
+	.strict();
 
 // Stored payloads are validated JSON, parsed at read — corruption
 // names itself with the row instead of surfacing downstream as a
@@ -230,6 +301,17 @@ function rowToProposal(row: unknown): ProgramProposal {
 			`program proposal ${r.id}: corrupt payload — ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
+	const telegram = telegramAddressOf(r.target);
+	let baseSnapshot: ProgramBaseSnapshot | null = null;
+	if (r.base_snapshot !== null) {
+		try {
+			baseSnapshot = baseSnapshotSchema.parse(JSON.parse(r.base_snapshot));
+		} catch (err) {
+			throw new Error(
+				`program proposal ${r.id}: corrupt base snapshot — ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
 	return {
 		id: r.id,
 		kind: r.kind,
@@ -237,12 +319,14 @@ function rowToProposal(row: unknown): ProgramProposal {
 		draft,
 		patch,
 		base: r.base,
-		chatId: r.chat_id,
-		threadId: r.thread_id,
+		baseSnapshot,
+		target: r.target,
+		chatId: telegram?.chatId ?? 0,
+		threadId: telegram?.threadId ?? null,
 		state: r.state,
 		createdAt: r.created_at,
 		decidedAt: r.decided_at,
-		decidedBy: r.decided_by,
+		decidedBy: typeof r.decided_by === "number" ? `telegram:${r.decided_by}` : r.decided_by,
 		activatedId: r.activated_id,
 	};
 }
@@ -254,21 +338,41 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 		target_id INTEGER,
 		payload TEXT NOT NULL,
 		base TEXT,
-		chat_id INTEGER NOT NULL,
+		base_snapshot TEXT,
+		target TEXT NOT NULL,
+		chat_id INTEGER NOT NULL DEFAULT 0,
 		thread_id INTEGER,
 		state TEXT NOT NULL,
 		created_at TEXT NOT NULL,
 		decided_at TEXT,
-		decided_by INTEGER,
+		decided_by TEXT,
 		activated_id INTEGER
 	)`);
+	const proposalCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(program_proposals)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!proposalCols.has("target")) {
+		db.exec("ALTER TABLE program_proposals ADD COLUMN target TEXT");
+		db.exec(`UPDATE program_proposals SET target =
+			CASE WHEN thread_id IS NULL THEN 'dm:' || chat_id
+			     ELSE 'topic:' || chat_id || ':' || thread_id END
+			WHERE target IS NULL`);
+	}
+	// Rows staged before base_snapshot existed read NULL — renders fall
+	// back to the fingerprint check (same conversation.ts ALTER pattern).
+	if (!proposalCols.has("base_snapshot")) {
+		db.exec("ALTER TABLE program_proposals ADD COLUMN base_snapshot TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM program_proposals WHERE id = ?");
 	const qList = db.query("SELECT * FROM program_proposals ORDER BY id");
 	const qPending = db.query("SELECT * FROM program_proposals WHERE state = 'pending' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO program_proposals
-		(kind, target_id, payload, base, chat_id, thread_id, state, created_at, decided_at, decided_by, activated_id)
-		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL)`);
+		(kind, target_id, payload, base, base_snapshot, target, chat_id, thread_id, state, created_at, decided_at, decided_by, activated_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL)`);
 	const qDecide = db.query(
 		"UPDATE program_proposals SET state = ?, decided_at = ?, decided_by = ?, activated_id = ? WHERE id = ?",
 	);
@@ -289,14 +393,25 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			if (target === null) throw new Error(`program proposal: no program ${targetId}`);
 			const validated = patchSchema.parse(patch);
 			deps.validateUpdate(target, validated);
+			const destination = proposalTarget(address);
+			if (!validTarget(destination)) {
+				throw new Error(`invalid proposal destination "${destination}"`);
+			}
+			const telegram = telegramAddressOf(destination);
+			// Validate before any write: the stored snapshot must decode on
+			// every later read, so a rejection aborts the transaction here —
+			// staging can never commit a row its own reader throws on.
+			const baseSnapshot = JSON.stringify(baseSnapshotSchema.parse(snapshotProgram(target)));
 			const superseded = qSupersede.run(now.toISOString(), targetId).changes;
 			const res = qInsert.run(
 				"update",
 				targetId,
 				JSON.stringify(validated),
 				programFingerprint(target),
-				address.chatId,
-				address.threadId,
+				baseSnapshot,
+				destination,
+				telegram?.chatId ?? 0,
+				telegram?.threadId ?? null,
 				now.toISOString(),
 			);
 			return { id: Number(res.lastInsertRowid), superseded };
@@ -308,7 +423,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 	// written, and a write failure anywhere rolls the grant and its
 	// record back together.
 	const approveTxn = db.transaction(
-		(id: number, decidedBy: number, hookHash: string | undefined, now: Date): ApproveOutcome => {
+		(id: number, decidedBy: string, hookHash: string | undefined, now: Date): ApproveOutcome => {
 			const row = qGet.get(id);
 			if (row === null) return { kind: "refused", proposal: null, refusal: "gone" };
 			const proposal = rowToProposal(row);
@@ -332,7 +447,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 						maxLatenessMinutes: draft.maxLatenessMinutes,
 						hookHash: draft.hook ? hookHash! : null,
 						mailFilter: draft.mailFilter,
-						address: { chatId: proposal.chatId, threadId: proposal.threadId },
+						address: { target: proposal.target },
 					},
 					now,
 				);
@@ -367,7 +482,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 		},
 	);
 
-	const rejectTxn = db.transaction((id: number, decidedBy: number, now: Date): RejectOutcome => {
+	const rejectTxn = db.transaction((id: number, decidedBy: string, now: Date): RejectOutcome => {
 		const row = qGet.get(id);
 		if (row === null) return { kind: "refused", proposal: null, refusal: "gone" };
 		const proposal = rowToProposal(row);
@@ -386,13 +501,20 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 		proposeCreate(draft, address, now = new Date()) {
 			const validated = draftSchema.parse(draft);
 			deps.validateCreate(validated);
+			const destination = proposalTarget(address);
+			if (!validTarget(destination)) {
+				throw new Error(`invalid proposal destination "${destination}"`);
+			}
+			const telegram = telegramAddressOf(destination);
 			const res = qInsert.run(
 				"create",
 				null,
 				JSON.stringify(validated),
 				null,
-				address.chatId,
-				address.threadId,
+				null,
+				destination,
+				telegram?.chatId ?? 0,
+				telegram?.threadId ?? null,
 				now.toISOString(),
 			);
 			const proposal = rowToProposal(qGet.get(Number(res.lastInsertRowid)));
@@ -403,8 +525,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				cron: proposal.draft!.cron,
 				hook: proposal.draft!.hook,
 				mail: proposal.draft!.mailFilter !== null,
-				chat: proposal.chatId,
-				thread: proposal.threadId,
+				target: proposal.target,
 			});
 			return proposal;
 		},
@@ -414,11 +535,10 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			log.info("program proposal staged", {
 				proposal: proposal.id,
 				kind: "update",
-				target: targetId,
+				program: targetId,
 				fields: Object.keys(proposal.patch!),
 				...(superseded > 0 ? { superseded } : {}),
-				chat: proposal.chatId,
-				thread: proposal.threadId,
+				target: proposal.target,
 			});
 			return proposal;
 		},
@@ -433,11 +553,12 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			return qPending.all().map(rowToProposal);
 		},
 		approve(id, decidedBy, opts = {}) {
-			const outcome = approveTxn.immediate(id, decidedBy, opts.hookHash, opts.now ?? new Date());
+			const actor = actorOf(decidedBy);
+			const outcome = approveTxn.immediate(id, actor, opts.hookHash, opts.now ?? new Date());
 			if (outcome.kind === "activated") {
 				log.info("program proposal approved", {
 					proposal: id,
-					decidedBy,
+					decidedBy: actor,
 					program: outcome.program.id,
 					name: outcome.program.name,
 				});
@@ -445,20 +566,21 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				log.info("program proposal approval refused", {
 					proposal: id,
 					refusal: outcome.refusal,
-					decidedBy,
+					decidedBy: actor,
 				});
 			}
 			return outcome;
 		},
 		reject(id, decidedBy, now = new Date()) {
-			const outcome = rejectTxn.immediate(id, decidedBy, now);
+			const actor = actorOf(decidedBy);
+			const outcome = rejectTxn.immediate(id, actor, now);
 			if (outcome.kind === "rejected") {
-				log.info("program proposal rejected", { proposal: id, decidedBy });
+				log.info("program proposal rejected", { proposal: id, decidedBy: actor });
 			} else {
 				log.info("program proposal rejection refused", {
 					proposal: id,
 					refusal: outcome.refusal,
-					decidedBy,
+					decidedBy: actor,
 				});
 			}
 			return outcome;

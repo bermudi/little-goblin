@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
+import type { AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
+import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import {
 	appendQuote,
 	ChatView,
@@ -126,6 +128,21 @@ describe("MessageParts", () => {
 		expect(html).toContain("worked-fail");
 		expect(html).toContain("— 1 failed");
 		expect(html).toContain("a.dev");
+	});
+
+	test("a data-approval part inside a tool run still renders its card", () => {
+		// Approvals persist as standalone system messages today, but a
+		// part that renders its own surface must split an activity run —
+		// like data-attachment and data-note — never fold away unseen.
+		const approval = {
+			type: "data-approval",
+			data: { kind: "program", id: 7 },
+		} as unknown as UIMessage["parts"][number];
+		const html = renderToStaticMarkup(
+			<MessageParts parts={[toolPart, approval, { type: "text", text: "done" }]} />,
+		);
+		expect(html).toContain("approval-card");
+		expect(html).toContain("done");
 	});
 
 	test("an id-only data-note part still renders a chip — the id is its own label", () => {
@@ -265,6 +282,8 @@ describe("turn metadata usage", () => {
 				typeof request === "string" ? request : request instanceof URL ? request.href : request.url;
 			if (url.endsWith("/messages"))
 				return json({
+					ratings: [],
+					rateableMessageIds: ["a1"],
 					messages: [
 						{
 							id: "a1",
@@ -280,7 +299,13 @@ describe("turn metadata usage", () => {
 				});
 			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
 			if (url.endsWith("/interrupted")) return json({ runs: [] });
-			return json({ model: "prov/model", thinking: "off", favorites: [], thinkingLevels: ["off"] });
+			return json({
+				model: "prov/model",
+				thinking: "off",
+				favorites: [],
+				catalog: [],
+				thinkingLevels: ["off"],
+			});
 		}) as typeof fetch;
 		dom.root = createRoot(dom.container);
 		await act(async () => {
@@ -294,6 +319,8 @@ describe("turn metadata usage", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -303,6 +330,143 @@ describe("turn metadata usage", () => {
 		expect(dom.container.querySelector(".msg-meta")?.textContent).toBe(
 			`prov/model · 0.0s · ${expected}`,
 		);
+	});
+});
+
+// Reply votes ride the durable event list: the server names the final
+// assistant event for each reply; media records and user messages get no
+// buttons. The selected vote and failures stay visible on the action bar.
+describe("reply ratings", () => {
+	const dom = mountDom();
+
+	const json = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const message = (id: string, role: UIMessage["role"], text: string): UIMessage => ({
+		id,
+		role,
+		parts: [{ type: "text", text }],
+	});
+	const attachment = (id: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [
+			{
+				type: "data-attachment",
+				data: {
+					path: "attachments/generated.txt",
+					mediaType: "text/plain",
+					filename: "generated.txt",
+					size: 4,
+				},
+			} as UIMessage["parts"][number],
+		],
+	});
+
+	const render = async (ratingStatus = 200) => {
+		const posts: { messageId?: string; rating?: string }[] = [];
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/messages"))
+				return json({
+					messages: [
+						message("u1", "user", "hi"),
+						attachment("m1"),
+						message("a1", "assistant", "answer"),
+					],
+					ratings: [
+						{
+							messageId: "a1",
+							eventSeq: 3,
+							anchorSeq: 1,
+							rating: "down",
+							createdAt: "2026-01-01T00:00:00Z",
+						},
+					],
+					rateableMessageIds: ["a1"],
+				});
+			if (url.endsWith("/ratings") && init?.method === "POST") {
+				posts.push(JSON.parse(String(init.body)) as { messageId?: string; rating?: string });
+				return ratingStatus === 200
+					? json({
+							rating: {
+								messageId: "a1",
+								eventSeq: 3,
+								anchorSeq: 1,
+								rating: "up",
+								createdAt: "2026-01-01T00:00:01Z",
+							},
+						})
+					: json({ error: "no such assistant reply" }, ratingStatus);
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return json({ runs: [] });
+			return json({
+				model: "prov/model",
+				thinking: "off",
+				favorites: [],
+				catalog: [],
+				thinkingLevels: ["off"],
+			});
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await act(async () => {});
+		return posts;
+	};
+
+	test("only the server-rated final reply gets controls; the stored vote is selected", async () => {
+		const posts = await render();
+		const rows = [...dom.container.querySelectorAll(".msg-actions")];
+		expect(
+			rows.map((row) => row.querySelectorAll("button[aria-label^='Rate reply']").length),
+		).toEqual([0, 2]);
+		const bad = dom.container.querySelector(
+			"button[aria-label='Rate reply bad']",
+		) as HTMLButtonElement;
+		const helpful = dom.container.querySelector(
+			"button[aria-label='Rate reply helpful']",
+		) as HTMLButtonElement;
+		expect(bad.getAttribute("aria-pressed")).toBe("true");
+		expect(helpful.getAttribute("aria-pressed")).toBe("false");
+
+		await act(async () => {
+			helpful.click();
+		});
+		await act(async () => {});
+		expect(posts).toEqual([{ messageId: "a1", rating: "up" }]);
+		expect(helpful.getAttribute("aria-pressed")).toBe("true");
+		expect(helpful.classList.contains("on")).toBe(true);
+		expect(bad.getAttribute("aria-pressed")).toBe("false");
+	});
+
+	test("a failed vote stays inline and re-enables the buttons", async () => {
+		await render(404);
+		const helpful = dom.container.querySelector(
+			"button[aria-label='Rate reply helpful']",
+		) as HTMLButtonElement;
+		await act(async () => {
+			helpful.click();
+		});
+		await act(async () => {});
+		expect(dom.container.querySelector(".msg-err")?.textContent).toBe("no such assistant reply");
+		expect(helpful.disabled).toBe(false);
 	});
 });
 
@@ -345,7 +509,9 @@ describe("ChatView reload window (issue #79)", () => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/conversations/chat-01/messages") {
 				historyFetches++;
-				return Promise.resolve(jsonResponse({ messages: stored }));
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			}
 			if (url === "/api/app/conversations/chat-01/stream") {
 				reconnects++;
@@ -358,6 +524,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -375,6 +542,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -405,7 +574,8 @@ describe("ChatView reload window (issue #79)", () => {
 		let stored: UIMessage[] = [userMsg("u1", "run the thing")];
 		let streamGets = 0;
 		let resumePosts = 0;
-		const interruptedBody = {
+		const callState: AppRunCall["state"] = "resolved-skip";
+		const interruptedBody: AppInterruptedList = {
 			runs: [
 				{
 					runId: "run-deadbeef",
@@ -418,12 +588,12 @@ describe("ChatView reload window (issue #79)", () => {
 							toolCallId: "c1",
 							name: "probe",
 							args: { q: 1 },
-							state: "resolved-skip",
+							state: callState,
 							result: null,
 							error: null,
 							resolutionNote: null,
 							resolvedMs: null,
-							canAuthorizeRetry: false,
+							canAuthorizeRetry: canAuthorizeRetry({ state: callState, replayed: false }),
 						},
 					],
 				},
@@ -432,7 +602,10 @@ describe("ChatView reload window (issue #79)", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			if (url.endsWith("/interrupted")) return Promise.resolve(jsonResponse(interruptedBody));
 			if (url.endsWith("/stream")) {
 				streamGets++;
@@ -448,6 +621,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -465,6 +639,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -509,7 +685,8 @@ describe("ChatView reload window (issue #79)", () => {
 			async (input: RequestInfo | URL) => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-				if (url.endsWith("/messages")) return jsonResponse({ messages: stored });
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
 				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
 				if (url.endsWith("/stream"))
 					return new Response(stream, {
@@ -519,6 +696,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				});
 			},
@@ -536,6 +714,8 @@ describe("ChatView reload window (issue #79)", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -604,7 +784,11 @@ describe("ChatView mid-turn steer", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (url.endsWith("/messages"))
-					return jsonResponse({ messages: [userMsg("u1", "run the thing")] });
+					return jsonResponse({
+						messages: [userMsg("u1", "run the thing")],
+						ratings: [],
+						rateableMessageIds: [],
+					});
 				if (url.endsWith("/stream")) return new Response(liveStream, { headers: sseHeaders });
 				if (url === "/api/app/chat") {
 					chatPosts.push(JSON.parse(String(init?.body)));
@@ -633,6 +817,7 @@ describe("ChatView mid-turn steer", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				});
 			},
@@ -650,6 +835,8 @@ describe("ChatView mid-turn steer", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -770,7 +957,8 @@ describe("NotePicker dismissal", () => {
 				const url =
 					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 				if (url.startsWith("/api/app/notes")) return jsonResponse({ notes: [], truncated: false });
-				if (url.endsWith("/messages")) return jsonResponse({ messages: [] });
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
 				return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
 			},
 			{ preconnect: dom.realFetch.preconnect },
@@ -787,6 +975,8 @@ describe("NotePicker dismissal", () => {
 					setStaged={() => {}}
 					stagedNotes={[]}
 					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -943,6 +1133,47 @@ describe("AttachmentChip download failure", () => {
 		const err = dom.container.querySelector(".msg-err");
 		expect(err).not.toBeNull();
 		expect(err?.textContent).toContain("http 404");
+	});
+});
+
+describe("AttachmentChip audio", () => {
+	const dom = mountDom();
+
+	test("a stored voice note renders an inline player", async () => {
+		const seen: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			seen.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			return Promise.resolve(
+				new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "audio/ogg" }), {
+					headers: { "content-type": "audio/ogg" },
+				}),
+			);
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		act(() => {
+			dom.root?.render(
+				<MessageParts
+					parts={[
+						{
+							type: "data-attachment",
+							data: {
+								path: "attachments/voice-1-voice-note.ogg",
+								mediaType: "audio/ogg",
+								filename: "voice-note.ogg",
+								size: 3,
+							},
+						},
+					]}
+					token={null}
+				/>,
+			);
+		});
+		await act(async () => {});
+		const player = dom.container.querySelector("audio");
+		expect(player).not.toBeNull();
+		expect(player?.getAttribute("controls")).not.toBeNull();
+		expect(player?.getAttribute("src")).toContain("blob:");
+		expect(seen[0]).toContain("/api/app/attachments/voice-1-voice-note.ogg");
 	});
 });
 
@@ -1116,5 +1347,156 @@ describe("MessageParts fence clipping (happy-dom)", () => {
 		});
 		expect(dom.container.querySelector(".codeblock-more")).toBeNull();
 		expect(dom.container.querySelector("pre")!.classList.contains("clip")).toBe(false);
+	});
+});
+
+// The composer model knob: a button that opens a small menu — current
+// checked, favorites by friendly name, then "All models…" into the
+// picker sheet. Stars in the sheet POST /api/app/favorites.
+describe("composer model knob (happy-dom)", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+
+	const CFG = {
+		model: "prov/current",
+		thinking: "off",
+		favorites: ["prov/fav-b", "prov/fav-a"],
+		catalog: [
+			{
+				provider: "prov",
+				models: [
+					{ id: "current", name: "Current Model", releaseDate: "2026-01-01" },
+					{ id: "fav-a", name: "Fav A", releaseDate: "2026-02-01" },
+					{ id: "fav-b", name: null, releaseDate: "2026-03-01" },
+					{ id: "other", name: "Other Model", releaseDate: "2026-04-01" },
+				],
+			},
+		],
+		thinkingLevels: ["off"],
+	};
+
+	let favPosts: { ref: string; on: boolean }[];
+	let configPatches: { model?: string; thinking?: string }[];
+	let favorites: string[];
+
+	const mount = async () => {
+		favPosts = [];
+		configPatches = [];
+		favorites = CFG.favorites.slice();
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url.endsWith("/favorites") && method === "POST") {
+				const body = JSON.parse(String(init?.body)) as { ref: string; on: boolean };
+				favPosts.push(body);
+				favorites = body.on
+					? [...new Set([...favorites, body.ref])]
+					: favorites.filter((f) => f !== body.ref);
+				return jsonResponse({ favorites });
+			}
+			if (url.endsWith("/config") && (method === "PATCH" || method === "POST")) {
+				configPatches.push(JSON.parse(String(init?.body)) as { model?: string });
+				return jsonResponse({ ...CFG, favorites, ...configPatches.at(-1) });
+			}
+			if (url.endsWith("/messages"))
+				return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			return jsonResponse({ ...CFG, favorites });
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await act(async () => {});
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+	};
+
+	const knob = () => dom.container.querySelector('[aria-label="Conversation model"]');
+	const popItem = (text: string) =>
+		[...dom.container.querySelectorAll(".model-pop li button")].find((b) =>
+			b.textContent?.includes(text),
+		);
+
+	test("the knob opens a menu of favorites by friendly name", async () => {
+		await mount();
+		// The knob itself reads the catalog name, the ref rides title.
+		expect(knob()?.textContent).toBe("Current Model");
+		expect(knob()?.getAttribute("title")).toBe("prov/current");
+		await click(knob());
+		const pop = dom.container.querySelector(".model-pop");
+		expect(pop).not.toBeNull();
+		const items = [...pop!.querySelectorAll("li button")];
+		expect(items[0]?.textContent).toContain("Current Model");
+		expect(items[0]?.getAttribute("aria-checked")).toBe("true");
+		expect(items[1]?.textContent).toContain("fav-b"); // no catalog name — last segment
+		expect(items[1]?.textContent).toContain("prov/fav-b");
+		expect(items[2]?.textContent).toContain("Fav A");
+		expect(pop?.textContent).toContain("All models…");
+		// Picking a favorite writes the knob and closes the menu.
+		await click(popItem("Fav A"));
+		expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
+		expect(dom.container.querySelector(".model-pop")).toBeNull();
+	});
+
+	test("All models… opens the picker sheet; a pick writes the knob", async () => {
+		await mount();
+		await click(knob());
+		await click(popItem("All models…"));
+		expect(dom.container.querySelector(".model-pop")).toBeNull();
+		const sheet = dom.container.querySelector(".msheet");
+		expect(sheet).not.toBeNull();
+		expect(sheet?.getAttribute("aria-label")).toBe("Model for this conversation");
+		expect(sheet?.textContent).toContain("Other Model");
+		const row = [...sheet!.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Other Model"),
+		);
+		await click(row);
+		expect(configPatches).toEqual([{ model: "prov/other" }]);
+		expect(dom.container.querySelector(".msheet")).toBeNull();
+	});
+
+	test("a star in the sheet POSTs the toggle and refreshes favorites", async () => {
+		await mount();
+		await click(knob());
+		await click(popItem("All models…"));
+		const sheet = dom.container.querySelector(".msheet")!;
+		// The catalog's non-favorite offers an open star; the favorited
+		// rows show filled ones.
+		expect(sheet.querySelector('[aria-label="unfavorite prov/fav-a"]')).not.toBeNull();
+		await click(sheet.querySelector('[aria-label="favorite prov/other"]'));
+		expect(favPosts).toEqual([{ ref: "prov/other", on: true }]);
+		// The response's favorites update the sheet's stars.
+		expect(sheet.querySelector('[aria-label="unfavorite prov/other"]')).not.toBeNull();
+		// And the next menu open lists the new favorite.
+		await click(knob());
+		expect(popItem("Other Model")).toBeTruthy();
 	});
 });

@@ -1,16 +1,42 @@
 // One-shot migration check (run manually): replays every conversation's
 // stored UIMessage history through the v7 SDK read path — history() →
 // convertToModelMessages (plus validateUIMessages for the strict pass).
-// Works on a COPY of the live DB; never opens the service's own file.
+// Refuses to run while goblin.service is active: the copy below is a
+// raw cpSync, and a raw copy taken across a WAL checkpoint can tear the
+// database (docs/operations.md → Backups). Stop the unit first — on a
+// stopped unit the copy reads the service's own files without opening
+// them, and the copy is what gets opened.
 
 import { convertToModelMessages, safeValidateUIMessages } from "ai";
 import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { paths } from "../src/config.ts";
 import { openStore } from "../src/conversation.ts";
+import { boundedRun, spawnProc } from "../src/proc.ts";
 
 const live = paths.db();
+// Anything but a clean stop refuses: `failed` and `activating` units
+// come back (Restart=on-failure), and an unreportable state proves
+// nothing. Only `inactive` is a stopped service.
+let state: string;
+try {
+	const proc = spawnProc(
+		["systemctl", "--user", "is-active", "goblin.service"],
+		resolve(import.meta.dir, ".."),
+	);
+	const result = await boundedRun(proc, { timeoutMs: 5000, maxOutput: 64 * 1024 });
+	state = result.stdout.trim();
+} catch (error) {
+	console.error(`replay-v7-history: cannot verify goblin.service is stopped: ${String(error)}`);
+	process.exit(2);
+}
+if (state !== "inactive") {
+	console.error(
+		`replay-v7-history: goblin.service is ${state === "" ? "unreportable" : state} — stop it first; a raw copy taken while it runs can tear the database (docs/operations.md → Backups)`,
+	);
+	process.exit(2);
+}
 const dir = mkdtempSync(join(tmpdir(), "goblin-replay-"));
 for (const suffix of ["", "-wal", "-shm"]) {
 	try {

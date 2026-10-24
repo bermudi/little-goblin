@@ -83,17 +83,58 @@ Four kinds exist (the shipped example uses `responses` for Z.AI):
 | `openai-compatible` | OpenAI-style Chat Completions endpoints | a secret in `auth.jsonl` |
 | `responses` | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl` |
 | `openrouter` | OpenRouter | a secret in `auth.jsonl` |
-| `codex` | ChatGPT-subscription models via the Codex CLI's own login | nothing — it reads `~/.codex/auth.json` (override with `authFile`) |
+| `codex` | ChatGPT-subscription models | nothing — sign in from Settings → Accounts & keys; tokens live in `$GOBLIN_HOME/state/codex-auth.json` (falls back to `~/.codex/auth.json`; `authFile` pins a path) |
 
-For `codex`, run `codex login` first. The bot refreshes expired tokens
-itself and writes the rotated tokens back, so the CLI login keeps working.
+For `codex`, use **Sign in with ChatGPT** in Settings (a device code you
+approve on any browser). Goblin keeps its own token file, so signing in or
+out never touches your terminal's `codex` login. Until the first in-app
+sign-in it reads `~/.codex/auth.json` (run `codex login`); an explicit
+`authFile` pins a path and disables in-app sign-in. Expired tokens are
+refreshed in-process and written back.
+
+Blocks switched off in Settings move under `parked` instead of being
+deleted, so switching them back on restores every field — including the
+ones only this file edits.
+
+#### 1min.AI (OpenAI-compatible relay)
+
+```json5
+onemin: {
+  kind: "openai-compatible",
+  baseUrl: "https://api.1min.ai/openai/v1",
+  auth: "onemin",
+},
+```
+
+`auth` names your 1min.AI API key (`pass-keys add goblin-dev onemin
+Keys/<Item>`, then an `auth.jsonl` record
+`{"name": "onemin", "value": "!pass-keys get goblin-dev onemin"}`).
+Model ids come straight from 1min's catalog (`gpt-5.4`, `qwen3.6-plus`,
+`moonshotai/kimi-k2.6` — ids keep their slashes); the picker isn't
+pre-seeded for this relay, so use the typed-ref fallback and keep the
+relay's own `GET /openai/v1/models` as the source of truth. Pinned
+behavior (docs.1min.ai/docs/api/openai-compatible): every model is
+text-only (including the `vl` ids) — attachments stay path references
+and the `vision` tool answers image questions; requests cap at 200
+messages / 100,000 characters and a two-minute generation deadline;
+every attempt bills, so each chat call makes one POST — no SDK
+retries (the one deliberate exception is the content-filter re-ask,
+bounded to once per turn) — and `reasoning_effort` rides only the
+OpenAI reasoning models (GPT-5/6 and o3 — not the older gpt-4 ids,
+which reject it). `gpt-6-astra` cannot serve as the chat model (it
+rejects function tools).
+
+The same `onemin` auth record also serves the speech kinds —
+`tts: { kind: "onemin" }` and `transcription: { kind: "onemin" }` run
+through 1min's feature API (TEXT_TO_SPEECH / SPEECH_TO_TEXT) with
+`API-KEY`-header auth instead of Bearer; see [Voice](voice.md).
 
 ### Model selection
 
 ```json5
 model: "zai/glm-5.3-flash", // app default for new conversations
 telegram: { model: "zai/glm-5.3-flash", thinking: "high" }, // independent
-favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5"],
+favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5", "onemin/gpt-5.4"],
 ```
 
 A model is written `provider/model-id`, split at the **first** slash —
@@ -109,13 +150,15 @@ keep Telegram's placeholder name.
 ### Thinking
 
 ```json5
-thinking: "medium",   // off | low | medium | high | xhigh | max
+thinking: "medium",   // off | minimal | low | medium | high | xhigh | max
 ```
 
 This is *your* vocabulary, not the providers'. Each model honestly maps it
 onto what it can actually do — a forced-thinking model clamps `off` up to
 its lowest rung rather than pretending thinking is disabled; the mini app
-only offers the levels the current model supports.
+only offers the levels the current model supports. `off` appears only when
+the model can really switch reasoning off, and `minimal` only where a
+provider expresses it.
 
 ### Speech
 
@@ -130,16 +173,20 @@ cloud speech models (`fish-audio/s2.1-pro-free:free` by default, needs the
 `openrouter` auth record), `kind: "logfare"` for Logfare's (Deepgram
 Aura, `aura-2-en` by default, needs the `logfare` auth record), or
 `kind: "mimo"` for Xiaomi's (`mimo-v2.5-tts` by default, needs the `mimo`
-auth record), or set `tts: ""` to turn it off. It powers
+auth record), or `kind: "onemin"` for 1min.AI's (`tts-1` by default,
+shares the `onemin` auth record with its chat provider), or set
+`tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`
 tool for other audio files on request. `kind: "whistle"` runs locally
 (keyless, private — artifacts auto-download once); groq, openai,
-openrouter, mistral, elevenlabs, gemini, mimo, and logfare are the cloud
-kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
+openrouter, mistral, elevenlabs, gemini, mimo, logfare, and onemin are
+the cloud kinds, each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
 whistle and mimo transcription need it always (their wav profile is the
-decoder), other cloud kinds only over the upload cap. Details in [Voice](voice.md).
+decoder), and onemin's `qwen3-asr-flash` too (every note transcodes to
+wav — its format table is the one without MP4); other cloud kinds only
+over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
 
@@ -249,10 +296,19 @@ allowedUsers: [],
 http: { port: 8787 },
 ```
 
+- `telegram.enabled` — default `true`. `false` makes Telegram optional:
+  boot needs no `telegram` auth record, constructs no bot, starts no
+  polling, and answers the Telegram Mini-App door with `503`; `/app` and
+  `/api/app/*` stay live. Telegram-targeted wakes, notices, mail drafts,
+  and interrupted-turn resumes report the channel as unavailable instead
+  of running without a delivery door. Boot-pinned: a Settings save writes
+  the switch and the restart hint applies it.
 - `operators` — your Telegram user id(s): you, plus any of your own
   accounts. Full personal agent on every surface, app doors included.
-  DM `@userinfobot` to find yours. Checked on every message, so mini-app
-  edits take effect immediately.
+  DM `@userinfobot` to find yours. At least one is required while
+  Telegram is enabled; the list may be empty only when `telegram.enabled`
+  is `false`. Checked on every message, so mini-app edits take effect
+  immediately.
 - `allowedUsers` — people you name. Sandboxed: a guest persona with
   search-only tools, no memory, no app. Their DM is a standing chat; in
   groups they @mention you. Everyone else gets one refusal line per
@@ -308,8 +364,9 @@ The following values are placeholders:
 {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_API_KEY"}
 ```
 
-- `telegram` (the bot token) is always required, plus one record per
-  configured provider `auth` name. Codex uses its own OAuth file instead.
+- `telegram` (the bot token) is required while `telegram.enabled` is
+  true (the default), plus one record per configured provider `auth`
+  name. Codex uses its own OAuth file instead.
   Include configured optional auth references too: transcription, search/fetch,
   memory, mail, reviewer/System One and `appToken`, as applicable. A reference's
   presence does not prove the credential or remote model works.

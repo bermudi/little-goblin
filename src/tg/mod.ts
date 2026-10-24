@@ -34,7 +34,7 @@ import {
 	type CommandMemoryDeps,
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
-import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { SPEAK_CALLBACK } from "./delivery.ts";
 import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
 import {
@@ -46,12 +46,18 @@ import {
 	refusalDue,
 	routeMemberGuestMessage,
 } from "./guest.ts";
-import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
-import { PROGRAM_CALLBACK_RE, type ProgramApproval } from "./program-approval.ts";
+import { MAIL_CALLBACK_RE, type TelegramMailApproval } from "./mail-approval.ts";
+import { PROGRAM_CALLBACK_RE, type TelegramProgramApproval } from "./program-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
-import { openRatings } from "./ratings.ts";
+import { openRatings } from "../reply-ratings.ts";
 import { SKILL_CALLBACK_RE, startSkillApproval } from "./skill-approval.ts";
+import {
+	handleSkillCommand,
+	handleTempSkillCallback,
+	TEMP_SKILL_CALLBACK_RE,
+	type SkillCommandDeps,
+} from "./skill-command.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
@@ -65,6 +71,7 @@ import { openPings, type PingStore } from "./pings.ts";
 import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
+import { makeConversationDeliverySink, sharedChatPart } from "./turn-input.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 500;
@@ -79,6 +86,7 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/resume",
 	"/decide",
 	"/abandon",
+	"/skill",
 ]);
 
 // `message_thread_id` also rides on non-forum comment threads (is_topic_message unset) — those stay bare-chat.
@@ -122,8 +130,8 @@ export interface BotDeps {
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	memory?: CommandMemoryDeps;
-	mail?: () => MailApproval;
-	programApproval?: () => ProgramApproval | undefined;
+	mail?: () => TelegramMailApproval | undefined;
+	programApproval?: () => TelegramProgramApproval | undefined;
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 	resumeOps?: () => ResumeOps | undefined;
 }
@@ -132,7 +140,9 @@ export interface RunningBot {
 	bot: Bot;
 	drainIntake(): Promise<void>;
 	replayInbox(): Promise<void>;
-	startPolling(): void;
+	/** A terminated poll is a channel failure, not a boot failure — the
+	 *  owner detaches in its callback. */
+	startPolling(onError: (err: unknown) => void): void;
 }
 
 export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
@@ -391,19 +401,41 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					() => deps.store.rollDm(addr.chatId, paths.workspace()),
 				);
 			}
-			handled = handleCommand(
-				{
-					api: env.api,
-					configRef: deps.configRef,
-					store: deps.store,
-					runtime: deps.runtime,
-					botUsername: env.botUsername,
-					...(deps.memory ? { memory: deps.memory } : {}),
-					...(deps.resumeOps ? { resumeOps: deps.resumeOps } : {}),
-				},
-				target,
-				text,
-			);
+			if (command.command === "/skill") {
+				// Submitting door (ruling 2026-10-21) — async fetch/scoring
+				// off the sync intake path; it owns its replies.
+				const skillDeps = skillCommandDeps(deps, env.api);
+				void handleSkillCommand(skillDeps, target, text).catch((err: unknown) => {
+					log.error("/skill failed", err, { conversation: target?.id ?? lane });
+					withTimeout(
+						env.api.sendMessage(
+							target?.chatId ?? msg.chat.id,
+							`command failed: ${err instanceof Error ? err.message : String(err)}`,
+							target == null || target.threadId === null
+								? {}
+								: { message_thread_id: target.threadId },
+						),
+						"sendMessage (/skill failure)",
+					).catch((e: unknown) => {
+						log.warn("/skill failure reply failed", e);
+					});
+				});
+				handled = true;
+			} else {
+				handled = handleCommand(
+					{
+						api: env.api,
+						configRef: deps.configRef,
+						store: deps.store,
+						runtime: deps.runtime,
+						botUsername: env.botUsername,
+						...(deps.memory ? { memory: deps.memory } : {}),
+						...(deps.resumeOps ? { resumeOps: deps.resumeOps } : {}),
+					},
+					target,
+					text,
+				);
+			}
 		} catch (err) {
 			log.error("command failed", err, { conversation: target?.id ?? lane });
 			withTimeout(
@@ -814,17 +846,20 @@ function archiveNavigatedInput(
 	return normal;
 }
 
-export const SHARED_CHAT_NOTE =
-	"[note: this is a shared chat — everyone in it can read your replies. " +
-	"Be deliberate before surfacing private material (workspace files, notes, past conversations).]";
+export { SHARED_CHAT_NOTE, sharedChatPart } from "./turn-input.ts";
 
-export function sharedChatPart(
-	conversationId: string,
-	chatId: number,
-): { type: "text"; text: string } | null {
-	if (channelOf(conversationId) === "guest") return null;
-	if (chatId >= 0) return null;
-	return { type: "text", text: SHARED_CHAT_NOTE };
+// One wiring for every /skill door — the command and the temp-skill
+// callback tap. Delivery is the same conversation-configured sink
+// ordinary intake turns get.
+function skillCommandDeps(deps: BotDeps, api: Api): SkillCommandDeps {
+	const gate = deps.followUpGate?.();
+	return {
+		api,
+		store: deps.store,
+		runtime: deps.runtime,
+		delivery: (target) => makeConversationDeliverySink(api, target, deps),
+		...(gate !== undefined ? { gate } : {}),
+	};
 }
 
 function admitBatch(
@@ -835,35 +870,27 @@ function admitBatch(
 	parts: UIMessage["parts"],
 ): void {
 	const { deps } = env;
-	const tts = deps.configRef.current.tts;
 	const audience = sharedChatPart(conv.id, conv.chatId);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
+	// The append runs inside commitBatch's transaction — capturing its seq
+	// here hands submitPersisted the event's true identity without a lookup.
+	let seq: number | undefined;
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
 		laneKey,
 		() => {
-			deps.store.append(conv.id, [message]);
+			seq = deps.store.append(conv.id, [message])[0]!;
 		},
 	);
-	const replyTo = items[0]?.replyTo;
-	const sink = makeDeliverySink(env.api, conv, {
-		...(replyTo !== undefined ? { replyTo } : {}),
-		...(tts && !deps.configRef.ttsDown
-			? {
-					voice: {
-						voiceMode: conv.voice,
-						synthesize: (text: string) => deps.synthesize(text, tts),
-					},
-				}
-			: {}),
-		rating: deps.store,
-		rich: {
-			enabled: deps.configRef.current.telegram.richReplies,
-			reasoning: deps.configRef.current.telegram.showReasoning,
-		},
-	});
+	const sink = makeConversationDeliverySink(env.api, conv, deps, items[0]?.replyTo);
 	try {
-		deps.runtime.submitPersisted(conv, message, sink);
+		// commitBatch either runs the append inside its transaction or
+		// throws — if that contract ever breaks, fail here instead of
+		// submitting a turn with no event identity.
+		if (seq === undefined) {
+			throw new Error("inbox commit did not append the turn input");
+		}
+		deps.runtime.submitPersisted(conv, message, sink, seq);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({
@@ -915,11 +942,14 @@ function admitAppBatch(
 ): void {
 	const { deps } = env;
 	const message = userMessage(parts);
+	// Same capture as the telegram batch: the seq rides out of the
+	// commitBatch transaction so the queued turn owns its real event.
+	let seq: number | undefined;
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
 		laneKey,
 		() => {
-			deps.store.append(conv.id, [message]);
+			seq = deps.store.append(conv.id, [message])[0]!;
 		},
 	);
 	for (const item of items) {
@@ -952,7 +982,11 @@ function admitAppBatch(
 	}
 	const sink = env.bell(conv);
 	try {
-		deps.runtime.submitPersisted(conv, message, sink);
+		// Same contract as the telegram batch above: no append, no submit.
+		if (seq === undefined) {
+			throw new Error("inbox commit did not append the turn input");
+		}
+		deps.runtime.submitPersisted(conv, message, sink, seq);
 	} catch (err) {
 		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({
@@ -1105,6 +1139,36 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		});
 	});
 
+	bot.callbackQuery(TEMP_SKILL_CALLBACK_RE, (ctx) => {
+		const q = ctx.callbackQuery;
+		if (!deps.configRef.current.operators.includes(q.from.id)) {
+			log.warn("temp skill tap refused — not operator", { userId: q.from.id });
+			void withTimeout(
+				bot.api.answerCallbackQuery(q.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
+		void handleTempSkillCallback(skillCommandDeps(deps, bot.api),
+			{
+				id: q.id,
+				data: q.data,
+				...(q.message !== undefined
+					? {
+							message: {
+								message_id: q.message.message_id,
+								chat: { id: q.message.chat.id },
+							},
+						}
+					: {}),
+			},
+		).catch((err: unknown) => {
+			log.error("temp skill callback failed", err, { query: q.id });
+		});
+	});
+
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
 		if (!deps.configRef.current.operators.includes(ctx.callbackQuery.from.id)) {
 			log.warn("mail approval tap refused — not operator", {
@@ -1178,12 +1242,12 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	return {
 		bot,
 		replayInbox: () => replayInbox(env),
-		startPolling() {
+		startPolling(onError: (err: unknown) => void) {
 			void bot
 				.start({ onStart: () => log.startup("long polling started") })
 				.catch((err: unknown) => {
 					log.error("long polling failed", err);
-					process.exit(1);
+					onError(err);
 				});
 		},
 		async drainIntake() {

@@ -1,14 +1,25 @@
 import { useEffect, useState } from "react";
-import { ApiError, getServiceStatus, listDelegations, listPrograms } from "./api.ts";
+import {
+	ApiError,
+	deleteProgram,
+	getServiceStatus,
+	listDelegations,
+	listPrograms,
+	programHook,
+	toggleProgram,
+	updateProgram,
+} from "./api.ts";
+import { ApprovalsPanel, SecretReveal } from "./Approvals.tsx";
 import { describe, KV, ts, uptime, useLoad } from "./opsShared.tsx";
 import type {
 	OperatorDelegationItem,
 	OperatorProgramItem,
 	OperatorStatusResponse,
 } from "../../src/http/operator-wire.ts";
+import type { AppProgramMutationResponse } from "../../src/http/app-wire.ts";
 
 export function ProgramsView({ token }: { token: string | null }) {
-	const { data, err } = useLoad(() => listPrograms(token));
+	const { data, err, reload } = useLoad(() => listPrograms(token));
 	if (err !== null)
 		return (
 			<div className="ops">
@@ -23,35 +34,184 @@ export function ProgramsView({ token }: { token: string | null }) {
 		);
 	return (
 		<div className="ops">
+			<h2 className="ops-h2">Pending approvals</h2>
+			<ApprovalsPanel token={token} />
 			<h2 className="ops-h2">Programs ({data.programs.length})</h2>
 			{data.programs.length === 0 && <p className="empty">No programs defined.</p>}
 			{data.programs.map((p: OperatorProgramItem) => (
-				<div className="card" key={p.id}>
-					<div className="op-item-head">
-						<span className="op-item-title">{p.name}</span>
-						<span className={p.enabled ? "pill on" : "pill"}>
-							{p.enabled ? "enabled" : "disabled"}
-						</span>
-					</div>
-					{p.charter !== "" && <div className="op-item-body">{p.charter}</div>}
-					<KV k="cron" v={p.cron ?? "—"} mono />
-					{p.cron !== null && (
-						<KV
-							k="max lateness"
-							v={p.maxLatenessMinutes === null ? "unlimited" : `${p.maxLatenessMinutes} min`}
-						/>
-					)}
-					{p.hasHook && <KV k="hook" v="attached" mono />}
-					{p.mailFilter !== null && <KV k="mail filter" v={p.mailFilter} mono />}
-					<KV k="last run" v={ts(p.lastRun)} />
-					<KV k="next run" v={ts(p.nextRun)} />
-					<KV
-						k="pinned to"
-						v={p.threadId !== null ? `chat ${p.chatId} · thread ${p.threadId}` : `chat ${p.chatId}`}
-						mono
-					/>
-				</div>
+				<ProgramCard key={p.id} token={token} program={p} onChanged={reload} />
 			))}
+		</div>
+	);
+}
+
+function ProgramCard({
+	token,
+	program,
+	onChanged,
+}: {
+	token: string | null;
+	program: OperatorProgramItem;
+	onChanged(): void;
+}) {
+	const [editing, setEditing] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [result, setResult] = useState<AppProgramMutationResponse | null>(null);
+	const [err, setErr] = useState<string | null>(null);
+	const [name, setName] = useState(program.name);
+	const [charter, setCharter] = useState(program.charter);
+	const [cron, setCron] = useState(program.cron ?? "");
+	const [maxLateness, setMaxLateness] = useState(
+		program.maxLatenessMinutes === null ? "" : String(program.maxLatenessMinutes),
+	);
+	const [mailFilter, setMailFilter] = useState(program.mailFilter ?? "");
+
+	const run = async (action: () => Promise<AppProgramMutationResponse>) => {
+		setBusy(true);
+		setErr(null);
+		try {
+			const out = await action();
+			setResult(out);
+			if (out.status !== "error") onChanged();
+		} catch (e) {
+			setErr(e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const save = async () => {
+		const lateness = maxLateness.trim();
+		const parsedLateness = lateness === "" ? null : Number(lateness);
+		if (parsedLateness !== null && (!Number.isInteger(parsedLateness) || parsedLateness <= 0)) {
+			setErr("max lateness must be a positive whole number of minutes");
+			return;
+		}
+		await run(() =>
+			updateProgram(token, program.id, {
+				name: name.trim(),
+				charter,
+				cron: cron.trim() === "" ? null : cron.trim(),
+				maxLatenessMinutes: parsedLateness,
+				mailFilter: mailFilter.trim() === "" ? null : mailFilter.trim(),
+			}),
+		);
+	};
+
+	return (
+		<div className="card">
+			<div className="op-item-head">
+				<span className="op-item-title">{program.name}</span>
+				<span className={program.enabled ? "pill on" : "pill"}>
+					{program.enabled ? "enabled" : "disabled"}
+				</span>
+			</div>
+			{program.charter !== "" && <div className="op-item-body">{program.charter}</div>}
+			<KV k="cron" v={program.cron ?? "—"} mono />
+			{program.cron !== null && (
+				<KV
+					k="max lateness"
+					v={
+						program.maxLatenessMinutes === null ? "unlimited" : `${program.maxLatenessMinutes} min`
+					}
+				/>
+			)}
+			{program.hasHook && <KV k="hook" v="attached" mono />}
+			{program.mailFilter !== null && <KV k="mail filter" v={program.mailFilter} mono />}
+			<KV k="last run" v={ts(program.lastRun)} />
+			<KV k="next run" v={ts(program.nextRun)} />
+			<KV k="pinned to" v={program.target} mono />
+			<div className="approval-actions">
+				<button
+					type="button"
+					disabled={busy}
+					onClick={() => void run(() => toggleProgram(token, program.id))}
+				>
+					{program.enabled ? "Disable" : "Enable"}
+				</button>
+				<button type="button" disabled={busy} onClick={() => setEditing((v) => !v)}>
+					{editing ? "Close editor" : "Edit"}
+				</button>
+				<button
+					type="button"
+					disabled={busy}
+					onClick={() =>
+						void run(() => programHook(token, program.id, program.hasHook ? "rotate" : "enable"))
+					}
+				>
+					{program.hasHook ? "Rotate hook" : "Enable hook"}
+				</button>
+				{program.hasHook && (
+					<button
+						type="button"
+						disabled={busy}
+						onClick={() => void run(() => programHook(token, program.id, "disable"))}
+					>
+						Disable hook
+					</button>
+				)}
+				<button
+					type="button"
+					className="danger"
+					disabled={busy}
+					onClick={() => {
+						if (window.confirm(`Delete program "${program.name}"?`)) {
+							void run(() => deleteProgram(token, program.id));
+						}
+					}}
+				>
+					Delete
+				</button>
+			</div>
+			{editing && (
+				<div className="program-editor">
+					<label>
+						Name
+						<input value={name} onChange={(e) => setName(e.target.value)} />
+					</label>
+					<label>
+						Charter
+						<textarea value={charter} onChange={(e) => setCharter(e.target.value)} rows={8} />
+					</label>
+					<label>
+						Cron
+						<input
+							value={cron}
+							onChange={(e) => setCron(e.target.value)}
+							placeholder="blank clears the schedule"
+						/>
+					</label>
+					<label>
+						Max lateness minutes
+						<input
+							value={maxLateness}
+							onChange={(e) => setMaxLateness(e.target.value)}
+							placeholder="blank = unlimited"
+						/>
+					</label>
+					<label>
+						Mail filter
+						<input
+							value={mailFilter}
+							onChange={(e) => setMailFilter(e.target.value)}
+							placeholder="blank clears the filter"
+						/>
+					</label>
+					<div className="approval-actions">
+						<button type="button" disabled={busy} onClick={() => void save()}>
+							Save changes
+						</button>
+					</div>
+				</div>
+			)}
+			{busy && <p className="cap">Working…</p>}
+			{err !== null && <p className="error">{err}</p>}
+			{result !== null && (
+				<div className={`approval-result st-${result.status}`}>
+					{result.message}
+					{result.hookUrl !== undefined && <SecretReveal url={result.hookUrl} />}
+				</div>
+			)}
 		</div>
 	);
 }

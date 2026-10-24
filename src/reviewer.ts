@@ -39,9 +39,11 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { generateText, isStepCount, type LanguageModel, type ToolSet } from "ai";
-import type { ToolExecutionOptions } from "@ai-sdk/provider-utils";
+import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { loadCatalog } from "./agent/skills.ts";
+import { isOneMinRoute, modelCallMaxRetries } from "./agent/onemin.ts";
 import { cacheRouteFor, observedModel, resolveModel } from "./agent/providers.ts";
+import { thinkingOptions } from "./agent/thinking.ts";
 import { editFileTool } from "./agent/tools/edit.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { writeFileTool } from "./agent/tools/write.ts";
@@ -112,7 +114,18 @@ export interface ReviewerDeps {
 	// Resolves the review model fresh per review (the mini app owns the
 	// default between reviews; the override is config). Labels the call
 	// for the model-call wrapper.
-	reviewModel(conversationId: string): Promise<{ ref: string; model: LanguageModel }>;
+	reviewModel(conversationId: string): Promise<{
+		ref: string;
+		model: LanguageModel;
+		// Provider retry rule for the review call — 0 on 1min, absent
+		// keeps the SDK default.
+		maxRetries?: number;
+		// Wire options the review call must carry for its provider — the
+		// 1min review route, where tools demand reasoning_effort on the
+		// GPT-5.6/6-Sol/6-Luna ids. Absent sends none (today's behavior
+		// on every other route).
+		providerOptions?: ProviderOptions;
+	}>;
 	store: Pick<ConversationStore, "append">;
 	skillsDir: string;
 	// Where validated proposals park (workspace/skills-proposed) — the
@@ -204,9 +217,23 @@ export function wireReviewer(deps: ReviewerWiringDeps): ReviewerWiring {
 				const cfg = configRef.current;
 				const conv = store.get(conversationId);
 				if (!conv) throw new Error(`conversation ${conversationId} not found`);
-				const ref = cfg.reviewer?.model ?? captureConversationSettings(store, conv, cfg).model;
+				// The fallback pair (model + thinking) resolves the way the
+				// turn's admission resolves it; a configured reviewer.model
+				// overrides the model while the conversation's level still
+				// clamps onto that model's ladder.
+				const settings = captureConversationSettings(store, conv, cfg);
+				const ref = cfg.reviewer?.model ?? settings.model;
+				const maxRetries = modelCallMaxRetries(cfg, ref);
+				// The review call carries tools; on 1min the wire rules bind
+				// (reasoning_effort on the tools-forced ids, nothing elsewhere).
+				// Other routes keep sending no options at all.
+				const providerOptions = isOneMinRoute(cfg, ref)
+					? thinkingOptions(cfg, ref, settings.thinking)
+					: undefined;
 				return {
 					ref,
+					...(maxRetries !== undefined ? { maxRetries } : {}),
+					...(providerOptions !== undefined ? { providerOptions } : {}),
 					model: observedModel(await resolveModel(cfg, auth, ref), {
 						conversation: conversationId,
 						purpose: "review",
@@ -1103,8 +1130,15 @@ async function runStagedReview(
 	const catalogLines = catalog.entries.map((e) => `- ${e.name} — ${e.description}`);
 	let ref: string;
 	let model: LanguageModel;
+	let reviewMaxRetries: number | undefined;
+	let reviewProviderOptions: ProviderOptions | undefined;
 	try {
-		({ ref, model } = await deps.reviewModel(conv));
+		({
+			ref,
+			model,
+			maxRetries: reviewMaxRetries,
+			providerOptions: reviewProviderOptions,
+		} = await deps.reviewModel(conv));
 	} catch (err) {
 		// Model resolve/auth failure gets the same containment as a
 		// model-call failure: a line carrying the review id, staging
@@ -1143,6 +1177,8 @@ async function runStagedReview(
 				prompt: reviewPrompt(turn, prior, catalogLines),
 				tools: reviewTools(stagedSkills, written),
 				stopWhen: isStepCount(REVIEW_MAX_STEPS),
+				...(reviewMaxRetries !== undefined ? { maxRetries: reviewMaxRetries } : {}),
+				...(reviewProviderOptions !== undefined ? { providerOptions: reviewProviderOptions } : {}),
 				abortSignal: controller.signal,
 			});
 		} catch (err) {

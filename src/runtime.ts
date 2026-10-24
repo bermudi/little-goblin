@@ -7,6 +7,7 @@ import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk }
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import { isTransientTurnFailure } from "./agent/provider-errors.ts";
+import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -36,6 +37,7 @@ import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from ".
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
+import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
 // Completed turns at/above this compact in-lane — the lane stays occupied
@@ -71,7 +73,7 @@ export interface TurnSink {
 	// Voice synthesis exposes a visible wait and returns its stopper. Starting
 	// that indicator is a side effect and is fenced by the running turn.
 	onVoiceSynthesisStart?(): () => void;
-	setAuthorityCheck?(check: () => boolean): void;
+	setAuthorityCheck?(check: () => boolean, anchorSeq?: number | null): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
@@ -90,6 +92,10 @@ export interface ModelStep {
 	carries?: (mediaType: string, position: MediaPosition) => boolean;
 	// Context-window denominator for utilization logging, when known.
 	contextWindow?: number;
+	// Retry budget for the provider's chat calls, when the provider's own
+	// rules override the SDK default (2) — 1min bills every attempt, so
+	// its steps carry 0. Absent keeps the default.
+	maxRetries?: number;
 }
 
 export interface RuntimeDeps {
@@ -109,6 +115,11 @@ export interface RuntimeDeps {
 		// Filled after buildStep so fetch can render stored PDF references with
 		// this turn's media capabilities.
 		accepts?: { current: AcceptsMedia },
+		context?: {
+			runId: string;
+			sourceMessageId(): string;
+			sourceInputSeq(): number | null;
+		},
 	): ToolSet;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
@@ -139,6 +150,50 @@ export interface RuntimeDeps {
 	// Each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
+	// Durable wake ownership (wake-dispatcher.ts): the composition's
+	// window into which journal run processes which submitted message.
+	// `begin` fires after the run row exists and before the stream can
+	// reach a tool — the admitted members' durable event seqs plus the
+	// run rows this attempt continues (explicit resume) or inherits
+	// (overflow). `members` fires when a steered submit joins the
+	// membership mid-run. `end` fires at the run's terminal journal
+	// stamp. Membership is named by event seq, never by client message
+	// id — ids are untrusted and may repeat across events, so an id
+	// match could hand a wake to a run that never processed it. Only
+	// meaningful when turnJournal exists; hooks must not throw (they
+	// observe the turn, they never gate it).
+	runOwnership?: {
+		begin(event: {
+			runId: string;
+			conversationId: string;
+			memberSeqs: number[];
+			resumedFrom?: string;
+			inheritFrom?: string[];
+		}): void;
+		members(runId: string, conversationId: string, memberSeqs: number[]): void;
+		end(
+			runId: string,
+			status: "fenced" | "completed" | "error",
+			delivery: "delivered" | "undelivered" | "failed",
+		): void;
+		/** The attempt died before `begin` could link its members — no run
+		 *  row exists for reconcile to read, so the attempt's terminal
+		 *  outcome is otherwise invisible to ownership. Fired on every
+		 *  pre-run terminal path (a refused admission, an overflow that
+		 *  will NOT resume — a resuming attempt's fresh run links
+		 *  normally). Hooks must not throw, like the rest. */
+		preRunFailure?(event: { conversationId: string; memberSeqs: number[]; error: string }): void;
+	};
+	// The context-window view's store (window-capture.ts): the attempt's
+	// final outbound prompt, recorded per conversation, latest wins.
+	// Observability, never turn state — a throw is logged, the turn
+	// proceeds (the journal owns what must be honest; this row only
+	// feeds the view).
+	recordWindow?(
+		conversationId: string,
+		input: { model: string; step: number; capture: WindowCapture; recallVersion: number },
+	): void;
+	windowVersion?(): number;
 }
 
 export class FencedError extends Error {
@@ -155,6 +210,10 @@ export class FencedError extends Error {
 export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 interface QueuedTurn {
+	// The durable event seq of the appended message — captured from the
+	// append (or the persisting caller) so steering ownership never has to
+	// match client message ids, which are neither unique nor trusted.
+	seq: number;
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
 	message: UIMessage;
@@ -169,6 +228,7 @@ interface QueuedTurn {
 	// interrupted run it continues; claimed as a member its recovery
 	// would silently drop, so the claim boundary stops before it.
 	resumeSeed?: ResumeSeed | undefined;
+	release?: (() => void) | undefined;
 }
 
 // Compaction jobs run between turns so the preceding exchange is whole.
@@ -190,6 +250,7 @@ interface Lane {
 	// Shutdown awaits the drain so terminal sink flushes finish.
 	draining: Promise<void> | null;
 	live: LiveChunks | null;
+	admitted: Map<string, QueuedTurn[]>;
 }
 
 // A streaming submit stays queued behind a headless turn so it can lead its
@@ -267,14 +328,16 @@ export class Runtime {
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		this.deps.store.append(conv.id, [message]);
-		return this.admit(conv, message, sink);
+		const seqs = this.deps.store.append(conv.id, [message]);
+		return this.admit(conv, message, sink, seqs[0]!);
 	}
 
 	// The inbox has already persisted this message; appending again would
-	// duplicate a recovered turn.
-	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
-		return this.admit(conv, message, sink);
+	// duplicate a recovered turn. `seq` is that persisted event's seq — the
+	// persisting caller watched the append, so the queue never has to guess
+	// it from a client message id.
+	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink, seq: number): boolean {
+		return this.admit(conv, message, sink, seq);
 	}
 
 	// Admission for an operator-resumed turn — turn-resume.ts owns the
@@ -286,29 +349,60 @@ export class Runtime {
 	// submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
 		const journal = this.deps.turnJournal;
+		let seq: number;
 		if (journal !== undefined && seed.resumedFrom !== undefined) {
-			this.deps.store.db.transaction(() => {
-				this.deps.store.append(conv.id, [message]);
-				journal.noteResumeRequest(seed.resumedFrom!, this.deps.store.lastUserSeq(conv.id)!);
+			seq = this.deps.store.db.transaction(() => {
+				// The registry names the seq this append actually wrote —
+				// inferring it (e.g. lastUserSeq) would silently register an
+				// unrelated event if the message's shape ever changed.
+				const seqs = this.deps.store.append(conv.id, [message]);
+				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
+				return seqs[0]!;
 			})();
 		} else {
-			this.deps.store.append(conv.id, [message]);
+			const seqs = this.deps.store.append(conv.id, [message]);
+			seq = seqs[0]!;
 		}
-		return this.admit(conv, message, sink, seed);
+		return this.admit(conv, message, sink, seq, seed);
+	}
+
+	// A live admission by client-visible id — loose matching for
+	// callers that only carry the id. `eventSeq` tightens it to one
+	// durable event: a different admitted event reusing the same client
+	// id must not stand in for the seq the caller actually means.
+	isAdmitted(conversationId: string, messageId: string, eventSeq?: number): boolean {
+		return (
+			this.lanes
+				.get(conversationId)
+				?.admitted.get(messageId)
+				?.some((t) => !t.doneSent && (eventSeq === undefined || t.seq === eventSeq)) ?? false
+		);
 	}
 
 	private admit(
 		conv: Conversation,
 		message: UIMessage,
 		sink: TurnSink,
+		seq: number,
 		seed?: ResumeSeed,
 	): boolean {
 		if (this.closed) {
-			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
+			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ message, sink, doneSent: false, resumeSeed: seed });
+		const turn: QueuedTurn = { seq, message, sink, doneSent: false, resumeSeed: seed };
+		turn.release = () => {
+			const holders = lane.admitted.get(message.id);
+			if (holders === undefined) return;
+			const index = holders.indexOf(turn);
+			if (index !== -1) holders.splice(index, 1);
+			if (holders.length === 0) lane.admitted.delete(message.id);
+		};
+		lane.pending.push(turn);
+		const holders = lane.admitted.get(message.id);
+		if (holders === undefined) lane.admitted.set(message.id, [turn]);
+		else holders.push(turn);
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -319,10 +413,16 @@ export class Runtime {
 		return !this.closed;
 	}
 
-	// Used by app retries to avoid turning a retry into steering input.
+	// Busy is the lane holding any work — a claimed or queued turn, or a
+	// queued/in-flight compaction. Compaction counts because it rewrites
+	// the model view between turns: app retries use this to avoid turning
+	// a retry into steering input, and resume admission refuses on it so
+	// the visibility it measured cannot move before the resumed turn runs.
 	busy(convId: string): boolean {
 		const lane = this.lanes.get(convId);
-		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+		return (
+			lane !== undefined && (lane.running || lane.pending.length > 0 || lane.compacts.length > 0)
+		);
 	}
 
 	// Replay the existing wire and subscribe atomically; the replay/live union is
@@ -444,23 +544,31 @@ export class Runtime {
 			// Metadata only — never buildStep: resolving a model and building
 			// a system prompt here would freeze a snapshot no turn asked for.
 			const contextWindow = await compaction.contextWindow(conv);
-			// The authority check precedes the abort check so a /stop (epoch
-			// bump + abort) still reports as a fence, matching the commit-time
-			// assertAuthority inside runCompaction.
+			// The authority check doubles as the abort check: compactController
+			// is only aborted by cancelFenced after the epoch commits, so a
+			// /stop during the lookup already reports as a fence. runCompaction
+			// reverses the order after each call — a provider may resolve under
+			// abort, so there the signal check must land first.
 			this.checkAuthority(conv.id, epoch);
-			controller.signal.throwIfAborted();
-			const tailTokenBudget =
-				contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
+			const tailTokenBudget = contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
 			// Overflow recovery uses a smaller tail to stay below the provider's
 			// observed limit.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 			// Keep summarizer input below half the window to leave answer headroom.
-			const inputTokenBudget =
-				contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const inputTokenBudget = contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
+			const modelRef = compaction.modelRef(conv);
+			log.info("compaction window", {
+				conversation: conv.id,
+				model: modelRef,
+				contextWindow,
+				tailTokenBudget: tail,
+				inputTokenBudget,
+				reason,
+			});
 			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,
-				compaction.modelRef(conv),
+				modelRef,
 				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
 				{
 					tailTokenBudget: tail,
@@ -495,6 +603,7 @@ export class Runtime {
 				compactController: null,
 				draining: null,
 				live: null,
+				admitted: new Map(),
 			};
 			this.lanes.set(convId, l);
 		}
@@ -510,6 +619,8 @@ export class Runtime {
 			await turn.sink.onDone(done);
 		} catch (err) {
 			log.warn("sink onDone failed", err);
+		} finally {
+			turn.release?.();
 		}
 	}
 
@@ -769,6 +880,20 @@ export class Runtime {
 		live: LiveChunks,
 	): Promise<AttemptOutcome> {
 		const { store } = this.deps;
+		let recallVersion: number | null;
+		if (recovery !== undefined && recovery.recallVersion !== undefined) {
+			recallVersion = recovery.recallVersion;
+		} else {
+			try {
+				recallVersion = this.deps.windowVersion?.() ?? 0;
+			} catch (err) {
+				log.warn("recall version unreadable — window capture disabled for this attempt", {
+					conversation: convId,
+					error: String(err),
+				});
+				recallVersion = null;
+			}
+		}
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// Preserve loop history across overflow, while attempt-scoped state resets.
 		// Completed tool calls stay in the recovery package as evidence —
@@ -778,7 +903,10 @@ export class Runtime {
 			{
 				convId,
 				watchdog: this.loopWatchdog,
-				request: messageText(turns[0]!.message),
+				// An operator-resume head is the generated provenance marker —
+				// the seed carries the run's real request for the watchdog;
+				// every other head message is itself the request.
+				request: recovery?.operatorRequest ?? messageText(turns[0]!.message),
 			},
 			recovery?.loop,
 		);
@@ -790,23 +918,51 @@ export class Runtime {
 			endLive(live, done, convId);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
-		// Admission fixes this attempt's ownership and model input.
-		const admitted = admitTurn(
-			{
-				convId,
-				live,
-				getConversation: () => store.get(convId),
-				captureConversation: this.deps.captureConversation,
-				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
-				modelEntries: () => store.modelEntries(convId),
-				now: Date.now,
-			},
-			recovery === undefined
-				? undefined
-				: { conversation: recovery.conversation, startedAt: recovery.startedAt },
-		);
+		// The ownership window: from admission until the begin hook, the
+		// attempt's members are unlinked — a terminal failure in that span
+		// (a refused admission included) is invisible to the dispatcher's
+		// reconcile (no run row to read), so it must be announced instead
+		// of re-admitting the trigger forever.
+		let ownershipBegun = false;
+		const announcePreRunFailure = (err: unknown) => {
+			if (ownershipBegun) return;
+			this.deps.runOwnership?.preRunFailure?.({
+				conversationId: convId,
+				memberSeqs: turns.map((t) => t.seq),
+				error: err instanceof Error ? err.message : String(err),
+			});
+		};
+		// Admission fixes this attempt's ownership and model input. A
+		// throw escapes to the drain's last-ditch settle — still a
+		// terminal death inside the ownership window, so it announces
+		// the same as a refused admission before propagating.
+		let admitted: ReturnType<typeof admitTurn>;
+		try {
+			admitted = admitTurn(
+				{
+					convId,
+					live,
+					getConversation: () => store.get(convId),
+					captureConversation: this.deps.captureConversation,
+					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
+					pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
+					// Read after claimQueued — it can add members to `turns`.
+					ownedInputSeqs: () => new Set(turns.map((t) => t.seq)),
+					modelEntries: () => store.modelEntries(convId),
+					now: Date.now,
+				},
+				recovery === undefined
+					? undefined
+					: { conversation: recovery.conversation, startedAt: recovery.startedAt },
+			);
+		} catch (err) {
+			announcePreRunFailure(err);
+			throw err;
+		}
 		if (admitted.kind !== "admitted") {
+			announcePreRunFailure(
+				admitted.kind === "missing" ? "conversation missing" : admitted.message,
+			);
 			await notifyAll({
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
@@ -817,7 +973,7 @@ export class Runtime {
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
 		// Resume members join `turns` before admission so all paths settle them.
 		// An admission failure must not strand a member claimed during recovery.
-		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
+		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch, anchorSeq);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;
@@ -839,6 +995,14 @@ export class Runtime {
 		// and inherits its calls as evidence: a re-asked effect conflicts
 		// unless an operator grant names it.
 		const sourceRunId = recovery?.resumedFrom;
+		const sourceInputSeq = (): number | null => {
+			let max: number | null = null;
+			for (const [i, t] of turns.entries()) {
+				if (i === 0 && sourceRunId !== undefined) continue;
+				if (max === null || t.seq > max) max = t.seq;
+			}
+			return max ?? recovery?.sourceInputSeq ?? null;
+		};
 		let runId: string | null = null;
 		// A thrown journal write anywhere in the fence lands here — the
 		// catch below aborts the turn instead of letting the SDK report a
@@ -852,6 +1016,10 @@ export class Runtime {
 			if (journal === undefined || runId === null || runStamped) return;
 			journal.finishRun(runId, status, delivery);
 			runStamped = true;
+			// The terminal stamp IS the durable acknowledgement a wake
+			// waits on — the hook fires after the row lands so the
+			// dispatcher's settle read never sees a live run by mistake.
+			this.deps.runOwnership?.end(runId, status, delivery);
 		};
 		try {
 			this.checkAuthority(convId, epoch);
@@ -903,7 +1071,11 @@ export class Runtime {
 			// them must never leave a successor that re-executes recorded
 			// side effects.
 			runId = randomUUID();
-			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts);
+			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
+				runId,
+				sourceMessageId: () => turns[turns.length - 1]!.message.id,
+				sourceInputSeq,
+			});
 			journal?.beginRun({
 				runId,
 				conversationId: convId,
@@ -914,9 +1086,27 @@ export class Runtime {
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
 				ownedInputSeqs: snapshot.ownedInputSeqs,
+				sourceInputSeq: sourceInputSeq(),
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
 			});
+			// Every member claimed into this attempt — the drain's initial
+			// claim and a resume admission's queue claim are both already
+			// on `turns` — becomes this run's owned input here, before the
+			// stream can reach a tool. A wake linked to a predecessor the
+			// row continues or inherits moves with it.
+			if (journal !== undefined) {
+				this.deps.runOwnership?.begin({
+					runId,
+					conversationId: convId,
+					memberSeqs: turns.map((t) => t.seq),
+					...(sourceRunId !== undefined ? { resumedFrom: sourceRunId } : {}),
+					...(recovery?.predecessorRun !== undefined
+						? { inheritFrom: [recovery.predecessorRun] }
+						: {}),
+				});
+				ownershipBegun = true;
+			}
 			// The recovery guard reads the fresh row once, after
 			// inheritance: it already carries the source's decisions and
 			// every predecessor attempt's recorded executions. Calls this
@@ -948,12 +1138,14 @@ export class Runtime {
 				tools,
 				modalities: step.inputModalities,
 				carries: accepts.current.carries,
+				skillRef: resolveSkillRef,
 			};
 			const merged = await buildModelView(viewCtx, {
 				entries,
 				prior: memory.prior,
 				current: memory.current,
 				partial: recovery?.partial ?? null,
+				ownedSeqs: snapshot.ownedInputSeqs,
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
@@ -966,6 +1158,15 @@ export class Runtime {
 				state,
 				journal,
 				runId,
+				// A steer that joins mid-run is processed by this run — the
+				// wake hook hears only the joined seqs (converts that failed
+				// were settled, never joined). Journaled turns only.
+				...(journal === undefined
+					? {}
+					: {
+							noteRunMembers: (seqs: number[]) =>
+								this.deps.runOwnership?.members(runId!, convId, seqs),
+						}),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
 					if (journalFault.current !== undefined) throw journalFault.current;
@@ -978,9 +1179,9 @@ export class Runtime {
 				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
-				modelEntries: () => store.modelEntries(convId),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: snapshot.ownedInputSeqs,
+				sourceInputSeq,
 				partial: recovery?.partial ?? null,
 				seenText: recovery?.seenText ?? false,
 				toolCalls: recovery ? [...recovery.toolCalls] : [],
@@ -992,6 +1193,22 @@ export class Runtime {
 				turnStartMs,
 				signal: controller.signal,
 			});
+			// Record the window on both rails — the failed rail throws its
+			// recovery/error below, and the request went out either way.
+			if (outcome.window !== null && recallVersion !== null) {
+				try {
+					this.deps.recordWindow?.(convId, {
+						model: outcome.model,
+						step: outcome.steps,
+						capture: outcome.window,
+						recallVersion,
+					});
+				} catch (err) {
+					log.error("context window record failed — turn continues", err, {
+						conversation: convId,
+					});
+				}
+			}
 			if (outcome.kind === "failed") {
 				// Carry the filter retry budget into a possible resume.
 				filterRetryUsed = outcome.filterRetryUsed;
@@ -1083,6 +1300,7 @@ export class Runtime {
 					conversation: convId,
 					epoch,
 				});
+				announcePreRunFailure(fault);
 				stampRun("error", "failed");
 				await notifyAll({
 					kind: "error",
@@ -1094,6 +1312,7 @@ export class Runtime {
 				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
+				announcePreRunFailure(err);
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1112,6 +1331,9 @@ export class Runtime {
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
 					failedRunId: runId ?? undefined,
+					operatorRequest: recovery?.operatorRequest,
+					recallVersion,
+					sourceInputSeq: sourceInputSeq(),
 					members: turns,
 					compact: () => this.doCompact(conv, "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),
@@ -1123,9 +1345,12 @@ export class Runtime {
 					// output was withheld for recovery; the resume opens a
 					// fresh row that inherits this row's settled calls, so a
 					// crash of the continuation still resumes with them.
+					// No pre-run announcement: the fresh run links its members
+					// through its own begin.
 					stampRun("error", "undelivered");
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
+				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
 					outcome.kind === "fenced" ? "undelivered" : "failed",
@@ -1149,6 +1374,7 @@ export class Runtime {
 					modelCalls: state.snapshot().modelCalls,
 					transient: isTransientTurnFailure(err),
 				};
+				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);
 			}

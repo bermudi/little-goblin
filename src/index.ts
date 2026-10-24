@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
-import { ensureOpenRouterCatalog } from "./agent/models-dev.ts";
+import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
@@ -10,8 +10,10 @@ import { makePrivateSender } from "./agent/tools/program.ts";
 import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
 import { makeVisionDepsFor } from "./agent/vision.ts";
 import { makeSpeaker, synthesizeSpeech } from "./agent/tts.ts";
-import { loadAuth } from "./auth.ts";
+import { appendAuthRecord, loadAuth } from "./auth.ts";
+import { openAppPush } from "./app-push.ts";
 import { openCacheObservation } from "./cache-observation.ts";
+import { openWindowCapture } from "./window-capture.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import {
 	type Config,
@@ -37,18 +39,23 @@ import {
 	wireDelegation,
 } from "./delegation-lifecycle.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
+import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
+import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
+import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
-import { startMailWatcher } from "./mail-watcher.ts";
+import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
+import { startProgramApproval, type ProgramApproval } from "./program-approval.ts";
+import { startProgramOps } from "./program-ops.ts";
 import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
@@ -58,12 +65,17 @@ import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
+import { telegramAddressOf } from "./targets.ts";
 
 import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
-import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
-import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
-import { type ProgramApproval, startProgramApproval } from "./tg/program-approval.ts";
+import {
+	makeTelegramMailLane,
+	sendMailNotice,
+	startTelegramMailApproval,
+} from "./tg/mail-approval.ts";
+import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot, type RunningBot } from "./tg/mod.ts";
+import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
@@ -75,6 +87,11 @@ import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { makeResponsibilityObserver } from "./responsibility-observer.ts";
+import { makeResponsibilityService } from "./responsibility-service.ts";
+import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
+import { type DevelopmentInput, openWakeStore } from "./wake-store.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -125,11 +142,40 @@ async function boot() {
 		);
 	}
 	const store = openStore(paths.db());
+	// Browser push is an app-owned device registry. Its VAPID pair is an
+	// auth record generated on first enable, not operator config.
+	const appPush = openAppPush(store.db, {
+		auth,
+		storeSecret: (name, value) => {
+			appendAuthRecord(paths.auth(), name, value);
+			auth.put(name, value);
+		},
+		store,
+		subject: () => configRef.current.publicUrl ?? "mailto:goblin@localhost",
+	});
 	const cacheObservations = openCacheObservation(store.db);
+	// The context-window view's rows — the final step's outbound prompt
+	// per conversation, recorded by the runtime, served read-only.
+	const windowCapture = openWindowCapture(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
 	// fences first, so 'running' at open means the process died mid-turn.
 	const turnJournal = openTurnJournal(store.db);
+	// Durable wakes share the store handle — the trigger append, its
+	// history reference, and the delivery state commit together. The
+	// dispatcher binds after the runtime exists (the ownership hooks
+	// late-bind through this slot); it is what the responsibility
+	// service's developments ride.
+	const wakeStore = openWakeStore(store.db);
+	let wakeDispatcher: WakeDispatcher | undefined;
+	// Late-bound like the dispatcher — the responsibility service is
+	// built once the store and observer exist (after makeTurnTools is
+	// assembled). The getter below reads this slot per turn.
+	let responsibilitySvc: {
+		resps: ReturnType<typeof openResponsibilities>;
+		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
+		listFor: () => ReturnType<typeof operatorHerdr.list>;
+	} | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
@@ -200,9 +246,9 @@ async function boot() {
 	// reach the delegation lifecycle, whose wakes need bot.api — which
 	// needs the bot, whose intake needs the runtime; and the retention
 	// worker's notices need bot.api while the memory surfaces quiesce
-	// through it. completeBoot() below is the one fill point, before
-	// replayInbox (the first await after startBot) — an unwired read past
-	// it is a boot-order bug.
+	// through it. completeBoot() below is the one fill point, before the
+	// deferred telegram task can replay inbox rows or admit a turn — an
+	// unwired read past it is a boot-order bug.
 
 	interface LateBoot {
 		delegationLifecycle(): DelegationLifecycle;
@@ -231,12 +277,14 @@ async function boot() {
 	};
 
 	// Voice replies and transcription die at runtime without ffmpeg —
-	// the probe, the wav-kind gate, and the ttsDown flag live in
+	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
-	await checkBootMedia(config, configRef);
+	await checkBootMedia(config, configRef, auth);
 
-	// Warm the openrouter catalog so thinking options and the mini app
-	// see real levels, not the cold-start fallback.
+	// Warm both catalogs: thinking options and the mini app see real
+	// levels, and the settings model picker gets names and API hosts
+	// instead of a pre-name cache.
+	void ensureModelsDevCatalog();
 	void ensureOpenRouterCatalog();
 
 	// Long-term memory is a boot-time snapshot — queue rows bind to the
@@ -276,17 +324,37 @@ async function boot() {
 	// The mount policy (which slots exist per channel/config/boot pin)
 	// lives in turn-tools.ts; boot binds the seams and the late-bound
 	// getters (subagents/mail/desktop bind past Runtime construction).
+	const telegramEnabled = config.telegram.enabled;
 	// The one operator-DM lane — the program tool's hook rotation and the
 	// proposal approval's grant-time hook delivery share it (a secret URL
-	// never enters history). Reads tg.bot.api at call time.
-	const sendPrivate = makePrivateSender(
-		(id, text) => withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage"),
-		() => configRef.current.operators,
-	);
-	// Late-bound like mailApproval: the adapter starts after the bot, so
-	// the getter answers undefined to anything earlier rather than a
-	// half-wired gate.
+	// never enters history). An enabled-but-unattached channel (init
+	// pending or failed) throws at call time — never a silent skip.
+	let tg: RunningBot | null = null;
+	// Stop/drain ownership is separate from routability: a detached
+	// channel still owns intake that shutdown must drain.
+	let telegramRunning: RunningBot | null = null;
+	// The init task reads this after each await — a getMe landing during
+	// shutdown must not attach or start polling.
+	let telegramSealed = false;
+	// Resolved inside the Telegram init task only; the HTTP bot-token
+	// getter fails closed until the channel attaches.
+	let telegramToken: string | undefined;
+	const sendPrivate = telegramEnabled
+		? makePrivateSender(
+				(id, text) => {
+					if (tg === null) throw new Error("telegram channel is unavailable");
+					return withTimeout(tg.bot.api.sendMessage(id, text), "sendMessage");
+				},
+				() => configRef.current.operators,
+			)
+		: undefined;
+	// Late-bound like mailApproval: shared owners and their Telegram
+	// adapters start on channel attach, so getters answer undefined to
+	// anything earlier rather than a half-wired gate.
 	let programApproval: ProgramApproval | undefined;
+	let mailApproval: MailApproval | undefined;
+	let telegramProgramApproval: ReturnType<typeof startTelegramProgramApproval> | undefined;
+	let telegramMailApproval: ReturnType<typeof startTelegramMailApproval> | undefined;
 	const makeTurnTools = makeTurnToolsFactory({
 		configRef,
 		auth,
@@ -296,7 +364,7 @@ async function boot() {
 		programs,
 		// The one send composed outside tg/ — same deadline as every tg/
 		// sender, or a wedged API stalls the program turn's tool call.
-		sendPrivate,
+		...(sendPrivate === undefined ? {} : { sendPrivate }),
 		memory:
 			memoryClient && memoryBootConfig
 				? { client: memoryClient, config: memoryBootConfig, noteRecall }
@@ -311,6 +379,7 @@ async function boot() {
 		subagents: () => subagents,
 		desktops: () => desktops,
 		subagentsBoot: () => subagentsBoot,
+		responsibility: () => responsibilitySvc,
 		filterGuests: filterGuestTools,
 	});
 
@@ -326,10 +395,18 @@ async function boot() {
 	const runtime = new Runtime({
 		store,
 		turnJournal,
+		runOwnership: {
+			begin: (e) => wakeDispatcher?.hooks.begin(e),
+			members: (runId, convId, seqs) => wakeDispatcher?.hooks.members(runId, convId, seqs),
+			end: (runId, status, delivery) => wakeDispatcher?.hooks.end(runId, status, delivery),
+			preRunFailure: (e) => wakeDispatcher?.hooks.preRunFailure?.(e),
+		},
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
 		},
+		recordWindow: windowCapture.record,
+		windowVersion: windowCapture.version,
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
@@ -357,66 +434,78 @@ async function boot() {
 	// seam lazily, so the binding must exist before the awaits that let
 	// traffic in. `undefined` in that window answers "not wired".
 	let resumeOps: ResumeOps | undefined;
-	const tg = await startBot({
-		configRef,
-		auth,
-		store,
-		runtime,
-		titleFor,
-		async synthesize(text, tts) {
-			return synthesizeSpeech(text, tts, { auth });
-		},
-		transcribe: transcribeFile,
-		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-		mail: () => mailApproval,
-		programApproval: () => programApproval,
-		followUpGate: () => system1Gate ?? undefined,
-		resumeOps: () => resumeOps,
-	});
+	// The bot attaches in the init task kicked after HTTP and the
+	// scheduler stand — everything below boots on tg === null and binds
+	// to the live seams when getMe lands.
+	if (!telegramEnabled) {
+		log.info("telegram channel disabled — bot auth, polling, and mini-app auth skipped");
+	}
 
-	// The mail approval gate — the draft's one owner (queue → post →
-	// bind; taps; expiry sweep). Always started: orphaned drafts still settle.
-	const mailApproval = startMailApproval({
-		api: tg.bot.api,
+	// The shared mail approval owner — queue, CAS, send lifecycle and
+	// expiry are channel-neutral; each door only presents and stamps.
+	// The telegram lane is replaceable: the init task swaps in the real
+	// adapter on attach, and detach restores the unavailable lane.
+	const mailLanes = {
+		app: makeAppMailLane(store),
+		telegram: unavailableMailLane(
+			telegramEnabled ? "telegram channel unavailable" : "telegram channel is disabled",
+		),
+	};
+	mailApproval = startMailApproval({
 		outbox,
 		sender: mailSender,
 		reader: mailPoller,
+		lanes: mailLanes,
 	});
 
-	// The program approval gate — proposals activate only through the
-	// operator's tap. It mints approved hook credentials and DMs them
-	// privately; always started so pending proposals stay decidable.
+	// The shared program grant owner — the durable decision path is one
+	// for both doors. Presentation routes by target: Telegram posts its
+	// chunked buttons; app turns get a durable approval marker.
 	programApproval = startProgramApproval({
-		api: tg.bot.api,
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
-		sendPrivate,
+		present: async (proposal, signal) => {
+			if (telegramAddressOf(proposal.target) !== null) {
+				if (tg === null) throw new Error("telegram channel is unavailable");
+				await postProgramApproval(tg.bot.api, programs, proposal, signal);
+			} else {
+				presentProgramApproval(store, proposal);
+			}
+		},
+	});
+	// The Telegram-side adapter binds on channel attach (see the init
+	// task) — programApproval itself is the shared, channel-neutral owner.
+	const programOps = startProgramOps({
+		programs,
+		publicUrl: () => configRef.current.publicUrl || undefined,
+		requestApproval: (proposal, signal) => programApproval!.requestApproval(proposal, signal),
 	});
 
-	// The retention worker runs after the bot — outage and blocked
+	// The retention worker boots before the channel — outage and blocked
 	// notices deliver through bot.api (one per episode / per document).
 	const memoryWorker = memoryClient
 		? startMemoryWorker(store.memoryQueue, memoryClient, {
 				outage: {
 					tracker: new OutageTracker(store.db),
 					notify: (conversationId, sinceMs, queued) =>
-						sendMemoryOutageNotice(tg.bot.api, conversationId, sinceMs, queued),
+						sendMemoryOutageNotice(tg?.bot.api ?? null, conversationId, sinceMs, queued),
 				},
 				blocked: {
 					notify: (conversationId, error, attempts) =>
-						sendMemoryBlockedNotice(tg.bot.api, conversationId, error, attempts),
+						sendMemoryBlockedNotice(tg?.bot.api ?? null, conversationId, error, attempts),
 				},
 			})
 		: null;
 
-	// Runs after the bot — save notices deliver through bot.api.
+	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
 		configRef,
 		auth,
 		store,
 		observation: cacheObservations,
 		paths,
-		notify: (conversationId, skills) => sendSkillProposedNotice(tg.bot.api, conversationId, skills),
+		notify: (conversationId, skills) =>
+			sendSkillProposedNotice(tg?.bot.api ?? null, conversationId, skills),
 		recordSources: (conversationId, reviewId, skills) => {
 			for (const skill of skills)
 				skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
@@ -432,17 +521,29 @@ async function boot() {
 
 	// The shared wake path — program fires and delegation notices submit
 	// through it; wake.ts owns the routing. Intake opens its own pings handle
-	// inside createBot.
+	// inside createBot. One wakeDeps OBJECT identity for the process: the
+	// telegram init task mutates it in place on attach/detach so the
+	// scheduler, delegation lifecycle, subagent wake and resume sinks all
+	// read the same delivery surface at call time.
 	const pings = openPings(store.db);
-	const wakeDeps = makeWakeDeps({
+	const wakeBase = {
 		store,
 		runtime,
-		api: tg.bot.api,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
 		followUpGate: () => system1Gate ?? undefined,
 		pings,
-	});
+		push: appPush,
+	};
+	const wakeDeps = makeWakeDeps({ ...wakeBase, api: null });
+	// Object.assign alone can't drop absent fields — delete the
+	// telegram-only seams before laying the (re)built set down, so detach
+	// restores the app-only bell rather than a stale delivery.
+	const rewireWake = (api: Parameters<typeof makeWakeDeps>[0]["api"]): void => {
+		delete wakeDeps.delivery;
+		delete wakeDeps.markRoll;
+		Object.assign(wakeDeps, makeWakeDeps({ ...wakeBase, api }));
+	};
 
 	// The explicit-resume surface (turn-resume.ts): /resume /decide
 	// /abandon on Telegram, the app runs/* routes on the app channel.
@@ -459,20 +560,113 @@ async function boot() {
 		...makeResumeSinks({
 			wake: wakeDeps,
 			operators: () => configRef.current.operators,
-			sendDm: (chat, text) =>
-				withTimeout(tg.bot.api.sendMessage(chat, text), "sendMessage (resumed turn notice)"),
+			...(telegramEnabled
+				? {
+						sendDm: (chat: number, text: string) => {
+							const running = tg;
+							if (running === null) throw new Error("telegram channel is unavailable");
+							return withTimeout(
+								running.bot.api.sendMessage(chat, text),
+								"sendMessage (resumed turn notice)",
+							);
+						},
+					}
+				: {}),
 		}),
 	});
-	const firingDeps: SchedulerDeps = {
-		...wakeDeps,
+	// Durable wake delivery — the dispatcher owns record→commit→submit
+	// and the journal-run ownership the runtime announces through the
+	// hooks bound above. Built after wakeDeps (the sinks it uses) and
+	// before replayInbox: recovered wakes enter their lanes ahead of
+	// inbound traffic. The boot pump replays the last crash boundary.
+	wakeDispatcher = makeWakeDispatcher({
+		store,
+		wakes: wakeStore,
+		journal: turnJournal,
+		runtime,
+		sinkFor: (conv) =>
+			channelOf(conv.id) === "app" || wakeDeps.delivery === undefined
+				? wakeDeps.bell(conv)
+				: wakeDeps.delivery(conv),
+	});
+	wakeDispatcher.pump();
+	const stopWakeTicker = wakeDispatcher.startTicker();
+
+	// Project-owned responsibilities — the store the handover service
+	// writes, and the deterministic observer that turns attachment
+	// snapshots into deduped durable developments. The observer's list
+	// seam is the local operator session; (server, session) on each
+	// attachment is the grouping key for when a second target exists.
+	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
+	const responsibilityService = makeResponsibilityService({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		conversations: store,
+		pump: () => wakeDispatcher!.pump(),
 		programs,
+		// The committed epoch fence cancels the live turn before the
+		// correction wake is admitted — a stale model stream, queued
+		// tool call, or parked preflight can no longer act.
+		onCorrectionCommitted: (conversationId, epoch) => {
+			const { settled } = runtime.cancelFenced(conversationId, epoch);
+			settled.catch((err) =>
+				log.error("correction cancel settle failed", err, {
+					conversation: conversationId,
+					epoch,
+				}),
+			);
+		},
+	});
+	responsibilitySvc = {
+		resps: responsibilities,
+		service: responsibilityService,
+		listFor: () => operatorHerdr.list(),
+	};
+	// Boot sweep: every open responsibility re-verifies its follow-up
+	// Program — a restart (or a deleted program row) re-links here,
+	// never leaves the check-in silently unarmed.
+	for (const r of responsibilities.open()) {
+		try {
+			responsibilityService.ensureFollowup(r.responsibilityId);
+		} catch (err) {
+			log.error("responsibility follow-up relink failed", err, {
+				responsibility: r.responsibilityId,
+			});
+		}
+	}
+	const responsibilityObserver = makeResponsibilityObserver({
+		db: store.db,
+		resps: responsibilities,
+		wakes: wakeStore,
+		pump: () => wakeDispatcher!.pump(),
+		list: () => operatorHerdr.list(),
+	});
+	const OBSERVE_MS = 60_000;
+	const observerTicker = setInterval(() => {
+		responsibilityObserver
+			.observe()
+			.catch((err) => log.error("responsibility observe tick failed", err));
+	}, OBSERVE_MS);
+	observerTicker.unref();
+	const stopObserverTicker = () => clearInterval(observerTicker);
+
+	// The scheduler rides the SAME wakeDeps object — a spread here would
+	// snapshot delivery/bell before the telegram attach ever lands.
+	const firingDeps: SchedulerDeps = Object.assign(wakeDeps, {
+		programs,
+		// Responsibility-destination programs fire as durable
+		// developments on the coordination conversation — the
+		// dispatcher owns their wake from the record on.
+		responsibilities,
+		recordDevelopment: (input: DevelopmentInput) => wakeDispatcher!.record(input),
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
-	};
+	});
 
-	// The delegation lifecycle — after tg (notices wake through bot.api),
-	// before replayInbox (the first await after startBot): the wire step
-	// lands before any turn.
+	// The delegation lifecycle wakes through the shared wakeDeps — its
+	// closures read delivery/bell live, so a telegram attach mid-run is
+	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
 		delegations !== null && herdr !== null
 			? startDelegationLifecycle({
@@ -524,33 +718,22 @@ async function boot() {
 		);
 	}
 
-	// Rows reclassified 'interrupted' at open get one DM per operator —
-	// terse facts, never a replay. A failed send must not hold boot;
-	// the log line is the record.
-	sendInterruptedTurnNotices(
-		tg.bot.api,
-		turnJournal.interruptedAtOpen,
-		configRef.current.operators,
-		(id) => store.get(id)?.title ?? undefined,
-	);
-
-	// Recover inbox rows before polling: the wirings above must exist before
-	// recovered turns run, and the offset must not advance past journaled input.
-	await tg.replayInbox();
-	tg.startPolling();
-
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
 	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
-	// delegation/subagents freeze adapters and pool limits at boot — a
-	// mid-run change is a warn + restart.
+	// delegation/subagents freeze adapters and pool limits at boot,
+	// http.port binds the Bun.serve listener, and reviewer wiring is
+	// boot-bound — a mid-run change is a warn + restart.
 	const bootPins: BootPins = {
 		memory: memoryBootConfig,
 		appToken: appTokenName,
+		telegramEnabled,
 		apiRoot: apiRootBoot,
 		delegation: delegationBoot,
 		subagents: subagentsBoot,
+		http: config.http,
+		reviewer: config.reviewer,
 	};
 	// One post-write path for every config door: hot-apply what's live,
 	// flip-log what joins/leaves the tool set, warn on what's boot-pinned —
@@ -561,7 +744,9 @@ async function boot() {
 		pins: bootPins,
 		// publicUrl is operator-editable — keep the menu button in sync
 		// without a restart.
-		syncMenuButton: () => applyMenuButton(tg.bot.api, configRef.current.publicUrl),
+		syncMenuButton: () => {
+			if (tg !== null) applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+		},
 		warnStrandedSandboxes,
 	});
 	// The operator surface (settings, memory, programs, delegations,
@@ -569,22 +754,38 @@ async function boot() {
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).
 	// http/operator.ts owns the assembly; boot binds configRef and
 	// onConfigWritten per door.
+	const chatgptLogin = createChatGptLogin({
+		config: () => configRef.current,
+		// A first sign-in makes ChatGPT usable — providers.codex lands
+		// only when no codex provider is configured at all.
+		onSignedIn: () => ensureCodexProvider(configRef, onConfigWritten),
+	});
 	const operatorSeams = makeOperatorSeams({
 		store,
 		memory,
 		programs,
 		delegations,
 		skillSources,
+		// Temp-skill previews score through the same gate as the mail
+		// injection check — absent = the endpoint answers 503.
+		...(system1Gate
+			? { skillFetch: { gate: system1Gate as Pick<typeof system1Gate, "decide"> } }
+			: {}),
 		auth,
 		paths,
 		version: pkg.version,
 		startedAt,
 		restartHints,
 	});
+	operatorSeams.chatgpt = chatgptLogin;
 	const http = startHttp({
 		configRef,
 		...operatorSeams,
-		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		// Late-bound and fail-closed: until the telegram attach lands,
+		// mini-app initData has no token to validate against and refuses.
+		get botToken() {
+			return tg === null ? undefined : telegramToken;
+		},
 		// POST /hook/<token> — the token is the credential; the webhook
 		// entry point owns the fire's accounting (last_run only when landed).
 		hooks: {
@@ -610,11 +811,28 @@ async function boot() {
 				// them under /api/app/* with the bearer/trust gate.
 				operator: operatorSeams,
 				resumeOps: () => resumeOps,
+				// Both doors reach the same durable CAS owners; this route
+				// supplies the authenticated app actor, never transport authority.
+				...(programApproval !== undefined && mailApproval !== undefined
+					? { approvals: { program: programApproval, mail: mailApproval } }
+					: {}),
+				programOps,
+				push: appPush,
+				// The project feed + controls — the same stores the
+				// coordination tool drives; record pumps through the
+				// dispatcher so a correction steers the next wake.
+				responsibilities: {
+					feed: { db: store.db, resps: responsibilities, programs },
+					resps: responsibilities,
+					service: responsibilityService,
+					listAgents: () => operatorHerdr.list(),
+				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
 				// rather than failing mid-synthesis (tts.ts owns the gate).
 				speak,
+				windowCapture,
 				titleFor,
 				// Selection rewrite — the configured root model/thinking;
 				// generation only, the accepted proposal returns via PATCH.
@@ -638,8 +856,160 @@ async function boot() {
 		programs,
 		reader: mailPoller,
 		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
-		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
+		notify: makeMailNoticeRouter({
+			resps: responsibilities,
+			record: (input) => wakeDispatcher.record(input),
+			sendTelegram: (address, text) => {
+				if (tg === null) {
+					log.warn(
+						telegramEnabled
+							? "mail outage notice skipped — telegram channel unavailable"
+							: "mail outage notice skipped — telegram channel disabled",
+						{ chat: address.chatId, thread: address.threadId },
+					);
+					return Promise.resolve();
+				}
+				return sendMailNotice(tg.bot.api, address, text);
+			},
+		}),
 	});
+
+	// ---------- deferred telegram attach ----------
+	//
+	// One bounded attempt (getMe carries the shared 30s deadline), kicked
+	// only after every core service stands — the app channel, HTTP, the
+	// scheduler and the mail watcher must never wait on bot auth. A
+	// failed attempt leaves every telegram seam unavailable and asks for
+	// a config repair plus approved restart; there is no retry loop.
+	const attachTelegram = (running: RunningBot): void => {
+		mailLanes.telegram = makeTelegramMailLane(running.bot.api);
+		if (mailApproval !== undefined) {
+			telegramMailApproval = startTelegramMailApproval({
+				api: running.bot.api,
+				approval: mailApproval,
+			});
+		}
+		if (programApproval !== undefined && sendPrivate !== undefined) {
+			telegramProgramApproval = startTelegramProgramApproval({
+				api: running.bot.api,
+				approval: programApproval,
+				programs,
+				sendPrivate,
+			});
+		}
+		rewireWake(running.bot.api);
+		tg = running;
+		log.info("telegram channel attached", { bot: running.bot.botInfo.username });
+	};
+	const detachTelegram = (): void => {
+		tg = null;
+		telegramMailApproval = undefined;
+		telegramProgramApproval = undefined;
+		mailLanes.telegram = unavailableMailLane("telegram channel unavailable");
+		rewireWake(null);
+		// telegramRunning stays — its intake still belongs to this boot and
+		// shutdown drains it even while routing reads detached.
+	};
+	const telegramInit = telegramEnabled
+		? (async () => {
+				try {
+					// The token resolves inside this task only — the HTTP door
+					// fails closed until the attach below sets it live.
+					telegramToken = await auth.resolve(AUTH_TELEGRAM_TOKEN);
+					if (telegramSealed || !runtime.accepting()) {
+						log.info("telegram attach skipped — shutdown in progress");
+						return;
+					}
+					const running = await startBot({
+						configRef,
+						auth,
+						store,
+						runtime,
+						titleFor,
+						async synthesize(text, tts) {
+							return synthesizeSpeech(text, tts, { auth });
+						},
+						transcribe: transcribeFile,
+						...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
+						mail: () => telegramMailApproval,
+						programApproval: () => telegramProgramApproval,
+						followUpGate: () => system1Gate ?? undefined,
+						resumeOps: () => resumeOps,
+					});
+					// Own the bot the moment it exists — a later detach or a
+					// seal mid-replay must never strand its stop/drain.
+					telegramRunning = running;
+					if (telegramSealed || !runtime.accepting()) {
+						log.info("telegram attach skipped — shutdown in progress");
+						return;
+					}
+					attachTelegram(running);
+					// Rows reclassified 'interrupted' at open get one DM per
+					// operator — terse facts, never a replay. Sent only after a
+					// successful attach; the skip/failure logs above stand alone.
+					sendInterruptedTurnNotices(
+						running.bot.api,
+						turnJournal.interruptedAtOpen,
+						configRef.current.operators,
+						(id) => store.get(id)?.title ?? undefined,
+					);
+					if (telegramSealed || !runtime.accepting()) {
+						detachTelegram();
+						return;
+					}
+					// Replay before polling — the offset must not advance past
+					// journaled input — then poll with a detach-on-end contract:
+					// a terminated long poll degrades the channel, never the boot.
+					await running.replayInbox();
+					if (telegramSealed || !runtime.accepting()) {
+						detachTelegram();
+						return;
+					}
+					running.startPolling((err) => {
+						log.error(
+							"telegram polling ended — channel detached; repair and restart to reattach",
+							err,
+						);
+						detachTelegram();
+					});
+					// Catch up any occurrence held while the channel was
+					// unattached — after replay, before steady-state polling.
+					scheduler.tick();
+				} catch (err) {
+					log.error(
+						"telegram channel init failed — running without it; fix the credentials/config and restart",
+						err,
+					);
+					detachTelegram();
+				}
+			})().catch((err: unknown) => {
+				log.error("telegram init task failed", err);
+				detachTelegram();
+			})
+		: Promise.resolve();
+
+	// Shutdown's telegram stop: seals the attach path first (a late getMe
+	// can no longer bind), detaches routing, stops polling only if it is
+	// actually running, drains intake, and joins the init task — all under
+	// the caller's shared drain budget, never its own timer.
+	const stopTelegram = (): Promise<unknown> => {
+		telegramSealed = true;
+		// Owner, not router: a detached channel still has intake to drain.
+		const running = telegramRunning;
+		if (tg !== null) detachTelegram();
+		const pollStop =
+			running !== null && running.bot.isRunning() ? running.bot.stop() : Promise.resolve();
+		const intake = running === null ? Promise.resolve() : running.drainIntake();
+		const joined = Promise.allSettled([pollStop, intake, telegramInit]);
+		return joined.then((results) => {
+			const labels = ["telegram poll stop", "telegram intake drain", "telegram init join"];
+			for (const [i, r] of results.entries()) {
+				if (r.status === "rejected") {
+					log.warn("shutdown step failed", r.reason, { step: labels[i] });
+				}
+			}
+		});
+	};
 
 	return {
 		configRef,
@@ -649,12 +1019,22 @@ async function boot() {
 		outbox,
 		delegations,
 		runtime,
-		tg,
+		wakeDispatcher,
+		stopWakeTicker,
+		responsibilities,
+		responsibilityObserver,
+		stopObserverTicker,
+		stopTelegram,
 		http,
 		scheduler,
 		delegationLifecycle,
 		mailWatcher,
 		mailApproval,
+		programApproval,
+		// Live closure over the attach/detach-rebound Telegram adapter —
+		// shutdown joins in-flight taps through it without racing a
+		// detach that happened after boot returned.
+		stopTelegramProgramApproval: () => telegramProgramApproval?.stop() ?? Promise.resolve(),
 		memoryWorker,
 		subagentRuns,
 		subagents,
@@ -675,12 +1055,17 @@ const {
 	outbox,
 	delegations,
 	runtime,
-	tg,
+	wakeDispatcher,
+	stopWakeTicker,
+	stopObserverTicker,
+	stopTelegram,
 	http,
 	scheduler,
 	delegationLifecycle,
 	mailWatcher,
 	mailApproval,
+	programApproval,
+	stopTelegramProgramApproval,
 	memoryWorker,
 	subagentRuns,
 	subagents,
@@ -697,6 +1082,9 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
+	// Wake retries stop too — open wakes ride to the next boot's pump.
+	stopWakeTicker();
+	stopObserverTicker();
 	// Join any in-flight scan before closing the store; running agents
 	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
@@ -706,19 +1094,24 @@ async function shutdown(signal: string): Promise<void> {
 	// The approval gate stops sweeping AND joins an in-flight Gmail send
 	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
+	// Program approvals join in-flight posts and taps the same way — an
+	// approved hook commits activation before its private credential
+	// delivery, and the token's plaintext exists only inside that handler.
+	// The Telegram adapter's stop reads live, before stopTelegram detaches.
+	const telegramProgramJoins = stopTelegramProgramApproval();
+	const programJoins = programApproval?.stop() ?? Promise.resolve();
 	// The retention worker aborts its in-flight request and yields — the
 	// outbox rows stay durable for the next boot. Joined under the budget
 	// like everything else: a wedged memory service is not a deploy hold.
 	const retention = memoryWorker?.stop() ?? Promise.resolve();
 	// bot.stop confirms the polling offset so handled updates don't
-	// redeliver on the next boot.
-	const stopping = tg.bot.stop().catch((err: unknown) => {
-		log.warn("bot stop failed", err);
-	});
+	// redeliver on the next boot. stopTelegram seals the attach path,
+	// stops polling only if it is running, drains intake, and joins the
+	// deferred init task — the channel may not even have attached yet.
+	const stopping = stopTelegram();
 	// Close the runtime first — intake that lands during the drain still
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
-	const flushed = tg.drainIntake();
 	// Pause only: pending subagent runs persist for the next boot — the
 	// harness close seals admission, it never aborts work.
 	const subagentsClosed = subagents
@@ -729,10 +1122,11 @@ async function shutdown(signal: string): Promise<void> {
 	const settled = Promise.allSettled([
 		stopping,
 		drained,
-		flushed,
 		delegationScan,
 		mailScan,
 		mailSends,
+		programJoins,
+		telegramProgramJoins,
 		retention,
 		subagentsClosed,
 	]);

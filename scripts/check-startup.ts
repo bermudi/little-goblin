@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadConfig } from "../src/config.ts";
 import { boundedRun } from "../src/proc.ts";
 import { startupCategory } from "./startup-categories.ts";
 
@@ -72,6 +73,22 @@ async function run(argv: string[], label: string, deadline: number): Promise<str
 		throw new Error(`${label}: command failed/timeout/output limit`);
 	}
 	return result.stdout;
+}
+
+// Telegram long-polling evidence is only demandable when the channel is
+// configured: enabled is a boot-pinned config switch and long polling
+// only starts under it (src/index.ts gates telegramInit on it), so
+// demanding the line from a telegram-disabled boot would time out every
+// legal app-only install (design/doctor.md → startup-aware acceptance).
+// A missing config keeps the strict legacy expectation; an unreadable
+// one fails as its own category — the service could not have booted on
+// it either.
+function expectPolling(): boolean {
+	try {
+		return loadConfig()?.telegram.enabled ?? true;
+	} catch {
+		throw new Error("startup config unreadable");
+	}
 }
 
 async function identity(deadline: number): Promise<Identity> {
@@ -180,6 +197,7 @@ async function watchInvocation(
 	let current: Identity | undefined;
 	let boundPort = port === 0 ? undefined : port;
 	const seen = new Set<string>();
+	const expectLongPolling = expectPolling();
 	// Re-reading the invocation's whole journal each ~250ms would hit
 	// the output cap on a flood — each journalctl resumes after the last
 	// consumed record instead. Absent the field (old systemd), the poll
@@ -265,7 +283,7 @@ async function watchInvocation(
 		}
 		if (
 			seen.has("goblin up") &&
-			seen.has("long polling started") &&
+			(!expectLongPolling || seen.has("long polling started")) &&
 			observed.ActiveState === "active" &&
 			boundPort !== undefined
 		) {

@@ -4,9 +4,14 @@ import type { AuthStore } from "../auth.ts";
 import type { ConfigRef, TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
+import { oneminSpeech } from "./onemin-speech.ts";
 import { logfareSpeech, mimoSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const CHUNK_LIMIT = 10_000;
+// 1min's TTS caps text at 4096 characters (docs → OpenAI
+// Text-to-Speech → Parameters); 4k leaves margin for the merger's
+// trim behavior.
+const ONEMIN_CHUNK_LIMIT = 4_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_VERSION = "143.0.3650.75";
@@ -374,51 +379,53 @@ function withoutStatusTail(text: string): string {
 // result must be idempotent — tg callers pre-strip, then the speaker
 // boundary strips again.
 function stripMarkdown(text: string): string {
-	return text
-		.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-		// Table separator rows (`| --- | :-: |`) vanish before data rows
-		// would read their dashes; outer-piped rows speak as comma lists.
-		// Whitespace stays line-confined — \s here would let a row match
-		// across newlines.
-		.replace(/^[ \t]{0,3}\|?[ \t:|-]+\|?[ \t]*$/gm, "")
-		.replace(/^[ \t]{0,3}\|(.+)\|[ \t]*$/gm, (_m, row: string) =>
-			row
-				.split("|")
-				.map((cell) => cell.trim())
-				.filter(Boolean)
-				.join(", "),
-		)
-		.replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, "")
-		// Horizontal rules (`---`, `***`, `___`, spaced) — `***` would die
-		// in the symbol strip anyway, but the dashes would read "minus
-		// minus minus".
-		.replace(/^\s{0,3}(?:([-*_])[ \t]*)(?:\1[ \t]*){2,}$/gm, "")
-		.replace(/<[^>]+>/g, "")
-		.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (entity) => {
-			switch (entity) {
-				case "&amp;":
-					return "&";
-				case "&lt;":
-					return "<";
-				case "&gt;":
-					return ">";
-				case "&quot;":
-					return '"';
-				case "&apos;":
-				case "&#39;":
-					return "'";
-				default:
-					return " ";
-			}
-		})
-		// snake_case reads as two words, not one blended one; `_ital_`
-		// keeps dying in the symbol strip (underscores at word edges).
-		.replace(/(?<=\w)_(?=\w)/g, " ")
-		.replace(/[*_~`]/g, "")
-		.replace(/[ \t]+\n/g, "\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+	return (
+		text
+			.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			// Table separator rows (`| --- | :-: |`) vanish before data rows
+			// would read their dashes; outer-piped rows speak as comma lists.
+			// Whitespace stays line-confined — \s here would let a row match
+			// across newlines.
+			.replace(/^[ \t]{0,3}\|?[ \t:|-]+\|?[ \t]*$/gm, "")
+			.replace(/^[ \t]{0,3}\|(.+)\|[ \t]*$/gm, (_m, row: string) =>
+				row
+					.split("|")
+					.map((cell) => cell.trim())
+					.filter(Boolean)
+					.join(", "),
+			)
+			.replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+|\d+[.)]\s+)/gm, "")
+			// Horizontal rules (`---`, `***`, `___`, spaced) — `***` would die
+			// in the symbol strip anyway, but the dashes would read "minus
+			// minus minus".
+			.replace(/^\s{0,3}(?:([-*_])[ \t]*)(?:\1[ \t]*){2,}$/gm, "")
+			.replace(/<[^>]+>/g, "")
+			.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (entity) => {
+				switch (entity) {
+					case "&amp;":
+						return "&";
+					case "&lt;":
+						return "<";
+					case "&gt;":
+						return ">";
+					case "&quot;":
+						return '"';
+					case "&apos;":
+					case "&#39;":
+						return "'";
+					default:
+						return " ";
+				}
+			})
+			// snake_case reads as two words, not one blended one; `_ital_`
+			// keeps dying in the symbol strip (underscores at word edges).
+			.replace(/(?<=\w)_(?=\w)/g, " ")
+			.replace(/[*_~`]/g, "")
+			.replace(/[ \t]+\n/g, "\n")
+			.replace(/\n{3,}/g, "\n\n")
+			.trim()
+	);
 }
 
 export function speechContent(text: string): { spoken: string; supplemental: string | null } {
@@ -677,6 +684,10 @@ function defaultSynthesizer(config: TtsConfig, deps: SpeechDeps): ChunkSynthesiz
 			if (deps.auth === undefined) throw new Error("mimo tts needs an auth store");
 			return mimoSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
 		}
+		case "onemin": {
+			if (deps.auth === undefined) throw new Error("onemin tts needs an auth store");
+			return oneminSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
 	}
 }
 
@@ -685,7 +696,11 @@ export async function synthesizeSpeech(
 	config: TtsConfig,
 	deps: SpeechDeps = {},
 ): Promise<Uint8Array[]> {
-	const chunks = chunkSpeech(text, deps.chunkLimit ?? CHUNK_LIMIT);
+	// 1min's text cap is the one per-kind chunk limit — the global
+	// 10k would send the feature a request it rejects.
+	const chunkLimit =
+		deps.chunkLimit ?? (config.kind === "onemin" ? ONEMIN_CHUNK_LIMIT : CHUNK_LIMIT);
+	const chunks = chunkSpeech(text, chunkLimit);
 	if (chunks.length === 0) throw new Error("speech input is empty");
 	const synthesize = deps.synthesize ?? defaultSynthesizer(config, deps);
 	const remux = deps.remux ?? (config.kind === "edge" ? remuxWebmOgg : remuxMp3Ogg);

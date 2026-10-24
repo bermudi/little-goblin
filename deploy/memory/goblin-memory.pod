@@ -1,0 +1,12 @@
+[Unit]
+Description=Goblin memory pod — Hindsight API and PostgreSQL share its loopback
+
+[Pod]
+PodName=goblin-memory
+# Same private bridge membership as before: outbound HTTPS to model
+# providers stays; nothing else joins.
+Network=goblin-memory.network
+# The stack's only published port. Pod members reach each other over the
+# pod's own loopback, so PostgreSQL listens on 127.0.0.1 and needs no
+# password — there is no socket reachable from outside the pod.
+PublishPort=127.0.0.1:8888:8888

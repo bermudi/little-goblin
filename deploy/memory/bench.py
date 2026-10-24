@@ -17,15 +17,19 @@ Two subcommands, both read-only against the live service:
 
 Spending: `llm` calls the paid extraction LLM and `recall` the embedding
 provider. Both print a plan with an upfront cost estimate and require --yes.
-API keys are read from hindsight.env into process memory only and never
-printed, logged, or written to outputs.
+Credentials come from the same lane the container uses: run under
+`pass-keys run goblin-dev --` (the shared OPENROUTER_API_KEY enters the
+environment), or the bench resolves the provider's auth.jsonl `!` record
+in-process. hindsight.env no longer carries secrets — it is read for
+provider/model/base-URL structure only, never for key values.
 
-Run: uv run deploy/memory/bench.py <llm|recall> [flags]
+Run: pass-keys run goblin-dev -- uv run deploy/memory/bench.py <llm|recall> [flags]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import statistics
 import sys
@@ -35,7 +39,11 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from providers import read_goblin_providers, resolve_auth_key
+
 FIXTURES = Path(__file__).parent / "bench_fixtures"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+GOBLIN_HOME = Path(os.environ.get("GOBLIN_HOME", Path.home() / "goblin"))
 DEFAULT_API = "http://127.0.0.1:8888"
 # Upstream's exact directive text (hindsight_api/engine/prompt_utils.py,
 # output_language_directive) — replicated verbatim so the simulated pin is
@@ -66,6 +74,29 @@ def load_env(path: Path) -> dict[str, str]:
 		key, _, value = line.partition("=")
 		env[key.strip()] = value.strip().strip('"').strip("'")
 	return env
+
+
+def bench_key(provider: str, env_name: str) -> str:
+	"""The credential for one provider, resolved like the container does:
+	injected environment first (`pass-keys run goblin-dev --` exports the
+	shared key under its pass-keys NAME, e.g. OPENROUTER_API_KEY), else the
+	provider's auth.jsonl `!` record resolved in-process. Values go to
+	request headers only — never printed, logged, or written."""
+	for var in (env_name, "OPENROUTER_API_KEY"):
+		value = os.environ.get(var)
+		if value:
+			return value
+	registry, problem = read_goblin_providers(GOBLIN_HOME, REPO_ROOT)
+	auth_name = registry.get(provider)
+	if auth_name is None:
+		hint = f" ({problem})" if problem else ""
+		fail(f"no key for '{provider}': run under `pass-keys run goblin-dev --` "
+		     f"or map providers.{provider}.auth in goblin.json5{hint}")
+	try:
+		return resolve_auth_key(GOBLIN_HOME, auth_name)
+	except ValueError as error:
+		fail(f"cannot resolve '{auth_name}': {error}")
+	raise AssertionError("unreachable")
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +332,12 @@ def count_facts(text: str) -> tuple[bool, int]:
 
 def cmd_llm(args: argparse.Namespace) -> None:
 	env = load_env(Path(args.env))
-	api_key = env.get("HINDSIGHT_API_LLM_API_KEY")
+	provider = env.get("HINDSIGHT_API_LLM_PROVIDER", "openrouter")
 	model = env.get("HINDSIGHT_API_LLM_MODEL")
 	base_url = env.get("HINDSIGHT_API_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-	if not api_key or not model:
-		fail("HINDSIGHT_API_LLM_API_KEY / HINDSIGHT_API_LLM_MODEL missing from hindsight.env")
+	if not model:
+		fail("HINDSIGHT_API_LLM_MODEL missing from hindsight.env")
+	api_key = bench_key(provider, "HINDSIGHT_API_LLM_API_KEY")
 
 	prompts_base = render_retain_prompts(args.api, args.bank)
 	docs = json.loads((FIXTURES / "docs.json").read_text())
@@ -413,9 +445,26 @@ def cosine_top_k(query: list[float], corpus: list[list[float]], k: int) -> list[
 
 def cmd_recall(args: argparse.Namespace) -> None:
 	env = load_env(Path(args.env))
-	api_key = env.get("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY")
-	if not api_key:
-		fail("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY missing from hindsight.env")
+	emb_provider = env.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER")
+	if emb_provider == "openrouter":
+		deployed = (
+			"deployed@openrouter", "https://openrouter.ai/api/v1/embeddings",
+			bench_key("openrouter", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"),
+			env.get("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL", "voyageai/voyage-4-lite"),
+		)
+	elif emb_provider == "openai":
+		base = env.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL")
+		model = env.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL")
+		if not base or not model:
+			fail("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL / _MODEL missing from hindsight.env")
+		# The deployed endpoint may be the local relay — its API_KEY in the
+		# env file is the non-secret `local-ollama` sentinel, safe to read.
+		auth = env.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY") \
+			or bench_key("openai", "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY")
+		deployed = ("deployed@openai", base.rstrip("/") + "/embeddings", auth, model)
+	else:
+		fail(f"HINDSIGHT_API_EMBEDDINGS_PROVIDER '{emb_provider}' unsupported — "
+		     "expected openrouter or openai in hindsight.env")
 
 	# --- latency race ---
 	filler = (
@@ -428,9 +477,9 @@ def cmd_recall(args: argparse.Namespace) -> None:
 			s += filler
 		return s[:n]
 	targets = [
-		("deployed@openrouter", "https://openrouter.ai/api/v1/embeddings", api_key,
-		 env.get("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL", "voyageai/voyage-4-lite")),
-		("candidate@ollama", "http://127.0.0.1:11434/v1/embeddings", "ollama", "embeddinggemma"),
+		deployed,
+		("candidate@ollama", "http://127.0.0.1:11434/v1/embeddings", "ollama",
+		 "nomic-embed-text-v2-moe"),
 	]
 	print(f"latency race: {args.embed_reps} reps x sizes {args.sizes}, interleaved")
 	if not args.yes:

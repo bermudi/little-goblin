@@ -124,7 +124,7 @@ describe("speak voice choice", () => {
 			async () => {},
 		);
 		expect(bare.description).toBe(
-			"Synthesize text or a plain-text/Markdown file and send it as Telegram voice notes.",
+			"Synthesize text or a plain-text/Markdown file and send it as voice notes.",
 		);
 	});
 });

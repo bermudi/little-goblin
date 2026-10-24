@@ -572,6 +572,33 @@ header h1 {
 .header-action:hover {
 	color: var(--app-fg);
 }
+/* Chat width selector — trails the header-action (which keeps the auto
+   margin), mono like the composer's knobs. Hidden on phone widths: the
+   column is narrow whatever it says there. */
+.width-seg {
+	display: inline-flex;
+	gap: 2px;
+}
+.width-seg button {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+	padding: 0.25rem 0.45rem;
+	border-radius: 6px;
+}
+.width-seg button:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.width-seg button.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+@media (max-width: 720px) {
+	.width-seg {
+		display: none;
+	}
+}
 .nav-toggle {
 	display: none;
 	align-items: center;
@@ -628,6 +655,11 @@ header h1 {
 	max-width: 46rem;
 	display: flex;
 	flex-direction: column;
+}
+/* The header's narrow/wide selector (App.tsx) flips the column — wide
+   spends the rail's spare width on transcript and composer together. */
+.chat-wide .transcript-inner {
+	max-width: 72rem;
 }
 /* The last row's gap belongs to the transcript's padding, not the
    message — otherwise dead space parks between it and the composer. */
@@ -752,12 +784,21 @@ h6.md-h {
 	font-size: 0.92em;
 	max-width: 100%;
 }
+/* The wrapper owns horizontal overflow — the table may exceed the
+   column and scroll, never push the column itself wide. */
+.md-tablewrap {
+	overflow-x: auto;
+}
 .md-table th,
 .md-table td {
 	border: 1px solid var(--app-divider);
 	padding: 0.3rem 0.65rem;
 	text-align: left;
 	vertical-align: top;
+	/* anywhere (not break-word) so a long token — a sha256 in code —
+	   shrinks the cell's min-content width and the table fits instead
+	   of overflowing into the scroll path. */
+	overflow-wrap: anywhere;
 }
 .md-table th {
 	background: var(--app-hover);
@@ -836,6 +877,10 @@ h6.md-h {
 .msg-actions button:hover {
 	color: var(--app-fg);
 	background: var(--app-hover);
+}
+.msg-actions button.on {
+	color: var(--app-fg);
+	background: var(--app-active);
 }
 .msg-actions button:disabled {
 	color: var(--app-fg-subtle);
@@ -1454,6 +1499,17 @@ button.pathchip:hover svg {
 .attachment-thumb {
 	border-radius: 6px;
 }
+/* Voice notes stay in place instead of becoming a detached download. */
+.attachment.audio {
+	border-radius: 14px;
+	padding: 0.2rem 0.6rem;
+}
+.attachment.audio audio {
+	display: block;
+	width: 12rem;
+	max-width: 42vw;
+	height: 1.9rem;
+}
 /* A name that opens the file is a button wearing the name's look. */
 .attachment-name.link {
 	font-size: inherit;
@@ -1484,6 +1540,9 @@ button.pathchip:hover svg {
 	align-self: center;
 	margin: 0.25rem 0 0.75rem;
 	padding: 0.1rem 0.35rem 0.4rem;
+}
+.chat-wide .composer {
+	width: min(72rem, calc(100% - 2rem));
 }
 /* Focus is the moment the boundary matters most — typing draft text
    beside the transcript — so the hairline gains weight under focus
@@ -1596,6 +1655,63 @@ button.pathchip:hover svg {
 .knob select option {
 	background: var(--app-bg);
 	color: var(--app-fg);
+}
+/* The model knob's button twin — reads like the flat selects. */
+.knob-btn {
+	font: inherit;
+	font-size: 11px;
+	font-family: var(--font-mono);
+	color: var(--app-fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: 6px;
+	padding: 0.3rem 0.45rem;
+	cursor: pointer;
+	outline: none;
+}
+.knob-btn:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.knob-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+/* The model popover floats above the bar, right-anchored toward the knob. */
+.model-knob {
+	display: inline-flex;
+}
+.model-pop {
+	left: auto;
+	right: 0.5rem;
+	min-width: 15rem;
+}
+.model-pop li button {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+.model-pop .mi {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.model-pop .mi-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.model-pop .check {
+	color: var(--app-fg);
+}
+.model-pop .menu-div {
+	border-top: 1px solid var(--app-divider);
+	margin: 0.15rem 0;
 }
 
 /* Context gauge — the composer's window-utilization readout. Reads as
@@ -2059,8 +2175,8 @@ button.pathchip:hover svg {
 .prov input,
 .prov select,
 .keyentry input,
-.msheet-custom input,
-.msheet-custom select {
+.msheet-filter input,
+.msheet-filter select {
 	font: inherit;
 	font-size: 12.5px;
 	background: var(--app-bg);
@@ -2072,7 +2188,7 @@ button.pathchip:hover svg {
 }
 .frow input:focus,
 .chain-card input:focus,
-.msheet-custom input:focus {
+.msheet-filter input:focus {
 	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
 }
 .mono {
@@ -2093,8 +2209,45 @@ button.pathchip:hover svg {
 	background: var(--app-hover);
 }
 .valuebtn .val {
-	font-family: var(--font-mono);
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	overflow: hidden;
+	text-align: left;
+}
+.valuebtn .val-name {
 	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.valuebtn .val-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* A favorite row in Settings — friendly name over the raw ref, with
+   the chain-btns reorder/remove controls. */
+.fav-cell {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.fav-name {
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.fav-ref {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -2260,24 +2413,26 @@ button.pathchip:hover svg {
 }
 
 .chain-card {
-	border: 1px solid var(--app-divider);
-	border-radius: 10px;
-	background: var(--app-gray-50);
-	padding: 0.6rem 0.75rem;
 	display: flex;
 	flex-direction: column;
 	gap: 0.45rem;
-	margin-bottom: 0.5rem;
+	border-top: 1px solid var(--app-divider);
+}
+.chain-card:first-of-type {
+	border-top: 0;
 }
 .chain-head {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
+	row-gap: 0.35rem;
 }
 .chain-num {
 	font-family: var(--font-mono);
 	font-size: 11px;
 	color: var(--app-fg-muted);
-	flex: 1;
+	flex: none;
+	width: 1.4rem;
 }
 .chain-btns {
 	display: flex;
@@ -2487,6 +2642,19 @@ button.pathchip:hover svg {
 .mrow.sel {
 	background: var(--app-active);
 }
+.mrow .mcell {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.mrow .mname {
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .mrow .ref {
 	flex: 1;
 	min-width: 0;
@@ -2496,6 +2664,11 @@ button.pathchip:hover svg {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.mrow .mcell .ref {
+	flex: none;
+	color: var(--app-fg-muted);
+	font-size: 10.5px;
+}
 .mrow .off-label {
 	font-family: inherit;
 	color: var(--app-fg-muted);
@@ -2503,6 +2676,41 @@ button.pathchip:hover svg {
 .mrow .check {
 	color: var(--app-fg);
 	font-size: 12px;
+}
+/* A model row plus its star — the star is a sibling button, not
+   nested in the pick target. */
+.mline {
+	display: flex;
+	align-items: center;
+	border-radius: 8px;
+}
+.mline:hover {
+	background: var(--app-hover);
+}
+.mline .mrow {
+	flex: 1;
+	min-width: 0;
+}
+.mline:hover .mrow {
+	background: transparent;
+}
+.mline .mrow.sel {
+	background: var(--app-active);
+}
+.mstar {
+	flex: none;
+	font-size: 14px;
+	line-height: 1;
+	padding: 0.35rem 0.45rem;
+	border-radius: 6px;
+	color: var(--app-fg-subtle);
+}
+.mstar:hover {
+	color: var(--app-warning);
+	background: var(--app-hover);
+}
+.mstar.on {
+	color: var(--app-warning);
 }
 .mgroup {
 	font-size: 10.5px;
@@ -2512,31 +2720,23 @@ button.pathchip:hover svg {
 	color: var(--app-fg-subtle);
 	padding: 0.6rem 0.6rem 0.25rem;
 }
-.msheet-custom {
+.msheet-filter {
 	display: flex;
 	gap: 0.4rem;
 	padding: 0.6rem;
-	border-top: 1px solid var(--app-divider);
-	margin-top: 0.4rem;
+	border-bottom: 1px solid var(--app-divider);
 }
-.msheet-custom select {
+.msheet-filter select {
 	max-width: 9rem;
 }
-.msheet-custom input {
+.msheet-filter input {
 	flex: 1;
 	min-width: 0;
 }
-.msheet-custom button {
-	border: 1px solid var(--app-border);
-	border-radius: 8px;
-	padding: 0.35rem 0.7rem;
-	font-size: 12.5px;
-}
-.msheet-custom button:hover:not(:disabled) {
-	background: var(--app-hover);
-}
-.msheet-custom button:disabled {
-	opacity: 0.35;
+.mempty {
+	padding: 0.8rem 0.6rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
 }
 @media (min-width: 721px) {
 	.veil {
@@ -2588,6 +2788,11 @@ button.pathchip:hover svg {
 	display: flex;
 	flex-direction: column;
 	font-size: 12px;
+}
+.blocked-actions {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.75rem;
 }
 
 .doc-row {
@@ -2754,6 +2959,119 @@ button.pathchip:hover svg {
 .pill.st-stopped {
 	color: var(--app-danger);
 	border-color: color-mix(in oklab, var(--app-danger) 40%, transparent);
+}
+
+/* ---------- operator approvals ---------- */
+
+.msg.system {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--app-fg-muted);
+}
+
+.approval-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	margin: 0.5rem 0.4rem 1rem;
+}
+
+.approval-card {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.7rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	font-size: 13px;
+	line-height: 1.45;
+}
+.approval-card pre {
+	margin: 0;
+	font: inherit;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 20rem;
+	overflow-y: auto;
+}
+.approval-card.empty,
+.approval-card.settled {
+	color: var(--app-fg-muted);
+}
+.approval-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.9rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.approval-actions {
+	display: flex;
+	gap: 0.5rem;
+}
+.approval-actions button,
+.secret-reveal button {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.4rem 0.8rem;
+	font-size: 12.5px;
+}
+.approval-actions button:first-child {
+	color: var(--app-success);
+	border-color: color-mix(in oklab, var(--app-success) 40%, transparent);
+}
+.approval-actions button:hover:not(:disabled),
+.secret-reveal button:hover {
+	background: var(--app-hover);
+}
+.approval-actions button:disabled {
+	opacity: 0.45;
+}
+.approval-result {
+	border-left: 2px solid var(--app-border);
+	padding-left: 0.7rem;
+	font-size: 12.5px;
+}
+.secret-reveal {
+	border: 1px solid var(--app-warning);
+	border-radius: 8px;
+	padding: 0.55rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+}
+.secret-reveal pre {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+}
+
+.program-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	margin-top: 0.7rem;
+}
+.program-editor label {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.program-editor input,
+.program-editor textarea {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	padding: 0.45rem 0.6rem;
+	font: inherit;
+	font-size: 13px;
+}
+.program-editor textarea {
+	font-family: var(--font-mono);
+	resize: vertical;
 }
 
 /* ---------- intelligent ui ---------- */
@@ -4232,4 +4550,439 @@ button.link:hover {
 .script-calls code {
 	font-family: var(--font-mono);
 	color: var(--app-fg);
+}
+
+/* Responsibility feed — project + home surfaces */
+.resp-feed {
+	margin: 14px 0;
+}
+.resp-feed-h {
+	margin: 0 0 8px;
+	font-size: 1rem;
+}
+.resp-item {
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	margin-bottom: 8px;
+}
+.resp-pill {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: baseline;
+	padding: 8px 10px;
+	cursor: pointer;
+	list-style: none;
+}
+.resp-pill::-webkit-details-marker {
+	display: none;
+}
+.resp-status {
+	font-size: 0.75rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 1px 6px;
+	border-radius: 4px;
+	background: #2a4;
+	color: #042;
+}
+.resp-status-paused {
+	background: #a83;
+	color: #210;
+}
+.resp-status-blocked,
+.resp-status-waiting_for_operator {
+	background: #c44;
+	color: #200;
+}
+.resp-status-completed {
+	background: #555;
+	color: #ddd;
+}
+.resp-status-cancelled {
+	background: #333;
+	color: #999;
+}
+.resp-outcome {
+	font-weight: 600;
+}
+.resp-agents,
+.resp-fresh,
+.resp-next {
+	font-size: 0.8rem;
+	opacity: 0.75;
+}
+.resp-detail {
+	padding: 0 10px 10px;
+	border-top: 1px solid var(--app-divider);
+}
+.resp-warn {
+	color: #ca4;
+	font-size: 0.85rem;
+}
+.resp-events-older {
+	margin: 2px 0;
+	font-size: 0.75rem;
+	opacity: 0.5;
+}
+.resp-understanding p {
+	margin: 4px 0;
+	font-size: 0.85rem;
+}
+.resp-rev {
+	opacity: 0.5;
+	font-size: 0.75rem;
+}
+.resp-section h4 {
+	margin: 10px 0 4px;
+	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	opacity: 0.6;
+}
+.resp-att,
+.resp-op,
+.resp-event {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: baseline;
+	font-size: 0.85rem;
+	padding: 3px 0;
+}
+.resp-att-health,
+.resp-op-state,
+.resp-event-kind {
+	font-size: 0.75rem;
+	opacity: 0.8;
+}
+.resp-att-meta,
+.resp-op-meta,
+.resp-event-meta,
+.resp-event-origin {
+	font-size: 0.75rem;
+	opacity: 0.6;
+}
+.resp-op-brief,
+.resp-event-text {
+	flex: 1 1 100%;
+}
+.resp-controls {
+	display: flex;
+	gap: 8px;
+	margin-top: 10px;
+}
+.resp-correct {
+	margin-top: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.resp-correct textarea {
+	width: 100%;
+}
+
+/* Skill picker sheet (ruling 2026-10-21): catalog rows + the
+   from-link preview card. Reuses the msheet chrome. */
+.skill-picker-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 0.75rem;
+	width: 100%;
+	text-align: left;
+	padding: 0.45rem 0.5rem;
+	border: 0;
+	border-bottom: 1px solid var(--line, #ddd);
+	background: none;
+	cursor: pointer;
+}
+.skill-picker-row:hover {
+	background: var(--hover, rgba(127, 127, 127, 0.12));
+}
+.skill-picker-main {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	min-width: 0;
+}
+.skill-picker-sub {
+	color: var(--dim, #777);
+	font-size: 0.85em;
+	overflow-wrap: anywhere;
+}
+.skill-picker-side {
+	color: var(--dim, #777);
+	font-size: 0.85em;
+	white-space: nowrap;
+}
+.skill-from-link {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	margin-top: 0.75rem;
+	padding-top: 0.75rem;
+	border-top: 1px solid var(--line, #ddd);
+}
+.skill-from-link .link-row {
+	display: flex;
+	gap: 0.4rem;
+}
+.skill-from-link .link-row input {
+	flex: 1;
+	min-width: 0;
+}
+.skill-preview-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	padding: 0.5rem;
+	border: 1px solid var(--line, #ddd);
+	border-radius: 8px;
+}
+
+/* ---------- context window view (design/app.md → Context window view) ---------- */
+.win-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.6rem;
+	margin: 0.6rem 0.4rem;
+}
+.win-controls .chip {
+	cursor: pointer;
+	background: none;
+}
+.win-controls .chip.on {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.win-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.win-search {
+	min-width: 10rem;
+	flex: 1;
+	max-width: 18rem;
+}
+.win-cap {
+	margin: 0.4rem;
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+}
+.win-stale {
+	color: var(--app-warning, #d7a94b);
+}
+.win-bar {
+	display: flex;
+	height: 8px;
+	border-radius: 4px;
+	overflow: hidden;
+	margin: 0.4rem;
+	background: var(--app-divider);
+}
+/* Segment hues — nth-child, so order = builder order in the view. */
+.win-bar-seg {
+	min-width: 1px;
+}
+.win-bar-seg:nth-child(6n + 1) {
+	background: color-mix(in oklab, var(--app-fg) 70%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 2) {
+	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 3) {
+	background: color-mix(in oklab, var(--app-fg) 42%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 4) {
+	background: color-mix(in oklab, var(--app-fg) 32%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 5) {
+	background: color-mix(in oklab, var(--app-fg) 24%, var(--app-bg));
+}
+.win-bar-seg:nth-child(6n + 6) {
+	background: color-mix(in oklab, var(--app-fg) 17%, var(--app-bg));
+}
+.win-segments {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.3rem 1rem;
+	list-style: none;
+	margin: 0.2rem 0.4rem 0.6rem;
+	padding: 0;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.win-segments .win-dot {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	border-radius: 2px;
+	margin-right: 0.35rem;
+	background: var(--app-fg-muted);
+}
+.win-h3 {
+	margin: 0.8rem 0.4rem 0.3rem;
+	font-size: 13px;
+	color: var(--app-fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.win-json {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	background: var(--app-gray-950);
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	padding: 0.5rem;
+	margin: 0.3rem 0;
+	max-height: 24rem;
+	overflow: auto;
+}
+.win-system {
+	max-height: 32rem;
+}
+.win-text {
+	font-size: 13.5px;
+}
+.win-tools,
+.win-msgs {
+	list-style: none;
+	margin: 0;
+	padding: 0 0.4rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.win-tools details,
+.win-msg {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.45rem 0.6rem;
+}
+.win-tools summary,
+.win-parts summary {
+	cursor: pointer;
+	font-family: var(--font-mono);
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+.win-tooldesc {
+	margin: 0.4rem 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.win-msg-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	margin-bottom: 0.25rem;
+}
+.win-idx {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.win-role {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	padding: 0.05rem 0.4rem;
+	border-radius: 6px;
+	background: var(--app-hover);
+}
+.win-msg-user .win-role {
+	background: color-mix(in oklab, var(--app-fg) 18%, var(--app-bg));
+}
+.win-msg-tool .win-role {
+	background: var(--app-gray-100);
+	color: var(--app-fg-muted);
+}
+.win-size {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+}
+.win-parts {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.win-parts > .chip {
+	align-self: flex-start;
+}
+.win-tablewrap {
+	overflow-x: auto;
+	margin: 0.3rem 0.4rem;
+}
+.win-table {
+	border-collapse: collapse;
+	font-size: 12px;
+	font-family: var(--font-mono);
+	white-space: nowrap;
+}
+.win-table th,
+.win-table td {
+	text-align: left;
+	padding: 0.2rem 0.55rem;
+	border-bottom: 1px solid var(--app-divider);
+}
+.win-table th {
+	color: var(--app-fg-subtle);
+	font-weight: 500;
+}
+
+.keystat {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+/* Settings selects — dark, token-styled, with a chevron. */
+.settings select {
+	appearance: none;
+	-webkit-appearance: none;
+	font: inherit;
+	font-size: 12.5px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 1.7rem 0.4rem 0.6rem;
+	outline: none;
+	background-image:
+		linear-gradient(45deg, transparent 50%, var(--app-fg-muted) 50%),
+		linear-gradient(135deg, var(--app-fg-muted) 50%, transparent 50%);
+	background-position:
+		calc(100% - 14px) 55%,
+		calc(100% - 9px) 55%;
+	background-size: 5px 5px;
+	background-repeat: no-repeat;
+	max-width: 100%;
+}
+.settings select option {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+/* Model popover rows: label stack left, check pinned right, never
+   wraps. The menu also carries .note-pick, whose li button is
+   display:block — out-rank it. */
+.note-pick.model-pop li button {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	flex-wrap: nowrap;
+}
+.note-pick.model-pop .check {
+	flex: none;
+	margin-left: auto;
+}
+.chatgpt-code {
+	font-size: 1.3em;
+	letter-spacing: 0.12em;
 }

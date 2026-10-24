@@ -1,11 +1,15 @@
 import { log } from "../log.ts";
 import { handleAttachmentsRoute } from "./app-attachments.ts";
+import { handleAttentionRoute } from "./app-attention.ts";
 import { appAuth } from "./app-auth.ts";
 import { handleChatRoute } from "./app-chat.ts";
 import { handleConfigRoute } from "./app-config.ts";
 import { handleConversationsRoute } from "./app-conversations.ts";
 import { handleNotesRoute } from "./app-notes.ts";
+import { handleProgramRoutes } from "./app-programs.ts";
 import { handleProjectsRoute } from "./app-projects.ts";
+import { handleAppPushRoute } from "./app-push.ts";
+import { handleResponsibilitiesRoute } from "./app-responsibilities.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { handleOperatorRoute } from "./operator.ts";
 
@@ -22,10 +26,14 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/skills": "skills",
 	"/api/app/skills/from": "skills/from",
 	"/api/app/skills/file": "skills/file",
+	"/api/app/skills/preview": "skills/preview",
 	"/api/app/skills/decide": "skills/decide",
 	"/api/app/attachments/file": "attachments/file",
 	"/api/app/identity": "identity",
 	"/api/app/log": "log",
+	"/api/app/accounts/chatgpt": "accounts/chatgpt",
+	"/api/app/accounts/chatgpt/login": "accounts/chatgpt/login",
+	"/api/app/accounts/chatgpt/logout": "accounts/chatgpt/logout",
 };
 
 export async function handleAppApi(
@@ -53,7 +61,11 @@ export async function handleAppApi(
 			);
 		}
 		if (
-			(opTail === "config" || opTail === "secrets" || opTail === "skills/decide") &&
+			(opTail === "config" ||
+				opTail === "secrets" ||
+				opTail === "skills/preview" ||
+				opTail === "skills/decide" ||
+				opTail === "memory/blocked") &&
 			req.method === "POST"
 		) {
 			const refusedJson = jsonBodyRefusal(req);
@@ -70,8 +82,12 @@ export async function handleAppApi(
 	}
 
 	const route =
+		(await handleProgramRoutes(req, url, deps)) ??
+		(await handleAttentionRoute(req, url, deps)) ??
+		(await handleAppPushRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
 		(await handleProjectsRoute(req, url, deps)) ??
+		(await handleResponsibilitiesRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??
 		(await handleConfigRoute(req, url, deps)) ??
 		(await handleChatRoute(req, url, deps)) ??

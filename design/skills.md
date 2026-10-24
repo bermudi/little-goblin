@@ -33,10 +33,137 @@ availability (docs/operations.md → Deploying; the herdr v2.0 seed
 against a v1.0 live copy misfired a pane-send, 2026-10-13).
 
 Invocation is `read_file` plus `bash`; activation is already observable
-in the tool-call log. Still out: a skill tool, per-skill tool scoping,
-fingerprints, immutable skill snapshots, additional catalog roots (host,
-project), per-conversation selection, a `/skills` command or mini-app
-surface.
+in the tool-call log. Explicit invocation (ruling 2026-10-21, below)
+rides a message part, not a tool. Still out: a skill tool, per-skill
+tool scoping, fingerprints, immutable skill snapshots, additional
+catalog roots (host, project), per-conversation selection.
+
+## Skill invocation (ruling 2026-10-21, operator ask)
+
+The prompt-mediated path is probabilistic — the model can skip the
+`read_file`, and a manual-only skill is by design unadvertised, so the
+operator has no lever that guarantees the body lands in context. The
+operator now has one: an invocation part on a user message, injected
+server-side. The app picker and the Telegram `/skill` command are two
+doors onto one mechanism.
+
+**The part.** `data-skill` on a user message, a union like the note
+part: `{ name }` resolves against the catalog (manual-only included —
+naming it IS the operator's override of `disable-model-invocation`);
+`{ url, path }` is a temp skill (below). Store format = wire format: the
+part persists, replays, and copies with history, and renders as a chip
+on the message — the transcript never lies. Validation is zod at the
+wire, mirroring the attachment-ref gate: a name matches the spec name
+rule; a temp path must name the descriptor's own cached SKILL.md —
+`<cache>/<digest>/<name>/SKILL.md`, not merely a descendant of the
+cache root (refined 2026-10-22: a support file is unscored, unbounded
+by the body cap, and never an injectable body; the resolver re-checks
+the binding against the descriptor so stored parts degrade the same
+way).
+
+**Owning-turn injection.** Every model view renders the part as a
+one-line marker (`[skill: name]` / `[temp skill: name (host)]`), so
+later turns know the invocation happened. The **body** is injected only
+into the turn that owns the invoking message — as an appended user
+ModelMessage after it, at admission (whole history) and on the steer
+path (claimed steers), the same append-only tail steering uses, so the
+prefix bytes never rewrite within the turn. The next turn's view carries
+the marker alone — a bounded suffix rewrite at the invocation point,
+the accepted price of owning-turn-only semantics. A body read that
+fails (skill deleted mid-flight, cache evicted) logs a warning and the
+marker stands alone; the turn never dies for a missing body. For a
+non-owning turn the resolver excludes the body outright: historical
+invocations resolve the marker name only, never re-reading SKILL.md.
+A temp marker still reads its descriptor for the display name.
+Operator resume copies a still-visible invocation's reference into the
+generated resume event — the body was never persisted, so only the new
+owning turn can inject it (design/runtime-turn.md → Operator resume).
+An injected body is a
+log line (`skill invoked`: conversation, skill or source host, bytes)
+plus the durable part — activation stays answerable from the log,
+though no tool call marks it.
+
+**Picker (app).** The composer gains a skill button opening the
+catalog: every valid entry, advertised and manual-only, with
+description and body size (no silent truncation — an explicit
+invocation is an explicit context-cost decision; the 105KB claude-api
+body is real). Picking stages a chip beside the upload chips; send
+appends the part. The `## skills` prompt section is untouched —
+manual-only stays unadvertised to the model; injection is server
+behavior, not a prompt contract, so conversations with prompts frozen
+before this ruling invoke identically.
+
+**Temp skills (ruling 2026-10-21, operator ask: "temp skill, not
+install"; hardened 2026-10-22).** A GitHub skill URL (tree/blob/raw
+forms; a SKILL.md leaf takes its parent dir — a skill is a directory)
+fetches server-side: one capped tarball download from codeload (public
+repos — private fails loud), and the fetched bytes are both the cache
+identity input and the extraction input — never a second fetch that
+could race a changed upstream. The download runs under one 60s
+application deadline covering headers AND the complete streamed body
+(a trickle can't reset it) — expiry, like any transport failure, is a
+typed `unreachable` refusal; the tar listing and the tar extraction
+each run under their own 60s deadline, and a kill/timeout/truncated
+pipe is a typed `oversized` refusal, never partial output. Cache identity is
+`sha256(sha256(tarball) + "\0" + canonicalSourceUrl)`, so equivalent
+tree/blob/raw forms of one skill share `state/skillcache/<digest>/`
+while sibling subtrees of the same tarball do not (cache, not state —
+deletable). Whole directory staged because skills' work lives beside
+their SKILL.md in script dirs the body tells the model to run.
+
+Pre-flight before payload. The archive's own `tar -t` listing
+(GNU tar, env-pinned) is parsed defensively before a single file is
+extracted: one safe common top-level prefix discovered from entries
+(never the synthesized `repo-ref`), canonical selected paths, regular
+files and directories only inside the selected subtree — links and
+specials refuse before extraction, as do the resource caps (256KiB
+root SKILL.md, 10MiB dir, 500 files, 500 dirs — inode-only payloads
+are payloads). Only then does member-anchored `tar -x` run, with the
+post-extraction walk retained as defense in depth. A cache dir whose
+descriptor is absent or corrupt is a broken cache, not a cache miss:
+it fails loud, never re-extracts over or repairs the incumbent, and a
+publish-race loser re-reads the incumbent. Frontmatter must parse and
+the name must match the directory — the operator previews a
+known-valid skill.
+
+**The gate is System One, the decision is the operator's.** The
+fetched body scores through the injection checker (the shared
+`design/system1.md` client) with the full cached bytes — no head-cut
+sampling, so a tail payload is scored, not skipped. The preview card
+shows name, description, body size, source repo, and the verdict —
+the operator clicks yes or no before anything stages or sends. The
+verdict is advisory, not a gate: a skill may legitimately instruct,
+and the operator may accept it. The route stamps the verdict onto the
+descriptor before the card renders — `previewed` marks the check
+*completed* (including `unavailable`), not consent; consent is the
+channel's confirm/tap on the preview card. The stamp is immutable:
+identical cached bytes (one digest) keep their first verdict — a
+re-preview shows the persisted verdict and runs no second score, so
+no outstanding confirmation's advisory can change under it (ruling
+2026-10-22). Injection gates on
+`previewed`, and a stamped `unavailable` rides the body as advisory
+preamble text, never a silent clean. On the app the card is the confirm; on Telegram `/skill <url>`
+replies with the preview and a ✅/🚫 row (pending keyed by a short
+token — the URL cannot ride the 64-byte callback cap; a pending
+confirm dies with the process, and the command re-runs instantly off
+the cache). `/skill <url> text…` holds the text for the turn the
+confirmation submits.
+
+**Injection preamble.** A temp body is injected wrapped: fetched-from
+line, the verdict line, not-installed notice, and the staged directory
+path — the model reaches the scripts with `read_file`/`bash`, no new
+capability. What never happens is persistence: a temp skill produces
+no catalog entry, no proposal, no provenance row. Catalog membership
+remains only via install, which stays the operator-approved
+conversational path — the fetched copy in skillcache is bytes beside
+a cache, not a skill.
+
+**Residual, accepted.** A temp skill is un-reviewed instruction text
+injected verbatim into context — the same residual every skill
+carries, minus prior review. Mitigations are the preview-before-send,
+the scored verdict, the caps, and operator-initiation being the only
+trigger. One-shot remote invocation without a confirm was considered
+and rejected: it injects unvalidated bytes with no decision point.
 
 ## Skill provenance (ruling 2026-10-16)
 
@@ -147,7 +274,15 @@ job (tune it, don't duplicate it).
   back by review id and reports proposals against disk (still proposed /
   installed / gone). No UI. Good/bad turn labels don't exist yet — the
   field ships empty until they do.
-- **Config.** Optional `reviewer` block; absent = feature off.
-  Hand-edited-only, like delegation and mail — no mini-app surface; the
-  gate's auth and thresholds are boot-captured, the review model
-  resolves live per review.
+- **Config.** Optional `reviewer` block; absent at boot = feature off.
+  Settings can park/restore the block; detailed tuning remains a bootstrap
+  or recovery file edit. Reviewer wiring is boot-bound: enabling,
+  disabling, or changing any reviewer configuration requires an approved
+  restart, reported by the shared config-pins warnings and restart hints.
+  A save never creates, replaces or removes the running reviewer: until
+  restart, an enabled-at-boot reviewer continues running even when its
+  block is parked, and an absent-at-boot reviewer stays absent after an
+  enable save. Gate auth, thresholds, queue cap and evidence limits are
+  boot-captured. The review model still resolves live per review, but the
+  whole block is conservatively restart-pinned; a live model lookup does
+  not make reviewer lifecycle or tuning hot-swappable.

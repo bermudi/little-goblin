@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
+import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 
 type Summary = AppConversationList["conversations"][number];
 
@@ -193,10 +194,12 @@ function ProjectIndexRow({
 // Archived projects wait behind the same collapsed-section pattern the
 // rail's archived chats use.
 export function ProjectsIndex({
+	token,
 	projects,
 	onOpen,
 	onNew,
 }: {
+	token: string | null;
 	projects: AppProject[];
 	onOpen: (id: string) => void;
 	onNew: () => void;
@@ -210,6 +213,7 @@ export function ProjectsIndex({
 	return (
 		<div className="ops">
 			<h2 className="ops-h2">Projects</h2>
+			<ResponsibilityFeed token={token} projectId={null} />
 			{active.length === 0 ? (
 				<p className="empty">
 					No projects yet — a project gives related chats their own directory and instructions.
@@ -534,6 +538,8 @@ export function ProjectView({
 			)}
 
 			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} />
+
+			<ResponsibilityFeed token={token} projectId={project.id} />
 
 			<h2 className="ops-h2">Chats</h2>
 			{activeChats.length === 0 ? (

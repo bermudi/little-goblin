@@ -7,13 +7,26 @@
 // when any exist — a dedicated code so the caller can tell "offenders
 // found" apart from the check itself failing (any other nonzero).
 // Values are secret material and never print — process.stdout.write,
-// not `log`, keeps the output bare names.
+// not `log`, keeps the output bare names. A missing auth.jsonl (the
+// fresh-install norm) is an empty store: exit 0 with one structured
+// stderr note, stdout staying bare names only.
 import { readFileSync } from "node:fs";
 import { invokesPassCliDirectly, parseAuthFile } from "../src/auth.ts";
 import { paths } from "../src/config.ts";
 
+let raw: string;
+try {
+	raw = readFileSync(paths.auth(), "utf8");
+} catch (err) {
+	if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	process.stderr.write(
+		`${JSON.stringify({ level: "warn", msg: "no auth.jsonl — no records to scan", path: paths.auth() })}\n`,
+	);
+	process.exit(0);
+}
+
 const offenders = new Set<string>();
-for (const rec of parseAuthFile(readFileSync(paths.auth(), "utf8"))) {
+for (const rec of parseAuthFile(raw)) {
 	if (rec.value.startsWith("!") && invokesPassCliDirectly(rec.value.slice(1))) {
 		offenders.add(rec.name);
 	}

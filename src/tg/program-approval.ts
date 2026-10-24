@@ -1,18 +1,22 @@
-// The Telegram side of the program grant boundary: requestApproval
-// posts the complete immutable candidate — charter in full plus the
-// resulting trigger set — chunked but never truncated, buttons on the
-// last chunk only. handleTap turns the operator's tap into the store's
-// one-transaction decision: no tap, no activation. A hook requested by
-// a proposal is minted here at grant time — the token never enters
-// model context, tool results, stamps or logs; it goes only to the
-// operators' private chats.
+// Telegram presentation for program grants: post the complete
+// immutable candidate in chunks, translate callback taps into the
+// shared decision owner, answer callbacks, and stamp the result. Durable
+// approval/rejection and hook minting live in ../program-approval.ts.
+// In-flight taps are tracked so stop() can join them at shutdown: the
+// token's plaintext exists only inside that delivery.
 
 import type { Api } from "grammy";
 import { formatAddress } from "../conversation.ts";
 import { log } from "../log.ts";
-import { hookTokenHash, hookUrl, newHookToken } from "../program-hook.ts";
-import type { ProgramProposal, ProposalRefusal } from "../program-proposals.ts";
+import {
+	proposalText,
+	refusalText,
+	type ProgramApproval,
+	type ProgramDecisionOutcome,
+} from "../program-approval.ts";
+import type { ProgramProposal } from "../program-proposals.ts";
 import type { ProgramsStore } from "../programs.ts";
+import { telegramActor, telegramAddressOf } from "../targets.ts";
 import { withTimeout } from "./deadline.ts";
 
 export const PROGRAM_APPROVE_PREFIX = "program:approve:";
@@ -31,61 +35,37 @@ export interface ProgramApprovalQuery {
 	};
 }
 
-export interface ProgramApprovalDeps {
+export interface TelegramProgramApprovalDeps {
 	api: Api;
-	programs: Pick<ProgramsStore, "get" | "proposals">;
-	publicUrl(): string | undefined;
+	approval: ProgramApproval;
+	programs: Pick<ProgramsStore, "get">;
 	/** The same operator-DM lane the hook tool uses — secret delivery
 	 *  stays behind this one seam. */
 	sendPrivate(text: string): Promise<void>;
-	now?(): Date;
 }
 
-export interface ProgramApproval {
-	requestApproval(proposal: ProgramProposal): Promise<void>;
+export interface TelegramProgramApproval {
 	handleTap(query: ProgramApprovalQuery): Promise<void>;
+	/** Joins in-flight taps — shutdown's drain budget bounds the wait so
+	 *  an approved hook's credential delivery can't be cut off
+	 *  mid-await. */
+	stop(): Promise<void>;
 }
 
-export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval {
-	const requestApproval = async (proposal: ProgramProposal): Promise<void> => {
-		const chunks = chunkProposalText(proposalText(deps.programs, proposal));
-		for (let i = 0; i < chunks.length; i++) {
-			const last = i === chunks.length - 1;
-			await withTimeout(
-				deps.api.sendMessage(proposal.chatId, chunks[i]!, {
-					...(proposal.threadId !== null ? { message_thread_id: proposal.threadId } : {}),
-					...(last
-						? {
-								reply_markup: {
-									inline_keyboard: [
-										[
-											{
-												text: "✅ Approve",
-												callback_data: `${PROGRAM_APPROVE_PREFIX}${proposal.id}`,
-											},
-											{
-												text: "🚫 Reject",
-												callback_data: `${PROGRAM_REJECT_PREFIX}${proposal.id}`,
-											},
-										],
-									],
-								},
-							}
-						: {}),
-				}),
-				"sendMessage",
-			);
-		}
-		log.info("program approval posted", {
-			proposal: proposal.id,
-			kind: proposal.kind,
-			conversation: formatAddress(
-				proposal.threadId === null
-					? { kind: "dm", chatId: proposal.chatId }
-					: { kind: "topic", chatId: proposal.chatId, threadId: proposal.threadId },
-			),
-			chunks: chunks.length,
-		});
+export function startTelegramProgramApproval(
+	deps: TelegramProgramApprovalDeps,
+): TelegramProgramApproval {
+	// In-flight taps; stop() joins them (mail-approval's pattern). The
+	// tap matters most: activation commits before the callback answer and
+	// the private credential delivery, and the token's plaintext exists
+	// only in that handler — losing the process mid-await loses it
+	// permanently.
+	const inFlight = new Set<Promise<void>>();
+	const tracked = (run: () => Promise<void>): Promise<void> => {
+		const p = run();
+		inFlight.add(p);
+		void p.catch(() => {}).then(() => inFlight.delete(p));
+		return p;
 	};
 
 	const handleTap = async (query: ProgramApprovalQuery): Promise<void> => {
@@ -116,184 +96,103 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 			await answer("unknown button");
 			return;
 		}
-		const op = match[1]!;
+		const action = match[1] === "approve" ? "approve" : "reject";
 		const proposalId = Number(match[2]);
-		const proposal = deps.programs.proposals.get(proposalId);
-		if (proposal === null) {
-			await answer("proposal gone");
-			return;
-		}
-		if (proposal.state !== "pending") {
-			await stripButtons(deps.api, proposal, query);
-			await answer(`already ${proposal.state}`);
-			return;
-		}
-
-		if (op === "reject") {
-			const outcome = deps.programs.proposals.reject(proposalId, query.from.id, deps.now?.());
-			if (outcome.kind !== "rejected") {
-				await answer(refusalText(outcome.refusal));
-				return;
+		const outcome = await deps.approval.decide(proposalId, action, telegramActor(query.from.id));
+		if (outcome.kind === "refused") {
+			await answer(telegramRefusalText(outcome));
+			if (outcome.proposal !== null && outcome.proposal.state !== "pending") {
+				await stripButtons(deps.api, outcome.proposal, query);
 			}
-			await stamp(
-				deps.api,
-				proposal,
-				query,
-				`🚫 Proposal #${proposalId} rejected — nothing was granted.`,
-			);
-			await answer("rejected");
 			return;
 		}
-
-		// Approve. A requested hook mints here: publicUrl must exist
-		// before the grant, or the proposal stays pending for a later
-		// tap — approving with no reachable URL would activate a hook
-		// the operator can never receive.
-		const wantsHook =
-			proposal.kind === "create" ? proposal.draft?.hook === true : proposal.patch?.hook === true;
-		const base = wantsHook ? deps.publicUrl() : undefined;
-		if (wantsHook && base === undefined) {
+		if (outcome.kind === "needs-public-url") {
 			await answer(
 				"publicUrl isn't set — set it in the mini app, then approve again; the proposal stays pending",
 			);
 			return;
 		}
-		const token = wantsHook ? newHookToken() : undefined;
-		const outcome = deps.programs.proposals.approve(proposalId, query.from.id, {
-			...(token !== undefined ? { hookHash: hookTokenHash(token) } : {}),
-			...(deps.now !== undefined ? { now: deps.now() } : {}),
-		});
-		if (outcome.kind !== "activated") {
-			await answer(refusalText(outcome.refusal));
+		if (outcome.kind === "rejected") {
+			// The decision is committed — acknowledge before the card edit,
+			// which can sit out a flood wait longer than the tap lives.
+			await answer("rejected");
+			await stamp(
+				deps.api,
+				outcome.proposal,
+				query,
+				`🚫 Proposal #${proposalId} rejected — nothing was granted.`,
+			);
 			return;
 		}
-		const program = outcome.program;
-		if (token !== undefined) {
-			// The grant already landed — a delivery failure reports
-			// granted-but-undelivered with rotation guidance, never a
-			// pretended rollback.
+
+		// The grant already landed — acknowledge before delivery and the
+		// card edit, either of which can sit out a flood wait longer than
+		// the tap lives. A callback answers once, so anything later rides
+		// the stamped card, never a second toast.
+		await answer("approved");
+		if (outcome.hookUrl !== undefined) {
+			// A delivery failure reports granted-but-undelivered with
+			// rotation guidance, never a pretended rollback.
 			try {
 				await deps.sendPrivate(
-					`Webhook for program ${program.name}: ${hookUrl(base!, token)}\nKeep it secret; rotate via goblin if it leaks.`,
+					`Webhook for program ${outcome.program.name}: ${outcome.hookUrl}\nKeep it secret; rotate via goblin if it leaks.`,
 				);
 			} catch (err) {
 				log.warn("program hook URL delivery failed — the grant is active", err, {
 					proposal: proposalId,
-					program: program.id,
+					program: outcome.program.id,
 				});
 				await stamp(
 					deps.api,
-					proposal,
+					outcome.proposal,
 					query,
-					`✅ Proposal #${proposalId} approved — "${program.name}" is active, but the webhook URL could not be delivered (${err instanceof Error ? err.message : String(err)}). Ask goblin to rotate the hook to resend it.`,
+					`✅ Proposal #${proposalId} approved — "${outcome.program.name}" ${programStatus(outcome)}, but the webhook URL could not be delivered (${err instanceof Error ? err.message : String(err)}). Ask goblin to rotate the hook to resend it.`,
 				);
-				await answer("approved — webhook URL delivery failed; rotate to resend");
 				return;
 			}
 		}
-		await stamp(
-			deps.api,
-			proposal,
-			query,
-			`✅ Proposal #${proposalId} approved — "${program.name}" is active${token !== undefined ? "; the webhook URL was sent privately" : ""}.`,
-		);
-		await answer("approved");
+		await stampApproval(deps.api, outcome, query);
 	};
 
-	return { requestApproval, handleTap };
-}
-
-function refusalText(refusal: ProposalRefusal): string {
-	switch (refusal) {
-		case "gone":
-			return "proposal gone";
-		case "decided":
-			return "already decided";
-		case "superseded":
-			return "a newer proposal superseded this one";
-		case "target-gone":
-			return "the program is gone — nothing applied; reject the proposal to clear it";
-		case "stale":
-			return "the program changed since this proposal — it no longer matches what was shown; reject it and ask again";
-		case "hook-unsatisfied":
-			return "the hook credential wasn't generated — nothing applied";
-	}
-}
-
-// The complete candidate: for a create, the whole draft; for an
-// update, the resulting configuration (current row merged with the
-// requested patch — the shown grant is what lands, not just the
-// diff). Nothing abbreviated: the operator approves exactly this.
-function proposalText(programs: Pick<ProgramsStore, "get">, proposal: ProgramProposal): string {
-	const header =
-		proposal.kind === "create"
-			? `📋 Program proposal #${proposal.id} — new program "${proposal.draft!.name}".`
-			: `📋 Program proposal #${proposal.id} — changes to program ${proposal.targetId}.`;
-	const lead =
-		proposal.kind === "create"
-			? "Approving grants it standing authority exactly as shown:"
-			: "Approving applies exactly this configuration:";
-	if (proposal.kind === "create") {
-		const d = proposal.draft!;
-		return [
-			header,
-			lead,
-			"",
-			`name: ${d.name}`,
-			"charter:",
-			d.charter,
-			"",
-			`triggers: ${triggerLine({ cron: d.cron, maxLatenessMinutes: d.maxLatenessMinutes, hook: d.hook, mailFilter: d.mailFilter })}`,
-		].join("\n");
-	}
-	const patch = proposal.patch!;
-	const target = proposal.targetId !== null ? programs.get(proposal.targetId) : null;
-	if (target === null) {
-		return [
-			header,
-			lead,
-			"",
-			"(the program is already gone — the approval will refuse; reject to clear it)",
-			"",
-			`requested: ${JSON.stringify(patch)}`,
-		].join("\n");
-	}
-	const merged = {
-		name: patch.name ?? target.name,
-		charter: patch.charter ?? target.charter,
-		cron: patch.cron !== undefined ? patch.cron : target.cron,
-		maxLatenessMinutes:
-			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : target.maxLatenessMinutes,
-		hook: patch.hook === true ? true : target.hookHash !== null,
-		mailFilter: patch.mailFilter !== undefined ? patch.mailFilter : target.mailFilter,
+	return {
+		handleTap: (query) => tracked(() => handleTap(query)),
+		stop: async () => {
+			const waits = [...inFlight];
+			if (waits.length > 0) {
+				log.info("program approval — joining in-flight handlers on shutdown", {
+					handlers: waits.length,
+				});
+			}
+			await Promise.allSettled(waits);
+		},
 	};
-	return [
-		header,
-		lead,
-		"",
-		`name: ${merged.name}`,
-		"charter:",
-		merged.charter,
-		"",
-		`triggers: ${triggerLine(merged)}`,
-	].join("\n");
 }
 
-function triggerLine(t: {
-	cron: string | null;
-	maxLatenessMinutes: number | null;
-	hook: boolean;
-	mailFilter: string | null;
-}): string {
-	const parts: string[] = [];
-	if (t.cron !== null) {
-		parts.push(
-			`cron "${t.cron}"${t.maxLatenessMinutes !== null ? ` (fires at most ${t.maxLatenessMinutes}m late)` : " (no lateness limit)"}`,
-		);
+function telegramRefusalText(
+	outcome: Extract<ProgramDecisionOutcome, { kind: "refused" }>,
+): string {
+	if (outcome.refusal === "decided" && outcome.proposal !== null) {
+		return `already ${outcome.proposal.state}`;
 	}
-	if (t.hook) parts.push("webhook");
-	if (t.mailFilter !== null) parts.push(`mail filter "${t.mailFilter}"`);
-	return parts.length === 0 ? "none" : parts.join(", ");
+	if (outcome.refusal === "superseded") return "already superseded";
+	return refusalText(outcome.refusal);
+}
+
+function programStatus(outcome: Extract<ProgramDecisionOutcome, { kind: "activated" }>): string {
+	return outcome.program.enabled ? "is active" : "remains disabled";
+}
+
+async function stampApproval(
+	api: Api,
+	outcome: Extract<ProgramDecisionOutcome, { kind: "activated" }>,
+	query: ProgramApprovalQuery,
+): Promise<void> {
+	await stamp(
+		api,
+		outcome.proposal,
+		query,
+		`✅ Proposal #${outcome.proposal.id} approved — "${outcome.program.name}" ${programStatus(outcome)}${outcome.hookUrl !== undefined ? "; the webhook URL was sent privately" : ""}.`,
+	);
 }
 
 // Bounded input (the charter cap lives in the proposal schema) means
@@ -316,6 +215,63 @@ export function chunkProposalText(text: string): string[] {
 	return chunks;
 }
 
+export async function postProgramApproval(
+	api: Api,
+	programs: Pick<ProgramsStore, "get">,
+	proposal: ProgramProposal,
+	signal?: AbortSignal,
+): Promise<void> {
+	const address = telegramAddressOf(proposal.target);
+	if (address === null) throw new Error(`proposal ${proposal.id} is not addressed to Telegram`);
+	const chunks = chunkProposalText(proposalText(programs, proposal));
+	for (let i = 0; i < chunks.length; i++) {
+		// The staging turn fences its own posting: once stopped, no
+		// further chunks — and never the buttons chunk — may go out in
+		// its name. The durable proposal stays pending for
+		// program/review to re-send.
+		if (signal?.aborted) {
+			throw new Error(
+				`turn stopped before the approval card finished posting (${i}/${chunks.length} chunks sent) — proposal #${proposal.id} stays pending`,
+			);
+		}
+		const last = i === chunks.length - 1;
+		await withTimeout(
+			api.sendMessage(address.chatId, chunks[i]!, {
+				...(address.threadId !== null ? { message_thread_id: address.threadId } : {}),
+				...(last
+					? {
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{
+											text: "✅ Approve",
+											callback_data: `${PROGRAM_APPROVE_PREFIX}${proposal.id}`,
+										},
+										{
+											text: "🚫 Reject",
+											callback_data: `${PROGRAM_REJECT_PREFIX}${proposal.id}`,
+										},
+									],
+								],
+							},
+						}
+					: {}),
+			}),
+			"sendMessage",
+		);
+	}
+	log.info("program approval posted", {
+		proposal: proposal.id,
+		kind: proposal.kind,
+		conversation: formatAddress(
+			address.threadId === null
+				? { kind: "dm", chatId: address.chatId }
+				: { kind: "topic", chatId: address.chatId, threadId: address.threadId },
+		),
+		chunks: chunks.length,
+	});
+}
+
 async function stamp(
 	api: Api,
 	proposal: ProgramProposal,
@@ -323,9 +279,10 @@ async function stamp(
 	text: string,
 ): Promise<void> {
 	if (query.message === undefined) return;
+	const threadId = proposal.threadId;
 	await withTimeout(
 		api.editMessageText(query.message.chat.id, query.message.message_id, text, {
-			...(proposal.threadId !== null ? { message_thread_id: proposal.threadId } : {}),
+			...(threadId !== null ? { message_thread_id: threadId } : {}),
 			reply_markup: { inline_keyboard: [] },
 		}),
 		"editMessageText",

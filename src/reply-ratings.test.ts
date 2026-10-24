@@ -2,10 +2,10 @@
 // latest-wins reads — including across a reopened handle (a restart).
 
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { openStore } from "../conversation.ts";
-import { openRatings } from "./ratings.ts";
-import { tmpDb } from "../testkit.ts";
+import { Database } from "bun:sqlite";
+import { openStore } from "./conversation.ts";
+import { openRatings } from "./reply-ratings.ts";
+import { tmpDb } from "./testkit.ts";
 
 describe("reply ratings", () => {
 	test("record → latest round-trips all fields", () => {
@@ -74,6 +74,98 @@ describe("reply ratings", () => {
 			expect(openRatings(second.db).latest(-100, 5)?.rating).toBe("down");
 		} finally {
 			second.close();
+		}
+	});
+
+	test("app rows key the durable event, stay channel-separated, and latest wins", () => {
+		const store = openStore(tmpDb("goblin-ratings-"));
+		try {
+			const ratings = openRatings(store.db);
+			ratings.record({
+				conversationId: "app/chat-01",
+				anchorSeq: 1,
+				chatId: 99,
+				messageId: 7,
+				rating: "down",
+			});
+			ratings.recordApp({
+				conversationId: "app/chat-01",
+				anchorSeq: 1,
+				eventSeq: 2,
+				rating: "up",
+			});
+			ratings.recordApp({
+				conversationId: "app/chat-01",
+				anchorSeq: 1,
+				eventSeq: 2,
+				rating: "down",
+			});
+			ratings.recordApp({
+				conversationId: "app/chat-01",
+				anchorSeq: 4,
+				eventSeq: 5,
+				rating: "up",
+			});
+
+			expect(ratings.latestEvent("app/chat-01", 2)).toMatchObject({
+				channel: "app",
+				conversationId: "app/chat-01",
+				anchorSeq: 1,
+				chatId: 0,
+				messageId: 0,
+				eventSeq: 2,
+				rating: "down",
+			});
+			expect(ratings.listApp("app/chat-01").map((r) => [r.eventSeq, r.rating])).toEqual([
+				[2, "down"],
+				[5, "up"],
+			]);
+			expect(ratings.latest(99, 7)?.channel).toBe("telegram");
+			expect(ratings.latest(0, 2)).toBeNull();
+			expect(ratings.latestEvent("app/other", 2)).toBeNull();
+		} finally {
+			store.close();
+		}
+	});
+
+	test("an existing Telegram-only table gains the app columns without losing rows", () => {
+		const path = tmpDb("goblin-ratings-");
+		const legacy = new Database(path);
+		legacy.exec(`
+			CREATE TABLE reply_ratings (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				conversation_id TEXT NOT NULL,
+				anchor_seq INTEGER,
+				chat_id INTEGER NOT NULL,
+				message_id INTEGER NOT NULL,
+				rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+				created_at TEXT NOT NULL
+			);
+			INSERT INTO reply_ratings
+				(conversation_id, anchor_seq, chat_id, message_id, rating, created_at)
+			VALUES ('dm:1', 3, 1, 9, 'up', '2026-01-01T00:00:00Z');
+		`);
+		legacy.close();
+
+		const store = openStore(path);
+		try {
+			const ratings = openRatings(store.db);
+			expect(ratings.latest(1, 9)).toMatchObject({
+				channel: "telegram",
+				conversationId: "dm:1",
+				anchorSeq: 3,
+				eventSeq: null,
+				rating: "up",
+			});
+			ratings.recordApp({
+				conversationId: "app/chat-01",
+				anchorSeq: 1,
+				eventSeq: 2,
+				rating: "down",
+			});
+			expect(ratings.latestEvent("app/chat-01", 2)?.rating).toBe("down");
+		} finally {
+			store.close();
 		}
 	});
 

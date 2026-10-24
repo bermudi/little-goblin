@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { authDefaults, type Config, memoryConfigSchema, parseConfig } from "../../src/config.ts";
 import {
 	bodyFromDraft,
+	capabilityFlags,
 	displayLevel,
 	draftFromConfig,
 	emptyTranscription,
@@ -35,6 +36,7 @@ const baseConfig = (): Config => ({
 	operators: [111],
 	allowedUsers: [111, 222],
 	telegram: {
+		enabled: true,
 		model: "route/auto",
 		thinking: "low",
 		dmGapMinutes: 45,
@@ -61,11 +63,14 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	titleModel: "",
 	favorites: [],
 	thinking: "medium",
+	telegramEnabled: true,
 	telegramModel: "main/gpt-5",
 	telegramThinking: "medium",
 	tts: null,
 	transcription: null,
 	vision: null,
+	image: null,
+	capabilities: capabilityFlags(),
 	search: null,
 	fetch: null,
 	operators: [111],
@@ -84,7 +89,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 describe("draftFromConfig", () => {
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {
 		const c = baseConfig();
-		c.telegram = { dmGapMinutes: 45, richReplies: true, showReasoning: false };
+		c.telegram = { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false };
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toBeNull();
 		expect(d.transcription).toBeNull();
@@ -225,6 +230,19 @@ describe("validateDraft", () => {
 	test("both models are required", () => {
 		expect(validateDraft(draft({ model: "" }), [prov()])).toMatch(/app default/);
 		expect(validateDraft(draft({ telegramModel: "" }), [prov()])).toMatch(/Telegram/);
+	});
+
+	test("a disabled Telegram channel allows no model and no operators, and serializes its switch", () => {
+		const c = baseConfig();
+		c.telegram.enabled = false;
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.telegramEnabled).toBe(false);
+		const off = { ...d, operators: [], telegramModel: "" };
+		expect(validateDraft(off, providers)).toBeNull();
+		const body = bodyFromDraft(off, providers, authDefaults);
+		expect(body.operators).toEqual([]);
+		expect(body.telegram.enabled).toBe(false);
+		expect(body.telegram).not.toHaveProperty("model");
 	});
 });
 
@@ -491,6 +509,25 @@ describe("transcription block", () => {
 			kind: "whistle",
 			model: "",
 			auth: "",
+		});
+	});
+
+	// onemin's language vocabulary is the widest in the app (locales for
+	// latest_short/long, fil/yue for qwen3) — carried text must fit the
+	// target kind's narrower regex or the save 422s.
+	test("leaving onemin downgrades the locale and drops un-fittable codes", () => {
+		const locale = { ...emptyTranscription("onemin"), language: "en-US" };
+		expect(switchTranscriptionKind(locale, "groq")).toMatchObject({ language: "en" });
+		const qwen = { ...emptyTranscription("onemin"), language: "yue" };
+		expect(switchTranscriptionKind(qwen, "groq").language).toBe("");
+		// A stashed value restores verbatim — the guard only touches
+		// carried text.
+		const stash: TrKindStash = {};
+		switchTranscriptionKind(locale, "groq", stash);
+		expect(
+			switchTranscriptionKind({ ...emptyTranscription("groq") }, "onemin", stash),
+		).toMatchObject({
+			language: "en-US",
 		});
 	});
 
@@ -803,5 +840,122 @@ describe("tts block", () => {
 		// switching to it again would restore model + auth.
 		expect(or).toMatchObject({ kind: "edge", voice: "en-US-AndrewNeural" });
 		expect(stash.openrouter).toEqual({ voice: "", model: "fish-x", auth: "or-key" });
+	});
+});
+
+describe("opaque round-trip", () => {
+	// Every field the UI doesn't render still rides the draft — a save
+	// must write them back byte-for-byte. If a new input is added for one
+	// of these, it's still covered (the save just may change it).
+	test("file-only fields survive draftFromConfig → bodyFromDraft", () => {
+		const c = parseConfig({
+			providers: {
+				main: {
+					kind: "openai-compatible",
+					baseUrl: "https://api.example.test",
+					auth: "main-record",
+				},
+				zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
+				or: { kind: "openrouter", auth: "or-record" },
+				dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+			},
+			model: "main/gpt-5",
+			operators: [111],
+			allowedUsers: [111],
+			telegram: {
+				model: "main/gpt-5",
+				apiRoot: "https://tg-proxy.example.test",
+				dmGapMinutes: 30,
+			},
+			publicUrl: "https://goblin.example.test",
+			http: { port: 9999 },
+			search: [{ kind: "brave", auth: "brave-record" }, { kind: "jina" }],
+			fetch: [{ kind: "parallel", auth: "parallel-record" }],
+			tts: { kind: "onemin", model: "tts-1", auth: "onemin-record", voice: "onyx" },
+			transcription: {
+				kind: "whistle",
+				engine: "whisper.cpp",
+				weights: "/models/ggml-large.bin",
+				keywords: ["goblin"],
+				language: "en",
+				fallbacks: [{ kind: "groq", model: "whisper-x", auth: "groq-record", language: "de" }],
+			},
+			vision: { model: "main/vlm", maxTokens: 4321, mode: "always" },
+			image: { model: "main/dalle", size: "1024x1536" },
+			memory: {
+				baseUrl: "https://mem.example.test",
+				bankId: "bank-one",
+				auth: "mem-record",
+				budget: "high",
+				maxTokens: 2048,
+				recallTimeoutMs: 3000,
+				preferObservations: false,
+				minScores: { semantic: 0.7 },
+				searchMaxTokens: 999,
+				searchBudget: "low",
+				searchTimeoutMs: 1500,
+				searchMinScores: { semantic: 0.4 },
+				reflectMaxTokens: 1111,
+				reflectBudget: "high",
+				reflectTimeoutMs: 9000,
+			},
+		});
+		const { draft, providers } = draftFromConfig(c);
+		const body = bodyFromDraft(draft, providers, authDefaults);
+		// Non-form fields: verbatim.
+		expect(body.telegram.apiRoot).toBe("https://tg-proxy.example.test");
+		expect(body.http).toEqual({ port: 9999 });
+		expect(body.publicUrl).toBe("https://goblin.example.test");
+		// Provider identities — preset base url, every auth record,
+		// codex's authFile — all preserved.
+		expect(body.providers).toEqual({
+			main: {
+				kind: "openai-compatible",
+				baseUrl: "https://api.example.test",
+				auth: "main-record",
+			},
+			zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
+			or: { kind: "openrouter", auth: "or-record" },
+			dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+		});
+		// Chain auth records ride through untouched.
+		expect(body.search).toEqual([{ kind: "brave", auth: "brave-record" }, { kind: "jina" }]);
+		expect(body.fetch).toEqual([{ kind: "parallel", auth: "parallel-record" }]);
+		// Voice blocks: model/auth/voice and whistle's engine/weights.
+		expect(body.tts).toEqual({
+			kind: "onemin",
+			model: "tts-1",
+			auth: "onemin-record",
+			voice: "onyx",
+		});
+		expect(body.transcription).toMatchObject({
+			kind: "whistle",
+			engine: "whisper.cpp",
+			weights: "/models/ggml-large.bin",
+			keywords: ["goblin"],
+			language: "en",
+			fallbacks: [{ kind: "groq", model: "whisper-x", auth: "groq-record", language: "de" }],
+		});
+		// Helpers keep their tuning.
+		expect(body.vision).toEqual({ model: "main/vlm", maxTokens: 4321, mode: "always" });
+		expect(body.image).toEqual({ model: "main/dalle", size: "1024x1536" });
+		// Memory: the installer-owned connection plus every tuning knob.
+		expect(body.memory).toEqual({
+			baseUrl: "https://mem.example.test",
+			bankId: "bank-one",
+			auth: "mem-record",
+			budget: "high",
+			maxTokens: 2048,
+			recallTimeoutMs: 3000,
+			preferObservations: false,
+			minScores: { semantic: 0.7 },
+			searchMaxTokens: 999,
+			searchBudget: "low",
+			searchTimeoutMs: 1500,
+			searchMinScores: { semantic: 0.4 },
+			reflectMaxTokens: 1111,
+			reflectBudget: "high",
+			reflectTimeoutMs: 9000,
+		});
 	});
 });

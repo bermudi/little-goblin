@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getMemoryStatus, listMemoryDocuments } from "./api.ts";
+import { decideBlockedMemory, getMemoryStatus, listMemoryDocuments } from "./api.ts";
 import { describe } from "./opsShared.tsx";
 import { MemoryDocDetail, MemoryDocRow, relTime, useMemoryDocSheet } from "./memoryShared.tsx";
 import type { MemoryDocListItem, MemoryStatusResponse } from "../../src/http/operator-wire.ts";
@@ -7,7 +7,15 @@ import type { MemoryDocListItem, MemoryStatusResponse } from "../../src/http/ope
 const PAGE = 20;
 type MemoryFilter = { query: string; token: string | null };
 
-function StatusCard({ status }: { status: MemoryStatusResponse }) {
+function StatusCard({
+	status,
+	busy,
+	onBlocked,
+}: {
+	status: MemoryStatusResponse;
+	busy: "retry" | "dismiss" | null;
+	onBlocked: (action: "retry" | "dismiss") => void;
+}) {
 	return (
 		<div className="card">
 			<div className="stat-grid">
@@ -57,6 +65,26 @@ function StatusCard({ status }: { status: MemoryStatusResponse }) {
 					))}
 				</div>
 			)}
+			{status.blocked > 0 && (
+				<div className="blocked-actions">
+					<button
+						type="button"
+						className="ghost"
+						disabled={busy !== null}
+						onClick={() => onBlocked("retry")}
+					>
+						{busy === "retry" ? "Requeueing…" : "Retry blocked"}
+					</button>
+					<button
+						type="button"
+						className="ghost"
+						disabled={busy !== null}
+						onClick={() => onBlocked("dismiss")}
+					>
+						{busy === "dismiss" ? "Dismissing…" : "Dismiss blocked"}
+					</button>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -64,6 +92,8 @@ function StatusCard({ status }: { status: MemoryStatusResponse }) {
 export function MemoryView({ token }: { token: string | null }) {
 	const [status, setStatus] = useState<MemoryStatusResponse | null>(null);
 	const [statusErr, setStatusErr] = useState<string | null>(null);
+	const [blockedBusy, setBlockedBusy] = useState<"retry" | "dismiss" | null>(null);
+	const [blockedErr, setBlockedErr] = useState<string | null>(null);
 	const [q, setQ] = useState("");
 	const [items, setItems] = useState<MemoryDocListItem[]>([]);
 	const [total, setTotal] = useState(0);
@@ -90,6 +120,18 @@ export function MemoryView({ token }: { token: string | null }) {
 			clearInterval(t);
 		};
 	}, [token]);
+
+	const actOnBlocked = (action: "retry" | "dismiss") => {
+		setBlockedBusy(action);
+		setBlockedErr(null);
+		void decideBlockedMemory(token, action)
+			.then(() => getMemoryStatus(token))
+			.then(
+				(s) => setStatus(s),
+				(err: unknown) => setBlockedErr(describe(err)),
+			)
+			.finally(() => setBlockedBusy(null));
+	};
 
 	// Debounced search; each result page appends under "Load more".
 	const loadDocs = (
@@ -153,7 +195,12 @@ export function MemoryView({ token }: { token: string | null }) {
 		<div className="ops">
 			<h2 className="ops-h2">Status</h2>
 			{statusErr !== null && <p className="error">{statusErr}</p>}
-			{status === null ? <p className="empty">Loading…</p> : <StatusCard status={status} />}
+			{blockedErr !== null && <p className="error">{blockedErr}</p>}
+			{status === null ? (
+				<p className="empty">Loading…</p>
+			) : (
+				<StatusCard status={status} busy={blockedBusy} onBlocked={actOnBlocked} />
+			)}
 
 			{sheet.detail !== null ? (
 				<>

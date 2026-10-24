@@ -2,10 +2,10 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bermudi/little-goblin)
 
 
-A personal AI assistant that lives in Telegram. One operator, one process,
-running on your own machine. Talk to it in a chat; it answers, runs shell
-commands, reads and writes files, handles photos and voice notes, and can
-speak replies back as voice notes.
+A personal AI assistant with an installable app and an optional Telegram
+channel. One operator, one process, running on your own machine. Talk to it in
+the app or a Telegram chat; it answers, runs shell commands, reads and writes
+files, handles photos and voice notes, and can speak replies back as voice notes.
 
 Built on the Vercel AI SDK — `DESIGN.md` covers the why and the
 non-goals. It runs in one place: g7, this tree; `scripts/deploy.sh`
@@ -14,44 +14,50 @@ separate (see [`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph
 
-You message the bot on Telegram. Each forum topic (or the bare chat, if there
-are no topics) is its own conversation with its own history — make a topic to
-start something, post in an old topic to pick it back up. Your messages get
-answered by whatever model you've picked, with tools for files, shell,
-speech, scheduling, memory recall, web search and more. Common settings live
-in Telegram's Settings mini app; some optional integrations are configured
-by hand. Everything is stored under one folder
+The app is the primary operator channel: chat, approvals, programs, settings,
+memory, notifications, and recovery all live under `/app/`. Telegram is a
+parallel conversation channel when `telegram.enabled` is true — each forum
+topic (or the bare chat, if there are no topics) keeps its own history. Your
+messages get answered by whatever model you've picked, with tools for files,
+shell, speech, scheduling, memory recall, web search and more. Some optional
+integrations are configured by hand. Everything is stored under one folder
 (`~/goblin` by default).
 
 ## Quick start
 
 1. Install [bun](https://bun.sh) (>= 1.1) and make sure it's in your `PATH`.
 2. Copy `goblin.json5.example` to `~/goblin/goblin.json5` and fill it in
-   (bot token goes in `~/goblin/auth.jsonl`, not the config — see below).
+   (while Telegram is enabled, the bot token goes in `~/goblin/auth.jsonl`,
+   not the config — see below).
 3. Run `scripts/install.sh`. It refuses to start a half-configured service,
    so if something's missing it tells you what to fix instead of crash-looping.
-4. Message your bot on Telegram.
+4. Open `/app/` on the configured HTTP door; if Telegram is enabled, message
+   your bot there too.
 
 Full walkthrough: [`docs/setup.md`](docs/setup.md).
 
 ## Daily use
 
-- **Topics are conversations.** No `/new`, no `/resume` — Telegram does that job.
+- **The app owns the workflow:** chat, approvals, programs, settings, memory,
+  notifications, and recovery are all available under `/app/`, even when
+  Telegram is disabled.
+- **Telegram topics are conversations.** No `/new`, no `/resume` there —
+  Telegram does that job when the channel is on.
 - **Six commands:** `/voice` (voice-note replies on/off), `/stop`
   (interrupt), `/memory` (memory status, per-topic inclusion), `/forget`
   (delete remembered content), `/compact` (summarize older history), and
   `/start` (a canned hello). The settings ones are per-topic; model and
-  thinking effort live in the Settings mini app.
+  thinking effort live in the Settings view.
 - **Send anything:** photos, files, voice notes, videos. Voice gets
   transcribed so even text-only models can "hear" it.
 - **Memory is automatic (when enabled):** exchanges are remembered and
   recalled on their own — no "remember this". `/forget` removes; see
   [`docs/memory.md`](docs/memory.md).
-- **Settings mini app:** a Settings button in the chat opens the common
-  settings; delegation, Gmail, and the skill reviewer remain hand-configured.
-- **The app:** `<publicUrl>/app/` is a second door — a standalone web client
-  (installable PWA) for the reading Telegram does badly. App conversations
-  live only in the app; nothing mirrors. Bearer token or tailnet trust —
+- **Settings:** the app Settings view owns the common settings; delegation,
+  Gmail, and the skill reviewer remain hand-configured.
+- **Telegram:** `<publicUrl>/t/` is the channel-specific mini app when
+  `telegram.enabled` is true; it disappears with a clear 503 when the channel
+  is off. Bearer token or tailnet trust protects the app door —
   see [`docs/security.md`](docs/security.md#the-app-channels-auth).
 
 Details: [`docs/usage.md`](docs/usage.md). Voice features:

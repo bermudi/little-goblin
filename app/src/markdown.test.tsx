@@ -34,11 +34,44 @@ describe("Markdown", () => {
 		expect(html).toContain("nested");
 	});
 
-	test("a pipe table renders header and rows", () => {
+	test("a pipe table renders header and rows inside the scroll wrapper", () => {
 		const html = renderToStaticMarkup(<Markdown text={"| a | b |\n|---|---|\n| 1 | 2 |"} />);
+		expect(html).toContain('class="md-tablewrap"');
 		expect(html).toContain("<table");
 		expect(html).toContain("<th>a</th>");
 		expect(html).toContain("<td>1</td>");
+	});
+
+	// Delegation and program notices open with a machinery tag line —
+	// machine speech that must read as an envelope, not transcript prose.
+	test("a machinery tag line renders fenced, following prose stays text", () => {
+		const html = renderToStaticMarkup(
+			<Markdown
+				text={
+					'[delegation: #4 whistle-digest-check · done]\n\n<event source="delegation">\n# Report\n\nbody text'
+				}
+			/>,
+		);
+		expect(html).toContain('class="codeblock-lang">status');
+		expect(html).toContain("[delegation: #4 whistle-digest-check · done]");
+		expect(html).not.toContain("<p>[delegation:");
+		expect(html).toContain('class="md-h"');
+		expect(html).toContain("body text");
+	});
+
+	test("a program tag fences alone and its charter paragraph continues", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"[program: digest · trigger: cron 0 9 * * *]\nRun the digest."} />,
+		);
+		expect(html).toContain('class="codeblock-lang">status');
+		expect(html).toContain("Run the digest.");
+		expect(html).toContain("<p>Run the digest.</p>");
+	});
+
+	test("a bracket line that is not machinery stays a paragraph", () => {
+		const html = renderToStaticMarkup(<Markdown text={"[see this](https://example.com) link"} />);
+		expect(html).not.toContain("codeblock");
+		expect(html).toContain("<p>");
 	});
 
 	test("fenced code highlights a known language and labels it", () => {

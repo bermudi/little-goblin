@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { clampThinkingFor } from "./agent/thinking.ts";
 import { type Config, splitModelRef, type ThinkingLevel, thinkingLevels } from "./config.ts";
 import { log } from "./log.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
@@ -12,7 +13,10 @@ import { MemoryQueue } from "./memory/queue.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { retargetPruningMarker } from "./pruning-marker.ts";
+import { coordinationAnchors, ensureResponsibilitiesSchema } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import { ensureWakeSchema, sweepConversationWakes } from "./wake-store.ts";
+import { ensureWindowSchema } from "./window-capture.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 
 // Routing discriminates on kind alone; the app member's zeros are fillers,
@@ -261,7 +265,13 @@ export interface ConversationStore {
 	): Conversation;
 	// Initialize missing app settings once, no reset, no epoch fence;
 	// missing/non-app ids throw.
-	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
+	initializeAppSettings(
+		id: string,
+		defaults: ModelSettings & { providers?: Config["providers"] },
+	): ModelSettings;
+	// The stored pair with defaults filling gaps — no clamp, no write.
+	// Missing/non-app ids throw.
+	readAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// All guest conversations in a chat — closing guest access fences
 	// their running turns.
@@ -277,8 +287,10 @@ export interface ConversationStore {
 	clearPromptSnapshot(id: string): void;
 	// Settings patch + epoch bump in one transaction — never half-applied.
 	applySettings(id: string, patch: ConversationMetaPatch): number;
-	// One transaction; seq assigned here. anchorSeq ties a response to the
-	// user event that triggered its turn.
+	// One transaction; seq assigned here and returned (one per message,
+	// in order) — callers that journal the event need the real seq, not
+	// a lastUserSeq inference. anchorSeq ties a response to the user
+	// event that triggered its turn.
 	append(
 		id: string,
 		messages: UIMessage[],
@@ -286,7 +298,7 @@ export interface ConversationStore {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };
 		},
-	): void;
+	): number[];
 	// The causal view (anchored responses sort right after their user
 	// event) as messages; historyEntries adds seqs (recall blocks need
 	// positions); historyDetail adds anchors (compaction's cut rule).
@@ -606,6 +618,14 @@ export function openStore(dbPath: string): ConversationStore {
 	// this table.
 	ensureProjectsSchema(db);
 	ensureNotesSchema(db);
+	// Companion schemas whose rows reference conversations: ensured here
+	// so deleteConversation's anchor check and wake sweep always find
+	// their tables on this handle, and the FK chain is complete from the
+	// first open. context_windows carries no FK — the ensure keeps the
+	// sweep's delete unconditional on every handle.
+	ensureResponsibilitiesSchema(db);
+	ensureWakeSchema(db);
+	ensureWindowSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -764,14 +784,58 @@ export function openStore(dbPath: string): ConversationStore {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS reply_ratings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel TEXT NOT NULL DEFAULT 'telegram',
 			conversation_id TEXT NOT NULL,
 			anchor_seq INTEGER,
 			chat_id INTEGER NOT NULL,
 			message_id INTEGER NOT NULL,
+			event_seq INTEGER,
 			rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
 			created_at TEXT NOT NULL
 		)`);
-	db.run("CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(chat_id, message_id)");
+	const ratingCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(reply_ratings)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!ratingCols.has("channel")) {
+		db.run("ALTER TABLE reply_ratings ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'");
+	}
+	if (!ratingCols.has("event_seq")) {
+		db.run("ALTER TABLE reply_ratings ADD COLUMN event_seq INTEGER");
+	}
+	db.run(
+		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(channel, chat_id, message_id)",
+	);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
+	);
+	// Web Push subscriptions are endpoint-scoped operator devices. The
+	// endpoint and its keys are send credentials, so callers/log lines use
+	// endpoint_hash; only the sender boundary reads the raw row.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS app_push_subscriptions (
+			endpoint_hash TEXT PRIMARY KEY,
+			endpoint TEXT NOT NULL,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			expiration_time INTEGER,
+			user_agent TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`);
+	// One row = one terminal app notification delivered to one endpoint.
+	// Claimed only after send success, so a transient push outage can be
+	// retried by the next merged sink callback while a delivered device is
+	// not rung twice.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS app_push_deliveries (
+			notification_key TEXT NOT NULL,
+			endpoint_hash TEXT NOT NULL REFERENCES app_push_subscriptions(endpoint_hash) ON DELETE CASCADE,
+			sent_at TEXT NOT NULL,
+			PRIMARY KEY (notification_key, endpoint_hash)
+		)`);
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`
@@ -1048,6 +1112,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDeleteEvents = db.query("DELETE FROM events WHERE conversation_id = ?");
 	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
+	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
 
 	function previousDmRow(chatId: number): Row | null {
@@ -1124,16 +1189,42 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
 	}
 
-	function initializeSettings(id: string, defaults: ModelSettings): ModelSettings {
+	// The stored selection, defaults filling the gaps — no clamp, no
+	// write. Writers that re-derive the level need the raw pair so a
+	// normalization pass can't erase information first.
+	function readSettings(id: string, defaults: ModelSettings): ModelSettings {
 		const row = qGet.get(id);
 		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
-		const settings = modelSettingsSchema.parse({
+		return modelSettingsSchema.parse({
 			model: row.model ?? defaults.model,
 			thinking: row.thinking ?? defaults.thinking,
 		});
+	}
+
+	function initializeSettings(
+		id: string,
+		defaults: ModelSettings & { providers?: Config["providers"] },
+	): ModelSettings {
+		const row = qGet.get(id);
+		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
+		const stored = readSettings(id, defaults);
+		// A stored level the model can't express is a lie — persist the
+		// rung the wire clamp would land on instead of showing it.
+		const settings: ModelSettings = {
+			model: stored.model,
+			thinking: clampThinkingFor(defaults.providers ?? {}, stored.model, stored.thinking),
+		};
 		if (row.model === null || row.thinking === null) {
 			applyPatch(id, settings);
 			log.info("app conversation settings initialized", { conversation: id, ...settings });
+		} else if (settings.thinking !== stored.thinking) {
+			applyPatch(id, settings);
+			log.info("app conversation thinking clamped to the model's ladder", {
+				conversation: id,
+				model: settings.model,
+				from: stored.thinking,
+				to: settings.thinking,
+			});
 		}
 		return settings;
 	}
@@ -1299,6 +1390,10 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => initializeSettings(id, defaults))();
 		},
 
+		readAppSettings(id, defaults) {
+			return readSettings(id, defaults);
+		},
+
 		forkToApp(fromId, appId, defaultCwd, title, defaults) {
 			return db.transaction(() => {
 				const id = formatAddress(appAddress(appId));
@@ -1413,7 +1508,7 @@ export function openStore(dbPath: string): ConversationStore {
 		append(id, messages, opts) {
 			let operation: string | undefined;
 			let unarchived = false;
-			db.transaction(() => {
+			const seqs = db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
 				// Eligibility is stamped at admission, from the live exclusion
@@ -1456,6 +1551,7 @@ export function openStore(dbPath: string): ConversationStore {
 					}
 					operation = memoryQueue.enqueue(opts.memory.target, opts.memory.document);
 				}
+				return messages.map((_, i) => start + i + 1);
 			})();
 			if (operation)
 				log.info("memory queued", {
@@ -1466,6 +1562,7 @@ export function openStore(dbPath: string): ConversationStore {
 			if (unarchived) {
 				log.info("conversation unarchived on activity", { conversation: id });
 			}
+			return seqs;
 		},
 
 		lastUserSeq(id) {
@@ -1565,7 +1662,20 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		deleteConversation(id) {
-			db.transaction(() => {
+			const swept = db.transaction((): { wakes: number; workEvents: number } => {
+				// A coordination surface must not outlive the responsibility
+				// that stands on it: the handover loop and wake delivery
+				// would both dangle. Terminal responsibilities keep their
+				// records — the conversation stays too. Refuse with names,
+				// not the bare FK error the row delete would raise.
+				const anchors = coordinationAnchors(db, id);
+				if (anchors.length > 0) {
+					throw new Error(
+						`conversation ${id} coordinates ${anchors
+							.map((a) => `${a.responsibilityId} (${a.status})`)
+							.join(", ")} — resolve them before deleting`,
+					);
+				}
 				// Sever the rolling navigation chain first — successors'
 				// previous_dm_id would FK-fail the row delete (a demoted
 				// lane's persona reset is the one caller that deletes a
@@ -1597,11 +1707,25 @@ export function openStore(dbPath: string): ConversationStore {
 						[gone.id, gone.epoch],
 					);
 				}
+				// Wake rows are this conversation's delivery bookkeeping —
+				// they ride the delete, in the same transaction.
+				const counts = sweepConversationWakes(db, id);
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);
 				qDeleteContexts.run(id);
+				// The captured window has no FK — it rides the sweep so a
+				// re-minted id never inherits the last generation's prompt.
+				qDeleteWindows.run(id);
 				qDeleteConv.run(id);
+				return counts;
 			})();
+			if (swept.wakes > 0) {
+				log.info("wake rows swept with conversation", {
+					conversation: id,
+					wakes: swept.wakes,
+					workEvents: swept.workEvents,
+				});
+			}
 			// The purge waits for the commit: queued retention rides the
 			// append transaction only, so cancelling before the delete and
 			// then rolling back would strand those rows forever. A purge

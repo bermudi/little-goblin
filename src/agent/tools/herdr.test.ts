@@ -318,12 +318,13 @@ describe("herdr tool", () => {
 		const controller = new AbortController();
 		controller.abort();
 		const { calls, execute } = harness([]);
-		await expect(
-			execute(
-				{ action: "prompt", pane: "w1:p1", expect: "pi", text: "hi" },
-				{ signal: controller.signal },
-			),
-		).rejects.toThrow();
+		// An aborted preflight is a named refusal — nothing was sent, so
+		// the tool resolves the fenced verdict rather than throwing.
+		const out = (await execute(
+			{ action: "prompt", pane: "w1:p1", expect: "pi", text: "hi" },
+			{ signal: controller.signal },
+		)) as { code?: string };
+		expect(out.code).toBe("fenced");
 		expect(calls).toEqual([]);
 	});
 });

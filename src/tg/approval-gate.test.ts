@@ -193,6 +193,7 @@ describe("approval callbacks", () => {
 				handleTap: async () => {
 					taps++;
 				},
+				stop: async () => {},
 			}),
 		});
 		await running.bot.handleUpdate(callbackUpdate(1, "program:approve:1"));

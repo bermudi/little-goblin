@@ -132,30 +132,100 @@ notifies operators on terminal `onDone`.
 **Operator resume is a new source-linked exchange, not a retroactive
 attach** (ruling 2026-10-19). `/resume` admits a fresh attempt whose
 input is a NEW durable user event — a provenance prefix plus the
-original anchor's and the owned post-anchor inputs' parts verbatim —
-never the original event re-appended. The event rides the admission
-anchor, so the recovered instruction survives compaction and the reply
-anchors to the resume event itself; the prefix change is tail-only.
-Ownership is journaled as durable event seqs — never message ids, which
-are app-controlled and carry no uniqueness guarantee: `owned_input_seqs`
-records the admitted user seqs plus every successfully folded steer (one
-checkpoint write with the steer mark, after conversion and the
-post-await authority check), and `resume_request_seqs` on the
-interrupted source names the generated events that are this run's own —
-the same store transaction as the event append, so a partial write can
-never leave an unregistered event reading as foreign. Stale-check reads
-the durable record (`historyDetail`), never the compaction-filtered
-view, and refuses a newer user event the run never owned; only an event
-BOTH registered on the source AND carrying matching `goblinResume`
-metadata is exempt — metadata alone is client-controlled and never
-exempts, and a different event reusing an owned or registered id stays
-foreign. A modern row whose ownership omits its own anchor is
-inconsistent and refuses readable. Legacy NULL
-ownership fails closed to anchor-only (anchorless runs with no durable
-users stay resumable); a malformed column is a readable refusal, never
-a silent policy change.
+original anchor's and the owned post-anchor inputs' parts verbatim,
+but only for events the model view no longer carries — never the
+original event re-appended. An event still in the view reaches the
+model through its own entry; re-copying it would double the text in
+the prompt and in the retention document. One exception: a skill
+invocation's durable record is the reference alone — the body rides
+only the owning turn's view — so references from ALL journal-owned
+invocation messages are re-carried into the resume event for the new
+run to own and inject, including pre-anchor coalesced inputs, not
+merely the visible anchor; ordinary parts of a visible event stay
+visibility-filtered, and the prefix names folded request/steering
+only when those parts were actually copied. Visibility is measured at
+ops-admission, so the lane must hold still for the measurement to
+stay true: `Runtime.busy` counts queued and in-flight compactions as
+busy, and a resume offered while the lane holds work refuses — a
+queued or in-flight summary would otherwise rewrite the view between
+measurement and the resumed turn's own admission, silently dropping
+an anchor that read visible. The event rides the
+admission anchor, so the recovered instruction survives compaction
+and the reply anchors to the resume event itself; the prefix change
+is tail-only. The seed also carries the original request's text for
+the loop watchdog — the generated marker names provenance, not the
+task, and the watchdog judges progress against the ask. Ownership is
+journaled as durable event seqs — never
+message ids, which are app-controlled and carry no uniqueness
+guarantee: `owned_input_seqs` records the admitted user seqs plus
+every successfully folded steer (one checkpoint write with the steer
+mark, after conversion and the post-await authority check). Each
+steer carries its own event seq on the queued member from the append
+that persisted it — the fold records exactly that seq, never a scan
+of the view matching message ids (two steers may share one id; only
+the one that converted is owned), and admission's pending exclusion
+is seq-based for the same reason. Every queued member's seq comes
+from the append that persisted it (or the persisting caller's
+registry) — never a `lastUserSeq` rediscovery — and the attempt owns
+only the seqs its members carry: historical user entries stay in the
+model view as context but are never owned, so an owning-turn-only
+payload (a skill body) resolves for owned seqs alone (2026-10-21).
+`resume_request_seqs` on the
+interrupted source names the generated
+events that are this run's own — the same store transaction as the
+event append, which returns the real seq it wrote (never a
+lastUserSeq inference), and whose registry UPDATE verifies it landed
+— a partial or skipped write can never leave an unregistered event
+reading as foreign. Stale-check reads the durable record
+(`historyDetail`), never the compaction-filtered view, and refuses a
+user event past the run's anchor that the run never owned — whether
+it arrived mid-turn (a steer never folded) or after the
+interruption; an anchorless run refuses any unowned input as such.
+Only an event BOTH registered on the source AND carrying matching
+`goblinResume` metadata is exempt — metadata alone is
+client-controlled and never exempts, and a different event reusing
+an owned or registered id stays foreign. A modern row whose
+ownership omits its own anchor is inconsistent and refuses readable.
+Legacy NULL ownership fails closed to anchor-only (anchorless runs
+with no durable users stay resumable); a malformed column — either
+`owned_input_seqs` or `resume_request_seqs` — is a readable refusal,
+never a silent policy change.
+
+`source_input_seq` is the durable handover identity: the newest owned
+input's event seq, persisted at begin and at the same steer checkpoint
+as `owned_input_seqs` so a folded steer genuinely moves who the turn
+answers for (a still-queued input is never a member and never wins).
+An operator-resume seed carries the source run's own journaled value —
+the generated resume marker is never a source — and a legacy row
+without it falls back to the max seq staleness validated (anchor or
+latest owned input), except a legacy already-resumed row, which keeps
+NULL: a handover on missing durable identity refuses rather than key
+on a client message id.
 
 ## What must not change
+
+Durable wake delivery (`wake-store.ts`, `wake-dispatcher.ts`) follows
+the journal's ownership hooks, not submit callbacks. The hooks name
+members by conversation + durable event seq — never by client message
+id, which is untrusted and may repeat across events and lanes: a
+foreign event reusing the trigger's id can neither link the wake to a
+run that never processed it nor fail it closed. The link lookup
+(`claimedForEvents`) matches claimed wakes on
+`conversation_id + history_seq` for the same reason. Claiming a trigger
+also records the conversation epoch: an unlinked claim may recover
+after a crash only while that authority still matches. Legacy unlinked
+claims without a recorded epoch fail closed. An overflow attempt's
+`error/undelivered` stamp is not a terminal wake failure while its
+message is still admitted under the same epoch — the admission check
+is seq-scoped too; the successor's begin
+hook transfers ownership. A stop, lost admission, or process death
+ends that temporary hold. A terminal failure BEFORE the begin hook —
+no run row exists, so reconcile would read the claimed wake as
+unowned and re-admit the same trigger every pump — fires the
+`preRunFailure` ownership hook (2026-10-22), and the dispatcher fails
+matching unlinked claims closed (the same `failUnlinked` CAS a lost
+ownership link uses). An overflow that WILL resume stays silent: its
+successor links normally through its own begin.
 
 Invariants a refactor can still break silently — the audit list for any
 turn-structure change.
@@ -195,10 +265,10 @@ turn-structure change.
   and never re-runs for steered input; the reply's anchor, retention
   source, and reviewer evidence read the exchange as ended, bounded by
   the ownership mark. The #82 ruling — durability is not ownership —
-  means the `queuedIds` filter is **admission's**, not the view
-  builder's: the view receives already-owned entries and cannot express
-  "read what is merely durable", so the bug class cannot reappear as a
-  view-layer convenience.
+  means the `pendingSeqs` filter is **admission's**, not the view
+  builder's: the view receives historical context and admitted inputs,
+  never still-pending inputs. Its separate owned-input seq set names
+  only the current members, not every user entry in that context.
 - **The sink contract.** Exactly one `onDone` per submit — completed,
   fenced, or error — including drops by `/stop` and the drain crash
   guard. `notifyDone`'s `doneSent` guard stays runtime-owned; every

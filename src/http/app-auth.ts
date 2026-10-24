@@ -3,7 +3,6 @@ import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { NO_STORE } from "./app-shared.ts";
-import { isLoopbackHost } from "./check.ts";
 
 export interface AppAuthDeps {
 	auth: Pick<AuthStore, "resolve">;
@@ -32,17 +31,23 @@ function bearerMatches(presented: string, expected: string): boolean {
 
 const OWN_FETCH_SITES = new Set(["same-origin", "none"]);
 
+// Trust mode's origin line (design/app.md, ruling 2026-10-08 #75): a
+// browser's Origin must match the request's own Host (either scheme —
+// TLS ends at the front) or the configured publicUrl's origin. Own-Host
+// acceptance is proxy compatibility, not independent proof; the
+// DNS-rebinding residual is accepted for proxy/direct-access
+// compatibility, and a stricter pinned-origin policy needs its own
+// ruling — none has been recorded.
 function allowedBrowserOrigins(req: Request, deps: AppAuthDeps): Set<string> {
 	const origins = new Set<string>();
+	const host = req.headers.get("host") ?? "";
+	if (host !== "") {
+		origins.add(`http://${host}`);
+		origins.add(`https://${host}`);
+	}
 	const publicUrl = deps.configRef.current.publicUrl;
 	if (publicUrl !== undefined && URL.canParse(publicUrl)) {
 		origins.add(new URL(publicUrl).origin);
-		return origins;
-	}
-	if (isLoopbackHost(req)) {
-		const host = req.headers.get("host") ?? "";
-		origins.add(`http://${host}`);
-		origins.add(`https://${host}`);
 	}
 	return origins;
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { type Config, memoryConfigSchema } from "../config.ts";
@@ -25,7 +25,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -533,6 +533,31 @@ describe("handleMessage", () => {
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
 	});
 
+	test("a commit that skips the append errors the chat instead of submitting a seq-less turn", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		// Fault injection: the inbox contract runs the append inside
+		// commitBatch's transaction or throws. Break that — commit the
+		// batch without appending — and the flush must fail loud, never
+		// submit a turn whose message has no event identity.
+		const realCommit = h.env.inbox.commitBatch.bind(h.env.inbox);
+		h.env.inbox.commitBatch = (updateIds, conversationId, _append) =>
+			realCommit(updateIds, conversationId, () => {});
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
+		// The error reply rides the async delivery chain — drain it.
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+		await new Promise<void>((r) => process.nextTick(r));
+		expect(submitted).toEqual([]);
+		expect(
+			h.apiCalls.some((c) => (c.text ?? "").includes("inbox commit did not append the turn input")),
+		).toBe(true);
+		h.store.close();
+	});
+
 	test("a promotion to operator clears the guest lane's class-forced exclusion", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
 		h.env.deps.runtime.submitPersisted = () => true;
@@ -551,7 +576,7 @@ describe("handleMessage", () => {
 		const h = routerHarness({
 			...baseConfig,
 			guest: { outputChars: 3500 },
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		// An answered exchange seeds — without one the burst never
 		// reaches the check.
@@ -589,7 +614,7 @@ describe("handleMessage", () => {
 		h.env.deps.configRef.current = {
 			...baseConfig,
 			allowedUsers: [],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		};
 		release();
 		await flushing;
@@ -935,6 +960,45 @@ describe("operator-only command gate", () => {
 		h.store.close();
 	});
 
+	test("an approved user's /skill refuses — bare, by name, by URL, bot-addressed", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		const fetching = spyOn(globalThis, "fetch").mockImplementation(
+			(() => Promise.reject(new Error("skill fetch must not run"))) as unknown as typeof fetch,
+		);
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		try {
+			for (const [i, text] of [
+				"/skill",
+				"/skill herdr",
+				"/skill https://github.com/o/r/tree/main/skills/x",
+				"/skill@goblin herdr",
+			].entries()) {
+				handleMessage(h.env, guestMsg(text, 70 + i), 70 + i);
+				// The refusal latch coalesces while a send is pending — let
+				// it settle so every refused variant is counted, not merged.
+				await Bun.sleep(0);
+			}
+		} finally {
+			fetching.mockRestore();
+		}
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+		]);
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(submitted).toEqual([]);
+		expect(fetching).not.toHaveBeenCalled();
+		h.store.close();
+	});
+
 	test("privileged command refusals deduplicate one sender and cap actual unresolved sends", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
 		const gate = Promise.withResolvers<{ message_id: number }>();
@@ -1012,6 +1076,53 @@ describe("operator-only command gate", () => {
 		await Promise.resolve();
 		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
 		expect(h.store.currentDm(1)).toBeNull();
+		h.store.close();
+	});
+
+	test("an operator's /skill in a shared topic turns with the audience note and real delivery", async () => {
+		const home = useHome("goblin-skillgate-");
+		mkdirSync(join(home, "workspace/skills/herdr"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace/skills/herdr/SKILL.md"),
+			"---\nname: herdr\ndescription: d\n---\nbody",
+		);
+		const h = routerHarness();
+		const submitted: Array<{ conv: string; sink: TurnSink }> = [];
+		h.env.deps.runtime.submitPersisted = (c: { id: string }, _m: unknown, s: TurnSink) => {
+			submitted.push({ conv: c.id, sink: s });
+			return true;
+		};
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 80,
+				chat: { id: -100, type: "supergroup" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "/skill herdr",
+				message_thread_id: 7,
+				is_topic_message: true,
+			}),
+			80,
+		);
+		await Bun.sleep(10);
+		const conv = h.store.get("topic:-100:7")!;
+		const durable = h.store.history(conv.id).at(-1)!.parts;
+		expect((durable[0] as { text: string }).text).toBe(SHARED_CHAT_NOTE);
+		expect((durable[1] as { type: string }).type).toBe("data-skill");
+		expect(submitted).toHaveLength(1);
+		// The sink the skill door built is the real conversation sink —
+		// it delivers into the topic, not a stub.
+		submitted[0]!.sink.onTextDelta("answer text");
+		await submitted[0]!.sink.onDone({ kind: "completed" });
+		expect(
+			h.apiCalls.some(
+				(c) =>
+					c.method === "sendMessage" &&
+					c.chat === -100 &&
+					c.opts?.message_thread_id === 7 &&
+					c.text === "answer text",
+			),
+		).toBe(true);
 		h.store.close();
 	});
 
@@ -1858,7 +1969,7 @@ describe("rolling dm", () => {
 			...baseConfig,
 			allowedUsers: [2, 7],
 			guest: { outputChars: 3500 },
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -1903,7 +2014,7 @@ describe("rolling dm", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, 7],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -2020,7 +2131,7 @@ describe("manual DM navigation", () => {
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
 		const h = routerHarness({
 			...baseConfig,
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		for (const [i, text] of [
 			"/new@otherbot",
@@ -2061,7 +2172,7 @@ describe("manual DM navigation", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, chat.id],
-			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.

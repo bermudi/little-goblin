@@ -12,10 +12,12 @@ import type { UIMessage } from "ai";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
-import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
+import { startMailWatcher, makeMailNoticeRouter, type MailWatcher } from "./mail-watcher.ts";
 import { fireMail, type SchedulerDeps } from "./scheduler.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
 import { openStore } from "./conversation.ts";
+import { openProjects } from "./projects.ts";
+import { openResponsibilities } from "./responsibilities.ts";
 import type { Runtime, TurnSink } from "./runtime.ts";
 import type { Config } from "./config.ts";
 
@@ -41,7 +43,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -66,7 +68,7 @@ interface Harness {
 	/** The handoff record: every fireMail call, before it runs. */
 	fired: Array<{ program: number; matches: string[] }>;
 	submitted: Array<{ conv: string; text: string; sink: TurnSink }>;
-	notices: Array<{ chat: number; text: string }>;
+	notices: Array<{ program: number; chatId: number; text: string }>;
 	polls: Array<{ filter: string; cursor: string }>;
 	profiles: number;
 	/** What the fake runtime does: true → submit throws, no turn lands. */
@@ -169,8 +171,10 @@ function start(h: Harness): MailWatcher {
 				h.fired.push({ program: program.id, matches: hits.map((x) => x.id) });
 				await h.fireMail(program, hits, checkpoint, now);
 			},
-			notify: async (address, text) => {
-				h.notices.push({ chat: address.chatId, text });
+			notify: async (program, text) => {
+				// The seam hands the whole program: the composition decides
+				// Telegram vs the responsibility lane from the row.
+				h.notices.push({ program: program.id, chatId: program.chatId, text });
 			},
 			now: () => NOW,
 		},
@@ -654,4 +658,103 @@ test("mail watcher rejects duplicate owners and never scans through a stopped ha
 	} finally {
 		await w.stop();
 	}
+});
+
+describe("mail outage notice routing", () => {
+	const respRig = () => {
+		const h = harness();
+		const store = openStore(join(h.path));
+		const projects = openProjects(store);
+		const project = projects.create({ name: "rig" });
+		const conv = store.resolve(
+			{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+			project.dir,
+		);
+		store.bindProject(conv.id, project.id);
+		const resps = openResponsibilities(store.db);
+		const { responsibility } = resps.create({
+			projectId: project.id,
+			coordinationConversationId: conv.id,
+			handoverKey: "k1",
+			understanding: {
+				outcome: "o",
+				situation: "s",
+				nextAction: "n",
+				checkpoints: [],
+				completionEvidence: [],
+			},
+		});
+		return { h, store, resps, responsibility, conv };
+	};
+
+	test("a responsibility-bound program's outage lands on the coordination lane, not chat 0", async () => {
+		const { h, store, resps, responsibility } = respRig();
+		// chat_id 0 is the destination marker — the old address-based
+		// notice targeted a nonexistent Telegram chat every scan.
+		const program = h.programs.create({
+			name: "bank watch",
+			charter: "c",
+			mailFilter: "from:bank",
+			responsibilityId: responsibility.responsibilityId,
+		});
+		expect(program.chatId).toBe(0);
+		const recorded: unknown[] = [];
+		const telegram: { chatId: number; text: string }[] = [];
+		const route = makeMailNoticeRouter({
+			resps,
+			record: (input) => recorded.push(input),
+			sendTelegram: async (address, text) => {
+				telegram.push({ chatId: address.chatId, text });
+			},
+		});
+		await route(program, "the watcher is failing");
+		expect(telegram).toHaveLength(0);
+		expect(recorded).toHaveLength(1);
+		const dev = recorded[0] as {
+			sourceKey: string;
+			conversationId: string;
+			kind: string;
+			text: string;
+			responsibilityId?: string;
+		};
+		expect(dev.conversationId).toBe(responsibility.coordinationConversationId);
+		expect(dev.kind).toBe("mail-outage");
+		expect(dev.text).toBe("the watcher is failing");
+		expect(dev.responsibilityId).toBe(responsibility.responsibilityId);
+		expect(dev.sourceKey.startsWith(`mail-outage:${program.id}:`)).toBe(true);
+		store.close();
+	});
+
+	test("a chat-pinned program still notices Telegram; a missing responsibility skips loudly", async () => {
+		const { h, store, resps } = respRig();
+		const chatProgram = h.programs.create({
+			name: "bank watch",
+			charter: "c",
+			mailFilter: "from:bank",
+			address: ADDRESS,
+		});
+		const telegram: { chatId: number; threadId: number | null }[] = [];
+		const recorded: unknown[] = [];
+		const route = makeMailNoticeRouter({
+			resps,
+			record: (input) => recorded.push(input),
+			sendTelegram: async (address) => {
+				telegram.push(address);
+			},
+		});
+		await route(chatProgram, "failing");
+		expect(telegram).toEqual([{ chatId: ADDRESS.chatId, threadId: ADDRESS.threadId }]);
+		expect(recorded).toHaveLength(0);
+		// A responsibility destination with no row left: nobody to tell.
+		const ghost = h.programs.create({
+			name: "ghost watch",
+			charter: "c",
+			mailFilter: "from:x",
+			responsibilityId: "resp-does-not-exist",
+		});
+		await route(ghost, "failing");
+		expect(telegram).toHaveLength(1);
+		expect(recorded).toHaveLength(0);
+		store.close();
+	});
 });

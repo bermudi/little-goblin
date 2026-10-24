@@ -3,12 +3,17 @@ import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
+import { clampThinkingFor } from "../agent/thinking.ts";
+import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
-import { appAddress, appIdSchema } from "../conversation.ts";
+import { appAddress, appIdSchema, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
+import { openRatings } from "../reply-ratings.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
+import { refusalText } from "../program-approval.ts";
+import { APP_ACTOR } from "../targets.ts";
 import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import {
 	type AppChannelDeps,
@@ -19,21 +24,29 @@ import {
 } from "./app-shared.ts";
 import { appSseWriter } from "./app-sse.ts";
 import type {
+	AppApprovalDecisionResponse,
+	AppApprovalsResponse,
 	AppCompactResponse,
 	AppContextSegment,
 	AppContextView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationMemoryResponse,
+	AppConversationMemoryView,
 	AppConversationPatch,
 	AppDecideResponse,
 	AppInterruptedList,
 	AppInterruptedRun,
 	AppMessageList,
+	AppRatedReply,
+	AppReplyRatingList,
+	AppReplyRatingResponse,
 	AppResumeBlocked,
 	AppResumeResponse,
 	AppRunCall,
 	AppSearchResponse,
 	AppStopResponse,
+	AppWindowView,
 } from "./app-wire.ts";
 
 const createBody = z.object({
@@ -141,6 +154,47 @@ const decideBody = z.object({
 	note: z.string().max(4000).optional(),
 });
 
+const memoryBody = z.object({ memoryExcluded: z.boolean() }).strict();
+
+const programDecisionBody = z.object({
+	action: z.enum(["approve", "reject"]),
+});
+
+const mailDecisionBody = z.object({
+	action: z.enum(["send", "cancel"]),
+});
+
+const replyRatingBody = z.object({
+	messageId: z.string().min(1).max(200),
+	rating: z.enum(["up", "down"]),
+});
+
+async function parsedJson<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
+	const refusedJson = jsonBodyRefusal(req);
+	if (refusedJson !== null) return refusedJson;
+	let json: unknown;
+	try {
+		json = await req.json();
+	} catch {
+		return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+	}
+	const parsed = schema.safeParse(json);
+	if (!parsed.success) {
+		return Response.json(
+			{ error: z.prettifyError(parsed.error) },
+			{ status: 422, headers: NO_STORE },
+		);
+	}
+	return parsed.data;
+}
+
+function approvalUnavailable(): Response {
+	return Response.json(
+		{ error: "approvals are not configured" },
+		{ status: 503, headers: NO_STORE },
+	);
+}
+
 function appRunCall(c: TurnToolCall): AppRunCall {
 	return {
 		toolCallId: c.toolCallId,
@@ -179,6 +233,60 @@ function refusalStatus(code: ResumeRefusalCode): number {
 	}
 }
 
+type HistoryDetailEntry = ReturnType<ConversationStore["historyDetail"]>[number];
+
+// Telegram puts the vote row on a turn's final bubble. App turns can
+// commit several assistant events for one user anchor (media records,
+// then the prose reply), so the rateable event is the last assistant
+// event for each anchor — not every assistant row.
+function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, HistoryDetailEntry> {
+	const lastByAnchor = new Map<number | string, HistoryDetailEntry>();
+	let unanchoredRun = 0;
+	let inUnanchoredRun = false;
+	for (const entry of detail) {
+		if (entry.message.role !== "assistant") {
+			inUnanchoredRun = false;
+			continue;
+		}
+		if (entry.anchorSeq !== null) {
+			lastByAnchor.set(entry.anchorSeq, entry);
+			inUnanchoredRun = false;
+			continue;
+		}
+		if (!inUnanchoredRun) unanchoredRun++;
+		lastByAnchor.set(`unanchored:${unanchoredRun}`, entry);
+		inUnanchoredRun = true;
+	}
+	return new Map([...lastByAnchor.values()].map((entry) => [entry.message.id, entry]));
+}
+
+function ratedReplies(
+	store: ConversationStore,
+	conversationId: string,
+	rateable: Map<string, HistoryDetailEntry>,
+): AppRatedReply[] {
+	const assistantBySeq = new Map(
+		[...rateable.values()].map((entry) => [entry.seq, entry.message.id] as const),
+	);
+	return openRatings(store.db)
+		.listApp(conversationId)
+		.flatMap((record) => {
+			if (record.eventSeq === null) return [];
+			const messageId = assistantBySeq.get(record.eventSeq);
+			return messageId === undefined
+				? []
+				: [
+						{
+							messageId,
+							eventSeq: record.eventSeq,
+							anchorSeq: record.anchorSeq,
+							rating: record.rating,
+							createdAt: record.createdAt,
+						},
+					];
+		});
+}
+
 export async function handleConversationsRoute(
 	req: Request,
 	url: URL,
@@ -186,6 +294,116 @@ export async function handleConversationsRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
+
+	if (path === "/api/app/approvals") {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body: AppApprovalsResponse = {
+			programs: deps.approvals.program.pending().map((proposal) => ({
+				id: proposal.id,
+				kind: proposal.kind,
+				targetId: proposal.targetId,
+				target: proposal.target,
+				state: proposal.state,
+				createdAt: proposal.createdAt,
+				decidedAt: proposal.decidedAt,
+				decidedBy: proposal.decidedBy,
+				activatedId: proposal.activatedId,
+				candidate: deps.approvals!.program.candidate(proposal),
+			})),
+			mail: deps.approvals.mail.pending().map((row) => ({
+				id: row.id,
+				to: row.to,
+				cc: row.cc,
+				subject: row.subject,
+				body: row.body,
+				replyToId: row.replyToId,
+				target: row.target,
+				status: row.status,
+				createdAt: row.createdAt,
+				expiresAt: row.expiresAt,
+				decidedAt: row.decidedAt,
+				decidedBy: row.decidedBy,
+				sentId: row.sentId,
+			})),
+		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	const programApprovalMatch = path.match(/^\/api\/app\/approvals\/program\/(\d+)$/);
+	if (programApprovalMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body = await parsedJson(req, programDecisionBody);
+		if (body instanceof Response) return body;
+		const outcome = await deps.approvals.program.decide(
+			Number(programApprovalMatch[1]),
+			body.action,
+			APP_ACTOR,
+		);
+		const response: AppApprovalDecisionResponse =
+			outcome.kind === "activated"
+				? {
+						status: "activated",
+						message: `program "${outcome.program.name}" is active`,
+						...(outcome.hookUrl !== undefined ? { hookUrl: outcome.hookUrl } : {}),
+					}
+				: outcome.kind === "rejected"
+					? { status: "rejected", message: "proposal rejected — nothing was granted" }
+					: outcome.kind === "needs-public-url"
+						? {
+								status: "needs-public-url",
+								message:
+									"publicUrl isn't set — set it in settings, then approve again; the proposal stays pending",
+							}
+						: {
+								status: "refused",
+								message: refusalText(outcome.refusal),
+							};
+		return Response.json(response, {
+			status: outcome.kind === "needs-public-url" ? 422 : 200,
+			headers: NO_STORE,
+		});
+	}
+
+	const mailApprovalMatch = path.match(/^\/api\/app\/approvals\/mail\/(\d+)$/);
+	if (mailApprovalMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.approvals === undefined) return approvalUnavailable();
+		const body = await parsedJson(req, mailDecisionBody);
+		if (body instanceof Response) return body;
+		const outcome = await deps.approvals.mail.decide(
+			Number(mailApprovalMatch[1]),
+			body.action,
+			APP_ACTOR,
+		);
+		const response: AppApprovalDecisionResponse = {
+			status: outcome.kind,
+			message:
+				outcome.kind === "gone"
+					? "draft gone"
+					: outcome.kind === "settled"
+						? `already ${outcome.row.status}`
+						: outcome.kind === "busy"
+							? "sending — wait for the verdict"
+							: outcome.kind === "expired"
+								? "draft expired"
+								: outcome.kind === "cancelled"
+									? "draft cancelled — never sent"
+									: outcome.kind === "sent"
+										? "draft sent"
+										: outcome.kind === "retry"
+											? outcome.message
+											: "send raced another decision",
+		};
+		return Response.json(response, { headers: NO_STORE });
+	}
 
 	if (path === "/api/app/conversations") {
 		if (req.method === "GET") {
@@ -270,6 +488,68 @@ export async function handleConversationsRoute(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 
+	const memoryMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/memory$/);
+	if (memoryMatch) {
+		const convId = conversationFromSegment(memoryMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const projectMemory =
+			conv.projectId === null ? null : (deps.projects.get(conv.projectId)?.memory ?? null);
+		if (req.method === "GET") {
+			const body: AppConversationMemoryView = {
+				memoryExcluded: conv.memoryExcluded,
+				projectMemory,
+			};
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method !== "PATCH") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = memoryBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		if (parsed.data.memoryExcluded === false && projectMemory === "off") {
+			return Response.json(
+				{ error: "project memory is off — switch the project to shared memory first" },
+				{ status: 409, headers: NO_STORE },
+			);
+		}
+		let cancelled = 0;
+		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
+			store.applySettings(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
+			if (parsed.data.memoryExcluded) {
+				cancelled = store.memoryQueue.cancelConversation(convId.id);
+			}
+			log.info(
+				parsed.data.memoryExcluded
+					? "app conversation memory excluded"
+					: "app conversation memory inclusion restored",
+				{ conversation: convId.id, cancelled },
+			);
+		}
+		const body: AppConversationMemoryResponse = {
+			memoryExcluded: parsed.data.memoryExcluded,
+			projectMemory,
+			cancelled,
+		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
 	const configMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/config$/);
 	if (configMatch) {
 		const convId = conversationFromSegment(configMatch[1]!);
@@ -309,14 +589,25 @@ export async function handleConversationsRoute(
 				if (!(err instanceof z.ZodError)) throw err;
 				return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 			}
-			store.initializeAppSettings(convId.id, cfg);
+			// The raw stored pair, defaults filling gaps — no heal write:
+			// clamping against the outgoing model first could erase a level
+			// the destination supports.
+			const stored = store.readAppSettings(convId.id, cfg);
+			// A stored level the target model can't express is a lie — the
+			// write persists what the wire clamp would send instead.
+			const thinking = clampThinkingFor(
+				cfg.providers,
+				parsed.data.model ?? stored.model,
+				parsed.data.thinking ?? stored.thinking,
+			);
 			store.setMeta(convId.id, {
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
-				...(parsed.data.thinking !== undefined ? { thinking: parsed.data.thinking } : {}),
+				thinking,
 			});
 			log.info("app conversation settings changed", {
 				conversation: convId.id,
 				...parsed.data,
+				...(parsed.data.thinking !== thinking ? { thinkingApplied: thinking } : {}),
 				applies: "next turn",
 			});
 		}
@@ -415,14 +706,14 @@ export async function handleConversationsRoute(
 				{ status: 500, headers: NO_STORE },
 			);
 		}
-			const r = readWorkspaceFile(workdir, from);
-			if ("error" in r) {
-				log.info("app file refused", { conversation: conv.id, path: from, reason: r.error });
-				return Response.json(
-					{ error: r.error },
-					{ status: workspaceReadStatus(r), headers: NO_STORE },
-				);
-			}
+		const r = readWorkspaceFile(workdir, from);
+		if ("error" in r) {
+			log.info("app file refused", { conversation: conv.id, path: from, reason: r.error });
+			return Response.json(
+				{ error: r.error },
+				{ status: workspaceReadStatus(r), headers: NO_STORE },
+			);
+		}
 		log.debug("app file served", { conversation: conv.id, path: r.path, bytes: r.data.byteLength });
 		// Direct navigation must never render a stored document in the app
 		// origin — the reader pulls it through fetch and renders it itself.
@@ -435,6 +726,57 @@ export async function handleConversationsRoute(
 				...NO_STORE,
 			},
 		});
+	}
+
+	const windowMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/window$/);
+	if (windowMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(windowMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const row = store.get(convId.id);
+		if (row === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		if (deps.windowCapture === undefined) {
+			return Response.json(
+				{ error: "the context window view is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const stored = deps.windowCapture.read(convId.id);
+		const body: AppWindowView = {
+			model: row.model ?? deps.configRef.current.model,
+			capturedAt: stored === null ? null : new Date(stored.capturedMs).toISOString(),
+			capturedModel: stored?.model ?? null,
+			steps: stored?.step ?? null,
+			segments: stored?.capture.segments ?? null,
+			system: stored?.capture.system ?? null,
+			tools: stored?.capture.tools ?? null,
+			messages: stored?.capture.messages ?? null,
+			calls: listCalls(store.db, convId.id).map((c) => ({
+				callId: c.callId,
+				purpose: c.purpose,
+				model: c.model,
+				startedMs: c.startedMs,
+				finishedMs: c.finishedMs,
+				status: c.status,
+				inputTokens: c.inputTokens,
+				outputTokens: c.outputTokens,
+				cacheRead: c.cacheRead,
+				cacheWrite: c.cacheWrite,
+				prefixRelation: c.prefixRelation,
+				sharedMessages: c.sharedMessages,
+			})),
+		};
+		log.debug("app window served", {
+			conversation: convId.id,
+			captured: stored !== null,
+			calls: body.calls.length,
+			messages: body.messages?.length ?? 0,
+		});
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	const interruptedMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/interrupted$/);
@@ -555,6 +897,57 @@ export async function handleConversationsRoute(
 		);
 	}
 
+	const ratingsMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/ratings$/);
+	if (ratingsMatch) {
+		const convId = conversationFromSegment(ratingsMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const detail = store.historyDetail(convId.id);
+		const rateable = rateableAssistantEntries(detail);
+		const ratings = openRatings(store.db);
+		if (req.method === "GET") {
+			const body: AppReplyRatingList = {
+				ratings: ratedReplies(store, convId.id, rateable),
+			};
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const body = await parsedJson(req, replyRatingBody);
+		if (body instanceof Response) return body;
+		const entry = rateable.get(body.messageId);
+		if (entry === undefined) {
+			return Response.json(
+				{ error: "no such assistant reply" },
+				{ status: 404, headers: NO_STORE },
+			);
+		}
+		ratings.recordApp({
+			conversationId: convId.id,
+			anchorSeq: entry.anchorSeq,
+			eventSeq: entry.seq,
+			rating: body.rating,
+		});
+		const record = ratings.latestEvent(convId.id, entry.seq)!;
+		const rating: AppRatedReply = {
+			messageId: entry.message.id,
+			eventSeq: entry.seq,
+			anchorSeq: record.anchorSeq,
+			rating: record.rating,
+			createdAt: record.createdAt,
+		};
+		log.info("app reply rated", {
+			conversation: convId.id,
+			eventSeq: entry.seq,
+			rating: record.rating,
+		});
+		const response: AppReplyRatingResponse = { rating };
+		return Response.json(response, { headers: NO_STORE });
+	}
+
 	const convMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/messages$/);
 	if (convMatch) {
 		if (req.method !== "GET") {
@@ -565,7 +958,13 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const body: AppMessageList = { messages: store.history(convId.id) };
+		const detail = store.historyDetail(convId.id);
+		const rateable = rateableAssistantEntries(detail);
+		const body: AppMessageList = {
+			messages: detail.map((entry) => entry.message),
+			ratings: ratedReplies(store, convId.id, rateable),
+			rateableMessageIds: [...rateable.keys()],
+		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
 		return Response.json(body, { headers: NO_STORE });
 	}

@@ -1,13 +1,17 @@
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
+import { openCacheObservation } from "../cache-observation.ts";
 import { type Config, type ConfigRef } from "../config.ts";
-import { openStore } from "../conversation.ts";
+import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
-import { openProjects, projectWorkdir } from "../projects.ts";
+import { observedModel } from "../agent/providers.ts";
+import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
+import { openWindowCapture } from "../window-capture.ts";
+import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { startHttp } from "./mod.ts";
 
@@ -27,6 +31,20 @@ export function setup(
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
 		resumeOps?: AppChannelDeps["resumeOps"];
+		approvals?: AppChannelDeps["approvals"];
+		programOps?: AppChannelDeps["programOps"];
+		push?: AppChannelDeps["push"];
+		model?: LanguageModel;
+		makeTools?: ConstructorParameters<typeof Runtime>[0]["makeTools"];
+		// The responsibility bag needs this setup's own stores — a
+		// factory form receives them after construction.
+		responsibilities?:
+			| AppChannelDeps["responsibilities"]
+			| ((ctx: {
+					store: ConversationStore;
+					projects: ProjectStore;
+					home: string;
+			  }) => AppChannelDeps["responsibilities"]);
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -35,19 +53,33 @@ export function setup(
 	const projects = openProjects(store);
 	const notes = openNotes(store, { projects });
 	const turnJournal = openTurnJournal(store.db);
+	// The context-window rows ride the same db — prod wires them
+	// unconditionally (src/index.ts), so the rig does too.
+	const windowCapture = openWindowCapture(store.db);
+	// Cache-call telemetry on the same seam prod's step builder uses, so
+	// lineage-reading surfaces see rows in tests.
+	const cacheObservations = openCacheObservation(store.db);
 	const runtime = new Runtime({
 		store,
 		turnJournal,
-		buildStep: () => ({
-			model: textModel(opts.deltas ?? ["hello", " app"], {
-				...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
-			}).model,
+		recordWindow: (conversationId, input) => {
+			windowCapture.record(conversationId, input);
+		},
+		windowVersion: windowCapture.version,
+		buildStep: (conv) => ({
+			model: observedModel(
+				opts.model ??
+					textModel(opts.deltas ?? ["hello", " app"], {
+						...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
+					}).model,
+				{ conversation: conv.id, observation: cacheObservations },
+			),
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
-		makeTools: (conv) => {
+		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
-			return {};
+			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile, accepts) ?? {};
 		},
 	});
 	const auth: Pick<AuthStore, "resolve"> = {
@@ -67,7 +99,7 @@ export function setup(
 			thinking: "medium",
 			operators: [42],
 			allowedUsers: [42],
-			telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+			telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 			http: { port: 0 },
 			logLevel: "info",
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),
@@ -83,6 +115,7 @@ export function setup(
 		notes,
 		auth,
 		configRef,
+		windowCapture,
 		onConfigWritten: () => {
 			configWrites.count += 1;
 		},
@@ -92,6 +125,17 @@ export function setup(
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
 		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
+		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
+		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
+		...(opts.push !== undefined ? { push: opts.push } : {}),
+		...((): { responsibilities?: import("./app-responsibilities.ts").AppResponsibilityDeps } => {
+			if (opts.responsibilities === undefined) return {};
+			const resolved =
+				typeof opts.responsibilities === "function"
+					? opts.responsibilities({ store, projects, home })
+					: opts.responsibilities;
+			return resolved === undefined ? {} : { responsibilities: resolved };
+		})(),
 	};
 	const http = startHttp({
 		configRef,
@@ -121,6 +165,8 @@ export function setup(
 		home,
 		appDeps,
 		turnJournal,
+		windowCapture,
+		cacheObservations,
 	};
 }
 

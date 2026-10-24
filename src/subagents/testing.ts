@@ -1,4 +1,3 @@
-
 import { afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1068,6 +1067,10 @@ afterEach(async () => {
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
+
+// Bun scopes the afterEach above to the first file importing this
+// module — bunfig.toml's [test] preload of this file makes it global,
+// so later files' rigs are cleaned too.
 
 export function forgetOwner(o: Subagents): void {
 	owners = owners.filter((x) => x !== o);

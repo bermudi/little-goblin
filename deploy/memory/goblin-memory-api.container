@@ -7,8 +7,16 @@ After=goblin-memory-db.service
 # API-only slim 1.0.0: no bundled local embedding/reranking models.
 Image=ghcr.io/vectorize-io/hindsight-api:1.0.0-slim@sha256:1e889b5f44a3546a40765d084162cf0807c0b08c97fb29f64d0705597f1ef3b6
 ContainerName=goblin-memory-api
-Network=goblin-memory.network
-PublishPort=127.0.0.1:8888:8888
+Pod=goblin-memory.pod
+# Non-secret configuration only. Credentials never land in this file or
+# the env file: each arrives as a podman shell-secret MOUNT under
+# /run/secrets (tmpfs inside the container; podman stores the lookup
+# command, never the value), and start.py exports each file under its
+# own name. The LLM key is required by every profile. The installer
+# writes provider-scoped secret lines between the markers — keep them.
+Secret=HINDSIGHT_API_LLM_API_KEY,type=mount
+# goblin:secrets-begin
+# goblin:secrets-end
 EnvironmentFile=%h/.config/goblin-memory/hindsight.env
 Volume=%h/.config/goblin-memory/start.py:/opt/goblin-memory-start.py:ro,Z
 # The healthcheck is a mounted script, not a `python -c` one-liner:

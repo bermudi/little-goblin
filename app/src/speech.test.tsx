@@ -9,7 +9,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { ReactElement } from "react";
+import type { UIMessage } from "ai";
 import { SPEECH_RATES, SpeechPlayer, tfmt, useSpeech } from "./speech.tsx";
+import { ActionBar } from "./ChatView.tsx";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -71,7 +73,7 @@ function Probe({ text }: { text: string }) {
 			<button
 				type="button"
 				onClick={() => (s.phase === "closed" ? void s.start(text) : s.stop())}
-				aria-label="Read aloud"
+				aria-label={s.phase === "open" ? "Stop reading aloud" : "Read aloud"}
 				disabled={s.phase === "loading"}
 			>
 				{s.phase === "open" ? "■ stop" : s.phase === "loading" ? "…" : "▶ read"}
@@ -162,8 +164,10 @@ describe("speech player", () => {
 		});
 	};
 
+	// The label follows the phase ("Read aloud" ⇄ "Stop reading aloud");
+	// the suffix match keeps the trigger findable in every state.
 	const readButtons = () =>
-		[...container.querySelectorAll('button[aria-label="Read aloud"]')].map(
+		[...container.querySelectorAll('button[aria-label$="aloud"]')].map(
 			(b) => b as HTMLButtonElement,
 		);
 
@@ -237,10 +241,9 @@ describe("speech player", () => {
 		expect(btn?.disabled).toBe(true);
 		await act(async () => {
 			release(
-				new Response(
-					JSON.stringify({ chunks: [btoa("ogg")], mediaType: "audio/ogg" }),
-					{ status: 200 },
-				),
+				new Response(JSON.stringify({ chunks: [btoa("ogg")], mediaType: "audio/ogg" }), {
+					status: 200,
+				}),
 			);
 			await flush();
 		});
@@ -298,7 +301,9 @@ describe("speech player", () => {
 			FakeAudio.made[0]?.headError(3);
 			await flush();
 		});
-		expect(container.querySelector(".msg-err")?.textContent).toBe("playback failed (media error 3)");
+		expect(container.querySelector(".msg-err")?.textContent).toBe(
+			"playback failed (media error 3)",
+		);
 	});
 
 	test("a part that never reports a duration fails loud", async () => {
@@ -401,5 +406,47 @@ describe("speech player", () => {
 		expect(player()).toBeNull();
 		expect(FakeAudio.made[0]?.paused).toBe(true);
 		expect(readButtons()[0]?.textContent).toBe("▶ read");
+	});
+
+	test("the message action bar's read button names the action it performs", async () => {
+		// The real ActionBar, not the Probe above: a static "Read aloud"
+		// label would announce the opposite action while audio plays.
+		stubFetch(1);
+		const msg = {
+			id: "a1",
+			role: "assistant",
+			parts: [{ type: "text", text: "hello" }],
+		} as UIMessage;
+		await mount(
+			<ActionBar
+				message={msg}
+				isLastAssistant={false}
+				busy={false}
+				onRetry={() => {}}
+				token="tok"
+				rateable={false}
+				rating={null}
+				ratingPending={false}
+				ratingError={null}
+				onRate={() => {}}
+			/>,
+		);
+		const readBtn = () =>
+			container.querySelector('button[aria-label$="aloud"]') as HTMLButtonElement;
+		expect(readBtn().getAttribute("aria-label")).toBe("Read aloud");
+		expect(readBtn().textContent).toBe("▶ read");
+		await act(async () => {
+			readBtn().dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			await flush();
+		});
+		await act(async () => {
+			FakeAudio.made.forEach((a) => a.metadata(3));
+			await flush();
+		});
+		expect(readBtn().getAttribute("aria-label")).toBe("Stop reading aloud");
+		expect(readBtn().textContent).toBe("■ stop");
+		await clickAria("Stop");
+		expect(readBtn().getAttribute("aria-label")).toBe("Read aloud");
+		expect(readBtn().textContent).toBe("▶ read");
 	});
 });

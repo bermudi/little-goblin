@@ -27,6 +27,15 @@ const signal = (message: string): void => {
 	process.stderr.write(`install: ${message}\n`);
 };
 class InstallFailure extends Error {}
+// design/auth.md ("Never the owner session, by mechanism."): a `!`
+// record invoking pass-cli directly would resolve as the owner session.
+// The gate refuses with its own exit code and its own stdout — bare
+// offender names; values are secret material and never print.
+class PoisonedAuth extends Error {
+	constructor(readonly stdout: string) {
+		super("auth.jsonl: record invokes pass-cli directly");
+	}
+}
 function fail(category: string): never {
 	throw new InstallFailure(category);
 }
@@ -107,6 +116,14 @@ async function command(argv: string[], label: string, timeoutMs = 30_000): Promi
 	if (cancellationSignalFailed) fail(`${label}: cancellation-signal-failed`);
 	if (cancellation.signal.aborted) fail(`setup cancelled (${cancelledBy}); no later phases`);
 	if (result.timedOut || result.truncated || result.exitCode !== 0) {
+		// The gate's dedicated code carries its stdout — the offender names.
+		if (
+			label === "scan auth.jsonl for pass-cli records" &&
+			!result.timedOut &&
+			!result.truncated &&
+			result.exitCode === 2
+		)
+			throw new PoisonedAuth(result.stdout);
 		if (label === "start and accept current invocation") {
 			for (const line of result.stderr.split("\n")) {
 				if (!line.startsWith("install: ")) continue;
@@ -245,6 +262,13 @@ async function install(): Promise<void> {
 	}
 	if ((statSync(join(target, "auth.jsonl")).mode & 0o077) !== 0)
 		fail("auth.jsonl: insecure-mode; chmod 600 before setup");
+	// design/auth.md: install refuses poisoned `!pass-cli` records before
+	// enabling the unit — before any mutation at all, in fact. Exit 2
+	// naming offenders is the gate's own contract, re-emitted verbatim.
+	await command(
+		[bun, "--no-install", "run", "scripts/check-auth.ts"],
+		"scan auth.jsonl for pass-cli records",
+	);
 	if (!statSync(repo).isDirectory() || !statSync(target).isDirectory())
 		fail("layout: not-a-directory");
 
@@ -420,15 +444,24 @@ if (import.meta.main) {
 	try {
 		await install();
 	} catch (error) {
-		// External stderr, auth/config contents and arbitrary native messages stay private.
-		const code = (error as NodeJS.ErrnoException).code;
-		signal(
-			code
-				? `filesystem inspection/action failed (${code})`
-				: error instanceof InstallFailure
-					? error.message
-					: "setup failed: internal inspection error",
-		);
-		process.exitCode = 1;
+		if (error instanceof PoisonedAuth) {
+			// The gate's stdout re-emitted verbatim: bare offender names.
+			process.stdout.write(error.stdout);
+			signal(
+				"auth.jsonl invokes pass-cli directly — it would resolve as the owner session; route through pass-keys (design/auth.md: Proton Pass)",
+			);
+			process.exitCode = 2;
+		} else {
+			// External stderr, auth/config contents and arbitrary native messages stay private.
+			const code = (error as NodeJS.ErrnoException).code;
+			signal(
+				code
+					? `filesystem inspection/action failed (${code})`
+					: error instanceof InstallFailure
+						? error.message
+						: "setup failed: internal inspection error",
+			);
+			process.exitCode = 1;
+		}
 	}
 }

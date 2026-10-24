@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
-import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
+import {
+	_primeModelsDevForTest,
+	_primeOpenRouterCatalog,
+	_resetModelsDevForTest,
+} from "../agent/models-dev.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
@@ -36,7 +40,261 @@ describe("app conversations", () => {
 
 			const messages = await call("/api/app/conversations/chat-01/messages");
 			expect(messages.status).toBe(200);
-			expect((await messages.json()) as { messages: unknown[] }).toEqual({ messages: [] });
+			expect(
+				(await messages.json()) as {
+					messages: unknown[];
+					ratings: unknown[];
+					rateableMessageIds: unknown[];
+				},
+			).toEqual({ messages: [], ratings: [], rateableMessageIds: [] });
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("reply ratings persist against the durable assistant event", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "rated-01" }),
+			});
+			store.append("app/rated-01", [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			]);
+			store.append(
+				"app/rated-01",
+				[
+					{
+						id: "m1",
+						role: "assistant",
+						parts: [
+							{
+								type: "data-attachment",
+								data: {
+									path: "attachments/generated.txt",
+									mediaType: "text/plain",
+									filename: "generated.txt",
+									size: 4,
+								},
+							},
+						],
+					},
+				],
+				{ anchorSeq: 1 },
+			);
+			store.append(
+				"app/rated-01",
+				[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "answer" }] }],
+				{ anchorSeq: 1 },
+			);
+			expect((await call("/api/app/conversations/rated-01/ratings")).status).toBe(200);
+
+			const historyBefore = await call("/api/app/conversations/rated-01/messages");
+			expect(await historyBefore.json()).toMatchObject({
+				rateableMessageIds: ["a1"],
+			});
+			expect(
+				(
+					await call("/api/app/conversations/rated-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "m1", rating: "up" }),
+					})
+				).status,
+			).toBe(404);
+
+			const post = await call("/api/app/conversations/rated-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a1", rating: "up" }),
+			});
+			expect(post.status).toBe(200);
+			expect(await post.json()).toMatchObject({
+				rating: { messageId: "a1", eventSeq: 3, anchorSeq: 1, rating: "up" },
+			});
+
+			const history = await call("/api/app/conversations/rated-01/messages");
+			expect(await history.json()).toMatchObject({
+				ratings: [{ messageId: "a1", eventSeq: 3, rating: "up" }],
+			});
+
+			const changed = await call("/api/app/conversations/rated-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a1", rating: "down" }),
+			});
+			expect(changed.status).toBe(200);
+			const latest = await call("/api/app/conversations/rated-01/ratings");
+			expect(await latest.json()).toMatchObject({
+				ratings: [{ messageId: "a1", eventSeq: 3, rating: "down" }],
+			});
+			expect(
+				(
+					await call("/api/app/conversations/rated-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "u1", rating: "up" }),
+					})
+				).status,
+			).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rating eligibility picks the last assistant event in each reply group", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "eligible-01" }),
+			});
+			const text = (id: string, role: "user" | "assistant") => ({
+				id,
+				role,
+				parts: [{ type: "text" as const, text: id }],
+			});
+			store.append("app/eligible-01", [text("u1", "user")]);
+			store.append("app/eligible-01", [text("a1", "assistant")], { anchorSeq: 1 });
+			store.append("app/eligible-01", [text("a2", "assistant")], { anchorSeq: 1 });
+			// Legacy/no-anchor assistant events still form one reply run; only
+			// its tail is voteable. A user event starts a new run.
+			store.append("app/eligible-01", [text("a3", "assistant"), text("a4", "assistant")]);
+			store.append("app/eligible-01", [text("u2", "user")]);
+			store.append("app/eligible-01", [text("a5", "assistant"), text("a6", "assistant")]);
+
+			const history = await call("/api/app/conversations/eligible-01/messages");
+			expect(await history.json()).toMatchObject({
+				rateableMessageIds: ["a2", "a4", "a6"],
+			});
+			for (const messageId of ["a1", "a3", "a5"]) {
+				expect(
+					(
+						await call("/api/app/conversations/eligible-01/ratings", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ messageId, rating: "up" }),
+						})
+					).status,
+				).toBe(404);
+			}
+			const voted = await call("/api/app/conversations/eligible-01/ratings", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ messageId: "a6", rating: "down" }),
+			});
+			expect(voted.status).toBe(200);
+			expect(await voted.json()).toMatchObject({
+				rating: { messageId: "a6", eventSeq: 8, anchorSeq: null, rating: "down" },
+			});
+
+			expect(
+				(await call("/api/app/conversations/eligible-01/ratings", { method: "PUT" })).status,
+			).toBe(405);
+			expect((await call("/api/app/conversations/ghost/ratings")).status).toBe(404);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "text/plain" },
+						body: "x",
+					})
+				).status,
+			).toBe(415);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: "{",
+					})
+				).status,
+			).toBe(400);
+			expect(
+				(
+					await call("/api/app/conversations/eligible-01/ratings", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ messageId: "a6", rating: "maybe" }),
+					})
+				).status,
+			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("memory PATCH fences the conversation and cancels queued retention", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const target = "0".repeat(64);
+			const op = store.memoryQueue.enqueue(target, {
+				id: "exchange/app/chat-01/1/a",
+				content: "Operator: hi\nGoblin: hello",
+				timestamp: new Date().toISOString(),
+				conversationId: "app/chat-01",
+				sourceIds: ["u1", "a1"],
+			});
+			const before = store.get("app/chat-01")!.epoch;
+
+			const off = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: true }),
+			});
+			expect(off.status).toBe(200);
+			expect(await off.json()).toEqual({
+				memoryExcluded: true,
+				projectMemory: null,
+				cancelled: 1,
+			});
+			const excluded = store.get("app/chat-01")!;
+			expect(excluded.memoryExcluded).toBe(true);
+			expect(excluded.epoch).toBe(before + 1);
+			expect(store.memoryQueue.get(op)).toBeNull();
+
+			const on = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: false }),
+			});
+			expect(on.status).toBe(200);
+			expect(await on.json()).toEqual({
+				memoryExcluded: false,
+				projectMemory: null,
+				cancelled: 0,
+			});
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("project memory off stays a hard boundary", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = projects.create({ name: "vault", memory: "off" });
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", projectId: project.id }),
+			});
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
+			const res = await call("/api/app/conversations/chat-01/memory", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ memoryExcluded: false }),
+			});
+			expect(res.status).toBe(409);
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(true);
 		} finally {
 			http.stop();
 		}
@@ -528,6 +786,105 @@ test("conversation settings are isolated, durable, validated, and only future ch
 	}
 });
 
+test("conversation config writes persist a level the model can express — never an offered-looking lie", async () => {
+	const { http, call, store } = setup();
+	const patch = (path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "clamp-01" }),
+		});
+		const a = "/api/app/conversations/clamp-01/config";
+		// xhigh is real on zai/m — it persists verbatim.
+		expect((await patch(a, { model: "zai/m", thinking: "xhigh" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ model: "zai/m", thinking: "xhigh" });
+		// Switching only the model re-clamps the staged level — glm-5.3 has
+		// no xhigh, so the row lands on the rung the wire would send.
+		const switched = await patch(a, { model: "zai/glm-5.3" });
+		expect(switched.status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({
+			model: "zai/glm-5.3",
+			thinking: "max",
+		});
+		expect(await switched.json()).toMatchObject({
+			thinking: "max",
+			thinkingLevels: ["low", "high", "max"],
+		});
+		// An explicit unexpressible level clamps the same way, and "off"
+		// lands on the forced-thinking floor.
+		expect((await patch(a, { thinking: "xhigh" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "max" });
+		expect((await patch(a, { thinking: "off" })).status).toBe(200);
+		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "low" });
+	} finally {
+		http.stop();
+	}
+});
+
+test("a model-only PATCH clamps once against the destination — the outgoing model can't erase a level", async () => {
+	const { http, call, store, configRef } = setup();
+	configRef.current.providers.openrouter = { kind: "openrouter", auth: "openrouter" };
+	// Cold catalog: the deepseek route is unknown, so its "high" persists
+	// verbatim until the catalog can judge it.
+	_primeOpenRouterCatalog(null);
+	const patch = (path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "ladder-hop" }),
+		});
+		const a = "/api/app/conversations/ladder-hop/config";
+		const seeded = await patch(a, {
+			model: "openrouter/deepseek/deepseek-r1-0528",
+			thinking: "high",
+		});
+		expect(seeded.status).toBe(200);
+		expect(store.get("app/ladder-hop")).toMatchObject({ thinking: "high" });
+		// Warm: deepseek's real profile is a mandatory toggle (low only);
+		// minimax takes the whole effort set, high included.
+		_primeOpenRouterCatalog(
+			new Map([
+				[
+					"deepseek/deepseek-r1-0528",
+					{ params: new Set(["reasoning"]), reasoning: { mandatory: true } },
+				],
+				[
+					"minimax/minimax-m3.1-flash:free",
+					{
+						params: new Set(["reasoning", "reasoning_effort"]),
+						reasoning: {
+							mandatory: true,
+							supported_efforts: ["max", "xhigh", "high", "medium", "low"],
+						},
+					},
+				],
+			]),
+		);
+		const moved = await patch(a, { model: "openrouter/minimax/minimax-m3.1-flash:free" });
+		expect(moved.status).toBe(200);
+		expect(store.get("app/ladder-hop")).toMatchObject({
+			model: "openrouter/minimax/minimax-m3.1-flash:free",
+			thinking: "high",
+		});
+		expect(await moved.json()).toMatchObject({ thinking: "high" });
+	} finally {
+		http.stop();
+		_primeOpenRouterCatalog(null);
+	}
+});
+
 test("conversation context reports last-turn usage, limit, and cache rates", async () => {
 	const { http, call } = setup();
 	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
@@ -647,6 +1004,78 @@ test("context prefers the final step's input and itemizes the window", async () 
 			{ key: "history", tokens: 150 },
 			{ key: "toolResults", tokens: 60 },
 		]);
+	} finally {
+		_resetModelsDevForTest();
+		http.stop();
+	}
+});
+
+test("the context window view serves the captured prompt and the call lineage", async () => {
+	const { http, call } = setup();
+	_primeModelsDevForTest({ zai: { models: { m: { limit: { context: 1000 } } } } });
+	try {
+		expect((await call("/api/app/conversations/nope/window")).status).toBe(404);
+		expect(
+			(
+				await call("/api/app/conversations/w-01/window", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				})
+			).status,
+		).toBe(405);
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "w-01" }),
+		});
+		// No turn yet: null sections, an empty lineage — the page says
+		// so instead of faking a window.
+		const empty = (await (await call("/api/app/conversations/w-01/window")).json()) as {
+			capturedAt: string | null;
+			messages: unknown[] | null;
+			calls: unknown[];
+		};
+		expect(empty.capturedAt).toBeNull();
+		expect(empty.messages).toBeNull();
+		expect(empty.calls).toEqual([]);
+
+		// A real turn: the runtime recorded its final step's prompt, and
+		// the observation logged the call.
+		await createAndChat(call, "hi", "w-01");
+		const body = (await (await call("/api/app/conversations/w-01/window")).json()) as {
+			model: string;
+			capturedAt: string | null;
+			capturedModel: string | null;
+			steps: number | null;
+			system: string | null;
+			tools: { name: string }[] | null;
+			messages: { role: string; content: unknown }[] | null;
+			segments: Record<string, number> | null;
+			calls: {
+				status: string;
+				inputTokens: number | null;
+				prefixRelation: string;
+			}[];
+		};
+		expect(body.capturedAt).not.toBeNull();
+		// The rig's buildStep sets no label, so the observed modelId is
+		// what the record carries — prod's stepBuilder labels with the ref.
+		expect(body.capturedModel).toBe("fake-1");
+		expect(body.steps).toBe(1);
+		expect(body.system).toBe("test");
+		expect(body.tools).toEqual([]);
+		expect(body.segments).not.toBeNull();
+		expect(body.segments!.history).toBeGreaterThan(0);
+		// The outbound of the turn's single step: the user message only —
+		// the reply is the response, never its own input.
+		expect(body.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);
+		expect(body.calls).toHaveLength(1);
+		expect(body.calls[0]).toMatchObject({
+			status: "completed",
+			prefixRelation: "first",
+		});
+		expect(body.calls[0]!.inputTokens).toBeGreaterThan(0);
 	} finally {
 		_resetModelsDevForTest();
 		http.stop();
@@ -844,6 +1273,9 @@ describe("app channel interrupted-run routes", () => {
 			interruptedRun(store, wired.journal, convId, "run-dead");
 			wired.journal.noteToolInput("run-dead", "c1", "probe", { q: 1 });
 			wired.journal.noteToolDispatch("run-dead", "c1", "probe", { q: 1 });
+			wired.journal.noteToolInput("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.noteToolDispatch("run-dead", "c2", "probe", { q: 2 });
+			wired.journal.resolveCall("run-dead", "c2", "skip");
 
 			const res = await call("/api/app/conversations/chat-01/interrupted");
 			expect(res.status).toBe(200);
@@ -851,7 +1283,11 @@ describe("app channel interrupted-run routes", () => {
 			expect(body.runs).toHaveLength(1);
 			expect(body.runs[0]!.runId).toBe("run-dead");
 			expect(body.runs[0]!.calls.dispatched).toBe(1);
+			expect(body.runs[0]!.calls.resolved).toBe(1);
 			expect(body.runs[0]!.toolCalls[0]!.state).toBe("dispatched");
+			expect(body.runs[0]!.toolCalls[0]!.canAuthorizeRetry).toBe(true);
+			expect(body.runs[0]!.toolCalls[1]!.state).toBe("resolved-skip");
+			expect(body.runs[0]!.toolCalls[1]!.canAuthorizeRetry).toBe(false);
 
 			expect((await call("/api/app/conversations/ghost/interrupted")).status).toBe(404);
 			expect(

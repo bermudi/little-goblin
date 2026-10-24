@@ -2,6 +2,7 @@
 // decisions are compare-and-set (one winner between a tap and the
 // sweeper), and expiry only ever takes pending rows.
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "./mail-outbox.ts";
@@ -23,6 +24,60 @@ describe("mail outbox", () => {
 		expect(row.cc).toEqual([]);
 		expect(new Date(row.expiresAt).getTime() - NOW.getTime()).toBe(OUTBOX_TTL_MS);
 		expect(s.get(row.id)).toEqual(row);
+	});
+
+	test("queue accepts an app conversation target", () => {
+		const s = store();
+		const row = s.queue(
+			{ to: ["a@x.com"], subject: "hi", body: "hello", address: { target: "app/chat-1" } },
+			NOW,
+		);
+		expect(row.target).toBe("app/chat-1");
+		expect(row.chatId).toBe(0);
+		expect(row.threadId).toBeNull();
+		s.close();
+	});
+
+	test("a pre-target outbox migrates its destination without deciding it", () => {
+		const path = tmpDb("goblin-outbox-");
+		const db = new Database(path);
+		db.exec(`CREATE TABLE mail_outbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			to_json TEXT NOT NULL,
+			cc_json TEXT,
+			subject TEXT NOT NULL,
+			body TEXT NOT NULL,
+			reply_to_id TEXT,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			draft_message_id INTEGER,
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			decided_at TEXT,
+			sent_id TEXT
+		)`);
+		db.query(`INSERT INTO mail_outbox
+			(to_json, subject, body, chat_id, thread_id, draft_message_id, status, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).run(
+			'["a@x.com"]',
+			"hi",
+			"body",
+			-100,
+			7,
+			55,
+			NOW.toISOString(),
+			"2026-09-27T10:00:00.000Z",
+		);
+		db.close();
+		const s = openOutbox(path);
+		const row = s.get(1)!;
+		expect(row.target).toBe("topic:-100:7");
+		expect(row.chatId).toBe(-100);
+		expect(row.threadId).toBe(7);
+		expect(row.draftMessageId).toBe(55);
+		expect(row.status).toBe("pending");
+		s.close();
 	});
 
 	test("bindDraft pins the draft message; rows survive a reopen", () => {

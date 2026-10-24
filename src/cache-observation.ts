@@ -102,32 +102,34 @@ function sharedPrefix(current: string[], previous: string[]): number {
 	return n;
 }
 
+const MODEL_CACHE_CALLS_DDL = `CREATE TABLE IF NOT EXISTS model_cache_calls (
+	call_id TEXT PRIMARY KEY,
+	conversation_id TEXT,
+	purpose TEXT,
+	route_key TEXT NOT NULL,
+	model TEXT NOT NULL,
+	started_ms INTEGER NOT NULL,
+	finished_ms INTEGER,
+	head_hash TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	settings_hash TEXT NOT NULL,
+	prompt_hashes TEXT NOT NULL,
+	status TEXT NOT NULL,
+	input_tokens INTEGER,
+	cache_read INTEGER,
+	cache_write INTEGER,
+	output_tokens INTEGER,
+	idle_ms INTEGER,
+	prefix_relation TEXT NOT NULL,
+	shared_messages INTEGER NOT NULL
+)`;
+
 export function openCacheObservation(
 	db: Database,
 	options?: { now?: () => number },
 ): CacheObservation {
 	const now = options?.now ?? Date.now;
-	db.run(`CREATE TABLE IF NOT EXISTS model_cache_calls (
-		call_id TEXT PRIMARY KEY,
-		conversation_id TEXT,
-		purpose TEXT,
-		route_key TEXT NOT NULL,
-		model TEXT NOT NULL,
-		started_ms INTEGER NOT NULL,
-		finished_ms INTEGER,
-		head_hash TEXT NOT NULL,
-		request_hash TEXT NOT NULL,
-		settings_hash TEXT NOT NULL,
-		prompt_hashes TEXT NOT NULL,
-		status TEXT NOT NULL,
-		input_tokens INTEGER,
-		cache_read INTEGER,
-		cache_write INTEGER,
-		output_tokens INTEGER,
-		idle_ms INTEGER,
-		prefix_relation TEXT NOT NULL,
-		shared_messages INTEGER NOT NULL
-	)`);
+	db.run(MODEL_CACHE_CALLS_DDL);
 	db.run(
 		"CREATE INDEX IF NOT EXISTS model_cache_calls_lineage ON model_cache_calls(conversation_id, route_key, purpose, started_ms DESC)",
 	);
@@ -300,4 +302,71 @@ export function openCacheObservation(
 			};
 		},
 	};
+}
+
+// ---------- the window view's call lineage ----------
+
+// Every model call recorded against one conversation, newest first —
+// the historical half of the context-window view (the stored window is
+// the newest call's prompt; these rows are every call that hit it).
+export interface CacheCallRow {
+	callId: string;
+	purpose: string | null;
+	routeKey: string;
+	model: string;
+	startedMs: number;
+	finishedMs: number | null;
+	status: string;
+	inputTokens: number | null;
+	cacheRead: number | null;
+	cacheWrite: number | null;
+	outputTokens: number | null;
+	prefixRelation: string;
+	sharedMessages: number;
+}
+
+const callRowSchema = z.object({
+	call_id: z.string(),
+	purpose: z.string().nullable(),
+	route_key: z.string(),
+	model: z.string(),
+	started_ms: z.number(),
+	finished_ms: z.number().nullable(),
+	status: z.string(),
+	input_tokens: z.number().nullable(),
+	cache_read: z.number().nullable(),
+	cache_write: z.number().nullable(),
+	output_tokens: z.number().nullable(),
+	prefix_relation: z.string(),
+	shared_messages: z.number(),
+});
+
+export function listCalls(db: Database, conversationId: string, limit = 200): CacheCallRow[] {
+	db.run(MODEL_CACHE_CALLS_DDL);
+	const rows = db
+		.query(
+			`SELECT call_id, purpose, route_key, model, started_ms, finished_ms, status,
+				input_tokens, cache_read, cache_write, output_tokens, prefix_relation, shared_messages
+			FROM model_cache_calls WHERE conversation_id = ?
+			ORDER BY started_ms DESC, rowid DESC LIMIT ?`,
+		)
+		.all(conversationId, limit);
+	return rows.map((raw) => {
+		const row = callRowSchema.parse(raw);
+		return {
+			callId: row.call_id,
+			purpose: row.purpose,
+			routeKey: row.route_key,
+			model: row.model,
+			startedMs: row.started_ms,
+			finishedMs: row.finished_ms,
+			status: row.status,
+			inputTokens: row.input_tokens,
+			cacheRead: row.cache_read,
+			cacheWrite: row.cache_write,
+			outputTokens: row.output_tokens,
+			prefixRelation: row.prefix_relation,
+			sharedMessages: row.shared_messages,
+		};
+	});
 }

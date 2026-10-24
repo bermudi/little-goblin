@@ -690,6 +690,45 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			complete.close();
 		}
 	});
+	test("telegram channel tables leave the expectation when the channel is disabled", async () => {
+		// tg_inbox/tg_inbox_archives/guest_dedup are created only by
+		// startBot, which runs only while telegram.enabled — a healthy
+		// telegram-disabled install must not warn (design/doctor.md:
+		// config-gated tables only while their block exists).
+		const f = fixture();
+		installLayout(f.home);
+		assets(f.checkout);
+		const path = join(f.home, "state/goblin.sqlite");
+		const bootSansTelegram = (): { close(): void } => {
+			const store = openStore(path);
+			const extras = [openPrograms(path), openOutbox(path), openSandboxes(path)];
+			openCacheObservation(store.db);
+			openPings(store.db);
+			openTurnJournal(store.db);
+			return {
+				close() {
+					for (const extra of extras) extra.close();
+					store.close();
+				},
+			};
+		};
+		const partial = bootSansTelegram();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, operators: [], telegram: { enabled: false } }),
+		);
+		const disabled = await runHealth({ ...f.options, phase: "installed" });
+		expect(finding(disabled, "sqlite.subsystems").status).toBe("pass");
+		// The same store against an enabled channel still warns by name.
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(f.config));
+		const enabled = await runHealth({ ...f.options, phase: "installed" });
+		const subsystems = finding(enabled, "sqlite.subsystems");
+		expect(subsystems.status).toBe("warn");
+		for (const table of ["tg_inbox", "tg_inbox_archives", "guest_dedup"])
+			expect(subsystems.detail).toContain(table);
+		partial.close();
+	});
+
 	test("sandbox probes stay skip until configured; engine and image readiness split", async () => {
 		const f = fixture();
 		expect(finding(await runHealth(f.options), "sandbox.engine").status).toBe("skip");
@@ -879,7 +918,11 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 			mkdirSync(units, { recursive: true });
 			writeFileSync(
 				join(units, "goblin-memory-api.container"),
-				"ContainerName=goblin-memory-api\nPublishPort=127.0.0.1:8888:8888\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+				"ContainerName=goblin-memory-api\nPod=goblin-memory.pod\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+			);
+			writeFileSync(
+				join(units, "goblin-memory.pod"),
+				"PodName=goblin-memory\nPublishPort=127.0.0.1:8888:8888\n",
 			);
 			writeFileSync(
 				join(cfg, "hindsight.env"),
@@ -898,8 +941,13 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 			);
 			const metadata = JSON.stringify({
 				running: true,
-				ports: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
 				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
+			});
+			const podMeta = JSON.stringify({
+				InfraConfig: {
+					PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+				},
+				Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
 			});
 			const lowCapacity = mode.startsWith("low-");
 			if (lowCapacity) {
@@ -922,7 +970,8 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 					: `printf '${secret}' >&2; exit 1`;
 			f.script(
 				"podman",
-				`if [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
+				`if [ "$1" = pod ]; then printf '%s' '${podMeta}';
+				elif [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
 				elif [ "$1" = volume ] && [ '${lowCapacity}' = true ]; then printf '%s' '${JSON.stringify(join(f.root, secret))}';
 				else ${mountFailure}; fi`,
 			);
@@ -971,6 +1020,88 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 					);
 				}
 			}
+		});
+
+	for (const mode of ["array", "missing-roster", "wrong-binding"] as const)
+		test(`pod association refuses ${mode}`, async () => {
+			const f = fixture(),
+				cfg = join(f.root, ".config/goblin-memory");
+			const units = join(f.root, ".config/containers/systemd");
+			mkdirSync(cfg, { recursive: true });
+			mkdirSync(units, { recursive: true });
+			writeFileSync(
+				join(units, "goblin-memory-api.container"),
+				"ContainerName=goblin-memory-api\nPod=goblin-memory.pod\nEnvironmentFile=%h/.config/goblin-memory/hindsight.env\n",
+			);
+			writeFileSync(
+				join(units, "goblin-memory.pod"),
+				"PodName=goblin-memory\nPublishPort=127.0.0.1:8888:8888\n",
+			);
+			writeFileSync(
+				join(cfg, "hindsight.env"),
+				"HINDSIGHT_API_EMBEDDINGS_PROVIDER=openai\nHINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL=http://127.0.0.1:11435/v1\nHINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL=fixture-model\n",
+			);
+			writeFileSync(
+				join(cfg, "embed-relay.env"),
+				"GOBLIN_EMBED_RELAY_ADDR=127.0.0.1\nGOBLIN_EMBED_MODEL=fixture-model\n",
+			);
+			writeFileSync(
+				join(f.home, "goblin.json5"),
+				JSON.stringify({
+					...f.config,
+					memory: { baseUrl: "http://127.0.0.1:8888", bankId: secret },
+				}),
+			);
+			const metadata = JSON.stringify({
+				running: true,
+				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
+			});
+			const podMeta =
+				mode === "array"
+					? JSON.stringify([
+							{
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+							},
+						])
+					: mode === "missing-roster"
+						? JSON.stringify({
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }],
+							})
+						: JSON.stringify({
+								InfraConfig: {
+									PortBindings: { "8888/tcp": [{ HostIp: "0.0.0.0", HostPort: "8888" }] },
+								},
+								Containers: [{ Name: "goblin-memory-api" }, { Name: "goblin-memory-db" }],
+							});
+			f.script(
+				"podman",
+				`printf '%s\\n' "$@" >> '${join(f.root, "argv")}'
+				if [ "$1" = pod ]; then printf '%s' '${podMeta}';
+				elif [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
+				else exit 1; fi`,
+			);
+			const fetch = spyOn(globalThis, "fetch").mockImplementation(
+				Object.assign(async () => new Response("ok"), {
+					preconnect: globalThis.fetch.preconnect,
+				}),
+			);
+			restorers.push(() => fetch.mockRestore());
+			const report = await runHealth(f.options);
+			expect(JSON.stringify(report)).not.toContain(secret);
+			expect(finding(report, "memory.local-association").status).toBe("warn");
+			expect(finding(report, "memory.local-association").detail).toContain(
+				"unverified-pod-API-association",
+			);
+			expect(finding(report, "memory.embedding").status).toBe("skip");
+			expect(readFileSync(join(f.root, "argv"), "utf8")).toContain(
+				"--format\n{{json .}}\ngoblin-memory",
+			);
 		});
 });
 

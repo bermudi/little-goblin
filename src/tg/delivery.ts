@@ -1,7 +1,7 @@
 import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
-import { channelOf, type Conversation } from "../conversation.ts";
+import { channelOf, parseAddress, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
@@ -137,6 +137,18 @@ function windowEnd(body: string, start: number): number {
 
 export type DeliveryApi = Api;
 
+// Rich rendering and the salute effect are DM-only in v1 (design/telegram.md
+// → Formatted replies & draft streaming: "DMs only"). The `dm:` id prefix is
+// not the DM discriminant — a topic-less group's standing lane is addressed
+// `dm:<chatId>` too, with a negative chat id (mod.ts conversationAddress).
+// Parse the address and require a private chat: kind dm/rolling, chatId > 0.
+function isPrivateDmAddress(id: string): boolean {
+	const parsed = parseAddress(id);
+	if (parsed === null) return false;
+	if (parsed.kind !== "dm" && parsed.kind !== "rolling") return false;
+	return parsed.chatId > 0;
+}
+
 export interface DeliverySinkOptions {
 	replyTo?: number;
 	editIntervalMs?: number;
@@ -227,7 +239,7 @@ export function makeDeliverySink(
 	const richOpts = rich;
 	const answerDraftId = nextDraftId++;
 	const reasonDraftId = nextDraftId++;
-	let richMode = richOpts?.enabled === true && conv.id.startsWith("dm:") && !voice?.voiceMode;
+	let richMode = richOpts?.enabled === true && isPrivateDmAddress(conv.id) && !voice?.voiceMode;
 	const reasoningOn = richOpts?.reasoning === true && conv.persona !== "guest";
 	let reasoningText = "";
 	let reasoningPushed = 0;
@@ -1000,7 +1012,7 @@ export function makeDeliverySink(
 							...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
 						};
 						const effect =
-							done.kind === "completed" && conv.id.startsWith("dm:") && messageEffectsUsable
+							done.kind === "completed" && isPrivateDmAddress(conv.id) && messageEffectsUsable
 								? { message_effect_id: SALUTE_EFFECT_ID }
 								: {};
 						const keyboard = done.kind === "completed" ? buildKeyboard() : null;

@@ -193,7 +193,10 @@ describe("turn journal — a real killed process", () => {
 			expect(runs).toHaveLength(1);
 			const continuation = runs[0]!;
 			const calls = journal.callsFor(continuation.runId);
-			expect(calls.map((c) => c.toolCallId)).toEqual(["call-1"]);
+			// The failed attempt's evidence rides in namespaced by its
+			// origin run — the continuation's own ids stay free.
+			expect(calls).toHaveLength(1);
+			expect(calls[0]!.toolCallId).toMatch(/:call-1$/);
 			expect(calls[0]!.state).toBe("completed");
 			expect(calls[0]!.result).toBe('{"ok":true}');
 

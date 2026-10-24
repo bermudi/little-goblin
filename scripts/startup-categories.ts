@@ -2,6 +2,7 @@
 export const startupCategories: readonly string[] = [
 	"invalid startup arguments",
 	"startup deadline expired",
+	"startup config unreadable",
 	"startup refuses existing invocation",
 	"startup watch refuses missing invocation",
 	"startup clock unavailable",

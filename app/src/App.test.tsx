@@ -152,7 +152,8 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat"))
 				return Promise.resolve(
@@ -170,6 +171,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -333,13 +335,15 @@ describe("rail row actions and the pinned pool", () => {
 				}
 				return Promise.resolve(jsonResponse(body));
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			return Promise.resolve(
 				jsonResponse({
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -573,8 +577,33 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					conversations = conversations.map((c) => ({ ...c, archivedAt: "2026-10-10T00:00:00Z" }));
 				return Promise.resolve(jsonResponse({ ok: true }));
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/window"))
+				return Promise.resolve(
+					jsonResponse({
+						model: "main/test",
+						capturedAt: "2026-10-22T10:00:00.000Z",
+						capturedModel: "main/test",
+						steps: 1,
+						segments: {
+							identity: 10,
+							environment: 0,
+							project: 0,
+							agentsMd: 0,
+							userMd: 0,
+							skills: 0,
+							toolDefs: 0,
+							history: 20,
+							toolResults: 0,
+						},
+						system: "You are goblin.",
+						tools: [],
+						messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+						calls: [],
+					}),
+				);
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
 				if (saveStatus !== 200)
@@ -586,13 +615,14 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					new Response(
 						JSON.stringify({
 							config: settings,
-							providerKinds: ["openai-compatible", "openrouter"],
+							providerKinds: ["openai-compatible", "responses", "openrouter", "codex"],
 							searchKinds: ["ddg", "brave", "jina"],
 							fetchKinds: ["local", "firecrawl", "jina"],
 							transcriptionKinds,
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main", "groq"],
+							modelCatalog: [],
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
@@ -651,6 +681,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					model: "main/test",
 					thinking: "medium",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -820,6 +851,24 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
+	test("the context-window button opens /app/c/<id>/window and Back returns to the chat", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		const action = container.querySelector('button[aria-label^="Context window"]');
+		expect(action).not.toBeNull();
+		await click(action);
+		await settle();
+		expect(win.location.pathname).toBe("/app/c/fixture/window");
+		expect(container.querySelector(".ops")?.textContent).toContain("You are goblin.");
+		expect(container.querySelector(".ops")?.textContent).toContain("Model calls · 0");
+
+		await traverse("back");
+		await settle();
+		expect(win.location.pathname).toBe("/app/c/fixture");
+		expect(container.querySelector(".chat")).not.toBeNull();
+	});
+
 	test("repeated conversation and empty-chat selection do not add history entries", async () => {
 		seedConversation();
 		await mount();
@@ -925,7 +974,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 	}
 
-	test("search and fetch kind changes clear only the changed provider's credential before save", async () => {
+	test("removing a chain entry drops its key record from the saved body", async () => {
 		settings = parseConfig({
 			...SETTINGS,
 			search: [
@@ -941,41 +990,22 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Web")),
 		);
-		const providers = [...container.querySelectorAll<HTMLSelectElement>(".chain-card select")];
-		const credentials = () =>
-			[...container.querySelectorAll<HTMLInputElement>(".chain-card input")].map((e) => e.value);
-		const change = async (index: number, kind: string) => {
-			await act(async () => {
-				const select = providers[index]!;
-				select.value = kind;
-				select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-			});
-			await settle();
-		};
-		expect(credentials()).toEqual(["search-key", "search-fallback", "fetch-key", "fetch-fallback"]);
-		await change(0, "brave");
-		await change(2, "firecrawl");
-		expect(credentials()).toEqual(["search-key", "search-fallback", "fetch-key", "fetch-fallback"]);
-		await change(0, "jina");
-		expect(credentials()).toEqual(["", "search-fallback", "fetch-key", "fetch-fallback"]);
-		await change(2, "jina");
-		expect(credentials()).toEqual(["", "search-fallback", "", "fetch-fallback"]);
-		// The last posted body must carry the final state.
-		await waitFor(() => savedBodies.length > 0, "the edits to write themselves");
-		expect(savedBodies.at(-1)?.search).toEqual([
-			{ kind: "jina" },
-			{ kind: "jina", auth: "search-fallback" },
-		]);
-		expect(savedBodies.at(-1)?.fetch).toEqual([
-			{ kind: "jina" },
-			{ kind: "jina", auth: "fetch-fallback" },
-		]);
+		const cards = () => [...container.querySelectorAll(".chain-card")];
+		// No per-row record-name inputs — a service swap is remove + add.
+		expect(container.querySelector('input[aria-label*="secret name"]')).toBeNull();
+		// brave · jina | firecrawl · jina — the first removal shifts the
+		// rest up, so firecrawl is then index 1.
+		await click(cards()[0]!.querySelector('[aria-label="remove"]'));
+		await click(cards()[1]!.querySelector('[aria-label="remove"]'));
+		await waitFor(() => savedBodies.length > 0, "the removals to write");
+		expect(savedBodies.at(-1)?.search).toEqual([{ kind: "jina", auth: "search-fallback" }]);
+		expect(savedBodies.at(-1)?.fetch).toEqual([{ kind: "jina", auth: "fetch-fallback" }]);
 	});
 
 	test("a valid edit writes itself — no Save click needed", async () => {
 		await mount();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		await click(
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
@@ -990,15 +1020,15 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	const openProviders = async () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) =>
-				b.textContent?.includes("Providers"),
+				b.textContent?.includes("Accounts & keys"),
 			),
 		);
-		expect(container.querySelector(".prov.card")).not.toBeNull();
+		expect(container.querySelector(".chain-card")).not.toBeNull();
+		// The service fields live behind the row's Edit disclosure.
+		await click(container.querySelector('[aria-label="edit main"]'));
 	};
-	const authInput = () =>
-		container.querySelector('.prov.card input[aria-label="secret name"]') as HTMLInputElement;
 	const nameInput = () =>
-		container.querySelector('.prov.card input[aria-label="provider name"]') as HTMLInputElement;
+		container.querySelector('.chain-card input[aria-label="service name"]') as HTMLInputElement;
 	const renameProviderCard = async (name: string) => {
 		await typeInto(nameInput(), name, win.HTMLInputElement.prototype);
 		await act(async () => {
@@ -1009,89 +1039,94 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await settle();
 	};
 
-	test("a blanked provider auth materializes from the submitted body — a rename can't re-point it", async () => {
+	test("a provider added with no key materializes its record name — a rename can't re-point it", async () => {
 		await mount();
 		await openProviders();
-		expect(authInput().value).toBe("fixture");
-		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
-		await waitFor(() => savedBodies.length > 0, "the blank-auth save");
-		expect(savedBodies.at(-1)?.providers["main"]).toEqual({
-			kind: "openai-compatible",
-			baseUrl: "https://api.example.test",
-			auth: "main",
-		});
-		await waitFor(() => authInput().value === "main", "the materialized auth input");
-		expect(container.querySelector(".dirty-pill")).toBeNull();
+		// Rename the existing service — its stored record name is kept
+		// verbatim in the body, not re-derived from the new name.
 		await renameProviderCard("primary");
-		await waitFor(() => savedBodies.length > 1, "the rename save");
+		await waitFor(() => savedBodies.length > 0, "the rename save");
 		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
 			kind: "openai-compatible",
 			baseUrl: "https://api.example.test",
-			auth: "main",
+			auth: "fixture",
 		});
 		expect(savedBodies.at(-1)?.providers["main"]).toBeUndefined();
+		// A custom endpoint added without a key materializes its own name.
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "+ Add model service",
+			),
+		);
+		await act(async () => {
+			const sel = container.querySelector(
+				'select[aria-label="add a service"]',
+			) as HTMLSelectElement;
+			sel.value = "__custom";
+			sel.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await typeInto(
+			container.querySelector('input[aria-label="custom base url"]')!,
+			"https://custom.test/v1",
+			win.HTMLInputElement.prototype,
+		);
+		await typeInto(
+			container.querySelector('input[aria-label="service name"]:not([value="primary"])') ??
+				[...container.querySelectorAll('input[aria-label="service name"]')].at(-1)!,
+			"custom-svc",
+			win.HTMLInputElement.prototype,
+		);
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Add service"),
+		);
+		await waitFor(() => savedBodies.length > 1, "the add save");
+		expect(savedBodies.at(-1)?.providers["custom-svc"]).toEqual({
+			kind: "openai-compatible",
+			baseUrl: "https://custom.test/v1",
+			auth: "custom-svc",
+		});
 	});
 
-	test("edits that land under a held settings ack survive it — rename keeps the credential, explicit edits win", async () => {
+	test("edits that land under a held settings ack survive it — rename keeps the record, later edits win", async () => {
 		await mount();
 		await openProviders();
-		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
 		let release = holdSettingsPost();
-		await waitFor(() => savedBodies.length > 0, "the held save");
-		await renameProviderCard("primary");
-		release();
-		await waitFor(() => savedBodies.length > 1, "the rename's save");
-		expect(nameInput().value).toBe("primary");
-		expect(authInput().value).toBe("main");
-		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
-			kind: "openai-compatible",
-			baseUrl: "https://api.example.test",
-			auth: "main",
+		await typeInto(nameInput(), "primary", win.HTMLInputElement.prototype);
+		await act(async () => {
+			nameInput().dispatchEvent(
+				new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event,
+			);
 		});
-
-		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
-		release = holdSettingsPost();
-		await waitFor(() => savedBodies.length > 2, "the second held save");
-		await typeInto(authInput(), "rotated", win.HTMLInputElement.prototype);
-		release();
-		await waitFor(() => savedBodies.length > 3, "the rotated save");
-		expect(authInput().value).toBe("rotated");
-		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
-			kind: "openai-compatible",
-			baseUrl: "https://api.example.test",
-			auth: "rotated",
-		});
-
-		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
-		release = holdSettingsPost();
-		await waitFor(() => savedBodies.length > 4, "the third held save");
+		await waitFor(() => savedBodies.length > 0, "the held rename save");
+		// While the ack is held, a protocol change edits the same provider.
 		await act(async () => {
 			const select = container.querySelector(
-				'.prov.card select[aria-label="provider type"]',
+				'.chain-card select[aria-label="protocol"]',
 			) as HTMLSelectElement;
-			select.value = "openrouter";
+			select.value = "responses";
 			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
 		});
 		await settle();
 		release();
-		await waitFor(() => savedBodies.length > 5, "the kind-change save");
+		await waitFor(() => savedBodies.length > 1, "the kind-change save");
 		expect(
-			(
-				container.querySelector(
-					'.prov.card select[aria-label="provider type"]',
-				) as HTMLSelectElement
-			).value,
-		).toBe("openrouter");
+			(container.querySelector('.chain-card select[aria-label="protocol"]') as HTMLSelectElement)
+				.value,
+		).toBe("responses");
+		// The protocol switch dropped the explicit record — a blank auth
+		// materializes to the provider's own name.
 		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
-			kind: "openrouter",
-			auth: authDefaults.openrouter,
+			kind: "responses",
+			baseUrl: "https://api.example.test",
+			auth: "primary",
 		});
 	}, 30_000);
+
 	test("a conflicted save offers no retry — only a transient failure does", async () => {
 		saveStatus = 409;
 		await mount();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		const level = (name: string) =>
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
@@ -1127,43 +1162,31 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		for (let i = 0; i < 40; i++) await settle();
 		expect(savedBodies).toHaveLength(0);
 		expect(container.textContent).toContain("unsaved");
-		expect(container.textContent).toContain("Operators must keep at least one Telegram id.");
+		expect(container.textContent).toContain(
+			"Operators must keep at least one Telegram id while Telegram is enabled.",
+		);
 	});
 
-	test("publicUrl stages for the explicit Save — the debounce never carries an in-between value", async () => {
+	test("publicUrl is read-only and round-trips unchanged — there is no Save button", async () => {
 		settings = parseConfig({ ...SETTINGS, publicUrl: "https://g.example.ts.net" });
 		await mount();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
-		const field = [...container.querySelectorAll(".frow")].find(
-			(r) => r.querySelector(".flabel")?.textContent === "Public url",
-		)!;
-		const input = field.querySelector("input")!;
-		// Clearing is a VALID value — before staging, the debounce wrote
-		// it and the tab's own origin fell out of the allowlist.
-		await typeInto(input, "", win.HTMLInputElement.prototype);
-		expect(container.textContent).toContain("unsaved");
-		expect(container.textContent).toContain("public url");
-		// Well past the 800ms debounce — nothing may have posted.
-		for (let i = 0; i < 40; i++) await settle();
-		expect(savedBodies).toHaveLength(0);
-		// Other pending edits wait on the same commit — the save body is
-		// the whole draft, so an unstaged autosave would carry the
-		// half-edited allowlist.
+		// Displayed, not editable — no input carries the value.
+		expect(container.textContent).toContain("https://g.example.ts.net");
+		expect(container.querySelector(".savebar-save")).toBeNull();
+		expect(
+			[...container.querySelectorAll("input")].find((i) => i.value === "https://g.example.ts.net"),
+		).toBeUndefined();
+		// An ordinary edit saves the draft with publicUrl untouched.
 		await click(
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
 				(b) => b.textContent === "debug",
 			),
 		);
-		for (let i = 0; i < 40; i++) await settle();
-		expect(savedBodies).toHaveLength(0);
-		// The explicit Save commits everything at once.
-		await click(container.querySelector(".savebar-save"));
-		await waitFor(() => savedBodies.length > 0, "the explicit save");
-		expect(savedBodies.at(-1)?.publicUrl).toBe("");
-		expect(savedBodies.at(-1)?.logLevel).toBe("debug");
-		expect(container.textContent).not.toContain("unsaved");
+		await waitFor(() => savedBodies.length > 0, "the autosave");
+		expect(savedBodies.at(-1)?.publicUrl).toBe("https://g.example.ts.net");
 	});
 
 	test("a create resolving after navigation to dirty Settings is dropped — no silent close", async () => {
@@ -1478,6 +1501,7 @@ describe("App telegram door", () => {
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main"],
+							modelCatalog: [],
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
@@ -1651,7 +1675,7 @@ describe("App telegram door", () => {
 		stubClosingConfirmation();
 		await renderDoor();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		await click(
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
@@ -2079,7 +2103,10 @@ describe("app projects surface", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(
+					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
+				);
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
@@ -2099,6 +2126,7 @@ describe("app projects surface", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -4016,7 +4044,8 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 				return g.promise;
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
-			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat"))
 				return Promise.resolve(
@@ -4033,6 +4062,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -4130,5 +4160,115 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		await settle();
 		expect(container.textContent).not.toContain("Couldn't refresh the list.");
 		expect(container.textContent).toContain("kept chat");
+	});
+});
+
+// The chat width selector — a header control on the chat page whose
+// choice flips the shell column and survives a remount (per-device
+// localStorage, chatWidth.ts).
+describe("chat width selector", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/conversations")
+				return Promise.resolve(jsonResponse({ conversations: [] }));
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const mount = async () => {
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+	};
+
+	test("wide flips the shell class and survives a remount", async () => {
+		await mount();
+		const seg = container.querySelector(".width-seg");
+		expect(seg).not.toBeNull();
+		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
+
+		const wide = [...(seg?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "wide");
+		await act(async () => {
+			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+		expect(win.localStorage.getItem("goblin.chat-width.v1")).toBe("wide");
+
+		await act(async () => {
+			root?.unmount();
+		});
+		root = null;
+		await mount();
+		expect(container.querySelector("main")?.className).toContain("chat-wide");
+	});
+
+	test("narrow stays the default on a fresh device", async () => {
+		await mount();
+		expect(container.querySelector("main")?.className ?? "").not.toContain("chat-wide");
 	});
 });

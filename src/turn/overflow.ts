@@ -21,7 +21,14 @@ export interface TurnRecovery {
 	filterRetryUsed: boolean;
 	resumedFrom?: string | undefined;
 	predecessorRun?: string | undefined;
+	// The operator's real request for the loop watchdog's progress check —
+	// set only by operator-resume, whose head event is a generated
+	// provenance marker rather than the ask. Absent, the attempt falls
+	// back to the head message's text (every other head IS the request).
+	operatorRequest?: string | undefined;
 	overflowed?: boolean | undefined;
+	recallVersion?: number | null | undefined;
+	sourceInputSeq?: number | null | undefined;
 }
 
 export class ContextOverflowError extends Error {
@@ -83,6 +90,11 @@ export interface OverflowDeps<M> {
 	filterRetryUsed: boolean;
 	resumedFrom?: string | undefined;
 	failedRunId?: string | undefined;
+	// Carried forward so an operator-resumed turn that overflows keeps
+	// the real request on its continuation attempt.
+	operatorRequest?: string | undefined;
+	recallVersion?: number | null | undefined;
+	sourceInputSeq?: number | null | undefined;
 	members: M[];
 	compact(): Promise<CompactionOutcome>;
 	assertAuthority(): void;
@@ -146,7 +158,10 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			filterRetryUsed: deps.filterRetryUsed,
 			resumedFrom: deps.resumedFrom,
 			predecessorRun: deps.failedRunId,
+			operatorRequest: deps.operatorRequest,
 			overflowed: true,
+			recallVersion: deps.recallVersion,
+			sourceInputSeq: deps.sourceInputSeq,
 		},
 		members: deps.members,
 	};

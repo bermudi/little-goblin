@@ -434,6 +434,9 @@ describe("local deployment refresh and rollback", () => {
 		"app/src/App.tsx",
 		"app/vite.config.ts",
 		"src/agent/tools/ui-schema.ts",
+		// Value-imported into the served bundle (app/src/markdown.tsx) — a
+		// tags-only deploy must not ship a stale client.
+		"src/tags.ts",
 	]) {
 		test(`${path} rebuilds the inlined client`, () => {
 			const result = runDeploy([path]);

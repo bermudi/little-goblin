@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from typing import Protocol
 import urllib.error
 from urllib.parse import urlsplit
 import urllib.request as urlrequest
@@ -19,18 +20,38 @@ import urllib.request as urlrequest
 import install
 from install import (
     Answers,
-    build_database_uri,
+    SecretSpec,
+    apply_secret_block,
     build_goblin_memory_snippet,
     build_hindsight_env,
     insert_json5_property,
     install_assets,
-    parse_postgres_env,
+    needed_secrets,
     render_env_file,
+    secret_lookup,
     write_file_atomic,
 )
+from providers import auth_command_for
 from start import validate
 
+
+class Probe(Protocol):
+    """install.probe's declared shape: the fake podman/systemd edges
+    stubbing it must match it exactly for strict mypy (a bare Callable
+    is Any, and a Callable alias's positional-only params are not
+    assignable to a def-declared named parameter)."""
+
+    def __call__(self, command: list[str],
+                 ) -> subprocess.CompletedProcess[str] | None:
+        ...
+
+
 SYNTHETIC_KEY = "synthetic-secret"
+LLM_SPEC = SecretSpec("HINDSIGHT_API_LLM_API_KEY", "synthetic-lookup-llm")
+EMB_SPEC = SecretSpec("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY",
+                      "synthetic-lookup-emb")
+OPENAI_EMB_SPEC = SecretSpec("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+                             "synthetic-lookup-openai-emb")
 BOOT_QUERY = ["systemctl", "--user", "show", "-p", "Wants", "--value", "default.target"]
 
 
@@ -40,15 +61,24 @@ def synthetic_answers(
     emb_provider: str = "openrouter",
     emb_base_url: str | None = None,
     emb_model: str = "operator-embedding",
+    local_embeddings: bool = False,
 ) -> Answers:
+    # local_embeddings mirrors a loopback/relay endpoint: no real key is
+    # needed, the env file carries the documented sentinel instead.
+    if local_embeddings:
+        emb_secret: SecretSpec | None = None
+    elif emb_provider == "openai":
+        emb_secret = OPENAI_EMB_SPEC
+    else:
+        emb_secret = EMB_SPEC
     return Answers(
         llm_provider="zai",
         llm_model=llm_model,
         llm_base_url=llm_base_url,
-        llm_api_key=SYNTHETIC_KEY,
+        llm_secret=LLM_SPEC,
         emb_provider=emb_provider,
         emb_model=emb_model,
-        emb_api_key=SYNTHETIC_KEY,
+        emb_secret=emb_secret,
         emb_base_url=emb_base_url,
         bank_id="goblin",
         bank_mission="synthetic mission",
@@ -57,70 +87,90 @@ def synthetic_answers(
 
 class BuildEnvTest(unittest.TestCase):
     def test_passes_launch_guard(self) -> None:
-        env = build_hindsight_env(synthetic_answers(), "synthetic-password")
-        validate(env)
+        env = build_hindsight_env(synthetic_answers())
+        # The file side validates alone; the guard sees the union with the
+        # injected secret names inside build_hindsight_env itself.
+        validate(dict(env,
+                      HINDSIGHT_API_LLM_API_KEY="synthetic",
+                      HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY="synthetic"))
+
+    def test_env_file_never_carries_real_credentials(self) -> None:
+        # Regression for the plaintext-secret design: every *_API_KEY /
+        # *_PASSWORD the API needs is a podman secret mount; the only
+        # credential-shaped line allowed in the file is the documented
+        # local-embeddings sentinel.
+        env = build_hindsight_env(synthetic_answers())
+        for key, value in env.items():
+            if key.endswith("_API_KEY") or key.endswith("_PASSWORD"):
+                self.assertEqual(value, install.LOCAL_EMBED_KEY, key)
+        self.assertNotIn("HINDSIGHT_API_LLM_API_KEY", env)
+        self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY", env)
+
+    def test_database_url_is_passwordless_loopback(self) -> None:
+        env = build_hindsight_env(synthetic_answers())
+        parsed = urlsplit(env["HINDSIGHT_API_DATABASE_URL"])
+        self.assertEqual(parsed.scheme, "postgresql")
+        self.assertEqual(parsed.hostname, "127.0.0.1")
+        self.assertEqual(parsed.port, 5432)
+        self.assertEqual(parsed.username, "hindsight")
+        self.assertIsNone(parsed.password)
+        self.assertEqual(parsed.path, "/hindsight")
 
     def test_openai_embeddings_require_base_url(self) -> None:
         answers = synthetic_answers(
             emb_provider="openai",
             emb_base_url="https://embed.example.invalid/v1",
         )
-        env = build_hindsight_env(answers, "synthetic-password")
+        env = build_hindsight_env(answers)
         self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL"],
                          "https://embed.example.invalid/v1")
         self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL", env)
         with self.assertRaises(ValueError):
             build_hindsight_env(
-                synthetic_answers(emb_provider="openai", emb_base_url=None),
-                "synthetic-password",
-            )
+                synthetic_answers(emb_provider="openai", emb_base_url=None))
+
+    def test_local_embeddings_write_the_sentinel_not_a_key(self) -> None:
+        env = build_hindsight_env(synthetic_answers(
+            emb_provider="openai", emb_base_url="http://100.64.0.1:11435/v1",
+            emb_model="embeddinggemma:latest", local_embeddings=True))
+        self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"],
+                         install.LOCAL_EMBED_KEY)
+        self.assertEqual(needed_secrets(
+            synthetic_answers(emb_provider="openai",
+                              emb_base_url="http://100.64.0.1:11435/v1",
+                              emb_model="embeddinggemma:latest",
+                              local_embeddings=True)),
+                         [LLM_SPEC])
 
     def test_task_prefixes_written_for_prefix_models(self) -> None:
         answers = synthetic_answers(
             emb_provider="openai",
             emb_base_url="http://100.64.0.1:11435/v1",
-            emb_model="embeddinggemma:latest")
-        env = build_hindsight_env(answers, "synthetic-password")
+            emb_model="embeddinggemma:latest", local_embeddings=True)
+        env = build_hindsight_env(answers)
         # Trailing spaces are significant to the embedder — assert them.
         self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX"],
                          "task: search result | query: ")
         self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX"],
                          "title: none | text: ")
-        validate(env)
 
     def test_no_prefix_keys_for_unlisted_models(self) -> None:
-        env = build_hindsight_env(synthetic_answers(), "synthetic-password")
+        env = build_hindsight_env(synthetic_answers())
         self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX", env)
         self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX", env)
 
     def test_newline_in_value_rejected_before_guard(self) -> None:
         with self.assertRaises(ValueError):
-            build_hindsight_env(
-                synthetic_answers(llm_model="bad\nmodel"), "synthetic-password")
+            build_hindsight_env(synthetic_answers(llm_model="bad\nmodel"))
 
     def test_invalid_url_rejected_by_guard(self) -> None:
         with self.assertRaises(ValueError):
-            build_hindsight_env(
-                synthetic_answers(llm_base_url="not a url"), "synthetic-password")
-
-    def test_database_uri_roundtrip(self) -> None:
-        # token_urlsafe output is a subset of URI-safe chars, but quote()
-        # must keep hostile operator passwords representable.
-        for password in ("plain", "p@ss:word/with?weird#chars", "synthetic-password"):
-            uri = build_database_uri(password)
-            parsed = urlsplit(uri)
-            self.assertEqual(parsed.scheme, "postgresql")
-            self.assertEqual(parsed.hostname, "db")
-            self.assertEqual(parsed.port, 5432)
-            self.assertEqual(parsed.username, "hindsight")
-            self.assertEqual(parsed.path, "/hindsight")
-            from urllib.parse import unquote
-            self.assertEqual(unquote(parsed.password or ""), password)
+            build_hindsight_env(synthetic_answers(llm_base_url="not a url"))
 
 
 class RenderEnvTest(unittest.TestCase):
     def test_exact_lines_and_only_chosen_provider(self) -> None:
-        env = build_hindsight_env(synthetic_answers(), "synthetic-password")
+        env = build_hindsight_env(synthetic_answers())
         text = render_env_file(env)
         lines = text.splitlines()
         self.assertEqual(lines[0], "HINDSIGHT_API_DATABASE_URL=" + env["HINDSIGHT_API_DATABASE_URL"])
@@ -133,12 +183,26 @@ class RenderEnvTest(unittest.TestCase):
             key, sep, _ = line.partition("=")
             self.assertTrue(sep, "literal KEY=value, no export/quotes")
 
+    def test_credentials_refused_at_render(self) -> None:
+        # Belt and suspenders behind the builder: even a hand-assembled
+        # env dict must not render a credential value to a file.
+        for key in ("HINDSIGHT_API_LLM_API_KEY",
+                    "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY",
+                    "POSTGRES_PASSWORD"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    render_env_file({key: "synthetic-secret"})
+        # The sentinel is the one allowed credential-shaped line.
+        self.assertIn("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY=local-ollama",
+                      render_env_file(
+                          {"HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": "local-ollama"}))
+
     def test_prefix_line_keeps_significant_trailing_space(self) -> None:
         env = build_hindsight_env(
             synthetic_answers(emb_provider="openai",
                               emb_base_url="http://100.64.0.1:11435/v1",
-                              emb_model="embeddinggemma"),
-            "synthetic-password")
+                              emb_model="embeddinggemma",
+                              local_embeddings=True))
         lines = render_env_file(env).splitlines()
         self.assertIn(
             "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX=task: search result | query: ",
@@ -151,36 +215,75 @@ class RenderEnvTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_env_file({"HINDSIGHT_API_BOGUS": "x"})
 
-    def test_postgres_env_roundtrip(self) -> None:
-        text = install.render_postgres_env("synthetic-password")
-        self.assertEqual(text, "POSTGRES_PASSWORD=synthetic-password\n")
-        self.assertEqual(parse_postgres_env(text)["POSTGRES_PASSWORD"],
-                         "synthetic-password")
-        with self.assertRaises(ValueError):
-            parse_postgres_env("POSTGRES_USER=x\n")
+
+class SecretLookupTest(unittest.TestCase):
+    def test_lookup_command_path_prefix_and_newline_strip(self) -> None:
+        # Units run without ~/.local/bin in PATH, and the shell driver
+        # returns stdout byte-exact — both fixes must be present.
+        lookup = secret_lookup("pass-keys get goblin-dev OPENROUTER_API_KEY")
         self.assertEqual(
-            parse_postgres_env("# comment\nPOSTGRES_PASSWORD=p\n")["POSTGRES_PASSWORD"], "p")
+            lookup,
+            "env PATH=$HOME/.local/bin:$PATH "
+            "pass-keys get goblin-dev OPENROUTER_API_KEY | tr -d '\\n'")
+        self.assertNotIn("/home/", lookup,
+                         "$HOME keeps the lookup portable across operators")
 
-    def test_duplicate_keys_rejected(self) -> None:
+    def test_driver_tail_is_noop_storage(self) -> None:
+        self.assertEqual(install.SECRET_DRIVER_TAIL,
+                         "store=cat >/dev/null,list=true,delete=true")
+
+
+class AuthCommandTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+
+    def write_auth(self, value: str) -> None:
+        (self.home / "auth.jsonl").write_text(
+            json.dumps({"name": "key", "value": value}) + "\n")
+
+    def test_command_record_returns_the_command(self) -> None:
+        self.write_auth("!pass-keys get goblin-dev OPENROUTER_API_KEY")
+        self.assertEqual(auth_command_for(self.home, "key"),
+                         "pass-keys get goblin-dev OPENROUTER_API_KEY")
+
+    def test_literal_record_refused(self) -> None:
+        # A literal value cannot become a podman lookup — the credential
+        # would have to be copied somewhere to reach the container.
+        self.write_auth("synthetic-literal")
+        with self.assertRaises(ValueError) as raised:
+            auth_command_for(self.home, "key")
+        self.assertNotIn("synthetic-literal", str(raised.exception))
+
+    def test_pass_cli_record_refused(self) -> None:
+        self.write_auth("!pass-cli get goblin-dev x")
         with self.assertRaises(ValueError):
-            parse_postgres_env(
-                "POSTGRES_PASSWORD=a\nPOSTGRES_PASSWORD=b\n")
+            auth_command_for(self.home, "key")
 
 
-class AskSecretCharsetTest(unittest.TestCase):
-    def test_real_key_shapes_render_verbatim(self) -> None:
-        for value in ("sk-ant-api03-abc123DEF", "gsk_9x8y7z",
-                      "AIzaSyD-123_456", "eyJhbGciOi.eyJzdWIi.s==",
-                      "abc+def/ghi~jkl:mno=pqr"):
-            self.assertTrue(install.UNQUOTED_ENV_VALUE.fullmatch(value), value)
+class ApplySecretBlockTest(unittest.TestCase):
+    SHIPPED = ("[Container]\n# goblin:secrets-begin\n# goblin:secrets-end\n"
+               "Exec=/start\n")
 
-    def test_env_breaking_values_are_rejected(self) -> None:
-        # Quotes, whitespace, backslashes and friends change how the
-        # KEY= line parses under systemd — ask_secret rejects them at
-        # input instead of storing a silently different credential.
-        for value in ('"sk-123', "sk 123", "sk\\123", "sk#123", "sk'123",
-                      "sk;rm", "sk,123", "sk$123"):
-            self.assertIsNone(install.UNQUOTED_ENV_VALUE.fullmatch(value), value)
+    def test_fills_marker_region_and_preserves_rest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "goblin-memory-api.container"
+            path.write_text(self.SHIPPED)
+            apply_secret_block(path, ["HINDSIGHT_API_LLM_API_KEY",
+                                      "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"])
+            text = path.read_text()
+            self.assertIn("[Container]\n# goblin:secrets-begin\n"
+                          "Secret=HINDSIGHT_API_LLM_API_KEY,type=mount\n"
+                          "Secret=HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY,type=mount\n"
+                          "# goblin:secrets-end\nExec=/start\n", text)
+
+    def test_missing_markers_fail_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "goblin-memory-api.container"
+            path.write_text("[Container]\nExec=/start\n")
+            with self.assertRaises(SystemExit):
+                apply_secret_block(path, ["HINDSIGHT_API_LLM_API_KEY"])
 
 
 class EmbedRelayEnvTest(unittest.TestCase):
@@ -255,13 +358,16 @@ class EmbedRelayEnvTest(unittest.TestCase):
                 self.assertEqual(parsed["GOBLIN_EMBED_MODEL"], model)
 
 
-class PromptAnswersKeyReuseTest(unittest.TestCase):
-    """A resolved auth-store value that can't render verbatim in an env
-    file must fall back to the prompted path — the same charset gate
-    pasted keys pass, or the boot mangles it into a misleading 401."""
+class PromptAnswersCredentialTest(unittest.TestCase):
+    """Credentials must be auth-store `!` records: the command becomes the
+    podman secret's lookup, the value is resolved once in-process for the
+    catalog only. There is no paste path — a provider without a `!`
+    record fails loud."""
 
-    STUBBED = ("read_goblin_providers", "resolve_auth_key", "ask_provider",
-               "ask_url", "ask_secret", "load_catalog", "ask_model_search")
+    STUBBED = ("read_goblin_providers", "auth_command_for",
+               "resolve_auth_key", "ask_provider", "ask_url",
+               "is_local_embeddings_endpoint",
+               "load_catalog", "ask_model_search")
 
     def setUp(self) -> None:
         self.saved = {name: getattr(install, name) for name in self.STUBBED}
@@ -271,30 +377,63 @@ class PromptAnswersKeyReuseTest(unittest.TestCase):
         for name, value in self.saved.items():
             setattr(install, name, value)
 
-    def run_flow(self, resolved: str) -> tuple[object, list[str]]:
+    def run_flow(self, providers_registry: dict[str, str] | None = None,
+                 resolvable: bool = True) -> Answers:
         install.read_goblin_providers = (
-            lambda goblin_home, repo_root: ({"zai": "ZAI_KEY"}, None))
-        install.resolve_auth_key = lambda goblin_home, name: resolved
-        install.ask_provider = lambda *args: "zai"
+            lambda goblin_home, repo_root:
+            (providers_registry if providers_registry is not None
+             else {"zai": "ZAI_KEY", "openrouter": "OR_KEY"}, None))
+        install.auth_command_for = (
+            lambda goblin_home, auth_name: f"pass-keys get goblin-dev {auth_name}")
+        def resolve(goblin_home: Path, auth_name: str) -> str:
+            if not resolvable:
+                raise ValueError("wallet locked")
+            return "synthetic-resolved"
+        install.resolve_auth_key = resolve
+        install.ask_provider = lambda label, role, goblin_providers: (
+            "zai" if role == "llm" else "openrouter")
         install.ask_url = lambda *args: "https://api.z.ai/v4"
-        prompted: list[str] = []
-        install.ask_secret = lambda prompt: (
-            prompted.append(prompt), "sk-good")[1]
+        install.is_local_embeddings_endpoint = lambda base_url: False
         install.load_catalog = lambda *args: None
         install.ask_model_search = lambda *args: "m"
         with contextlib.redirect_stdout(io.StringIO()):
-            answers = install.prompt_answers(Path("/nowhere"))
-        return answers, prompted
+            return install.prompt_answers(Path("/nowhere"))
 
-    def test_unrenderable_stored_key_falls_back_to_prompt(self) -> None:
-        answers, prompted = self.run_flow("sk bad")
-        self.assertEqual(prompted, ["API key"])
-        self.assertEqual(answers.llm_api_key, "sk-good")
+    def test_command_records_become_secret_specs(self) -> None:
+        answers = self.run_flow()
+        self.assertEqual(answers.llm_secret.env_name, "HINDSIGHT_API_LLM_API_KEY")
+        self.assertIn("pass-keys get goblin-dev ZAI_KEY",
+                      answers.llm_secret.lookup)
+        self.assertIsNotNone(answers.emb_secret)
+        assert answers.emb_secret is not None
+        self.assertEqual(
+            answers.emb_secret.env_name,
+            "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY")
 
-    def test_renderable_stored_key_reused_without_prompt(self) -> None:
-        answers, prompted = self.run_flow("sk-good")
-        self.assertEqual(prompted, [])
-        self.assertEqual(answers.llm_api_key, "sk-good")
+    def test_unresolvable_key_still_proceeds(self) -> None:
+        # The container resolves at start; a locked wallet now only means
+        # no live catalog — model entry falls back to free text.
+        answers = self.run_flow(resolvable=False)
+        self.assertEqual(answers.llm_secret.env_name,
+                         "HINDSIGHT_API_LLM_API_KEY")
+
+    def test_provider_without_auth_record_fails(self) -> None:
+        install.read_goblin_providers = (
+            lambda goblin_home, repo_root: ({"zai": "ZAI_KEY"}, None))
+        install.auth_command_for = (
+            lambda goblin_home, auth_name: f"pass-keys get goblin-dev {auth_name}")
+        install.resolve_auth_key = lambda goblin_home, auth_name: "x"
+        install.ask_provider = lambda label, role, goblin_providers: (
+            "zai" if role == "llm" else "openrouter")
+        install.ask_url = lambda *args: "https://api.z.ai/v4"
+        install.is_local_embeddings_endpoint = lambda base_url: False
+        install.load_catalog = lambda *args: None
+        install.ask_model_search = lambda *args: "m"
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                install.prompt_answers(Path("/nowhere"))
+        self.assertIn("openrouter", errors.getvalue())
 
 
 class SecretFileTest(unittest.TestCase):
@@ -427,7 +566,7 @@ class InstallAssetsTest(unittest.TestCase):
                 (memory_dir / name).write_text("[Unit]\n")
             systemd_dir.mkdir()
             edited = systemd_dir / "goblin-memory-api.container"
-            edited.write_text("[Container]\nTimeoutStartSec=900\n")
+            edited.write_text("[Container]\nPod=goblin-memory.pod\nTimeoutStartSec=900\n")
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 installed = install_assets(memory_dir, systemd_dir, cfg_dir,
                                            user_unit_dir,
@@ -543,11 +682,13 @@ class BootActivationTest(unittest.TestCase):
             source.mkdir()
             generated.mkdir()
             # Exercise the shipped activation declaration with no containers
-            # or credentials: the real generator only writes unit files.
-            (source / "goblin-memory-api.container").write_text(
-                (install.MEMORY_DIR / "goblin-memory-api.container").read_text())
-            (source / "goblin-memory.network").write_text(
-                (install.MEMORY_DIR / "goblin-memory.network").read_text())
+            # or credentials: the real generator only writes unit files. The
+            # pod, db and volume come along — the api references them via Pod=.
+            for name in ("goblin-memory-api.container", "goblin-memory-db.container",
+                         "goblin-memory.pod", "goblin-memory.network",
+                         "goblin-memory-db.volume"):
+                (source / name).write_text(
+                    (install.MEMORY_DIR / name).read_text())
             result = subprocess.run(
                 [str(generator), "--user", str(generated)],
                 env={**os.environ, "QUADLET_UNIT_DIRS": str(source)},
@@ -822,6 +963,9 @@ class PreflightTest(unittest.TestCase):
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "http_ok", "probe", "goblin_stable", "create_bank", "wire_goblin",
          "pre_pull_images", "start_stack",
+         "managed_secrets", "ensure_secret", "sync_secrets",
+         "prune_secrets", "restore_secrets", "apply_secret_block",
+         "read_goblin_providers", "auth_command_for",
          "time", "CFG_DIR", "SYSTEMD_DIR",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
@@ -933,6 +1077,9 @@ class MainFlowTest(unittest.TestCase):
         install.USER_UNIT_DIR = root / "user-units"
         install.POSTGRES_ENV = install.CFG_DIR / "postgres.env"
         install.HINDSIGHT_ENV = install.CFG_DIR / "hindsight.env"
+        # Secret edge off by default (no podman in tests); reconfigure
+        # tests re-stub with a managed set via stub_secret_edge().
+        self.stub_secret_edge()
         self.goblin_home = root / "goblin"
         self.goblin_home.mkdir()
         (self.goblin_home / "goblin.json5").write_text(
@@ -950,50 +1097,73 @@ class MainFlowTest(unittest.TestCase):
     def fake_yes(self) -> None:
         install.ask_yes = lambda prompt, default: True
 
-    def test_fresh_refuses_existing_postgres_env(self) -> None:
-        # Review B2: a fresh run must never regenerate the database
-        # password — the volume may already be initialized.
+    def stub_secret_edge(self,
+                         managed: dict[str, dict[str, str]] | None = None,
+                         ) -> dict[str, list[object]]:
+        """No real podman in tests: secret ops record calls instead."""
+        calls: dict[str, list[object]] = {"created": [], "pruned": [],
+                                          "restored": [], "blocked": []}
+        install.managed_secrets = lambda: (
+            dict(managed) if managed is not None else {})
+        install.ensure_secret = lambda spec: calls["created"].append(spec.env_name)
+        install.sync_secrets = lambda needed: calls["created"].extend(
+            s.env_name for s in needed)
+        install.prune_secrets = lambda keep: calls["pruned"].append(set(keep))
+        install.restore_secrets = lambda previous: calls["restored"].append(dict(previous))
+        install.apply_secret_block = (
+            lambda path, env_names: calls["blocked"].append((path, list(env_names))))
+        return calls
+
+    def test_fresh_install_writes_no_postgres_env_and_no_keys(self) -> None:
+        # The pod-era invariant: the installer produces config files with
+        # no credential material at all — password or API key.
         self.fake_prompts()
         self.fake_yes()
+        calls = self.stub_secret_edge()
+        install.pre_pull_images = lambda: None
+        install.start_stack = lambda: None
+        install.create_bank = lambda bank_id, mission: None
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertFalse(install.POSTGRES_ENV.exists(),
+                         "there is no postgres.env in a pod install")
+        env_text = install.HINDSIGHT_ENV.read_text()
+        for line in env_text.splitlines():
+            key, _, value = line.partition("=")
+            if key.endswith("_API_KEY") or key.endswith("_PASSWORD"):
+                self.assertEqual(value, install.LOCAL_EMBED_KEY,
+                                 f"{key} must be the sentinel or absent")
+        self.assertIn("postgresql://hindsight@127.0.0.1:5432/hindsight",
+                      env_text)
+        self.assertEqual(calls["created"],
+                         [s.env_name for s in needed_secrets(synthetic_answers())])
+
+    def test_fresh_install_warns_on_stray_postgres_env(self) -> None:
+        # A leftover from a pre-pod install is dead config, not a blocker:
+        # warn the operator and proceed — the password sync problem is
+        # gone because there is no password.
+        self.fake_prompts()
+        self.fake_yes()
+        self.stub_secret_edge()
         install.POSTGRES_ENV.parent.mkdir(parents=True)
         install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        with self.assertRaises(SystemExit):
-            install.main([])
+        install.pre_pull_images = lambda: None
+        install.start_stack = lambda: None
+        install.create_bank = lambda bank_id, mission: None
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertIn("dead config", out.getvalue())
         self.assertEqual(install.POSTGRES_ENV.read_text(),
-                         "POSTGRES_PASSWORD=existing\n")
-        self.assertFalse(install.HINDSIGHT_ENV.exists())
-
-    def test_postgres_env_refusal_fires_before_prompting(self) -> None:
-        # The fresh path collects two hidden keys and makes live catalog
-        # calls — refusing a stray postgres.env must happen BEFORE any of
-        # that, the ordering --reconfigure already takes.
-        install.preflight = lambda: None
-        calls: list[str] = []
-
-        def guard_answers(goblin_home: Path) -> Answers:
-            calls.append("answers")
-            return synthetic_answers()
-
-        def guard_bank() -> tuple[str, str]:
-            calls.append("bank")
-            return ("goblin", "m")
-
-        install.prompt_answers = guard_answers
-        install.prompt_bank = guard_bank
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        with (contextlib.redirect_stdout(io.StringIO()),
-              contextlib.redirect_stderr(io.StringIO())):
-            with self.assertRaises(SystemExit):
-                install.main([])
-        self.assertEqual(calls, [])
+                         "POSTGRES_PASSWORD=existing\n",
+                         "the warning never touches the file itself")
 
     def write_partial_install(self) -> None:
-        """The state a first install dies in: both env files written,
-        stack never started, bank never created, goblin never wired."""
+        """The state a first install dies in: config written, stack never
+        started, bank never created, goblin never wired."""
         install.preflight = lambda: None
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
         install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=x\n")
 
     def test_resume_finishes_a_partial_install(self) -> None:
@@ -1001,6 +1171,10 @@ class MainFlowTest(unittest.TestCase):
         # creation and goblin wiring unreachable. Resume runs exactly
         # that tail and never re-prompts keys.
         self.write_partial_install()
+        # A partial install past the secret stage has its registrations:
+        # an empty managed set means the older crash window instead.
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.prompt_answers = lambda goblin_home: self.fail(
             "--resume must never re-prompt keys")
         install.prompt_bank = lambda: ("goblin", "synthetic mission")
@@ -1010,8 +1184,8 @@ class MainFlowTest(unittest.TestCase):
         wired: list[tuple[Path, str]] = []
         install.create_bank = lambda bank_id, mission: banks.append((bank_id, mission))
 
-        def fake_wire(home: Path, bank_id: str) -> str:
-            wired.append((home, bank_id))
+        def fake_wire(goblin_home: Path, bank_id: str) -> str:
+            wired.append((goblin_home, bank_id))
             return "live"
 
         install.wire_goblin = fake_wire
@@ -1029,6 +1203,8 @@ class MainFlowTest(unittest.TestCase):
 
     def test_resume_starts_a_down_stack(self) -> None:
         self.write_partial_install()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.prompt_bank = lambda: ("goblin", "synthetic mission")
         install.probe = lambda command: subprocess.CompletedProcess(
             command, 0, "inactive\n", "")
@@ -1037,7 +1213,7 @@ class MainFlowTest(unittest.TestCase):
         install.pre_pull_images = lambda: pulled.append(True)
         install.start_stack = lambda: started.append(True)
         install.create_bank = lambda bank_id, mission: None
-        install.wire_goblin = lambda home, bank_id: "live"
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
         with contextlib.redirect_stdout(io.StringIO()):
             install.main(["--resume", "--goblin-home", str(self.goblin_home)])
         self.assertEqual(pulled, [True])
@@ -1058,11 +1234,170 @@ class MainFlowTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     install.main(["--resume", *extra])
 
-    def test_reconfigure_reuses_password_and_rewrites_only_hindsight(self) -> None:
+    # ------------------------------------------------------------------
+    # The audited half-install window: a fresh install that dies between
+    # writing hindsight.env and its first podman secret registration
+    # used to dead-end on every rerun path (hunt-06 F2).
+
+    def crash_a_fresh_install(self, answers: Answers) -> tuple[list[str], str]:
+        """Run a fresh install whose FIRST podman secret create fails —
+        the crash window: hindsight.env, assets and the Quadlet secret
+        block land, zero secrets register. Leaves ensure_secret working
+        for the recovery rerun. Returns the recorder of registered
+        names and the env text as written."""
         self.fake_prompts()
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        install.prompt_answers = lambda goblin_home: answers
+        self.fake_yes()
+        created: list[str] = []
+        first = {"pending": True}
+
+        def failing_first(spec: install.SecretSpec) -> None:
+            if first["pending"]:
+                first["pending"] = False
+                raise SystemExit(1)  # the first podman secret create fails
+            created.append(spec.env_name)
+
+        install.ensure_secret = failing_first
+        install.managed_secrets = (
+            lambda: {name: {"lookup": "synthetic"} for name in created})
+        # setUp stubbed the whole secret edge: run the REAL sync_secrets
+        # so the failing ensure is actually driven and the crash lands
+        # exactly between the env write and the first registration.
+        # Everything after the secrets is fail-stubbed: if the crash
+        # ever fails to happen, the test fails HERE instead of reaching
+        # the system edge (a test once restarted the real goblin unit
+        # from exactly that gap).
+        install.sync_secrets = self.saved["sync_secrets"]
+        install.apply_secret_block = self.saved["apply_secret_block"]
+        install.pre_pull_images = lambda: self.fail(
+            "the crash must happen before any image pull")
+        install.start_stack = lambda: self.fail(
+            "the crash must happen before the stack starts")
+        install.create_bank = lambda bank_id, mission: self.fail(
+            "the crash must happen before bank creation")
+        install.wire_goblin = lambda goblin_home, bank_id: self.fail(
+            "the crash must happen before goblin wiring")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertTrue(install.HINDSIGHT_ENV.is_file())
+        self.assertEqual(created, [], "the crash must leave zero secrets")
+        return created, install.HINDSIGHT_ENV.read_text()
+
+    def stub_registry(self, registry: dict[str, str]) -> None:
+        """The provider registry the crashed install was built from."""
+        install.read_goblin_providers = lambda goblin_home, repo_root: (
+            dict(registry), None)
+        install.auth_command_for = (
+            lambda goblin_home, auth_name: f"pass-keys get goblin-dev {auth_name}")
+
+    def stub_down_stack_edge(self) -> list[list[str]]:
+        """Status-path edge for the recovery rerun: down stack, no boot
+        hook yet; every run() command recorded."""
+        runs: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        install.run = fake_run
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "inactive\n", "")
+        install.http_ok = lambda url: False
+        return runs
+
+    def test_plain_rerun_converges_a_crashed_fresh_install(self) -> None:
+        # Hunt-06 F2: the status path used to only refresh assets and
+        # point at a --resume that could not start an API mounting
+        # never-created secrets. The plain rerun must converge instead:
+        # register the secrets the installed config needs and keep the
+        # env file byte-identical.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({"zai": "ZAI_KEY", "openrouter": "OR_KEY"})
+        self.stub_down_stack_edge()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertEqual(
+            created, [s.env_name for s in needed_secrets(synthetic_answers())],
+            "the registrations the crashed config needs, in its order")
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text,
+                         "completion never rewrites the env file")
+        quadlet = (install.SYSTEMD_DIR
+                    / "goblin-memory-api.container").read_text()
+        for name in created:
+            self.assertIn(f"Secret={name},type=mount", quadlet)
+        self.assertIn("interrupted install", output.getvalue())
+        self.assertIn("--resume", output.getvalue(),
+                      "the printed continuation is now actionable")
+
+    def test_resume_converges_a_crashed_fresh_install(self) -> None:
+        # The other dead end: --resume went straight to start_stack and
+        # failed on the Quadlet's never-created secret mounts. It now
+        # completes the registration first, then finishes the install —
+        # still without re-prompting keys.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({"zai": "ZAI_KEY", "openrouter": "OR_KEY"})
+        install.prompt_answers = lambda goblin_home: self.fail(
+            "--resume must never re-prompt keys")
+        install.prompt_bank = lambda: ("goblin", "synthetic mission")
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "inactive\n", "")
+        install.pre_pull_images = lambda: None
+        started: list[bool] = []
+        install.start_stack = lambda: started.append(True)
+        banks: list[tuple[str, str]] = []
+        install.create_bank = lambda bank_id, mission: banks.append((bank_id, mission))
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--resume", "--goblin-home", str(self.goblin_home)])
+        self.assertEqual(
+            created, [s.env_name for s in needed_secrets(synthetic_answers())])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
+        self.assertEqual(started, [True])
+        self.assertEqual(banks, [("goblin", "synthetic mission")])
+
+    def test_recovery_honors_the_local_embeddings_sentinel(self) -> None:
+        # A local-embeddings env carries the sentinel where a remote key
+        # would be: recovery registers the LLM secret only, and never
+        # needs the embeddings provider's registry entry.
+        answers = synthetic_answers(
+            emb_provider="openai", emb_base_url="http://100.64.0.1:11435/v1",
+            emb_model="embeddinggemma", local_embeddings=True)
+        created, env_text = self.crash_a_fresh_install(answers)
+        self.assertIn(f"HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY="
+                      f"{install.LOCAL_EMBED_KEY}", env_text)
+        self.stub_registry({"zai": "ZAI_KEY"})
+        self.stub_down_stack_edge()
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertEqual(created, ["HINDSIGHT_API_LLM_API_KEY"])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
+
+    def test_recovery_refuses_when_the_registry_cannot_serve_the_config(self) -> None:
+        # Unrecoverable half-install: the registry that produced the
+        # crashed install no longer knows the provider. Refuse loud and
+        # mutate nothing — spec reconstruction precedes every write.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({})
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertIn("not in goblin's provider registry", errors.getvalue())
+        self.assertEqual(created, [])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
+
+    def test_reconfigure_rewrites_env_and_resyncs_secrets(self) -> None:
+        self.fake_prompts()
+        calls = self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
         restarts: list[list[str]] = []
         runs: list[list[str]] = []
 
@@ -1070,7 +1405,8 @@ class MainFlowTest(unittest.TestCase):
             restarts.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
-        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1078,17 +1414,20 @@ class MainFlowTest(unittest.TestCase):
         install.run = fake_run
         install.http_ok = lambda url: True
         install.main(["--reconfigure"])
-        self.assertEqual(install.POSTGRES_ENV.read_text(),
-                         "POSTGRES_PASSWORD=existing\n")
         env = install.HINDSIGHT_ENV.read_text()
         self.assertIn("HINDSIGHT_API_LLM_MODEL=operator-llm", env)
-        self.assertIn("postgresql://hindsight:existing@db:5432/hindsight", env)
+        self.assertIn("postgresql://hindsight@127.0.0.1:5432/hindsight", env)
+        self.assertNotIn("API_KEY=", env)
         self.assertEqual(restarts, [["systemctl", "--user", "restart", install.API_UNIT]])
+        self.assertIn("HINDSIGHT_API_LLM_API_KEY", calls["created"])
+        self.assertEqual(calls["blocked"],
+                         [(install.SYSTEMD_DIR / "goblin-memory-api.container",
+                           [s.env_name for s in needed_secrets(synthetic_answers())])])
         # A reconfigure on an existing box must also refresh the assets
         # (watch units) and bring the timer live — fresh-install parity.
-        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"],
-                                ["systemctl", "--user", "enable", "--now",
-                                 install.WATCH_TIMER]])
+        self.assertIn(["systemctl", "--user", "daemon-reload"], runs)
+        self.assertIn(["systemctl", "--user", "enable", "--now",
+                       install.WATCH_TIMER], runs)
         self.assertTrue((install.USER_UNIT_DIR / install.WATCH_TIMER).is_file())
 
     def check_installed_guard(self, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -1106,39 +1445,53 @@ class MainFlowTest(unittest.TestCase):
         self.fake_prompts()
         answers = synthetic_answers(
             emb_provider="openai", emb_base_url="http://100.64.0.1:11435/v1",
-            emb_model="embeddinggemma")
+            emb_model="embeddinggemma", local_embeddings=True)
         install.prompt_answers = lambda goblin_home: answers
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.CFG_DIR.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        previous_env = build_hindsight_env(synthetic_answers(), "existing")
+        previous_env = build_hindsight_env(synthetic_answers())
         previous_text = render_env_file(previous_env)
         write_file_atomic(install.HINDSIGHT_ENV, previous_text, 0o640)
         guard_path = install.CFG_DIR / "start.py"
         shipped_guard = (install.MEMORY_DIR / "start.py").read_text()
         # The baseline profile had the same required keys, but no optional
         # prefix allowance. Reproduce that installed-file contract offline.
-        self.assertIn(" | OPTIONAL", shipped_guard)
-        guard_path.write_text(shipped_guard.replace(" | OPTIONAL", ""))
-        new_env = build_hindsight_env(answers, "existing")
-        self.assertEqual(self.check_installed_guard(previous_env).returncode, 0)
-        rejected = self.check_installed_guard(new_env)
+        self.assertIn(" | FIXED.keys() | OPTIONAL", shipped_guard)
+        guard_path.write_text(
+            shipped_guard.replace(" | FIXED.keys() | OPTIONAL", " | FIXED.keys()"))
+        new_env = build_hindsight_env(answers)
+        previous_runtime = dict(previous_env,
+                                HINDSIGHT_API_LLM_API_KEY="synthetic",
+                                HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY="synthetic")
+        self.assertEqual(self.check_installed_guard(previous_runtime).returncode, 0)
+        new_runtime = dict(new_env, HINDSIGHT_API_LLM_API_KEY="synthetic")
+        rejected = self.check_installed_guard(new_runtime)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("unsupported override", rejected.stderr)
         restarted_envs: list[dict[str, str]] = []
         runs: list[list[str]] = []
 
         def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if command == ["systemctl", "--user", "daemon-reload"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
             self.assertEqual(command, ["systemctl", "--user", "restart", install.API_UNIT])
             env = dict(line.split("=", 1)
                        for line in install.HINDSIGHT_ENV.read_text().splitlines())
             restarted_envs.append(env)
-            checked = self.check_installed_guard(env)
+            # The container's env is the file PLUS the mounted secrets;
+            # the on-disk guard must accept that union.
+            runtime = dict(env, HINDSIGHT_API_LLM_API_KEY="synthetic")
+            if env.get("HINDSIGHT_API_EMBEDDINGS_PROVIDER") == "openrouter":
+                runtime["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"] = "synthetic"
+            checked = self.check_installed_guard(runtime)
             self.assertEqual(checked.returncode, 0, checked.stderr)
             if failure == "restart" and len(restarted_envs) == 1:
                 return subprocess.CompletedProcess(command, 1, "", "synthetic restart failure")
             return subprocess.CompletedProcess(command, 0, "", "")
 
-        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1156,7 +1509,6 @@ class MainFlowTest(unittest.TestCase):
                     install.main(["--reconfigure"])
         self.assertEqual(guard_path.read_text(), shipped_guard)
         self.assertEqual(stat.S_IMODE(guard_path.stat().st_mode), 0o644)
-        self.assertEqual(install.POSTGRES_ENV.read_text(), "POSTGRES_PASSWORD=existing\n")
         if failure is None:
             self.assertEqual(restarted_envs, [new_env])
             self.assertEqual(install.HINDSIGHT_ENV.read_text(), render_env_file(new_env))
@@ -1166,7 +1518,9 @@ class MainFlowTest(unittest.TestCase):
             self.assertEqual(install.HINDSIGHT_ENV.read_text(), previous_text)
             self.assertEqual(stat.S_IMODE(install.HINDSIGHT_ENV.stat().st_mode), 0o640)
             self.assertIn("verified the API is healthy again", errors.getvalue())
-            self.assertEqual(runs, [], "failed upgrade must not enable the watcher")
+            self.assertNotIn(
+                ["systemctl", "--user", "enable", "--now", install.WATCH_TIMER],
+                runs, "failed upgrade must not enable the watcher")
 
     def test_baseline_upgrade_installs_guard_before_restart(self) -> None:
         self.run_baseline_upgrade()
@@ -1181,15 +1535,20 @@ class MainFlowTest(unittest.TestCase):
         # A restart command failure must not leave the new (untested) env
         # installed over a working stack's config.
         self.fake_prompts()
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        calls = self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
         failed = subprocess.CompletedProcess([], 1, "", "unit not found")
         commands: list[list[str]] = []
 
         def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
             commands.append(command)
-            return failed
+            if command == ["systemctl", "--user", "restart", install.API_UNIT]:
+                return failed
+            return subprocess.CompletedProcess(command, 0, "", "")
 
         install.probe = fake_probe
         install.http_ok = lambda url: True
@@ -1199,21 +1558,29 @@ class MainFlowTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 install.main(["--reconfigure"])
         self.assertEqual(install.HINDSIGHT_ENV.read_text(),
+                         f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
                          "HINDSIGHT_API_LLM_MODEL=old\n",
                          "previous env must be restored")
         self.assertEqual(
-            commands,
-            [["systemctl", "--user", "restart", install.API_UNIT]] * 2,
-            "rollback must restart the restored (previous) config")
+            calls["restored"],
+            [{"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}}],
+            "rollback must restore the prior secret registrations")
+        restarts = [c for c in commands
+                    if c == ["systemctl", "--user", "restart", install.API_UNIT]]
+        self.assertEqual(len(restarts), 2,
+                         "rollback must restart the restored (previous) config")
         self.assertIn("restored the previous hindsight.env", errors.getvalue())
 
     def test_reconfigure_restores_previous_env_when_never_healthy(self) -> None:
         # Structurally valid config (passes the launch guard) that the API
         # still refuses to serve: restore and verify the old stack.
         self.fake_prompts()
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
         ok = subprocess.CompletedProcess([], 0, "", "")
         commands: list[list[str]] = []
 
@@ -1233,11 +1600,17 @@ class MainFlowTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 install.main(["--reconfigure"])
         self.assertEqual(install.HINDSIGHT_ENV.read_text(),
+                         f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
                          "HINDSIGHT_API_LLM_MODEL=old\n")
-        self.assertEqual(len(commands), 2, "rollback restarts the prior config")
+        restarts = [c for c in commands
+                    if c == ["systemctl", "--user", "restart", install.API_UNIT]]
+        self.assertEqual(len(restarts), 2,
+                         "rollback restarts the prior config")
         self.assertIn("did NOT recover", errors.getvalue())
 
-    def test_reconfigure_prompts_before_failing_on_missing_postgres_env(self) -> None:
+    def test_reconfigure_refuses_a_pre_pod_install_before_prompting(self) -> None:
+        # Env file but no registered secrets = a password-era install;
+        # reconfigure would half-migrate it. Refuse before any prompt.
         asked = {"prompts": False}
 
         def fake_answers(goblin_home: Path) -> Answers:
@@ -1246,9 +1619,15 @@ class MainFlowTest(unittest.TestCase):
 
         install.preflight = lambda: None
         install.prompt_answers = fake_answers
-        with self.assertRaises(SystemExit):
-            install.main(["--reconfigure"])
-        self.assertFalse(asked["prompts"], "must fail before collecting hidden keys")
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        self.assertFalse(asked["prompts"], "must fail before collecting answers")
+        self.assertIn("pod-era", errors.getvalue())
 
     def test_reconfigure_rejects_no_start(self) -> None:
         with self.assertRaises(SystemExit):
@@ -1256,9 +1635,10 @@ class MainFlowTest(unittest.TestCase):
 
     def existing_stack(self) -> None:
         install.preflight = lambda: None
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True, exist_ok=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
 
     def run_existing(self, api_state: str, argv: list[str]) -> list[list[str]]:
         """Run main() over an existing install; probe reports api_state
@@ -1269,7 +1649,8 @@ class MainFlowTest(unittest.TestCase):
             command, 0, f"{api_state}\n", "")
         install.http_ok = lambda url: True
 
-        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
             return subprocess.CompletedProcess(command, 0, output, "")
@@ -1284,6 +1665,10 @@ class MainFlowTest(unittest.TestCase):
         # re-running on an existing box left the health watcher inactive
         # forever. Stack up → copy + reload + timer live.
         self.existing_stack()
+        # A complete install has its secrets registered; an empty
+        # managed set is the interrupted-install crash window instead.
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("active", [])
         self.assertEqual(runs, [BOOT_QUERY,
                                ["systemctl", "--user", "daemon-reload"],
@@ -1299,9 +1684,11 @@ class MainFlowTest(unittest.TestCase):
         # raise the health-gate failure message tells the operator to
         # make by hand.
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
         edited = install.SYSTEMD_DIR / "goblin-memory-api.container"
-        edited.write_text("[Container]\nTimeoutStartSec=900\n")
+        edited.write_text("[Container]\nPod=goblin-memory.pod\nTimeoutStartSec=900\n")
         self.run_existing("active", [])
         self.assertIn("TimeoutStartSec=900", edited.read_text())
         self.assertTrue(
@@ -1312,13 +1699,319 @@ class MainFlowTest(unittest.TestCase):
         # A stopped stack is a deliberate operator choice: assets and
         # reload only, no enable.
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("inactive", [])
         self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
 
     def test_existing_install_respects_no_start(self) -> None:
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("active", ["--no-start"])
         self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
+
+    def run_existing_expect_refusal(self, argv: list[str]) -> tuple[
+            list[list[str]], dict[str, list[object]], str]:
+        """Status-path run that must refuse: capture run() commands, the
+        secret-edge recorders and the refusal stderr."""
+        runs: list[list[str]] = []
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "active\n", "")
+        install.http_ok = lambda url: True
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            return subprocess.CompletedProcess(
+                command, 0,
+                f"{install.API_UNIT}\n" if command == BOOT_QUERY else "", "")
+
+        install.run = fake_run
+        calls = self.stub_secret_edge()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(argv)
+        return runs, calls, errors.getvalue()
+
+    def test_refresh_refuses_a_password_era_env_before_any_mutation(self) -> None:
+        for env_body in (
+            "HINDSIGHT_API_DATABASE_URL="
+            "postgresql://hindsight:secretpw@127.0.0.1:5432/hindsight\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n",
+            "HINDSIGHT_API_LLM_MODEL=old\n",
+            (f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+             "HINDSIGHT_API_DATABASE_URL="
+             "postgresql://hindsight:secretpw@127.0.0.1:5432/hindsight\n"),
+            ("HINDSIGHT_API_DATABASE_URL="
+             "postgresql://hindsight:secretpw@127.0.0.1:5432/hindsight\n"
+             f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"),
+        ):
+            with self.subTest(env=env_body):
+                self.existing_stack()
+                quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+                install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+                quadlet.write_text(
+                    "[Container]\nPod=goblin-memory.pod\nTimeoutStartSec=900\n")
+                install.CFG_DIR.mkdir(parents=True, exist_ok=True)
+                guard = install.CFG_DIR / "start.py"
+                guard.write_text("# synthetic old guard\n")
+                os.chmod(guard, 0o640)
+                install.HINDSIGHT_ENV.write_text(env_body)
+                for argv in ([], ["--no-start"]):
+                    runs, calls, errors = self.run_existing_expect_refusal(argv)
+                    self.assertIn("unsupported installed memory stack", errors)
+                    self.assertIn("docs/memory.md", errors)
+                    self.assertTrue(
+                        all(command == BOOT_QUERY for command in runs),
+                        f"read-only status probes only — no mutation: {runs}")
+                    self.assertEqual(
+                        calls["created"] + calls["pruned"] + calls["restored"],
+                        [], "refusal must precede every secret mutation")
+                    self.assertEqual(quadlet.read_text(),
+                                     "[Container]\nPod=goblin-memory.pod\n"
+                                     "TimeoutStartSec=900\n")
+                    self.assertEqual(guard.read_text(), "# synthetic old guard\n")
+                    self.assertEqual(stat.S_IMODE(guard.stat().st_mode), 0o640)
+                    self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_body)
+
+    def test_refresh_refuses_a_non_pod_quadlet_before_any_mutation(self) -> None:
+        for quadlet_body in ("[Container]\nPublishPort=8888:8888\n",
+                             "[Unit]\nPod=goblin-memory.pod\n[Container]\n",
+                             "[Container]\nPod=goblin-memory.pod\n"
+                             "Pod=goblin-memory.pod\n"):
+            with self.subTest(quadlet=quadlet_body):
+                self.existing_stack()
+                legacy = install.SYSTEMD_DIR / "goblin-memory-api.container"
+                install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+                legacy.write_text(quadlet_body)
+                guard = install.CFG_DIR / "start.py"
+                guard.write_text("# synthetic old guard\n")
+                os.chmod(guard, 0o640)
+                runs, calls, errors = self.run_existing_expect_refusal([])
+                self.assertIn("goblin-memory.pod", errors)
+                self.assertTrue(all(command == BOOT_QUERY for command in runs))
+                self.assertEqual(calls["created"] + calls["pruned"]
+                                 + calls["restored"], [])
+                self.assertEqual(legacy.read_text(), quadlet_body)
+                self.assertEqual(guard.read_text(), "# synthetic old guard\n")
+                self.assertEqual(stat.S_IMODE(guard.stat().st_mode), 0o640)
+
+    def test_refresh_accepts_a_quoted_passwordless_uri(self) -> None:
+        self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
+        install.HINDSIGHT_ENV.write_text(
+            f'HINDSIGHT_API_DATABASE_URL="{install.DATABASE_URL}"\n'
+            "HINDSIGHT_API_LLM_MODEL=old\n")
+        runs = self.run_existing("inactive", [])
+        self.assertEqual(runs, [BOOT_QUERY,
+                                ["systemctl", "--user", "daemon-reload"]])
+
+    def test_refresh_assets_refuses_directly_on_a_legacy_stack(self) -> None:
+        self.existing_stack()
+        install.HINDSIGHT_ENV.write_text(
+            "HINDSIGHT_API_DATABASE_URL="
+            "postgresql://hindsight:secretpw@127.0.0.1:5432/hindsight\n")
+        install.run = lambda command, **kw: self.fail(
+            f"refresh must refuse before run(): {command}")
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                install.refresh_assets(enable_watch=False)
+        self.assertIn("unsupported installed memory stack", errors.getvalue())
+
+    def write_reconfigure_incumbent(self) -> tuple[dict[str, list[object]],
+                                                   str, str]:
+        """A pod-era incumbent with a full secret/env/Quadlet snapshot to
+        roll back onto. Returns the managed map plus the file texts."""
+        self.fake_prompts()
+        previous_managed = {"HINDSIGHT_API_LLM_API_KEY":
+                            {"lookup": "old-lookup", "ttl": "300"}}
+        calls = self.stub_secret_edge(previous_managed)
+        install.CFG_DIR.mkdir(parents=True, exist_ok=True)
+        previous_env = (f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+                        "HINDSIGHT_API_LLM_MODEL=old\n")
+        write_file_atomic(install.HINDSIGHT_ENV, previous_env, 0o640)
+        install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+        quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+        previous_quadlet = "[Container]\nPod=goblin-memory.pod\nOld=1\n"
+        write_file_atomic(quadlet, previous_quadlet, 0o640)
+        return calls, previous_env, previous_quadlet
+
+    def assert_rollback_restored(self, calls: dict[str, list[object]],
+                                 previous_managed: dict[str, dict[str, str]],
+                                 previous_env: str, previous_quadlet: str,
+                                 commands: list[list[str]]) -> None:
+        quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), previous_env)
+        self.assertEqual(stat.S_IMODE(install.HINDSIGHT_ENV.stat().st_mode), 0o640)
+        self.assertEqual(quadlet.read_text(), previous_quadlet)
+        self.assertEqual(stat.S_IMODE(quadlet.stat().st_mode), 0o640)
+        self.assertEqual(calls["restored"], [dict(previous_managed)])
+        self.assertEqual(calls["pruned"], [])
+        self.assertNotIn(
+            ["systemctl", "--user", "enable", "--now", install.WATCH_TIMER],
+            commands, "a failed reconfigure must not reach the success refresh")
+        self.assertIn(["systemctl", "--user", "restart", install.API_UNIT],
+                      commands)
+
+    def test_reconfigure_daemon_reload_failure_rolls_back_once(self) -> None:
+        calls, previous_env, previous_quadlet = self.write_reconfigure_incumbent()
+        previous_managed = {"HINDSIGHT_API_LLM_API_KEY":
+                            {"lookup": "old-lookup", "ttl": "300"}}
+        runs: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            if command == ["systemctl", "--user", "daemon-reload"]:
+                raise SystemExit(1)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        probes: list[list[str]] = []
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            probes.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        self.assertIn("daemon-reload", errors.getvalue())
+        self.assert_rollback_restored(calls, previous_managed, previous_env,
+                                      previous_quadlet, runs + probes)
+
+    def test_reconfigure_second_secret_failure_rolls_back(self) -> None:
+        calls, previous_env, previous_quadlet = self.write_reconfigure_incumbent()
+        previous_managed = {"HINDSIGHT_API_LLM_API_KEY":
+                            {"lookup": "old-lookup", "ttl": "300"}}
+        registered: list[str] = []
+
+        def flaky_ensure(spec: install.SecretSpec) -> None:
+            registered.append(spec.env_name)
+            if len(registered) == 2:
+                raise SystemExit(1)
+
+        install.ensure_secret = flaky_ensure
+        commands: list[list[str]] = []
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        self.assertIn("secret registration", errors.getvalue())
+        self.assert_rollback_restored(calls, previous_managed, previous_env,
+                                      previous_quadlet, commands)
+
+    def test_reconfigure_secret_restore_failure_skips_recovery_restart(self) -> None:
+        calls, previous_env, previous_quadlet = self.write_reconfigure_incumbent()
+        commands: list[list[str]] = []
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        install.ensure_secret = lambda spec: (_ for _ in ()).throw(SystemExit(1))
+        def broken_restore(previous: dict[str, dict[str, str]]) -> None:
+            raise SystemExit(1)
+
+        install.restore_secrets = broken_restore
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        err = errors.getvalue()
+        self.assertIn("secret restoration failed", err)
+        self.assertIn("not restarted onto an incomplete rollback", err)
+        quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), previous_env)
+        self.assertEqual(quadlet.read_text(), previous_quadlet)
+        self.assertNotIn(["systemctl", "--user", "restart", install.API_UNIT],
+                         commands,
+                         "no restart onto an incomplete restoration")
+
+    def test_reconfigure_rollback_daemon_reload_failure_skips_restart(self) -> None:
+        calls, previous_env, previous_quadlet = self.write_reconfigure_incumbent()
+        commands: list[list[str]] = []
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        reload_count = {"n": 0}
+
+        def counting_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            if command == ["systemctl", "--user", "daemon-reload"]:
+                reload_count["n"] += 1
+                if reload_count["n"] == 1:
+                    return subprocess.CompletedProcess(command, 1, "", "reload err")
+            if command == ["systemctl", "--user", "restart", install.API_UNIT]:
+                return subprocess.CompletedProcess(command, 1, "", "synthetic")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = counting_probe
+        install.http_ok = lambda url: True
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        err = errors.getvalue()
+        self.assertIn("daemon-reload failed", err)
+        self.assertIn("not restarted", err)
+        quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), previous_env)
+        self.assertEqual(quadlet.read_text(), previous_quadlet)
+
+    def test_restore_secrets_recreates_previous_and_drops_partials(self) -> None:
+        install.restore_secrets = self.saved["restore_secrets"]
+        commands: list[list[str]] = []
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        install.managed_secrets = lambda: {
+            "HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"},
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": {"lookup": "partial"},
+        }
+        install.restore_secrets(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup", "ttl": "300"}})
+        self.assertIn(
+            ["podman", "secret", "create", "--replace", "--driver", "shell",
+             "--driver-opts", f"lookup=old-lookup,{install.SECRET_DRIVER_TAIL}",
+             "HINDSIGHT_API_LLM_API_KEY", "-"],
+            commands)
+        self.assertIn(["podman", "secret", "rm",
+                       "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"], commands)
 
     def write_relay_switch(self) -> None:
         install.CFG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1326,6 +2019,8 @@ class MainFlowTest(unittest.TestCase):
 
     def test_existing_install_enables_embed_relay_when_switched(self) -> None:
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         self.write_relay_switch()
         runs = self.run_existing("active", [])
         self.assertEqual(runs, [
@@ -1342,13 +2037,17 @@ class MainFlowTest(unittest.TestCase):
         # The API test-embeds during init: a switch to local embeddings on
         # reconfigure must have the relay live first.
         self.fake_prompts()
-        install.POSTGRES_ENV.parent.mkdir(parents=True)
-        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
-        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
+        install.HINDSIGHT_ENV.parent.mkdir(parents=True)
+        install.HINDSIGHT_ENV.write_text(
+            f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+            "HINDSIGHT_API_LLM_MODEL=old\n")
         self.write_relay_switch()
         commands: list[list[str]] = []
 
-        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def record(command: list[str], timeout: float = 600,
+               stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             commands.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1373,7 +2072,8 @@ class MainFlowTest(unittest.TestCase):
         self.write_relay_switch()
         commands: list[list[str]] = []
 
-        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def record(command: list[str], timeout: float = 600,
+               stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             commands.append(command)
             output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
             return subprocess.CompletedProcess(command, 0, output, "")
@@ -1440,7 +2140,8 @@ class MainFlowTest(unittest.TestCase):
         self.fake_yes()
         commands: list[list[str]] = []
 
-        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def record(command: list[str], timeout: float = 600,
+               stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             commands.append(command)
             output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
             return subprocess.CompletedProcess(command, 0, output, "")
@@ -1464,7 +2165,6 @@ class MainFlowTest(unittest.TestCase):
         install.wire_goblin = lambda goblin_home, bank_id: "live"
         with contextlib.redirect_stdout(io.StringIO()):
             install.main(["--goblin-home", str(self.goblin_home)])
-        self.assertTrue(install.POSTGRES_ENV.is_file())
         self.assertTrue(install.HINDSIGHT_ENV.is_file())
         self.assertEqual(banks, ["goblin"])
         for name in install.EMBED_UNITS:
@@ -1503,7 +2203,8 @@ class MainFlowTest(unittest.TestCase):
         prove nothing at the system edge actually ran."""
         runs: list[list[str]] = []
 
-        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1569,9 +2270,12 @@ class MainFlowTest(unittest.TestCase):
         with contextlib.redirect_stdout(captured):
             install.main(["--no-start", "--goblin-home", str(self.goblin_home)])
         output = captured.getvalue()
+        # No credential material exists to print — the env file carries
+        # none either.
         self.assertNotIn(SYNTHETIC_KEY, output)
-        pw = install.POSTGRES_ENV.read_text().split("=", 1)[1].strip()
-        self.assertNotIn(pw, output)
+        self.assertFalse(install.POSTGRES_ENV.exists())
+        self.assertNotIn("API_KEY=",
+                         install.HINDSIGHT_ENV.read_text())
         self.assertTrue(install.HINDSIGHT_ENV.is_file())
 
     def test_ctrl_c_exits_cleanly(self) -> None:
@@ -1595,6 +2299,148 @@ class MainFlowTest(unittest.TestCase):
                 install.cli()
         self.assertEqual(raised.exception.code, 1)
         self.assertNotIn("Traceback", errors.getvalue())
+
+
+class ManagedSecretsTest(unittest.TestCase):
+    """managed_secrets() fail-closed contract: callers act on the
+    snapshot (prune, rollback restore), so a partial or unreadable
+    answer must fail — never read as an empty or partial set. The real
+    function runs against a synthetic podman edge."""
+
+    def setUp(self) -> None:
+        self.real_probe = install.probe
+        self.addCleanup(setattr, install, "probe", self.real_probe)
+
+    def _stderr_for(self, probe: Probe) -> str:
+        install.probe = probe
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.managed_secrets()
+        return errors.getvalue()
+
+    def _edge(self, inspect: Probe) -> Probe:
+        def probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+            if "ls" in command:
+                return subprocess.CompletedProcess(
+                    command, 0, "HINDSIGHT_API_LLM_API_KEY\tshell\n", "")
+            return inspect(command)
+        return probe
+
+    def test_unavailable_and_failing_listing_refuse(self) -> None:
+        for result in (None,
+                       subprocess.CompletedProcess(["podman"], 1, "", "boom")):
+            with self.subTest(result=result):
+                errors = self._stderr_for(lambda command: result)
+                self.assertIn("cannot list podman secrets", errors)
+
+    def test_every_inspect_failure_refuses_by_operation_and_name_only(self) -> None:
+        outcomes: list[tuple[str, subprocess.CompletedProcess[str] | None]] = [
+            ("probe-gone", None),
+            ("nonzero", subprocess.CompletedProcess(["podman"], 2, "", "err")),
+            ("bad-json", subprocess.CompletedProcess(["podman"], 0, "raw-garbage", "")),
+            ("non-object", subprocess.CompletedProcess(["podman"], 0, '["a"]', "")),
+            ("non-string", subprocess.CompletedProcess(
+                ["podman"], 0, '{"lookup": 7}', "")),
+            ("missing-lookup", subprocess.CompletedProcess(
+                ["podman"], 0, '{"other": "v"}', "")),
+            ("blank-lookup", subprocess.CompletedProcess(
+                ["podman"], 0, '{"lookup": "   "}', "")),
+        ]
+        for name, outcome in outcomes:
+            with self.subTest(outcome=name):
+                errors = self._stderr_for(self._edge(lambda command: outcome))
+                self.assertIn("HINDSIGHT_API_LLM_API_KEY", errors)
+                self.assertNotIn("raw-garbage", errors,
+                                 "raw driver output must never be printed")
+
+    def test_valid_registrations_and_an_empty_listing_are_the_only_successes(
+            self) -> None:
+        install.probe = self._edge(
+            lambda command: subprocess.CompletedProcess(
+                command, 0, '{"lookup": "secret-id", "ttl": "300"}', ""))
+        self.assertEqual(install.managed_secrets(),
+                         {"HINDSIGHT_API_LLM_API_KEY":
+                          {"lookup": "secret-id", "ttl": "300"}})
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "", "")
+        self.assertEqual(install.managed_secrets(), {})
+
+    def test_a_failing_snapshot_blocks_reconfigure_without_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = {name: getattr(install, name)
+                     for name in (*FAKED, "install_assets", "USER_UNIT_DIR")}
+            def restore_globals() -> None:
+                for n, v in saved.items():
+                    setattr(install, n, v)
+
+            self.addCleanup(restore_globals)
+            install.CFG_DIR = root / "goblin-memory"
+            install.SYSTEMD_DIR = root / "systemd"
+            install.USER_UNIT_DIR = root / "user-units"
+            install.CFG_DIR.mkdir()
+            install.SYSTEMD_DIR.mkdir()
+            env_body = (f"HINDSIGHT_API_DATABASE_URL={install.DATABASE_URL}\n"
+                        "HINDSIGHT_API_LLM_MODEL=old\n")
+            install.HINDSIGHT_ENV = install.CFG_DIR / "hindsight.env"
+            install.HINDSIGHT_ENV.write_text(env_body)
+            quadlet = install.SYSTEMD_DIR / "goblin-memory-api.container"
+            quadlet.write_text("[Container]\nPod=goblin-memory.pod\n")
+            guard = install.CFG_DIR / "start.py"
+            guard.write_text("# synthetic old guard\n")
+            install.preflight = lambda: None
+            install.prompt_answers = lambda goblin_home: self.fail(
+                "a failed snapshot must never reach prompts")
+            mutations: dict[str, list[object]] = {"run": [], "probe": [],
+                                                  "ensure": [], "block": [],
+                                                  "assets": []}
+            def fake_run(command: list[str], timeout: float = 600,
+                         stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+                mutations["run"].append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            install.run = fake_run
+            install.ensure_secret = lambda spec: (
+                mutations["ensure"].append(spec.env_name))
+            install.apply_secret_block = lambda path, env_names: (
+                mutations["block"].append((path, env_names)))
+
+            def fake_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
+                            user_unit_dir: Path,
+                            skip_existing_quadlets: bool = False) -> list[Path]:
+                mutations["assets"].append(True)
+                return []
+
+            install.install_assets = fake_assets
+
+            def probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+                mutations["probe"].append(command)
+                if "inspect" in command:
+                    return subprocess.CompletedProcess(command, 2, "", "err")
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    "HINDSIGHT_API_LLM_API_KEY\tshell\n", "")
+
+            install.probe = probe
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(errors):
+                with self.assertRaises(SystemExit):
+                    install.main(["--reconfigure"])
+            self.assertTrue(
+                any(isinstance(c, list) and "inspect" in c
+                    for c in mutations["probe"]),
+                "the snapshot's inspect must be the observed failure")
+            self.assertIn("cannot inspect podman secret", errors.getvalue())
+            self.assertIn("HINDSIGHT_API_LLM_API_KEY", errors.getvalue())
+            self.assertNotIn("secretpw", errors.getvalue())
+            self.assertNotIn("lookup=", errors.getvalue())
+            self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_body)
+            self.assertEqual(quadlet.read_text(), "[Container]\nPod=goblin-memory.pod\n")
+            self.assertEqual(guard.read_text(), "# synthetic old guard\n")
+            self.assertEqual(mutations["run"] + mutations["ensure"]
+                             + mutations["block"] + mutations["assets"], [])
 
 
 class WireGoblinRollbackTest(unittest.TestCase):

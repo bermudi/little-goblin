@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import type { UIMessage } from "ai";
+import { sendFileTool } from "../agent/tools/send.ts";
+import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
-import { sleep, waitUntil } from "../testkit.ts";
+import type { TurnDone } from "../runtime.ts";
+import type { AppChannelDeps } from "./app-shared.ts";
+import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
+import { sleep, tmpDir, waitUntil } from "../testkit.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
 describe("app chat", () => {
@@ -38,6 +44,159 @@ describe("app chat", () => {
 			expect(types).toContain("finish");
 
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a malformed part payload is refused before persistence — no poison pill", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "poison-01" }),
+			});
+			// A wrong-typed text payload converts cleanly, would persist,
+			// and then fails every later turn at standardizePrompt — the
+			// boundary must refuse it before anything is written.
+			const badText = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: { id: "m-bad", role: "user", parts: [{ type: "text", text: 12345 }] },
+				}),
+			});
+			expect(badText.status).toBe(422);
+			await badText.text();
+			const badFile = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: {
+						id: "m-bad-file",
+						role: "user",
+						parts: [{ type: "file", url: "https://x.example/a.png" }],
+					},
+				}),
+			});
+			expect(badFile.status).toBe(422);
+			await badFile.text();
+			// The refusals left nothing behind: a later well-formed turn
+			// runs to completion on the same conversation.
+			expect(store.history("app/poison-01")).toEqual([]);
+			const good = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: { id: "m-good", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(good.status).toBe(200);
+			await good.text();
+			expect(store.history("app/poison-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("generated files and voice notes persist durably and stream live", async () => {
+		const work = tmpDir("goblin-app-media-");
+		writeFileSync(join(work, "note.txt"), "file-bytes");
+		const audio = new Uint8Array([9, 8, 7]);
+		const model = scriptedModel([
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart(
+					"file-1",
+					"send_file",
+					JSON.stringify({ path: "note.txt", caption: "keepsake" }),
+				),
+				toolCallPart("voice-1", "speak", JSON.stringify({ text: "hello" })),
+				finishPart("tool-calls"),
+			],
+			textParts("sent"),
+		]).model;
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			model,
+			makeTools: (_conv, deliverVoice, _recording, deliverFile) => ({
+				send_file: sendFileTool(work, deliverFile!),
+				speak: speakTool(work, async () => [audio], deliverVoice!),
+			}),
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-media" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-media",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "send media" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			const frames = (await res.text())
+				.split("\n\n")
+				.filter((f) => f.startsWith("data: "))
+				.map((f) => f.slice("data: ".length));
+			const chunks = frames
+				.filter((f) => f !== "[DONE]")
+				.map((f) => JSON.parse(f) as { type: string; data?: unknown });
+			const live = chunks
+				.filter((c) => c.type === "data-attachment")
+				.map(
+					(c) =>
+						c.data as {
+							path: string;
+							mediaType: string;
+							filename: string;
+							size: number;
+						},
+				);
+			expect(live.map((a) => a.filename).sort()).toEqual(["note.txt", "voice-note.ogg"]);
+
+			const detail = store.historyDetail("app/chat-media");
+			expect(detail.map((e) => e.message.role)).toEqual([
+				"user",
+				"assistant",
+				"assistant",
+				"assistant",
+			]);
+			const media = detail.filter((e) => e.message.parts.some((p) => p.type === "data-attachment"));
+			expect(media).toHaveLength(2);
+			expect(media.map((e) => e.anchorSeq)).toEqual([1, 1]);
+
+			const reopened = (await (
+				await call("/api/app/conversations/chat-media/messages")
+			).json()) as { messages: UIMessage[] };
+			const refs = reopened.messages.flatMap((m) =>
+				m.parts
+					.filter((p) => p.type === "data-attachment")
+					.map((p) => (p as { data: { path: string; mediaType: string; filename: string } }).data),
+			);
+			expect(refs.map((r) => r.filename).sort()).toEqual(["note.txt", "voice-note.ogg"]);
+
+			const fileRef = refs.find((r) => r.filename === "note.txt")!;
+			const fileGet = await call(
+				`/api/app/attachments/${encodeURIComponent(basename(fileRef.path))}`,
+			);
+			expect(fileGet.status).toBe(200);
+			expect(await fileGet.text()).toBe("file-bytes");
+			const voiceRef = refs.find((r) => r.filename === "voice-note.ogg")!;
+			const voiceGet = await call(
+				`/api/app/attachments/${encodeURIComponent(basename(voiceRef.path))}`,
+			);
+			expect(voiceGet.status).toBe(200);
+			expect(voiceGet.headers.get("content-type")).toBe("audio/ogg");
+			expect([...new Uint8Array(await voiceGet.arrayBuffer())]).toEqual([9, 8, 7]);
 		} finally {
 			http.stop();
 		}
@@ -112,6 +271,56 @@ describe("app chat", () => {
 			const ok = await chat(ref);
 			expect(ok.status).toBe(200);
 			expect((await ok.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a data-skill part validates name and temp path against the cache", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-skill" }),
+			});
+			const chat = (data: Record<string, unknown>) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: "app/chat-skill",
+						message: { id: "m1", role: "user", parts: [{ type: "data-skill", data }] },
+					}),
+				});
+			expect((await chat({ name: "Bad Name" })).status).toBe(422);
+			expect((await chat({ name: "../escape" })).status).toBe(422);
+			expect(
+				(await chat({ url: "https://github.com/o/r/tree/main/demo", path: "/etc/passwd" }))
+					.status,
+			).toBe(422);
+			// A support file under the cache is not the descriptor's
+			// SKILL.md — only the exact cached body shape passes.
+			const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+			const { mkdirSync, writeFileSync } = await import("node:fs");
+			mkdirSync(join(digestDir, "demo"), { recursive: true });
+			writeFileSync(join(digestDir, "demo", "payload.txt"), "x");
+			expect(
+				(
+					await chat({
+						url: "https://github.com/o/r/tree/main/demo",
+						path: join(digestDir, "demo", "payload.txt"),
+					})
+				).status,
+			).toBe(422);
+			// A staged copy under this home's skillcache passes and persists.
+			const cached = join(digestDir, "demo", "SKILL.md");
+			writeFileSync(cached, "x");
+			const ok = await chat({
+				url: "https://github.com/o/r/tree/main/demo",
+				path: cached,
+			});
+			expect(ok.status).toBe(200);
 		} finally {
 			http.stop();
 		}
@@ -410,6 +619,45 @@ describe("app chat", () => {
 					})
 				).status,
 			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a client-cancelled chat stream reaches the push owner at turn end", async () => {
+		const pushed: { conversation: string; done: TurnDone }[] = [];
+		const push: NonNullable<AppChannelDeps["push"]> = {
+			status: () => Promise.resolve({ configured: true, subscriptions: [] }),
+			ensurePublicKey: () => Promise.resolve("public"),
+			register: () => Promise.resolve({ endpointHash: "hash" }),
+			unregister: () => true,
+			notifyDone: (conv, done) => {
+				pushed.push({ conversation: conv.id, done });
+				return Promise.resolve();
+			},
+		};
+		const { http, call } = setup({ token: APP_TOKEN_NAME, delayMs: 80, push });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			await res.body!.cancel();
+			await waitUntil(() => pushed.length === 1, "push on disconnected turn");
+			expect(pushed[0]).toMatchObject({
+				conversation: "app/chat-01",
+				done: { kind: "completed" },
+			});
 		} finally {
 			http.stop();
 		}

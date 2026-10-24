@@ -12,8 +12,8 @@
 //   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
 //   {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_KEY"}
 // A value starting with "!" is resolved by running it as a command at the
-// point of use. Required records: "telegram" (the bot token) plus one per
-// provider `auth` name below.
+// point of use. Required records: "telegram" (the bot token, while
+// telegram.enabled is true) plus one per provider `auth` name below.
 {
   // --- Provider registry: name → factory + auth.jsonl key ---
   providers: {
@@ -62,8 +62,9 @@
   ],
   // Operator vocabulary — each model clamps it to its real ladder and the
   // mini app only offers levels the model can express (glm-5.3: low|high|
-  // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
-  thinking: "medium", // off | low | medium | high | xhigh | max
+  // max — thinking is forced; a mandatory-reasoning model has no "off";
+  // gpt-6: low…xhigh|max; non-thinkers: off).
+  thinking: "medium", // off | minimal | low | medium | high | xhigh | max
 
   // Text → Telegram voice notes (/voice mode, the speak tool, 🔊
   // buttons). ON BY DEFAULT — edge read-aloud needs no keys, just ffmpeg
@@ -278,6 +279,10 @@
   // },
 
   // --- Telegram ---
+  // enabled:false runs the PWA/runtime without a bot token, polling, or
+  // the Telegram mini app; Telegram-targeted work reports the channel as
+  // unavailable. The flag is boot-pinned — Settings writes it and the
+  // restart hint applies it. While off, operators may be empty.
   // Two-list trust (design/telegram.md → Roles and permissions).
   // operators: full personal agent on every surface — you, and any of
   // your own accounts. allowedUsers: people you name, sandboxed (guest
@@ -293,6 +298,7 @@
   // conversations. Legacy configs without these keys start at the app
   // defaults above; a settings save pins the Telegram values explicitly.
   telegram: {
+    enabled: true,
     model: "zai/glm-5.3-flash",
     thinking: "medium",
     dmGapMinutes: 45,

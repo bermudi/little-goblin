@@ -1,9 +1,17 @@
 // Importing registers an afterEach that removes every tracked temp dir
 // and restores GOBLIN_HOME — test files must not also restore it by
 // hand for dirs obtained here. Test-only: production never imports this.
+//
+// Bun runs all test files of one invocation in a single process and
+// scopes a module-level afterEach to the file whose import first ran
+// this module: without bunfig.toml's [test] preload of this file,
+// every later file would share trackedDirs without ever firing the
+// hook (observed 2026-10-22: full-suite runs leaked ~86k mkdtemp dirs,
+// ~15GB, until /tmp hit ENOSPC). The preload makes this hook global;
+// the import-time sweep below heals what killed runs leave behind.
 
 import { afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -21,8 +29,33 @@ const trackedDirs: string[] = [];
 let savedHome: string | undefined;
 let homeSaved = false;
 
+let fixtureRoot: string | null = null;
+
+function fixtureRootDir(): string {
+	if (fixtureRoot === null) {
+		fixtureRoot = mkdtempSync(join(tmpdir(), `goblin-test-fixtures-${process.pid}-`));
+	}
+	return fixtureRoot;
+}
+
+function releaseFixtureRootIfEmpty(): void {
+	if (fixtureRoot === null) return;
+	try {
+		rmdirSync(fixtureRoot);
+		fixtureRoot = null;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			fixtureRoot = null;
+		} else if (code !== "ENOTEMPTY" && code !== "EEXIST") {
+			console.error(`testkit fixture root release failed for ${fixtureRoot}: ${String(err)}`);
+		}
+	}
+}
+
 afterEach(() => {
 	for (const d of trackedDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	releaseFixtureRootIfEmpty();
 	if (homeSaved) {
 		if (savedHome === undefined) delete process.env.GOBLIN_HOME;
 		else process.env.GOBLIN_HOME = savedHome;
@@ -31,9 +64,59 @@ afterEach(() => {
 	}
 });
 
-/** A fresh temp dir, removed after the test. */
+/** Fixture dirs older than this are assumed abandoned and swept. */
+export const STALE_MS = 60 * 60 * 1000;
+
+const FIXTURE_ROOT_PATTERN = /^goblin-test-fixtures-([1-9]\d*)-[A-Za-z0-9]{6}$/;
+
+function ownerDead(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "ESRCH";
+	}
+}
+
+/**
+ * Remove stale fixture roots older than STALE_MS whose owner PID is
+ * dead. Runs once per test process at import. Best effort by design:
+ * entries raced away by a concurrent sweeper are fine (rmSync force
+ * ignores ENOENT); only a persistent failure gets a stderr line so
+ * hygiene never reddens a suite. `root` is injectable so tests can
+ * sweep a private staging area rather than the shared tmpdir.
+ */
+export function sweepStaleFixtureDirs(root = tmpdir(), now = Date.now()): void {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	const cut = now - STALE_MS;
+	for (const e of entries) {
+		const match = FIXTURE_ROOT_PATTERN.exec(e.name);
+		if (match === null || !e.isDirectory()) continue;
+		const pid = Number.parseInt(match[1]!, 10);
+		if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+		const dir = join(root, e.name);
+		try {
+			if (statSync(dir).mtimeMs >= cut) continue;
+			if (!ownerDead(pid)) continue;
+			rmSync(dir, { recursive: true, force: true });
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				console.error(`testkit stale sweep skipped ${dir}: ${String(err)}`);
+			}
+		}
+	}
+}
+
+sweepStaleFixtureDirs();
+
+/** A fresh temp dir inside this process's fixture root, removed after the test. */
 export function tmpDir(prefix = "goblin-test-"): string {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
+	const dir = mkdtempSync(join(fixtureRootDir(), prefix));
 	trackedDirs.push(dir);
 	return dir;
 }

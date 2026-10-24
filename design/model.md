@@ -10,26 +10,85 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   PII-scrubbed and logged for eval. The Codex CLI-wrapper can't drive our
   loop (no caller tools); our adapter must write the CLI's rotated refresh
   tokens back, or it invalidates the CLI's own login.
+- **1min.AI relay (2026-10-22).** The `openai-compatible` kind serves
+  `https://api.1min.ai/openai/v1`; its pipe truths are pinned in
+  `src/agent/onemin.ts` from the operator-supplied docs
+  (docs.1min.ai/docs/api/openai-compatible), following the z.ai
+  precedent of host-scoped relay truth. Three of them change wire
+  behavior: the endpoint is **text-only for every model it lists**
+  ("including models with vl in their names") — the carrier gate
+  rejects all media by host, so attachments stay path references and
+  the vision tool answers image questions in auto mode even when the
+  catalog's scan-fallback claims the model id sees images;
+  **`reasoning_effort` is OpenAI reasoning-models-only** — "OpenAI GPT-5,
+  GPT-6, and o3 models accept reasoning_effort" (value set
+  none|minimal|low|medium|high|xhigh — no `max`): the older
+  non-reasoning OpenAI ids (gpt-3.5/4/4.1/4o) join GLM, DeepSeek, Qwen,
+  Mistral, Kimi and Muse Spark in sending no knob at all and offering
+  only the "off" the relay's default backfills, while GPT-5.6* and
+  GPT-6 Sol/Luna — which demand `none` whenever a request carries
+  tools or tool history, and the loop always defines tools — offer the
+  disable alone (the review call carries tools too, so it rides the
+  same options on 1min routes); and **every POST is a billed
+  generation**, so all chat calls (turn steps, compaction summaries,
+  reviews, titles, vision answers) carry `maxRetries: 0` — the SDK
+  default of 2 would be a silent double charge. One deliberate
+  exception survives on purpose (model.md → Provider-filter recovery):
+  the one-shot content-filter re-ask — a blocked request reports no
+  output tokens, so the retry spends roughly one input pass, bounded
+  and logged. Streaming asks for
+  `include_usage` (the relay reports usage only under it), and
+  `gpt-6-astra` can't serve as a chat model (it rejects function
+  tools — fail loud, 400). Request caps live upstream and are not
+  compensated: 200 messages, 100,000 total characters, a 32,768-token
+  output cap, a two-minute generation deadline, 60 requests/minute —
+  a 400/429 fails loud. The character cap is the practical wall:
+  ~100k characters is ~25k tokens, so a long conversation breaches it
+  long before its model's token window, and compaction (token-driven)
+  cannot prevent the 400 — `/compact` proactively if 1min models run
+  the long lanes. The offered effort ladder is the relay's union
+  value set ("accepted values vary by model"); a model that rejects a
+  rung answers with a provider parameter error — fail loud, the
+  per-model value sets are not published anywhere goblin can read. The
+  relay has no models.dev entry, so the settings picker shows no
+  model list — the typed-ref fallback carries, context windows arrive
+  via the catalog's scan-fallback from the serving providers. Cache
+  contract: reviewed-unknown — the relay publishes no prompt-cache
+  lifetime, and upstream caching does not carry through the relay.
 - **Selection scope (2026-10-06).** Telegram uses one shared selection across
   all DMs/topics, and root-default changes must never leak into it. Admission
   freezes a turn's settings (capability gates included) through overflow
   retry and compaction. Summaries use the conversation's model and thinking;
   reviewer fallback uses the conversation's model; explicit reviewer and
   title models stay independent.
-- **Thinking.** `off|low|medium|high|xhigh|max` is an operator vocabulary, not
-  a provider contract; each family maps to the nearest honest knob, and the
-  ladder follows the bare model id under every kind — a `glm-5.3` is
-  forced-thinking whether z.ai serves it directly or via a relay. Stored
-  values outside a model's set aren't errors — defaults span models, so the
-  mapping clamps to the nearest rung at-or-above (GLM's own collapse
-  direction). GLM (docs.z.ai): 5.3+ forced thinking, effort `low|high|max`
+- **Thinking (ruling 2026-10-21).** `off|minimal|low|medium|high|xhigh|max` is
+  an operator vocabulary, not a provider contract. Every model has one
+  **profile** — the rungs it supports, what `off` means on it, and the wire
+  knob that carries a rung (`src/agent/thinking.ts`). The ladder the app
+  offers IS the profile: a level a model cannot express is never offered.
+  `glm-5.3` offers `low|high|max` — no `off`, no `medium`, no `xhigh`;
+  `minimax-m3.1-flash` offers `low|medium|high|xhigh|max` and no `off`,
+  because its reasoning is mandatory. `off` is offered only when it
+  genuinely switches reasoning off; a stored `off` on a model that cannot
+  disable reasoning clamps to its weakest rung, because a mandatory model
+  answers a disable with "Reasoning is mandatory for this endpoint and
+  cannot be disabled" (probed on minimax-m3.1-flash, minimax-m2 and
+  deepseek-r1-0528). Stored values outside a model's set aren't errors —
+  defaults span models — so the mapping clamps to the nearest rung
+  at-or-above (GLM's own collapse direction).
+  Sources, in order of honesty: OpenRouter's cached `/models` catalog
+  reads the per-model `reasoning` object (`supported_efforts` → the rungs,
+  `mandatory` → whether `off` can exist; `none` in `supported_efforts` is
+  the disable); z.ai GLM and the OpenAI/codex families use the vendor's own
+  tables — GLM (docs.z.ai): 5.3+ forced thinking, effort `low|high|max`
   (unlisted values silently become `max`); 5.2 toggles plus `high|max`, ≤4.6
   toggles only; the coding-plan alias gives every glm the 5.3 ladder.
   GPT/codex takes `reasoning_effort` verbatim on `low|medium|high|xhigh`
-  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor.
-  OpenRouter's cached `/models` catalog reads `supported_parameters`:
-  `reasoning_effort` → verbatim, `reasoning`-only → toggle, neither → off; a
-  cold catalog passes the level through — fail loud, never fake knowledge.
+  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor. An
+  unknown route (cold catalog, unlisted model, dynamic router) keeps the
+  whole vocabulary and sends no reasoning knob at all for `off` — the
+  route's default — because a disable we cannot back is a failed turn:
+  fail loud, never fake knowledge.
 - **History.** Rows stamp the format that wrote them — the SDK owns the part
   shapes — so a future shape change is a deliberate converter at open, never
   silent placeholder degradation of old rows; a straggler that skips the
@@ -67,11 +126,17 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   `/compact` serializes through it and still compacts with the window
   unknown (a forced scrub). Ruling 2026-10-19: the window lookup is
   metadata, not a model step — `compaction.contextWindow` reads the
-  catalog only, so a compaction pass resolves no auth, builds no model
-  step, and can never mint or rewrite a frozen prompt snapshot;
-  `buildStep` alone builds prompts and only a landed boundary clears
-  the snapshot. The utilization warn stays as the alarm that
-  compaction didn't happen or didn't keep up.
+  catalog only, resolving no auth and building no model step, so the
+  lookup can never mint or rewrite a frozen prompt snapshot (the
+  summary call itself still resolves auth and runs the
+  conversation's model; `buildStep` alone builds prompts). The
+  snapshot clears only at a boundary that rewrites what the prompt
+  must say: a landed compaction, or a persona/memory-exclusion
+  switch. A `/compact` fenced mid-lookup — a `/stop` or
+  epoch-bumping settings change landing during the read — rejects
+  fenced rather than reporting "nothing to compact": the pass
+  genuinely lost authority. The utilization warn stays as the alarm
+  that compaction didn't happen or didn't keep up.
   A mid-turn **context-overflow error** is a recovery, not a failure
   (mechanism from pi): the partial reply is held off the wire, one
   compaction runs with a smaller tail (the overflow proved the estimate

@@ -4,7 +4,9 @@ Voice works in both directions: the bot listens (transcription) and speaks
 (text-to-speech). Transcription is opt-in; speech is on by default, but can
 be turned off independently with `tts: ""`. Speech needs `ffmpeg` in the
 bot's `PATH`; transcription needs it for whistle and mimo (always — it is
-the wav decoder/converter) and for cloud files over the provider upload cap.
+the wav decoder/converter), for onemin's `qwen3-asr-flash` (always —
+every note transcodes to wav), and for cloud files over the provider
+upload cap.
 
 ## Hearing you: transcription
 
@@ -38,12 +40,16 @@ transcription: { kind: "gemini" },     // gemini-flash-latest
 transcription: { kind: "mimo" },       // mimo-v2.5-asr, Xiaomi first-party — billed per audio hour
 transcription: { kind: "openrouter", model: "elevenlabs/scribe-v2" }, // the STT catalog
 transcription: { kind: "logfare" },    // whisper-large-v3-turbo; model: "nova-3" also works
+transcription: { kind: "onemin" },     // 1min.AI — whisper-1 by default (see below)
 ```
 
 Each kind defaults its `model` and its `auth` (the `auth.jsonl` record
 name — the kind's own name). Override
 either explicitly, and add `language: "es"` to skip detection (mimo's
-vocabulary is narrower: `en`, `zh`, or `auto`). Long
+vocabulary is narrower: `en`, `zh`, or `auto`; onemin takes an ISO code
+like `es` or a locale like `en-US` — the `latest_short`/`latest_long`
+models require the locale form, while `whisper-1` and `qwen3-asr-flash`
+detect without it). Long
 files are segmented automatically whatever the kind; openrouter warns
 of ~60 s upstream processing per request, so prefer whistle or groq
 for hour-long recordings.
@@ -150,6 +156,33 @@ with built-in voices: `Mia`, `Chloe`, `Milo`, `Dean` for English;
 ```json5
 tts: { kind: "mimo", voice: "Mia" },
 ```
+
+`kind: "onemin"` speaks through 1min.AI's feature API — the same
+`onemin` auth record as its chat provider. TTS is its
+`TEXT_TO_SPEECH` feature (`tts-1` default, also `tts-1-hd`) with the
+OpenAI voices: `alloy` (the blank-voice default), `echo`, `fable`,
+`onyx`, `nova`, `shimmer`. The reply chunks at 4,000 characters
+(their text cap is 4,096), the result is a signed URL and the audio is
+fetched from it, so a synthesis can involve a couple of round trips.
+
+```json5
+tts: { kind: "onemin", voice: "nova" },
+transcription: { kind: "onemin", model: "qwen3-asr-flash" },
+```
+
+`kind: "onemin"` transcription uploads the audio to 1min's asset API
+first, then runs the `SPEECH_TO_TEXT` feature and polls for the
+result — the engine rides 1min's async door, so a slow transcription
+polls instead of tripping the gateway. `whisper-1` (default)
+auto-detects; the short/long speech models (`latest_short`,
+`latest_long`) need the locale form (`language: "en-US"`);
+`qwen3-asr-flash` and the elevenlabs model detect on their own
+(qwen3's language list adds `fil`/`yue`). Files over the family's
+published 10 MB cap segment automatically, like the other cloud
+kinds. One container caveat: `qwen3-asr-flash`'s format table is the
+one without MP4, and Telegram video notes arrive as MP4 — the engine
+answers by routing qwen3 through 16 kHz mono wav transcodes (on every
+1min model's list) while the other models keep native containers.
 
 Three ways to hear the bot:
 

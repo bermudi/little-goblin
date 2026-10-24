@@ -1,15 +1,19 @@
-import { makeWakeDelivery } from "./tg/wake.ts";
+import { makeWakeDelivery, makeWakeDeps } from "./tg/wake.ts";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api } from "grammy";
 import type { DeliveryApi } from "./tg/delivery.ts";
+import { sendFileTool } from "./agent/tools/send.ts";
 import { appAddress, openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
-import { Runtime, type TurnSink } from "./runtime.ts";
+import { Runtime, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
-import { wake, wakeApp, wakeConversation, type WakeDeps } from "./wake.ts";
+import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
+import { useHome, waitUntil } from "./testkit.ts";
+import { wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
 	onTextDelta: () => {},
@@ -32,7 +36,7 @@ const config: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -186,6 +190,110 @@ test("wakeApp on a deleted app conversation drops landed — no submit, no retry
 	expect(landed).toBe(true);
 	expect(submitted).toEqual([]);
 	expect(sinks).toEqual([]);
+	store.close();
+});
+
+test("wakeTarget routes an app target to its exact conversation", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	store.resolve(appAddress("chat-01"), "/w");
+	const landed = wakeTarget(deps, "app/chat-01", "scheduled job ran");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual(["app/chat-01"]);
+	expect(sinks).toHaveLength(1);
+	store.close();
+});
+
+test("wakeTarget keeps Telegram targets on the ordinary wake path", () => {
+	const { deps, store, submitted, sends } = harness(0);
+	store.rollDm(7, "/w");
+	const landed = wakeTarget(deps, "dm:7", "scheduled job ran");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual(["dm:7:2"]);
+	expect(sends).toEqual(["— new conversation —"]);
+	store.close();
+});
+
+test("no Telegram delivery refuses Telegram targets while app targets keep the bell", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	delete deps.delivery;
+	delete deps.markRoll;
+	expect(wakeTarget(deps, "dm:7", "scheduled job ran")).toBe(false);
+	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/w");
+	expect(wakeConversation(deps, dm.id, "subagent notice")).toBe(false);
+	const app = store.resolve(appAddress("chat-01"), "/w");
+	expect(wakeTarget(deps, app.id, "scheduled job ran")).toBe(true);
+	expect(submitted).toEqual([app.id]);
+	expect(sinks).toHaveLength(1);
+	store.close();
+});
+
+test("a background app turn persists generated media without an SSE stream", async () => {
+	const home = useHome("goblin-wake-media-");
+	const work = join(home, "work");
+	mkdirSync(work, { recursive: true });
+	writeFileSync(join(work, "report.txt"), "report-bytes");
+	const store = openStore(join(home, "goblin.sqlite"));
+	const conv = store.resolve(appAddress("background"), join(home, "workspace"));
+	const model = scriptedModel([
+		[
+			{ type: "stream-start", warnings: [] },
+			toolCallPart("file-1", "send_file", JSON.stringify({ path: "report.txt" })),
+			finishPart("tool-calls"),
+		],
+		textParts("report sent"),
+	]).model;
+	const runtime = new Runtime({
+		store,
+		buildStep: () => ({ model, system: "test" }),
+		makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
+			send_file: sendFileTool(work, deliverFile!),
+		}),
+	});
+	const sends: string[] = [];
+	const pushed: { conversation: string; done: TurnDone }[] = [];
+	const api = {
+		sendMessage: (_chat: number, text: string) => {
+			sends.push(text);
+			return Promise.resolve({ message_id: sends.length });
+		},
+		sendChatAction: () => Promise.resolve(true),
+	} as unknown as Api;
+	const deps = makeWakeDeps({
+		store,
+		runtime,
+		api,
+		configRef: { current: config, ttsDown: false },
+		synthesize: async () => [],
+		followUpGate: () => undefined,
+		pings: { record: () => {}, lookup: () => null },
+		push: {
+			notifyDone: (notifyConv, done) => {
+				pushed.push({ conversation: notifyConv.id, done });
+				return Promise.resolve();
+			},
+		},
+	});
+
+	expect(wakeTarget(deps, "app/background", "run the report")).toBe(true);
+	await waitUntil(
+		() => store.history(conv.id).filter((m) => m.role === "assistant").length === 2,
+		"background media turn lands",
+	);
+	const media = store
+		.history(conv.id)
+		.flatMap((m) => m.parts)
+		.find((p) => p.type === "data-attachment") as
+		| { data: { path: string; filename: string } }
+		| undefined;
+	expect(media?.data.filename).toBe("report.txt");
+	expect(readFileSync(media!.data.path, "utf8")).toBe("report-bytes");
+	await waitUntil(() => sends.length === 1, "background ping lands");
+	await waitUntil(() => pushed.length === 1, "background push lands");
+	expect(pushed[0]).toMatchObject({
+		conversation: "app/background",
+		done: { kind: "completed" },
+	});
+	await runtime.shutdown();
 	store.close();
 });
 

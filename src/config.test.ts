@@ -123,6 +123,60 @@ for (const [name, input] of parseThrows) {
 	});
 }
 
+test("telegram.enabled absent stays on; false permits an app-only config with no operators", () => {
+	expect(parseConfig(objBase).telegram.enabled).toBe(true);
+	const off = parseConfig({ ...objBase, operators: [], telegram: { enabled: false } });
+	expect(off.telegram.enabled).toBe(false);
+	expect(off.operators).toEqual([]);
+});
+
+test("telegram.enabled true keeps the one-operator floor", () => {
+	expect(() => parseConfig({ ...objBase, operators: [], telegram: { enabled: true } })).toThrow(
+		/operators/,
+	);
+	expect(() => parseConfig({ ...objBase, operators: [] })).toThrow(/operators/);
+});
+
+test("a disabled telegram pin keeps a stale provider ref; enabled stays strict", () => {
+	const stale = {
+		...objBase,
+		operators: [],
+		telegram: { enabled: false, model: "gone/m", thinking: "high" },
+	};
+	// Disabled + missing provider → the pin parses through untouched.
+	const off = parseConfig(stale);
+	expect(off.telegram).toMatchObject({ enabled: false, model: "gone/m", thinking: "high" });
+	// A malformed ref is still a syntax error — dormancy is not a parse hole.
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false, model: "notaref" } })).toThrow();
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false, model: "/m" } })).toThrow();
+	// Enabled mode is unchanged: a missing provider rejects.
+	expect(() =>
+		parseConfig({ ...stale, operators: [7], telegram: { enabled: true, model: "gone/m" } }),
+	).toThrow(/telegram: custom/);
+	// Restoring the provider re-enables the same pin without edits.
+	const restored = parseConfig({
+		providers: {
+			test: { kind: "codex" },
+			gone: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
+		},
+		model: "test/m",
+		operators: [7],
+		allowedUsers: [7],
+		telegram: { enabled: true, model: "gone/m", thinking: "high" },
+	});
+	expect(restored.telegram).toMatchObject({ enabled: true, model: "gone/m" });
+	// The exemption is telegram.model only — the live app model and
+	// titleModel still demand a real provider while telegram is off.
+	expect(() => parseConfig({ ...stale, telegram: { enabled: false }, model: "gone/m" })).toThrow(
+		/model: custom/,
+	);
+	expect(() =>
+		parseConfig({ ...stale, telegram: { enabled: false }, titleModel: "gone/m" }),
+	).toThrow(/titleModel: custom/);
+	// An unpinned disabled block still inherits the app model.
+	expect(parseConfig({ ...stale, telegram: { enabled: false } }).telegram.model).toBe("test/m");
+});
+
 const valid: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },
@@ -133,7 +187,7 @@ const valid: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -390,6 +444,19 @@ describe("goblin.json5", () => {
 				voice: "b347db033a6549378b48d00acb0d06cd",
 			},
 		],
+		// 1min is the one cloud arm whose voice is REQUIRED on the wire —
+		// the schema materializes alloy (tts-1's own default) instead of
+		// leaving it optional like the /audio/speech kinds.
+		[
+			"onemin defaults model, auth, and materializes voice alloy",
+			`,tts:{kind:"onemin"}`,
+			{ kind: "onemin", model: "tts-1", auth: "onemin", voice: "alloy" },
+		],
+		[
+			"onemin parses explicit model, auth and voice",
+			`,tts:{kind:"onemin",model:"tts-1-hd",auth:"1min-tts",voice:"nova"}`,
+			{ kind: "onemin", model: "tts-1-hd", auth: "1min-tts", voice: "nova" },
+		],
 	]);
 	throwRows("tts", P_ZAI, [
 		[
@@ -400,6 +467,11 @@ describe("goblin.json5", () => {
 		["voice must be non-empty", `,tts:{kind:"edge",voice:""}`, "goblin.json5"],
 		["openrouter model must be non-empty", `,tts:{kind:"openrouter",model:""}`, "goblin.json5"],
 		["openrouter voice must be non-blank", `,tts:{kind:"openrouter",voice:" "}`, "goblin.json5"],
+		[
+			"onemin voice must be non-blank — it is required on the wire",
+			`,tts:{kind:"onemin",voice:" "}`,
+			"goblin.json5",
+		],
 	]);
 
 	valueRows("transcription", P_ZAI, (c) => c.transcription, [
@@ -420,6 +492,19 @@ describe("goblin.json5", () => {
 			`,transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}`,
 			{ kind: "whistle", keywords: ["goblin", "bermudi"], language: "es" },
 		],
+		// onemin takes the ISO code, qwen3's 3-letter codes, or the
+		// locale form the short/long/phone/telephony/medical models
+		// REQUIRE.
+		[
+			"onemin parses the locale form",
+			`,transcription:{kind:"onemin",language:"en-US"}`,
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: "en-US" },
+		],
+		[
+			"onemin parses qwen3's 3-letter codes",
+			`,transcription:{kind:"onemin",language:"yue"}`,
+			{ kind: "onemin", model: "whisper-1", auth: "onemin", language: "yue" },
+		],
 	]);
 	throwRows("transcription", P_ZAI, [
 		// Whistle's language is an enum, not any 2-letter code.
@@ -428,6 +513,12 @@ describe("goblin.json5", () => {
 			`,transcription:{kind:"whistle",language:"ja"}`,
 			"goblin.json5",
 		],
+		[
+			"onemin rejects a lowercase region",
+			`,transcription:{kind:"onemin",language:"en-us"}`,
+			"goblin.json5",
+		],
+		["onemin rejects a non-code", `,transcription:{kind:"onemin",language:"esp"}`, "goblin.json5"],
 	]);
 
 	valueRows("memory", P_ZAI, (c) => c.memory, [
@@ -1100,6 +1191,19 @@ describe("authReferences", () => {
 		expect([...authReferences(c)].sort()).toEqual(["groq", "or-asr", "telegram", "zai"]);
 	});
 
+	test("telegram auth leaves the sweep when the channel is disabled", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [],
+			telegram: { enabled: false },
+		});
+		expect([...authReferences(c)].sort()).toEqual(["zai"]);
+		expect(missingAuthNames(c, () => false)).toEqual(["zai"]);
+	});
+
 	test("missingAuthNames names the absent records, sorted — boot's warn sweep", () => {
 		const c = parseConfig({
 			providers: {
@@ -1322,5 +1426,42 @@ describe("config parser safety", () => {
 		}
 		expect(readFileSync(logPath, "utf8")).not.toContain(sentinel);
 		expect(readFileSync(paths.config(), "utf8")).toBe(text);
+	});
+});
+
+describe("parked capability blocks", () => {
+	const base = () => ({
+		providers: { zai: { kind: "openrouter" } },
+		model: "zai/m",
+		operators: [],
+		telegram: { enabled: false },
+	});
+
+	test("an empty parked object is dropped on parse and write", () => {
+		const home = useHome("goblin-cfg-");
+		const parsed = parseConfig({ ...base(), parked: {} });
+		expect("parked" in parsed).toBe(false);
+		writeConfig(parseConfig({ ...base(), parked: {} }));
+		expect(readFileSync(paths.config(), "utf8")).not.toContain("parked");
+		expect(home).toContain("goblin-cfg-");
+	});
+
+	test("parked blocks keep their own schema; authReferences never sees them", () => {
+		const parsed = parseConfig({
+			...base(),
+			parked: {
+				reviewer: { auth: "parked-secret-name" },
+				vision: { model: "zai/m", maxTokens: 999 },
+			},
+		});
+		expect(parsed.parked?.reviewer?.auth).toBe("parked-secret-name");
+		expect(parsed.parked?.vision?.maxTokens).toBe(999);
+		expect(authReferences(parsed).has("parked-secret-name")).toBe(false);
+	});
+
+	test("parked fields that fail their own schema are rejected", () => {
+		expect(
+			safeFailure(() => parseConfig({ ...base(), parked: { memory: { bankId: "x" } } })).message,
+		).toContain("invalid config");
 	});
 });

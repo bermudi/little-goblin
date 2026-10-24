@@ -70,7 +70,7 @@ function deps(resolve: () => Promise<LanguageModel> = async () => fakeEdge()): V
 		thinking: "medium",
 		operators: [1],
 		allowedUsers: [1],
-		telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+		telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 		http: { port: 8787 },
 		logLevel: "info",
 		vision: { model: "zai/glm-5.3-flash", maxTokens: 2000, mode: "auto" },

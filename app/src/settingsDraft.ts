@@ -3,6 +3,7 @@
 // only catches what the form can express badly before a round trip.
 
 import type {
+	CapabilityName,
 	Config,
 	MemoryConfig,
 	ProviderConfig,
@@ -12,11 +13,27 @@ import type {
 } from "../../src/config.ts";
 import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
 
+// Mirrors src/config.ts's capabilityNames — the server module isn't
+// bundle-safe, so the client keeps its own copy (a test pins parity).
+export const CAPABILITY_NAMES: readonly CapabilityName[] = [
+	"memory",
+	"transcription",
+	"vision",
+	"image",
+	"sandbox",
+	"subagents",
+	"scripting",
+	"delegation",
+	"guest",
+	"reviewer",
+];
+
 // The full operator vocabulary — the fallback when the model is
 // unknown, and the ordering for nearest-rung clamping. Mirrors the
 // server's thinkingLevels.
 export const THINKING_ORDER: readonly ThinkingLevel[] = [
 	"off",
+	"minimal",
 	"low",
 	"medium",
 	"high",
@@ -77,7 +94,7 @@ export interface ProvDraft {
 	baseUrl: string;
 	auth: string;
 }
-export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo";
+export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo" | "onemin";
 // Widened like TrDraft: edge-only fields (rate/voices) and cloud-only
 // fields (model/auth) all ride the draft so a save never drops a hand
 // edit; bodyFromDraft emits each kind's own arm.
@@ -161,6 +178,15 @@ export function switchTranscriptionKind<T extends TrEntryDraft>(
 	// A stashed value is verbatim by construction — it was valid on
 	// that kind when it was stashed — so only carried text needs this.
 	if (back === undefined) {
+		// onemin accepts what other kinds reject: locales like "en-US"
+		// and qwen3's 3-letter codes. Carried text gets downgraded to
+		// the region-stripped ISO code (all cloud kinds take it) or
+		// blanked (nothing valid survives the strip); stashed values
+		// stay verbatim by construction.
+		if (t.kind === "onemin" && kind !== "onemin") {
+			if (/^[a-z]{2}-[A-Z]{2}$/.test(language)) language = language.slice(0, 2);
+			else if (!/^[a-z]{2}$/.test(language)) language = "";
+		}
 		if (
 			(kind === "mimo" && !["auto", "zh", "en"].includes(language)) ||
 			(t.kind === "mimo" && (language === "auto" || (kind === "whistle" && language === "zh")))
@@ -255,6 +281,10 @@ export interface VisDraft {
 	maxTokens: string;
 	mode: "auto" | "always";
 }
+export interface ImgDraft {
+	model: string;
+	size: string;
+}
 export interface MemDraft {
 	baseUrl: string;
 	bankId: string;
@@ -275,11 +305,18 @@ export interface SettingsDraft {
 	titleModel: string;
 	favorites: string[];
 	thinking: ThinkingLevel;
+	telegramEnabled: boolean;
 	telegramModel: string;
 	telegramThinking: ThinkingLevel;
 	tts: TtsDraft | null;
 	transcription: TrDraft | null;
 	vision: VisDraft | null;
+	image: ImgDraft | null;
+	// Desired on/off for every parkable block — the body diffs this
+	// against the loaded state. The four content blocks keep their
+	// "" / object keys; this map only drives `capabilities` on the
+	// wire and the memory/transcription/vision/image restore path.
+	capabilities: Record<CapabilityName, boolean>;
 	search: ChainEntry[] | null;
 	fetch: ChainEntry[] | null;
 	operators: number[];
@@ -299,11 +336,14 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	titleModel: "",
 	favorites: [],
 	thinking: "medium",
+	telegramEnabled: true,
 	telegramModel: "",
 	telegramThinking: "medium",
 	tts: null,
 	transcription: null,
 	vision: null,
+	image: null,
+	capabilities: capabilityFlags(),
 	search: null,
 	fetch: null,
 	operators: [],
@@ -318,11 +358,23 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	memory: null,
 };
 
+// All-off flag map — EMPTY_DRAFT's baseline.
+export function capabilityFlags(on?: readonly string[]): Record<CapabilityName, boolean> {
+	return Object.fromEntries(CAPABILITY_NAMES.map((k) => [k, on?.includes(k) ?? false])) as Record<
+		CapabilityName,
+		boolean
+	>;
+}
+
 let provSeq = 0;
 
 // Optional blocks arrive as their config arm or absent; draft nulls are
-// "off".
-export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: ProvDraft[] } {
+// "off". `caps` is the GET's capability states — absent (tests) infers
+// on/off from the config's own blocks.
+export function draftFromConfig(
+	c: Config,
+	caps?: ConfigResponse["capabilities"],
+): { draft: SettingsDraft; providers: ProvDraft[] } {
 	const widen = (e: { kind: string; auth?: string | undefined }): ChainEntry => ({
 		kind: e.kind,
 		auth: e.auth ?? "",
@@ -332,6 +384,7 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 		titleModel: c.titleModel || "",
 		favorites: (c.favorites || []).slice(),
 		thinking: c.thinking || "medium",
+		telegramEnabled: c.telegram.enabled,
 		telegramModel: c.telegram.model || c.model,
 		telegramThinking: c.telegram.thinking || c.thinking,
 		tts:
@@ -354,6 +407,12 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 					mode: c.vision.mode || "auto",
 				}
 			: null,
+		image: c.image ? { model: c.image.model || "", size: c.image.size || "" } : null,
+		capabilities: capabilityFlags(
+			CAPABILITY_NAMES.filter((k) =>
+				caps !== undefined ? caps[k].state === "on" : c[k] !== undefined,
+			),
+		),
 		search: Array.isArray(c.search) ? c.search.map(widen) : null,
 		fetch: Array.isArray(c.fetch) ? c.fetch.map(widen) : null,
 		operators: [...c.operators],
@@ -414,8 +473,8 @@ export function displayLevel(configured: ThinkingLevel, levels: readonly string[
 }
 
 // Catches what the form can express badly; the server's schema is
-// still the gate. No own-id check — the schema's min(1) on operators
-// covers lockout.
+// still the gate. No own-id check — the schema's conditional floor on
+// operators covers lockout while Telegram is enabled.
 export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string | null {
 	const names = provs.map((p) => p.name.trim());
 	if (names.some((n) => !n)) return "Every provider needs a name.";
@@ -431,12 +490,13 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	// and defaulted server-side. The picker's "not in auth.jsonl" hint
 	// covers the typo case without blocking config-before-key.
 	if (!draft.model) return "Pick an app default model.";
-	if (!draft.telegramModel) return "Pick a Telegram model.";
+	if (draft.telegramEnabled && !draft.telegramModel) return "Pick a Telegram model.";
 	if (draft.tts && draft.tts.kind === "edge" && !draft.tts.voice.trim())
 		return "Text to speech is on — set a voice.";
 	// No transcription secret check: whistle takes none, and a blank cloud
 	// secret means the kind's default record — the server fills it.
 	if (draft.vision && !draft.vision.model.trim()) return "Vision is on — pick a model.";
+	if (draft.image && !draft.image.model.trim()) return "Image generation is on — pick a model.";
 	if (draft.search && !draft.search.length)
 		return "Search is on — add at least one provider, or switch it off.";
 	if (draft.fetch && !draft.fetch.length)
@@ -456,7 +516,8 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	if (draft.publicUrl.trim() && !draft.publicUrl.trim().startsWith("https://")) {
 		return "Public URL must use HTTPS for Telegram Web Apps.";
 	}
-	if (!draft.operators.length) return "Operators must keep at least one Telegram id.";
+	if (draft.telegramEnabled && !draft.operators.length)
+		return "Operators must keep at least one Telegram id while Telegram is enabled.";
 	return null;
 }
 
@@ -468,6 +529,7 @@ export function bodyFromDraft(
 	draft: SettingsDraft,
 	provs: ProvDraft[],
 	authDefaults: ConfigResponse["authDefaults"],
+	loadedCapabilities?: Record<CapabilityName, boolean>,
 ): ConfigPostBody {
 	const providers: Record<string, ProviderConfig> = {};
 	for (const p of provs) {
@@ -493,6 +555,30 @@ export function bodyFromDraft(
 			return { kind: e.kind, auth };
 		});
 	const numOrUndef = (s: string) => (s.trim() ? Number(s.trim()) : undefined);
+	// Parkable blocks: present content is always "on" and sends its
+	// object; null content sends "" (park) unless the flag says "on with
+	// no editable content" — then the key is omitted and the
+	// capabilities diff does the restore.
+	const capEmit = <K extends CapabilityName, T>(
+		k: K,
+		content: T | null,
+		body: (t: T) => unknown,
+	): unknown =>
+		content !== null && content !== undefined
+			? body(content)
+			: ((draft.capabilities as Record<CapabilityName, boolean> | undefined)?.[k] ?? false)
+				? undefined
+				: "";
+	// Only the flips cross the wire — the loaded map is what the GET
+	// reported when this draft started.
+	const capabilities =
+		loadedCapabilities === undefined
+			? undefined
+			: (Object.fromEntries(
+					CAPABILITY_NAMES.filter((k) => draft.capabilities[k] !== loadedCapabilities[k]).map(
+						(k) => [k, draft.capabilities[k]],
+					),
+				) as Partial<Record<CapabilityName, boolean>>);
 	return {
 		providers,
 		model: draft.model,
@@ -517,21 +603,36 @@ export function bodyFromDraft(
 							...(draft.tts.auth.trim() ? { auth: draft.tts.auth.trim() } : {}),
 							...(draft.tts.voice.trim() ? { voice: draft.tts.voice.trim() } : {}),
 						},
-		transcription: draft.transcription === null ? "" : transcriptionBody(draft.transcription),
-		vision:
-			draft.vision === null
-				? ""
-				: {
-						model: draft.vision.model.trim(),
-						maxTokens: Number(draft.vision.maxTokens) || 2000,
-						mode: draft.vision.mode,
-					},
+		transcription: capEmit("transcription", draft.transcription, transcriptionBody) as
+			| ""
+			| Exclude<ConfigPostBody["transcription"], undefined>,
+		vision: capEmit("vision", draft.vision, (v) => ({
+			model: v.model.trim(),
+			maxTokens: Number(v.maxTokens) || 2000,
+			mode: v.mode,
+		})) as ConfigPostBody["vision"],
+		image: capEmit("image", draft.image, (v) => ({
+			model: v.model.trim(),
+			...(v.size.trim() ? { size: v.size.trim() } : {}),
+		})) as ConfigPostBody["image"],
 		search: draft.search === null ? "" : chainOut(draft.search, SEARCH_META),
-		fetch: draft.fetch === null ? "" : chainOut(draft.fetch, FETCH_META),
+		// A chain of just the built-in (or nothing) is "no custom chain" —
+		// "" keeps the saved file free of a degenerate entry.
+		fetch:
+			draft.fetch === null ||
+			draft.fetch.length === 0 ||
+			(draft.fetch.length === 1 &&
+				draft.fetch[0]!.kind === "local" &&
+				draft.fetch[0]!.auth.trim() === "")
+				? ""
+				: chainOut(draft.fetch, FETCH_META),
 		operators: [...draft.operators],
 		allowedUsers: [...draft.allowedUsers],
 		telegram: {
-			model: draft.telegramModel,
+			enabled: draft.telegramEnabled,
+			// Disabled keeps the saved identity fields legible for a later
+			// re-enable; a blank model is omitted so the merge preserves it.
+			...(draft.telegramModel.trim() ? { model: draft.telegramModel.trim() } : {}),
 			thinking: draft.telegramThinking,
 			// "" clears — the server treats an absent key as "keep".
 			apiRoot: draft.apiRoot.trim(),
@@ -542,18 +643,16 @@ export function bodyFromDraft(
 		},
 		publicUrl: draft.publicUrl.trim(),
 		http: { port: Number(draft.port) },
-		memory:
-			draft.memory === null
-				? ""
-				: {
-						...draft.memory.policy,
-						baseUrl: draft.memory.baseUrl.trim(),
-						bankId: draft.memory.bankId.trim(),
-						auth: draft.memory.auth.trim() || undefined,
-						budget: (draft.memory.budget || "mid") as "low" | "mid" | "high",
-						maxTokens: numOrUndef(draft.memory.tokens),
-						recallTimeoutMs: numOrUndef(draft.memory.timeout),
-					},
+		memory: capEmit("memory", draft.memory, (m) => ({
+			...m.policy,
+			baseUrl: m.baseUrl.trim(),
+			bankId: m.bankId.trim(),
+			auth: m.auth.trim() || undefined,
+			budget: (m.budget || "mid") as "low" | "mid" | "high",
+			maxTokens: numOrUndef(m.tokens),
+			recallTimeoutMs: numOrUndef(m.timeout),
+		})) as ConfigPostBody["memory"],
 		logLevel: draft.logLevel,
+		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
 	};
 }

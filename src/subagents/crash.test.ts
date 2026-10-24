@@ -1,4 +1,3 @@
-
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

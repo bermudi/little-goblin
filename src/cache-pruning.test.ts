@@ -10,9 +10,9 @@ import {
 	cacheRouteKey,
 	hashCacheSettings,
 	observedModel,
-	thinkingOptions,
 	turnCallSettings,
 } from "./agent/providers.ts";
+import { thinkingOptions } from "./agent/thinking.ts";
 import { openCacheObservation, type CacheObservation } from "./cache-observation.ts";
 import { openCachePruning, pruningReplacement } from "./cache-pruning.ts";
 import {
@@ -47,7 +47,7 @@ function baseConfig(cachePruning?: CachePruningPolicy): Config {
 		thinking: "medium",
 		operators: [1],
 		allowedUsers: [1],
-		telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+		telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 		http: { port: 8787 },
 		logLevel: "info",
 		...(cachePruning === undefined ? {} : { cachePruning }),
@@ -296,6 +296,63 @@ describe("openCachePruning", () => {
 				.split("\n")
 				.filter((l) => l.includes("cache policy contradicted"));
 			expect(lines).toHaveLength(1);
+			f.store.close();
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("a fresh contradiction under a revised profile is a new finding — the notice repeats", () => {
+		const dir = tmpDir("goblin-prune-log-");
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const f = fixture();
+			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+			f.advance(1_000);
+			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+				cacheRead: 0,
+			});
+			f.advance(IDLE_AFTER + 1);
+			expect(f.pruning.pruneConversation(f.conv.id)).toEqual({
+				pruned: 0,
+				reason: "drift-contradiction",
+			});
+			// The operator revises the profile — a reviewedAt bump is the
+			// documented lift, and its reviewedAt puts the old receipts
+			// behind it.
+			const revised = {
+				...f.cfg,
+				cachePruning: policyFor(f.cfg, { profile: { reviewedAt: "2026-10-21T00:00:00.000Z" } }),
+			};
+			const lifted = openCachePruning({
+				store: f.store,
+				observation: f.observation,
+				getConfig: () => revised,
+				now: f.now,
+			});
+			// The lift lets a commit land under the revised profile.
+			f.set(T0 + 2 * 86_400_000);
+			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+			f.advance(IDLE_AFTER + 1);
+			expect(lifted.pruneConversation(f.conv.id)?.pruned).toBe(1);
+			// A fresh zero-read inside the revised profile's window
+			// contradicts it — a new finding, so the warn must repeat
+			// despite the process-lifetime dedupe.
+			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash);
+			f.advance(1_000);
+			completedCall(f.observation, f.conv.id, f.profile.routeKey, f.profile.settingsHash, {
+				cacheRead: 0,
+			});
+			f.advance(IDLE_AFTER + 1);
+			expect(lifted.pruneConversation(f.conv.id)).toEqual({
+				pruned: 0,
+				reason: "drift-contradiction",
+			});
+			const lines = readFileSync(logPath, "utf8")
+				.split("\n")
+				.filter((l) => l.includes("cache policy contradicted"));
+			expect(lines).toHaveLength(2);
 			f.store.close();
 		} finally {
 			setLogFile(null);

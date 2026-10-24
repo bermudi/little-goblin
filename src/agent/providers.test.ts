@@ -1,7 +1,6 @@
-// Send glm-5.3 an effort it doesn't list and the API silently upgrades
-// to max (docs.z.ai/guides) — the operator vocabulary must land on
-// knobs each provider family has. thinkingLevelsFor is the same table
-// read the other way: what the app may offer.
+// The model, the media it carries, and the receipts a call leaves.
+// The thinking vocabulary and the ladder each model may be offered
+// live in thinking.test.ts.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -14,14 +13,16 @@ import { setLogFile } from "../log.ts";
 import { tmpDir } from "../testkit.ts";
 import { APICallError } from "ai";
 import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
-import { _primeOpenRouterCatalog } from "./models-dev.ts";
-import {
-	cacheRouteFor,
-	carriesMedia,
-	observedModel,
-	thinkingLevelsFor,
-	thinkingOptions,
-} from "./providers.ts";
+import type { AuthStore } from "../auth.ts";
+import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
+
+// resolveModel resolves auth through a literal-key fixture — no records,
+// no commands, nothing secret.
+const fixtureAuth = (key: string): AuthStore => ({
+	resolve: async () => key,
+	has: () => true,
+	names: () => [],
+});
 
 const cfg: Config = {
 	providers: {
@@ -33,6 +34,13 @@ const cfg: Config = {
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
 		// Dotted name — the shape the SDK's first-segment lookup rule exists for.
 		"z.ai": { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
+		// The 1min.AI relay — text-only for every model it lists
+		// (docs.1min.ai/docs/api/openai-compatible).
+		onemin: {
+			kind: "openai-compatible",
+			baseUrl: "https://api.1min.ai/openai/v1",
+			auth: "onemin",
+		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
 		codex: { kind: "codex" },
 	},
@@ -42,282 +50,12 @@ const cfg: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],
-	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
+	telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
 
 const FULL = ["off", "low", "medium", "high", "xhigh", "max"] as const;
-
-describe("thinkingLevelsFor — the offered set", () => {
-	test("glm-5.3+ has no off — thinking is forced", () => {
-		expect(thinkingLevelsFor("openai-compatible", "glm-5.3-flash")).toEqual(["low", "high", "max"]);
-	});
-	test("glm-5.2 toggles and tops out at max", () => {
-		expect(thinkingLevelsFor("openai-compatible", "glm-5.2")).toEqual(["off", "high", "max"]);
-	});
-	test("older glm is a bare toggle", () => {
-		expect(thinkingLevelsFor("openai-compatible", "glm-4.6")).toEqual(["off", "low"]);
-	});
-	test("gpt ladders: no off; gpt-6 adds max", () => {
-		expect(thinkingLevelsFor("codex", "gpt-5.3-codex")).toEqual(["low", "medium", "high", "xhigh"]);
-		expect(thinkingLevelsFor("codex", "gpt-6-astra")).toEqual([
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		]);
-	});
-	test("family ladders follow the bare model id under any kind", () => {
-		// A glm-5.3 is forced-thinking wherever it's served — even via a
-		// relay that nests a vendor prefix or an unknown provider kind.
-		expect(thinkingLevelsFor("openrouter", "z-ai/glm-5.3")).toEqual(["low", "high", "max"]);
-		expect(thinkingLevelsFor("openai-compatible", "gpt-6-astra")).toEqual([
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		]);
-		expect(thinkingLevelsFor("", "glm-5.3")).toEqual(["low", "high", "max"]);
-	});
-	test("openrouter falls to the per-route catalog", () => {
-		_primeOpenRouterCatalog(
-			new Map([
-				["effort/model", new Set(["reasoning_effort", "tools"])],
-				["toggle/model", new Set(["reasoning", "tools"])],
-				["plain/model", new Set(["tools"])],
-			]),
-		);
-		expect(thinkingLevelsFor("openrouter", "effort/model")).toEqual(FULL);
-		expect(thinkingLevelsFor("openrouter", "toggle/model")).toEqual(["off", "low"]);
-		expect(thinkingLevelsFor("openrouter", "plain/model")).toEqual(["off"]);
-		// Unlisted → unknown, not unsupported: full vocabulary, fail loud.
-		expect(thinkingLevelsFor("openrouter", "unknown/model")).toEqual(FULL);
-		_primeOpenRouterCatalog(null);
-	});
-	test("everything else gets the full vocabulary", () => {
-		expect(thinkingLevelsFor("openai-compatible", "whatever-9")).toEqual(FULL);
-		expect(thinkingLevelsFor("openrouter", "x/y")).toEqual(FULL);
-	});
-});
-
-describe("thinkingOptions — glm-5.3+ (forced thinking, effort low|high|max)", () => {
-	test("off and medium clamp to real rungs; low/high/max pass through", () => {
-		const eff = (l: "off" | "low" | "medium" | "high" | "xhigh" | "max") =>
-			thinkingOptions(cfg, "zai/glm-5.3-flash", l);
-		expect(eff("off")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "low" },
-		});
-		expect(eff("low")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "low" },
-		});
-		expect(eff("medium")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "high" },
-		});
-		expect(eff("high")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "high" },
-		});
-		expect(eff("xhigh")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "max" },
-		});
-		expect(eff("max")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "max" },
-		});
-	});
-});
-
-describe("thinkingOptions — glm-5.2 (toggle + effort high|max)", () => {
-	// "other" serves real generations — on z.ai's coding-plan URL these
-	// ids would alias to 5.3-gen.
-	test("off sends the disabled toggle, never an effort", () => {
-		expect(thinkingOptions(cfg, "other/glm-5.2", "off")).toEqual({
-			other: { thinking: { type: "disabled" } },
-		});
-	});
-	test("low collapses up to high — GLM's own collapse direction", () => {
-		expect(thinkingOptions(cfg, "other/glm-5.2", "low")).toEqual({
-			other: { thinking: { type: "enabled" }, reasoningEffort: "high" },
-		});
-	});
-	test("max reaches the top rung", () => {
-		expect(thinkingOptions(cfg, "other/glm-5.2", "max")).toEqual({
-			other: { thinking: { type: "enabled" }, reasoningEffort: "max" },
-		});
-	});
-});
-
-describe("thinkingOptions — older glm (toggle only)", () => {
-	test("off disables; anything else enables with no effort key", () => {
-		expect(thinkingOptions(cfg, "other/glm-4.6", "off")).toEqual({
-			other: { thinking: { type: "disabled" } },
-		});
-		expect(thinkingOptions(cfg, "other/glm-4.6", "high")).toEqual({
-			other: { thinking: { type: "enabled" } },
-		});
-	});
-});
-
-describe("z.ai coding plan — older glm ids alias to 5.3-gen", () => {
-	// docs.z.ai/devpack: the plan only serves glm-5.3/5.3-flash and
-	// routes glm-5.2/5.1→5.3, glm-4.7→5.3-flash — an "older" id on that
-	// endpoint runs forced thinking, so the wire map follows the
-	// endpoint, not the id. cfg.zai's baseUrl is the coding-plan URL.
-	test("offered set is the 5.3 ladder for any glm id", () => {
-		expect(
-			thinkingLevelsFor("openai-compatible", "glm-4.6", "https://api.z.ai/api/coding/paas/v4"),
-		).toEqual(["low", "high", "max"]);
-	});
-	test("the general paas endpoint still serves real generations", () => {
-		expect(
-			thinkingLevelsFor("openai-compatible", "glm-4.6", "https://api.z.ai/api/paas/v4"),
-		).toEqual(["off", "low"]);
-	});
-	test("wire mapping follows the routed model", () => {
-		expect(thinkingOptions(cfg, "zai/glm-4.6", "medium")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "high" },
-		});
-		expect(thinkingOptions(cfg, "zai/glm-4.6", "off")).toEqual({
-			zai: { thinking: { type: "enabled" }, reasoningEffort: "low" },
-		});
-	});
-});
-
-describe("thinkingOptions — codex and gpt (reasoning_effort ladder)", () => {
-	test("off lands on the floor; real rungs pass through", () => {
-		expect(thinkingOptions(cfg, "codex/gpt-6-astra", "off")).toEqual({
-			codex: { reasoningEffort: "low" },
-		});
-		expect(thinkingOptions(cfg, "codex/gpt-6-astra", "xhigh")).toEqual({
-			codex: { reasoningEffort: "xhigh" },
-		});
-		expect(thinkingOptions(cfg, "codex/gpt-6-astra", "max")).toEqual({
-			codex: { reasoningEffort: "max" },
-		});
-	});
-	test("a stored max on a 5.x model clamps to its top rung", () => {
-		expect(thinkingOptions(cfg, "codex/gpt-5.3-codex", "max")).toEqual({
-			codex: { reasoningEffort: "xhigh" },
-		});
-	});
-	test("gpt via an openai-compatible relay clamps the same way", () => {
-		expect(thinkingOptions(cfg, "other/gpt-6-astra", "off")).toEqual({
-			other: { reasoningEffort: "low" },
-		});
-		expect(thinkingOptions(cfg, "other/gpt-6-astra", "max")).toEqual({
-			other: { reasoningEffort: "max" },
-		});
-	});
-});
-
-describe("thinkingOptions — provider options key", () => {
-	// openai-compatible resolves options under name.split(".")[0] —
-	// keying under the full name silently drops them.
-	test("a dotted provider name keys options under its first segment", () => {
-		expect(thinkingOptions(cfg, "z.ai/glm-5.2", "high")).toEqual({
-			z: { thinking: { type: "enabled" }, reasoningEffort: "high" },
-		});
-		expect(thinkingOptions(cfg, "z.ai/gpt-6-astra", "off")).toEqual({
-			z: { reasoningEffort: "low" },
-		});
-		expect(thinkingOptions(cfg, "z.ai/whatever-9", "medium")).toEqual({
-			z: { reasoningEffort: "medium" },
-		});
-	});
-});
-
-describe("thinkingOptions — non-glm openai-compatible and openrouter", () => {
-	test("generic endpoint keeps the reasoning_effort passthrough", () => {
-		expect(thinkingOptions(cfg, "other/whatever-9", "medium")).toEqual({
-			other: { reasoningEffort: "medium" },
-		});
-		expect(thinkingOptions(cfg, "other/whatever-9", "off")).toEqual({
-			other: { reasoningEffort: "low" },
-		});
-	});
-	test("openrouter: off is enabled:false, levels pass through", () => {
-		expect(thinkingOptions(cfg, "openrouter/x/y", "off")).toEqual({
-			openrouter: { reasoning: { enabled: false, exclude: true } },
-		});
-		expect(thinkingOptions(cfg, "openrouter/x/y", "high")).toEqual({
-			openrouter: { reasoning: { effort: "high" } },
-		});
-	});
-	test("openrouter per-route: toggle-only enables, non-reasoners send nothing", () => {
-		_primeOpenRouterCatalog(
-			new Map([
-				["toggle/model", new Set(["reasoning"])],
-				["plain/model", new Set(["tools"])],
-			]),
-		);
-		expect(thinkingOptions(cfg, "openrouter/toggle/model", "high")).toEqual({
-			openrouter: { reasoning: { enabled: true } },
-		});
-		expect(thinkingOptions(cfg, "openrouter/plain/model", "high")).toBeUndefined();
-		// "off" is still enabled:false even on a non-reasoner — trivially true.
-		expect(thinkingOptions(cfg, "openrouter/plain/model", "off")).toEqual({
-			openrouter: { reasoning: { enabled: false, exclude: true } },
-		});
-		_primeOpenRouterCatalog(null);
-	});
-});
-
-describe("responses kind — the /api/v1 door", () => {
-	test("glm on the coding endpoint is forced-thinking, whichever door", () => {
-		expect(thinkingLevelsFor("responses", "glm-5.3-flash", "https://api.z.ai/api/v1")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
-		// The endpoint aliases older glm ids to the 5.3 generation it serves.
-		expect(thinkingLevelsFor("responses", "glm-4.6", "https://api.z.ai/api/v1")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
-	});
-
-	test("the /api/v1 door matches with or without a trailing slash, and only that path", () => {
-		// glm-5.2's own ladder is off|high|max — low|high|max proves the
-		// coding-endpoint arm fired, whichever way the base URL is spelled.
-		expect(thinkingLevelsFor("responses", "glm-5.2", "https://api.z.ai/api/v1/")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
-		expect(thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/v1/")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
-		// The general paas path is not the coding door — 5.2 keeps its ladder.
-		expect(
-			thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/paas/v4"),
-		).toEqual(["off", "high", "max"]);
-	});
-
-	test("glm thinking maps to the OpenAI effort knob (probe: low→7, high→37 reasoning tokens)", () => {
-		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "off")).toEqual({
-			zai_responses: { reasoningEffort: "low" },
-		});
-		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "medium")).toEqual({
-			zai_responses: { reasoningEffort: "high" },
-		});
-		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "xhigh")).toEqual({
-			zai_responses: { reasoningEffort: "max" },
-		});
-	});
-
-	test("non-glm models pass the level through; off means the floor", () => {
-		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "high")).toEqual({
-			relay_responses: { reasoningEffort: "high" },
-		});
-		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "off")).toEqual({
-			relay_responses: { reasoningEffort: "low" },
-		});
-	});
-});
 
 describe("carriesMedia — what the pipe can deliver, per position", () => {
 	test("responses carries probe-verified types only: images and PDFs, in both positions", () => {
@@ -357,6 +95,90 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("mystery", "image/jpeg")).toBe(true);
 		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
+	});
+});
+
+describe("carriesMedia — 1min's relay is text-only", () => {
+	// "All models on this endpoint accept text only, including models
+	// with vl in their names" — the pipe gate must override the kind's
+	// shape and any catalog truth about the model id (models.dev lists
+	// qwen3-vl-plus under alibaba as image-capable; through this relay
+	// an image part would be a rejected field).
+	const base = "https://api.1min.ai/openai/v1";
+
+	test("no media rides the pipe in any position", () => {
+		expect(carriesMedia("openai-compatible", "image/jpeg", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "image/png", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "application/pdf", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "video/mp4", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "audio/mpeg", "user", base)).toBe(false);
+		expect(carriesMedia("openai-compatible", "image/png", "tool-result", base)).toBe(false);
+	});
+
+	test("the same kind off the relay keeps its shape", () => {
+		expect(carriesMedia("openai-compatible", "image/png")).toBe(true);
+		expect(carriesMedia("openai-compatible", "application/pdf")).toBe(true);
+	});
+});
+
+describe("resolveModel — 1min streams ask for usage (includeUsage)", () => {
+	// The wire pin: what the provider the config builds actually POSTs.
+	// 1min reports stream usage only under stream_options.include_usage
+	// (docs.1min.ai/docs/api/openai-compatible → Streaming, errors, and
+	// retries); a fetch stub captures the request body and serves one
+	// complete SSE exchange so doStream settles.
+	async function captureWire(providerName: string): Promise<{
+		url: string;
+		authorization: unknown;
+		body: Record<string, unknown>;
+	}> {
+		const model = await resolveModel(cfg, fixtureAuth("fixture-key"), `${providerName}/gpt-5.4`);
+		let url = "";
+		let authorization: unknown = null;
+		let body: Record<string, unknown> = {};
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: unknown, init?: { headers?: unknown }) => {
+			url = String(input);
+			const headers = init?.headers;
+			// The SDK passes a plain record here; grab the bearer line only.
+			if (headers && typeof headers === "object" && "authorization" in headers) {
+				authorization = headers.authorization;
+			}
+			body = JSON.parse(String(init && "body" in init ? init.body : "{}"));
+			return new Response(
+				'data: {"id":"1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+					'data: {"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+					"data: [DONE]\n\n",
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		}) as typeof fetch;
+		try {
+			const stream = await (model as unknown as LanguageModelV4).doStream({
+				prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+			});
+			const reader = stream.stream.getReader();
+			for (;;) {
+				const { done } = await reader.read();
+				if (done) break;
+			}
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+		return { url, authorization, body };
+	}
+
+	test("a 1min provider POSTs chat/completions with stream_options.include_usage", async () => {
+		const wire = await captureWire("onemin");
+		expect(wire.url).toBe("https://api.1min.ai/openai/v1/chat/completions");
+		expect(wire.authorization).toBe("Bearer fixture-key");
+		expect(wire.body.stream).toBe(true);
+		expect(wire.body.stream_options).toEqual({ include_usage: true });
+	});
+
+	test("the same kind off the relay sends no stream_options at all", async () => {
+		const wire = await captureWire("other");
+		expect(wire.url).toBe("https://example.com/v1/chat/completions");
+		expect("stream_options" in wire.body).toBe(false);
 	});
 });
 

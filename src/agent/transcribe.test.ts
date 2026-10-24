@@ -364,10 +364,7 @@ describe("transcribeChain", () => {
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
 		await expect(
-			transcribeChain(
-				[idEngine("groq/x", () => Promise.reject(new Error("HTTP 413")))],
-				file(f),
-			),
+			transcribeChain([idEngine("groq/x", () => Promise.reject(new Error("HTTP 413")))], file(f)),
 		).rejects.toThrow("HTTP 413");
 	});
 

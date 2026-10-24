@@ -533,8 +533,10 @@ function capacity(path: string, id: string, scope: string): HealthResult {
 
 // Feature tables join the expectation only while their config block
 // exists — delegations needs `delegation`, memory_outage needs
-// `memory`. Lazy tables (forget_listings, tg_dm_navigation*) are
-// deliberately absent: they appear on first use, not at boot.
+// `memory`, and the telegram channel tables need the boot-pinned
+// `telegram.enabled` (startBot, which creates them, is gated on it).
+// Lazy tables (forget_listings, tg_dm_navigation*) are deliberately
+// absent: they appear on first use, not at boot.
 function expectedTables(config: Config | undefined): string[] {
 	const boot = [
 		"projects",
@@ -552,14 +554,16 @@ function expectedTables(config: Config | undefined): string[] {
 		"mail_outbox",
 		"sandboxes",
 		"tg_pings",
-		"tg_inbox",
-		"tg_inbox_archives",
-		"guest_dedup",
 		"model_cache_calls",
 		"event_projections",
+		"app_push_subscriptions",
+		"app_push_deliveries",
 		"turn_runs",
 		"turn_tool_calls",
+		"context_windows",
+		"context_window_state",
 	];
+	if (config?.telegram.enabled) boot.push("tg_inbox", "tg_inbox_archives", "guest_dedup");
 	if (config?.delegation !== undefined) boot.push("delegations");
 	if (config?.memory !== undefined) boot.push("memory_outage");
 	return boot;
@@ -1034,23 +1038,25 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 	let embedding: { address: string; model: string } | undefined;
 	try {
 		const cfg = join(homedir(), ".config/goblin-memory");
-		const unit = readBounded(
-			join(homedir(), ".config/containers/systemd/goblin-memory-api.container"),
-			64 * 1024,
-		).text;
+		const unitsDir = join(homedir(), ".config/containers/systemd");
+		const unit = readBounded(join(unitsDir, "goblin-memory-api.container"), 64 * 1024).text;
+		const pod = readBounded(join(unitsDir, "goblin-memory.pod"), 64 * 1024).text;
 		if (
 			!/^ContainerName=goblin-memory-api$/m.test(unit) ||
-			!/^PublishPort=127\.0\.0\.1:8888:8888$/m.test(unit) ||
-			!/^EnvironmentFile=%h\/\.config\/goblin-memory\/hindsight\.env$/m.test(unit)
+			!/^Pod=goblin-memory\.pod$/m.test(unit) ||
+			!/^EnvironmentFile=%h\/\.config\/goblin-memory\/hindsight\.env$/m.test(unit) ||
+			!/^PodName=goblin-memory$/m.test(pod) ||
+			!/^PublishPort=127\.0\.0\.1:8888:8888$/m.test(pod)
 		)
 			throw new ProbeError("unverified-installed-API-association");
-		// Only running flag, published bindings and mount sources are requested.
+		// Only running flag and mount sources are requested — in a pod the
+		// port lives on the infra container, never on the API itself.
 		const raw = await command(
 			[
 				"podman",
 				"inspect",
 				"--format",
-				'{"running":{{json .State.Running}},"ports":{{json .NetworkSettings.Ports}},"mounts":{{json .Mounts}}}',
+				'{"running":{{json .State.Running}},"mounts":{{json .Mounts}}}',
 				"goblin-memory-api",
 			],
 			2000,
@@ -1065,19 +1071,12 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 		const meta = z
 			.object({
 				running: z.boolean(),
-				ports: z.record(
-					z.string(),
-					z.array(z.object({ HostIp: z.string(), HostPort: z.string() })).nullable(),
-				),
 				mounts: z.array(z.object({ Source: z.string(), Destination: z.string() })).max(64),
 			})
 			.safeParse(parsed);
 		if (
 			!meta.success ||
 			!meta.data.running ||
-			!meta.data.ports["8888/tcp"]?.some(
-				(port) => port.HostIp === "127.0.0.1" && port.HostPort === "8888",
-			) ||
 			!meta.data.mounts.some(
 				(mount) =>
 					mount.Source === join(cfg, "start.py") &&
@@ -1085,6 +1084,41 @@ async function localMemory(config: Config, probe: ProbeContext = {}): Promise<He
 			)
 		)
 			throw new ProbeError("unverified-running-API-association");
+		// The published binding belongs to the pod's infra container; the
+		// pod roster proves api+db share its loopback.
+		const podRaw = await command(
+			["podman", "pod", "inspect", "--format", "{{json .}}", "goblin-memory"],
+			2000,
+			probe,
+		);
+		let podParsed: unknown;
+		try {
+			podParsed = JSON.parse(podRaw);
+		} catch {
+			throw new ProbeError("invalid-pod-metadata");
+		}
+		const podMeta = z
+			.object({
+				InfraConfig: z
+					.object({
+						PortBindings: z
+							.record(z.string(), z.array(z.object({ HostIp: z.string(), HostPort: z.string() })))
+							.nullish(),
+					})
+					.nullish(),
+				Containers: z.array(z.object({ Name: z.string() })).nullish(),
+			})
+			.safeParse(podParsed);
+		const podInfo = podMeta.success ? podMeta.data : undefined;
+		const roster = new Set((podInfo?.Containers ?? []).map((c) => c.Name));
+		if (
+			!podInfo?.InfraConfig?.PortBindings?.["8888/tcp"]?.some(
+				(port) => port.HostIp === "127.0.0.1" && port.HostPort === "8888",
+			) ||
+			!roster.has("goblin-memory-api") ||
+			!roster.has("goblin-memory-db")
+		)
+			throw new ProbeError("unverified-pod-API-association");
 		const api = narrowEnv(join(cfg, "hindsight.env"), [
 			"HINDSIGHT_API_EMBEDDINGS_PROVIDER",
 			"HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",

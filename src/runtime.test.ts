@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -21,6 +21,10 @@ import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
+import { openWindowCapture } from "./window-capture.ts";
+import type { HindsightClient } from "./memory/hindsight.ts";
+import { forgetDocument } from "./memory/forget.ts";
+import { memoryConfigSchema } from "./config.ts";
 import {
 	Runtime,
 	type ModelStep,
@@ -63,7 +67,18 @@ function rig(
 		step?: Partial<Omit<ModelStep, "model">>;
 		buildStep?: RuntimeDeps["buildStep"];
 		tools?: ToolSet;
-		deps?: Partial<Pick<RuntimeDeps, "compaction" | "captureConversation" | "memory">>;
+		makeTools?: RuntimeDeps["makeTools"];
+		deps?: Partial<
+			Pick<
+				RuntimeDeps,
+				| "compaction"
+				| "captureConversation"
+				| "memory"
+				| "turnJournal"
+				| "recordWindow"
+				| "windowVersion"
+			>
+		>;
 		addr?: Parameters<Store["resolve"]>[0];
 		store?: Store;
 	} = {},
@@ -79,7 +94,7 @@ function rig(
 				system: "test",
 				...opts.step,
 			})),
-		makeTools: () => opts.tools ?? {},
+		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...opts.deps,
 	});
 	return { store, conv, runtime };
@@ -94,6 +109,323 @@ function submit(r: Rig, text: string, sink?: TurnSink): TurnSink {
 }
 
 const drain = (r: Rig) => waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+
+describe("skill body ownership across turns", () => {
+	test("the owning turn injects the body; a later turn sees only the marker", async () => {
+		const home = useHome("goblin-rt-skill-");
+		mkdirSync(join(home, "workspace/skills/rtdemo"), { recursive: true });
+		const skillPath = join(home, "workspace/skills/rtdemo/SKILL.md");
+		writeFileSync(skillPath, "---\nname: rtdemo\ndescription: d\n---\nRT-BODY-AAA");
+		const { model, prompts } = recordingModel(["ok"], 1);
+		const store = openStore(tmpDb("goblin-rt-j-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({ model, store, deps: { turnJournal: journal } });
+		try {
+			// Caller contract: append the durable user event, then submit
+			// with the append's seq.
+			const skill = userMessage([
+				{ type: "data-skill", data: { name: "rtdemo" } },
+				{ type: "text", text: "use it" },
+			] as never);
+			const firstSeq = r.store.append(r.conv.id, [skill])[0]!;
+			r.runtime.submitPersisted(r.conv, skill, new HeadlessSink(), firstSeq);
+			await drain(r);
+			expect(prompts[0]).toContain("RT-BODY-AAA");
+
+			// Explicit retry of that same input re-owns it — and now reads
+			// the EDITED body.
+			writeFileSync(skillPath, "---\nname: rtdemo\ndescription: d\n---\nRT-BODY-BBB");
+			r.runtime.submitPersisted(r.conv, skill, new HeadlessSink(), firstSeq);
+			await drain(r);
+			expect(prompts[1]).toContain("RT-BODY-BBB");
+
+			// An ordinary input reusing the skill message's id: ownership
+			// rides the durable seq, so the old invocation stays a marker.
+			const ordinary = {
+				id: skill.id,
+				role: "user",
+				parts: [{ type: "text", text: "just text" }],
+			} as unknown as UIMessage;
+			r.runtime.submit(r.conv, ordinary, new HeadlessSink());
+			await drain(r);
+			const secondSeq = r.store.lastUserSeq(r.conv.id)!;
+			expect(secondSeq).not.toBe(firstSeq);
+			expect(prompts[2]).toContain("[skill: rtdemo]");
+			expect(prompts[2]).not.toContain("RT-BODY-AAA");
+			expect(prompts[2]).not.toContain("RT-BODY-BBB");
+
+			const row = r.store.db
+				.query<{ run_id: string }, [number]>(
+					"SELECT run_id FROM turn_runs WHERE anchor_seq = ?",
+				)
+				.get(secondSeq);
+			expect(row).not.toBeNull();
+			expect(journal.get(row!.run_id)!.ownedInputSeqs).toEqual([secondSeq]);
+			expect(journal.get(row!.run_id)!.ownedInputSeqs).not.toContain(firstSeq);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a folded steer owns only its own durable seq — same message id, no history bleed", async () => {
+		const home = useHome("goblin-rt-steer-");
+		mkdirSync(join(home, "workspace/skills/rtdemo"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace/skills/rtdemo/SKILL.md"),
+			"---\nname: rtdemo\ndescription: d\n---\nSTEER-SKILL-UNIQUE",
+		);
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const probe = tool({
+			description: "probe",
+			inputSchema: z.object({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return "probe-result";
+			},
+		});
+		const { model, streamCalls } = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+			textParts("next"),
+		]);
+		const prompt = (i: number): string => JSON.stringify(streamCalls[i]!.prompt);
+		const store = openStore(tmpDb("goblin-rt-sj-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({ model, store, tools: { probe }, deps: { turnJournal: journal } });
+		try {
+			// A historical invocation — the SAME app id as the steer will
+			// carry, but a different durable seq.
+			const historical: UIMessage = {
+				id: "reused",
+				role: "user",
+				parts: [
+					{ type: "data-skill", data: { name: "rtdemo" } },
+					{ type: "text", text: "old invoke" },
+				],
+			} as UIMessage;
+			r.store.append(r.conv.id, [historical]);
+			const historicalSeq = r.store.lastUserSeq(r.conv.id)!;
+			r.store.append(
+				r.conv.id,
+				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as UIMessage],
+				{ anchorSeq: historicalSeq },
+			);
+			const head = new RecordingSink();
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "head" }]), head);
+			const headSeq = r.store.lastUserSeq(r.conv.id)!;
+			await entered.promise;
+			const steer = new RecordingSink();
+			r.runtime.submit(
+				r.conv,
+				{
+					id: "reused",
+					role: "user",
+					parts: [
+						{ type: "data-skill", data: { name: "rtdemo" } },
+						{ type: "text", text: "steered invoke" },
+					],
+				} as UIMessage,
+				steer,
+			);
+			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
+			release.resolve();
+			await Promise.all([head.done, steer.done]);
+			await drain(r);
+			// Step 1's prompt: the historical skill is a marker only —
+			// a duplicate id cannot re-own it.
+			expect(prompt(0)).toContain("[skill: rtdemo]");
+			expect(prompt(0)).not.toContain("STEER-SKILL-UNIQUE");
+			expect(r.store.history(r.conv.id)[0]!.id).toBe("reused");
+			expect(historicalSeq).not.toBe(steerSeq);
+			// Step 2 folded the steer: its body rides THIS owning turn — exactly once.
+			expect(prompt(1).split("STEER-SKILL-UNIQUE").length).toBe(2);
+			expect(prompt(1)).toContain("steered invoke");
+			const run = r.store.db
+				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
+				.all();
+			expect(run).toHaveLength(1);
+			expect(journal.get(run[0]!.run_id)!.ownedInputSeqs).toEqual([headSeq, steerSeq]);
+			expect(journal.get(run[0]!.run_id)!.steerMark).toBe(steerSeq);
+			// A later ordinary turn: marker only, body never re-injected.
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "later" }]), new HeadlessSink());
+			await drain(r);
+			expect(prompt(2)).toContain("[skill: rtdemo]");
+			expect(prompt(2)).not.toContain("STEER-SKILL-UNIQUE");
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+	test("a folded steer becomes the durable source; a still-queued input never does", async () => {
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const gate = tool({
+			description: "held",
+			inputSchema: z.object({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return "done";
+			},
+		});
+		const edge = scriptedEdge([
+			[toolCallPart("c1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("done"),
+			textParts("queued answer"),
+		]);
+		const store = openStore(tmpDb("goblin-rt-src-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({
+			model: edge.model,
+			store,
+			tools: { probe: gate },
+			deps: { turnJournal: journal },
+		});
+		try {
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "head" }]), new HeadlessSink());
+			const headSeq = r.store.lastUserSeq(r.conv.id)!;
+			await entered.promise;
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "steer" }]), new HeadlessSink());
+			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
+			const queued = new RecordingSink();
+			r.runtime.submit(r.conv, userMessage([{ type: "text", text: "queued" }]), queued);
+			const queuedSeq = r.store.lastUserSeq(r.conv.id)!;
+			release.resolve();
+			await drain(r);
+			const runs = r.store.db
+				.query<{ run_id: string; source_input_seq: number | null }, []>(
+					"SELECT run_id, source_input_seq FROM turn_runs ORDER BY rowid",
+				)
+				.all();
+			expect(runs).toHaveLength(2);
+			expect(runs[0]!.source_input_seq).toBe(steerSeq);
+			expect(runs[0]!.source_input_seq).not.toBe(headSeq);
+			expect(runs[0]!.source_input_seq).not.toBe(queuedSeq);
+			expect(runs[1]!.source_input_seq).toBe(queuedSeq);
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a forget landing mid-call fences the turn's late window record", async () => {
+		const store = openStore(tmpDb("goblin-rt-win-"));
+		const windows = openWindowCapture(store.db);
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const prompts: string[] = [];
+		const inner = fakeModel(["a", "b"], {
+			beforeDelta: async (_d, i) => {
+				if (i === 1) {
+					entered.resolve();
+					await release.promise;
+				}
+			},
+		}) as unknown as {
+			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
+		};
+		const model = {
+			...inner,
+			doStream(o: { prompt: unknown }) {
+				prompts.push(JSON.stringify(o.prompt));
+				return inner.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		const recalled = "the operator's cat is named ORION-9z7w";
+		const deleted: string[] = [];
+		const memoryClient = {
+			target: "a".repeat(64),
+			async recall() {
+				return [{ id: "f-1", text: recalled, document_id: "exchange/dm:1/1/a" }];
+			},
+			async operation() {
+				return null;
+			},
+			async deleteDocument(id: string) {
+				deleted.push(id);
+			},
+		};
+		const r = rig({
+			model,
+			store,
+			deps: {
+				recordWindow: (id, input) => windows.record(id, input),
+				windowVersion: () => windows.version(),
+				memory: {
+					client: memoryClient as unknown as HindsightClient,
+					config: memoryConfigSchema.parse({
+						baseUrl: "http://127.0.0.1:1",
+						bankId: "g",
+					}),
+					contexts: store.memoryContexts,
+					noteRecall: () => {},
+				},
+			},
+		});
+		try {
+			const sink = submit(r, "hi");
+			await entered.promise;
+			expect(prompts[0]).toContain(recalled);
+			const result = await forgetDocument(
+				{
+					client: memoryClient,
+					contexts: store.memoryContexts,
+					queue: store.memoryQueue,
+					withWorkerPaused: (fn) => fn(),
+					settleTiming: { pollMs: 5, budgetMs: 2_000 },
+				},
+				"exchange/dm:1/1/a",
+				{ channel: "app", conversation: r.conv.id },
+			);
+			expect(result.outcome).toBe("forgotten");
+			expect(result.outcome === "forgotten" ? result.redacted : 0).toBe(1);
+			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
+			expect(windows.version()).toBe(1);
+			release.resolve();
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(windows.read(r.conv.id)).toBeNull();
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("an unreadable recall version disables capture for the attempt, never the turn", async () => {
+		const store = openStore(tmpDb("goblin-rt-win-"));
+		const windows = openWindowCapture(store.db);
+		let recorded = 0;
+		const r = rig({
+			model: fakeModel(["still answers"]),
+			store,
+			deps: {
+				recordWindow: (id, input) => {
+					recorded++;
+					windows.record(id, input);
+				},
+				windowVersion: () => {
+					throw new Error("synthetic version read failure");
+				},
+			},
+		});
+		try {
+			const sink = submit(r, "hi");
+			expect(await sink.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(recorded).toBe(0);
+			expect(windows.read(r.conv.id)).toBeNull();
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+});
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 
@@ -1524,6 +1856,34 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
+	test("a settings fence during the window lookup rejects a manual /compact — never a noop", async () => {
+		// Nothing to fold: before the early authority check this returned
+		// "nothing worth compacting". The fence now wins over the noop —
+		// the pass genuinely lost authority, so the operator sees the
+		// rejection, not a false all-clear.
+		const windowGate = deferred<void>();
+		const lookupStarted = deferred<void>();
+		const r = rig({
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => {
+						lookupStarted.resolve();
+						return windowGate.promise.then(() => 1000);
+					},
+					summarize: async () => "must not summarize",
+				},
+			},
+		});
+		const compacted = r.runtime.compact(r.conv);
+		await lookupStarted.promise;
+		r.store.bumpEpoch(r.conv.id); // settings change — no abort, only the epoch
+		windowGate.resolve();
+		await expect(compacted).rejects.toThrow("turn fenced");
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		r.store.close();
+	});
+
 	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
 		// Gate the summary call so the settings change lands mid-compaction.
 		// /memory bumps the epoch without touching the abort signal — unlike
@@ -2350,8 +2710,16 @@ describe("streaming lane boundary", () => {
 		// The drain loop is parked in the first turn's delivery completion —
 		// the two submits below only queue (lane still running).
 		await parked.done;
-		submit(r, "background beat", background);
-		submit(r, "client owns me", client);
+		r.runtime.submit(
+			r.conv,
+			{ id: "same-id", role: "user", parts: [{ type: "text", text: "background beat" }] } as UIMessage,
+			background,
+		);
+		r.runtime.submit(
+			r.conv,
+			{ id: "same-id", role: "user", parts: [{ type: "text", text: "client owns me" }] } as UIMessage,
+			client,
+		);
 		gate.resolve();
 		expect(await background.done).toEqual({ kind: "completed" });
 		expect(await client.done).toEqual({ kind: "completed" });
@@ -2359,6 +2727,7 @@ describe("streaming lane boundary", () => {
 		// background turn's model request never contained the client's
 		// message — ownership, not durability, bounds the view.
 		expect(prompts).toHaveLength(3);
+		expect(prompts[1]).toContain("background beat");
 		expect(prompts[1]).not.toContain("client owns me");
 		expect(prompts[2]).toContain("background beat");
 		expect(prompts[2]).toContain("client owns me");
@@ -2493,6 +2862,49 @@ describe("loop landings", () => {
 			| undefined;
 		expect(md?.forcedCompletion).toBe("repeat");
 		store.close();
+	});
+
+	test("schema-rejected calls feed the same repeat detector — warns at 10, cuts at 20", async () => {
+		// A tool whose schema the model cannot satisfy plus a model that
+		// retries the identical invalid args is a loop like any other: the
+		// SDK maps the rejection to tool-input-error AND a following
+		// tool-output-error (id only — name+input were recorded at the
+		// input seam), which lands in noteCompletedCall.
+		const { model, requests } = loopModel({ input: () => ({}) });
+		let executions = 0;
+		const r = rig({
+			model,
+			addr: appAddress("loop"),
+			tools: {
+				probe: tool({
+					inputSchema: z.object({ q: z.string() }),
+					execute: async () => {
+						executions++;
+						return "never runs";
+					},
+				}),
+			},
+		});
+		const sink = new RecordingSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "spin" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed", forced: "repeat" });
+		await waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+		await r.runtime.shutdown();
+		expect(executions).toBe(0);
+		// Same ladder as completed calls: warn appended at the request
+		// after the 10th rejection, cut lands tools-off after the 20th.
+		expect(requests).toHaveLength(21);
+		expect(requests.slice(0, 10).every((req) => !req.prompt.includes(WARN_BIT))).toBe(true);
+		for (const req of requests.slice(10)) {
+			expect(occurrences(req.prompt, WARN_BIT)).toBe(1);
+		}
+		expect(requests[20]!.toolChoice).toBe("none");
+		expect(occurrences(requests[20]!.prompt, CUT_BIT)).toBe(1);
+		const md = (r.store.history(r.conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("repeat");
+		r.store.close();
 	});
 
 	test("same call with changing results never trips the detector", async () => {
@@ -2744,7 +3156,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		const first = new RecordingSink();
 		runtime.submit(app, userMessage([{ type: "text", text: "first" }]), first);
 		await first.admitted;
-		store.setMeta(app.id, { model: "test/personal", thinking: "max" });
+		store.setMeta(app.id, { model: "test/personal", thinking: "xhigh" });
 		cfg = parseConfig({
 			...cfg,
 			model: "test/future",
@@ -2757,7 +3169,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		const second = new RecordingSink();
 		runtime.submit(app, userMessage([{ type: "text", text: "second" }]), second);
 		expect((await second.done).kind).toBe("completed");
-		expect(second.text).toBe("test/personal:max");
+		expect(second.text).toBe("test/personal:xhigh");
 		const telegram = new RecordingSink();
 		runtime.submit(dm, userMessage([{ type: "text", text: "telegram" }]), telegram);
 		expect((await telegram.done).kind).toBe("completed");
@@ -3024,5 +3436,83 @@ describe("turn journal", () => {
 			await runtime.shutdown();
 			store.close();
 		}
+	});
+});
+
+describe("tool context", () => {
+	test("makeTools receives runId and a sourceMessageId bound to owned membership", async () => {
+		const store = openStore(tmpDb("goblin-rt-ctx-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const seen: { runId: string; source: string }[] = [];
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			makeTools: (_c, _v, _r, _f, _a, context) => {
+				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
+				return {};
+			},
+		});
+		const s = new RecordingSink();
+		const msg = userMessage([{ type: "text", text: "hi" }]);
+		runtime.submit(conv, msg, s);
+		await s.done;
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.runId).not.toBe("");
+		expect(seen[0]!.source).toBe(msg.id);
+		store.close();
+	});
+
+	test("sourceMessageId follows a joined steer, never a queued stream; runId is the journal run", async () => {
+		const store = openStore(tmpDb("goblin-rt-ctx2-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const gate = deferred<void>();
+		const entered = deferred<void>();
+		const contexts: { runId: string; sourceMessageId(): string }[] = [];
+		const edge = scriptedEdge([
+			[toolCallPart("c1", "probe"), finishPart("tool-calls")],
+			[...textParts("done"), finishPart("stop", 10)],
+			[...textParts("again"), finishPart("stop", 10)],
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: (_c, _v, _r, _f, _a, context) => {
+				contexts.push(context!);
+				return {
+					probe: tool({
+						inputSchema: z.object({}),
+						execute: async () => {
+							entered.resolve();
+							await gate.promise;
+							return { ok: true };
+						},
+					}),
+				};
+			},
+		});
+		const msg1 = userMessage([{ type: "text", text: "one" }]);
+		const head = new HeadlessSink();
+		runtime.submit(conv, msg1, head);
+		await entered.promise;
+		expect(contexts).toHaveLength(1);
+		expect(contexts[0]!.sourceMessageId()).toBe(msg1.id);
+		const msg2 = userMessage([{ type: "text", text: "steer" }]);
+		const steer = new HeadlessSink();
+		runtime.submit(conv, msg2, steer);
+		const msg3 = userMessage([{ type: "text", text: "queued stream" }]);
+		const queued = new RecordingSink();
+		runtime.submit(conv, msg3, queued);
+		gate.resolve();
+		await waitUntil(() => contexts[0]!.sourceMessageId() === msg2.id, "steer joins the turn");
+		expect(contexts[0]!.sourceMessageId()).not.toBe(msg3.id);
+		expect(await head.done).toEqual({ kind: "completed" });
+		expect(journal.get(contexts[0]!.runId)).not.toBeNull();
+		await queued.done;
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]!.sourceMessageId()).toBe(msg3.id);
+		expect(contexts[1]!.runId).not.toBe(contexts[0]!.runId);
+		store.close();
 	});
 });

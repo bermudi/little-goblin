@@ -12,7 +12,12 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
+import {
+	Composer,
+	type StagedNote,
+	type StagedSkill,
+	type StagedUpload,
+} from "./ChatView.tsx";
 
 // The server's side of the contract: each upload lands on its own
 // UUID-stemmed path (persistAttachment), so distinct uploads NEVER share
@@ -103,6 +108,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -136,6 +142,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	}) {
 		const [staged, setStaged] = useState<StagedUpload[]>([]);
 		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
+		const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
 		return (
 			<Composer
 				token={null}
@@ -145,6 +152,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}
 				setStagedNotes={setStagedNotes}
+				stagedSkills={stagedSkills}
+				setStagedSkills={setStagedSkills}
 				onSend={onSend}
 				draftRestore={draftRestore}
 			/>
@@ -200,7 +209,9 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				text,
 			);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
 		});
 	};
 	const textareaValue = () =>
@@ -275,6 +286,135 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			expect(container.querySelectorAll(".attachment").length).toBe(0);
 		},
 	);
+
+	test("unmounting mid-recording stops the recorder and releases the mic", async () => {
+		// The recorder is click-to-start and its stop affordances unmount
+		// with the composer — a route change mid-recording must tear the
+		// capture down at the unmount itself, or the mic stays hot with
+		// no in-app path to stop it.
+		let trackStops = 0;
+		class FakeMediaRecorder {
+			static isTypeSupported() {
+				return true;
+			}
+			mimeType = "audio/ogg;codecs=opus";
+			ondataavailable: ((event: { data: Blob }) => void) | null = null;
+			onstop: (() => void) | null = null;
+			state = "inactive";
+			start() {
+				this.state = "recording";
+			}
+			stop() {
+				this.state = "inactive";
+				this.ondataavailable?.({ data: new Blob(["voice"], { type: this.mimeType }) });
+				this.onstop?.();
+			}
+		}
+		installGlobal("MediaRecorder", FakeMediaRecorder);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		Object.defineProperty(win.navigator, "mediaDevices", {
+			value: {
+				getUserMedia: async () => ({
+					getTracks: () => [
+						{
+							stop: () => {
+								trackStops += 1;
+							},
+						},
+					],
+				}),
+			},
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		const mic = () => container.querySelector('button[aria-label="Record a voice note"]');
+		expect(mic()).not.toBeNull();
+		await act(async () => {
+			mic()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		// Recording is live: the flipped label and the rec row, tracks open.
+		expect(container.querySelector('button[aria-label="Stop and send"]')).not.toBeNull();
+		expect(container.querySelector(".rec-dot")).not.toBeNull();
+		expect(trackStops).toBe(0);
+		// Navigating away unmounts the composer mid-recording.
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		// The recorder stopped — its onstop released the tracks and, with
+		// the cancel flag set, sent nothing: the orphaned capture is
+		// dropped, not uploaded from the dead tree.
+		expect(trackStops).toBe(1);
+		expect(uploads.length).toBe(0);
+		expect(sent.length).toBe(0);
+	});
+
+	test("a permission grant landing after unmount releases the fresh tracks", async () => {
+		// The getUserMedia window: the prompt can outlive the composer —
+		// a grant landing on the dead tree must release the device it
+		// just returned instead of opening a mic nobody owns.
+		let trackStops = 0;
+		const gate = Promise.withResolvers<{ getTracks: () => Array<{ stop: () => void }> }>();
+		class FakeMediaRecorder {
+			static isTypeSupported() {
+				return true;
+			}
+			mimeType = "audio/ogg;codecs=opus";
+			ondataavailable: ((event: { data: Blob }) => void) | null = null;
+			onstop: (() => void) | null = null;
+			state = "inactive";
+			start() {
+				this.state = "recording";
+			}
+			stop() {
+				this.state = "inactive";
+				this.ondataavailable?.({ data: new Blob(["voice"], { type: this.mimeType }) });
+				this.onstop?.();
+			}
+		}
+		installGlobal("MediaRecorder", FakeMediaRecorder);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		Object.defineProperty(win.navigator, "mediaDevices", {
+			value: { getUserMedia: () => gate.promise },
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					onSend={(parts) => {
+						sent.push(parts);
+					}}
+				/>,
+			);
+		});
+		await act(async () => {
+			container
+				.querySelector('button[aria-label="Record a voice note"]')
+				?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		// Still waiting on the prompt — nothing is recording yet.
+		expect(container.querySelector('button[aria-label="Record a voice note"]')).not.toBeNull();
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		await act(async () => {
+			gate.resolve({ getTracks: () => [{ stop: () => void trackStops++ }] });
+		});
+		// The grant landed on a dead composer: the tracks it returned were
+		// released immediately, and no recorder was ever built.
+		expect(trackStops).toBe(1);
+		expect(uploads.length).toBe(0);
+		expect(sent.length).toBe(0);
+	});
 
 	test("overlapping same-name uploads each resolve to their own ref (stage order)", async () => {
 		await mount();
@@ -386,6 +526,35 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await submit();
 		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toBeNull();
 		expect(textareaValue()).toBe("");
+	});
+
+	test("an accepted send clears the stored draft even after the composer unmounts", async () => {
+		// The lazy-create swap: onSend stays in flight while the view —
+		// and this composer with it — unmounts. The accept lands on a
+		// dead tree whose persist effect never runs, so the accept path
+		// itself must write the clear.
+		let accept!: (accepted: boolean) => void;
+		const pendingSend = new Promise<boolean>((resolve) => {
+			accept = resolve;
+		});
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ComposerHarness onSend={() => pendingSend} />);
+		});
+		await type("sent from the start screen");
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toContain(
+			"sent from the start screen",
+		);
+		await submit();
+		await act(async () => {
+			root?.unmount();
+			root = null;
+		});
+		await act(async () => {
+			accept(true);
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(win.localStorage.getItem("goblin.composer-draft.v1:test")).toBeNull();
 	});
 
 	test("an unreadable stored draft says why, starts empty, and waits for typing", async () => {

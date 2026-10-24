@@ -74,6 +74,29 @@ describe("auth parser safety", () => {
 		},
 	);
 
+	test("a missing auth.jsonl is an empty store: clean exit 0, structured stderr note, bare stdout", async () => {
+		// The fresh-install norm — a brand-new operator has config, not
+		// keys. ENOENT must map to "no records → no offenders", never a
+		// stack trace (same ruling as loadAuthFile's ENOENT → empty store).
+		const dir = mkdtempSync(join(tmpdir(), "goblin-auth-parser-"));
+		dirs.push(dir);
+		const child = Bun.spawn([process.execPath, join(import.meta.dir, "../scripts/check-auth.ts")], {
+			env: { ...process.env, GOBLIN_HOME: dir },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(code).toBe(0);
+		expect(stdout).toBe("");
+		const note = JSON.parse(stderr.trim()) as Record<string, unknown>;
+		expect(note).toMatchObject({ level: "warn", msg: "no auth.jsonl — no records to scan" });
+		expect(note.path).toBe(join(dir, "auth.jsonl"));
+	});
+
 	test("install helper still refuses a forbidden command even before a clean duplicate", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-auth-parser-"));
 		dirs.push(dir);

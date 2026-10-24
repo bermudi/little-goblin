@@ -101,8 +101,25 @@ reproduces the checkpoint contract below with no new infrastructure.
   the stale snapshot, and an edited filter keeps its re-baseline.
   history.list takes no filter query, so arrivals intersect the filter's
   recent list page; a full page warns older matches may be invisible to
-  it (the one remaining loss channel). A dead token or quota error warns
-  once per outage episode, never per tick.
+  it. An arrival the search does not show may be a lagging index entry
+  rather than a non-match (ruling 2026-10-23): the checkpoint then holds
+  at the last seen-consistent boundary — the record before the earliest
+  unconfirmed arrival — so the record re-arrives and is offered to the
+  search again, bounded by a grace window of mailbox history
+  (~50 records) after which the arrival is treated as a non-match and
+  the cursor advances; the hold never crosses a fired record, so nothing
+  already fired refires. Residual loss channels, bounded and owned: a
+  match that fires while an earlier unconfirmed arrival sits at or
+  before its record (holding earlier would refire the match), matches
+  that fall out of a full list page, and unconfirmed arrivals that
+  outlast the grace. A dead token or quota error warns
+  once per outage episode, never per tick. The notice's destination
+  follows the program's destination union (2026-10-22): a chat-pinned
+  program notices its Telegram conversation, a responsibility-bound one
+  notices its coordination lane as a durable development through the
+  wake dispatcher — building the notice from `program.chatId` targeted
+  a nonexistent chat 0 every scan, and the failed delivery re-warned
+  forever.
 - **Approved sends join shutdown (ruling 2026-10-04).** The gate's stop
   clears the sweep timer and joins any in-flight Gmail send in the
   shutdown drain: a SIGTERM mid-send would otherwise land the row

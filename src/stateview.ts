@@ -19,6 +19,7 @@ import {
 	type Stats,
 } from "node:fs";
 import { join, sep } from "node:path";
+import { loadCatalog } from "./agent/skills.ts";
 
 // ---------- skills ----------
 
@@ -36,6 +37,46 @@ export interface OperatorSkillItem {
 export interface SkillsResponse {
 	skills: OperatorSkillItem[];
 	proposed: OperatorSkillItem[];
+	/** The invocation picker's view: valid catalog entries, manual-only included. */
+	catalog: PickerSkillItem[];
+}
+
+// One picker row (ruling 2026-10-21): what an explicit invocation needs
+// to be an informed choice — the body size especially, since skills run
+// to six figures of bytes.
+export interface PickerSkillItem {
+	name: string;
+	description: string;
+	/** disable-model-invocation — unadvertised to the model, invocable by name. */
+	manualOnly: boolean;
+	/** SKILL.md's byte size — the injection cost of one invocation. */
+	bodyBytes: number;
+}
+
+// Catalog entries + a stat — the picker is the one skills surface that
+// must include manual-only entries (design/skills.md → Skill
+// invocation). Malformed dirs the catalog skipped simply don't appear.
+export function listPickerSkills(skillsDir: string): PickerSkillItem[] {
+	const catalog = loadCatalog(skillsDir);
+	const items: PickerSkillItem[] = [];
+	for (const e of catalog.entries) {
+		let bodyBytes: number;
+		try {
+			bodyBytes = statSync(join(skillsDir, e.name, "SKILL.md")).size;
+		} catch (err) {
+			// ENOENT raced the scan — the skill is gone, not zero-sized.
+			// Anything else is a real read failure, not an empty row.
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
+		}
+		items.push({
+			name: e.name,
+			description: e.description,
+			manualOnly: e.manualOnly === true,
+			bodyBytes,
+		});
+	}
+	return items;
 }
 
 export interface SkillFileResponse {
@@ -121,7 +162,11 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 }
 
 export function listSkills(skillsDir: string, proposedDir: string): SkillsResponse {
-	return { skills: listSkillDir(skillsDir), proposed: listSkillDir(proposedDir) };
+	return {
+		skills: listSkillDir(skillsDir),
+		proposed: listSkillDir(proposedDir),
+		catalog: listPickerSkills(skillsDir),
+	};
 }
 
 // The containment check every read funnels through, enforced in

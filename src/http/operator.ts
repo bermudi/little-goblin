@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { thinkingLevelsFor } from "../agent/providers.ts";
+import { modelCatalogFor } from "../agent/models-dev.ts";
+import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
+	capabilityNames,
+	type CapabilityName,
 	type Config,
 	ConfigValidationError,
 	fetchKinds,
@@ -16,10 +19,15 @@ import {
 	ttsCloudDefaults,
 	writeConfig,
 } from "../config.ts";
+import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
 import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
+import { checkInjection } from "../injection.ts";
+import type { System1Client } from "../system1.ts";
+import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
+import { readFileSync } from "node:fs";
 import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
@@ -40,7 +48,7 @@ import {
 	SkillSources,
 	skillNameSchema,
 } from "../skill-provenance.ts";
-import type { SkillDecideResponse } from "./operator-wire.ts";
+import type { SkillDecideResponse, SkillPreviewResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
@@ -51,11 +59,14 @@ import {
 	tailLog,
 } from "../stateview.ts";
 import type {
+	CapabilityState,
+	ChatGptStatus,
 	ConfigPostBody,
 	ConfigResponse,
 	MemoriesListResponse,
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
+	MemoryBlockedResponse,
 	MemoryFactItem,
 	MemoryForgetResponse,
 	MemoryStatusResponse,
@@ -126,6 +137,22 @@ export interface OperatorDeps {
 	skillDecisions?: {
 		decide(skill: string, action: SkillAction): SkillDecision;
 	};
+	// Temp-skill preview (ruling 2026-10-21): the System One gate scores
+	// the fetched body; absent = the endpoint answers 503. fetchImpl and
+	// cacheRoot exist for tests.
+	skillFetch?: {
+		gate: Pick<System1Client, "decide">;
+		fetchImpl?: typeof fetch;
+		cacheRoot?: string;
+	};
+	// In-app ChatGPT sign-in (device code) — absent = the accounts
+	// routes answer 503.
+	chatgpt?: {
+		status(): ChatGptStatus;
+		start(): Promise<ChatGptStatus>;
+		cancel(): ChatGptStatus;
+		signOut(): ChatGptStatus;
+	};
 }
 
 export type OperatorActor = { via: "mini-app"; userId: number } | { via: "app" };
@@ -136,6 +163,7 @@ export interface OperatorSeamsDeps {
 	programs: ProgramsStore;
 	delegations: DelegationsStore | null;
 	skillSources: SkillSources;
+	skillFetch?: OperatorDeps["skillFetch"];
 	auth: WritableAuthStore;
 	paths: { auth(): string; skills(): string; skillsProposed(): string; workspace(): string };
 	version: string;
@@ -201,6 +229,7 @@ export function makeOperatorSeams(
 					action,
 				),
 		},
+		...(deps.skillFetch !== undefined ? { skillFetch: deps.skillFetch } : {}),
 	};
 }
 
@@ -219,6 +248,7 @@ const CONFIG_POST_KEYS = {
 	tts: true,
 	transcription: true,
 	vision: true,
+	image: true,
 	search: true,
 	fetch: true,
 	operators: true,
@@ -228,9 +258,11 @@ const CONFIG_POST_KEYS = {
 	http: true,
 	memory: true,
 	logLevel: true,
+	capabilities: true,
 } as const satisfies Record<keyof ConfigPostBody, true>;
 
 const CONFIG_POST_TELEGRAM_KEYS = {
+	enabled: true,
 	apiRoot: true,
 	dmGapMinutes: true,
 	model: true,
@@ -244,22 +276,40 @@ const configPostBodySchema = z
 		Object.fromEntries(
 			(Object.keys(CONFIG_POST_KEYS) as (keyof ConfigPostBody)[]).map((k) => [
 				k,
-				k === "telegram"
-					? z
-							.object(
-								Object.fromEntries(
-									(
-										Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
-									).map((tk) => [tk, z.unknown().optional()]),
-								),
-							)
-							.strict()
-							.optional()
-					: z.unknown().optional(),
+				k === "capabilities"
+					? z.partialRecord(z.enum(capabilityNames), z.boolean()).optional()
+					: k === "telegram"
+						? z
+								.object(
+									Object.fromEntries(
+										(
+											Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
+										).map((tk) => [tk, z.unknown().optional()]),
+									),
+								)
+								.strict()
+								.optional()
+						: z.unknown().optional(),
 			]),
 		),
 	)
 	.strict();
+
+const capabilitiesPostSchema = z.partialRecord(z.enum(capabilityNames), z.boolean());
+
+function capabilityState(config: Config, k: CapabilityName): CapabilityState {
+	if (config[k] !== undefined) return { state: "on", hint: null };
+	if (config.parked?.[k] !== undefined || capabilityDefaults[k] !== undefined)
+		return { state: "off", hint: null };
+	return { state: "needs-setup", hint: capabilityHints[k] };
+}
+
+function capabilityStates(config: Config): Record<CapabilityName, CapabilityState> {
+	return Object.fromEntries(capabilityNames.map((k) => [k, capabilityState(config, k)])) as Record<
+		CapabilityName,
+		CapabilityState
+	>;
+}
 
 function unknownConfigKeys(body: object): string[] {
 	const parsed = configPostBodySchema.safeParse(body);
@@ -299,16 +349,76 @@ async function saveConfig(
 			);
 		}
 		const normalized = parseConfig(base);
-		const candidate = { ...normalized, ...body };
-		if (
-			"telegram" in body &&
-			typeof body.telegram === "object" &&
-			body.telegram !== null &&
-			!Array.isArray(body.telegram)
-		) {
-			candidate.telegram = { ...normalized.telegram, ...body.telegram };
+		// Capability flips apply to the normalized disk config BEFORE the
+		// body merge — a body block for the same key then still wins.
+		const parked: Partial<Record<CapabilityName, unknown>> = { ...(normalized.parked ?? {}) };
+		const candidate: Record<string, unknown> = { ...normalized };
+		const caps = capabilitiesPostSchema.parse(
+			(body as { capabilities?: unknown }).capabilities ?? {},
+		);
+		for (const [k, on] of Object.entries(caps) as [CapabilityName, boolean][]) {
+			if (!on) {
+				if (candidate[k] !== undefined) {
+					parked[k] = candidate[k];
+					delete candidate[k];
+				}
+				continue;
+			}
+			if (candidate[k] !== undefined) continue;
+			// First-time setup may arrive with the enable switch. The body
+			// merge below wins over parked/default blocks; validate that
+			// supplied value with the WHOLE resulting config before writing
+			// (it may also introduce the model's provider).
+			const supplied = (body as Record<string, unknown>)[k];
+			if (supplied !== undefined && supplied !== "") continue;
+			if (parked[k] !== undefined) {
+				candidate[k] = parked[k];
+				delete parked[k];
+				continue;
+			}
+			const dflt = capabilityDefaults[k];
+			if (dflt !== undefined) {
+				candidate[k] = dflt;
+				continue;
+			}
+			log.warn(`${actor.via} config save refused — capability needs setup`, {
+				...who,
+				capability: k,
+			});
+			return Response.json(
+				{ error: `cannot enable ${k}: ${capabilityHints[k]}` },
+				{ status: 422, headers: NO_STORE },
+			);
 		}
+		for (const [k, v] of Object.entries(body)) {
+			if (k === "capabilities") continue;
+			if (k === "telegram" && typeof v === "object" && v !== null && !Array.isArray(v)) {
+				candidate.telegram = { ...normalized.telegram, ...v };
+				continue;
+			}
+			// "" on a parkable block keeps its contents — off, not deleted.
+			if (v === "" && (capabilityNames as readonly string[]).includes(k)) {
+				if (candidate[k] !== undefined) parked[k as CapabilityName] = candidate[k];
+				delete candidate[k];
+				continue;
+			}
+			candidate[k] = v;
+			if ((capabilityNames as readonly string[]).includes(k)) delete parked[k as CapabilityName];
+		}
+		candidate.parked = Object.keys(parked).length > 0 ? parked : undefined;
 		const merged = parseConfig(candidate);
+		// A stored level the model can't express is a lie — write the
+		// rung the wire clamp would land on, on both channels.
+		merged.thinking = clampThinkingFor(merged.providers, merged.model, merged.thinking);
+		// A disabled channel's saved pin is dormant state — leave model and
+		// thinking untouched until it is re-enabled.
+		if (merged.telegram.enabled) {
+			merged.telegram.thinking = clampThinkingFor(
+				merged.providers,
+				merged.telegram.model ?? merged.model,
+				merged.telegram.thinking ?? merged.thinking,
+			);
+		}
 		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
 			return Response.json(
 				{ error: `config would remove your own telegram user id (${actor.userId})` },
@@ -505,6 +615,8 @@ const browseQuerySchema = z
 		message: "q and conversation are mutually exclusive",
 	});
 
+const memoryBlockedBody = z.object({ action: z.enum(["retry", "dismiss"]) }).strict();
+
 function programItem(program: Program): OperatorProgramItem {
 	return {
 		id: program.id,
@@ -515,6 +627,7 @@ function programItem(program: Program): OperatorProgramItem {
 		hasHook: program.hookHash !== null,
 		mailFilter: program.mailFilter,
 		enabled: program.enabled,
+		target: program.target,
 		chatId: program.chatId,
 		threadId: program.threadId,
 		createdAt: program.createdAt,
@@ -572,6 +685,14 @@ export async function handleOperatorRoute(
 				ttsDefaults: ttsCloudDefaults,
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
+				authCommandNames: (deps.authNames?.() ?? [])
+					.filter((n) => deps.secrets?.isCommand(n) ?? false)
+					.sort(),
+				// Cached only: the settings door never waits on models.dev.
+				modelCatalog: modelCatalogFor(config),
+				capabilities: capabilityStates(config),
+				serviceNames,
+				providerPresets,
 			};
 			return Response.json(body, {
 				headers: { ...NO_STORE, etag: configTag(config) },
@@ -608,6 +729,48 @@ export async function handleOperatorRoute(
 			return attempt;
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	if (
+		tail === "accounts/chatgpt" ||
+		tail === "accounts/chatgpt/login" ||
+		tail === "accounts/chatgpt/logout"
+	) {
+		const chatgpt = deps.chatgpt;
+		if (chatgpt === undefined) {
+			return Response.json(
+				{ error: "chatgpt sign-in is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		if (tail === "accounts/chatgpt") {
+			if (req.method !== "GET") {
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			}
+			return Response.json(chatgpt.status(), { headers: NO_STORE });
+		}
+		if (tail === "accounts/chatgpt/login") {
+			if (req.method === "DELETE") {
+				return Response.json(chatgpt.cancel(), { headers: NO_STORE });
+			}
+			if (req.method !== "POST") {
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			}
+			if (chatgpt.status().pinned) {
+				return Response.json(
+					{
+						error:
+							"a codex provider pins authFile in goblin.json5 — remove it to sign in from Settings",
+					},
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			return Response.json(await chatgpt.start(), { headers: NO_STORE });
+		}
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		return Response.json(chatgpt.signOut(), { headers: NO_STORE });
 	}
 
 	if (tail === "secrets") {
@@ -677,6 +840,42 @@ export async function handleOperatorRoute(
 			blocked: view.blocked,
 		});
 		return Response.json(view, { headers: NO_STORE });
+	}
+
+	if (tail === "memory/blocked") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const gate = memoryGate(deps);
+		if (typeof gate === "string" || gate.queue === undefined || gate.client === undefined) {
+			return Response.json(
+				{ error: typeof gate === "string" ? gate : "memory queue is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = memoryBlockedBody.safeParse(raw);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const affected =
+			parsed.data.action === "retry"
+				? gate.queue.retryBlocked(gate.client.target)
+				: gate.queue.dismissBlocked(gate.client.target);
+		log.info(
+			`memory blocked retentions ${parsed.data.action === "retry" ? "requeued" : "dismissed"} via ${actor.via}`,
+			{ ...who, affected },
+		);
+		const body: MemoryBlockedResponse = { ok: true, action: parsed.data.action, affected };
+		return Response.json(body, { headers: NO_STORE });
 	}
 
 	if (tail === "memory/documents") {
@@ -985,6 +1184,85 @@ export async function handleOperatorRoute(
 		if (file === null)
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 		return Response.json(file, { headers: NO_STORE });
+	}
+
+	if (tail === "skills/preview") {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const preview = deps.skillFetch;
+		if (preview === undefined)
+			return Response.json(
+				{ error: "temp skills unavailable — the System One gate is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = z
+			.object({ url: z.string().url().startsWith("https://").max(2048) })
+			.safeParse(raw);
+		if (!parsed.success)
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		try {
+			const fetched = await fetchSkill(parsed.data.url, {
+				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
+				...(preview.cacheRoot !== undefined ? { cacheRoot: preview.cacheRoot } : {}),
+			});
+			// Identical cached bytes keep their first verdict — a
+			// re-preview shows what injection will inject, and no second
+			// score can move an outstanding confirm's advisory.
+			let verdict: SkillPreviewResponse["verdict"];
+			if (fetched.descriptor.previewed) {
+				verdict = fetched.descriptor.verdict;
+			} else {
+				// Score exactly the bytes the part will pin: read back
+				// from the published copy, never an in-memory
+				// intermediate, and no head-cut sampling.
+				const body = readFileSync(fetched.path, "utf8");
+				const scored = await checkInjection(preview.gate, body, {
+					maxChars: body.length,
+				});
+				verdict = stampVerdict(
+					preview.cacheRoot ?? paths.skillcache(),
+					fetched.digest,
+					scored,
+				).verdict;
+			}
+			const responseBody: SkillPreviewResponse = {
+				name: fetched.descriptor.name,
+				description: fetched.descriptor.description,
+				sourceUrl: fetched.descriptor.sourceUrl,
+				path: fetched.path,
+				dir: fetched.dir,
+				digest: fetched.digest,
+				bodyBytes: fetched.bodyBytes,
+				fileCount: fetched.fileCount,
+				dirBytes: fetched.dirBytes,
+				cached: fetched.cached,
+				verdict,
+			};
+			log.info("skill preview served", {
+				...who,
+				via: actor.via,
+				url: parsed.data.url,
+				name: fetched.descriptor.name,
+				verdict: verdict.status,
+				cached: fetched.cached,
+			});
+			return Response.json(responseBody, { headers: NO_STORE });
+		} catch (err) {
+			if (err instanceof SkillFetchError) {
+				const status = err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
+				return Response.json({ error: err.message }, { status, headers: NO_STORE });
+			}
+			throw err;
+		}
 	}
 
 	if (tail === "skills/decide") {

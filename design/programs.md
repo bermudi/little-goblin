@@ -48,9 +48,25 @@ Rulings:
   target supersedes older ones, and the decision — activation through
   the store's own create/update plus the stamp — is one immediate
   SQLite transaction, so a repeated tap or a crash can never grant
-  twice. A hook the proposal requests is minted only at approval and
-  travels only to operator DMs — no credential exists to leak before
-  the grant, and without `publicUrl` the tap refuses pending. Existing
+  twice. The update row also stores the renderable snapshot of its
+  base (`base_snapshot`, NULL on pre-column legacy rows): approval
+  cards always render that immutable candidate — a re-post after the
+  live program moved shows what the original card showed plus a stale
+  warning, never a merge onto today's row, and a drifted legacy row
+  with nothing immutable left names the coming refusal instead of
+  guessing a candidate. The snapshot's bounds are the trusted
+  store's, never proposal-input limits — a grandfathered or pre-limit
+  charter beyond the input cap still stages and reads, and the stored
+  payload is validated inside the staging transaction so no committed
+  row can fail its own reader. Posting is fenced by the staging turn's abort
+  signal chunk by chunk — a stopped turn sends no further chunks and
+  never the buttons; the durable row stays pending for
+  `program/review`. A hook the proposal requests is minted only at
+  approval and travels only to operator DMs — no credential exists to
+  leak before the grant, and without `publicUrl` the tap refuses
+  pending; the token's plaintext exists only inside the tap handler,
+  so in-flight posts and taps are tracked and shutdown joins them
+  under the drain budget before the store closes. Existing
   programs were never proposals: grandfathered rows activate nothing,
   ask nothing, migrate nothing.
 - **Firing is one path for every trigger.** Cron tick, webhook hit, or
@@ -65,6 +81,12 @@ Rulings:
   leaves the stamp and the throttle window open); mail holds its
   checkpoint on a failed fire (matches are real events that cannot be
   regenerated — they retry next poll). No caller writes program state.
+  One pre-admission exception: a Telegram-targeted occurrence due while
+  the channel is unattached is *held* — no fire attempt, no `last_run`,
+  no retry burn — so a restarting process does not consume catch-ups it
+  cannot deliver; the scan the attach kicks re-evaluates the same due
+  row under the normal lateness/coalescing rules. This is not a failed
+  submit — the failed-submit accounting above is unchanged.
 - **Schedule retry is a bounded in-process ladder** (2026-10-13):
   schedule is the one trigger with no retry middle ground (webhook has
   the caller, mail the checkpoint), so only a fire whose turn died
@@ -128,6 +150,58 @@ Rulings:
   write fences the occurrence in-process: the write retries with the
   original fire time, never the submit; a restart may re-offer the row
   once — at-least-once, never a duplicate storm.
+  Responsibility-destination fires (ruling 2026-10-20) enqueue the
+  occurrence as a durable development keyed by `program:<id>:occ:<iso>`.
+  The trigger text rehydrates the responsibility's *current* revision,
+  understanding, and attachment health, so a crash-window replay after a
+  correction re-recording the same key with drifted text is not an
+  identity conflict: flagged `replay`, the store reuses the recorded
+  occurrence — the occurrence that fired is the one that delivers, and
+  the next occurrence carries the fresher view. Conversation and kind
+  are still identity; drift there fails loudly as before.
+  **Destination union × canonical target (ruling 2026-10-22, merge of
+  the two lines):** a program row carries exactly one destination — a
+  conversation address or a `responsibility_id` — and the canonical
+  `target` column (NOT NULL) holds a `resp:<responsibility_id>` pseudo-
+  address on responsibility rows. That pseudo-address is not a
+  conversation: `telegramAddressOf`/`appConversationOf` project it to
+  null, and every delivery path branches on `responsibilityId` before
+  reading `target`. The program tool on project turns keeps the direct
+  lane inside the handed-over project (responsibility-destination
+  creates, scoped verbs, no hook minting — no operator DM exists there);
+  every other surface stages through the durable proposal gate above.
+  Only staging needs a destination: on an addressless project turn the
+  direct verbs still apply (rename, lateness, reschedule, hook disable),
+  while a grant-shaped update refuses — its staged row would have no
+  lane to pin. The app channel's presentation target is likewise not
+  the program's `target` column: a responsibility-destination program's
+  approvals post into the responsibility's coordination conversation —
+  the route resolves `responsibility_id` → row →
+  `coordination_conversation_id` → `targetOf` (canonical; a rolling DM
+  pins `dm:<chat>`). The program row itself stays responsibility-
+  targeted. Missing responsibility wiring, a missing row, or a missing
+  coordination conversation refuses the grant-shaped op with the
+  readable no-destination answer — direct edits and hook disable still
+  apply, nothing falls back to a fabricated lane. `review` scopes a
+  staged proposal by the grant it asks
+  for: the program it patches, or, on a create (no program row yet),
+  the conversation its draft pins as its destination — a foreign lane's
+  pending proposal reads as absent, so one project turn can never
+  re-post another conversation's approval card.
+
+  A follow-up program is create-once per responsibility. Its durable
+  identity is its `kind` ("followup", service-minted and unpatchable),
+  with the exact `followup:<responsibility_id>` name convention as the
+  fallback for rows created before kinds existed — NOT the
+  `responsibility_id` binding alone: independent programs (a mail
+  watch, a webhook) legally share a responsibility destination, and
+  recovery that matched on the binding adopted the oldest row whatever
+  it was, losing the scheduled check-in to a mail-only program. A
+  create that committed before its link write (crash, failed write) is
+  adopted by the next `ensureFollowup`, never twinned; surplus twins
+  from repeated crashed creates are disabled and logged; independent
+  programs sharing the destination are neither adopted nor silenced.
+  Disabling the linked program can never leave an orphan still firing.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

@@ -325,6 +325,31 @@ describe("materializeAttachments", () => {
 		const out = await materializeAttachments([stored], new Set(["image"]));
 		expect(out[0]!.parts[0]!.type).toBe("file");
 	});
+
+	test("an assistant delivery record stays a reference, never a provider file payload", async () => {
+		const dir = tmpDir("goblin-att-");
+		const f = join(dir, "generated.png");
+		writeFileSync(f, "pngdata");
+		const delivered: UIMessage = {
+			id: "a-media",
+			role: "assistant",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "image/png",
+					filename: "generated.png",
+					size: 7,
+				}),
+			],
+		};
+		const out = await materializeAttachments(
+			[delivered],
+			new Set(["text", "image", "file"]),
+			1024,
+			() => true,
+		);
+		expect(out[0]!.parts[0]!.type).toBe(ATTACHMENT_PART);
+	});
 });
 
 test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {

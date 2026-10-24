@@ -29,9 +29,7 @@ describe("fold arrow selectors", () => {
 		}));
 		for (const fold of ["worked", "tool-run", "reasoning-fold"]) {
 			const closed = rules.find((r) => r.selector.startsWith(`.${fold} `) && r.arrow === "▸");
-			const open = rules.find(
-				(r) => r.selector.startsWith(`.${fold}[open]`) && r.arrow === "▾",
-			);
+			const open = rules.find((r) => r.selector.startsWith(`.${fold}[open]`) && r.arrow === "▾");
 			expect(closed, `.${fold} closed arrow`).toBeDefined();
 			expect(open, `.${fold} open arrow`).toBeDefined();
 		}

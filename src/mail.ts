@@ -57,7 +57,10 @@ export interface MailPoller {
 	 *  the filter's list, oldest first, batched at whole history records
 	 *  up to the per-tick cap. historyId in the result is the new
 	 *  checkpoint — advance past it even when empty; a truncated batch
-	 *  checkpoints at its last fired record so the remainder refires. */
+	 *  checkpoints at its last fired record so the remainder refires,
+	 *  and an arrival the filter's search cannot confirm yet holds the
+	 *  checkpoint below the head within a grace window (search-index
+	 *  lag) instead of being skipped. */
 	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
 	/** Current mailbox history id — the no-fire baseline for a new filter. */
 	profileHistoryId(): Promise<string>;

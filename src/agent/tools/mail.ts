@@ -52,7 +52,7 @@ export const mailInputSchema = z
 export const mailTool = (deps: MailToolDeps) =>
 	tool({
 		description:
-			"Draft a mail for the operator to send. Send never sends directly: it queues a draft the operator approves with a Send button in Telegram — the result tells you it is awaiting approval, and you wait for the operator instead of announcing a sent mail. To read mail, use bash with the goblin-mail wrapper ($GOBLIN_HOME/goblin-mail search|read — see the gws skill): its reads are injection-checked and fenced.",
+			"Draft a mail for the operator to send. Send never sends directly: it queues a draft the operator approves on the originating approval surface — the result tells you it is awaiting approval, and you wait for the operator instead of announcing a sent mail. To read mail, use bash with the goblin-mail wrapper ($GOBLIN_HOME/goblin-mail search|read — see the gws skill): its reads are injection-checked and fenced.",
 		inputSchema: mailInputSchema,
 		execute: async (raw) => {
 			const input = sendSchema.parse(raw);

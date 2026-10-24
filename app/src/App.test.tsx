@@ -171,6 +171,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -342,6 +343,7 @@ describe("rail row actions and the pinned pool", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -679,6 +681,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					model: "main/test",
 					thinking: "medium",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -2151,6 +2154,7 @@ describe("app projects surface", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -4086,6 +4090,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -4229,6 +4234,7 @@ describe("chat width selector", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);

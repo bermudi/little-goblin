@@ -24,6 +24,8 @@ import type {
 	AppConversationPatch,
 	AppDecideRequest,
 	AppDecideResponse,
+	AppFavoriteToggleRequest,
+	AppFavoritesResponse,
 	AppInterruptedList,
 	AppInterruptedRun,
 	AppMessageList,
@@ -537,6 +539,19 @@ export function patchConversationConfig(
 		method: "PATCH",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(patch),
+	});
+}
+
+// One favorite at a time — the picker's star writes directly, no draft.
+export function toggleFavorite(
+	token: string | null,
+	ref: string,
+	on: boolean,
+): Promise<AppFavoritesResponse> {
+	return request(token, "/api/app/favorites", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ ref, on } satisfies AppFavoriteToggleRequest),
 	});
 }
 

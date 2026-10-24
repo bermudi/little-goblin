@@ -305,6 +305,7 @@ describe("navigation races: late completions", () => {
 					model: "fixture/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);

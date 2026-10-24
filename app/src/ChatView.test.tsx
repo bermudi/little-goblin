@@ -299,7 +299,13 @@ describe("turn metadata usage", () => {
 				});
 			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
 			if (url.endsWith("/interrupted")) return json({ runs: [] });
-			return json({ model: "prov/model", thinking: "off", favorites: [], thinkingLevels: ["off"] });
+			return json({
+				model: "prov/model",
+				thinking: "off",
+				favorites: [],
+				catalog: [],
+				thinkingLevels: ["off"],
+			});
 		}) as typeof fetch;
 		dom.root = createRoot(dom.container);
 		await act(async () => {
@@ -394,7 +400,13 @@ describe("reply ratings", () => {
 			}
 			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
 			if (url.endsWith("/interrupted")) return json({ runs: [] });
-			return json({ model: "prov/model", thinking: "off", favorites: [], thinkingLevels: ["off"] });
+			return json({
+				model: "prov/model",
+				thinking: "off",
+				favorites: [],
+				catalog: [],
+				thinkingLevels: ["off"],
+			});
 		}) as typeof fetch;
 		dom.root = createRoot(dom.container);
 		await act(async () =>
@@ -512,6 +524,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -608,6 +621,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);
@@ -682,6 +696,7 @@ describe("ChatView reload window (issue #79)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				});
 			},
@@ -802,6 +817,7 @@ describe("ChatView mid-turn steer", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				});
 			},
@@ -1331,5 +1347,156 @@ describe("MessageParts fence clipping (happy-dom)", () => {
 		});
 		expect(dom.container.querySelector(".codeblock-more")).toBeNull();
 		expect(dom.container.querySelector("pre")!.classList.contains("clip")).toBe(false);
+	});
+});
+
+// The composer model knob: a button that opens a small menu — current
+// checked, favorites by friendly name, then "All models…" into the
+// picker sheet. Stars in the sheet POST /api/app/favorites.
+describe("composer model knob (happy-dom)", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+
+	const CFG = {
+		model: "prov/current",
+		thinking: "off",
+		favorites: ["prov/fav-b", "prov/fav-a"],
+		catalog: [
+			{
+				provider: "prov",
+				models: [
+					{ id: "current", name: "Current Model", releaseDate: "2026-01-01" },
+					{ id: "fav-a", name: "Fav A", releaseDate: "2026-02-01" },
+					{ id: "fav-b", name: null, releaseDate: "2026-03-01" },
+					{ id: "other", name: "Other Model", releaseDate: "2026-04-01" },
+				],
+			},
+		],
+		thinkingLevels: ["off"],
+	};
+
+	let favPosts: { ref: string; on: boolean }[];
+	let configPatches: { model?: string; thinking?: string }[];
+	let favorites: string[];
+
+	const mount = async () => {
+		favPosts = [];
+		configPatches = [];
+		favorites = CFG.favorites.slice();
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url.endsWith("/favorites") && method === "POST") {
+				const body = JSON.parse(String(init?.body)) as { ref: string; on: boolean };
+				favPosts.push(body);
+				favorites = body.on
+					? [...new Set([...favorites, body.ref])]
+					: favorites.filter((f) => f !== body.ref);
+				return jsonResponse({ favorites });
+			}
+			if (url.endsWith("/config") && (method === "PATCH" || method === "POST")) {
+				configPatches.push(JSON.parse(String(init?.body)) as { model?: string });
+				return jsonResponse({ ...CFG, favorites, ...configPatches.at(-1) });
+			}
+			if (url.endsWith("/messages"))
+				return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			return jsonResponse({ ...CFG, favorites });
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await act(async () => {});
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+	};
+
+	const knob = () => dom.container.querySelector('[aria-label="Conversation model"]');
+	const popItem = (text: string) =>
+		[...dom.container.querySelectorAll(".model-pop li button")].find((b) =>
+			b.textContent?.includes(text),
+		);
+
+	test("the knob opens a menu of favorites by friendly name", async () => {
+		await mount();
+		// The knob itself reads the catalog name, the ref rides title.
+		expect(knob()?.textContent).toBe("Current Model");
+		expect(knob()?.getAttribute("title")).toBe("prov/current");
+		await click(knob());
+		const pop = dom.container.querySelector(".model-pop");
+		expect(pop).not.toBeNull();
+		const items = [...pop!.querySelectorAll("li button")];
+		expect(items[0]?.textContent).toContain("Current Model");
+		expect(items[0]?.getAttribute("aria-checked")).toBe("true");
+		expect(items[1]?.textContent).toContain("fav-b"); // no catalog name — last segment
+		expect(items[1]?.textContent).toContain("prov/fav-b");
+		expect(items[2]?.textContent).toContain("Fav A");
+		expect(pop?.textContent).toContain("All models…");
+		// Picking a favorite writes the knob and closes the menu.
+		await click(popItem("Fav A"));
+		expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
+		expect(dom.container.querySelector(".model-pop")).toBeNull();
+	});
+
+	test("All models… opens the picker sheet; a pick writes the knob", async () => {
+		await mount();
+		await click(knob());
+		await click(popItem("All models…"));
+		expect(dom.container.querySelector(".model-pop")).toBeNull();
+		const sheet = dom.container.querySelector(".msheet");
+		expect(sheet).not.toBeNull();
+		expect(sheet?.getAttribute("aria-label")).toBe("Model for this conversation");
+		expect(sheet?.textContent).toContain("Other Model");
+		const row = [...sheet!.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Other Model"),
+		);
+		await click(row);
+		expect(configPatches).toEqual([{ model: "prov/other" }]);
+		expect(dom.container.querySelector(".msheet")).toBeNull();
+	});
+
+	test("a star in the sheet POSTs the toggle and refreshes favorites", async () => {
+		await mount();
+		await click(knob());
+		await click(popItem("All models…"));
+		const sheet = dom.container.querySelector(".msheet")!;
+		// The catalog's non-favorite offers an open star; the favorited
+		// rows show filled ones.
+		expect(sheet.querySelector('[aria-label="unfavorite prov/fav-a"]')).not.toBeNull();
+		await click(sheet.querySelector('[aria-label="favorite prov/other"]'));
+		expect(favPosts).toEqual([{ ref: "prov/other", on: true }]);
+		// The response's favorites update the sheet's stars.
+		expect(sheet.querySelector('[aria-label="unfavorite prov/other"]')).not.toBeNull();
+		// And the next menu open lists the new favorite.
+		await click(knob());
+		expect(popItem("Other Model")).toBeTruthy();
 	});
 });

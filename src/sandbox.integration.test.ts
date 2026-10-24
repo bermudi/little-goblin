@@ -3,7 +3,7 @@
 // and removes exactly what it creates.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxConfigSchema } from "./config.ts";
@@ -103,17 +103,15 @@ describe.skipIf(!RUN)("sandbox against real podman", () => {
 		);
 	});
 
-	test("export reads the container's file content through a container symlink", async () => {
+	test("export refuses a container symlink — regular files only", async () => {
 		await call({ action: "exec", command: "ln -sf /etc/passwd /work/pw-link" });
 		const out = await call({ action: "export", from: "/work/pw-link", to: "passwd-copy" });
-		expect(out.error).toBeUndefined();
-		const got = readFileSync(join(ws, "passwd-copy"), "utf8");
-		// The bytes are the CONTAINER's /etc/passwd — alpine's tiny passwd
-		// file, not the host's (which would carry the operator's user).
-		expect(got).toContain("root:x:0:0:root:");
-		expect(got).not.toContain("daniel");
-		const inside = await call({ action: "exec", command: "cat /etc/passwd" });
-		expect(inside.output).toBe(got);
+		// design/sandbox.md → The tool → export: non-regular files are
+		// refused outright, leaf symlinks included (unit-pinned in
+		// sandboxes.test.ts "a leaf symlink is refused").
+		expect(out.error).toContain("not a regular file");
+		expect(existsSync(join(ws, "passwd-copy"))).toBe(false);
+		expect(podmanSync(["inspect", name]).code).toBe(0);
 	});
 
 	test("a timed-out exec restarts the sandbox — background dies, files stay", async () => {

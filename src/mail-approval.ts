@@ -213,8 +213,19 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 			log.error("outbox expiry sweep failed", err);
 			return;
 		}
+		// The row is decided before the lane stamps it — a settle failure
+		// loses only the stamp, but it must surface: every error path logs.
 		await Promise.allSettled(
-			rows.map((row) => laneFor(row).settle(row, `⌛ Draft #${row.id} expired — never sent.`)),
+			rows.map(async (row) => {
+				try {
+					await laneFor(row).settle(row, `⌛ Draft #${row.id} expired — never sent.`);
+				} catch (err) {
+					log.error("mail expiry settle failed", err, {
+						outbox: row.id,
+						target: row.target,
+					});
+				}
+			}),
 		);
 		if (rows.length > 0) log.info("outbox expiry swept", { count: rows.length });
 	};

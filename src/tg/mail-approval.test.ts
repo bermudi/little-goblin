@@ -21,6 +21,7 @@ import {
 	type TelegramMailApproval,
 } from "./mail-approval.ts";
 import { tmpDb } from "../testkit.ts";
+import { setLogFile, setLogWriter } from "../log.ts";
 
 test("draft chunk boundaries never split an emoji", () => {
 	const chunks = chunkDraft(`${"x".repeat(3799)}🙂tail`);
@@ -648,6 +649,58 @@ describe("the expiry sweep", () => {
 		expect(calls.edits).toEqual([
 			{ chat: -100, message: 555, text: expect.stringContaining("expired") },
 		]);
+		outbox.close();
+	});
+
+	test("a lane settle failure in the sweep surfaces as an error line, never a swallow", async () => {
+		const outbox = openOutbox(tmpDb("goblin-mailtap-"));
+		const stale = outbox.queue(
+			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
+		const throwing: MailApprovalLane = {
+			present: async () => ({ kind: "posted", messageId: null, surface: "x" }),
+			notice: async () => {},
+			settle: async () => {
+				throw new Error("app conversation gone");
+			},
+			strip: async () => {},
+		};
+		const captured: string[] = [];
+		setLogFile("approval-sweep-settle-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const gate = startMailApproval(
+				{
+					outbox,
+					sender: () => fakeSender(),
+					reader: () => fakeReader(),
+					lanes: { app: throwing, telegram: throwing },
+					now: () => NOW,
+				},
+				60_000,
+			);
+			gates.push(gate);
+			await gate.sweep();
+			await Bun.sleep(10);
+			// The row was decided before the stamp — the state is right;
+			// the failure must still surface.
+			expect(outbox.get(stale.id)!.status).toBe("expired");
+			const lines = captured
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.filter((l) => l.msg === "mail expiry settle failed");
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toMatchObject({
+				level: "error",
+				outbox: stale.id,
+				error: "app conversation gone",
+			});
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
 		outbox.close();
 	});
 

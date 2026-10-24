@@ -101,6 +101,12 @@ const planOf = (payload: Record<string, unknown> | null): string | null =>
 const accountIdOf = (payload: Record<string, unknown> | null): string | null =>
 	nestedString(payload, "https://api.openai.com/auth", "chatgpt_account_id");
 
+interface StartingLogin {
+	id: number;
+	abort: AbortController;
+	result: Promise<ChatGptStatus>;
+}
+
 interface PendingLogin {
 	id: number;
 	deviceAuthId: string;
@@ -163,11 +169,14 @@ export function createChatGptLogin(deps: {
 	const now = deps.now ?? (() => Date.now());
 	const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
 
+	let starting: StartingLogin | null = null;
 	let pending: PendingLogin | null = null;
 	let lastError: string | null = null;
 	let seq = 0;
 
 	function clearPending(): void {
+		starting?.abort.abort();
+		starting = null;
 		pending?.abort.abort();
 		pending = null;
 	}
@@ -203,6 +212,17 @@ export function createChatGptLogin(deps: {
 			clearPending();
 			lastError = "the pairing code expired — sign in again";
 			log.info("chatgpt login expired");
+		}
+		if (starting !== null) {
+			return {
+				state: "pending",
+				source: null,
+				email: null,
+				plan: null,
+				pending: null, // the user code has not arrived yet
+				error: null,
+				pinned,
+			};
 		}
 		const resolved = resolveCodexAuthFile(codexAuthFile());
 		const file = readTokens(resolved.path);
@@ -256,6 +276,9 @@ export function createChatGptLogin(deps: {
 		return status();
 	}
 
+	// Every network/body await checks ownership on both success and failure.
+	// Abort alone is insufficient: a response or body may settle after cancel.
+	// Only the current flow may report a failure; stale flows cannot clear it.
 	async function pollLoop(id: number): Promise<void> {
 		while (pending?.id === id) {
 			if (now() >= pending.deadlineMs) {
@@ -279,10 +302,11 @@ export function createChatGptLogin(deps: {
 					signal: AbortSignal.any([p.abort.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
 				});
 			} catch (err) {
-				if (p.abort.signal.aborted) return; // cancelled or superseded mid-flight
+				if (pending?.id !== id) return; // cancelled or superseded mid-flight
 				fail("poll", "device token poll failed", { err });
 				return;
 			}
+			if (pending?.id !== id) return;
 			if (res.status === 403 || res.status === 404) continue; // still pending
 			if (!res.ok) {
 				fail("poll", `device token poll failed: HTTP ${res.status}`, { status: res.status });
@@ -292,9 +316,11 @@ export function createChatGptLogin(deps: {
 			try {
 				grant = deviceTokenSchema.parse(await res.json());
 			} catch (err) {
+				if (pending?.id !== id) return;
 				fail("poll", "device token poll answered an unexpected body", { err });
 				return;
 			}
+			if (pending?.id !== id) return;
 			// The exact field set is the standard PKCE authorization_code
 			// grant, form-encoded — derived from codex's server.rs
 			// (TokenEncoding::Form). Posted exactly once: the code is
@@ -314,10 +340,11 @@ export function createChatGptLogin(deps: {
 					signal: AbortSignal.any([p.abort.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
 				});
 			} catch (err) {
-				if (p.abort.signal.aborted) return;
+				if (pending?.id !== id) return;
 				fail("exchange", "token exchange request failed", { err });
 				return;
 			}
+			if (pending?.id !== id) return;
 			if (!tokens.ok) {
 				fail("exchange", `token exchange failed: HTTP ${tokens.status}`, {
 					status: tokens.status,
@@ -328,9 +355,11 @@ export function createChatGptLogin(deps: {
 			try {
 				t = tokenResponseSchema.parse(await tokens.json());
 			} catch (err) {
+				if (pending?.id !== id) return;
 				fail("exchange", "token exchange answered an unexpected body", { err });
 				return;
 			}
+			if (pending?.id !== id) return;
 			const payload = jwtPayload(t.id_token);
 			const accountId = accountIdOf(payload);
 			try {
@@ -373,75 +402,93 @@ export function createChatGptLogin(deps: {
 		}
 	}
 
+	async function requestCode(id: number, abort: AbortController): Promise<ChatGptStatus> {
+		// start() installs ownership before scheduling this request. Cancellation
+		// can win even before the first fetch, or while its body is being read.
+		if (starting?.id !== id) return status();
+		let res: Response;
+		try {
+			res = await fetchImpl(USERCODE_URL, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
+				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
+			});
+		} catch (err) {
+			if (starting?.id !== id) return status(); // cancellation owns the outcome
+			return fail("usercode", "device login request failed", { err });
+		}
+		if (starting?.id !== id) return status();
+		if (res.status === 404) {
+			return fail("usercode", "device login is not enabled for this client", {
+				status: 404,
+			});
+		}
+		if (!res.ok) {
+			return fail("usercode", `device login request failed: HTTP ${res.status}`, {
+				status: res.status,
+			});
+		}
+		let parsed: z.infer<typeof usercodeSchema>;
+		try {
+			parsed = usercodeSchema.parse(await res.json());
+		} catch (err) {
+			if (starting?.id !== id) return status(); // cancellation owns the outcome
+			return fail("usercode", "device login answered an unexpected body", { err });
+		}
+		if (starting?.id !== id) return status();
+		const userCode = parsed.user_code ?? parsed.usercode;
+		if (userCode === undefined) {
+			return fail("usercode", "device login answered no user code");
+		}
+		const intervalS = Number(parsed.interval ?? MIN_POLL_INTERVAL_S);
+		const intervalMs =
+			Math.max(
+				MIN_POLL_INTERVAL_S,
+				Number.isFinite(intervalS) && intervalS > 0 ? intervalS : MIN_POLL_INTERVAL_S,
+			) * 1000;
+		const deadlineMs = now() + LOGIN_DEADLINE_MS;
+		pending = {
+			id,
+			deviceAuthId: parsed.device_auth_id,
+			userCode,
+			expiresAt:
+				parsed.expires_at !== undefined
+					? String(parsed.expires_at)
+					: new Date(deadlineMs).toISOString(),
+			intervalMs,
+			deadlineMs,
+			abort,
+		};
+		starting = null;
+		log.info("chatgpt login started");
+		// Backgrounded — the client polls goblin's status, not this loop.
+		pollLoop(id).catch((err: unknown) => {
+			log.error("chatgpt login poll crashed", err);
+			// A detached loop must not fail a later login after cancellation.
+			if (pending?.id !== id) return;
+			fail("poll", "login polling crashed");
+		});
+		return status();
+	}
+
 	return {
 		status,
-		async start(): Promise<ChatGptStatus> {
-			// A live pending login is returned as-is — a second start must
-			// not request a second pairing code.
-			if (pending !== null && now() < pending.deadlineMs) return status();
+		start(): Promise<ChatGptStatus> {
+			// Own the entire flow, including the initial user-code request. Starts
+			// arriving before it resolves share one result and one controller.
+			if (starting !== null) return starting.result;
+			if (pending !== null && now() < pending.deadlineMs) return Promise.resolve(status());
 			clearPending();
 			lastError = null;
-			let res: Response;
-			try {
-				res = await fetchImpl(USERCODE_URL, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
-					signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-				});
-			} catch (err) {
-				return fail("usercode", "device login request failed", { err });
-			}
-			if (res.status === 404) {
-				return fail("usercode", "device login is not enabled for this client", {
-					status: 404,
-				});
-			}
-			if (!res.ok) {
-				return fail("usercode", `device login request failed: HTTP ${res.status}`, {
-					status: res.status,
-				});
-			}
-			let parsed: z.infer<typeof usercodeSchema>;
-			try {
-				parsed = usercodeSchema.parse(await res.json());
-			} catch (err) {
-				return fail("usercode", "device login answered an unexpected body", { err });
-			}
-			const userCode = parsed.user_code ?? parsed.usercode;
-			if (userCode === undefined) {
-				return fail("usercode", "device login answered no user code");
-			}
-			const intervalS = Number(parsed.interval ?? MIN_POLL_INTERVAL_S);
-			const intervalMs =
-				Math.max(
-					MIN_POLL_INTERVAL_S,
-					Number.isFinite(intervalS) && intervalS > 0 ? intervalS : MIN_POLL_INTERVAL_S,
-				) * 1000;
-			const deadlineMs = now() + LOGIN_DEADLINE_MS;
-			pending = {
-				id: ++seq,
-				deviceAuthId: parsed.device_auth_id,
-				userCode,
-				expiresAt:
-					parsed.expires_at !== undefined
-						? String(parsed.expires_at)
-						: new Date(deadlineMs).toISOString(),
-				intervalMs,
-				deadlineMs,
-				abort: new AbortController(),
-			};
-			log.info("chatgpt login started");
-			const id = pending.id;
-			// Backgrounded — the client polls goblin's status, not this loop.
-			pollLoop(id).catch((err: unknown) => {
-				log.error("chatgpt login poll crashed", err);
-				fail("poll", "login polling crashed");
-			});
-			return status();
+			const id = ++seq;
+			const abort = new AbortController();
+			const result = Promise.resolve().then(() => requestCode(id, abort));
+			starting = { id, abort, result };
+			return result;
 		},
 		cancel(): ChatGptStatus {
-			if (pending !== null) {
+			if (starting !== null || pending !== null) {
 				clearPending();
 				log.info("chatgpt login cancelled");
 			}
@@ -462,7 +509,7 @@ export function createChatGptLogin(deps: {
 }
 
 // After a successful sign-in: a config with no codex provider gains
-// providers.codex = { kind: "codex" } — the same write pattern as the
+// a provider under the first unused codex name — the same write pattern as the
 // app favorites route.
 export function ensureCodexProvider(
 	configRef: { current: Config },
@@ -470,13 +517,15 @@ export function ensureCodexProvider(
 ): void {
 	const base = loadConfig() ?? parseConfig(configRef.current);
 	if (Object.values(base.providers).some((p) => p.kind === "codex")) return;
+	let name = "codex";
+	for (let suffix = 2; Object.hasOwn(base.providers, name); suffix++) name = `codex-${suffix}`;
 	const merged = parseConfig({
 		...base,
-		providers: { ...base.providers, codex: { kind: "codex" } },
+		providers: { ...base.providers, [name]: { kind: "codex" } },
 	});
 	writeConfig(merged);
 	const fresh = loadConfig();
 	if (fresh !== null) configRef.current = fresh;
 	onConfigWritten();
-	log.info("codex provider added");
+	log.info("codex provider added", { provider: name });
 }

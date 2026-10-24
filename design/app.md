@@ -290,18 +290,32 @@ as read-only text (System, the memory card).
   (pinned — in-app sign-in refused) > goblin's file > the CLI's file (the
   legacy path keeps an existing install working until its first in-app
   sign-in). Sign-out removes only goblin's file. A first sign-in adds
-  `providers.codex` when no codex provider exists.
+  a codex provider under the first unused name (`codex`, `codex-2`, …)
+  when none exists; an existing service named `codex` is never replaced.
+  A sign-in action returning pending starts status polling immediately;
+  completion reloads clean settings so the new provider is visible.
 - **Off parks, never deletes.** Switching off memory, transcription,
   vision, image, sandbox, subagents, scripting, delegation, guest or
   reviewer moves the block under `parked`; on restores it whole, file-only
   fields included. Runtime consumers and `authReferences` never read
-  `parked`. A block with no parked copy and no safe default (memory,
-  subagents, delegation) reports `needs-setup` with its hint; the switch
-  is disabled rather than inventing config.
+  `parked`. A block with no parked copy and no safe default reports
+  `needs-setup` with its hint; a bare switch cannot invent config. A save
+  may supply the block together with its enable switch (including a
+  first-time vision, image or transcription setup). Supplied blocks win
+  over parked copies and defaults; the whole resulting config, including
+  provider changes in that save, must validate before anything is written.
+  The editor hydrates its restoration stash from parked content on load;
+  enabling transcription or memory restores that content into the draft,
+  so its switch and subsequent saves reflect the requested state.
 - Sections: Models · Accounts & keys · Web · Voice · Memory · Telegram ·
   Access · Capabilities · System. Boot-pinned changes surface as one
   restart banner from the config-pins restart hints, not per-field
-  captions.
+  captions. This includes all reviewer changes: its switch persists and
+  parks/restores config, but the reviewer itself is wired only at boot;
+  enabling or disabling it takes an approved restart (design/skills.md →
+  Skill reviewer). Failed status checks preserve last-known restart hints
+  and show explicit uncertainty; unavailable status never confirms that
+  a saved change needs no restart.
 
 ## Spin-off (ruling 2026-10-03)
 

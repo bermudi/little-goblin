@@ -2,12 +2,13 @@
 // mocks. The poll loop is driven by an injected clock and instant
 // sleep; writes land under a throwaway GOBLIN_HOME.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Config, parseConfig, paths } from "../../config.ts";
-import { useHome } from "../../testkit.ts";
+import { spawnSync } from "node:child_process";
+import { type Config, loadConfig, parseConfig, paths, writeConfig } from "../../config.ts";
+import { deferred, useHome, waitUntil } from "../../testkit.ts";
 import { codexCredentials, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
 import { createChatGptLogin, ensureCodexProvider } from "./login.ts";
 
@@ -47,16 +48,22 @@ function rig(opts: {
 	config?: () => Config;
 }) {
 	const home = useHome("goblin-login-");
-	// homedir() backs the codex-cli fallback — pin HOME at the throwaway
-	// home too (tests that need determinism pin authFile instead).
-	process.env.HOME = home;
+	// Bun caches homedir() at process start: changing HOME here cannot
+	// isolate the CLI fallback. Pin the default fixture to goblin's file
+	// instead; the CLI-adoption test uses a child with a fixture HOME.
 	let t = 1_000_000;
 	const calls: { url: string; init: RequestInit | undefined }[] = [];
 	const fetchImpl: FetchLike = async (url, init) => {
 		calls.push({ url: String(url), init });
 		return opts.respond(String(url), init);
 	};
-	const cfg = opts.config ?? (() => baseConfig());
+	const cfg =
+		opts.config ??
+		(() =>
+			baseConfig({
+				providers: { codex: { kind: "codex", authFile: paths.codexAuth() } },
+				model: "codex/m",
+			}));
 	const login = createChatGptLogin({
 		config: cfg,
 		fetch: fetchImpl,
@@ -102,12 +109,7 @@ function happyFlow(url: string): Response {
 	throw new Error(`unexpected ${url}`);
 }
 
-const REAL_HOME = process.env.HOME;
-
 describe("chatgpt device login", () => {
-	afterEach(() => {
-		process.env.HOME = REAL_HOME;
-	});
 	test("start → pending → poll 403s → exchange once → signed-in file", async () => {
 		let polls = 0;
 		const { calls, login } = rig({
@@ -135,7 +137,7 @@ describe("chatgpt device login", () => {
 		await flush();
 		const done = login.status();
 		expect(done.state).toBe("signed-in");
-		expect(done.source).toBe("goblin");
+		expect(done.source).toBe("custom");
 		expect(done.email).toBe("op@example.com");
 		expect(done.plan).toBe("pro");
 		expect(polls).toBe(3);
@@ -173,6 +175,122 @@ describe("chatgpt device login", () => {
 			expect(wire).not.toContain(leak);
 		}
 	});
+
+	test("concurrent starts share the initial request and its result", async () => {
+		const response = deferred<Response>();
+		const { calls, login } = rig({ respond: () => response.promise });
+		const first = login.start();
+		const second = login.start();
+		expect(second).toBe(first);
+		expect(login.status()).toMatchObject({ state: "pending", pending: null });
+		await waitUntil(() => calls.length === 1, "one user-code request");
+		response.resolve(happyFlow(calls[0]!.url));
+		const [a, b] = await Promise.all([first, second]);
+		expect(a).toEqual(b);
+		expect(a.pending?.userCode).toBe("ABCD-1234");
+		login.cancel();
+		await flush();
+		expect(calls.filter((c) => c.url.endsWith("/deviceauth/usercode"))).toHaveLength(1);
+	});
+
+	for (const failure of ["network", "json", "schema"]) {
+		test(`an active initial ${failure} failure is shared, reported, and allows a fresh start`, async () => {
+			let usercodes = 0;
+			const { login } = rig({
+				respond: (url) => {
+					if (url.endsWith("/deviceauth/usercode") && ++usercodes === 1) {
+						if (failure === "network") throw new Error("fixture network failure");
+						return failure === "json" ? new Response("not JSON") : json({});
+					}
+					return happyFlow(url);
+				},
+			});
+			const first = login.start();
+			expect(login.start()).toBe(first);
+			const failed = await first;
+			expect(failed.state).toBe("error");
+			expect(failed.error).toContain(failure === "network" ? "request failed" : "unexpected body");
+			expect((await login.start()).state).toBe("pending");
+			expect(usercodes).toBe(2);
+			login.cancel();
+			await flush();
+		});
+	}
+
+	test("cancellation before the initial request is scheduled prevents the fetch", async () => {
+		const { calls, login } = rig({ respond: happyFlow });
+		const started = login.start();
+		expect(login.cancel().state).toBe("signed-out");
+		expect((await started).state).toBe("signed-out");
+		expect(calls).toHaveLength(0);
+	});
+
+	// Hold either response headers or streamed JSON at every network boundary.
+	// The fake deliberately ignores abort so ownership, not fetch cooperation,
+	// must prevent late success/error from resurrecting or failing a new login.
+	for (const endpoint of ["deviceauth/usercode", "deviceauth/token", "oauth/token"]) {
+		for (const boundary of ["fetch", "body"] as const) {
+			for (const action of ["cancel", "signOut"] as const) {
+				for (const outcome of ["success", "error"] as const) {
+					test(`${action} fences late ${outcome} at ${endpoint} ${boundary}`, async () => {
+						const response = deferred<Response>();
+						const reached = deferred();
+						let body: ReadableStreamDefaultController<Uint8Array> | undefined;
+						let signal: AbortSignal | null | undefined;
+						let heldUrl = "";
+						let usercodes = 0;
+						let signedIn = 0;
+						const { calls, login } = rig({
+							onSignedIn: () => signedIn++,
+							respond: (url, init) => {
+								if (url.endsWith("/deviceauth/usercode") && ++usercodes > 1) {
+									return new Promise<Response>(() => {}); // replacement stays starting
+								}
+								if (!url.endsWith(`/${endpoint}`)) return happyFlow(url);
+								heldUrl = url;
+								signal = init?.signal;
+								reached.resolve();
+								if (boundary === "fetch") return response.promise;
+								return new Response(
+									new ReadableStream<Uint8Array>({
+										start(controller) {
+											body = controller;
+										},
+									}),
+								);
+							},
+						});
+						const started = login.start();
+						await reached.promise;
+						expect(signal?.aborted).toBe(false);
+						expect(login[action]().state).toBe("signed-out");
+						expect(signal?.aborted).toBe(true);
+						login.start();
+						await waitUntil(() => usercodes === 2, "replacement request");
+						if (boundary === "fetch") {
+							if (outcome === "error") response.reject(new Error("late network failure"));
+							else response.resolve(happyFlow(heldUrl));
+						} else if (outcome === "error") {
+							body!.error(new Error("late body failure"));
+						} else {
+							body!.enqueue(new TextEncoder().encode(await happyFlow(heldUrl).text()));
+							body!.close();
+						}
+						await started;
+						await flush();
+						expect(login.status()).toMatchObject({ state: "pending", pending: null, error: null });
+						expect(existsSync(paths.codexAuth())).toBe(false);
+						expect(signedIn).toBe(0);
+						// No next stage may run after the held boundary lost ownership.
+						expect(calls).toHaveLength(
+							endpoint === "deviceauth/usercode" ? 2 : endpoint === "deviceauth/token" ? 3 : 4,
+						);
+						login.cancel();
+					});
+				}
+			}
+		}
+	}
 
 	test("a failed exchange is reported once and never retried", async () => {
 		let exchanges = 0;
@@ -254,7 +372,7 @@ describe("chatgpt device login", () => {
 		await login.start();
 		await flush();
 		expect(login.status().state).toBe("signed-in");
-		expect(login.status().source).toBe("goblin");
+		expect(login.status().source).toBe("custom");
 	});
 
 	test("cancel stops the poll and returns to signed-out", async () => {
@@ -279,29 +397,45 @@ describe("chatgpt device login", () => {
 		expect(polls).toBe(seen);
 	});
 
-	test("signOut removes goblin's file only — the CLI's file is adopted", async () => {
-		const { home, login } = rig({ respond: happyFlow });
+	test("signOut removes goblin's file only — the CLI's file is adopted", () => {
+		const home = useHome("goblin-login-");
 		const file = paths.codexAuth();
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, JSON.stringify({ tokens: { access_token: "x" } }), { mode: 0o600 });
-		// A codex-cli file under the pinned HOME keeps working — signOut
-		// must never touch it, and resolution falls through to it.
 		const cliFile = join(home, ".codex", "auth.json");
 		mkdirSync(dirname(cliFile), { recursive: true });
 		writeFileSync(cliFile, JSON.stringify({ tokens: { access_token: "cli-at" } }));
-		expect(login.status().state).toBe("signed-in");
-		expect(login.status().source).toBe("goblin");
-		const s = login.signOut();
+		const resultFile = join(home, "status.json");
+		// Set HOME before Bun starts: no read or write can reach live CLI auth.
+		const child = spawnSync(
+			process.execPath,
+			[
+				"--eval",
+				`
+			import { writeFileSync } from "node:fs";
+			import { parseConfig } from "./src/config.ts";
+			import { createChatGptLogin } from "./src/agent/codex/login.ts";
+			const login = createChatGptLogin({ config: () => parseConfig(${JSON.stringify(baseConfig())}) });
+			writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({ before: login.status(), after: login.signOut() }));
+		`,
+			],
+			{ env: { ...process.env, HOME: home, GOBLIN_HOME: home }, encoding: "utf8" },
+		);
+		expect(child.error).toBeUndefined();
+		expect(child.status).toBe(0);
+		expect(child.stderr).toBe("");
+		expect(JSON.parse(readFileSync(resultFile, "utf8"))).toMatchObject({
+			before: { state: "signed-in", source: "goblin" },
+			after: { state: "signed-in", source: "codex-cli" },
+		});
 		expect(existsSync(file)).toBe(false);
 		expect(readFileSync(cliFile, "utf8")).toContain("cli-at");
-		expect(s.state).toBe("signed-in");
-		expect(s.source).toBe("codex-cli");
 	});
 
 	test("resolveCodexAuthFile: custom > goblin > codex-cli", () => {
 		useHome("goblin-login-");
 		expect(resolveCodexAuthFile("~/mine.json")).toEqual({
-			path: join(process.env.HOME ?? "", "mine.json"),
+			path: join(homedir(), "mine.json"),
 			source: "custom",
 		});
 		expect(resolveCodexAuthFile().source).toBe("codex-cli");
@@ -309,6 +443,30 @@ describe("chatgpt device login", () => {
 		writeFileSync(paths.codexAuth(), "{}", { mode: 0o600 });
 		expect(resolveCodexAuthFile().source).toBe("goblin");
 		expect(resolveCodexAuthFile("/x/y.json").source).toBe("custom");
+	});
+
+	test("provider creation chooses an unused name without changing existing routes", () => {
+		useHome("goblin-login-");
+		const base = baseConfig({
+			providers: {
+				codex: { kind: "openrouter", auth: "existing-key" },
+				"codex-2": { kind: "responses", baseUrl: "https://fixture.invalid/v1", auth: "second-key" },
+			},
+			model: "codex/existing-model",
+		});
+		writeConfig(base);
+		// Disk is authoritative, including names not present in the boot snapshot.
+		const configRef = { current: baseConfig() };
+		let writes = 0;
+		ensureCodexProvider(configRef, () => writes++);
+		expect(configRef.current.providers).toEqual({
+			...base.providers,
+			"codex-3": { kind: "codex" },
+		});
+		expect(configRef.current.model).toBe(base.model);
+		expect(loadConfig()).toEqual(configRef.current);
+		ensureCodexProvider(configRef, () => writes++);
+		expect(writes).toBe(1);
 	});
 
 	test("a successful sign-in adds providers.codex when none exists", async () => {

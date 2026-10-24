@@ -177,6 +177,30 @@ describe("ChatGptAccount", () => {
 		expect(container.textContent).toContain("Signed in as new@example.test");
 	});
 
+	test("starting sign-in from signed-out starts polling without a parent rerender", async () => {
+		statusQueue = [
+			st({}),
+			st({
+				state: "pending",
+				pending: {
+					userCode: "WXYZ-1234",
+					verificationUrl: "https://auth.openai.com/codex/device",
+					expiresAt: new Date(Date.now() + 600_000).toISOString(),
+				},
+			}),
+			st({ state: "signed-in", source: "goblin", email: "new@example.test" }),
+		];
+		await mountCard();
+		await click(button("Sign in with ChatGPT"));
+		expect(container.textContent).toContain("WXYZ-1234");
+		await waitFor(() => signedInCalls === 1, "action-started login completion");
+		expect(container.textContent).toContain("Signed in as new@example.test");
+		const completedCalls = calls.length;
+		await settle(3100);
+		expect(calls).toHaveLength(completedCalls);
+		expect(signedInCalls).toBe(1);
+	}, 10_000);
+
 	test("sign out POSTs logout and shows signed-out", async () => {
 		statusQueue = [st({ state: "signed-in", source: "goblin", email: "op@example.test" }), st({})];
 		await mountCard();

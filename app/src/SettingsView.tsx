@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import type {
 	ConfigResponse,
@@ -108,6 +108,7 @@ export function SettingsView({
 	const [providerPresets, setProviderPresets] = useState<ProviderPreset[]>([]);
 	const [capStates, setCapStates] = useState<ConfigResponse["capabilities"] | null>(null);
 	const [status, setStatus] = useState<OperatorStatusResponse | null>(null);
+	const [statusErr, setStatusErr] = useState<string | null>(null);
 	const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalog[]>([]);
 	const [hasAppToken, setHasAppToken] = useState(false);
 	// A stored key's record joins the picker list so the "not in the
@@ -211,6 +212,17 @@ export function SettingsView({
 					return;
 				}
 				const { draft: d, providers } = draftFromConfig(data.config, data.capabilities);
+				// Parked content belongs in the restoration stash, not the active
+				// draft: switches must stay off until the operator enables them.
+				const restored = draftFromConfig({ ...data.config, ...data.config.parked }).draft;
+				last.current = {
+					tts: restored.tts,
+					transcription: restored.transcription,
+					vision: restored.vision,
+					search: restored.search,
+					fetch: restored.fetch,
+					memory: restored.memory,
+				};
 				setCapStates(data.capabilities ?? null);
 				setHasAppToken(data.config.appToken !== undefined);
 				setDraft(d);
@@ -247,23 +259,27 @@ export function SettingsView({
 		};
 	}, [token, reloadTick]);
 
-	// The restart banner's source — fetched once and after every save.
-	const refreshStatus = () => {
-		getServiceStatus(token)
-			.then((s) => setStatus(s))
-			.catch(() => setStatus(null));
-	};
+	// UI boundary: a network/HTTP/decoding failure cannot establish that
+	// no restart is needed. Keep known hints and show the failed check.
 	const statusSeq = useRef(0);
-	useEffect(() => {
+	const refreshStatus = useCallback(async () => {
 		const seq = ++statusSeq.current;
-		getServiceStatus(token)
-			.then((s) => {
-				if (seq === statusSeq.current) setStatus(s);
-			})
-			.catch(() => {
-				if (seq === statusSeq.current) setStatus(null);
-			});
-	}, [token, reloadTick]);
+		try {
+			const s = await getServiceStatus(token);
+			if (seq !== statusSeq.current) return;
+			setStatus(s);
+			setStatusErr(null);
+		} catch (e) {
+			if (seq !== statusSeq.current) return;
+			setStatusErr(e instanceof Error ? e.message : "Couldn't reach goblin.");
+		}
+	}, [token]);
+	useEffect(() => {
+		void refreshStatus();
+		return () => {
+			statusSeq.current++;
+		};
+	}, [refreshStatus, reloadTick]);
 
 	// Thinking-level capability lookups — kind/base/model from the
 	// form's own provider state, debounced.
@@ -282,6 +298,8 @@ export function SettingsView({
 					const r = await getThinkingLevels(token, p.kind, ref.slice(slash + 1), base);
 					return { values: r.levels, unavailable: false };
 				} catch {
+					// Picker boundary: a failed capability lookup is explicitly
+					// marked unavailable, not mistaken for known model support.
 					return { values: [...THINKING_ORDER], unavailable: true };
 				}
 			};
@@ -461,9 +479,11 @@ export function SettingsView({
 						) as ConfigResponse["capabilities"],
 				);
 			}
-			refreshStatus();
+			void refreshStatus();
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
+			// UI save boundary: surface HTTP/network/decoding failures and
+			// retain the dirty draft; saveFailure marks safe retries.
 			setNotice({ kind: "err", ...saveFailure(e) });
 		} finally {
 			setSaving(false);
@@ -680,6 +700,13 @@ export function SettingsView({
 						‹ Settings
 					</button>
 					{departureDirty && <span className="dirty-pill">unsaved</span>}
+				</div>
+			)}
+
+			{statusErr !== null && (
+				<div className="card error" role="alert">
+					Couldn't check service status: {statusErr} Restart requirements are unconfirmed
+					{status !== null ? "; any restart hints shown are from the last successful check." : "."}
 				</div>
 			)}
 

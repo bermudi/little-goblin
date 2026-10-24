@@ -365,6 +365,12 @@ async function saveConfig(
 				continue;
 			}
 			if (candidate[k] !== undefined) continue;
+			// First-time setup may arrive with the enable switch. The body
+			// merge below wins over parked/default blocks; validate that
+			// supplied value with the WHOLE resulting config before writing
+			// (it may also introduce the model's provider).
+			const supplied = (body as Record<string, unknown>)[k];
+			if (supplied !== undefined && supplied !== "") continue;
 			if (parked[k] !== undefined) {
 				candidate[k] = parked[k];
 				delete parked[k];

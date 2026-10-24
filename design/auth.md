@@ -98,3 +98,19 @@ consumption reads encrypted local snapshots, not Pass. Rulings:
   Pass audit records sync/task accesses). A failed sync can keep old keys
   available until a successful refresh; upstream revocation/rotation is the
   real authority change. Grant narrowly.
+
+### ChatGPT device-code ownership
+
+The in-app ChatGPT login (`src/agent/codex/login.ts`; settings surface in
+`design/app.md` → Settings) owns the flow before its first user-code request.
+Concurrent starts share that request and its result. Cancel and sign-out
+abort and revoke ownership across both response fetches and body reads;
+late success or failure cannot install a pairing, exchange a grant, write
+credentials, or change a successor login's state. Aborting network I/O is
+an optimization, not the authority fence.
+
+After sign-in, an existing provider of kind `codex` is reused without config
+changes. If none exists, creation chooses the first unused name: `codex`,
+then `codex-2`, `codex-3`, and so on. A different provider already named
+`codex` is an operator-owned route, not permission to replace it; its config
+and model references stay unchanged.

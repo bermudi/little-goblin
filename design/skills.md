@@ -274,7 +274,15 @@ job (tune it, don't duplicate it).
   back by review id and reports proposals against disk (still proposed /
   installed / gone). No UI. Good/bad turn labels don't exist yet — the
   field ships empty until they do.
-- **Config.** Optional `reviewer` block; absent = feature off.
-  Hand-edited-only, like delegation and mail — no mini-app surface; the
-  gate's auth and thresholds are boot-captured, the review model
-  resolves live per review.
+- **Config.** Optional `reviewer` block; absent at boot = feature off.
+  Settings can park/restore the block; detailed tuning remains a bootstrap
+  or recovery file edit. Reviewer wiring is boot-bound: enabling,
+  disabling, or changing any reviewer configuration requires an approved
+  restart, reported by the shared config-pins warnings and restart hints.
+  A save never creates, replaces or removes the running reviewer: until
+  restart, an enabled-at-boot reviewer continues running even when its
+  block is parked, and an absent-at-boot reviewer stays absent after an
+  enable save. Gate auth, thresholds, queue cap and evidence limits are
+  boot-captured. The review model still resolves live per review, but the
+  whole block is conservatively restart-pinned; a live model lookup does
+  not make reviewer lifecycle or tuning hot-swappable.

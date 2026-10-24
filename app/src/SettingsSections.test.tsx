@@ -26,6 +26,8 @@ let savedBodies: ConfigPostBody[] = [];
 let settings: ReturnType<typeof parseConfig>;
 let caps: ReturnType<typeof CAPS>;
 let chatgptStatus: Record<string, unknown>;
+let statusFailure: Response | null;
+let restartHints: string[];
 const realFetch = globalThis.fetch;
 const globals = new Map<string, PropertyDescriptor | undefined>();
 
@@ -80,6 +82,8 @@ beforeEach(() => {
 	savedBodies = [];
 	settings = BASE;
 	caps = CAPS();
+	statusFailure = null;
+	restartHints = [];
 	chatgptStatus = {
 		state: "signed-out",
 		source: null,
@@ -142,6 +146,8 @@ beforeEach(() => {
 					headers: { "content-type": "application/json" },
 				}),
 			);
+		if (url === "/api/app/status" && statusFailure !== null)
+			return Promise.resolve(statusFailure.clone());
 		if (url === "/api/app/status")
 			return Promise.resolve(
 				new Response(
@@ -149,7 +155,7 @@ beforeEach(() => {
 						version: "0.0.0-test",
 						startedAt: "2026-01-01T00:00:00.000Z",
 						uptimeSec: 60,
-						restartHints: [],
+						restartHints,
 						memory: { state: "off", detail: "", lastRecallAt: null },
 						programs: null,
 						delegations: null,
@@ -515,6 +521,115 @@ describe("Capabilities + memory", () => {
 			pinned: false,
 		};
 		await waitFor(() => settingsGets > before, "the settings reload after sign-in");
+	});
+
+	for (const transcription of [
+		{
+			kind: "groq",
+			model: "whisper-large-v3",
+			auth: "saved-groq",
+			language: "en",
+			fallbacks: [
+				{
+					kind: "whistle",
+					engine: "saved-engine",
+					weights: "/fixture/weights",
+					keywords: ["goblin"],
+				},
+			],
+		},
+		{
+			kind: "whistle",
+			engine: "saved-engine",
+			weights: "/fixture/weights",
+			keywords: ["goblin"],
+			language: "en",
+			fallbacks: [{ kind: "openai", model: "whisper-1", auth: "saved-openai", language: "es" }],
+		},
+	]) {
+		test(`reopening Settings restores parked ${transcription.kind} transcription whole`, async () => {
+			settings = parseConfig({ ...BASE, parked: { transcription } });
+			await mountSettings();
+			await openSection("Voice");
+			const toggle = () => container.querySelector('[aria-label="speech to text"]');
+			expect(toggle()?.getAttribute("aria-pressed")).toBe("false");
+			await click(toggle());
+			expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
+			await waitFor(() => savedBodies.length > 0, "transcription restoration save");
+			expect(savedBodies.at(-1)?.capabilities).toEqual({ transcription: true });
+			expect<unknown>(savedBodies.at(-1)?.transcription).toEqual(settings.parked?.transcription);
+		});
+	}
+
+	test("parked memory enables visibly, preserves policy, then disables after save", async () => {
+		settings = parseConfig({
+			...BASE,
+			parked: {
+				memory: {
+					baseUrl: "https://mem.test",
+					bankId: "saved-bank",
+					auth: "saved-memory",
+					budget: "high",
+					maxTokens: 1234,
+					recallTimeoutMs: 5678,
+					preferObservations: true,
+					searchMaxTokens: 4321,
+				},
+			},
+		});
+		await mountSettings();
+		await openSection("Memory");
+		const toggle = () => container.querySelector('[aria-label="long-term memory"]');
+		expect(toggle()?.getAttribute("aria-pressed")).toBe("false");
+		await click(toggle());
+		expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
+		expect(container.textContent).toContain("saved-bank");
+		await waitFor(() => savedBodies.length > 0, "memory restoration save");
+		expect(savedBodies.at(-1)?.capabilities).toEqual({ memory: true });
+		expect<unknown>(savedBodies.at(-1)?.memory).toEqual(settings.parked?.memory);
+		await settle();
+		await click(toggle());
+		expect(toggle()?.getAttribute("aria-pressed")).toBe("false");
+		await waitFor(() => savedBodies.length === 2, "memory disabled again");
+		expect(savedBodies.at(-1)?.capabilities).toEqual({ memory: false });
+		expect(savedBodies.at(-1)?.memory).toBe("");
+	});
+
+	for (const known of [false, true]) {
+		test(`status failure after save reports uncertainty${known ? " and retains known restart hints" : ""}`, async () => {
+			restartHints = known ? ["memory"] : [];
+			await mountSettings();
+			await openSection("Capabilities");
+			statusFailure = new Response(JSON.stringify({ error: "status unavailable" }), {
+				status: 503,
+				headers: { "content-type": "application/json" },
+			});
+			await click(container.querySelector('[aria-label="Sandboxed shell"]'));
+			await waitFor(
+				() => container.textContent?.includes("Couldn't check service status") ?? false,
+				"failed status warning",
+			);
+			expect(savedBodies).toHaveLength(1);
+			expect(container.textContent).toContain("status unavailable");
+			expect(container.textContent).toContain("Restart requirements are unconfirmed");
+			if (known)
+				expect(container.querySelector(".restart-banner")?.textContent).toContain("memory");
+			statusFailure = null;
+			await click(container.querySelector('[aria-label="Sandboxed shell"]'));
+			await waitFor(
+				() => savedBodies.length === 2 && container.querySelector('[role="alert"]') === null,
+				"successful status recheck clears warning",
+			);
+		});
+	}
+
+	test("initial status failure is visible even without a previous successful check", async () => {
+		statusFailure = new Response("not JSON", { headers: { "content-type": "application/json" } });
+		await mountSettings();
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+			"Couldn't check service status",
+		);
+		expect(container.textContent).toContain("Restart requirements are unconfirmed");
 	});
 
 	test("switching memory off parks the block", async () => {

@@ -721,8 +721,8 @@ async function boot() {
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
 	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
-	// delegation/subagents freeze adapters and pool limits at boot — a
-	// mid-run change is a warn + restart.
+	// delegation/subagents freeze adapters and pool limits, and reviewer
+	// wiring is boot-bound — a mid-run change is a warn + restart.
 	const bootPins: BootPins = {
 		memory: memoryBootConfig,
 		appToken: appTokenName,
@@ -730,6 +730,7 @@ async function boot() {
 		apiRoot: apiRootBoot,
 		delegation: delegationBoot,
 		subagents: subagentsBoot,
+		reviewer: config.reviewer,
 	};
 	// One post-write path for every config door: hot-apply what's live,
 	// flip-log what joins/leaves the tool set, warn on what's boot-pinned —

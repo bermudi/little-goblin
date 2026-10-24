@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
-import { parseConfig } from "../config.ts";
+import { loadConfig, parseConfig } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
@@ -90,7 +90,6 @@ describe("state viewer routes", () => {
 			expect(body.catalog[0]!.name).toBe("weather");
 			expect(body.catalog[0]!.bodyBytes).toBeGreaterThan(0);
 		});
-
 	});
 	test("skills/catalog includes manual-only entries", () => {
 		mkdirSync(join(home, "workspace/skills/secret"), { recursive: true });
@@ -115,9 +114,7 @@ describe("state viewer routes", () => {
 		const src = mkdtempSync(join(tmpdir(), "preview-src-"));
 		mkdirSync(join(src, "r-main/demo"), { recursive: true });
 		const skillBody =
-			"---\nname: demo\ndescription: the demo\n---\n" +
-			"pad ".repeat(2500) +
-			"TAIL_SENTINEL";
+			"---\nname: demo\ndescription: the demo\n---\n" + "pad ".repeat(2500) + "TAIL_SENTINEL";
 		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
 		const out = mkdtempSync(join(tmpdir(), "preview-ball-"));
 		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
@@ -615,6 +612,67 @@ describe("config save", () => {
 			new URL("http://x/config"),
 		);
 	}
+
+	test.each([
+		["vision", { model: "new/m" }],
+		["image", { model: "new/m" }],
+		["transcription", { kind: "openai", auth: "speech" }],
+	] as const)(
+		"first-time %s enablement accepts and persists its supplied block",
+		async (key, block) => {
+			const d = deps();
+			expect(d.configRef.current[key]).toBeUndefined();
+			expect(d.configRef.current.parked?.[key]).toBeUndefined();
+			// Models may name a provider added by the same save: validation
+			// must see the resulting config, not just the incumbent.
+			const res = await postConfig(d, {
+				providers: {
+					...d.configRef.current.providers,
+					new: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "new" },
+				},
+				capabilities: { [key]: true },
+				[key]: block,
+			});
+			expect(res?.status).toBe(200);
+			expect(d.configRef.current[key]).toMatchObject(block);
+			expect(loadConfig()?.[key]).toEqual(d.configRef.current[key]);
+			expect(d.configRef.current.parked?.[key]).toBeUndefined();
+		},
+	);
+
+	test.each([
+		["vision", { model: "missing/m" }, "vision"],
+		["image", { model: "test/m" }, "image"],
+		["transcription", { kind: "not-an-engine" }, "transcription"],
+	] as const)(
+		"first-time %s enablement validates its supplied block before writing",
+		async (key, block, error) => {
+			const d = deps();
+			const before = d.configRef.current;
+			const res = await postConfig(d, { capabilities: { [key]: true }, [key]: block });
+			expect(res?.status).toBe(422);
+			const detail = (await res?.json()) as { error: string };
+			expect(detail.error).toContain(error);
+			expect(detail.error).not.toContain("pick an engine/model");
+			expect(d.configRef.current).toBe(before);
+			expect(loadConfig()).toBeNull();
+		},
+	);
+
+	test.each(["vision", "image", "transcription"] as const)(
+		"first-time %s enablement still requires a block",
+		async (key) => {
+			const d = deps();
+			const res = await postConfig(d, { capabilities: { [key]: true } });
+			expect(res?.status).toBe(422);
+			expect((await res?.json()) as { error: string }).toHaveProperty(
+				"error",
+				expect.stringContaining("pick an engine/model"),
+			);
+			expect(d.configRef.current[key]).toBeUndefined();
+			expect(loadConfig()).toBeNull();
+		},
+	);
 
 	test("the write persists the rung the model's ladder can express", async () => {
 		const d = deps();

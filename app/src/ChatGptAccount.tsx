@@ -40,17 +40,24 @@ export function ChatGptAccount({
 	const { copy, copied } = useCopy();
 	const wasPending = useRef(false);
 
+	const applyStatus = (s: ChatGptStatus) => {
+		const completed = wasPending.current && s.state === "signed-in";
+		wasPending.current = s.state === "pending";
+		setStatus(s);
+		if (completed) onSignedIn?.();
+	};
+
 	useEffect(() => {
 		let dead = false;
 		const load = () =>
 			getChatGptStatus(token)
 				.then((s) => {
 					if (dead) return;
-					setStatus(s);
-					if (wasPending.current && s.state === "signed-in") onSignedIn?.();
-					wasPending.current = s.state === "pending";
+					applyStatus(s);
 				})
 				.catch((e: unknown) => {
+					// UI boundary: report HTTP/network/decoding failures on the
+					// card; never present a failed read as signed-out.
 					if (!dead) setErr(e instanceof ApiError ? e.message : "Couldn't reach goblin.");
 				});
 		void load();
@@ -69,8 +76,10 @@ export function ChatGptAccount({
 		setBusy(true);
 		setErr(null);
 		try {
-			setStatus(await fn(token));
+			applyStatus(await fn(token));
 		} catch (e) {
+			// UI boundary: a failed sign-in/cancel/logout stays visible
+			// without replacing the last known account state.
 			setErr(e instanceof ApiError ? e.message : "Couldn't reach goblin.");
 		} finally {
 			setBusy(false);
@@ -106,11 +115,18 @@ export function ChatGptAccount({
 			<div className="card">
 				{status.state === "pending" && status.pending !== null ? (
 					<>
-						<Row label="Pairing code" cap={`Enter it at OpenAI's sign-in page${doorNote !== null ? ` — ${doorNote}` : ""}.`}>
+						<Row
+							label="Pairing code"
+							cap={`Enter it at OpenAI's sign-in page${doorNote !== null ? ` — ${doorNote}` : ""}.`}
+						>
 							<code className="mono chatgpt-code">{status.pending.userCode}</code>
 						</Row>
 						<div className="addrow">
-							<button type="button" className="addbtn" onClick={() => copy(status.pending!.userCode)}>
+							<button
+								type="button"
+								className="addbtn"
+								onClick={() => copy(status.pending!.userCode)}
+							>
 								{copied ? "Copied" : "Copy"}
 							</button>
 							<a

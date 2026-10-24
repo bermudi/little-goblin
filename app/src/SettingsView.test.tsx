@@ -553,6 +553,82 @@ describe("main branch regressions", () => {
 		await waitFor(() => savedBodies.length > 0, "the Enter pick to save");
 		expect(savedBodies.at(-1)?.model).toBe("main/glm-5");
 	});
+
+	test("the value buttons show the catalog's friendly name over the ref", async () => {
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "test", name: "Test Model", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		const btn = container.querySelector('[aria-labelledby="appModelLabel"]');
+		expect(btn?.textContent).toContain("Test Model");
+		expect(btn?.textContent).toContain("main/test");
+	});
+
+	test("the favorites card lists, reorders, and removes entries", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a", "main/fav-b"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.textContent?.includes("Add favorites"),
+		);
+		expect(card).toBeTruthy();
+		// Friendly name over the small ref; unknown entries show the ref.
+		expect(card?.textContent).toContain("Fav Beta");
+		expect(card?.textContent).toContain("main/fav-a");
+		// Reorder: moving fav-a down swaps the pair.
+		await click(card?.querySelector('[aria-label="move main/fav-a down"]'));
+		await waitFor(() => savedBodies.length > 0, "the reorder save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-b", "main/fav-a"]);
+		// Remove drops the entry.
+		await click(card?.querySelector('[aria-label="remove main/fav-b"]'));
+		await waitFor(() => savedBodies.at(-1)?.favorites?.length === 1, "the removal save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a"]);
+	});
+
+	test("the Add favorites sheet toggles stars into the draft, not a pick", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
+		);
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "+ Add favorites"),
+		);
+		const sheet = container.querySelector(".msheet");
+		expect(sheet).not.toBeNull();
+		expect(sheet?.getAttribute("aria-label")).toBe("Favorites");
+		// The existing favorite shows a filled star; the catalog row's row
+		// click adds it — the sheet stays open and nothing picks a model.
+		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-a"]')).not.toBeNull();
+		const row = [...sheet!.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Fav Beta"),
+		);
+		await click(row);
+		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-b"]')).not.toBeNull();
+		await waitFor(() => savedBodies.length > 0, "the favorites save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a", "main/fav-b"]);
+		expect(savedBodies.at(-1)?.model).toBe("main/test");
+	});
 });
 
 describe("quiet harbor regressions", () => {

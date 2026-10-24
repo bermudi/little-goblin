@@ -1,10 +1,7 @@
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
-import type {
-	ConfigResponse,
-	ModelOption,
-	ProviderModelCatalog,
-} from "../../src/http/operator-wire.ts";
+import type { ConfigResponse, ProviderModelCatalog } from "../../src/http/operator-wire.ts";
+import { ModelPicker } from "./ModelPicker.tsx";
 import {
 	ApiError,
 	getOperatorConfig,
@@ -44,7 +41,7 @@ import {
 } from "./settingsDraft.ts";
 
 type Section = "chat" | "voice" | "web" | "memory" | "providers" | "access";
-type SheetMode = "model" | "telegram" | "title" | "vision";
+type SheetMode = "model" | "telegram" | "title" | "vision" | "favorites";
 
 // One channel's thinking rungs: the offered values plus whether the
 // capability lookup behind them failed.
@@ -371,187 +368,6 @@ function SecretEntry({
 				Writes to auth.jsonl as "{record}" — resolvable right away, no restart.
 			</div>
 			{err !== null && <div className="cap err-inline">{err}</div>}
-		</div>
-	);
-}
-
-function ModelSheet({
-	title,
-	current,
-	allowOff,
-	favorites,
-	catalog,
-	provNames,
-	onPick,
-	onClose,
-}: {
-	title: string;
-	current: string;
-	allowOff: boolean;
-	favorites: string[];
-	catalog: ProviderModelCatalog[];
-	provNames: string[];
-	onPick: (ref: string) => void;
-	onClose: () => void;
-}) {
-	const [query, setQuery] = useState("");
-	const [scope, setScope] = useState("");
-	const q = query.trim().toLowerCase();
-	const meta = new Map<string, ModelOption>();
-	const canonical = new Map<string, string>();
-	for (const group of catalog)
-		for (const model of group.models) {
-			const ref = `${group.provider}/${model.id}`;
-			meta.set(ref, model);
-			canonical.set(ref.toLowerCase(), ref);
-		}
-	// Search spans the full ref and the catalog's friendly name, so
-	// "glm-5.3" and "GLM" both land on the same row.
-	const hit = (ref: string) => {
-		if (q === "") return true;
-		const name = meta.get(ref)?.name?.toLowerCase() ?? "";
-		return ref.toLowerCase().includes(q) || name.includes(q);
-	};
-	const favs = favorites.filter(hit);
-	const showCurrent = current !== "" && !favorites.includes(current) && hit(current);
-	const pinned = new Set([...favorites, current]);
-	const groups = catalog
-		.filter((group) => scope === "" || group.provider === scope)
-		.map((group) => ({
-			provider: group.provider,
-			models: group.models
-				.map((model) => ({ ...model, ref: `${group.provider}/${model.id}` }))
-				.filter((model) => !pinned.has(model.ref) && hit(model.ref)),
-		}))
-		.filter((group) => group.models.length > 0);
-	const raw = query.trim();
-	const typedProvider = scope !== "" ? scope : provNames.length === 1 ? provNames[0] : undefined;
-	// Anything the catalog doesn't know stays reachable: a full
-	// provider/model ref is used as typed, a bare id joins the selected
-	// provider (or the only one configured).
-	const customRef =
-		raw === ""
-			? null
-			: raw.includes("/")
-				? raw
-				: typedProvider === undefined
-					? null
-					: `${typedProvider}/${raw}`;
-	const hasResults = favs.length > 0 || showCurrent || groups.length > 0;
-	const known = (ref: string) =>
-		canonical.has(ref.toLowerCase()) ||
-		favorites.some((f) => f.toLowerCase() === ref.toLowerCase());
-	const showCustom =
-		customRef !== null &&
-		!known(customRef) &&
-		customRef !== current &&
-		(!hasResults || customRef.includes("/"));
-	const row = (ref: string, label?: string) => {
-		const model = meta.get(ref);
-		const primary = label ?? model?.name ?? ref;
-		return (
-			<button
-				key={ref || "off"}
-				type="button"
-				className={ref === current ? "mrow sel" : "mrow"}
-				onClick={() => onPick(ref)}
-			>
-				<span className="mcell">
-					<span className={ref === "" ? "off-label" : "mname"}>{primary}</span>
-					{model?.name != null && (
-						<span className="ref" title={ref}>
-							{ref}
-						</span>
-					)}
-				</span>
-				{ref === current && <span className="check">✓</span>}
-			</button>
-		);
-	};
-	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-		if (e.key !== "Enter" || raw === "") return;
-		e.preventDefault();
-		const exact = canonical.get(raw.toLowerCase());
-		// A fully typed provider/model ref beats a catalog row that only
-		// contains it as a substring — Enter saves what was typed.
-		const pick =
-			exact ??
-			(showCustom && raw.includes("/") ? customRef : undefined) ??
-			favs[0] ??
-			(showCurrent ? current : undefined) ??
-			groups[0]?.models[0]?.ref ??
-			(showCustom ? customRef : null);
-		if (pick !== null) onPick(pick);
-	};
-	return (
-		<div className="veil on" onClick={onClose}>
-			<div className="msheet" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
-				<header className="msheet-head">
-					<h3>{title}</h3>
-					<button type="button" aria-label="Close" onClick={onClose}>
-						×
-					</button>
-				</header>
-				<div className="msheet-filter">
-					<input
-						className="mono"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						onKeyDown={onKeyDown}
-						placeholder="Search models or type provider/model-id"
-						autoComplete="off"
-						spellCheck={false}
-						autoCapitalize="off"
-						aria-label="Search models"
-					/>
-					{provNames.length > 0 && (
-						<select
-							aria-label="Model provider"
-							value={scope}
-							onChange={(e) => setScope(e.target.value)}
-						>
-							<option value="">All providers</option>
-							{provNames.map((n) => (
-								<option key={n} value={n}>
-									{n}
-								</option>
-							))}
-						</select>
-					)}
-				</div>
-				<div className="msheet-body">
-					{allowOff && row("", "Off")}
-					{favs.length > 0 && (
-						<>
-							<div className="mgroup">Favorites</div>
-							{favs.map((f) => row(f))}
-						</>
-					)}
-					{showCurrent && (
-						<>
-							<div className="mgroup">Current</div>
-							{row(current)}
-						</>
-					)}
-					{showCustom && customRef !== null && (
-						<>
-							<div className="mgroup">Not in the catalog</div>
-							<button type="button" className="mrow" onClick={() => onPick(customRef)}>
-								<span className="mcell">
-									<span className="mname">Use “{customRef}”</span>
-								</span>
-							</button>
-						</>
-					)}
-					{groups.map((group) => (
-						<Fragment key={group.provider}>
-							<div className="mgroup">{group.provider} models</div>
-							{group.models.map((model) => row(model.ref))}
-						</Fragment>
-					))}
-					{q !== "" && !hasResults && !showCustom && <div className="mempty">No models match.</div>}
-				</div>
-			</div>
 		</div>
 	);
 }
@@ -1410,6 +1226,32 @@ export function SettingsView({
 	}
 
 	const provNames = provs.map((p) => p.name).filter((n) => n !== "");
+	// ref → catalog display name, for the value buttons and the
+	// favorites list; a favorite the catalog doesn't know shows its ref.
+	const modelNames = new Map<string, string>();
+	for (const group of modelCatalog)
+		for (const m of group.models)
+			if (m.name != null) modelNames.set(`${group.provider}/${m.id}`, m.name);
+
+	// Stars in Settings edit the draft — the autosave persists them, so
+	// no parallel write races the etag.
+	const toggleFavoriteDraft = (ref: string, on: boolean) =>
+		patchDraft({
+			favorites: on
+				? draft.favorites.includes(ref)
+					? draft.favorites
+					: [...draft.favorites, ref]
+				: draft.favorites.filter((f) => f !== ref),
+		});
+	const moveFavorite = (i: number, d: number) => {
+		const j = i + d;
+		if (j < 0 || j >= draft.favorites.length) return;
+		const next = draft.favorites.slice();
+		next[i] = next[j]!;
+		next[j] = draft.favorites[i]!;
+		patchDraft({ favorites: next });
+	};
+
 	const sheetTitle =
 		sheet === "title"
 			? "Topic-title model"
@@ -1417,7 +1259,9 @@ export function SettingsView({
 				? "Vision model"
 				: sheet === "telegram"
 					? "Telegram model"
-					: "App default model";
+					: sheet === "favorites"
+						? "Favorites"
+						: "App default model";
 	const sheetCurrent =
 		sheet === "telegram"
 			? draft.telegramModel
@@ -1425,21 +1269,30 @@ export function SettingsView({
 				? draft.titleModel
 				: sheet === "vision"
 					? (draft.vision?.model ?? "")
-					: draft.model;
+					: sheet === "favorites"
+						? ""
+						: draft.model;
 
-	const modelButton = (label: string, cap: string, mode: SheetMode, val: string, id: string) => (
-		<Row label={label} cap={cap} labelId={id}>
-			<button
-				type="button"
-				className="valuebtn"
-				aria-labelledby={id}
-				onClick={() => setSheet(mode)}
-			>
-				<span className="val">{val === "" ? "Off" : val}</span>
-				<span className="chev">›</span>
-			</button>
-		</Row>
-	);
+	const modelButton = (label: string, cap: string, mode: SheetMode, val: string, id: string) => {
+		const name = val === "" ? null : (modelNames.get(val) ?? null);
+		return (
+			<Row label={label} cap={cap} labelId={id}>
+				<button
+					type="button"
+					className="valuebtn"
+					aria-labelledby={id}
+					title={val === "" ? undefined : val}
+					onClick={() => setSheet(mode)}
+				>
+					<span className="val">
+						<span className="val-name">{val === "" ? "Off" : (name ?? val)}</span>
+						{name !== null && <span className="val-ref">{val}</span>}
+					</span>
+					<span className="chev">›</span>
+				</button>
+			</Row>
+		);
+	};
 
 	// eff is the shown section — null means the narrow-screen index, and
 	// on wide viewports the at-index rules swap that index for the chat
@@ -1550,17 +1403,50 @@ export function SettingsView({
 					</div>
 					<h2 className="ops-h2">Favorites</h2>
 					<div className="card">
-						<ChipsEditor
-							values={draft.favorites}
-							onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
-							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
-							placeholder="provider/model-id"
-							ariaLabel="add favorite"
-							suggestions={modelCatalog.flatMap((group) =>
-								group.models.map((model) => `${group.provider}/${model.id}`),
-							)}
-							cap="Offered in the pickers above."
-						/>
+						{draft.favorites.map((f, i) => {
+							const name = modelNames.get(f);
+							return (
+								<div className="chain-card" key={`${i}:${f}`}>
+									<div className="chain-head">
+										<span className="fav-cell">
+											<span className="fav-name">{name ?? f}</span>
+											{name !== undefined && <span className="fav-ref">{f}</span>}
+										</span>
+										<span className="chain-btns">
+											<button
+												type="button"
+												aria-label={`move ${f} up`}
+												disabled={i === 0}
+												onClick={() => moveFavorite(i, -1)}
+											>
+												↑
+											</button>
+											<button
+												type="button"
+												aria-label={`move ${f} down`}
+												disabled={i === draft.favorites.length - 1}
+												onClick={() => moveFavorite(i, 1)}
+											>
+												↓
+											</button>
+											<button
+												type="button"
+												aria-label={`remove ${f}`}
+												onClick={() =>
+													patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })
+												}
+											>
+												×
+											</button>
+										</span>
+									</div>
+								</div>
+							);
+						})}
+						<button className="ghost" type="button" onClick={() => setSheet("favorites")}>
+							+ Add favorites
+						</button>
+						<div className="cap">Starred models — offered first in every picker.</div>
 					</div>
 					<h2 className="ops-h2">Telegram</h2>
 					<div className="card">
@@ -2315,14 +2201,16 @@ export function SettingsView({
 			</div>
 
 			{sheet !== null && (
-				<ModelSheet
+				<ModelPicker
 					title={sheetTitle}
 					current={sheetCurrent}
 					allowOff={sheet === "title" || sheet === "vision"}
 					favorites={draft.favorites}
 					catalog={modelCatalog}
 					provNames={provNames}
+					mode={sheet === "favorites" ? "favorites" : "pick"}
 					onPick={pickModel}
+					onToggleFavorite={toggleFavoriteDraft}
 					onClose={() => setSheet(null)}
 				/>
 			)}

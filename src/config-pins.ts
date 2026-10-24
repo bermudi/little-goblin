@@ -14,6 +14,9 @@ export interface BootPins {
 	apiRoot: Config["telegram"]["apiRoot"];
 	delegation: Config["delegation"];
 	subagents: Config["subagents"];
+	// Bun.serve binds the port once at boot — a mid-run edit rewrites the
+	// file and applies nothing, so it warns like the other pins.
+	http: Config["http"];
 }
 
 const eq = (a: unknown, b: unknown): boolean =>
@@ -27,6 +30,7 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 	if (cur.telegram.apiRoot !== pins.apiRoot) diffs.push("telegram.apiRoot");
 	if (!eq(cur.delegation, pins.delegation)) diffs.push("delegation");
 	if (!eq(cur.subagents, pins.subagents)) diffs.push("subagents");
+	if (!eq(cur.http, pins.http)) diffs.push("http");
 	return diffs;
 }
 
@@ -36,6 +40,7 @@ const PIN_LABEL: Record<string, string> = {
 	memory: "memory config",
 	delegation: "delegation config",
 	subagents: "subagents config",
+	http: "http config",
 };
 
 // Counts as configured only as an object — a bare `false` disables

@@ -37,6 +37,7 @@ function pinsFor(c: Config): BootPins {
 		apiRoot: c.telegram.apiRoot,
 		delegation: c.delegation,
 		subagents: c.subagents,
+		http: c.http,
 	};
 }
 
@@ -79,6 +80,7 @@ describe("bootPinnedDiffs", () => {
 		["apiRoot", `telegram:{apiRoot:"http://127.0.0.1:9"}`, "telegram.apiRoot"],
 		["delegation", `delegation:{harnesses:{a:{kind:"x"}}}`, "delegation"],
 		["subagents", `subagents:{maxRuns:2}`, "subagents"],
+		["http", `http:{port:9999}`, "http"],
 	])("a %s change reports its key", (_label, extra, key) => {
 		const boot = loadExtra("");
 		expect(bootPinnedDiffs(pinsFor(boot), loadExtra(extra))).toEqual([key]);

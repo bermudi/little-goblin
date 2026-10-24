@@ -431,7 +431,9 @@ export function Surface({
 		<PickContext.Provider value={{ picked, pick: setTapped }}>
 			<div className="ui">
 				{input.title !== undefined && <div className="ui-title">{input.title}</div>}
-				{render(input.root)}
+				{(Array.isArray(input.root) ? input.root : [input.root]).map((id) => (
+					<Fragment key={id}>{render(id)}</Fragment>
+				))}
 			</div>
 		</PickContext.Provider>
 	);

@@ -32,8 +32,9 @@ function reportFields(report: ReturnType<typeof normalizeUiInput>["report"]) {
 	);
 }
 
-// Elements deep from root — tree is guaranteed acyclic by validation,
-// but the walk guards anyway since execute sees only validated input.
+// Elements deep from the deepest root — the tree is guaranteed
+// acyclic by validation, but the walk guards anyway since execute
+// sees only validated input.
 function depth(input: UiInput): number {
 	const seen = new Set<string>();
 	const walk = (id: string): number => {
@@ -43,13 +44,13 @@ function depth(input: UiInput): number {
 		if (el === undefined) return 0;
 		return 1 + Math.max(0, ...(el.children ?? []).map(walk));
 	};
-	return walk(input.root);
+	return Math.max(0, ...(Array.isArray(input.root) ? input.root : [input.root]).map(walk));
 }
 
 export const uiTool = () =>
 	tool({
 		description:
-			'Show the operator an interface instead of prose, rendered inline in the goblin app. Plain text is the default — most answers should not use this. Reach for it when layout carries meaning: options compared side by side (columns), a process or plan in order (steps), numbers worth seeing at a glance (stats, chart, table), a topic with separable parts (tabs), a decision the operator makes with a tap (choices) or details to fill in (form). Use html only when the answer needs live computation or interaction the other elements cannot express — a calculator, a bill splitter, a small game: one self-contained document, inline script and style, no network, no external assets. Keep surrounding text short and never repeat in prose what the interface shows. Choices and form submits come back as a user message starting with [ui]. The interface is a flat map: "root" names the top element; "elements" maps each id to {type, props, children}, where children lists child ids — never nested objects. Containers: stack (a vertical group), tabs (children are tab elements, tab props {label}), columns (children are column elements, column props {title?}); stack, tab and column children may be any element, including other containers, nested as deep as needed. Every other type is a leaf with no children. Write root first, then each parent before its children; every element needs its "type" — write it first. Example: {"root":"main","elements":{"main":{"type":"stack","children":["intro","cmp"]},"intro":{"type":"text","props":{"md":"Two options."}},"cmp":{"type":"columns","children":["a","b"]},"a":{"type":"column","props":{"title":"A"},"children":["a1"]},"a1":{"type":"text","props":{"md":"…"}},"b":{"type":"column","props":{"title":"B"},"children":["b1"]},"b1":{"type":"text","props":{"md":"…"}}}}',
+			'Show the operator an interface instead of prose, rendered inline in the goblin app. Plain text is the default — most answers should not use this. Reach for it when layout carries meaning: options compared side by side (columns), a process or plan in order (steps), numbers worth seeing at a glance (stats, chart, table), a topic with separable parts (tabs), a decision the operator makes with a tap (choices) or details to fill in (form). Use html only when the answer needs live computation or interaction the other elements cannot express — a calculator, a bill splitter, a small game: one self-contained document, inline script and style, no network, no external assets. Keep surrounding text short and never repeat in prose what the interface shows. Choices and form submits come back as a user message starting with [ui]. The interface is a flat map: "root" names the top element; "elements" maps each id to {type, props, children}, where children lists child ids — never nested objects. For several top-level elements, "root" may be a list of ids in display order — no wrapper needed. Containers: stack (a vertical group), tabs (children are tab elements, tab props {label}), columns (children are column elements, column props {title?}); stack, tab and column children may be any element, including other containers, nested as deep as needed. Every other type is a leaf with no children. Write root first, then each parent before its children; every element needs its "type" — write it first. Example: {"root":"main","elements":{"main":{"type":"stack","children":["intro","cmp"]},"intro":{"type":"text","props":{"md":"Two options."}},"cmp":{"type":"columns","children":["a","b"]},"a":{"type":"column","props":{"title":"A"},"children":["a1"]},"a1":{"type":"text","props":{"md":"…"}},"b":{"type":"column","props":{"title":"B"},"children":["b1"]},"b1":{"type":"text","props":{"md":"…"}}}}',
 		inputSchema: jsonSchema<UiInput>(wireSchema, {
 			validate: (value) => {
 				const repaired = normalizeUiInput(value);

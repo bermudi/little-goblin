@@ -1,6 +1,7 @@
 // The ui tool's input schema — json-render's flat element-map SHAPE
 // (shape only: no $state/actions runtime, no inline-patch protocol).
-// "root" names the top element; "elements" maps each id to
+// "root" is the top element id — or the top-level ids, in display
+// order; "elements" maps each id to
 // {type, props, children} where children lists child ids — so nesting
 // depth is unbounded without a recursive schema (no $ref/$defs, which
 // providers handle unevenly). Structural rules — the tree must exist,
@@ -196,7 +197,10 @@ const leafTypes = new Set([
 export const uiInputSchema = z
 	.object({
 		title: z.string().optional().describe("Short heading above the interface"),
-		root: z.string().describe("Id of the top element in the map"),
+		root: z.union([
+			z.string().describe("Id of the top element"),
+			z.array(z.string()).min(1).max(30).describe("Top-level element ids, shown in order"),
+		]),
 		elements: z
 			.record(z.string(), uiElementSchema)
 			.describe(
@@ -213,12 +217,22 @@ export const uiInputSchema = z
 				message: `too many elements (${ids.length}) — 200 max`,
 			});
 		}
-		if (!(input.root in els)) {
+		const roots = Array.isArray(input.root) ? input.root : [input.root];
+		if (new Set(roots).size !== roots.length) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["root"],
-				message: `root "${input.root}" does not name an element`,
+				message: "the root list has duplicate ids",
 			});
+		}
+		for (const r of roots) {
+			if (!(r in els)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["root"],
+					message: `root "${r}" does not name an element`,
+				});
+			}
 		}
 		// Child existence + single parent (the map is a tree, not a DAG).
 		const parentOf = new Map<string, string>();
@@ -242,6 +256,18 @@ export const uiInputSchema = z
 				} else {
 					parentOf.set(c, pid);
 				}
+			}
+		}
+		// A top-level element is not a child — no root id may also
+		// appear in some element's children.
+		for (const r of roots) {
+			const parent = parentOf.get(r);
+			if (parent !== undefined) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["root"],
+					message: `root "${r}" is also a child of "${parent}" — a top-level element is not a child`,
+				});
 			}
 		}
 		// Container membership rules + leaf childlessness.
@@ -340,12 +366,11 @@ export interface UiNormalizeReport {
 	inferred: { id: string; type: string }[];
 	// chart series values coerced from numeric strings
 	coerced: { id: string; count: number }[];
-	// array root became a synthesized stack element with this id
-	synthesizedRoot: string | null;
 	// the single unreferenced element became root
 	inferredRoot: string | null;
-	// a string "root" entry inside the map was the misplaced root pointer
-	strayRoot: { value: string; action: "moved" | "dropped" } | null;
+	// a "root" entry inside the map (a string or string array can never
+	// be an element) was the misplaced root pointer
+	strayRoot: { value: string | string[]; action: "moved" | "dropped" } | null;
 	// the whole spec was nested one level deep inside elements
 	unwrapped: boolean;
 	// dropped: unreachable from root (prune only)
@@ -358,7 +383,6 @@ const emptyReport = (): UiNormalizeReport => ({
 	flattened: [],
 	inferred: [],
 	coerced: [],
-	synthesizedRoot: null,
 	inferredRoot: null,
 	strayRoot: null,
 	unwrapped: false,
@@ -368,6 +392,10 @@ const emptyReport = (): UiNormalizeReport => ({
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+
+// A string or a string array is a root pointer, never an element.
+const isRootLike = (v: unknown): v is string | string[] =>
+	typeof v === "string" || (Array.isArray(v) && v.every((s) => typeof s === "string"));
 
 function tryJsonObject(text: string): Record<string, unknown> | null {
 	try {
@@ -474,7 +502,7 @@ export function normalizeUiInput(
 		const inner = out.elements;
 		if (isPlainObject(inner.elements) && !("type" in inner.elements)) {
 			out.elements = inner.elements;
-			if (typeof inner.root === "string") out.root = inner.root;
+			if (isRootLike(inner.root)) out.root = inner.root;
 			if (out.title === undefined && typeof inner.title === "string")
 				out.title = inner.title;
 			report.unwrapped = true;
@@ -554,27 +582,20 @@ export function normalizeUiInput(
 	};
 	for (let i = 0; i < queue.length; i++) process(queue[i]!);
 
-	// A string "root" entry inside the map is the misplaced root pointer
-	// — a string can never be an element. Missing root → move it up;
-	// same value → drop the stray; differing → no repair.
-	if (typeof elements.root === "string") {
+	// A root-shaped "root" entry inside the map is the misplaced root
+	// pointer — a string or string array can never be an element.
+	// Missing root → move it up; same value → drop the stray;
+	// differing → no repair.
+	if (isRootLike(elements.root)) {
 		const stray = elements.root;
 		if (out.root === undefined) {
 			out.root = stray;
 			delete elements.root;
 			report.strayRoot = { value: stray, action: "moved" };
-		} else if (out.root === stray) {
+		} else if (JSON.stringify(out.root) === JSON.stringify(stray)) {
 			delete elements.root;
 			report.strayRoot = { value: stray, action: "dropped" };
 		}
-	}
-
-	// Array root → a synthesized stack element wrapping it.
-	if (Array.isArray(out.root)) {
-		const rid = freeId("root");
-		elements[rid] = { type: "stack", children: out.root };
-		out.root = rid;
-		report.synthesizedRoot = rid;
 	}
 
 	// Missing root → the single unreferenced element is it.
@@ -592,9 +613,9 @@ export function normalizeUiInput(
 	}
 
 	// Prune unreachable elements — the report names what was dropped.
-	if (opts?.prune !== false && typeof out.root === "string") {
+	if (opts?.prune !== false && isRootLike(out.root)) {
 		const reach = new Set<string>();
-		const todo = [out.root];
+		const todo = typeof out.root === "string" ? [out.root] : [...out.root];
 		while (todo.length > 0) {
 			const id = todo.pop()!;
 			if (reach.has(id)) continue;
@@ -604,10 +625,11 @@ export function normalizeUiInput(
 			for (const c of el.children) if (typeof c === "string") todo.push(c);
 		}
 		for (const id of Object.keys(elements)) {
-			// Everything unreachable prunes — except a string-valued
-			// "root" entry: that is the R9-declined stray pointer
-			// (differing roots), which must stay so validation sees it.
-			if (!reach.has(id) && !(id === "root" && typeof elements[id] === "string")) {
+			// Everything unreachable prunes — except a root-shaped
+			// "root" entry: that is the stray pointer the
+			// differing-roots rule declined, which must stay so
+			// validation sees it.
+			if (!reach.has(id) && !(id === "root" && isRootLike(elements[id]))) {
 				delete elements[id];
 				report.unreachable.push(id);
 			}

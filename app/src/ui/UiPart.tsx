@@ -33,7 +33,6 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 	const norm = isPlainObject(normalized) ? normalized : {};
 	const normElements = isPlainObject(norm.elements) ? norm.elements : {};
 	const title = typeof norm.title === "string" ? norm.title : null;
-	const root = typeof norm.root === "string" ? norm.root : null;
 
 	// The map Node reads holds only schema-valid elements; invalid ones
 	// fall to the render wrapper's skeleton/nothing split below.
@@ -63,10 +62,12 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 		kept.set(id, kids);
 		for (const c of kids) visit(c, new Set(ancestors).add(id));
 	};
-	const roots: string[] = [];
-	if (root !== null) {
-		roots.push(root);
-	} else {
+	const roots: string[] = Array.isArray(norm.root)
+		? norm.root.filter((r): r is string => typeof r === "string")
+		: typeof norm.root === "string"
+			? [norm.root]
+			: [];
+	if (roots.length === 0) {
 		const referenced = new Set<string>();
 		for (const v of Object.values(normElements)) {
 			if (!isPlainObject(v) || !Array.isArray(v.children)) continue;

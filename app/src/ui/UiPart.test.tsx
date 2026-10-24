@@ -126,6 +126,48 @@ describe("UiPart (static markup)", () => {
 		expect(html).toContain("skel");
 	});
 
+	test("a multi-root surface renders every top element in order — no wrapper", () => {
+		const input = {
+			root: ["a", "b", "c"],
+			elements: {
+				a: { type: "text", props: { md: "first" } },
+				b: { type: "text", props: { md: "second" } },
+				c: { type: "text", props: { md: "third" } },
+			},
+		};
+		const html = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
+		);
+		const ia = html.indexOf("first");
+		const ib = html.indexOf("second");
+		const ic = html.indexOf("third");
+		expect(ia).toBeGreaterThan(-1);
+		expect(ib).toBeGreaterThan(ia);
+		expect(ic).toBeGreaterThan(ib);
+		expect(html).not.toContain("ui-stack");
+	});
+
+	test("input-streaming renders a multi-root input in root order", () => {
+		const html = renderToStaticMarkup(
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						root: ["b", "a"],
+						elements: {
+							a: { type: "text", props: { md: "aaa" } },
+							b: { type: "text", props: { md: "bbb" } },
+						},
+					},
+				})}
+			/>,
+		);
+		const ia = html.indexOf("aaa");
+		const ib = html.indexOf("bbb");
+		expect(ib).toBeGreaterThan(-1);
+		expect(ia).toBeGreaterThan(ib);
+	});
+
 	test("input-streaming without root renders orphans in arrival order", () => {
 		const html = renderToStaticMarkup(
 			<UiPart

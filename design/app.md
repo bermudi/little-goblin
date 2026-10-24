@@ -667,8 +667,12 @@ the model sees its past interface as a past tool call.
   is unbounded without a recursive schema — a recursive zod schema
   emits `$ref`/`$defs`, which OpenAI-compatible providers handle
   unevenly, and a rejected schema breaks every app turn (the emitted
-  schema also strips zod's `propertyNames`). Structural rules live in a
-  superRefine naming the ids: root exists, every child id exists, tree
+  schema also strips zod's `propertyNames`). `root` is one element id
+  or a list of top-level ids in display order — several top elements
+  need no wrapper container. Structural rules live in a
+  superRefine naming the ids: every root id exists and none is also a
+  child (a top-level element is not a child), a root list holds no
+  duplicates, every child id exists, tree
   not DAG (single parent), no cycles, tabs hold only `tab` elements and
   columns only `column` (inversely a tab needs a tabs parent, a column
   a columns parent), leaves are childless, ≤200 elements. Streaming
@@ -692,15 +696,17 @@ the model sees its past interface as a past tool call.
   element's top level with no `props` hoist into it; a typeless element
   re-types by exact props key-set match (`{label}` → `tab`, the one
   inferable container; a tie or invented keys mean no repair); inline
-  child objects hoist into the map as `<parent>.<index>`; an array root
-  synthesizes a `stack`; a missing root picks the single unreferenced
+  child objects hoist into the map as `<parent>.<index>`; a missing
+  root picks the single unreferenced
   element; numeric-string chart series values coerce; and entries
-  unreachable from root are pruned — except a string `elements.root`
-  the differing-roots rule declined, which stays so validation sees it.
+  unreachable from root are pruned — except a string-or-array
+  `elements.root` the differing-roots rule declined, which stays so
+  validation sees it.
   Two wrapper
   repairs handle whole-spec misplacement (2026-10-24 probe): a spec
   nested one level deep as `elements.{elements,root}` unwraps when no
-  top-level root exists, and a string `elements.root` — the root
+  top-level root exists, and an `elements.root` holding a string or an
+  id array — the root
   pointer misplaced inside the map — moves up (or drops when it
   duplicates root; differing roots are no repair). What no rule fixes
   surfaces as a tool error — the model sees it and may retry. Server

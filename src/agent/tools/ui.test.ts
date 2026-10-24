@@ -31,6 +31,49 @@ describe("uiInputSchema", () => {
 		const r = normalizeUiInput(legacy);
 		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
 	});
+
+	test("an array root validates natively — top elements need no wrapper", () => {
+		const parsed = uiInputSchema.safeParse({
+			root: ["a", "b"],
+			elements: {
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "stack", children: ["c"] },
+				c: { type: "text", props: { md: "y" } },
+			},
+		});
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+	});
+
+	test("an array root id missing from elements fails, naming the id", () => {
+		const parsed = uiInputSchema.safeParse({
+			root: ["a", "zzz"],
+			elements: { a: { type: "text", props: { md: "x" } } },
+		});
+		expect(parsed.success).toBe(false);
+		if (!parsed.success)
+			expect(parsed.error.issues.map((i) => i.message).join()).toContain('"zzz"');
+	});
+
+	test("duplicate ids in a root array fail", () => {
+		const parsed = uiInputSchema.safeParse({
+			root: ["a", "a"],
+			elements: { a: { type: "text", props: { md: "x" } } },
+		});
+		expect(parsed.success).toBe(false);
+	});
+
+	test("a root id that is also a child fails — top-level is not a child", () => {
+		const parsed = uiInputSchema.safeParse({
+			root: ["a", "b"],
+			elements: {
+				a: { type: "stack", children: ["b"] },
+				b: { type: "text", props: { md: "x" } },
+			},
+		});
+		expect(parsed.success).toBe(false);
+		if (!parsed.success)
+			expect(parsed.error.issues.map((i) => i.message).join()).toContain('"b"');
+	});
 });
 
 describe("wire JSON schema", () => {
@@ -181,12 +224,12 @@ describe("normalizeUiInput", () => {
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 	});
 
-	test("rule 5: an array root becomes a synthesized stack", () => {
+	test("rule 5: an array root stays an array — no wrapper is synthesized", () => {
 		const r = normalizeUiInput({
 			root: ["a", "b"],
 			elements: { a: { type: "text", props: { md: "x" } }, b: { type: "text", props: { md: "y" } } },
 		});
-		expect(r.report.synthesizedRoot).toBe("root");
+		expect((r.value as { root: unknown }).root).toEqual(["a", "b"]);
 		const parsed = uiInputSchema.safeParse(r.value);
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 	});
@@ -266,6 +309,20 @@ describe("normalizeUiInput", () => {
 		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
+	test("rule 8: prune walks every id in an array root", () => {
+		const r = normalizeUiInput({
+			root: ["a", "b"],
+			elements: {
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "stack", children: ["c"] },
+				c: { type: "text", props: { md: "y" } },
+				stray: { type: "text", props: { md: "unreachable" } },
+			},
+		});
+		expect(r.report.unreachable).toEqual(["stray"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
 	test("rule 8: prune:false keeps unreachable elements", () => {
 		const r = normalizeUiInput(
 			{
@@ -300,6 +357,31 @@ describe("normalizeUiInput", () => {
 		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
+	test("rule 9: a stray array root inside elements moves to the top level", () => {
+		const r = normalizeUiInput({
+			elements: {
+				root: ["a", "b"],
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "text", props: { md: "y" } },
+			},
+		});
+		expect(r.report.strayRoot).toEqual({ value: ["a", "b"], action: "moved" });
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 9: a stray matching array root is dropped", () => {
+		const r = normalizeUiInput({
+			root: ["a", "b"],
+			elements: {
+				root: ["a", "b"],
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "text", props: { md: "y" } },
+			},
+		});
+		expect(r.report.strayRoot).toEqual({ value: ["a", "b"], action: "dropped" });
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
 	test("rule 9 negative: differing roots are no repair", () => {
 		const r = normalizeUiInput({
 			root: "b",
@@ -325,6 +407,21 @@ describe("normalizeUiInput", () => {
 		const parsed = uiInputSchema.safeParse(r.value);
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 		if (parsed.success) expect(parsed.data.title).toBe("wrapped");
+	});
+
+	test("rule 10: a wrapped spec with an array inner root unwraps", () => {
+		const r = normalizeUiInput({
+			elements: {
+				root: ["a", "b"],
+				elements: {
+					a: { type: "text", props: { md: "x" } },
+					b: { type: "text", props: { md: "y" } },
+				},
+			},
+		});
+		expect(r.report.unwrapped).toBe(true);
+		expect((r.value as { root: unknown }).root).toEqual(["a", "b"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
 	test("rule 10 negative: a top-level root blocks the unwrap", () => {

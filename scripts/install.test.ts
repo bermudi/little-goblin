@@ -24,6 +24,7 @@ function fixture(
 	edit?: (home: string, repo: string) => void,
 ): {
 	status: number | null;
+	stdout: string;
 	stderr: string;
 	calls: string;
 	units: string;
@@ -61,8 +62,14 @@ function fixture(
 		);
 		copyFileSync(join(root, "src", "proc.ts"), join(repo, "src", "proc.ts"));
 		copyFileSync(join(root, "src", "log.ts"), join(repo, "src", "log.ts"));
-		if (mode.startsWith("real-")) cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
+		if (mode.startsWith("real-")) {
+			cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
+			copyFileSync(join(root, "scripts", "check-auth.ts"), join(repo, "scripts", "check-auth.ts"));
+		}
 		if (mode === "startup-descendant") {
+			// The shipped watcher resolves the channel config itself, so its
+			// import closure and a valid goblin.json5 are part of the fixture.
+			cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
 			copyFileSync(
 				join(root, "scripts", "check-startup.ts"),
 				join(repo, "scripts", "check-startup.ts"),
@@ -81,7 +88,7 @@ function fixture(
 			copyFileSync(join(root, "deploy", name), join(repo, "deploy", name));
 		writeFileSync(
 			join(home, "goblin", "goblin.json5"),
-			mode.startsWith("real-")
+			mode.startsWith("real-") || mode === "startup-descendant"
 				? '{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",operators:[1],tts:""}\n'
 				: "{}\n",
 		);
@@ -106,6 +113,7 @@ function fixture(
 '--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `printf '%s' "$PPID" > '${join(dir, "installer-pid")}'; exec '${realBun}' --no-install run '${join(repo, "src", "doctor.ts")}' --phase preflight --json > '${join(dir, "doctor-report.json")}'` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
 '--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main", "alpha-one"] : [] })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
+'--no-install run scripts/check-auth.ts') ${mode.startsWith("real-") ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "check-auth.ts")}'` : mode === "poisoned-auth" ? "printf 'telegram\\n'; exit 2" : ":"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
 '--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable goblin.service && systemctl --user start --no-block goblin.service"} ;;
 '--no-install run src/doctor.ts --phase installed --json') ${mode === "installed" ? "exit 1" : ":"} ;;
@@ -168,6 +176,7 @@ esac`,
 				: undefined;
 		return {
 			status: result.status,
+			stdout: result.stdout,
 			stderr: result.stderr,
 			calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
 			units: existsSync(installedUnit) ? readFileSync(installedUnit, "utf8") : "",
@@ -224,10 +233,11 @@ describe("fresh installer", () => {
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.calls).toContain("scripts/check-startup.ts 0");
 	});
-	test("orders frozen sync, preflight, build, asset check, units, current startup, installed checks", () => {
+	test("orders auth gate, frozen sync, preflight, build, asset check, units, current startup, installed checks", () => {
 		const result = fixture();
 		expect(result.status, result.stderr).toBe(0);
 		const stages = [
+			"scripts/check-auth.ts",
 			"install --frozen-lockfile",
 			"--phase preflight --json",
 			"run app:build",
@@ -278,6 +288,20 @@ describe("fresh installer", () => {
 		expect(result.status).not.toBe(0);
 		expect(result.calls).not.toContain("install --frozen-lockfile");
 		expect(result.stderr).toContain("insecure-mode");
+	});
+	test("poisoned auth refuses with the gate's own code and offender names before any mutation", () => {
+		// design/auth.md ("Never the owner session, by mechanism."): the
+		// install aborts with exit 2, names on stdout (bare record names —
+		// values are secret material and never print), nothing enabled.
+		const result = fixture("poisoned-auth");
+		expect(result.status).toBe(2);
+		expect(result.stdout).toBe("telegram\n");
+		expect(result.stderr).toContain("pass-cli directly");
+		expect(result.stderr).toContain("design/auth.md");
+		expect(result.calls).not.toContain("install --frozen-lockfile");
+		expect(result.calls).not.toContain("app:build");
+		expect(result.calls).not.toContain("daemon-reload");
+		expect(result.units).toBe("");
 	});
 	test("spawn failure reports the errno and stops before any mutation", () => {
 		// An exec-bit file with an invalid format passes Bun.which's

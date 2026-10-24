@@ -119,7 +119,10 @@ describe("gws mail reader", () => {
 		const { hits, historyId } = await reader.poll("from:bank", "100");
 		// new-other arrived but doesn't match; old-noise matches but isn't new.
 		expect(hits.map((h) => h.id)).toEqual(["new-match"]);
-		expect(historyId).toBe("120");
+		// new-other is an arrival the search does not show — lag or noise,
+		// unknowable — so the checkpoint holds at record 110 instead of
+		// the head: record 111 re-arrives next poll and is offered again.
+		expect(historyId).toBe("110");
 		expect(hits[0]).toMatchObject({ from: "a-new-match@x.com", subject: "sub-new-match" });
 		// Raw discovery surface, not helpers: resource/method argv with
 		// userId + --format json on every call.
@@ -254,6 +257,111 @@ describe("gws mail reader", () => {
 		const out = await makeGwsReader(run).poll("from:bank", "120");
 		expect(out).toEqual({ hits: [], historyId: "130" });
 		expect(calls.map((c) => c.args[3])).toEqual(["list"]);
+	});
+
+	test("an arrival the filter list cannot show holds the checkpoint — index lag is not a skip", async () => {
+		// The report's sketch: one history record with message m, head
+		// past it, and a filter list that cannot see m yet. The old
+		// behavior returned the head and skipped m forever.
+		const { run } = fakeGws({
+			history: () => ({
+				history: [{ id: "150", messagesAdded: [{ message: { id: "m" } }] }],
+				historyId: "155",
+			}),
+			list: () => ({ messages: [] }),
+		});
+		const captured: string[] = [];
+		setLogFile("gws-poll-hold-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		let out: { hits: MailHit[]; historyId: string };
+		try {
+			out = await makeGwsReader(run).poll("from:bank", "100");
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		// The cursor does not move past the record: ""-free hold at the
+		// poll's own cursor keeps the record ahead of it for the next poll.
+		expect(out).toEqual({ hits: [], historyId: "100" });
+		const holds = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg?.toString().startsWith("mail poll checkpoint held"));
+		expect(holds).toHaveLength(1);
+		expect(holds[0]).toMatchObject({ level: "info", filter: "from:bank", boundary: "100" });
+	});
+
+	test("a lagged match fires on redelivery once the search can see it", async () => {
+		let listCall = 0;
+		const { run } = fakeGws({
+			history: (p) => ({
+				history:
+					Number(p.startHistoryId) < 150
+						? [{ id: "150", messagesAdded: [{ message: { id: "m" } }] }]
+						: [],
+				historyId: "155",
+			}),
+			list: () => (++listCall === 1 ? { messages: [] } : { messages: [{ id: "m" }] }),
+		});
+		const reader = makeGwsReader(run);
+		const first = await reader.poll("from:bank", "100");
+		expect(first).toEqual({ hits: [], historyId: "100" });
+		const second = await reader.poll("from:bank", first.historyId);
+		expect(second.hits.map((h) => h.id)).toEqual(["m"]);
+		expect(second.historyId).toBe("155");
+	});
+
+	test("the hold never crosses a fired record — the fired match cannot refire", async () => {
+		const { run } = fakeGws({
+			history: (p) => ({
+				history: [
+					{ id: "110", messagesAdded: [{ message: { id: "m1" } }] },
+					{ id: "111", messagesAdded: [{ message: { id: "m2" } }] },
+				].filter((r) => Number(r.id) > Number(p.startHistoryId)),
+				historyId: "120",
+			}),
+			// The search confirms m1 only — m2 is unconfirmed.
+			list: () => ({ messages: [{ id: "m1" }] }),
+		});
+		const reader = makeGwsReader(run);
+		const first = await reader.poll("from:bank", "100");
+		expect(first.hits.map((h) => h.id)).toEqual(["m1"]);
+		// Held at the fired record's boundary, not the head: m2's record
+		// re-arrives, m1's cannot.
+		expect(first.historyId).toBe("110");
+		const second = await reader.poll("from:bank", first.historyId);
+		// The API returns records after 110 — m1 cannot re-arrive; m2 is
+		// offered again and still unconfirmed, so the hold stands.
+		expect(second.hits).toEqual([]);
+		expect(second.historyId).toBe("110");
+	});
+
+	test("an arrival that outlasts the grace window is treated as a non-match — the cursor advances", async () => {
+		const { run } = fakeGws({
+			history: () => ({
+				history: [{ id: "150", messagesAdded: [{ message: { id: "m" } }] }],
+				historyId: "250", // age 100 ≥ grace — noise, not lag
+			}),
+			list: () => ({ messages: [] }),
+		});
+		const out = await makeGwsReader(run).poll("from:bank", "100");
+		expect(out).toEqual({ hits: [], historyId: "250" });
+	});
+
+	test("the hold skips an aged-out unconfirmed record and pins to the next fresh one", async () => {
+		const { run } = fakeGws({
+			history: () => ({
+				history: [
+					{ id: "140", messagesAdded: [{ message: { id: "old" } }] },
+					{ id: "145", messagesAdded: [{ message: { id: "new" } }] },
+				],
+				historyId: "190", // age(140)=50 aged out; age(145)=45 fresh
+			}),
+			list: () => ({ messages: [] }),
+		});
+		const out = await makeGwsReader(run).poll("from:bank", "100");
+		expect(out).toEqual({ hits: [], historyId: "140" });
 	});
 
 	test("a 404 history list surfaces as HistoryExpiredError", async () => {

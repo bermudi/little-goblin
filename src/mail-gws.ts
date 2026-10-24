@@ -13,9 +13,16 @@ import { ProviderError, str } from "./agent/tools/web.ts";
 const POLL_BATCH_CAP = 10;
 // The intersection window: how many of the filter's recent matches the
 // list call can see. A full page means arrivals older than the newest
-// LIST_PAGE matches are invisible to the intersection — the one way a
-// match can still be lost, and it gets a warn line when it's possible.
+// LIST_PAGE matches are invisible to the intersection — the search
+// cannot confirm them, so the lag watermark below holds their records
+// until the grace runs out, and the full page still gets a warn line.
 const LIST_PAGE = 50;
+// How much mailbox history (in history-record ids) may accrue past an
+// arrival the search has not confirmed before it is treated as a
+// non-match: long enough that a lagging search index gets several
+// polls to surface the record again, short enough that a
+// never-matching filter's cursor cannot trail the head indefinitely.
+const LAG_GRACE_RECORDS = 50;
 
 const GWS_TIMEOUT_MS = 30_000;
 const GWS_MAX_OUTPUT = 1 << 20;
@@ -366,10 +373,53 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		}
 		const hits: MailHit[] = [];
 		for (const id of batch) hits.push(await getMetadata(id));
-		// Every match fired → the head (past every record, matched or
-		// not); truncated → the last fired record's id, so the unfired
+		// Truncated → the last fired record's id, so the unfired
 		// remainder is still ahead of the cursor.
-		return { hits, historyId: truncated ? lastIncluded : latest };
+		if (truncated) return { hits, historyId: lastIncluded };
+		// Search-index lag watermark: an arrival the filter's q search
+		// does not show may be a match whose index entry lags the history
+		// log, not a non-match — advancing the head over it would skip it
+		// forever. Hold the checkpoint at the last seen-consistent
+		// boundary: the record before the earliest unconfirmed arrival,
+		// so that record re-arrives next poll and is offered to the
+		// search again. The hold is bounded — once LAG_GRACE_RECORDS of
+		// mailbox history has accrued past the record, the arrival has
+		// had its chances and is treated as a non-match — and it never
+		// crosses a fired record (records at or before the checkpoint
+		// never re-arrive), so nothing already fired refires:
+		// at-least-once without duplicates.
+		const head = Number(latest);
+		const seen = new Set(matching.map((m) => m.id));
+		let prev = "";
+		let held = "";
+		for (const rec of records) {
+			if (Number(rec.id) <= Number(lastIncluded)) {
+				prev = rec.id;
+				continue;
+			}
+			if (rec.ids.every((id) => seen.has(id))) {
+				prev = rec.id;
+				continue;
+			}
+			const age = head - Number(rec.id);
+			if (Number.isFinite(head) && head > 0 && Number.isFinite(age) && age < LAG_GRACE_RECORDS) {
+				// The earliest fresh unconfirmed record decides the hold;
+				// later ones sit behind it and re-arrive with it.
+				held = prev === "" ? startHistoryId : prev;
+				break;
+			}
+			// Aged out — given up as a non-match, but keep scanning:
+			// later records are newer and may still be within grace.
+			prev = rec.id;
+		}
+		if (held !== "") {
+			log.info(
+				"mail poll checkpoint held — arrivals the filter list does not show yet may still be indexing",
+				{ filter, boundary: held, head: latest },
+			);
+			return { hits, historyId: held };
+		}
+		return { hits, historyId: latest };
 	}
 
 	async function profileHistoryId(): Promise<string> {

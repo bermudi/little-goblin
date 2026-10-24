@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import type { JournalStatus } from "./turn-journal.ts";
 import { openWakeStore } from "./wake-store.ts";
 
@@ -475,6 +476,46 @@ describe("wake store", () => {
 		const plan = wakes.reconcile(new Date().toISOString(), () => null);
 		expect(plan.toFail.map((w) => w.wakeId)).toEqual([rec.wakeId]);
 		expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
+	});
+
+	test("one undecodable wake row is skipped loudly — the pass never wedges", () => {
+		const { store, conv, other, wakes } = setup();
+		const bad = wakes.record({
+			sourceKey: "poll:1",
+			conversationId: conv.id,
+			kind: "done-candidate",
+			text: "line",
+			facts: {},
+			origin: "observer",
+		});
+		const healthy = wakes.record({
+			sourceKey: "poll:2",
+			conversationId: other.id,
+			kind: "done-candidate",
+			text: "line two",
+			facts: {},
+			origin: "observer",
+		});
+		// Out-of-band corruption only — SQLite's dynamic typing lets a
+		// TEXT land in the INTEGER column, and a rollback deploy leaves
+		// rows the running schema rejects. The poison row must cost its
+		// own error line per pump (naming the wake); classification must
+		// continue — the healthy wake in the other conversation still
+		// owes its append.
+		store.db.run("UPDATE wake_deliveries SET attempts = 'x' WHERE wake_id = ?", [bad.wakeId]);
+		const lines: Record<string, unknown>[] = [];
+		setLogFile("wake-store-op.log");
+		setLogWriter((_p, line) => lines.push(JSON.parse(line) as Record<string, unknown>));
+		try {
+			const plan = wakes.reconcile(new Date().toISOString(), () => null);
+			expect(plan.toAppend.map((w) => w.wakeId)).toEqual([healthy.wakeId]);
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+		const err = lines.find((l) => l.msg === "wake row undecodable — skipped this reconcile");
+		expect(err).toMatchObject({ wake: bad.wakeId, conversation: conv.id, state: "pending" });
+		expect(String(err?.error)).toContain("attempts");
 	});
 
 	test("a pending wake whose conversation row is gone fails terminally, not the pass", () => {

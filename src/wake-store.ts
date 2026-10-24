@@ -570,7 +570,24 @@ export function openWakeStore(db: Database): WakeStore {
 				preserved: [],
 			};
 			for (const row of qOpenAll.all()) {
-				const rec = rowToRecord(row);
+				// Same ruling as programs.ts decodeScan: one row the schema
+				// rejects (drift between versions, a hand edit) must cost that
+				// row an error line per pump, not every other wake its
+				// delivery — pump() treats a reconcile throw as fatal for the
+				// whole pass, so an unguarded row wedges all wake delivery and
+				// settlement every tick. The row is skipped, never decoded
+				// into a fabricated record.
+				let rec: WakeRecord;
+				try {
+					rec = rowToRecord(row);
+				} catch (err) {
+					log.error("wake row undecodable — skipped this reconcile", err, {
+						wake: row.wake_id,
+						conversation: row.conversation_id,
+						state: row.state,
+					});
+					continue;
+				}
 				if (rec.state === "pending") {
 					const conv = qEpoch.get(rec.conversationId);
 					if (conv === null) {

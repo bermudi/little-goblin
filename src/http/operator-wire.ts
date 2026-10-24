@@ -68,7 +68,9 @@ export interface ConfigPostBody {
 				auth?: string;
 				voice?: string;
 		  };
-	transcription:
+	// Optional on the four parkable blocks: an enable with no editable
+	// content is expressed through `capabilities` instead of a body key.
+	transcription?:
 		| ""
 		| {
 				kind: (typeof transcriptionKinds)[number];
@@ -88,7 +90,8 @@ export interface ConfigPostBody {
 					weights?: string | undefined;
 				}[];
 		  };
-	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
+	vision?: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
+	image?: "" | { model: string; size?: string };
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
@@ -104,7 +107,7 @@ export interface ConfigPostBody {
 	};
 	publicUrl: string;
 	http: { port: number };
-	memory:
+	memory?:
 		| ""
 		| {
 				baseUrl: string;

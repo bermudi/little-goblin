@@ -248,6 +248,7 @@ const CONFIG_POST_KEYS = {
 	tts: true,
 	transcription: true,
 	vision: true,
+	image: true,
 	search: true,
 	fetch: true,
 	operators: true,

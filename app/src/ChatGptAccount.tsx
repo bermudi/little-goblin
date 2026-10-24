@@ -49,7 +49,9 @@ export function ChatGptAccount({
 	}, [onSignedIn]);
 
 	const applyStatus = (s: ChatGptStatus) => {
-		const completed = wasPending.current && s.state === "signed-in";
+		// Fallback credentials can report signed-in with an error when the
+		// requested pairing itself failed — that is not completion.
+		const completed = wasPending.current && s.state === "signed-in" && s.error === null;
 		wasPending.current = s.state === "pending";
 		setStatus(s);
 		if (completed) onSignedInRef.current?.();
@@ -195,13 +197,11 @@ export function ChatGptAccount({
 						<span className="cap">read-only</span>
 					</Row>
 				) : (
-					<Row
-						label="Status"
-						cap={`Not signed in.${status.error !== null ? ` ${status.error}` : ""}`}
-					>
+					<Row label="Status" cap="Not signed in.">
 						{signIn}
 					</Row>
 				)}
+				{status.error !== null && <div className="cap err-inline">{status.error}</div>}
 				{err !== null && <div className="cap err-inline">{err}</div>}
 			</div>
 		</>

@@ -18,6 +18,17 @@ root-level oneOf that some providers cannot generate arguments against —
 every call arrives as `{}` and fails validation (it took out mail Sep 28);
 the per-action contract is a discriminated union enforced inside `execute`.
 
+**Tool-call repair is rule-based, never a model re-ask** (ruling
+2026-10-24): `streamText`'s `repairToolCall` (`src/agent/tool-repair.ts`)
+rewrites an invalid call only when a rule applies — JSON5-strict syntax
+slips, and a top-level property whose schema type is object/array
+(anyOf/oneOf included) holding a JSON string gets parsed into place.
+`NoSuchToolError` and unparseable (truncated) input are declined; a
+repair that still doesn't validate surfaces as the usual tool error.
+Every attempt logs `tool call repaired`/`tool call not repaired` with
+the fixes or the reason. Per-tool input repair (e.g. `ui`'s
+`normalizeUiInput`) stays the tool's own validator concern.
+
 `speak` synthesizes and hands the bytes to the turn's delivery sink — it
 does not send; the sink owns the Telegram call, so "Telegram send is
 delivery, not a tool" stays true and voice notes ride the same serialized
@@ -100,6 +111,15 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
 - **Nested calls are real calls** — each runs the tool's live `execute`,
   so the runtime's authority fence wraps it, under the turn's abort
   signal. Calls that completed before a failure are not undone.
+- **Nested calls don't produce SDK tool parts** — they run `execute`
+  directly, so a presentation tool can't ride the allowlist alone
+  (ruling 2026-10-21). `artifact` is the typed presentation seam: a
+  nested call's `{artifact}` result is collected into
+  `output.presentations` under the stable child call id
+  (`<scriptCallId>/<n>`), kept out of the digest text so bytes never
+  re-enter context, and rendered by the app through the same card path
+  as a direct call. Completed presentations survive a script that fails
+  afterwards — the no-rollback rule above.
 - **The bounds live in the worker, before a call can post.** Upstream
   posts every call the VM makes; a cap checked only on the host would run
   after the port flooded and every args blob parsed. A local worker entry

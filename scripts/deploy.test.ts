@@ -62,8 +62,11 @@ function fakeBin(dir: string, includePodman = true): string {
 		"mv",
 		"readlink",
 		"rm",
+		"sed",
 		"seq",
+		"sort",
 		"tail",
+		"tr",
 	]) {
 		symlinkSync(commandPath(name), join(bin, name));
 	}
@@ -189,7 +192,15 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 		writeFileSync(join(main, "package.json"), "deps-A\n");
 		mkdirSync(join(main, "app", "src"), { recursive: true });
 		writeFileSync(join(main, "app", "index.html"), "<html>fixture</html>\n");
-		writeFileSync(join(main, "app", "src", "App.tsx"), "app-A\n");
+		// The served bundle inlines every "../src/" module app/src
+		// imports — deploy.sh derives its rebuild set from these
+		// specifiers, so the fixture carries the three the tests exercise.
+		writeFileSync(
+			join(main, "app", "src", "App.tsx"),
+			'import { isMachineryText } from "../../src/tags.ts";\n' +
+				'import { artifactOf } from "../../src/agent/tools/artifact-schema.ts";\n' +
+				'import type { UiInput } from "../../src/agent/tools/ui-schema.ts";\n',
+		);
 		git(main, "add", ".");
 		git(main, "commit", "-qm", "previous deployment");
 		const oldRev = git(main, "rev-parse", "HEAD");
@@ -433,9 +444,11 @@ describe("local deployment refresh and rollback", () => {
 		"package.json",
 		"app/src/App.tsx",
 		"app/vite.config.ts",
+		// Value-imported into the served bundle by the fixture's App.tsx —
+		// each module the client inlines must rebuild it, including a
+		// shared module added without touching deploy.sh's trigger set.
 		"src/agent/tools/ui-schema.ts",
-		// Value-imported into the served bundle (app/src/markdown.tsx) — a
-		// tags-only deploy must not ship a stale client.
+		"src/agent/tools/artifact-schema.ts",
 		"src/tags.ts",
 	]) {
 		test(`${path} rebuilds the inlined client`, () => {

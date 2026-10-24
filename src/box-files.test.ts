@@ -18,9 +18,12 @@ import {
 	BOX_FILE_MAX_BYTES,
 	exportBytes,
 	exportNamedBytes,
+	readWorkspaceFile,
 	resolveExport,
 	resolveImport,
 	readImport,
+	WORKSPACE_READ_MAX_BYTES,
+	workspaceReadStatus,
 	writeExportBytes,
 } from "./box-files.ts";
 
@@ -262,5 +265,78 @@ describe("writeExportBytes", () => {
 		expect("error" in dangle && dangle.error).toContain("dangling symlink");
 		const big = writeExportBytes(workspace, "big.bin", new Uint8Array(BOX_FILE_MAX_BYTES + 1));
 		expect("error" in big && big.error).toContain("MiB cap");
+	});
+});
+
+describe("readWorkspaceFile", () => {
+	test("a workspace file reads back, relative and absolute", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "doc.md"), "# hi");
+		const rel = readWorkspaceFile(workspace, "doc.md");
+		expect("data" in rel && new TextDecoder().decode(rel.data)).toBe("# hi");
+		const abs = readWorkspaceFile(workspace, join(workspace, "doc.md"));
+		expect("data" in abs).toBe(true);
+	});
+
+	test("missing is 404, every other refusal is 403", () => {
+		const { dir, workspace } = ws();
+		const missing = readWorkspaceFile(workspace, "gone.md");
+		// The classification rides the structural code, not the message.
+		expect("error" in missing && missing.code).toBe("not-found");
+		expect("error" in missing && workspaceReadStatus(missing)).toBe(404);
+		writeFileSync(join(dir, "outside.txt"), "x");
+		const escape = readWorkspaceFile(workspace, "../outside.txt");
+		expect("error" in escape && escape.code).toBe("refused");
+		expect("error" in escape && workspaceReadStatus(escape)).toBe(403);
+		mkdirSync(join(workspace, "dir"));
+		const dirRead = readWorkspaceFile(workspace, "dir");
+		expect("error" in dirRead && workspaceReadStatus(dirRead)).toBe(403);
+	});
+
+	test("a symlink escaping the workspace is refused", () => {
+		const { dir, workspace } = ws();
+		writeFileSync(join(dir, "target.txt"), "secret");
+		symlinkSync(join(dir, "target.txt"), join(workspace, "link.txt"));
+		const out = readWorkspaceFile(workspace, "link.txt");
+		expect("error" in out && out.error).toContain("outside the workspace");
+	});
+
+	test("auth.jsonl is refused wherever it lands in the workspace", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "auth.jsonl"), "{}");
+		mkdirSync(join(workspace, "sub"));
+		writeFileSync(join(workspace, "sub", "auth.jsonl"), "{}");
+		expect("error" in readWorkspaceFile(workspace, "auth.jsonl")).toBe(true);
+		expect("error" in readWorkspaceFile(workspace, "sub/auth.jsonl")).toBe(true);
+		const denied = readWorkspaceFile(workspace, "auth.jsonl");
+		expect("error" in denied && workspaceReadStatus(denied)).toBe(403);
+	});
+
+	test("a renamed symlink cannot launder auth.jsonl past the deny", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "auth.jsonl"), "{}");
+		symlinkSync(join(workspace, "auth.jsonl"), join(workspace, "notes.md"));
+		const out = readWorkspaceFile(workspace, "notes.md");
+		expect("error" in out && out.error).toContain("never served");
+	});
+
+	test("anything resolving inside .git is refused", () => {
+		const { workspace } = ws();
+		mkdirSync(join(workspace, ".git", "refs"), { recursive: true });
+		writeFileSync(join(workspace, ".git", "config"), "[remote]");
+		expect("error" in readWorkspaceFile(workspace, ".git/config")).toBe(true);
+		// A symlink whose realpath lands inside .git is refused too.
+		mkdirSync(join(workspace, "repo", ".git"), { recursive: true });
+		writeFileSync(join(workspace, "repo", ".git", "config"), "x");
+		symlinkSync(join(workspace, "repo", ".git", "config"), join(workspace, "gitlink"));
+		expect("error" in readWorkspaceFile(workspace, "gitlink")).toBe(true);
+	});
+
+	test("the reader cap is smaller than the transfer cap and enforced", () => {
+		const { workspace } = ws();
+		expect(WORKSPACE_READ_MAX_BYTES).toBeLessThan(BOX_FILE_MAX_BYTES);
+		writeFileSync(join(workspace, "big.bin"), new Uint8Array(WORKSPACE_READ_MAX_BYTES + 1));
+		const out = readWorkspaceFile(workspace, "big.bin");
+		expect("error" in out && out.error).toContain("MiB cap");
 	});
 });

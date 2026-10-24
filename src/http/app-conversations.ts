@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
+import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
 import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
 import { appAddress, appIdSchema, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import type { Project } from "../projects.ts";
+import { type Project, projectWorkdir } from "../projects.ts";
 import { openRatings } from "../reply-ratings.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
@@ -677,6 +678,57 @@ export async function handleConversationsRoute(
 			turns: body.turns,
 		});
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// The document reader: a byte route for the app's file modal, not a
+	// workspace browser — one conversation's workdir, realpath-contained,
+	// capped, with the auth/.git refusals inside readWorkspaceFile.
+	const fileMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/file$/);
+	if (fileMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(fileMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const from = url.searchParams.get("path") ?? "";
+		if (from === "") {
+			return Response.json({ error: "missing path" }, { status: 422, headers: NO_STORE });
+		}
+		let workdir: string;
+		try {
+			workdir = projectWorkdir(deps.projects, conv);
+		} catch (err) {
+			// A vanished project dir is a server-side environment failure,
+			// not something the request got wrong.
+			return Response.json(
+				{ error: err instanceof Error ? err.message : String(err) },
+				{ status: 500, headers: NO_STORE },
+			);
+		}
+		const r = readWorkspaceFile(workdir, from);
+		if ("error" in r) {
+			log.info("app file refused", { conversation: conv.id, path: from, reason: r.error });
+			return Response.json(
+				{ error: r.error },
+				{ status: workspaceReadStatus(r), headers: NO_STORE },
+			);
+		}
+		log.debug("app file served", { conversation: conv.id, path: r.path, bytes: r.data.byteLength });
+		// Direct navigation must never render a stored document in the app
+		// origin — the reader pulls it through fetch and renders it itself.
+		return new Response(r.data, {
+			headers: {
+				"content-type": Bun.file(r.path).type || "application/octet-stream",
+				"content-disposition": "attachment",
+				"content-security-policy": "sandbox",
+				"x-content-type-options": "nosniff",
+				...NO_STORE,
+			},
+		});
 	}
 
 	const windowMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/window$/);

@@ -704,7 +704,10 @@ choice, a small calculator — rendered in the transcript, not described in
 prose. **Chat-native for the app channel** (how an answer renders, not a
 second system), only while stateless: no saved or re-openable "apps", no
 artifact store, no state outliving the message; that line is machinery and
-needs its own ruling.
+needs its own ruling. (The file-presentation half of that line arrived as
+`artifact` + the document reader — see the 2026-10-21 ruling below; the
+bytes persist in the attachment store, the presentation stays
+message-scoped.)
 
 **Mechanism: a component tree, not HTML.** One tool, `ui`, app conversations
 only (Telegram never sees it; guests never). The tool *input is the
@@ -714,22 +717,59 @@ ack — nothing runs. Store format = wire format: the tool part persists in
 UIMessage history, so reload, resume, and spin-off copies carry the UI, and
 the model sees its past interface as a past tool call.
 
-- **No recursion, two levels** (containers hold leaf children only): a
-  recursive zod schema emits `$ref`/`$defs`, which OpenAI-compatible
-  providers handle unevenly, and a rejected schema breaks every app turn.
+- **Flat element map** (ruling 2026-10-24): json-render's spec shape
+  adopted — shape only, not the package, its `$state`/`$bindState`/
+  `visible`/`repeat`/actions runtime, or its inline JSONL-patch
+  protocol. `{title?, root, elements}` maps each id to
+  `{type, props, children}` where `children` lists child ids, so depth
+  is unbounded without a recursive schema — a recursive zod schema
+  emits `$ref`/`$defs`, which OpenAI-compatible providers handle
+  unevenly, and a rejected schema breaks every app turn (the emitted
+  schema also strips zod's `propertyNames`). `root` is one element id
+  or a list of top-level ids in display order — several top elements
+  need no wrapper container. Structural rules live in a
+  superRefine naming the ids: every root id exists and none is also a
+  child (a top-level element is not a child), a root list holds no
+  duplicates, every child id exists, tree
+  not DAG (single parent), no cycles, tabs hold only `tab` elements and
+  columns only `column` (inversely a tab needs a tabs parent, a column
+  a columns parent), leaves are childless, ≤200 elements. Streaming
+  renders root first, skeletons pending ids (an element failing its
+  schema skeletons only when it's the raw tail), and orphans render in
+  arrival order while root is unwritten; html still mounts only once
+  complete. Legacy `{blocks}` parts are not converted — they fail the
+  schema and render as the generic tool row (operator call — little
+  history to preserve). Evidence: json-render-agent-bench,
+  `glm-5.3-flash`, oneshot 82% pass@1 / 98% structurally valid; the
+  failures were in the dynamic-state layer goblin excludes.
 - **Progressive render.** The AI SDK surfaces partially parsed tool input;
-  the client renders every block that validates plus a skeleton for the
+  the client renders every element that validates plus a skeleton for the
   arriving one. Without provider tool-input deltas the UI lands whole at
   completion — degraded, not failed.
 - **Placement.** `ui` parts render inline, never inside the Worked fold;
   validation failures render as the normal tool error row.
-- **Type repair, both sides.** Probed live, `zai/glm-5.3-flash` broke 9 of
-  22 comparison-style answers, mostly by dropping a block's `type`
-  discriminator; after repair 3 of 22 still failed. A typeless object is
-  re-typed by exact key-set match (a tie meaning no repair); invented keys
-  are not repaired — the model sees the tool error and may retry. Server and
-  client both validate/render through the same repair, so history renders
-  as accepted.
+- **Type repair, both sides.** `normalizeUiInput` repairs, each rule
+  only when exactly one interpretation exists: `elements`/element
+  `props` given as JSON strings parse into place; content fields on an
+  element's top level with no `props` hoist into it; a typeless element
+  re-types by exact props key-set match (`{label}` → `tab`, the one
+  inferable container; a tie or invented keys mean no repair); inline
+  child objects hoist into the map as `<parent>.<index>`; a missing
+  root picks the single unreferenced
+  element; numeric-string chart series values coerce; and entries
+  unreachable from root are pruned — except a string-or-array
+  `elements.root` the differing-roots rule declined, which stays so
+  validation sees it.
+  Two wrapper
+  repairs handle whole-spec misplacement (2026-10-24 probe): a spec
+  nested one level deep as `elements.{elements,root}` unwraps when no
+  top-level root exists, and an `elements.root` holding a string or an
+  id array — the root
+  pointer misplaced inside the map — moves up (or drops when it
+  duplicates root; differing roots are no repair). What no rule fixes
+  surfaces as a tool error — the model sees it and may retry. Server
+  and client both validate/render through the same repair, so history
+  renders as accepted.
 - **Judgment lives in the description.** Goblin's models are prompted, not
   trained: the description says text is the default and names when layout
   carries meaning.
@@ -765,6 +805,54 @@ injected.
 prefix per live app conversation. Frozen prompt snapshots keep the old
 "Tools:" line until the next boundary (roll, compaction); the description
 carries the guidance meanwhile.
+
+## Artifacts & the document reader (ruling 2026-10-21)
+
+Operator ask (Mario's Pi codemode thread): files the agent makes should be
+openable in the PWA, and composition should end in a card, not a prose
+summary. Two doc kinds ride one modal:
+
+- **An artifact is an immutable snapshot.** The `artifact` tool copies the
+  bytes once into the attachment store; editing or deleting the source
+  afterwards never rewrites history — a reload renders the snapshot, not
+  the file's future. The wire carries only `{path, name, title?, mediaType,
+  size, source}`: bytes travel file → attachment store → HTTP → render,
+  never through model context. Cards hoist out of the Worked fold beside
+  the fold that ran them — a direct `artifact` call and a script's
+  collected `output.presentations` land the same way. The Intelligent UI
+  ruling's "no artifact store" line moved exactly this far: the store is
+  the existing attachment directory serving by basename, presentation is
+  still message-scoped (a card in history), and no separate registry was
+  built.
+- **A file read is live and mutable.** Clicking a path chip opens the file
+  as it is *now* — same semantics as `read_file`, deliberately not the
+  immutable kind. `GET /api/app/conversations/:id/file?path=` resolves
+  inside that conversation's workdir (the workspace, or the bound
+  project's dir via `projectWorkdir`) with the box-files realpath
+  containment: `..`, absolute escapes, symlink escapes, directories and
+  over-cap reads all refuse. On top of the import boundary the reader
+  refuses `auth.jsonl` anywhere (the State viewer ruling applies — a
+  linked project dir can sit outside `$GOBLIN_HOME`, so the deny rides on
+  the resolved path, not the home) and anything inside `.git` (remote URLs
+  carry credentials). The reader cap is the app byte budget (32 MiB), not
+  the 100 MiB transfer bound. Served `content-disposition: attachment` +
+  `content-security-policy: sandbox` + `nosniff`: direct navigation can
+  never render a stored document in the app origin; the reader pulls it
+  through fetch and renders it itself.
+
+Rendering is by kind: markdown through the shared renderer (relative
+`[t](path)` links are live only inside the viewer — they resolve against
+the doc's own directory and push onto the modal's back stack; in the
+transcript they stay literal syntax), HTML inside the same sandboxed
+srcdoc frame as ui leaves, raster images/audio/video/pdf over object
+URLs, plain text for the rest of the text kinds past a decode cap, and a
+download affordance for binaries (SVG included — it never renders
+same-origin). The frame CSP grew `media-src data: blob:` so a generated
+document can embed or build media — still no network, still an opaque
+origin.
+
+App-channel only, like `ui`: the tool mounts on app turns, the routes sit
+behind app auth, and Telegram/guests get neither.
 
 **Parked candidate (2026-10-22): json-render.** Vercel Labs' framework for
 this same idea (`@json-render/core`, `@json-render/react`), layered on the AI

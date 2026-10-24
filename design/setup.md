@@ -28,7 +28,12 @@ opt-in capability boundary.
 Required sequence:
 
 1. Cheap host/input/path checks and existing-installed-target refusal,
-   before any dependency, asset or service mutation.
+   before any dependency, asset or service mutation. The
+   direct-`pass-cli` auth gate lives here too — it runs before
+   `node_modules` exists, so `scripts/check-auth.ts` may only import the
+   dependency-free grammar leaf `src/auth-parse.ts` (and `src/goblin-home.ts`),
+   never `src/auth.ts`/`src/config.ts` or anything else that reaches
+   zod/json5.
 2. Frozen dependency sync. Dependency-using validation runs only after
    this — never through incidental Bun cache/auto-install.
 3. Confirm operator provisioning is complete: the installer creates no
@@ -148,8 +153,8 @@ or provider access — the operator handshake does.
 - Auth command recognition is exactly one form: a `!` record whose first
   word is `pass-keys` running `get <profile> <KEY>`. Wrappers, env
   prefixes, quotes, shell operators and executable substitutions/globs
-  keep the record a general, unverified command. `src/auth.ts` owns this
-  grammar.
+  keep the record a general, unverified command. `src/auth-parse.ts`
+  owns this grammar; `src/auth.ts` re-exports it.
 
 ## Opt-in dependencies
 

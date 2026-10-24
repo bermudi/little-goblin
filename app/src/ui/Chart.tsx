@@ -10,7 +10,7 @@
 // so the hues live in the stylesheet's tokens, not here.
 
 import { useEffect, useRef, useState } from "react";
-import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
+import type { UiLeafProps } from "../../../src/agent/tools/ui-schema.ts";
 
 const H = 220;
 const FALLBACK_W = 560;
@@ -77,7 +77,7 @@ function Pie({
 	);
 }
 
-export function Chart({ leaf }: { leaf: Extract<UiLeaf, { type: "chart" }> }) {
+export function Chart({ leaf }: { leaf: UiLeafProps<"chart"> }) {
 	const { kind, x, series, unit } = leaf;
 	const ref = useRef<HTMLDivElement>(null);
 	const [width, setWidth] = useState(FALLBACK_W);

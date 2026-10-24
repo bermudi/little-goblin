@@ -21,7 +21,15 @@ import { writeThroughTarget } from "./agent/tools/paths.ts";
 export const BOX_FILE_MAX_BYTES = 100 * 1024 * 1024;
 
 export type BoxPathResult = { path: string } | { error: string };
-export type BoxImportResult = { path: string; bytes: number } | { error: string };
+
+/** Why the boundary said no: "not-found" means the named thing isn't
+ *  there at all; "refused" means it exists and the boundary won't serve
+ *  it. Carried on the error so callers classify on structure, never by
+ *  re-parsing the prose. */
+export type BoxErrorCode = "not-found" | "refused";
+export type BoxImportResult =
+	| { path: string; bytes: number }
+	| { error: string; code: BoxErrorCode };
 
 function inside(root: string, path: string): boolean {
 	return path === root || path.startsWith(root + sep);
@@ -39,7 +47,11 @@ function numberedCandidate(base: string, i: number): string {
 
 /** Import side: a workspace path that exists, stays inside the
  *  workspace under realpath, and names a regular file within the cap. */
-export function resolveImport(workspace: string, from: string): BoxImportResult {
+export function resolveImport(
+	workspace: string,
+	from: string,
+	maxBytes: number = BOX_FILE_MAX_BYTES,
+): BoxImportResult {
 	const wsLex = resolve(workspace);
 	const resolved = isAbsolute(from) ? resolve(from) : resolve(wsLex, from);
 	// A lexical `..` escape is refused before the filesystem is
@@ -47,6 +59,7 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 	if (!inside(wsLex, resolved)) {
 		return {
 			error: `refused: ${from} resolves to ${resolved}, outside the workspace — copy it into the workspace first if this is deliberate`,
+			code: "refused",
 		};
 	}
 	let real: string;
@@ -54,7 +67,7 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 		real = realpathSync(resolved);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			return { error: `source not found: ${from}` };
+			return { error: `source not found: ${from}`, code: "not-found" };
 		}
 		throw err;
 	}
@@ -62,15 +75,17 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 	if (!inside(wsReal, real)) {
 		return {
 			error: `refused: ${from} resolves to ${real}, outside the workspace — copy it into the workspace first if this is deliberate`,
+			code: "refused",
 		};
 	}
 	const st = statSync(real);
 	if (!st.isFile()) {
-		return { error: `refused: ${from} is not a regular file` };
+		return { error: `refused: ${from} is not a regular file`, code: "refused" };
 	}
-	if (st.size > BOX_FILE_MAX_BYTES) {
+	if (st.size > maxBytes) {
 		return {
-			error: `refused: ${from} exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+			error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
+			code: "refused",
 		};
 	}
 	return { path: real, bytes: st.size };
@@ -80,20 +95,24 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 export function readImport(
 	workspace: string,
 	from: string,
-): { path: string; data: Uint8Array } | { error: string } {
-	const resolved = resolveImport(workspace, from);
+	maxBytes: number = BOX_FILE_MAX_BYTES,
+): { path: string; data: Uint8Array } | { error: string; code: BoxErrorCode } {
+	const resolved = resolveImport(workspace, from, maxBytes);
 	if ("error" in resolved) return resolved;
 	const fd = openSync(resolved.path, constants.O_RDONLY | constants.O_NONBLOCK);
 	try {
 		const path = realpathSync(`/proc/self/fd/${fd}`);
 		if (!inside(realpathSync(workspace), path)) {
-			return { error: `refused: ${from} resolves outside the workspace` };
+			return { error: `refused: ${from} resolves outside the workspace`, code: "refused" };
 		}
 		const st = fstatSync(fd);
-		if (!st.isFile()) return { error: `refused: ${from} is not a regular file` };
-		if (st.size > BOX_FILE_MAX_BYTES) {
+		if (!st.isFile()) {
+			return { error: `refused: ${from} is not a regular file`, code: "refused" };
+		}
+		if (st.size > maxBytes) {
 			return {
-				error: `refused: ${from} exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+				error: `refused: ${from} exceeds the ${maxBytes / (1024 * 1024)} MiB cap`,
+				code: "refused",
 			};
 		}
 		// One extra byte detects growth without allowing an unbounded read.
@@ -104,7 +123,9 @@ export function readImport(
 			if (n === 0) break;
 			bytes += n;
 		}
-		if (bytes > st.size) return { error: `refused: ${from} grew during import; retry it` };
+		if (bytes > st.size) {
+			return { error: `refused: ${from} grew during import; retry it`, code: "refused" };
+		}
 		return { path, data: data.subarray(0, bytes) };
 	} finally {
 		closeSync(fd);
@@ -284,4 +305,54 @@ export function exportNamedBytes(
 	const written = writeExportBytes(workspace, rel, data);
 	if ("error" in written) return written;
 	return { rel };
+}
+
+// ---------- the app document reader ----------
+
+// A viewer read is bounded by what the app can pull, not the 100 MiB
+// transfer bound — same budget as the app attachment upload/serve caps.
+export const WORKSPACE_READ_MAX_BYTES = 32 * 1024 * 1024;
+
+// On top of the import boundary, the reader refuses two things a plain
+// file-open must never render: auth.jsonl (ruled out forever by
+// design/app.md → State viewer, wherever it happens to live — a linked
+// project dir can sit outside $GOBLIN_HOME), and anything inside a
+// .git dir, where remote URLs can carry credentials.
+const READER_DENIED_BASENAMES = new Set(["auth.jsonl"]);
+const READER_DENIED_COMPONENTS = new Set([".git"]);
+
+export type WorkspaceReadResult =
+	| { path: string; data: Uint8Array }
+	| { error: string; code: BoxErrorCode };
+
+/** Whether a denied read means "gone" (404) or "refused" (403) — the
+ *  boundary's error codes own the classification so callers don't
+ *  re-parse the prose. */
+export function workspaceReadStatus(result: { code: BoxErrorCode }): number {
+	return result.code === "not-found" ? 404 : 403;
+}
+
+export function readWorkspaceFile(
+	workspace: string,
+	from: string,
+	maxBytes: number = WORKSPACE_READ_MAX_BYTES,
+): WorkspaceReadResult {
+	// The requested name gets an early refusal; the resolved name gets
+	// the real one — a symlink called notes.md may not launder
+	// auth.jsonl's bytes past the deny.
+	if (READER_DENIED_BASENAMES.has(basename(from))) {
+		return { error: `refused: ${basename(from)} is never served`, code: "refused" };
+	}
+	const r = readImport(workspace, from, maxBytes);
+	if ("error" in r) return r;
+	if (READER_DENIED_BASENAMES.has(basename(r.path))) {
+		return {
+			error: `refused: ${from} resolves to ${basename(r.path)}, which is never served`,
+			code: "refused",
+		};
+	}
+	if (r.path.split(sep).some((part) => READER_DENIED_COMPONENTS.has(part))) {
+		return { error: `refused: ${from} resolves inside .git`, code: "refused" };
+	}
+	return r;
 }

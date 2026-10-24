@@ -341,6 +341,31 @@ describe("chatgpt device login", () => {
 		expect(s.source).toBe("custom");
 	});
 
+	test("a failed sign-in over usable fallback creds stays signed-in but keeps the error", async () => {
+		// The pinned file is a working credential the codex provider can
+		// still use — a failed pairing must surface as signed-in+error,
+		// never as silent success the client could read as completion.
+		const home = mkdtempSync(join(tmpdir(), "goblin-login-pin-"));
+		writeFileSync(
+			join(home, "pinned.json"),
+			JSON.stringify({ tokens: { access_token: "cli-at", id_token: ID_TOKEN } }),
+		);
+		const { login } = rig({
+			config: () => pinnedConfig(home),
+			respond: (url) =>
+				url.endsWith("/deviceauth/usercode") ? json({ error: "down" }, 500) : happyFlow(url),
+		});
+		const failed = await login.start();
+		expect(failed).toMatchObject({
+			state: "signed-in",
+			source: "custom",
+			email: "op@example.com",
+			pinned: true,
+		});
+		expect(failed.error).toContain("500");
+		expect(login.status().error).toBe(failed.error);
+	});
+
 	test("cancel aborts an in-flight poll fetch", async () => {
 		const home = mkdtempSync(join(tmpdir(), "goblin-login-pin-"));
 		let pollSignal: AbortSignal | undefined;

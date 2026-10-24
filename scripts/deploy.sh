@@ -220,11 +220,21 @@ step "gate: bun run typecheck"
 bun run typecheck
 
 # --- 4. Refresh the served bundle -------------------------------------------
+# The bundle inlines dependencies and every server module app/src
+# imports — the rebuild trigger is that import set itself. A hand-kept
+# list drifted once already and shipped a stale client while the backend
+# restarted (a changed src/ contract the app consumed but nothing
+# watched), so the set is derived here from the actual "../src/"
+# specifiers rather than maintained by hand.
+client_inputs="$(
+	grep -rhoE "['\"](\.\./)+src/[^'\"]+['\"]" app/src --include='*.ts' --include='*.tsx' |
+		tr -d "'\"" | sed -E 's|^(\.\./)+||' | sort -u || true
+)"
 if [ "$interrupted" = true ] ||
-	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$|src/tags\.ts$)' <<< "$changed_paths"; then
-	# The bundle inlines dependencies, the shared UI schema and the shared
-	# tags module, not just app/. Build stages into app/dist.next; publish
-	# flips the app/dist symlink.
+	grep -qE '^(app/|package\.json$|bun\.lock$)' <<< "$changed_paths" ||
+	{ [ -n "$client_inputs" ] &&
+		grep -qxF -f <(printf '%s\n' "$client_inputs") <<< "$changed_paths"; }; then
+	# Build stages into app/dist.next; publish flips the app/dist symlink.
 	bun run app:build
 	bash scripts/publish-app.sh
 fi

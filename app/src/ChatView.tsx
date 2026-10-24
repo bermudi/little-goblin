@@ -38,9 +38,10 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { ApprovalCard } from "./Approvals.tsx";
+import { ArtifactCard, DocViewerProvider } from "./docview.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
-import { ApprovalCard } from "./Approvals.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
@@ -49,6 +50,11 @@ import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
+import {
+	type Artifact,
+	artifactOf,
+	presentationsOf,
+} from "../../src/agent/tools/artifact-schema.ts";
 import type {
 	AppConfigView,
 	AppContextView,
@@ -424,6 +430,23 @@ export function MessageParts({
 				j++;
 			}
 			out.push(<Activity key={`w${i}`} parts={run} />);
+			// Published artifacts hoist out of the fold into cards — the
+			// fold records that the call ran; the card is the openable
+			// thing. Direct artifact calls and a script's collected
+			// presentations land the same way.
+			for (const q of run) {
+				if (!isToolUIPart(q) || q.state !== "output-available") continue;
+				const name = getToolName(q);
+				const artifacts: Artifact[] =
+					name === "artifact"
+						? ([artifactOf(q.output)].filter((a) => a !== null) as Artifact[])
+						: name === "script"
+							? presentationsOf(q.output).map((p2) => p2.artifact)
+							: [];
+				for (const a of artifacts) {
+					out.push(<ArtifactCard key={`a:${a.path}`} artifact={a} />);
+				}
+			}
 			i = j - 1;
 			continue;
 		}
@@ -2770,8 +2793,9 @@ function Chat({
 	};
 
 	return (
-		<div className="chat">
-			<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
+		<DocViewerProvider token={token} conversationId={conversationId}>
+			<div className="chat">
+				<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
 			<div
 				className="transcript"
 				ref={scrollRef}
@@ -2919,6 +2943,7 @@ function Chat({
 					void stop();
 				}}
 			/>
-		</div>
+			</div>
+		</DocViewerProvider>
 	);
 }

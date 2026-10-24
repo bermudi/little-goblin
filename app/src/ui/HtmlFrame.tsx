@@ -12,12 +12,14 @@
 // location assignment from script remains the accepted residual.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
+import type { UiLeafProps } from "../../../src/agent/tools/ui-schema.ts";
 
 // base-uri 'none' pins resolution as belt: the click guard sets
 // location.hash verbatim without resolving hrefs, but no static or
 // script-inserted <base href> should ever be usable anyway.
-const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'">`;
+// media-src data:+blob: lets a generated document embed audio/video it
+// carries or builds itself — still no network, still an opaque origin.
+const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data: blob:; base-uri 'none'">`;
 
 // documentElement.scrollHeight can't drop below the frame's own
 // viewport — a one-way ratchet — so measure body bounds instead
@@ -73,7 +75,7 @@ export function srcdoc(html: string): string {
 	return `<!doctype html>${CSP}${baseStyle()}${RESIZE}${NAVIGATION_GUARD}${body}`;
 }
 
-export function HtmlFrame({ leaf }: { leaf: Extract<UiLeaf, { type: "html" }> }) {
+export function HtmlFrame({ leaf }: { leaf: UiLeafProps<"html"> }) {
 	const ref = useRef<HTMLIFrameElement>(null);
 	const [height, setHeight] = useState(360);
 	const doc = useMemo(() => srcdoc(leaf.html), [leaf.html]);

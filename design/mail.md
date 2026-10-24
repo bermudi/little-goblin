@@ -106,7 +106,9 @@ reproduces the checkpoint contract below with no new infrastructure.
   at the last seen-consistent boundary — the record before the earliest
   unconfirmed arrival — so the record re-arrives and is offered to the
   search again, bounded by a grace window of mailbox history
-  (~50 records) after which the arrival is treated as a non-match and
+  (~50 records, counted as records observed after the candidate —
+  history ids are non-contiguous, their numeric distance means nothing)
+  after which the arrival is treated as a non-match and
   the cursor advances; the hold never crosses a fired record, so nothing
   already fired refires. Residual loss channels, bounded and owned: a
   match that fires while an earlier unconfirmed arrival sits at or

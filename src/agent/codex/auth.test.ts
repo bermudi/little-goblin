@@ -4,7 +4,14 @@
 // re-login.
 
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexCredentials } from "./auth.ts";
@@ -77,6 +84,37 @@ describe("codexCredentials — oauth refresh write-back", () => {
 		});
 		expect(auth.tokens.access_token).toBe(cliFresh);
 		expect(auth.tokens.refresh_token).toBe("cli-rt");
+	});
+
+	test("a file unlinked mid-refresh is not resurrected — sign-out wins", async () => {
+		const path = authDir({ access_token: jwt(PAST), refresh_token: "rt" });
+		await expect(
+			codexCredentials(path, async () => {
+				// signOut unlinks while the refresh POST is in flight — the
+				// rotated pair is sacrificed, never written back over it.
+				unlinkSync(path);
+				return new Response(
+					JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
+				);
+			}),
+		).rejects.toThrow("removed during token refresh");
+		expect(existsSync(path)).toBe(false);
+	});
+
+	test("a fresh pair landing mid-refresh is adopted, not clobbered", async () => {
+		const path = authDir({ access_token: jwt(PAST), refresh_token: "old-rt" });
+		const loginPair = { access_token: jwt(FUTURE), refresh_token: "login-rt" };
+		const auth = await codexCredentials(path, async () => {
+			// A new sign-in wrote its own pair while our POST was in flight —
+			// our tokens derived from the dead pair must not overwrite it.
+			writeFileSync(path, JSON.stringify({ tokens: loginPair }));
+			return new Response(
+				JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
+			);
+		});
+		expect(auth.tokens.refresh_token).toBe("login-rt");
+		const onDisk = JSON.parse(readFileSync(path, "utf8"));
+		expect(onDisk.tokens.refresh_token).toBe("login-rt");
 	});
 
 	test("a merge read that stays unreadable still persists the rotated pair — loudly", async () => {

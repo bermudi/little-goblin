@@ -5,20 +5,14 @@
 // stays in React.
 
 import type { UIMessage } from "ai";
-import type { UiBlock } from "../../../src/agent/tools/ui-schema.ts";
+import type { UiInput } from "../../../src/agent/tools/ui-schema.ts";
 
-// Every choices label a surface offers — top level and inside
-// containers (the highlight matches table first cells against these).
-export function choiceLabels(blocks: readonly UiBlock[]): string[] {
+// Every choices label a surface offers, at any depth (the highlight
+// matches table first cells against these).
+export function choiceLabels(input: UiInput): string[] {
 	const out: string[] = [];
-	for (const b of blocks) {
-		if (b.type === "choices") {
-			for (const o of b.options) out.push(o.label);
-		} else if (b.type === "tabs") {
-			for (const t of b.tabs) out.push(...choiceLabels(t.blocks));
-		} else if (b.type === "columns") {
-			for (const c of b.columns) out.push(...choiceLabels(c.blocks));
-		}
+	for (const el of Object.values(input.elements)) {
+		if (el.type === "choices") for (const o of el.props.options) out.push(o.label);
 	}
 	return out;
 }

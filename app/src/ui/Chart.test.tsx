@@ -6,7 +6,6 @@ function ticks(values: number[]): string[] {
 	const html = renderToStaticMarkup(
 		<Chart
 			leaf={{
-				type: "chart",
 				kind: "line",
 				x: values.map((_, i) => `x${i}`),
 				series: [{ name: "Reading", values }],
@@ -30,7 +29,7 @@ test("integer, zero and large charts keep compact readable ticks", () => {
 
 function chart(kind: "bar" | "line" | "pie", x: string[], values: number[], unit?: string): string {
 	return renderToStaticMarkup(
-		<Chart leaf={{ type: "chart", kind, x, series: [{ name: "km", values }], unit }} />,
+		<Chart leaf={{ kind, x, series: [{ name: "km", values }], unit }} />,
 	);
 }
 

@@ -148,15 +148,23 @@ async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAut
 	const refreshed = refreshResponseSchema.parse(await res.json());
 	let existing: Record<string, unknown> = {};
 	// The merge read must survive a transient failure or a concurrent
-	// non-atomic writer: retry briefly. Still failing → write anyway (the
-	// new refresh token is single-use; losing it logs the CLI out), but
-	// warn — sibling fields would drop out of the file.
+	// non-atomic writer: retry briefly. Still missing after the retries
+	// means the file was unlinked mid-refresh (sign-out) — the rotated
+	// pair is sacrificed rather than resurrecting credentials the
+	// operator just removed. Any other still-failing read → write anyway
+	// (the new refresh token is single-use; losing it logs the CLI out),
+	// but warn — sibling fields would drop out of the file.
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			existing = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 			break;
 		} catch (err) {
 			if (attempt === 2) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+					throw new Error(
+						`${path}: auth file removed during token refresh — sign in again`,
+					);
+				}
 				log.warn("codex auth re-read failed — writing tokens without sibling fields", err, {
 					authFile: path,
 				});
@@ -164,6 +172,15 @@ async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAut
 				await Bun.sleep(50);
 			}
 		}
+	}
+	// The pair this refresh derived from must still be the file's pair: a
+	// different refresh_token means a sibling rotated it or a fresh login
+	// landed while the POST was in flight — adopt the live pair instead
+	// of clobbering it with tokens derived from dead state.
+	const live = authFileSchema.safeParse(existing);
+	if (live.success && live.data.tokens.refresh_token !== auth.tokens.refresh_token) {
+		log.info("codex auth file changed mid-refresh — adopted the live pair", { authFile: path });
+		return live.data;
 	}
 	const tokens = {
 		...auth.tokens,

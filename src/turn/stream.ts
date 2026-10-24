@@ -21,6 +21,7 @@ import {
 	isContextOverflow,
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
+import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import { log } from "../log.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
@@ -315,6 +316,9 @@ export async function driveStream<M extends WireMember>(
 		instructions: deps.step.system,
 		messages: deps.messages,
 		tools: deps.tools,
+		// Rule-based repairs only (JSON5 slips, stringified args) — a call
+		// no rule fixes still surfaces as a tool error, never a re-ask.
+		repairToolCall: makeToolCallRepair(convId),
 		// Provider retry rules ride the step — 1min sends no SDK
 		// retries (its one-shot content-filter re-ask is separate and
 		// deliberate; model.md → Provider-filter recovery).

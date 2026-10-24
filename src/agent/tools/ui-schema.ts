@@ -1,24 +1,40 @@
+// The ui tool's input schema — json-render's flat element-map SHAPE
+// (shape only: no $state/actions runtime, no inline-patch protocol).
+// "root" is the top element id — or the top-level ids, in display
+// order; "elements" maps each id to
+// {type, props, children} where children lists child ids — so nesting
+// depth is unbounded without a recursive schema (no $ref/$defs, which
+// providers handle unevenly). Structural rules — the tree must exist,
+// hold together, and respect container membership — live in the
+// superRefine; leaf props are the same fields and limits as ever.
+
 import { z } from "zod";
 
-const md = z.string().describe("Markdown body");
+const md = () => z.string().describe("Markdown body");
 
-const textLeaf = z.object({
-	type: z.literal("text"),
-	md: md.describe("Markdown text — prose inside the interface"),
+const children = (min: number, max: number) =>
+	z
+		.array(z.string())
+		.min(min)
+		.max(max)
+		.describe(`Child element ids, ${min}–${max} — ids into the elements map, never nested objects`);
+
+// ---------- leaf props (same fields/limits as the two-level schema) ----------
+
+const textProps = z.object({
+	md: md().describe("Markdown text — prose inside the interface"),
 });
 
-const calloutLeaf = z.object({
-	type: z.literal("callout"),
+const calloutProps = z.object({
 	tone: z
 		.enum(["info", "warn", "success", "danger"])
 		.optional()
 		.describe("Emphasis tone; defaults to info"),
 	title: z.string().optional().describe("Short callout heading"),
-	md: md.describe("Markdown body of the callout"),
+	md: md().describe("Markdown body of the callout"),
 });
 
-const statsLeaf = z.object({
-	type: z.literal("stats"),
+const statsProps = z.object({
 	items: z
 		.array(
 			z.object({
@@ -32,19 +48,17 @@ const statsLeaf = z.object({
 		.describe("1–8 headline numbers"),
 });
 
-const tableLeaf = z.object({
-	type: z.literal("table"),
+const tableProps = z.object({
 	columns: z.array(z.string()).min(1).max(8).describe("Column headers, 1–8"),
 	rows: z.array(z.array(z.string())).max(50).describe("Body rows; each row is one cell per column"),
 });
 
-const stepsLeaf = z.object({
-	type: z.literal("steps"),
+const stepsProps = z.object({
 	items: z
 		.array(
 			z.object({
 				title: z.string().describe("Step name"),
-				md: md.optional().describe("Optional Markdown detail under the step"),
+				md: md().optional().describe("Optional Markdown detail under the step"),
 			}),
 		)
 		.min(1)
@@ -52,9 +66,8 @@ const stepsLeaf = z.object({
 		.describe("Ordered steps, 1–20"),
 });
 
-const chartLeaf = z
+const chartProps = z
 	.object({
-		type: z.literal("chart"),
 		kind: z
 			.enum(["bar", "line", "pie"])
 			.describe(
@@ -80,8 +93,7 @@ const chartLeaf = z
 		message: "pie slices need non-negative values",
 	});
 
-const choicesLeaf = z.object({
-	type: z.literal("choices"),
+const choicesProps = z.object({
 	prompt: z.string().optional().describe("Question the options answer"),
 	options: z
 		.array(z.object({ label: z.string().max(80).describe("Button label") }))
@@ -90,9 +102,8 @@ const choicesLeaf = z.object({
 		.describe("2–8 tappable options; a tap sends [ui] <label> as a message"),
 });
 
-const formLeaf = z
+const formProps = z
 	.object({
-		type: z.literal("form"),
 		fields: z
 			.array(
 				z.object({
@@ -119,8 +130,7 @@ const formLeaf = z
 		path: ["fields"],
 	});
 
-const htmlLeaf = z.object({
-	type: z.literal("html"),
+const htmlProps = z.object({
 	title: z.string().describe("Accessible frame title"),
 	html: z
 		.string()
@@ -130,173 +140,512 @@ const htmlLeaf = z.object({
 		),
 });
 
-export const uiLeafSchema = z.discriminatedUnion("type", [
-	textLeaf,
-	calloutLeaf,
-	statsLeaf,
-	tableLeaf,
-	stepsLeaf,
-	chartLeaf,
-	choicesLeaf,
-	formLeaf,
-	htmlLeaf,
+// ---------- elements ----------
+
+const leaf = <T extends string, P extends z.ZodType>(type: T, props: P) =>
+	z.object({ type: z.literal(type), props, children: z.array(z.string()).optional() });
+
+const container = <T extends string, P extends z.ZodType>(type: T, props: P, min: number, max: number) =>
+	z.object({ type: z.literal(type), props: props.optional(), children: children(min, max) });
+
+const leafElements = z.discriminatedUnion("type", [
+	leaf("text", textProps),
+	leaf("callout", calloutProps),
+	leaf("stats", statsProps),
+	leaf("table", tableProps),
+	leaf("steps", stepsProps),
+	leaf("chart", chartProps),
+	leaf("choices", choicesProps),
+	leaf("form", formProps),
+	leaf("html", htmlProps),
 ]);
 
-const tabsBlock = z.object({
-	type: z.literal("tabs"),
-	tabs: z
-		.array(
-			z.object({
-				label: z.string().describe("Tab label"),
-				blocks: z.array(uiLeafSchema).min(1).max(10).describe("Leaves shown on this tab"),
-			}),
-		)
-		.min(2)
-		.max(8)
-		.describe("2–8 tabs"),
-});
-
-const columnsBlock = z.object({
-	type: z.literal("columns"),
-	columns: z
-		.array(
-			z.object({
-				title: z.string().optional().describe("Column heading"),
-				blocks: z.array(uiLeafSchema).min(1).max(10).describe("Leaves in this column"),
-			}),
-		)
-		.min(2)
-		.max(4)
-		.describe("2–4 side-by-side columns"),
-});
-
-export const uiBlockSchema = z.discriminatedUnion("type", [
-	...uiLeafSchema.options,
-	tabsBlock,
-	columnsBlock,
+const containerElements = z.discriminatedUnion("type", [
+	container("stack", z.object({}), 1, 30),
+	container("tabs", z.object({}), 2, 8),
+	z.object({
+		type: z.literal("tab"),
+		props: z.object({ label: z.string().describe("Tab label") }),
+		children: children(1, 30),
+	}),
+	container("columns", z.object({}), 2, 4),
+	z.object({
+		type: z.literal("column"),
+		props: z.object({ title: z.string().optional().describe("Column heading") }).optional(),
+		children: children(1, 30),
+	}),
 ]);
 
-export const uiInputSchema = z.object({
-	title: z.string().optional().describe("Short heading above the interface"),
-	blocks: z
-		.array(uiBlockSchema)
-		.min(1)
-		.max(30)
-		.describe("The interface, top to bottom — leaves and containers"),
-});
+export const uiLeafElementSchema = leafElements;
+export const uiElementSchema = z.discriminatedUnion("type", [
+	...leafElements.options,
+	...containerElements.options,
+]);
 
-export type UiLeaf = z.infer<typeof uiLeafSchema>;
-export type UiBlock = z.infer<typeof uiBlockSchema>;
+const leafTypes = new Set([
+	"text",
+	"callout",
+	"stats",
+	"table",
+	"steps",
+	"chart",
+	"choices",
+	"form",
+	"html",
+]);
+
+export const uiInputSchema = z
+	.object({
+		title: z.string().optional().describe("Short heading above the interface"),
+		root: z.union([
+			z.string().describe("Id of the top element"),
+			z.array(z.string()).min(1).max(30).describe("Top-level element ids, shown in order"),
+		]),
+		elements: z
+			.record(z.string(), uiElementSchema)
+			.describe(
+				"Flat map of every element: id → {type, props, children}. children lists child ids — never nested objects",
+			),
+	})
+	.superRefine((input, ctx) => {
+		const els = input.elements;
+		const ids = Object.keys(els);
+		if (ids.length > 200) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["elements"],
+				message: `too many elements (${ids.length}) — 200 max`,
+			});
+		}
+		const roots = Array.isArray(input.root) ? input.root : [input.root];
+		if (new Set(roots).size !== roots.length) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["root"],
+				message: "the root list has duplicate ids",
+			});
+		}
+		for (const r of roots) {
+			if (!Object.hasOwn(els, r)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["root"],
+					message: `root "${r}" does not name an element`,
+				});
+			}
+		}
+		// Child existence + single parent (the map is a tree, not a DAG).
+		const parentOf = new Map<string, string>();
+		for (const [pid, el] of Object.entries(els)) {
+			for (const c of el.children ?? []) {
+				if (!Object.hasOwn(els, c)) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["elements", pid, "children"],
+						message: `child "${c}" does not name an element`,
+					});
+					continue;
+				}
+				const prev = parentOf.get(c);
+				if (prev !== undefined) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["elements", pid, "children"],
+						message:
+							prev === pid
+								? `element "${c}" is a duplicate child of "${pid}"`
+								: `element "${c}" has two parents ("${prev}" and "${pid}") — the elements form a tree`,
+					});
+				} else {
+					parentOf.set(c, pid);
+				}
+			}
+		}
+		// A top-level element is not a child — no root id may also
+		// appear in some element's children.
+		for (const r of roots) {
+			const parent = parentOf.get(r);
+			if (parent !== undefined) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["root"],
+					message: `root "${r}" is also a child of "${parent}" — a top-level element is not a child`,
+				});
+			}
+		}
+		// Container membership rules + leaf childlessness.
+		for (const [pid, el] of Object.entries(els)) {
+			const kids = el.children ?? [];
+			if (el.type === "tabs") {
+				for (const c of kids) {
+					const t = Object.hasOwn(els, c) ? els[c] : undefined;
+					if (t !== undefined && t.type !== "tab") {
+						ctx.addIssue({
+							code: "custom",
+							path: ["elements", pid],
+							message: `tabs "${pid}" child "${c}" is type "${t.type}" — tabs children must be tab elements`,
+						});
+					}
+				}
+			}
+			if (el.type === "columns") {
+				for (const c of kids) {
+					const t = Object.hasOwn(els, c) ? els[c] : undefined;
+					if (t !== undefined && t.type !== "column") {
+						ctx.addIssue({
+							code: "custom",
+							path: ["elements", pid],
+							message: `columns "${pid}" child "${c}" is type "${t.type}" — columns children must be column elements`,
+						});
+					}
+				}
+			}
+			if (leafTypes.has(el.type) && kids.length > 0) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["elements", pid],
+					message: `leaf "${pid}" (${el.type}) must not have children`,
+				});
+			}
+		}
+		// Placement: tab only under tabs, column only under columns.
+		for (const [id, el] of Object.entries(els)) {
+			const parentType = els[parentOf.get(id) ?? ""]?.type;
+			if (el.type === "tab" && parentType !== "tabs") {
+				ctx.addIssue({
+					code: "custom",
+					path: ["elements", id],
+					message: `tab "${id}" is not inside a tabs element`,
+				});
+			}
+			if (el.type === "column" && parentType !== "columns") {
+				ctx.addIssue({
+					code: "custom",
+					path: ["elements", id],
+					message: `column "${id}" is not inside a columns element`,
+				});
+			}
+		}
+		// Cycles: every node's ancestor walk must terminate off-loop.
+		for (const id of ids) {
+			const seen = new Set<string>([id]);
+			let cur = id;
+			while (parentOf.has(cur)) {
+				cur = parentOf.get(cur)!;
+				if (seen.has(cur)) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["elements", id],
+						message: `cycle: "${cur}" is its own ancestor`,
+					});
+					break;
+				}
+				seen.add(cur);
+			}
+		}
+	});
+
+export type UiLeaf = z.infer<typeof uiLeafElementSchema>;
+export type UiContainer = z.infer<typeof containerElements>;
+export type UiElement = z.infer<typeof uiElementSchema>;
 export type UiInput = z.infer<typeof uiInputSchema>;
+export type UiLeafProps<T extends UiLeaf["type"]> = Extract<UiLeaf, { type: T }>["props"];
 
 // ---------- type repair ----------
+//
+// Every rule fires only when exactly one interpretation exists — a tie
+// or a guess stays broken and the model sees the tool error. `prune`
+// (default on) drops elements unreachable from root; the streaming
+// renderer passes prune:false so in-flight subtrees stay visible.
 
-interface Candidate {
-	type: string;
-	schema: { safeParse(v: unknown): { success: boolean } };
-	keys: readonly string[];
-	// Observed live: GLM writes choices options as bare strings, not {label}.
-	prepare?: (obj: Record<string, unknown>) => Record<string, unknown>;
+export interface UiNormalizeReport {
+	// element ids (or "elements") whose JSON-string payload parsed to an object
+	parsedProps: string[];
+	// content fields moved off an element's top level into props
+	hoisted: { id: string; keys: string[] }[];
+	// inline child objects lifted into the elements map, id → parent
+	flattened: { id: string; parent: string }[];
+	// type inferred from the props key-set
+	inferred: { id: string; type: string }[];
+	// chart series values coerced from numeric strings
+	coerced: { id: string; count: number }[];
+	// the single unreferenced element became root
+	inferredRoot: string | null;
+	// a "root" entry inside the map (a string or string array can never
+	// be an element) was the misplaced root pointer
+	strayRoot: { value: string | string[]; action: "moved" | "dropped" } | null;
+	// the whole spec was nested one level deep inside elements
+	unwrapped: boolean;
+	// dropped: unreachable from root (prune only)
+	unreachable: string[];
 }
 
-const labelize = (v: unknown): unknown => (typeof v === "string" ? { label: v } : v);
-
-const leafCandidates: Candidate[] = [
-	{ type: "text", schema: textLeaf, keys: ["md"] },
-	{ type: "callout", schema: calloutLeaf, keys: ["tone", "title", "md"] },
-	{ type: "stats", schema: statsLeaf, keys: ["items"] },
-	{ type: "table", schema: tableLeaf, keys: ["columns", "rows"] },
-	{ type: "steps", schema: stepsLeaf, keys: ["items"] },
-	{ type: "chart", schema: chartLeaf, keys: ["kind", "x", "series", "unit"] },
-	{
-		type: "choices",
-		schema: choicesLeaf,
-		keys: ["prompt", "options"],
-		prepare: (o) => (Array.isArray(o.options) ? { ...o, options: o.options.map(labelize) } : o),
-	},
-	{ type: "form", schema: formLeaf, keys: ["fields", "submit"] },
-	{ type: "html", schema: htmlLeaf, keys: ["title", "html"] },
-];
-const blockCandidates: Candidate[] = [
-	...leafCandidates,
-	{ type: "tabs", schema: tabsBlock, keys: ["tabs"] },
-	{ type: "columns", schema: columnsBlock, keys: ["columns"] },
-];
+const emptyReport = (): UiNormalizeReport => ({
+	parsedProps: [],
+	hoisted: [],
+	flattened: [],
+	inferred: [],
+	coerced: [],
+	inferredRoot: null,
+	strayRoot: null,
+	unwrapped: false,
+	unreachable: [],
+});
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-const DROP = Symbol("ui-drop");
+// A string or a string array is a root pointer, never an element.
+const isRootLike = (v: unknown): v is string | string[] =>
+	typeof v === "string" || (Array.isArray(v) && v.every((s) => typeof s === "string"));
 
-function repairBlock(
-	obj: unknown,
-	candidates: Candidate[],
-	path: string,
-	ctx: { inferred: { path: string; type: string }[]; dropped: number },
-): unknown {
-	if (!isPlainObject(obj)) return obj;
-	const keys = Object.keys(obj);
-	if (keys.length === 1 && keys[0] === "type") {
-		ctx.dropped++;
-		return DROP;
+function tryJsonObject(text: string): Record<string, unknown> | null {
+	try {
+		const v: unknown = JSON.parse(text);
+		return isPlainObject(v) ? v : null;
+	} catch {
+		return null;
 	}
-	if ("type" in obj) return obj;
+}
+
+const labelize = (v: unknown): unknown => (typeof v === "string" ? { label: v } : v);
+
+const NUMERIC = /^-?\d+(\.\d+)?$/;
+
+// Chart series values that arrived as plain numeric strings — anything
+// formatted ("$6.00", "1,234") is left alone.
+function coerceChartSeries(props: Record<string, unknown>): number {
+	if (!Array.isArray(props.series)) return 0;
+	let count = 0;
+	props.series = props.series.map((s) => {
+		if (!isPlainObject(s) || !Array.isArray(s.values)) return s;
+		return {
+			...s,
+			values: s.values.map((v) =>
+				typeof v === "string" && NUMERIC.test(v) ? (count++, Number(v)) : v,
+			),
+		};
+	});
+	return count;
+}
+
+interface Candidate {
+	type: string;
+	schema: { safeParse(v: unknown): { success: boolean } };
+	keys: readonly string[];
+	prepare?: (props: Record<string, unknown>) => Record<string, unknown>;
+}
+
+const candidates: Candidate[] = [
+	{ type: "text", schema: textProps, keys: ["md"] },
+	{ type: "callout", schema: calloutProps, keys: ["tone", "title", "md"] },
+	{ type: "stats", schema: statsProps, keys: ["items"] },
+	{ type: "table", schema: tableProps, keys: ["columns", "rows"] },
+	{ type: "steps", schema: stepsProps, keys: ["items"] },
+	{
+		type: "chart",
+		schema: chartProps,
+		keys: ["kind", "x", "series", "unit"],
+		prepare: (p) => {
+			const c = { ...p };
+			coerceChartSeries(c);
+			return c;
+		},
+	},
+	{
+		type: "choices",
+		schema: choicesProps,
+		keys: ["prompt", "options"],
+		prepare: (o) => (Array.isArray(o.options) ? { ...o, options: o.options.map(labelize) } : o),
+	},
+	{ type: "form", schema: formProps, keys: ["fields", "submit"] },
+	{ type: "html", schema: htmlProps, keys: ["title", "html"] },
+	// The one inferable container — {label} names a tab. stack/tabs/
+	// columns/column stay unguessable.
+	{ type: "tab", schema: z.object({ label: z.string() }), keys: ["label"] },
+];
+
+// Re-type a typeless element by exact props key-set: every key must be
+// known to the candidate, the candidate must validate, and the minimal
+// matching key-set must be unique (a tie is no repair).
+function inferType(props: Record<string, unknown>): { type: string; props: Record<string, unknown> } | null {
+	const keys = Object.keys(props);
 	const qualifying: { c: Candidate; prepared: Record<string, unknown> }[] = [];
 	for (const c of candidates) {
 		if (!keys.every((k) => c.keys.includes(k))) continue;
-		const prepared = c.prepare ? c.prepare(obj) : obj;
-		if (c.schema.safeParse({ ...prepared, type: c.type }).success) {
-			qualifying.push({ c, prepared });
-		}
+		const prepared = c.prepare ? c.prepare(props) : props;
+		if (c.schema.safeParse(prepared).success) qualifying.push({ c, prepared });
 	}
-	if (qualifying.length === 0) return obj;
+	if (qualifying.length === 0) return null;
 	const min = Math.min(...qualifying.map((q) => q.c.keys.length));
 	const best = qualifying.filter((q) => q.c.keys.length === min);
-	if (best.length !== 1) return obj;
-	ctx.inferred.push({ path, type: best[0]!.c.type });
-	return { type: best[0]!.c.type, ...best[0]!.prepared };
+	if (best.length !== 1) return null;
+	return { type: best[0]!.c.type, props: best[0]!.prepared };
 }
 
-function repairChildren(
-	obj: unknown,
-	path: string,
-	ctx: { inferred: { path: string; type: string }[]; dropped: number },
-): unknown {
-	if (!isPlainObject(obj)) return obj;
-	const out: Record<string, unknown> = { ...obj };
-	for (const key of ["tabs", "columns"] as const) {
-		const group = obj[key];
-		if (!Array.isArray(group)) continue;
-		out[key] = group.map((member, mi) => {
-			if (!isPlainObject(member) || !Array.isArray(member.blocks)) return member;
-			const children: unknown[] = [];
-			member.blocks.forEach((child, ci) => {
-				const fixed = repairBlock(child, leafCandidates, `${path}.${key}.${mi}.blocks.${ci}`, ctx);
-				if (fixed !== DROP) children.push(fixed);
+export function normalizeUiInput(
+	raw: unknown,
+	opts?: { prune?: boolean },
+): { value: unknown; report: UiNormalizeReport } {
+	const report = emptyReport();
+	if (!isPlainObject(raw)) return { value: raw, report };
+	const out: Record<string, unknown> = { ...raw };
+	if (typeof out.elements === "string") {
+		const parsed = tryJsonObject(out.elements);
+		if (parsed !== null) {
+			out.elements = parsed;
+			report.parsedProps.push("elements");
+		}
+	}
+	// The whole spec nested one level deep: elements holds {elements,
+	// root?} where the inner elements value is itself a map (a plain
+	// object with no "type" — an element value would carry one).
+	if (out.root === undefined && isPlainObject(out.elements)) {
+		const inner = out.elements;
+		if (isPlainObject(inner.elements) && !Object.hasOwn(inner.elements, "type")) {
+			out.elements = inner.elements;
+			if (isRootLike(inner.root)) out.root = inner.root;
+			if (out.title === undefined && typeof inner.title === "string")
+				out.title = inner.title;
+			report.unwrapped = true;
+		}
+	}
+	if (!isPlainObject(out.elements)) return { value: out, report };
+	const elements: Record<string, unknown> = { ...out.elements };
+
+	const freeId = (base: string): string => {
+		if (!Object.hasOwn(elements, base)) return base;
+		for (let i = 2; ; i++) {
+			const id = `${base}~${i}`;
+			if (!Object.hasOwn(elements, id)) return id;
+		}
+	};
+
+	const queue = Object.keys(elements);
+	const processed = new Set<string>();
+	const process = (id: string): void => {
+		if (processed.has(id)) return;
+		processed.add(id);
+		const original = elements[id];
+		if (!isPlainObject(original)) return;
+		const el: Record<string, unknown> = { ...original };
+
+		// props as a JSON string → parse into place
+		if (typeof el.props === "string") {
+			const parsed = tryJsonObject(el.props);
+			if (parsed !== null) {
+				el.props = parsed;
+				report.parsedProps.push(id);
+			}
+		}
+
+		// Content fields on the element's top level with no props → they
+		// ARE the props.
+		const extraKeys = Object.keys(el).filter(
+			(k) => k !== "type" && k !== "props" && k !== "children",
+		);
+		if (extraKeys.length > 0 && !isPlainObject(el.props)) {
+			const props: Record<string, unknown> = {};
+			for (const k of extraKeys) {
+				props[k] = el[k];
+				delete el[k];
+			}
+			el.props = props;
+			report.hoisted.push({ id, keys: extraKeys });
+		}
+
+		// Inline child objects hoist into the map as "<parent>.<index>".
+		if (Array.isArray(el.children)) {
+			el.children = (el.children as unknown[]).map((c, i) => {
+				if (!isPlainObject(c)) return c;
+				const cid = freeId(`${id}.${i}`);
+				elements[cid] = c;
+				report.flattened.push({ id: cid, parent: id });
+				queue.push(cid);
+				return cid;
 			});
-			return { ...member, blocks: children };
-		});
-	}
-	return out;
-}
+		}
 
-export function normalizeUiInput(raw: unknown): {
-	value: unknown;
-	inferred: { path: string; type: string }[];
-	dropped: number;
-} {
-	const ctx = { inferred: [] as { path: string; type: string }[], dropped: 0 };
-	if (!isPlainObject(raw) || !Array.isArray(raw.blocks)) {
-		return { value: raw, ...ctx };
+		if (typeof el.type !== "string" && isPlainObject(el.props)) {
+			const hit = inferType(el.props);
+			if (hit !== null) {
+				el.type = hit.type;
+				el.props = hit.props;
+				report.inferred.push({ id, type: hit.type });
+			}
+		}
+
+		if (el.type === "chart" && isPlainObject(el.props)) {
+			// el's spread is shallow — props is still the caller's object,
+			// and coerceChartSeries writes props.series. Copy first (the
+			// inferType prepare path does the same).
+			const props = { ...el.props };
+			const n = coerceChartSeries(props);
+			if (n > 0) {
+				el.props = props;
+				report.coerced.push({ id, count: n });
+			}
+		}
+
+		elements[id] = el;
+	};
+	for (let i = 0; i < queue.length; i++) process(queue[i]!);
+
+	// A root-shaped "root" entry inside the map is the misplaced root
+	// pointer — a string or string array can never be an element.
+	// Missing root → move it up; same value → drop the stray;
+	// differing → no repair.
+	if (isRootLike(elements.root)) {
+		const stray = elements.root;
+		if (out.root === undefined) {
+			out.root = stray;
+			delete elements.root;
+			report.strayRoot = { value: stray, action: "moved" };
+		} else if (JSON.stringify(out.root) === JSON.stringify(stray)) {
+			delete elements.root;
+			report.strayRoot = { value: stray, action: "dropped" };
+		}
 	}
-	const blocks: unknown[] = [];
-	raw.blocks.forEach((b, i) => {
-		const path = `blocks.${i}`;
-		const withChildren = repairChildren(b, path, ctx);
-		const fixed = repairBlock(withChildren, blockCandidates, path, ctx);
-		if (fixed === DROP) return;
-		blocks.push(fixed);
-	});
-	return { value: { ...raw, blocks }, ...ctx };
+
+	// Missing root → the single unreferenced element is it.
+	if (out.root === undefined) {
+		const referenced = new Set<string>();
+		for (const el of Object.values(elements)) {
+			if (!isPlainObject(el) || !Array.isArray(el.children)) continue;
+			for (const c of el.children) if (typeof c === "string") referenced.add(c);
+		}
+		const orphans = Object.keys(elements).filter((id) => !referenced.has(id));
+		if (orphans.length === 1) {
+			out.root = orphans[0]!;
+			report.inferredRoot = orphans[0]!;
+		}
+	}
+
+	// Prune unreachable elements — the report names what was dropped.
+	if (opts?.prune !== false && isRootLike(out.root)) {
+		const reach = new Set<string>();
+		const todo = typeof out.root === "string" ? [out.root] : [...out.root];
+		while (todo.length > 0) {
+			const id = todo.pop()!;
+			if (reach.has(id)) continue;
+			reach.add(id);
+			const el = Object.hasOwn(elements, id) ? elements[id] : undefined;
+			if (!isPlainObject(el) || !Array.isArray(el.children)) continue;
+			for (const c of el.children) if (typeof c === "string") todo.push(c);
+		}
+		for (const id of Object.keys(elements)) {
+			// Everything unreachable prunes — except a root-shaped
+			// "root" entry: that is the stray pointer the
+			// differing-roots rule declined, which must stay so
+			// validation sees it.
+			if (!reach.has(id) && !(id === "root" && isRootLike(elements[id]))) {
+				delete elements[id];
+				report.unreachable.push(id);
+			}
+		}
+	}
+
+	out.elements = elements;
+	return { value: out, report };
 }

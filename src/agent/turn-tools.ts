@@ -246,6 +246,16 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
 					? { conversation: conv.id, workspace: workdir, desktops }
 					: undefined,
+			// App turns only, like ui — the artifact card is an app surface.
+			// The sandbox source follows the sandbox feature's live gate.
+			artifact:
+				channelOf(conv.id) === "app"
+					? {
+							conversation: conv.id,
+							workspace: workdir,
+							...(configRef.current.sandbox !== undefined ? { sandboxes } : {}),
+						}
+					: undefined,
 			// Project-bound turns only: the coordination surface the
 			// handover loop lives on. The handover key is the project
 			// conversation — one acceptance per coordination conversation.

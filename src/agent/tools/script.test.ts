@@ -18,6 +18,10 @@ interface Out {
 	text: string;
 	calls: { tool: string; args: string; ok: boolean; result: string }[];
 	error?: string;
+	presentations?: {
+		call: string;
+		artifact: { path: string; name: string; mediaType: string; size: number };
+	}[];
 }
 
 const exec = (t: unknown, input: unknown, opts: { signal?: AbortSignal } = {}): Promise<Out> =>
@@ -580,4 +584,58 @@ test("herdr is not in the script's callable set", () => {
 		bash: counter(() => "x"),
 	});
 	expect(descriptionOf(tools)).not.toContain("tools.herdr");
+});
+
+describe("nested presentations", () => {
+	const fakeArtifact = () =>
+		tool({
+			inputSchema: z
+				.object({
+					source: z.object({ target: z.string(), path: z.string() }).loose(),
+					title: z.string().optional(),
+				})
+				.loose(),
+			execute: () => ({
+				artifact: {
+					path: "/home/ws/attachments/abc-x.md",
+					name: "x.md",
+					mediaType: "text/markdown",
+					size: 3,
+					source: { target: "workspace", path: "x.md" },
+				},
+			}),
+		});
+
+	test("a nested artifact call collects a typed presentation, kept out of the digest", async () => {
+		const tools = composed({ artifact: fakeArtifact() });
+		const out = await exec(scriptToolOf(tools), {
+			code: `const r = await tools.artifact({ source: { target: "workspace", path: "x.md" } });
+return "done";`,
+		});
+		expect(out.error).toBeUndefined();
+		expect(out.presentations).toHaveLength(1);
+		expect(out.presentations![0]!.call).toBe("tc-script/1");
+		expect(out.presentations![0]!.artifact.name).toBe("x.md");
+		// The digest carries the call ledger, not the artifact body.
+		expect(out.text).not.toContain("attachments/");
+		expect(out.text).toContain("done");
+	});
+
+	test("completed presentations survive a later script failure", async () => {
+		const tools = composed({ artifact: fakeArtifact() });
+		const out = await exec(scriptToolOf(tools), {
+			code: `await tools.artifact({ source: { target: "workspace", path: "x.md" } });
+throw new Error("late boom");`,
+		});
+		expect(out.error).toBe("script");
+		expect(out.presentations).toHaveLength(1);
+	});
+
+	test("a non-artifact return shape joins no envelope", async () => {
+		const tools = composed({
+			bash: counter(() => ({ artifact: null, other: true })),
+		});
+		const out = await exec(scriptToolOf(tools), { code: `await tools.bash({}); return 1;` });
+		expect(out.presentations).toBeUndefined();
+	});
 });

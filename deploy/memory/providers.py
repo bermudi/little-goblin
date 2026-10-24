@@ -31,7 +31,7 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # `pass-cli` as a shell word at command position — start or after
 # whitespace/`;&|()"'\`` — optionally path-prefixed, followed by a
 # separator or end. Deliberately conservative: `echo pass-cli` trips it
-# too. Mirrors src/auth.ts's invokesPassCliDirectly.
+# too. Mirrors src/auth-parse.ts's invokesPassCliDirectly.
 _INVOKES_PASS_CLI_DIRECTLY = re.compile(
     r"(?:^|[\s;&|()\"'`])(?:[^\s;&|()\"'`/]*\/)*pass-cli(?:[\s;&|)\"'`]|$)"
 )

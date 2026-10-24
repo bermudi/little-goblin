@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import type { UiBlock } from "../../../src/agent/tools/ui-schema.ts";
+import type { UiInput } from "../../../src/agent/tools/ui-schema.ts";
 import { choiceLabels, derivePick } from "./picks.ts";
 
 const userText = (text: string): UIMessage => ({
@@ -9,39 +9,51 @@ const userText = (text: string): UIMessage => ({
 	parts: [{ type: "text", text }],
 });
 
-const surface: UiBlock[] = [
-	{
-		type: "table",
-		columns: ["Ride", "km"],
-		rows: [
-			["Road loop", "42"],
-			["Gravel trail", "60"],
-		],
-	},
-	{
-		type: "choices",
-		prompt: "Which ride?",
-		options: [{ label: "Road loop" }, { label: "Gravel trail" }],
-	},
-	{
-		type: "tabs",
-		tabs: [
-			{
-				label: "fallback",
-				blocks: [{ type: "choices", options: [{ label: "Stay home" }, { label: "Rain check" }] }],
+const surface: UiInput = {
+	root: "main",
+	elements: {
+		main: { type: "stack", children: ["tbl", "pick", "tabs"] },
+		tbl: {
+			type: "table",
+			props: {
+				columns: ["Ride", "km"],
+				rows: [
+					["Road loop", "42"],
+					["Gravel trail", "60"],
+				],
 			},
-			{ label: "info", blocks: [{ type: "text", md: "x" }] },
-		],
+		},
+		pick: {
+			type: "choices",
+			props: {
+				prompt: "Which ride?",
+				options: [{ label: "Road loop" }, { label: "Gravel trail" }],
+			},
+		},
+		tabs: { type: "tabs", children: ["t1", "t2"] },
+		t1: {
+			type: "tab",
+			props: { label: "fallback" },
+			children: ["nested-pick"],
+		},
+		"nested-pick": {
+			type: "choices",
+			props: { options: [{ label: "Stay home" }, { label: "Rain check" }] },
+		},
+		t2: { type: "tab", props: { label: "info" }, children: ["t2x"] },
+		t2x: { type: "text", props: { md: "x" } },
 	},
-];
+};
 
 describe("choiceLabels", () => {
-	test("collects top-level and container choices labels", () => {
+	test("collects choices labels at any depth", () => {
 		expect(choiceLabels(surface)).toEqual(["Road loop", "Gravel trail", "Stay home", "Rain check"]);
 	});
 
 	test("a surface without choices yields none", () => {
-		expect(choiceLabels([{ type: "text", md: "hi" }])).toEqual([]);
+		expect(
+			choiceLabels({ root: "a", elements: { a: { type: "text", props: { md: "hi" } } } }),
+		).toEqual([]);
 	});
 });
 

@@ -177,6 +177,33 @@ describe("ChatGptAccount", () => {
 		expect(container.textContent).toContain("Signed in as new@example.test");
 	});
 
+	test("parent rerenders with a fresh onSignedIn don't restart the poll", async () => {
+		statusQueue = [
+			st({
+				state: "pending",
+				pending: {
+					userCode: "RTRY-9999",
+					verificationUrl: "https://auth.openai.com/codex/device",
+					expiresAt: new Date(Date.now() + 600_000).toISOString(),
+				},
+			}),
+		];
+		await mountCard();
+		expect(container.textContent).toContain("RTRY-9999");
+		const loadCalls = calls.filter((c) => c.method === "GET").length;
+		// SettingsView rebuilds ctx — so this callback — on every render
+		// (each keystroke, autosave, status refresh). The poll must not
+		// refetch per render: a dep there also keeps clearing the 3s
+		// interval, freezing the pairing countdown.
+		for (let i = 0; i < 5; i++) {
+			await act(async () => {
+				root?.render(<ChatGptAccount token={null} onSignedIn={() => signedInCalls++} />);
+			});
+			await settle(50);
+		}
+		expect(calls.filter((c) => c.method === "GET").length).toBe(loadCalls);
+	});
+
 	test("starting sign-in from signed-out starts polling without a parent rerender", async () => {
 		statusQueue = [
 			st({}),

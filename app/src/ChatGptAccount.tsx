@@ -39,12 +39,20 @@ export function ChatGptAccount({
 	const [nowMs, setNowMs] = useState(() => Date.now());
 	const { copy, copied } = useCopy();
 	const wasPending = useRef(false);
+	// onSignedIn rides a ref, not the deps: the parent rebuilds its ctx
+	// (and this callback) on every render, and a dep here would refetch
+	// and restart the poll per parent render — renders faster than
+	// POLL_MS would starve setNowMs and freeze the pairing countdown.
+	const onSignedInRef = useRef(onSignedIn);
+	useEffect(() => {
+		onSignedInRef.current = onSignedIn;
+	}, [onSignedIn]);
 
 	const applyStatus = (s: ChatGptStatus) => {
 		const completed = wasPending.current && s.state === "signed-in";
 		wasPending.current = s.state === "pending";
 		setStatus(s);
-		if (completed) onSignedIn?.();
+		if (completed) onSignedInRef.current?.();
 	};
 
 	useEffect(() => {
@@ -70,7 +78,7 @@ export function ChatGptAccount({
 			dead = true;
 			clearInterval(t);
 		};
-	}, [token, onSignedIn]);
+	}, [token]);
 
 	const act = async (fn: (t: string | null) => Promise<ChatGptStatus>) => {
 		setBusy(true);

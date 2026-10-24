@@ -253,6 +253,19 @@ describe("normalizeUiInput", () => {
 		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
 	});
 
+	test("rule 8: an unreachable non-element entry (null) prunes too", () => {
+		const r = normalizeUiInput({
+			root: "s",
+			elements: {
+				s: { type: "stack", children: ["a"] },
+				a: { type: "text", props: { md: "x" } },
+				stray: null,
+			},
+		});
+		expect(r.report.unreachable).toEqual(["stray"]);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
 	test("rule 8: prune:false keeps unreachable elements", () => {
 		const r = normalizeUiInput(
 			{

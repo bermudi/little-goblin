@@ -604,10 +604,10 @@ export function normalizeUiInput(
 			for (const c of el.children) if (typeof c === "string") todo.push(c);
 		}
 		for (const id of Object.keys(elements)) {
-			// Only element objects prune — a non-element entry (a stray
-			// string, a number) is a schema violation, not unreachable
-			// junk, and must stay visible to validation.
-			if (!reach.has(id) && isPlainObject(elements[id])) {
+			// Everything unreachable prunes — except a string-valued
+			// "root" entry: that is the R9-declined stray pointer
+			// (differing roots), which must stay so validation sees it.
+			if (!reach.has(id) && !(id === "root" && typeof elements[id] === "string")) {
 				delete elements[id];
 				report.unreachable.push(id);
 			}

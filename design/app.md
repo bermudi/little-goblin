@@ -694,9 +694,10 @@ the model sees its past interface as a past tool call.
   inferable container; a tie or invented keys mean no repair); inline
   child objects hoist into the map as `<parent>.<index>`; an array root
   synthesizes a `stack`; a missing root picks the single unreferenced
-  element; numeric-string chart series values coerce; and elements
-  unreachable from root are pruned (non-element junk entries stay — a
-  schema violation is not unreachable-element debris). Two wrapper
+  element; numeric-string chart series values coerce; and entries
+  unreachable from root are pruned — except a string `elements.root`
+  the differing-roots rule declined, which stays so validation sees it.
+  Two wrapper
   repairs handle whole-spec misplacement (2026-10-24 probe): a spec
   nested one level deep as `elements.{elements,root}` unwraps when no
   top-level root exists, and a string `elements.root` — the root

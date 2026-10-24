@@ -10,17 +10,12 @@ import type {
 	transcriptionKinds,
 	ttsCloudDefaults,
 } from "../config.ts";
+import type { ProviderModelCatalog } from "./app-wire.ts";
 
-export interface ModelOption {
-	id: string;
-	name: string | null;
-	releaseDate: string | null;
-}
-
-export interface ProviderModelCatalog {
-	provider: string;
-	models: ModelOption[];
-}
+// Shared with the app wire — defined there (app-wire is the leaf both
+// clients import); re-exported so operator-wire consumers keep one
+// import site.
+export type { ModelOption, ProviderModelCatalog } from "./app-wire.ts";
 
 export interface ConfigResponse {
 	config: Config;

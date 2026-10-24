@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { modelOptionsCached } from "../agent/models-dev.ts";
+import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
@@ -23,11 +23,7 @@ import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { checkInjection } from "../injection.ts";
 import type { System1Client } from "../system1.ts";
-import {
-	fetchSkill,
-	SkillFetchError,
-	stampVerdict,
-} from "../agent/skill-fetch.ts";
+import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
 import { readFileSync } from "node:fs";
 import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
@@ -609,10 +605,7 @@ export async function handleOperatorRoute(
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
 				// Cached only: the settings door never waits on models.dev.
-				modelCatalog: Object.entries(config.providers).map(([provider, p]) => ({
-					provider,
-					models: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
-				})),
+				modelCatalog: modelCatalogFor(config),
 			};
 			return Response.json(body, {
 				headers: { ...NO_STORE, etag: configTag(config) },
@@ -1083,7 +1076,10 @@ export async function handleOperatorRoute(
 			.object({ url: z.string().url().startsWith("https://").max(2048) })
 			.safeParse(raw);
 		if (!parsed.success)
-			return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
 		try {
 			const fetched = await fetchSkill(parsed.data.url, {
 				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
@@ -1133,8 +1129,7 @@ export async function handleOperatorRoute(
 			return Response.json(responseBody, { headers: NO_STORE });
 		} catch (err) {
 			if (err instanceof SkillFetchError) {
-				const status =
-					err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
+				const status = err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
 				return Response.json({ error: err.message }, { status, headers: NO_STORE });
 			}
 			throw err;

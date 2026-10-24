@@ -150,11 +150,35 @@ export interface AppSearchResponse {
 	hits: AppSearchHit[];
 }
 
+export interface ModelOption {
+	id: string;
+	name: string | null;
+	releaseDate: string | null;
+}
+
+export interface ProviderModelCatalog {
+	provider: string;
+	models: ModelOption[];
+}
+
 export interface AppConfigView {
 	model: string;
 	thinking: string;
 	favorites: string[];
 	thinkingLevels: string[];
+	/** The configured providers' cached model catalogs — the composer
+	 *  picker's friendly names and its "All models…" list. Empty on a
+	 *  cold models.dev cache; the picker still takes typed refs. */
+	catalog: ProviderModelCatalog[];
+}
+
+export interface AppFavoriteToggleRequest {
+	ref: string;
+	on: boolean;
+}
+
+export interface AppFavoritesResponse {
+	favorites: string[];
 }
 
 export interface AppConfigPatch {

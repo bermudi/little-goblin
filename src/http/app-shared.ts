@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
@@ -80,5 +81,6 @@ export function configView(cfg: Config, settings: ModelSettings = cfg): AppConfi
 		thinking,
 		favorites: cfg.favorites,
 		thinkingLevels: levels,
+		catalog: modelCatalogFor(cfg),
 	};
 }

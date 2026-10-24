@@ -13,7 +13,7 @@ import type {
 	SharedV4FileData,
 	SharedV4Warning,
 } from "@ai-sdk/provider";
-import { codexCredentials, defaultCodexAuthFile, expandHome, type FetchLike } from "./auth.ts";
+import { codexCredentials, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
 
 export const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -589,9 +589,5 @@ export function codexModel(
 	authFile?: string,
 	fetchImpl: FetchLike = fetch,
 ): CodexLanguageModel {
-	return new CodexLanguageModel(
-		modelId,
-		authFile ? expandHome(authFile) : defaultCodexAuthFile(),
-		fetchImpl,
-	);
+	return new CodexLanguageModel(modelId, resolveCodexAuthFile(authFile).path, fetchImpl);
 }

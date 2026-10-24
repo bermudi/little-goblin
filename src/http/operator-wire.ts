@@ -3,6 +3,7 @@
 
 import type {
 	authDefaults,
+	CapabilityName,
 	Config,
 	ProviderConfig,
 	ThinkingLevel,
@@ -17,6 +18,19 @@ import type { ProviderModelCatalog } from "./app-wire.ts";
 // import site.
 export type { ModelOption, ProviderModelCatalog } from "./app-wire.ts";
 
+export interface CapabilityState {
+	/** on = the block is live; off = parked or has a default; needs-setup
+	 *  = neither — `hint` is the same message the enable path 422s with. */
+	state: "on" | "off" | "needs-setup";
+	hint: string | null;
+}
+
+export interface ProviderPreset {
+	id: string;
+	name: string;
+	provider: ProviderConfig;
+}
+
 export interface ConfigResponse {
 	config: Config;
 	providerKinds: readonly string[];
@@ -27,7 +41,30 @@ export interface ConfigResponse {
 	ttsDefaults: typeof ttsCloudDefaults;
 	authDefaults: typeof authDefaults;
 	authNames: string[];
+	/** auth.jsonl record names that are `!command` records — names only. */
+	authCommandNames: string[];
 	modelCatalog: ProviderModelCatalog[];
+	capabilities: Record<CapabilityName, CapabilityState>;
+	serviceNames: Record<string, string>;
+	providerPresets: ProviderPreset[];
+}
+
+export interface ChatGptStatus {
+	state: "signed-in" | "signed-out" | "pending" | "error";
+	/** Which file supplies the credentials — goblin's own sign-in file,
+	 *  the codex CLI's, or a provider-pinned custom path. */
+	source: "goblin" | "codex-cli" | "custom" | null;
+	email: string | null;
+	plan: string | null;
+	pending: {
+		userCode: string;
+		verificationUrl: string;
+		expiresAt: string;
+	} | null;
+	error: string | null;
+	/** A codex provider pins authFile in goblin.json5 — in-app sign-in
+	 *  is refused until it's removed. */
+	pinned: boolean;
 }
 
 export interface ConfigPostBody {
@@ -92,6 +129,9 @@ export interface ConfigPostBody {
 				recallTimeoutMs: number | undefined;
 		  };
 	logLevel: "debug" | "info" | "warn" | "error";
+	/** On/off flips for the parkable blocks — applied to the normalized
+	 *  disk config before the rest of the body merges. */
+	capabilities?: Partial<Record<CapabilityName, boolean>>;
 }
 
 export interface ThinkingLevelsResponse {

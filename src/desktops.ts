@@ -13,6 +13,7 @@ import {
 import { durableWriteBytes } from "./durable.ts";
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 
 // Mapped to {error} tool results — model/operator-actionable failures.
 export class DesktopError extends Error {
@@ -159,6 +160,7 @@ function toRow(row: unknown): DesktopRow {
 export function openDesktops(dbPath: string): DesktopStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec(`CREATE TABLE IF NOT EXISTS desktops (
 		name TEXT PRIMARY KEY,
 		container TEXT NOT NULL,

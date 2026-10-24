@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import {
 	existsSync,
 	mkdirSync,
@@ -1668,5 +1669,51 @@ describe("observation id persistence", () => {
 		// recorded frame to a different boot.
 		expect(d2.get("a")!.bootGen).not.toBeNull();
 		await d2.act("a", RUN_A, shot.id, CLICK);
+	});
+});
+
+describe("desktops store contention", () => {
+	// openDesktops shares the one state file with the other stores — a
+	// foreign write lock (an operator's sqlite3 session, a checkpoint)
+	// must be waited out via busy_timeout before failing loud, not
+	// failed instantly like bun:sqlite's pragma-less default.
+	test("a foreign write lock is waited out, not failed instantly", () => {
+		const dbPath = tmpdb();
+		const store = openDesktops(dbPath);
+		const row: DesktopRow = {
+			name: "d1",
+			container: "goblin-desktop-d1",
+			image: IMAGE,
+			network: false,
+			reserved: false,
+			leaseKind: null,
+			leaseId: null,
+			leaseExpiresAt: null,
+			lastObsId: null,
+			lastObsUsed: false,
+			lastObsHash: null,
+			lastActSig: null,
+			lastActFrameHash: null,
+			bootGen: null,
+			shotSeq: 0,
+			createdAt: 1,
+			lastUsedAt: 1,
+		};
+		// A foreign writer holds the file's write lock.
+		const foreign = new Database(dbPath);
+		foreign.run("BEGIN IMMEDIATE");
+		const start = Date.now();
+		expect(() => store.put(row)).toThrow();
+		// The busy wait must happen before the loud failure — WAL leaves
+		// only foreign writers as contention, and in-process nothing
+		// releases the lock, so the wait runs to its full 2s budget. The
+		// pragma-less default throws in the first milliseconds.
+		expect(Date.now() - start).toBeGreaterThanOrEqual(1_000);
+		foreign.run("ROLLBACK");
+		foreign.close();
+		// The lock released, the write lands.
+		store.put(row);
+		expect(store.get("d1")!.createdAt).toBe(1);
+		store.close();
 	});
 });

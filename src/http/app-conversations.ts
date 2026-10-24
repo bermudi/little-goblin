@@ -28,6 +28,7 @@ import type {
 	AppCompactResponse,
 	AppContextSegment,
 	AppContextView,
+	AppConversationBranch,
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationMemoryResponse,
@@ -53,6 +54,8 @@ const createBody = z.object({
 	title: z.string().min(1).max(200).optional(),
 	projectId: z.string().min(1).optional(),
 });
+
+const branchBody = z.object({ messageId: z.string().min(1).max(200) });
 
 const convPatchBody = z
 	.object({
@@ -915,6 +918,94 @@ export async function handleConversationsRoute(
 		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// Branch: a new app conversation holding this one's causal prefix
+	// through one durable message. The source is never touched — the
+	// operator's escape hatch from a destructive edit, and the way to
+	// explore a different answer without losing the first.
+	const branchMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/branch$/);
+	if (branchMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(branchMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = branchBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		// A live turn would copy a half-written tail; an interrupted one
+		// would copy an exchange whose reply is still owed.
+		if (runtime.busy(convId.id)) {
+			return Response.json(
+				{ error: "a turn is running — wait for it to finish, then branch" },
+				{ status: 409, headers: NO_STORE },
+			);
+		}
+		const target = store.messageEvent(convId.id, parsed.data.messageId);
+		if (target === null) {
+			return Response.json({ error: "no such message" }, { status: 404, headers: NO_STORE });
+		}
+		let project: Project | null = null;
+		if (conv.projectId !== null) {
+			project = deps.projects.get(conv.projectId);
+			if (project === null) {
+				return Response.json(
+					{ error: "the conversation's project no longer exists" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			if (project.archivedAt !== null) {
+				return Response.json(
+					{ error: "project is archived — unarchive it to branch into it" },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+		}
+		const title = conv.title === null ? null : `${conv.title} (branch)`.slice(0, 200);
+		const forked = store.forkToApp(
+			convId.id,
+			randomUUID(),
+			paths.workspace(),
+			title,
+			store.readAppSettings(convId.id, deps.configRef.current),
+			{
+				throughSeq: target.seq,
+				projectId: conv.projectId,
+				titleImplicit: false,
+			},
+		);
+		if (project?.memory === "off" && !forked.memoryExcluded) {
+			store.setMeta(forked.id, { memoryExcluded: true });
+		}
+		log.info("app conversation branched", {
+			conversation: forked.id,
+			from: convId.id,
+			message: parsed.data.messageId,
+			throughSeq: target.seq,
+		});
+		const body: AppConversationBranch = {
+			id: forked.id,
+			title: forked.title,
+			createdAt: forked.createdAt,
+		};
+		return Response.json(body, { status: 201, headers: NO_STORE });
 	}
 
 	const stopMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stop$/);

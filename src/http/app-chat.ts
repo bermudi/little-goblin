@@ -24,6 +24,11 @@ const chatBody = z
 	.object({
 		conversationId: conversationIdSchema,
 		retry: z.literal(true).optional(),
+		// Edit-in-place: the durable user event this message replaces. The
+		// store cuts the transcript there; the edited message becomes the
+		// next turn's anchor. Only the app channel can name an event, so
+		// this is not a Telegram affordance.
+		editMessageId: z.string().min(1).max(200).optional(),
 		message: z
 			.looseObject({
 				id: z.string().min(1),
@@ -100,6 +105,9 @@ const chatBody = z
 	.superRefine((d, ctx) => {
 		if (d.retry === true && d.message !== undefined) {
 			ctx.addIssue({ code: "custom", message: "retry takes no message" });
+		}
+		if (d.retry === true && d.editMessageId !== undefined) {
+			ctx.addIssue({ code: "custom", message: "retry takes no edit" });
 		}
 		if (d.retry !== true && d.message === undefined) {
 			ctx.addIssue({ code: "custom", path: ["message"], message: "message is required" });
@@ -247,6 +255,29 @@ export async function handleChatRoute(
 
 		const message = parsed.data.message!;
 
+		// Validate the edit target before any transcript/attachment prep —
+		// a refused edit must not pay for transcription it will discard.
+		const editId = parsed.data.editMessageId;
+		let editTarget: { seq: number; role: string } | null = null;
+		if (editId !== undefined) {
+			if (runtime.busy(convId)) {
+				return Response.json(
+					{ error: "a turn is already running — wait for it to finish, then edit" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			editTarget = store.messageEvent(convId, editId);
+			if (editTarget === null) {
+				return Response.json({ error: "no such message" }, { status: 404, headers: NO_STORE });
+			}
+			if (editTarget.role !== "user") {
+				return Response.json(
+					{ error: "only a user message can be edited" },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+		}
+
 		if (deps.transcribe !== undefined) {
 			for (const part of message.parts) {
 				if (part.type !== ATTACHMENT_PART) continue;
@@ -306,6 +337,76 @@ export async function handleChatRoute(
 				note: note.id,
 				rev: note.rev,
 				bytes: Buffer.byteLength(note.body),
+			});
+		}
+
+		if (editId !== undefined && editTarget !== null) {
+			// Prep above awaited (transcription). A turn admitted in that
+			// window would be cut by the rewind — re-check the lane with no
+			// await before the store write.
+			if (runtime.busy(convId)) {
+				return Response.json(
+					{ error: "a turn is already running — wait for it to finish, then edit" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			// An interrupted run whose request the edit drops can never be
+			// resumed coherently — the transcript it anchored to is gone.
+			// Runs anchored before the cut survive: their events do.
+			const resume = deps.resumeOps?.();
+			if (resume !== undefined) {
+				for (const run of resume.interrupted(convId)) {
+					const anchor = run.run.anchorSeq;
+					if (anchor !== null && anchor < editTarget.seq) continue;
+					const outcome = resume.abandon(convId, run.run.runId);
+					if (outcome.kind !== "ok") {
+						return Response.json(
+							{ error: `interrupted run blocks the edit: ${outcome.reason}` },
+							{ status: 409, headers: NO_STORE },
+						);
+					}
+					log.info("interrupted run abandoned by edit", {
+						conversation: convId,
+						run: run.run.runId,
+						anchor,
+					});
+				}
+			}
+			const edited = store.editUserMessage(convId, editId, message as UIMessage);
+			if (edited === null) {
+				return Response.json({ error: "no such user message" }, { status: 404, headers: NO_STORE });
+			}
+			log.info("app message edited", {
+				conversation: convId,
+				message: editId,
+				cutSeq: edited.cutSeq,
+				seq: edited.seq,
+				events: edited.events,
+				compactions: edited.compactions,
+				contexts: edited.contexts,
+				projections: edited.projections,
+				ratings: edited.ratings,
+			});
+			const stream = appStreamSink(
+				convId,
+				{
+					append: (messages, opts) => store.append(convId, messages, opts),
+				},
+				notifyDisconnected,
+			);
+			try {
+				runtime.submitPersisted(conv, message as UIMessage, stream.sink, edited.seq);
+			} catch (err) {
+				log.error("app edit submit failed", err, { conversation: convId, message: editId });
+				stream.dispose();
+				return Response.json(
+					{ error: "turn could not be started" },
+					{ status: 500, headers: NO_STORE },
+				);
+			}
+			log.info("app stream start", { conversation: convId, edit: true });
+			return new Response(stream.body, {
+				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
 			});
 		}
 

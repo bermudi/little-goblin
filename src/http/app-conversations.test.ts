@@ -7,7 +7,7 @@ import {
 	_primeOpenRouterCatalog,
 	_resetModelsDevForTest,
 } from "../agent/models-dev.ts";
-import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
+import { appAddress, type ConversationStore, openStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
@@ -1511,6 +1511,153 @@ describe("app channel interrupted-run routes", () => {
 				).status,
 			).toBe(404);
 			void runtime;
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app conversation branch", () => {
+	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
+		call(path, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	const history = async (call: ReturnType<typeof setup>["call"], id: string) =>
+		(await (await call(`/api/app/conversations/${id}/messages`)).json()) as {
+			messages: { id: string; role: string; parts: { type: string; text?: string }[] }[];
+		};
+	const createConv = (call: ReturnType<typeof setup>["call"], body: Record<string, unknown>) =>
+		postJson(call, "/api/app/conversations", body);
+
+	test("a branch copies the causal prefix into a new chat and leaves the source untouched", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createConv(call, { id: "chat-01", title: "First" });
+			await createAndChat(call, "first");
+			const second = await postJson(call, "/api/app/chat", {
+				conversationId: "app/chat-01",
+				message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+			});
+			await second.text();
+			const source = await history(call, "chat-01");
+			expect(source.messages).toHaveLength(4);
+			const firstReply = source.messages[1]!;
+			expect(firstReply.role).toBe("assistant");
+
+			const res = await postJson(call, "/api/app/conversations/chat-01/branch", {
+				messageId: firstReply.id,
+			});
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as { id: string; title: string | null };
+			expect(body.id.startsWith("app/")).toBe(true);
+			expect(body.title).toBe("First (branch)");
+			const branchId = body.id.slice("app/".length);
+
+			const copied = await history(call, branchId);
+			expect(copied.messages.map((m) => m.id)).toEqual([source.messages[0]!.id, firstReply.id]);
+			// The source is a copy source, never a move victim.
+			expect((await history(call, "chat-01")).messages).toHaveLength(4);
+			expect(store.get("app/chat-01")).not.toBeNull();
+			// A second branch is a distinct chat, even from one reply.
+			const again = await postJson(call, "/api/app/conversations/chat-01/branch", {
+				messageId: firstReply.id,
+			});
+			expect(again.status).toBe(201);
+			expect(((await again.json()) as { id: string }).id).not.toBe(body.id);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a branch keeps the source's project binding; an archived project refuses", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = (await (
+				await postJson(call, "/api/app/projects", { name: "Work" })
+			).json()) as { id: string };
+			await createConv(call, { id: "chat-01", projectId: project.id });
+			await createAndChat(call, "hi");
+			const messages = await history(call, "chat-01");
+			const reply = messages.messages.find((m) => m.role === "assistant")!;
+
+			const res = await postJson(call, "/api/app/conversations/chat-01/branch", {
+				messageId: reply.id,
+			});
+			expect(res.status).toBe(201);
+			const branch = (await res.json()) as { id: string };
+			const list = (await (await call("/api/app/conversations")).json()) as {
+				conversations: { id: string; projectId: string | null }[];
+			};
+			expect(list.conversations.find((c) => c.id === branch.id)?.projectId).toBe(project.id);
+
+			await call(`/api/app/projects/${project.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ archived: true }),
+			});
+			const refused = await postJson(call, "/api/app/conversations/chat-01/branch", {
+				messageId: reply.id,
+			});
+			expect(refused.status).toBe(422);
+			expect(((await refused.json()) as { error: string }).error).toContain("archived");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a branch is refused while a turn is running", async () => {
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+		});
+		try {
+			await createConv(call, { id: "chat-01" });
+			const chat = await postJson(call, "/api/app/chat", {
+				conversationId: "app/chat-01",
+				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			});
+			expect(chat.status).toBe(200);
+			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
+			const res = await postJson(call, "/api/app/conversations/chat-01/branch", {
+				messageId: "m1",
+			});
+			expect(res.status).toBe(409);
+			expect(((await res.json()) as { error: string }).error).toContain("running");
+			await chat.text();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("unknown conversations, unknown messages, and malformed bodies refuse", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call, "hi");
+			expect(
+				(
+					await postJson(call, "/api/app/conversations/ghost/branch", {
+						messageId: "m1",
+					})
+				).status,
+			).toBe(404);
+			expect(
+				(
+					await postJson(call, "/api/app/conversations/chat-01/branch", {
+						messageId: "ghost-message",
+					})
+				).status,
+			).toBe(404);
+			expect((await postJson(call, "/api/app/conversations/chat-01/branch", {})).status).toBe(422);
+			expect((await call("/api/app/conversations/chat-01/branch")).status).toBe(405);
+			// Every refusal above leaves the source and the rail as they were.
+			expect(store.history("app/chat-01")).toHaveLength(2);
+			const list = (await (await call("/api/app/conversations")).json()) as {
+				conversations: unknown[];
+			};
+			expect(list.conversations).toHaveLength(1);
 		} finally {
 			http.stop();
 		}

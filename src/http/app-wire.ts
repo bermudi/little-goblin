@@ -16,6 +16,11 @@ export interface AppConversationCreate {
 	createdAt: string;
 }
 
+// A branch is a fresh app conversation copied through one durable
+// message — the same shape create returns, so the client navigates with
+// one code path.
+export type AppConversationBranch = AppConversationCreate;
+
 export interface AppProject {
 	id: string;
 	name: string;

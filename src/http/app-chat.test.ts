@@ -6,9 +6,9 @@ import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
 import type { TurnDone } from "../runtime.ts";
-import type { AppChannelDeps } from "./app-shared.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import { sleep, tmpDir, waitUntil } from "../testkit.ts";
+import type { AppChannelDeps } from "./app-shared.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
 describe("app chat", () => {
@@ -296,8 +296,7 @@ describe("app chat", () => {
 			expect((await chat({ name: "Bad Name" })).status).toBe(422);
 			expect((await chat({ name: "../escape" })).status).toBe(422);
 			expect(
-				(await chat({ url: "https://github.com/o/r/tree/main/demo", path: "/etc/passwd" }))
-					.status,
+				(await chat({ url: "https://github.com/o/r/tree/main/demo", path: "/etc/passwd" })).status,
 			).toBe(422);
 			// A support file under the cache is not the descriptor's
 			// SKILL.md — only the exact cached body shape passes.
@@ -700,6 +699,185 @@ describe("app chat", () => {
 			expect(part.data.transcript).toBeUndefined();
 			expect(part.data.transcriptionError).toBe("stt down");
 			expect(part.data.path).toBe(String(ref.path));
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app chat edit (rewind)", () => {
+	const postChat = (call: ReturnType<typeof setup>["call"], body: Record<string, unknown>) =>
+		call("/api/app/chat", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	test("an edit drops the tail, streams the replacement, and never reuses a seq", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call, "first question");
+			const second = await postChat(call, {
+				conversationId: "app/chat-01",
+				message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+			});
+			expect(second.status).toBe(200);
+			await second.text();
+			expect(store.history("app/chat-01")).toHaveLength(4);
+
+			const res = await postChat(call, {
+				conversationId: "app/chat-01",
+				editMessageId: "m1",
+				message: {
+					id: "m1b",
+					role: "user",
+					parts: [{ type: "text", text: "first, rewritten" }],
+				},
+			});
+			expect(res.status).toBe(200);
+			expect(res.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
+			const body = await res.text();
+			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+
+			const history = store.historyDetail("app/chat-01");
+			expect(history.map((e) => e.message.role)).toEqual(["user", "assistant"]);
+			expect(history[0]!.message.id).toBe("m1b");
+			expect(history[0]!.message.parts[0]).toEqual({
+				type: "text",
+				text: "first, rewritten",
+			});
+			// Seqs 1–4 were spent by the dropped exchange; the replacement
+			// continues above them, so a stale rating or journal row can
+			// never re-bind to the new turn.
+			expect(history[0]!.seq).toBe(5);
+			expect(history[1]!.seq).toBe(6);
+			expect(history[1]!.anchorSeq).toBe(5);
+			expect(store.messageEvent("app/chat-01", "m1")).toBeNull();
+			expect(store.messageEvent("app/chat-01", "m2")).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an edit is refused while a turn is running", async () => {
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chat = await postChat(call, {
+				conversationId: "app/chat-01",
+				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			});
+			expect(chat.status).toBe(200);
+			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
+			const edit = await postChat(call, {
+				conversationId: "app/chat-01",
+				editMessageId: "m1",
+				message: { id: "m1b", role: "user", parts: [{ type: "text", text: "rewritten" }] },
+			});
+			expect(edit.status).toBe(409);
+			expect(((await edit.json()) as { error: string }).error).toContain("running");
+			await chat.text();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("unknown and non-user targets refuse without touching the transcript", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call, "hello");
+			const before = store.history("app/chat-01");
+			const assistantId = store
+				.historyDetail("app/chat-01")
+				.find((e) => e.message.role === "assistant")!.message.id;
+			const nonUser = await postChat(call, {
+				conversationId: "app/chat-01",
+				editMessageId: assistantId,
+				message: { id: "x1", role: "user", parts: [{ type: "text", text: "rewrite" }] },
+			});
+			expect(nonUser.status).toBe(422);
+			await nonUser.text();
+			const unknown = await postChat(call, {
+				conversationId: "app/chat-01",
+				editMessageId: "ghost",
+				message: { id: "x2", role: "user", parts: [{ type: "text", text: "rewrite" }] },
+			});
+			expect(unknown.status).toBe(404);
+			await unknown.text();
+			// The refusal happens before the store write — no half-rewind.
+			expect(store.history("app/chat-01")).toEqual(before);
+			// Retry and edit are different repairs and cannot combine.
+			const both = await postChat(call, {
+				conversationId: "app/chat-01",
+				retry: true,
+				editMessageId: "m1",
+			});
+			expect(both.status).toBe(422);
+			await both.text();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an edit abandons only the interrupted runs its cut drops", async () => {
+		const { http, call, store, turnJournal, appDeps } = setup({ token: APP_TOKEN_NAME });
+		const abandoned: { convId: string; runId: string }[] = [];
+		appDeps.resumeOps = () => ({
+			interrupted: (convId) =>
+				turnJournal
+					.interrupted()
+					.filter((r) => r.conversationId === convId)
+					.map((run) => ({ run, calls: [] })),
+			resume: () => ({ kind: "refused", code: "invalid", reason: "not used" }),
+			decide: () => ({ kind: "refused", code: "invalid", reason: "not used" }),
+			abandon: (convId, runRef) => {
+				abandoned.push({ convId, runId: runRef });
+				return { kind: "ok" };
+			},
+		});
+		try {
+			await createAndChat(call, "first");
+			const conv = store.get("app/chat-01")!;
+			const second = await postChat(call, {
+				conversationId: "app/chat-01",
+				message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
+			});
+			await second.text();
+			const begin = (runId: string, anchorSeq: number | null) =>
+				turnJournal.beginRun({
+					runId,
+					conversationId: conv.id,
+					epoch: conv.epoch,
+					anchorSeq,
+					steerMark: null,
+					convSnapshot: { model: conv.model, thinking: conv.thinking },
+					toolNames: ["probe"],
+					startedAt: "2026-10-11T00:00:00.000Z",
+				});
+			begin("run-early", 1);
+			begin("run-dropped", 3);
+			store.db.run(
+				"UPDATE turn_runs SET status = 'interrupted' WHERE run_id IN ('run-early', 'run-dropped')",
+			);
+
+			const res = await postChat(call, {
+				conversationId: "app/chat-01",
+				editMessageId: "m2",
+				message: { id: "m2b", role: "user", parts: [{ type: "text", text: "second, fixed" }] },
+			});
+			expect(res.status).toBe(200);
+			await res.text();
+			// run-early anchored before the cut; its events survive, so its
+			// resume stays possible. run-dropped's request no longer exists.
+			expect(abandoned).toEqual([{ convId: conv.id, runId: "run-dropped" }]);
 		} finally {
 			http.stop();
 		}

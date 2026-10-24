@@ -31,6 +31,9 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/attachments/file": "attachments/file",
 	"/api/app/identity": "identity",
 	"/api/app/log": "log",
+	"/api/app/accounts/chatgpt": "accounts/chatgpt",
+	"/api/app/accounts/chatgpt/login": "accounts/chatgpt/login",
+	"/api/app/accounts/chatgpt/logout": "accounts/chatgpt/logout",
 };
 
 export async function handleAppApi(

@@ -1,17 +1,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import {
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
-import { type Config, loadConfig, memoryConfigSchema } from "../config.ts";
+import { type Config, loadConfig, memoryConfigSchema, parseConfig } from "../config.ts";
+import type { FetchLike } from "../agent/codex/auth.ts";
+import {
+	createChatGptLogin,
+	ensureCodexProvider,
+	type ChatGptLogin,
+} from "../agent/codex/login.ts";
 import { openDelegations } from "../delegations.ts";
 import { setLogFile } from "../log.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
@@ -22,7 +21,12 @@ import { handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { APP_TOKEN_NAME, APP_TOKEN_VALUE, setup } from "./app-testing.ts";
 import { startHttp } from "./mod.ts";
 import type { OperatorDeps } from "./operator.ts";
-import type { MemoriesListResponse, ThreadSkillItem } from "./operator-wire.ts";
+import type {
+	ChatGptStatus,
+	ConfigResponse,
+	MemoriesListResponse,
+	ThreadSkillItem,
+} from "./operator-wire.ts";
 
 describe("app channel http", () => {
 	test("boot resolution logs the auth mode — trust mode warns about funnel", () => {
@@ -854,6 +858,286 @@ describe("app operator surface", () => {
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
 			expect(res.status).toBe(403);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app operator surface — capability parking", () => {
+	// A live config with two parkable blocks carrying fields no form
+	// edits — parking must retain them verbatim.
+	const capFixture = () =>
+		parseConfig({
+			providers: {
+				zai: {
+					kind: "openai-compatible",
+					baseUrl: "https://api.example.com",
+					auth: "zai",
+				},
+			},
+			model: "zai/m",
+			operators: [42],
+			allowedUsers: [42],
+			telegram: { enabled: true },
+			memory: {
+				baseUrl: "http://localhost:9999",
+				bankId: "op",
+				searchMaxTokens: 8123,
+			},
+			vision: { model: "zai/m", maxTokens: 4321 },
+		});
+
+	test("GET reports capability states and hints; POST parks/restores whole blocks", async () => {
+		const { http, call, configRef } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { beforeConfigWritten: () => {} },
+		});
+		try {
+			configRef.current = capFixture();
+			const get = async () => (await (await call("/api/app/settings")).json()) as ConfigResponse;
+			const post = async (payload: unknown) => {
+				const etag = (await call("/api/app/settings")).headers.get("etag")!;
+				return call("/api/app/settings", {
+					method: "POST",
+					headers: { "content-type": "application/json", "if-match": etag },
+					body: JSON.stringify(payload),
+				});
+			};
+
+			const first = await get();
+			expect(first.capabilities.memory.state).toBe("on");
+			expect(first.capabilities.vision.state).toBe("on");
+			// off = a default exists; needs-setup = neither block nor parked copy
+			expect(first.capabilities.sandbox.state).toBe("off");
+			expect(first.capabilities.reviewer.state).toBe("off");
+			expect(first.capabilities.subagents.state).toBe("needs-setup");
+			expect(first.capabilities.subagents.hint).toContain("goblin.json5");
+			expect(first.capabilities.delegation.state).toBe("needs-setup");
+			expect(first.capabilities.transcription.hint).toBe("pick an engine/model");
+			expect(first.capabilities.memory.hint).toBeNull();
+			// The service catalog rides the same GET.
+			expect(first.serviceNames.codex).toBe("ChatGPT");
+			expect(first.providerPresets.map((p) => p.id).sort()).toEqual([
+				"logfare",
+				"onemin",
+				"openrouter",
+				"zai",
+			]);
+
+			// "" parks the block — file-only fields stay under parked.
+			expect((await post({ memory: "" })).status).toBe(200);
+			expect(configRef.current.memory).toBeUndefined();
+			expect(configRef.current.parked?.memory?.searchMaxTokens).toBe(8123);
+			expect((await get()).capabilities.memory.state).toBe("off");
+
+			// capabilities:true restores the parked copy verbatim, then
+			// drops the empty parked key on write.
+			expect((await post({ capabilities: { memory: true } })).status).toBe(200);
+			expect(configRef.current.memory?.searchMaxTokens).toBe(8123);
+			expect(configRef.current.parked).toBeUndefined();
+
+			// false on an absent block is a no-op.
+			expect((await post({ capabilities: { transcription: false } })).status).toBe(200);
+			expect(configRef.current.parked?.transcription).toBeUndefined();
+
+			// true creates defaults where a capability has one.
+			expect(
+				(
+					await post({
+						capabilities: { sandbox: true, scripting: true, guest: true, reviewer: true },
+					})
+				).status,
+			).toBe(200);
+			expect(configRef.current.sandbox).toBeDefined();
+			expect(configRef.current.scripting).toBeDefined();
+			expect(configRef.current.guest?.outputChars).toBe(3500);
+			expect(configRef.current.reviewer?.auth).toBe("openrouter");
+
+			// true with nothing parked and no default → 422 + hint.
+			const needsSetup = await post({ capabilities: { subagents: true } });
+			expect(needsSetup.status).toBe(422);
+			expect(((await needsSetup.json()) as { error: string }).error).toContain(
+				"set it up in goblin.json5 first",
+			);
+			const noInstaller = await post({ capabilities: { image: true } });
+			expect(noInstaller.status).toBe(422);
+			expect(((await noInstaller.json()) as { error: string }).error).toContain(
+				"pick an engine/model",
+			);
+
+			// A body object for the same key wins over capabilities —
+			// it sets the live block and drops the parked copy.
+			expect((await post({ vision: "" })).status).toBe(200);
+			expect(configRef.current.parked?.vision?.maxTokens).toBe(4321);
+			expect(
+				(
+					await post({
+						capabilities: { vision: false },
+						vision: { model: "zai/m", maxTokens: 111 },
+					})
+				).status,
+			).toBe(200);
+			expect(configRef.current.vision?.maxTokens).toBe(111);
+			expect(configRef.current.parked?.vision).toBeUndefined();
+
+			// Unknown capability names hit the unknown-keys refusal.
+			const bogus = await post({ capabilities: { bogus: true } });
+			expect(bogus.status).toBe(400);
+			expect(((await bogus.json()) as { error: string }).error).toContain("capabilities.bogus");
+			expect(configRef.current.subagents).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("settings GET lists only !command auth record names, sorted", async () => {
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				authNames: () => ["zeta", "keychain", "alpha"],
+				secrets: {
+					has: () => true,
+					isCommand: (name) => name === "keychain" || name === "zeta",
+					store: () => {},
+				},
+			},
+		});
+		try {
+			const body = (await (await call("/api/app/settings")).json()) as ConfigResponse;
+			expect(body.authCommandNames).toEqual(["keychain", "zeta"]);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app operator surface — chatgpt sign-in", () => {
+	const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+	const idToken = `${b64({ alg: "none" })}.${b64({ email: "op@example.com" })}.sig`;
+	const json = (body: unknown, status = 200) =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+	const flush = () => new Promise((r) => setTimeout(r, 15));
+
+	test("unwired operator dep answers 503 on every chatgpt route", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			for (const path of [
+				"/api/app/accounts/chatgpt",
+				"/api/app/accounts/chatgpt/login",
+				"/api/app/accounts/chatgpt/logout",
+			]) {
+				expect((await call(path)).status).toBe(503);
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("login → pending, cancel, logout, pinned 409; sign-in adds providers.codex", async () => {
+		let login!: ChatGptLogin;
+		const { http, call, configRef, home } = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				chatgpt: {
+					status: () => login.status(),
+					start: () => login.start(),
+					cancel: () => login.cancel(),
+					signOut: () => login.signOut(),
+				},
+			},
+		});
+		try {
+			let t = 1_000_000;
+			const fetchImpl: FetchLike = async (url) => {
+				const u = String(url);
+				if (u.endsWith("/deviceauth/usercode")) {
+					return json({
+						device_auth_id: "dev-1",
+						user_code: "UC-1234",
+						interval: "5",
+						expires_at: "2099-01-01T00:00:00Z",
+					});
+				}
+				if (u.endsWith("/deviceauth/token")) {
+					return json({
+						authorization_code: "code-1",
+						code_verifier: "cv",
+					});
+				}
+				if (u.endsWith("/oauth/token")) {
+					return json({
+						id_token: idToken,
+						access_token: "at-1",
+						refresh_token: "rt-1",
+					});
+				}
+				throw new Error(`unexpected ${u}`);
+			};
+			login = createChatGptLogin({
+				config: () => configRef.current,
+				fetch: fetchImpl,
+				now: () => t,
+				sleep: (ms) => {
+					t += ms;
+					return Promise.resolve();
+				},
+				onSignedIn: () => ensureCodexProvider(configRef, () => {}),
+			});
+
+			const status = (await (await call("/api/app/accounts/chatgpt")).json()) as ChatGptStatus;
+			expect(status.pinned).toBe(false);
+			expect(status.pending).toBeNull();
+
+			const started = (await (
+				await call("/api/app/accounts/chatgpt/login", { method: "POST" })
+			).json()) as ChatGptStatus;
+			expect(started.state).toBe("pending");
+			expect(started.pending?.userCode).toBe("UC-1234");
+			expect(started.pending?.verificationUrl).toBe("https://auth.openai.com/codex/device");
+
+			const cancelled = (await (
+				await call("/api/app/accounts/chatgpt/login", { method: "DELETE" })
+			).json()) as ChatGptStatus;
+			expect(cancelled.state).not.toBe("pending");
+			expect(cancelled.pending).toBeNull();
+
+			// A real sign-in through the routes writes the file and adds
+			// providers.codex when no codex provider is configured.
+			await call("/api/app/accounts/chatgpt/login", { method: "POST" });
+			await flush();
+			expect(login.status().state).toBe("signed-in");
+			expect(configRef.current.providers["codex"]).toEqual({ kind: "codex" });
+			expect(readFileSync(join(home, "state", "codex-auth.json"), "utf8")).toContain(
+				'"access_token"',
+			);
+			expect(
+				((await (await call("/api/app/accounts/chatgpt")).json()) as ChatGptStatus).email,
+			).toBe("op@example.com");
+
+			const out = (await (
+				await call("/api/app/accounts/chatgpt/logout", { method: "POST" })
+			).json()) as ChatGptStatus;
+			expect(out.state).not.toBe("pending");
+
+			// A pinned authFile refuses in-app sign-in with a clear 409.
+			configRef.current = parseConfig({
+				providers: {
+					codex: { kind: "codex", authFile: join(home, "elsewhere.json") },
+				},
+				model: "codex/m",
+				operators: [42],
+				telegram: { enabled: true },
+			});
+			const pinned = await call("/api/app/accounts/chatgpt/login", { method: "POST" });
+			expect(pinned.status).toBe(409);
+			expect(((await pinned.json()) as { error: string }).error).toContain("authFile");
+			expect(
+				((await (await call("/api/app/accounts/chatgpt")).json()) as ChatGptStatus).pinned,
+			).toBe(true);
 		} finally {
 			http.stop();
 		}

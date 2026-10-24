@@ -43,6 +43,7 @@ import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
+import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
@@ -749,6 +750,12 @@ async function boot() {
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).
 	// http/operator.ts owns the assembly; boot binds configRef and
 	// onConfigWritten per door.
+	const chatgptLogin = createChatGptLogin({
+		config: () => configRef.current,
+		// A first sign-in makes ChatGPT usable — providers.codex lands
+		// only when no codex provider is configured at all.
+		onSignedIn: () => ensureCodexProvider(configRef, onConfigWritten),
+	});
 	const operatorSeams = makeOperatorSeams({
 		store,
 		memory,
@@ -766,6 +773,7 @@ async function boot() {
 		startedAt,
 		restartHints,
 	});
+	operatorSeams.chatgpt = chatgptLogin;
 	const http = startHttp({
 		configRef,
 		...operatorSeams,

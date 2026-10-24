@@ -116,36 +116,45 @@ describe("app channel browser-origin gate (trust mode, #75)", () => {
 		}
 	});
 
-	test("a spoofed Host minting its own Origin match is refused (DNS rebinding)", async () => {
+	test("a browser whose Origin matches its own non-loopback Host passes (ruling #75 proxy compatibility)", async () => {
 		const { http, call } = setup({ token: undefined });
 		try {
-			const rebound = await call(
+			// A front that preserves Host, or direct access via a tailnet
+			// name: the browser's Origin names the Host it was served from
+			// — the documented own-Host acceptance, loopback not required.
+			// The DNS-rebinding residual this shape carries is explicitly
+			// accepted in design/app.md (ruling 2026-10-08 #75); a stricter
+			// pinned-origin policy would need its own ruling.
+			const own = await call(
 				"/api/app/conversations",
 				{
 					method: "POST",
 					headers: {
-						host: "evil.example:9999",
-						origin: "http://evil.example:9999",
+						host: "goblin.tailnet.example:9999",
+						origin: "http://goblin.tailnet.example:9999",
 						"content-type": "application/json",
 					},
-					body: JSON.stringify({ id: "rebind-01" }),
+					body: JSON.stringify({ id: "own-host-01" }),
 				},
 				null,
 			);
-			expect(rebound.status).toBe(403);
+			expect(own.status).toBe(201);
 		} finally {
 			http.stop();
 		}
 	});
 
-	test("an unrecognized Host-derived origin is refused once publicUrl is set", async () => {
+	test("beside a configured publicUrl the own-Host origin still passes and a foreign origin is refused", async () => {
 		const { http, call, configRef } = setup({ token: undefined });
 		try {
 			configRef.current = {
 				...configRef.current,
 				publicUrl: "https://goblin.example.ts.net",
 			} as Config;
-			const direct = await call(
+			// The ruling's union: own Host (either scheme) or the public
+			// origin — publicUrl adds a door for Host-rewriting fronts,
+			// it does not pin the policy to itself.
+			const own = await call(
 				"/api/app/conversations",
 				{
 					method: "POST",
@@ -153,11 +162,24 @@ describe("app channel browser-origin gate (trust mode, #75)", () => {
 						origin: `http://127.0.0.1:${http.port}`,
 						"content-type": "application/json",
 					},
-					body: JSON.stringify({ id: "pinned-01" }),
+					body: JSON.stringify({ id: "own-beside-01" }),
 				},
 				null,
 			);
-			expect(direct.status).toBe(403);
+			expect(own.status).toBe(201);
+			const foreign = await call(
+				"/api/app/conversations",
+				{
+					method: "POST",
+					headers: {
+						origin: "https://evil.example",
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ id: "foreign-01" }),
+				},
+				null,
+			);
+			expect(foreign.status).toBe(403);
 		} finally {
 			http.stop();
 		}

@@ -374,6 +374,29 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		expect(actions).toEqual(["[ui] Plan ride: distance=30.5, terrain=flat, notes="]);
 	});
 
+	test("streaming tabs stay switchable — the render closure keeps no per-pass state", async () => {
+		// Regression: the streaming render's revisit guard used to live
+		// in a Set captured by the render closure — a Tabs setState
+		// re-render then saw already-visited ids and rendered null.
+		const input = {
+			root: "t",
+			elements: {
+				t: { type: "tabs", children: ["a", "b"] },
+				a: { type: "tab", props: { label: "A" }, children: ["ax"] },
+				b: { type: "tab", props: { label: "B" }, children: ["bx"] },
+				ax: { type: "text", props: { md: "tab one body" } },
+				bx: { type: "text", props: { md: "tab two body" } },
+			},
+		};
+		await mount(<UiPart part={uiPart({ state: "input-streaming", input })} />);
+		expect(container.textContent).toContain("tab one body");
+		const tabs = () => [...container.querySelectorAll("[role='tab']")];
+		await clickEl(tabs()[1] ?? null);
+		expect(container.textContent).toContain("tab two body");
+		await clickEl(tabs()[0] ?? null);
+		expect(container.textContent).toContain("tab one body");
+	});
+
 	test("a form's uncontrolled inputs never leak into the next tab at the same index", async () => {
 		const actions: string[] = [];
 		const form = (tag: string) => ({

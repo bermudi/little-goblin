@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse, ProviderModelCatalog } from "../../src/http/operator-wire.ts";
+import { ChatGptAccount } from "./ChatGptAccount.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import {
 	ApiError,
@@ -12,6 +13,8 @@ import {
 import { saveFailure, shouldAutosave } from "./settingsSave.ts";
 import {
 	bodyFromDraft,
+	capabilityFlags,
+	CAPABILITY_NAMES,
 	type ChainEntry,
 	displayLevel,
 	draftFromConfig,
@@ -380,6 +383,7 @@ function ChainEditor({
 	meta,
 	defaults,
 	authNames,
+	names,
 	token,
 	onSecretStored,
 	onChange,
@@ -391,6 +395,8 @@ function ChainEditor({
 	 *  one source with the server schema. */
 	defaults: AuthDefaults;
 	authNames: string[];
+	/** Kind id → display name from the server's service catalog. */
+	names: Record<string, string>;
 	token: string | null;
 	onSecretStored: (name: string) => void;
 	onChange: (next: ChainEntry[] | ((current: ChainEntry[]) => ChainEntry[])) => void;
@@ -460,7 +466,7 @@ function ChainEditor({
 						>
 							{kinds.map((k) => (
 								<option key={k} value={k}>
-									{k}
+									{names[k] ?? k}
 								</option>
 							))}
 						</select>
@@ -869,6 +875,11 @@ export function SettingsView({
 		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
+	const [serviceNames, setServiceNames] = useState<Record<string, string>>({});
+	const [capStates, setCapStates] = useState<ConfigResponse["capabilities"] | null>(null);
+	// Bumps the settings GET — a completed ChatGPT sign-in may have
+	// added a codex provider, so the form reloads on transition.
+	const [reloadTick, setReloadTick] = useState(0);
 	const [modelCatalog, setModelCatalog] = useState<ProviderModelCatalog[]>([]);
 	// A stored key's record joins the picker list so the "not in
 	// auth.jsonl" hint clears without a reload; apply() points the
@@ -981,7 +992,8 @@ export function SettingsView({
 					setLoadErr("The settings endpoint predates this client — restart goblin, then reload.");
 					return;
 				}
-				const { draft: d, providers } = draftFromConfig(data.config);
+				const { draft: d, providers } = draftFromConfig(data.config, data.capabilities);
+				setCapStates(data.capabilities ?? null);
 				setDraft(d);
 				setProvs(providers);
 				setPendingNames(new Set());
@@ -997,6 +1009,7 @@ export function SettingsView({
 					ttsDefaults: data.ttsDefaults,
 				});
 				setAuthNames(data.authNames);
+				setServiceNames(data.serviceNames ?? {});
 				setModelCatalog(data.modelCatalog);
 			},
 			(err) => {
@@ -1011,7 +1024,7 @@ export function SettingsView({
 		return () => {
 			live = false;
 		};
-	}, [token]);
+	}, [token, reloadTick]);
 
 	// Thinking-level capability lookups — kind/base/model from the
 	// form's own provider state, debounced.
@@ -1162,7 +1175,11 @@ export function SettingsView({
 		}
 		setSaving(true);
 		setNotice(null);
-		const body = bodyFromDraft(draft, provs, kinds.authDefaults);
+		const loadedCaps =
+			capStates === null
+				? undefined
+				: capabilityFlags(CAPABILITY_NAMES.filter((k) => capStates[k].state === "on"));
+		const body = bodyFromDraft(draft, provs, kinds.authDefaults, loadedCaps);
 		const submittedProvs = provs;
 		try {
 			const res = await saveOperatorConfig(token, body, etag);
@@ -1856,6 +1873,7 @@ export function SettingsView({
 								meta={SEARCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
+								names={serviceNames}
 								token={token}
 								onSecretStored={rememberAuthName}
 								onChange={(next) =>
@@ -1899,6 +1917,7 @@ export function SettingsView({
 								meta={FETCH_META}
 								defaults={kinds.authDefaults}
 								authNames={authNames}
+								names={serviceNames}
 								token={token}
 								onSecretStored={rememberAuthName}
 								onChange={(next) =>
@@ -2056,6 +2075,7 @@ export function SettingsView({
 						Model vendors goblin can call. Secrets are names in auth.jsonl — the values never land
 						in config.
 					</p>
+					<ChatGptAccount token={token} onSignedIn={() => setReloadTick((t) => t + 1)} />
 					<h2 className="ops-h2">Providers</h2>
 					<div className="prov-grid">
 						{provs.map((p) => (

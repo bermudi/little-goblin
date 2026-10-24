@@ -67,6 +67,7 @@ import type {
 	MemoryStatusResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
+	ChatGptStatus,
 	OperatorStatusResponse,
 	SecretStoreResponse,
 	SkillDecideBody,
@@ -728,6 +729,22 @@ export function storeSecret(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
+}
+
+export function getChatGptStatus(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt");
+}
+
+export function startChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "POST" });
+}
+
+export function cancelChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "DELETE" });
+}
+
+export function signOutChatGpt(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/logout", { method: "POST" });
 }
 
 export function getThinkingLevels(

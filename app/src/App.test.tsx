@@ -615,7 +615,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					new Response(
 						JSON.stringify({
 							config: settings,
-							providerKinds: ["openai-compatible", "openrouter"],
+							providerKinds: ["openai-compatible", "responses", "openrouter", "codex"],
 							searchKinds: ["ddg", "brave", "jina"],
 							fetchKinds: ["local", "firecrawl", "jina"],
 							transcriptionKinds,
@@ -993,8 +993,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const cards = () => [...container.querySelectorAll(".chain-card")];
 		// No per-row record-name inputs — a service swap is remove + add.
 		expect(container.querySelector('input[aria-label*="secret name"]')).toBeNull();
+		// brave · jina | firecrawl · jina — the first removal shifts the
+		// rest up, so firecrawl is then index 1.
 		await click(cards()[0]!.querySelector('[aria-label="remove"]'));
-		await click(cards()[2]!.querySelector('[aria-label="remove"]'));
+		await click(cards()[1]!.querySelector('[aria-label="remove"]'));
 		await waitFor(() => savedBodies.length > 0, "the removals to write");
 		expect(savedBodies.at(-1)?.search).toEqual([{ kind: "jina", auth: "search-fallback" }]);
 		expect(savedBodies.at(-1)?.fetch).toEqual([{ kind: "jina", auth: "fetch-fallback" }]);
@@ -1003,7 +1005,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	test("a valid edit writes itself — no Save click needed", async () => {
 		await mount();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		await click(
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
@@ -1124,7 +1126,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		saveStatus = 409;
 		await mount();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		const level = (name: string) =>
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
@@ -1673,7 +1675,7 @@ describe("App telegram door", () => {
 		stubClosingConfirmation();
 		await renderDoor();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("System")),
 		);
 		await click(
 			[...container.querySelectorAll('[aria-label="Log level"] button')].find(

@@ -32,6 +32,10 @@ const observedCursorSchema = z.object({
 	/** Durable key namespace — bumps on sequence resets and on each
 	 *  missing/recovered cycle; old cursors begin at epoch zero. */
 	epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+	/** Transitions into blocked observed this generation. Names the
+	 *  blocked stint in its source key, so two genuine transitions stay
+	 *  distinct even when the server reports no state_change_seq. */
+	blockedTransitions: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
 });
 export type ObservedCursor = z.infer<typeof observedCursorSchema>;
 
@@ -65,6 +69,7 @@ function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): Obser
 	if (a === null) {
 		return {
 			epoch: prev?.epoch ?? 0,
+			blockedTransitions: prev?.blockedTransitions ?? 0,
 			seq: prev?.seq ?? null,
 			completionSeq: prev?.completionSeq ?? null,
 			status: "missing",
@@ -76,6 +81,7 @@ function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): Obser
 	}
 	return {
 		epoch: prev?.epoch ?? 0,
+		blockedTransitions: prev?.blockedTransitions ?? 0,
 		seq: a.state_change_seq,
 		completionSeq: a.completion_seq,
 		status: a.agent_status,
@@ -317,10 +323,15 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			});
 			return;
 		}
-		// Blocked/input-needed is a development only on transition.
+		// Blocked/input-needed is a development only on transition. The
+		// transition count names the stint in the key — `state_change_seq`
+		// is optional on the wire (older servers omit it), so `blocked:na`
+		// would recur per stint and the durable UNIQUE source key would
+		// silently dedupe every genuine transition after the first.
 		if (cur.status === "blocked" && prev?.status !== "blocked") {
+			cur.blockedTransitions += 1;
 			commit(att, conversationId, cur, null, {
-				sourceKey: key("blocked", cur.seq ?? "na"),
+				sourceKey: key("blocked", `t${cur.blockedTransitions}`),
 				kind: "blocked-candidate",
 				text: `The attached Herdr agent looks blocked awaiting input.\n${fencedObservation({
 					event: "blocked-candidate",

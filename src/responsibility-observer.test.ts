@@ -356,6 +356,32 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
+	// Older Herdr servers omit state_change_seq — the adapter reports
+	// null and the cursor carries no sequence to name the stint with.
+	// The transition count must take over, or the durable UNIQUE source
+	// key swallows every stint after the first.
+	test("blocked transitions stay distinct without state_change_seq", async () => {
+		const r = rig();
+		const blocked = agent({ agent_status: "blocked", state_change_seq: null });
+		r.agents = [blocked];
+		await r.observe();
+		r.agents = [agent({ agent_status: "idle", state_change_seq: null })];
+		await r.observe();
+		r.agents = [blocked];
+		await r.observe();
+		const ev = r.eventsFor();
+		expect(ev.map((e) => e.kind)).toEqual(["blocked-candidate", "blocked-candidate"]);
+		expect(new Set(ev.map((e) => e.sourceKey)).size).toBe(2);
+		// Staying blocked is still not a development.
+		r.agents = [blocked];
+		await r.observe();
+		expect(r.eventsFor()).toHaveLength(2);
+		// The count rides the durable cursor for the next stint.
+		const cursor = r.resps.getAttachment(r.attId)!.cursor as { blockedTransitions: number };
+		expect(cursor.blockedTransitions).toBe(2);
+		r.store.close();
+	});
+
 	for (const change of [
 		"detach",
 		"reattach",

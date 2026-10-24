@@ -1697,32 +1697,38 @@ export function SettingsView({
 											label="Model"
 											value={draft.tts.model}
 											onChange={(v) => patchTts({ model: v })}
-											placeholder={kinds?.ttsDefaults[draft.tts.kind].model}
+											// The defaults ride the settings response — an
+											// old server predating a kind this client
+											// offers answers without the key. Degrade to
+											// the caption fallbacks; never throw here.
+											placeholder={kinds?.ttsDefaults?.[draft.tts.kind]?.model}
 											mono
-											cap={`Blank uses ${kinds?.ttsDefaults[draft.tts.kind].model ?? "the kind's default"}.`}
+											cap={`Blank uses ${kinds?.ttsDefaults?.[draft.tts.kind]?.model ?? "the kind's default"}.`}
 										/>
 										<Field
 											label="Secret name"
 											value={draft.tts.auth}
 											onChange={(v) => patchTts({ auth: v })}
-											placeholder={`${kinds?.ttsDefaults[draft.tts.kind].auth ?? "auth"} — in auth.jsonl`}
+											placeholder={`${kinds?.ttsDefaults?.[draft.tts.kind]?.auth ?? "auth"} — in auth.jsonl`}
 											cap={
 												authWarn(
-													draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? ""),
+													draft.tts.auth.trim() ||
+														(kinds?.ttsDefaults?.[draft.tts.kind]?.auth ?? ""),
 													authNames,
 												) ??
 												(draft.tts.auth.trim() === ""
-													? `Blank uses ${kinds?.ttsDefaults[draft.tts.kind].auth ?? "the kind's record"}.`
+													? `Blank uses ${kinds?.ttsDefaults?.[draft.tts.kind]?.auth ?? "the kind's record"}.`
 													: undefined)
 											}
 											mono
 											list={AUTH_DL}
 										/>
 										<SecretEntry
-											key={`${draft.tts.kind}:${draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")}`}
+											key={`${draft.tts.kind}:${draft.tts.auth.trim() || (kinds?.ttsDefaults?.[draft.tts.kind]?.auth ?? "")}`}
 											token={token}
 											name={
-												draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? "")
+												draft.tts.auth.trim() ||
+												(kinds?.ttsDefaults?.[draft.tts.kind]?.auth ?? "")
 											}
 											onStored={keyStored((n) => patchTts({ auth: n }))}
 										/>

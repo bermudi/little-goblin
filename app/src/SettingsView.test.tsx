@@ -622,6 +622,8 @@ describe("quiet harbor regressions", () => {
 		// requests records every wire hit.
 		let posts: Request[] = [];
 		let postScript: Array<Response | (() => Promise<Response>)> = [];
+		// The GET body is mutable per test — version-skew fixtures shape it.
+		let settingsResponse: unknown = SETTINGS_BODY;
 
 		beforeEach(() => {
 			win = new Window({ url: "http://localhost/app/settings" });
@@ -639,6 +641,7 @@ describe("quiet harbor regressions", () => {
 			Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 			posts = [];
 			postScript = [];
+			settingsResponse = SETTINGS_BODY;
 			globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 				const req = new Request(new URL(String(input), "http://localhost"), init);
 				if (req.method === "POST" && new URL(req.url).pathname === "/api/app/settings") {
@@ -646,7 +649,7 @@ describe("quiet harbor regressions", () => {
 					const next = postScript.shift() ?? json({ ok: true }, { etag: '"v2"' });
 					return typeof next === "function" ? next() : next;
 				}
-				return json(SETTINGS_BODY, { etag: '"v1"' });
+				return json(settingsResponse, { etag: '"v1"' });
 			}) as typeof fetch;
 		});
 
@@ -738,6 +741,54 @@ describe("quiet harbor regressions", () => {
 			expect(posts).toHaveLength(1);
 			expect(savebar()).toContain("reload the page");
 			expect(retryButton()).toBeUndefined();
+		});
+
+		test("an engine the server's ttsDefaults lacks renders fallbacks instead of crashing", async () => {
+			// Rollout skew: a freshly built client offers kinds an old
+			// server's ttsDefaults does not answer for. Picking one must
+			// degrade to the caption fallbacks — there is no error
+			// boundary, so a thrown render blanks the whole tree.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				ttsDefaults: {
+					openrouter: { model: "fish/s2", auth: "openrouter" },
+					logfare: { model: "aura-2-en", auth: "logfare" },
+					mimo: { model: "mimo-tts", auth: "mimo" },
+				},
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			});
+			const ttsOn = container.querySelector('button[aria-label="text to speech"]');
+			expect(ttsOn).not.toBeNull();
+			await act(async () => {
+				ttsOn?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			});
+			const kind = container.querySelector<HTMLSelectElement>('select[aria-label="tts kind"]');
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The tree is alive and the unknown kind fell back to the
+			// captions' copy — blank fields, honest captions, no crash.
+			expect(container.querySelector('select[aria-label="tts kind"]')).not.toBeNull();
+			const rowByLabel = (text: string) =>
+				[...container.querySelectorAll(".frow")].find(
+					(r) => r.querySelector("label")?.textContent === text,
+				);
+			// Both placeholder chains fell back to undefined/"auth" — no
+			// server-provided default exists for this kind.
+			expect(rowByLabel("Model")?.querySelector("input")?.placeholder).toBe("");
+			expect(container.textContent).toContain("Blank uses the kind's default.");
+			expect(rowByLabel("Secret name")?.querySelector("input")?.placeholder).toBe(
+				"auth — in auth.jsonl",
+			);
+			expect(container.textContent).toContain("Blank uses the kind's record.");
 		});
 
 		test("a failed write isn't re-fired by the debounce on identical state", async () => {

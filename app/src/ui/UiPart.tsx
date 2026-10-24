@@ -51,7 +51,7 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 	const claimed = new Set<string>();
 	const kept = new Map<string, string[]>();
 	const visit = (id: string, ancestors: Set<string>): void => {
-		const el = valid[id];
+		const el = Object.hasOwn(valid, id) ? valid[id] : undefined;
 		if (el === undefined) return;
 		const kids: string[] = [];
 		for (const c of el.children ?? []) {
@@ -75,10 +75,10 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 		}
 		roots.push(...Object.keys(normElements).filter((id) => !referenced.has(id)));
 	}
-	for (const id of roots) {
-		claimed.add(id);
-		visit(id, new Set([id]));
-	}
+	// Claim every root before visiting any — a root id that is also a
+	// child then renders once, at top level, with its subtree intact.
+	for (const id of roots) claimed.add(id);
+	for (const id of roots) visit(id, new Set([id]));
 	const elements: Record<string, UiElement> = {};
 	for (const [id, el] of Object.entries(valid)) {
 		const k = kept.get(id);
@@ -86,9 +86,9 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 	}
 
 	const render: UiRender = (id) => {
-		const el = elements[id];
+		const el = Object.hasOwn(elements, id) ? elements[id] : undefined;
 		if (el === undefined) {
-			if (!(id in normElements)) return <Skeleton key={id} />;
+			if (!Object.hasOwn(normElements, id)) return <Skeleton key={id} />;
 			// Present but invalid: only the still-writing tail gets a
 			// skeleton; earlier invalids are skipped, never skeletons.
 			return id === tailId ? <Skeleton key={id} /> : null;

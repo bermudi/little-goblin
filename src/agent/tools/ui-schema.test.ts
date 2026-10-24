@@ -58,6 +58,32 @@ describe("structural rules", () => {
 		expect(msgs.some((m) => m.includes('root "missing"'))).toBe(true);
 	});
 
+	test("a prototype-named root is rejected — existence is own-key", () => {
+		const msgs = issues({ root: "toString", elements: { a: text() } });
+		expect(msgs.some((m) => m.includes('root "toString"'))).toBe(true);
+	});
+
+	test("a prototype-named child is rejected — existence is own-key", () => {
+		const bad = {
+			root: "s",
+			elements: { s: { type: "stack", children: ["hasOwnProperty"] } },
+		};
+		const msgs = issues(bad);
+		expect(msgs.some((m) => m.includes('child "hasOwnProperty"'))).toBe(true);
+	});
+
+	test('elements literally named "root" and "elements" work as normal ids', () => {
+		const ok = {
+			root: "elements",
+			elements: {
+				elements: { type: "stack", children: ["root"] },
+				root: text(),
+			},
+		};
+		const r = uiInputSchema.safeParse(ok);
+		expect(r.success, r.success ? "" : JSON.stringify(r.error.issues)).toBe(true);
+	});
+
 	test("a cycle is rejected", () => {
 		const bad = {
 			root: "a",
@@ -82,6 +108,15 @@ describe("structural rules", () => {
 		};
 		const msgs = issues(bad);
 		expect(msgs.some((m) => m.includes("two parents"))).toBe(true);
+	});
+
+	test("a duplicated child under the same parent names it a duplicate", () => {
+		const bad = {
+			root: "s",
+			elements: { s: { type: "stack", children: ["a", "a"] }, a: text() },
+		};
+		const msgs = issues(bad);
+		expect(msgs.some((m) => m.includes('duplicate child of "s"'))).toBe(true);
 	});
 
 	test("a tabs child that is not a tab is rejected", () => {

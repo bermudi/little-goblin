@@ -226,7 +226,7 @@ export const uiInputSchema = z
 			});
 		}
 		for (const r of roots) {
-			if (!(r in els)) {
+			if (!Object.hasOwn(els, r)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["root"],
@@ -238,7 +238,7 @@ export const uiInputSchema = z
 		const parentOf = new Map<string, string>();
 		for (const [pid, el] of Object.entries(els)) {
 			for (const c of el.children ?? []) {
-				if (!(c in els)) {
+				if (!Object.hasOwn(els, c)) {
 					ctx.addIssue({
 						code: "custom",
 						path: ["elements", pid, "children"],
@@ -251,7 +251,10 @@ export const uiInputSchema = z
 					ctx.addIssue({
 						code: "custom",
 						path: ["elements", pid, "children"],
-						message: `element "${c}" has two parents ("${prev}" and "${pid}") — the elements form a tree`,
+						message:
+							prev === pid
+								? `element "${c}" is a duplicate child of "${pid}"`
+								: `element "${c}" has two parents ("${prev}" and "${pid}") — the elements form a tree`,
 					});
 				} else {
 					parentOf.set(c, pid);
@@ -275,7 +278,7 @@ export const uiInputSchema = z
 			const kids = el.children ?? [];
 			if (el.type === "tabs") {
 				for (const c of kids) {
-					const t = els[c];
+					const t = Object.hasOwn(els, c) ? els[c] : undefined;
 					if (t !== undefined && t.type !== "tab") {
 						ctx.addIssue({
 							code: "custom",
@@ -287,7 +290,7 @@ export const uiInputSchema = z
 			}
 			if (el.type === "columns") {
 				for (const c of kids) {
-					const t = els[c];
+					const t = Object.hasOwn(els, c) ? els[c] : undefined;
 					if (t !== undefined && t.type !== "column") {
 						ctx.addIssue({
 							code: "custom",
@@ -500,7 +503,7 @@ export function normalizeUiInput(
 	// object with no "type" — an element value would carry one).
 	if (out.root === undefined && isPlainObject(out.elements)) {
 		const inner = out.elements;
-		if (isPlainObject(inner.elements) && !("type" in inner.elements)) {
+		if (isPlainObject(inner.elements) && !Object.hasOwn(inner.elements, "type")) {
 			out.elements = inner.elements;
 			if (isRootLike(inner.root)) out.root = inner.root;
 			if (out.title === undefined && typeof inner.title === "string")
@@ -512,10 +515,10 @@ export function normalizeUiInput(
 	const elements: Record<string, unknown> = { ...out.elements };
 
 	const freeId = (base: string): string => {
-		if (!(base in elements)) return base;
+		if (!Object.hasOwn(elements, base)) return base;
 		for (let i = 2; ; i++) {
 			const id = `${base}~${i}`;
-			if (!(id in elements)) return id;
+			if (!Object.hasOwn(elements, id)) return id;
 		}
 	};
 
@@ -574,8 +577,15 @@ export function normalizeUiInput(
 		}
 
 		if (el.type === "chart" && isPlainObject(el.props)) {
-			const n = coerceChartSeries(el.props);
-			if (n > 0) report.coerced.push({ id, count: n });
+			// el's spread is shallow — props is still the caller's object,
+			// and coerceChartSeries writes props.series. Copy first (the
+			// inferType prepare path does the same).
+			const props = { ...el.props };
+			const n = coerceChartSeries(props);
+			if (n > 0) {
+				el.props = props;
+				report.coerced.push({ id, count: n });
+			}
 		}
 
 		elements[id] = el;
@@ -620,7 +630,7 @@ export function normalizeUiInput(
 			const id = todo.pop()!;
 			if (reach.has(id)) continue;
 			reach.add(id);
-			const el = elements[id];
+			const el = Object.hasOwn(elements, id) ? elements[id] : undefined;
 			if (!isPlainObject(el) || !Array.isArray(el.children)) continue;
 			for (const c of el.children) if (typeof c === "string") todo.push(c);
 		}

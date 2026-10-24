@@ -24,11 +24,9 @@ const wireSchema = (() => {
 })();
 
 // Non-empty report fields only — the log line names what repair did.
-function reportFields(report: ReturnType<typeof normalizeUiInput>["report"]) {
+export function reportFields(report: ReturnType<typeof normalizeUiInput>["report"]) {
 	return Object.fromEntries(
-		Object.entries(report).filter(([, v]) =>
-			Array.isArray(v) ? v.length > 0 : v !== null && v !== 0,
-		),
+		Object.entries(report).filter(([, v]) => (Array.isArray(v) ? v.length > 0 : Boolean(v))),
 	);
 }
 
@@ -69,12 +67,13 @@ export const uiTool = () =>
 				return { success: true, value: parsed.data };
 			},
 		}),
-		execute: async (input) => {
+		execute: async (input, { toolCallId }) => {
 			const elements = Object.values(input.elements);
 			const htmlBytes = elements
 				.filter((e) => e.type === "html")
 				.reduce((n, e) => n + Buffer.byteLength(e.props.html), 0);
 			log.info("ui shown", {
+				toolCallId,
 				elements: elements.length,
 				kinds: [...new Set(elements.map((e) => e.type))].sort(),
 				depth: depth(input),

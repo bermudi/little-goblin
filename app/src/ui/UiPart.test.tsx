@@ -194,6 +194,31 @@ describe("UiPart (static markup)", () => {
 		expect(ia).toBeLessThan(ib);
 	});
 
+	test("input-streaming: a root that is also a child renders once, at top level", () => {
+		// Transient-invalid input: "b" names both a top-level element and
+		// a's child. Roots claim first, so b keeps its subtree and renders
+		// a single time instead of twice with its children dropped.
+		const html = renderToStaticMarkup(
+			<UiPart
+				part={uiPart({
+					state: "input-streaming",
+					input: {
+						root: ["a", "b"],
+						elements: {
+							a: { type: "stack", children: ["b", "x"] },
+							b: { type: "stack", children: ["bx"] },
+							bx: { type: "text", props: { md: "b child" } },
+							x: { type: "text", props: { md: "a sibling" } },
+						},
+					},
+				})}
+			/>,
+		);
+		expect(html.match(/b child/g)?.length).toBe(1);
+		expect(html).toContain("a sibling");
+		expect(html.match(/ui-stack/g)?.length).toBe(2);
+	});
+
 	test("input-streaming with a cyclic partial input does not hang", () => {
 		const html = renderToStaticMarkup(
 			<UiPart

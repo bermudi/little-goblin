@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTools } from "./mod.ts";
-import { uiTool } from "./ui.ts";
+import { reportFields, uiTool } from "./ui.ts";
 import { normalizeUiInput, uiInputSchema } from "./ui-schema.ts";
 
 const testdata = (name: string): unknown =>
@@ -437,9 +437,44 @@ describe("normalizeUiInput", () => {
 	});
 
 	test("never mutates the input", () => {
-		const raw = { elements: { a: { md: "hi" } } };
+		// The chart path is the historic offender: coercing numeric-string
+		// series wrote props.series on the caller's own props object.
+		const raw = {
+			elements: {
+				a: { md: "hi" },
+				c: {
+					type: "chart",
+					props: {
+						kind: "bar",
+						x: ["p", "q"],
+						series: [{ name: "s", values: ["1", "2"] }],
+					},
+				},
+			},
+		};
 		normalizeUiInput(raw);
-		expect(raw).toEqual({ elements: { a: { md: "hi" } } });
+		expect(raw).toEqual({
+			elements: {
+				a: { md: "hi" },
+				c: {
+					type: "chart",
+					props: {
+						kind: "bar",
+						x: ["p", "q"],
+						series: [{ name: "s", values: ["1", "2"] }],
+					},
+				},
+			},
+		});
+	});
+
+	test("a clean input produces an empty repaired-fields object", () => {
+		// Pins the unwrapped:false class — a no-op repair must not log.
+		const { report } = normalizeUiInput({
+			root: "a",
+			elements: { a: { type: "text", props: { md: "x" } } },
+		});
+		expect(reportFields(report)).toEqual({});
 	});
 });
 

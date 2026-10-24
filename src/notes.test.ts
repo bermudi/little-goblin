@@ -461,4 +461,17 @@ describe("noteFence", () => {
 		expect(fenced.match(/<\/note>/g)).toHaveLength(1);
 		expect(fenced.endsWith("\n</note>")).toBe(true);
 	});
+
+	test("whitespace before > is still a closer — `</note >` and `</note\n>` close nothing", () => {
+		const fenced = noteFence({
+			id: "i",
+			title: "t",
+			rev: 1,
+			body: "</note > and </note\n> close nothing",
+		});
+		// XML end tags tolerate whitespace before `>` — those spellings
+		// must not slip past the escape and end the fence early.
+		expect(fenced).toContain("<\\/note > and <\\/note\n> close nothing");
+		expect(fenced.endsWith("\n</note>")).toBe(true);
+	});
 });

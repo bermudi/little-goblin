@@ -99,9 +99,10 @@ export type NotePartData = z.infer<typeof notePartDataSchema>;
 
 // Fenced rendering shared by the note tool's read and the model view;
 // a literal closing fence in the body is neutralized so operator text
-// can't close its own fence. Only the exact closer (`</note>`, any
-// case) is escaped — escaping the `</note` prefix would mangle operator
-// text like `</notebook>` in every model-facing rendering.
+// can't close its own fence. A closer is `</note` + optional
+// whitespace + `>` (XML end tags may carry whitespace before `>`), any
+// case — matching the bare `</note` prefix would mangle operator text
+// like `</notebook>` in every model-facing rendering.
 export function noteFence(d: { id: string; title: string; rev: number; body: string }): string {
 	// id/title ride XML attributes — escape the full entity set, not
 	// just quotes, or a crafted title can break out of the attribute.
@@ -112,7 +113,7 @@ export function noteFence(d: { id: string; title: string; rev: number; body: str
 			.replace(/>/g, "&gt;")
 			.replace(/"/g, "&quot;")
 			.replace(/'/g, "&apos;");
-	const body = d.body.replace(/<\/note>/gi, (m) => `<\\${m.slice(1)}`);
+	const body = d.body.replace(/<\/note\s*>/gi, (m) => `<\\${m.slice(1)}`);
 	return `<note id="${attr(d.id)}" rev="${d.rev}" title="${attr(d.title)}">\n${body}\n</note>`;
 }
 

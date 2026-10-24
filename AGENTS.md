@@ -1,9 +1,21 @@
 # goblin v2
 
-Telegram-native personal AI agent for one operator on the Vercel AI SDK;
-`goblin.service` runs from this tree, and every session works here. Read
-`DESIGN.md` plus the `design/` file for the area you're touching before 
-any structural work. `docs/` is operator documentation, not spec.
+App-first personal AI agent with an optional Telegram channel, for one operator
+on the Vercel AI SDK; `goblin.service` runs from this tree.
+
+## Product Direction
+
+Before product or roadmap work, read [DIRECTION.md](DIRECTION.md) (settled
+operator intent) and [ROADMAP.md](ROADMAP.md) (baseline, recommended sequence,
+and acceptance targets). Continue from source and recorded evidence, not a
+particular chat session. Do not restart settled discovery or mistake proposed
+steps for already implemented behavior or blanket execution authorization.
+
+Keep those files current as the operator changes direction or work lands.
+Product intent is distinct from implementation contracts: read `DESIGN.md`
+plus the `design/` file for the area you're touching before structural work;
+surface conflicts with the direction rather than silently overriding it.
+`docs/` is operator documentation, not spec.
 
 ## Guardrails
 

@@ -7,8 +7,12 @@ channel. One operator, one process, running on your own machine. Talk to it in
 the app or a Telegram chat; it answers, runs shell commands, reads and writes
 files, handles photos and voice notes, and can speak replies back as voice notes.
 
-Built on the Vercel AI SDK — `DESIGN.md` covers the why and the
-non-goals. It runs in one place: g7, this tree; `scripts/deploy.sh`
+Built on the Vercel AI SDK. [DIRECTION.md](DIRECTION.md) records the product
+aspiration: Goblin as Chief of Staff, carrying work while the operator stays
+in the outer loop. [ROADMAP.md](ROADMAP.md) charts the next acceptance targets;
+`DESIGN.md` records implementation contracts and non-goals.
+
+It runs in one place: g7, this tree; `scripts/deploy.sh`
 gates, refreshes, and restarts locally, and publishing to GitHub is
 separate (see [`docs/operations.md`](docs/operations.md)).
 
@@ -91,6 +95,10 @@ systemctl --user restart goblin  # restart
 
 ## Developing
 
+- Start product/roadmap work with [`DIRECTION.md`](DIRECTION.md) and
+  [`ROADMAP.md`](ROADMAP.md): settled intent, the inspected baseline, and the
+  next acceptance target. Check current source before treating either as
+  evidence of shipped behavior.
 - `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
   programs). Both should pass
   before committing.
@@ -104,6 +112,8 @@ systemctl --user restart goblin  # restart
 
 ## Docs map
 
+- [`DIRECTION.md`](DIRECTION.md) — the product aspiration and settled operator intent
+- [`ROADMAP.md`](ROADMAP.md) — current baseline, recommended build order, and acceptance targets
 - [`docs/setup.md`](docs/setup.md) — install, first boot, what gets created where
 - [`docs/configuration.md`](docs/configuration.md) — every config knob and secret
 - [`docs/usage.md`](docs/usage.md) — topics, commands, media, the mini app

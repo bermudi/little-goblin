@@ -886,6 +886,77 @@ h6.md-h {
 	color: var(--app-fg-subtle);
 }
 
+/* The operator's own bubble carries copy/edit, revealed on hover like a
+   reply's actions. Touch has no hover to discover them, so they stay
+   visible there. */
+.msg.user .msg-actions {
+	justify-content: flex-end;
+	margin-top: 0.15rem;
+}
+.msg.user:hover .msg-actions,
+.msg.user .msg-actions:focus-within {
+	opacity: 1;
+}
+@media (hover: none) {
+	.msg.user .msg-actions {
+		opacity: 1;
+	}
+}
+/* The inline rewind editor: the bubble's own textarea, sized to the text
+   and never wider than the message it replaces. */
+.msg-edit textarea {
+	display: block;
+	width: min(70ch, 100%);
+	min-height: 2.5rem;
+	max-height: 30vh;
+	resize: vertical;
+	font: inherit;
+	font-size: 15px;
+	line-height: 1.6;
+	color: var(--app-fg);
+	background: var(--app-bg);
+	border: 1px solid color-mix(in oklab, var(--app-fg) 18%, transparent);
+	border-radius: 10px;
+	padding: 0.45rem 0.6rem;
+	outline: none;
+}
+.msg-edit textarea:focus {
+	border-color: color-mix(in oklab, var(--app-fg) 30%, transparent);
+}
+.msg-edit-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5rem;
+	margin-top: 0.35rem;
+}
+.msg-edit-actions button {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	background: transparent;
+	border: 0;
+	padding: 0.15rem 0.35rem;
+	border-radius: 6px;
+}
+.msg-edit-actions button:hover {
+	color: var(--app-fg);
+	background: var(--app-hover);
+}
+.msg-edit-actions button.primary {
+	color: var(--app-bg);
+	background: var(--app-fg);
+	font-weight: 500;
+}
+.msg-edit-actions button.primary:hover:not(:disabled) {
+	color: var(--app-bg);
+	background: var(--app-fg);
+	opacity: 0.85;
+}
+.msg-edit-actions button.primary:disabled {
+	color: var(--app-fg-subtle);
+	background: transparent;
+	opacity: 1;
+}
+
 /* Read-aloud player — a sibling row below .msg-actions (that row hides
    until hover; a player you drive must not). Shares the actions row's
    quiet button treatment. */

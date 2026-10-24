@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
+	APICallError,
 	DefaultChatTransport,
 	getToolName,
 	isToolUIPart,
@@ -21,6 +22,7 @@ import {
 	type UIMessage,
 } from "ai";
 import {
+	branchConversation,
 	compactConversation,
 	getConfig,
 	getContext,
@@ -442,8 +444,7 @@ export function MessageParts({
 			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);
 		else if (p.type === "data-note")
 			out.push(<NoteChip key={i} data={p.data} onOpenNote={onOpenNote} />);
-		else if (p.type === "data-skill")
-			out.push(<SkillChip key={i} data={p.data} />);
+		else if (p.type === "data-skill") out.push(<SkillChip key={i} data={p.data} />);
 		else if (p.type === "file")
 			out.push(
 				<span key={i} className="attachment">
@@ -535,6 +536,9 @@ export function ActionBar({
 	ratingPending,
 	ratingError,
 	onRate,
+	onBranch = null,
+	branchPending = false,
+	branchError = null,
 }: {
 	message: UIMessage;
 	isLastAssistant: boolean;
@@ -546,6 +550,12 @@ export function ActionBar({
 	ratingPending: boolean;
 	ratingError: string | null;
 	onRate: (rating: AppReplyRating) => void;
+	// A branch copies this conversation through the reply and opens the
+	// new chat. Null = the surface has nowhere to navigate (tests, a
+	// read-only view), so the affordance is absent rather than inert.
+	onBranch?: (() => void) | null;
+	branchPending?: boolean;
+	branchError?: string | null;
 }) {
 	const text = messageText(message);
 	const { copied, failed, copy } = useCopy();
@@ -603,6 +613,17 @@ export function ActionBar({
 						↻ retry
 					</button>
 				)}
+				{onBranch !== null && (
+					<button
+						type="button"
+						onClick={onBranch}
+						aria-label="Branch conversation"
+						disabled={busy || branchPending}
+					>
+						{branchPending ? "branching…" : "⑂ branch"}
+					</button>
+				)}
+				{branchError !== null && <span className="msg-err">{branchError}</span>}
 			</div>
 			{speech.phase === "open" && (
 				<SpeechPlayer
@@ -619,6 +640,57 @@ export function ActionBar({
 			)}
 		</>
 	);
+}
+
+// The operator's own messages carry the two actions that make sense on a
+// prompt: copy it, or rewrite it. A rewrite is a rewind — the view warns
+// when a tail will be dropped, and branch is the non-destructive path.
+function UserActions({
+	message,
+	disabled,
+	onEdit,
+}: {
+	message: UIMessage;
+	disabled: boolean;
+	onEdit: () => void;
+}) {
+	const text = messageText(message);
+	const { copied, failed, copy } = useCopy();
+	return (
+		<div className="msg-actions user-actions">
+			<button
+				type="button"
+				onClick={() => copy(text)}
+				aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy message"}
+				aria-live="polite"
+				disabled={text === ""}
+			>
+				{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
+			</button>
+			<button type="button" onClick={onEdit} aria-label="Edit message" disabled={disabled}>
+				edit
+			</button>
+		</div>
+	);
+}
+
+// Rewriting a prompt keeps everything that is not text (attachments,
+// note and skill chips): the first text part carries the new words and
+// any additional text parts collapse into it.
+export function editedParts(message: UIMessage, text: string): UIMessage["parts"] {
+	const parts: UIMessage["parts"] = [];
+	let placed = false;
+	for (const part of message.parts) {
+		if (part.type !== "text") {
+			parts.push(part);
+			continue;
+		}
+		if (placed) continue;
+		parts.push({ type: "text", text });
+		placed = true;
+	}
+	if (!placed) parts.unshift({ type: "text", text });
+	return parts;
 }
 
 // ---------- the composer ----------
@@ -2297,6 +2369,7 @@ export function ChatView({
 	onSeeded,
 	onTurnDone,
 	onOpenNote,
+	onBranched,
 }: {
 	token: string | null;
 	conversationId: string;
@@ -2321,6 +2394,8 @@ export function ChatView({
 	onTurnDone: () => void;
 	// Note chips + fenced note cards navigate to the note page in-app.
 	onOpenNote?: ((id: string) => void) | undefined;
+	// A branch opened a new conversation — the host refreshes and opens it.
+	onBranched?: ((id: string) => void) | undefined;
 }) {
 	const [initial, setInitial] = useState<{
 		messages: UIMessage[];
@@ -2366,6 +2441,7 @@ export function ChatView({
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
 			onOpenNote={onOpenNote}
+			onBranched={onBranched}
 		/>
 	);
 }
@@ -2388,6 +2464,7 @@ function Chat({
 	onSeeded,
 	onTurnDone,
 	onOpenNote,
+	onBranched,
 }: {
 	token: string | null;
 	conversationId: string;
@@ -2406,6 +2483,8 @@ function Chat({
 	onSeeded: () => void;
 	onTurnDone: () => void;
 	onOpenNote?: ((id: string) => void) | undefined;
+	// A branch exists now — the host refreshes the rail and opens it.
+	onBranched?: ((id: string) => void) | undefined;
 }) {
 	// The transport speaks this channel's contract: one user message per
 	// POST, keyed by the app conversation id. A regenerate rides the
@@ -2428,6 +2507,17 @@ function Chat({
 	const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
 		() => new Set(initialRateableIds),
 	);
+	// Rewriting a prompt is a rewind: everything from that message onward
+	// is dropped on the server before the edited text becomes the next
+	// turn. The backup exists only so a refused request (a turn started
+	// meanwhile, a vanished event) can restore the view; a landed edit
+	// keeps the truncated transcript and history is the truth on failure.
+	const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
+	const editRestore = useRef<UIMessage[] | null>(null);
+	// A branch is a copy in a new chat; the click opens it via the host's
+	// navigation. Errors stay on the reply's action row.
+	const [branchPending, setBranchPending] = useState<string | null>(null);
+	const [branchErrors, setBranchErrors] = useState<Record<string, string>>({});
 	const applyRatingSnapshot = (next: AppRatedReply[], nextIds: string[]) => {
 		setRatings(Object.fromEntries(next.map((rating) => [rating.messageId, rating])));
 		setRateableIds(new Set(nextIds));
@@ -2445,7 +2535,7 @@ function Chat({
 			prepareReconnectToStreamRequest: ({ id }) => ({
 				api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
 			}),
-			prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
+			prepareSendMessagesRequest: ({ trigger, messageId, messages, body }) => ({
 				body:
 					trigger === "regenerate-message"
 						? { conversationId, retry: true }
@@ -2455,6 +2545,12 @@ function Chat({
 									trigger === "submit-message"
 										? (messages.find((m) => m.id === messageId) ?? messages[messages.length - 1])
 										: messages[messages.length - 1],
+								// An edit rides the normal send: the message is the
+								// replacement text, the id names the durable event
+								// the server cuts at. Anything else is ignored.
+								...(typeof body?.editMessageId === "string"
+									? { editMessageId: body.editMessageId }
+									: {}),
 							},
 			}),
 		});
@@ -2495,11 +2591,23 @@ function Chat({
 				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
 			},
 			onFinish: ({ message, isAbort }) => {
+				// The edit's server-side answer is final now — a later
+				// onError must not resurrect the pre-edit transcript.
+				editRestore.current = null;
 				// An aborted reader (stop, or the drop before a steer) is not a
 				// finished reply — the bell belongs to the real finish.
 				if (!isAbort) notifyDone(title ?? "", messageText(message));
 				onTurnDone();
 				refreshTranscript();
+			},
+			onError: (err) => {
+				// An HTTP refusal (a turn started meanwhile, the message is
+				// gone) never reached the store: put the dropped tail back.
+				// A provider failure arrives after the server committed the
+				// edit, so the truncated view stands and onFinish re-syncs it.
+				const backup = editRestore.current;
+				editRestore.current = null;
+				if (backup !== null && err instanceof APICallError) setMessages(backup);
 			},
 		});
 	const refreshTranscript = () => {
@@ -2609,6 +2717,55 @@ function Chat({
 	// gets copy/read only.
 	const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
+	const beginEdit = (m: UIMessage) => {
+		if (busy) return;
+		setEditing({ id: m.id, draft: messageText(m) });
+	};
+	const cancelEdit = () => setEditing(null);
+	const saveEdit = (m: UIMessage) => {
+		if (busy || editing === null || editing.id !== m.id) return;
+		const index = messages.findIndex((x) => x.id === m.id);
+		if (index === -1) return;
+		const draft = editing.draft;
+		const parts = editedParts(m, draft);
+		const tail = messages.length - index - 1;
+		// A rewind is destructive by design. Say so when it is about to
+		// drop real messages; the branch action is the way to keep them.
+		if (
+			tail > 0 &&
+			!window.confirm(
+				`Editing this message drops the ${tail} message${tail === 1 ? "" : "s"} after it. Branch first if you want to keep them. Continue?`,
+			)
+		) {
+			return;
+		}
+		editRestore.current = messages;
+		setEditing(null);
+		pinned.current = true;
+		setLiveCtx(null);
+		setMessages(messages.slice(0, index));
+		void sendMessage({ parts }, { body: { editMessageId: m.id } });
+	};
+	const branch = (m: UIMessage) => {
+		if (busy || branchPending !== null) return;
+		setBranchPending(m.id);
+		setBranchErrors((errors) => {
+			const next = { ...errors };
+			delete next[m.id];
+			return next;
+		});
+		branchConversation(token, conversationId, m.id)
+			.then(
+				(created) => onBranched?.(created.id),
+				(err: unknown) =>
+					setBranchErrors((errors) => ({
+						...errors,
+						[m.id]: err instanceof Error ? err.message : "branch failed",
+					})),
+			)
+			.finally(() => setBranchPending(null));
+	};
+
 	return (
 		<div className="chat">
 			<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
@@ -2623,18 +2780,51 @@ function Chat({
 				<div className="transcript-inner">
 					{messages.length === 0 && <p className="empty">Say something.</p>}
 					{messages.map((m) => {
-						if (m.role === "user")
+						if (m.role === "user") {
+							const isEditing = editing !== null && editing.id === m.id;
 							return (
 								<div key={m.id} className="msg user">
-									<MessageParts
-										parts={m.parts}
-										token={token}
-										noteProjectId={noteProjectId}
-										onOpenNote={onOpenNote}
-										clipFences
-									/>
+									{isEditing ? (
+										<div className="msg-edit">
+											<textarea
+												value={editing.draft}
+												rows={Math.min(10, Math.max(2, editing.draft.split("\n").length))}
+												onChange={(e) => setEditing({ id: m.id, draft: e.target.value })}
+												aria-label="Edit message"
+												// biome-ignore lint/a11y/noAutofocus: opening the editor is the user's request
+												autoFocus
+											/>
+											<div className="msg-edit-actions">
+												<button type="button" onClick={cancelEdit}>
+													cancel
+												</button>
+												<button
+													type="button"
+													className="primary"
+													onClick={() => saveEdit(m)}
+													disabled={
+														editing.draft.trim() === "" && !m.parts.some((p) => p.type !== "text")
+													}
+												>
+													save &amp; resend
+												</button>
+											</div>
+										</div>
+									) : (
+										<>
+											<MessageParts
+												parts={m.parts}
+												token={token}
+												noteProjectId={noteProjectId}
+												onOpenNote={onOpenNote}
+												clipFences
+											/>
+											<UserActions message={m} disabled={busy} onEdit={() => beginEdit(m)} />
+										</>
+									)}
 								</div>
 							);
+						}
 						if (m.role === "system")
 							return (
 								<div key={m.id} className="msg system">
@@ -2674,6 +2864,9 @@ function Chat({
 									ratingPending={ratingPending === m.id}
 									ratingError={ratingErrors[m.id] ?? null}
 									onRate={(vote) => rate(m.id, vote)}
+									onBranch={() => branch(m)}
+									branchPending={branchPending === m.id}
+									branchError={branchErrors[m.id] ?? null}
 								/>
 								{meta !== null && <MetaLine meta={meta} />}
 							</div>

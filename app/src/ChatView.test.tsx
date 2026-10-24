@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
+import type { UIMessage } from "ai";
+import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Window } from "happy-dom";
-import type { UIMessage } from "ai";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import {
@@ -11,8 +11,9 @@ import {
 	ChatView,
 	ContextGauge,
 	contextCount,
-	mergeTranscript,
+	editedParts,
 	MessageParts,
+	mergeTranscript,
 } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
@@ -433,7 +434,9 @@ describe("reply ratings", () => {
 
 	test("only the server-rated final reply gets controls; the stored vote is selected", async () => {
 		const posts = await render();
-		const rows = [...dom.container.querySelectorAll(".msg-actions")];
+		// Scope to replies: user bubbles carry their own copy/edit row,
+		// which is not a rating surface.
+		const rows = [...dom.container.querySelectorAll(".msg.assistant .msg-actions")];
 		expect(
 			rows.map((row) => row.querySelectorAll("button[aria-label^='Rate reply']").length),
 		).toEqual([0, 2]);
@@ -890,6 +893,401 @@ describe("ChatView mid-turn steer", () => {
 		}
 		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
 		expect(dom.container.textContent).toContain("working — steered");
+	});
+});
+
+describe("ChatView edit and branch", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const userMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const assistantMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+	const streamOf = (chunks: unknown[]): Response => {
+		const encoder = new TextEncoder();
+		return new Response(
+			new ReadableStream<Uint8Array>({
+				start(c) {
+					for (const chunk of chunks)
+						c.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+					c.enqueue(encoder.encode("data: [DONE]\n\n"));
+					c.close();
+				},
+			}),
+			{ headers: sseHeaders },
+		);
+	};
+	const configFallback = () => ({
+		model: "prov/model",
+		thinking: "off",
+		favorites: [],
+		catalog: [],
+		thinkingLevels: ["off"],
+	});
+	const settle = async (check: () => boolean) => {
+		for (let i = 0; i < 100 && !check(); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+	};
+	const setText = async (ta: HTMLTextAreaElement, text: string) => {
+		await act(async () => {
+			ta.focus();
+			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				text,
+			);
+			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+	};
+
+	test("edit opens the bubble editor, confirms the dropped tail, and sends the durable id", async () => {
+		const chatPosts: {
+			conversationId?: string;
+			editMessageId?: string;
+			message?: UIMessage;
+		}[] = [];
+		let afterEdit: unknown = null;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) {
+					if (afterEdit !== null) return jsonResponse(afterEdit);
+					return jsonResponse({
+						messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					});
+				}
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					const body = JSON.parse(String(init?.body)) as {
+						conversationId: string;
+						editMessageId?: string;
+						message: UIMessage;
+					};
+					chatPosts.push(body);
+					afterEdit = {
+						messages: [userMsg(body.message.id, "hello, edited"), assistantMsg("a2", "new answer")],
+						ratings: [],
+						rateableMessageIds: ["a2"],
+					};
+					return streamOf([
+						{ type: "start", messageId: "a2" },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: "new answer" },
+						{ type: "text-end", id: "t1" },
+						{ type: "finish" },
+					]);
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		const confirms: string[] = [];
+		Reflect.set(dom.win, "confirm", (message?: string) => {
+			confirms.push(message ?? "");
+			return true;
+		});
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+
+		const editBtn = dom.container.querySelector<HTMLButtonElement>(
+			'button[aria-label="Edit message"]',
+		)!;
+		expect(editBtn.textContent).toBe("edit");
+		await act(async () => {
+			editBtn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		const ta = dom.container.querySelector<HTMLTextAreaElement>(
+			'textarea[aria-label="Edit message"]',
+		)!;
+		expect(ta.value).toBe("hello");
+		await setText(ta, "hello, edited");
+		const save = [...dom.container.querySelectorAll("button")].find((b) =>
+			b.textContent?.includes("save & resend"),
+		)!;
+		await act(async () => {
+			save.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => chatPosts.length > 0);
+		expect(confirms).toHaveLength(1);
+		expect(confirms[0]).toContain("1 message");
+		expect(chatPosts[0]?.conversationId).toBe("app/meta-01");
+		expect(chatPosts[0]?.editMessageId).toBe("u1");
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "hello, edited" }]);
+		await settle(() => dom.container.textContent?.includes("new answer") ?? false);
+		// The rewind is local and immediate: the old reply never comes back,
+		// even after the finish-time transcript refresh.
+		expect(dom.container.textContent).not.toContain("hi there");
+		expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(1);
+		expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
+	});
+
+	test("an edit with nothing after it skips the confirm", async () => {
+		let afterEdit: unknown = null;
+		const chatPosts: { editMessageId?: string; message?: UIMessage }[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse(
+						afterEdit ?? {
+							messages: [userMsg("u1", "only message")],
+							ratings: [],
+							rateableMessageIds: [],
+						},
+					);
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					const body = JSON.parse(String(init?.body)) as {
+						editMessageId?: string;
+						message: UIMessage;
+					};
+					chatPosts.push(body);
+					afterEdit = {
+						messages: [
+							userMsg(body.message.id, "only message, edited"),
+							assistantMsg("a1", "answer"),
+						],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					};
+					return streamOf([
+						{ type: "start", messageId: "a1" },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: "answer" },
+						{ type: "text-end", id: "t1" },
+						{ type: "finish" },
+					]);
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		const confirms: string[] = [];
+		Reflect.set(dom.win, "confirm", (message?: string) => {
+			confirms.push(message ?? "");
+			return false;
+		});
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await settle(() => dom.container.textContent?.includes("only message") ?? false);
+		await act(async () => {
+			dom.container
+				.querySelector<HTMLButtonElement>('button[aria-label="Edit message"]')!
+				.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		const ta = dom.container.querySelector<HTMLTextAreaElement>(
+			'textarea[aria-label="Edit message"]',
+		)!;
+		await setText(ta, "only message, edited");
+		const save = [...dom.container.querySelectorAll("button")].find((b) =>
+			b.textContent?.includes("save & resend"),
+		)!;
+		await act(async () => {
+			save.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => chatPosts.length > 0);
+		// A confirm stub that refuses everything: reaching the POST proves
+		// the empty tail skipped the prompt.
+		expect(confirms).toEqual([]);
+		expect(chatPosts[0]?.editMessageId).toBe("u1");
+	});
+
+	test("branch copies through the reply and hands the new chat to the host", async () => {
+		const branches: { path: string; body: { messageId: string } }[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({
+						messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					});
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/branch")) {
+					branches.push({
+						path: url,
+						body: JSON.parse(String(init?.body)) as { messageId: string },
+					});
+					return jsonResponse(
+						{ id: "app/branched-1", title: "hello (branch)", createdAt: "now" },
+						201,
+					);
+				}
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		const opened: string[] = [];
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+					onBranched={(id) => opened.push(id)}
+				/>,
+			),
+		);
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+		const branchBtn = dom.container.querySelector<HTMLButtonElement>(
+			'button[aria-label="Branch conversation"]',
+		)!;
+		expect(branchBtn.textContent).toBe("⑂ branch");
+		await act(async () => {
+			branchBtn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => opened.length > 0);
+		expect(branches).toEqual([
+			{ path: "/api/app/conversations/meta-01/branch", body: { messageId: "a1" } },
+		]);
+		expect(opened).toEqual(["app/branched-1"]);
+	});
+
+	test("a refused branch stays inline on the reply", async () => {
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({
+						messages: [userMsg("u1", "hello"), assistantMsg("a1", "hi there")],
+						ratings: [],
+						rateableMessageIds: ["a1"],
+					});
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/branch")) return jsonResponse({ error: "a turn is running" }, 409);
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		let opened = 0;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+					onBranched={() => {
+						opened += 1;
+					}}
+				/>,
+			),
+		);
+		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
+		await act(async () => {
+			dom.container
+				.querySelector<HTMLButtonElement>('button[aria-label="Branch conversation"]')!
+				.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => dom.container.querySelector(".msg-err") !== null);
+		expect(dom.container.querySelector(".msg-err")?.textContent).toBe("a turn is running");
+		expect(opened).toBe(0);
+	});
+});
+
+describe("editedParts", () => {
+	test("replaces the text and keeps every non-text part", () => {
+		const message: UIMessage = {
+			id: "u1",
+			role: "user",
+			parts: [
+				{ type: "text", text: "old" },
+				{ type: "data-note", data: { id: "n1" } },
+				{ type: "text", text: "second paragraph" },
+			],
+		};
+		const parts = editedParts(message, "new words");
+		expect(parts).toEqual([
+			{ type: "text", text: "new words" },
+			{ type: "data-note", data: { id: "n1" } },
+		]);
+	});
+
+	test("inserts the text when the message carried none", () => {
+		const message = {
+			id: "u1",
+			role: "user",
+			parts: [{ type: "data-note", data: { id: "n1" } }],
+		} as unknown as UIMessage;
+		expect(editedParts(message, "typed")[0]).toEqual({ type: "text", text: "typed" });
 	});
 });
 

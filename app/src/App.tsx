@@ -1674,6 +1674,10 @@ function AppShell() {
 								onSeeded={() => setSeed(null)}
 								onTurnDone={() => void refresh()}
 								onOpenNote={openNote}
+								onBranched={(id) => {
+									void refresh();
+									openConversation(id);
+								}}
 							/>
 						</>
 					))}

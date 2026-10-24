@@ -17,6 +17,7 @@ import type {
 	AppConfigPatch,
 	AppConfigView,
 	AppContextView,
+	AppConversationBranch,
 	AppConversationCreate,
 	AppConversationList,
 	AppConversationMemoryResponse,
@@ -181,6 +182,20 @@ async function request<T>(token: string | null, path: string, init?: RequestInit
 
 export function listConversations(token: string | null): Promise<AppConversationList> {
 	return request(token, "/api/app/conversations");
+}
+
+// Branch: a new app conversation copied through one durable message. The
+// source is untouched, so the client navigates to the returned id.
+export function branchConversation(
+	token: string | null,
+	id: string,
+	messageId: string,
+): Promise<AppConversationBranch> {
+	return request(token, `/api/app/conversations/${seg(id)}/branch`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ messageId }),
+	});
 }
 
 export function createConversation(

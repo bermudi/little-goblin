@@ -1876,6 +1876,90 @@ describe("MessageParts activity folding (happy-dom)", () => {
 	});
 });
 
+// The fold's open state: auto until the operator steers it. Activity
+// opens it, the lull between calls holds (collapsing for the gap
+// flashes on every new call), sealing settles — clean closes,
+// failures stay open — and a manual toggle outranks all of it.
+describe("MessageParts Worked fold state (happy-dom)", () => {
+	const dom = mountDom();
+
+	const part = (
+		id: string,
+		state: "input-available" | "output-available" | "output-error",
+	): UIMessage["parts"][number] =>
+		({
+			type: "tool-bash",
+			toolCallId: id,
+			state,
+			input: { command: id },
+			...(state === "output-available" ? { output: { exit_code: 0, output: "" } } : {}),
+			...(state === "output-error" ? { errorText: "boom" } : {}),
+		}) as unknown as UIMessage["parts"][number];
+	const fold = () => dom.container.querySelector<HTMLDetailsElement>(".worked")!;
+	const render = (parts: UIMessage["parts"], streaming: boolean) =>
+		act(async () => {
+			dom.root?.render(<MessageParts parts={parts} streaming={streaming} />);
+		});
+	// A summary click is the operator's toggle — the fold owns it
+	// through state, the DOM's own flip is prevented.
+	const click = () =>
+		act(() => {
+			fold().querySelector("summary")!.click();
+		});
+
+	test("the lull between calls holds the fold open; sealing settles a clean run", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "input-available")], true);
+		expect(fold().open).toBe(true);
+		// First call done, the message still arriving — a lull, not a
+		// settle: collapsing for the gap flashes on the next call.
+		await render([part("b1", "output-available")], true);
+		expect(fold().open).toBe(true);
+		// The next call joins the same run — still open, no flash.
+		await render([part("b1", "output-available"), part("b2", "input-available")], true);
+		expect(fold().open).toBe(true);
+		// The message ends clean — the run seals and the fold closes.
+		await render([part("b1", "output-available"), part("b2", "output-available")], false);
+		expect(fold().open).toBe(false);
+	});
+
+	test("a manual collapse holds through the lull, new calls, and failures", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "input-available")], true);
+		expect(fold().open).toBe(true);
+		click();
+		expect(fold().open).toBe(false);
+		// New calls landing must not pop the fold back open.
+		await render([part("b1", "output-available"), part("b2", "input-available")], true);
+		expect(fold().open).toBe(false);
+		// A failure doesn't override a deliberate close either — the
+		// summary's fail chip carries the signal.
+		await render([part("b1", "output-available"), part("b2", "output-error")], false);
+		expect(fold().open).toBe(false);
+		expect(fold().querySelector(".worked-fail")).not.toBeNull();
+	});
+
+	test("a failure keeps the fold open at seal; a manual open survives a clean one", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "input-available")], true);
+		await render([part("b1", "output-error")], false);
+		expect(fold().open).toBe(true);
+		click();
+		expect(fold().open).toBe(false);
+	});
+
+	test("a settled clean fold mounts closed — the operator can open it", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "output-available"), part("b2", "output-available")], false);
+		expect(fold().open).toBe(false);
+		click();
+		expect(fold().open).toBe(true);
+		// And it stays open across rerenders — nothing re-asserts auto.
+		await render([part("b1", "output-available"), part("b2", "output-available")], false);
+		expect(fold().open).toBe(true);
+	});
+});
+
 // Operator-sent fences over 20 lines clip to a preview — the user
 // branch sets clipFences; model output renders whole. The toggle
 // lives in markdown.tsx's CodeBlock.

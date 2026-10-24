@@ -454,29 +454,26 @@ describe("ContextGauge", () => {
 				.find((r) => r.querySelector("dt")?.textContent === name)
 				?.querySelector("dd")?.textContent;
 
-		// A turn starts — before its first step report lands the label
-		// counts the turn after the settled ones. The occupancy itself
-		// is unknown: the settled read is a turn stale and never stands
-		// in, so ring, hero, and rows all read "no number yet".
+		// A turn starts — the settled read stands in until the first
+		// step report lands: a stale number beats a placeholder, and
+		// every face keeps wearing it — label, ring, hero, rows.
 		await act(async () => {
 			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={true} live={null} />);
 		});
-		expect(label()).toBe("turn 3 in flight");
-		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
+		expect(label()).toBe("5k/10k · 50%");
+		expect(container.querySelector(".ctx-ring-fill")).not.toBeNull();
 
 		act(() => {
 			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
 		});
-		expect(container.querySelector(".ctx-head .mono")?.textContent).toBe("—");
-		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
-		expect(popRow("Input")).toBe("—");
-		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 0%;");
-		// The cache-hit row keeps its own fallback — a rate the settled
-		// read still owns, unlike the occupancy.
+		expect(container.querySelector(".ctx-head .mono")?.textContent).toBe("5k/10k");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
+		expect(popRow("Input")).toBe("5k tok");
+		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 50%;");
 		expect(popRow("Cache hit")).toBe("50.0%");
 
-		// A step the provider didn't meter is the same unknown — the
-		// popover's occupancy never falls back to the settled figures.
+		// A step the provider didn't meter stands on the same settled
+		// read — unmetered is not a number, so nothing hands over.
 		await act(async () => {
 			root?.render(
 				<ContextGauge
@@ -487,10 +484,9 @@ describe("ContextGauge", () => {
 				/>,
 			);
 		});
-		expect(label()).toBe("ctx ?");
-		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
-		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
-		expect(popRow("Input")).toBe("—");
+		expect(label()).toBe("5k/10k · 50%");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
+		expect(popRow("Input")).toBe("5k tok");
 		expect(popRow("Cache hit")).toBe("50.0%");
 
 		// Then step usage lands — the wire's number reads like the
@@ -516,8 +512,8 @@ describe("ContextGauge", () => {
 		expect(container.querySelector(".ctx-bar span")?.getAttribute("style")).toBe("width: 100%;");
 		expect(popRow("Input")).toBe("23.4k tok");
 
-		// A later step that reports no usage reverts to unknown — the
-		// last live figure doesn't linger.
+		// A later step that reports no usage hands the figures back to
+		// the settled read — the last live figure doesn't linger either.
 		await act(async () => {
 			root?.render(
 				<ContextGauge
@@ -528,10 +524,9 @@ describe("ContextGauge", () => {
 				/>,
 			);
 		});
-		expect(label()).toBe("ctx ?");
-		expect(container.querySelector(".ctx-ring-fill")).toBeNull();
-		expect(container.querySelector(".ctx-hero")?.textContent).toBe("?");
-		expect(popRow("Input")).toBe("—");
+		expect(label()).toBe("5k/10k · 50%");
+		expect(container.querySelector(".ctx-hero")?.textContent).toBe("50%");
+		expect(popRow("Input")).toBe("5k tok");
 
 		// A reported zero is a number, not an unknown — it meters at 0%.
 		await act(async () => {

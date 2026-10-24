@@ -81,11 +81,28 @@ function isActivityPart(p: UIMessage["parts"][number]): boolean {
 		(isToolUIPart(p) && getToolName(p) !== "ui") || (p.type === "reasoning" && p.text.trim() !== "")
 	);
 }
-function Activity({ parts }: { parts: ActivityPart[] }) {
+function Activity({ parts, live }: { parts: ActivityPart[]; live?: boolean | undefined }) {
 	const tools = parts.filter((p): p is ToolUIPart | DynamicToolUIPart => isToolUIPart(p));
 	const running = tools.some(partRunning);
 	const failures = tools.filter(partFailed).length;
+	const active = running || failures > 0;
 	const lines = tools.map(partSummaryLine);
+	// The fold drives itself until the operator steers it: activity
+	// opens it, the lull between calls holds whatever it had (folding
+	// for the gap flashes on every new call), and sealing — the
+	// message done arriving, the run unable to grow — settles it:
+	// clean closes, failures stay open. A summary click outranks auto
+	// for the rest of this fold's life: preventDefault keeps the DOM
+	// from flipping on its own so React's `open` stays the one writer.
+	const [auto, setAuto] = useState(active);
+	const [userOpen, setUserOpen] = useState<boolean | null>(null);
+	const growing = live === true;
+	const seen = useRef({ active, growing });
+	if (seen.current.active !== active || seen.current.growing !== growing) {
+		seen.current = { active, growing };
+		setAuto((cur) => (active ? true : growing ? cur : failures > 0));
+	}
+	const open = userOpen ?? auto;
 	// A thought-only run keeps the plain Thought fold — "Worked" over
 	// zero calls would read as a bug.
 	if (tools.length === 0) {
@@ -102,8 +119,13 @@ function Activity({ parts }: { parts: ActivityPart[] }) {
 		);
 	}
 	return (
-		<details className="worked" open={running || failures > 0}>
-			<summary>
+		<details className="worked" open={open}>
+			<summary
+				onClick={(e) => {
+					e.preventDefault();
+					setUserOpen(!open);
+				}}
+			>
 				{running ? "Working" : "Worked"} · <span className="worked-sum">{lines.join("; ")}</span>
 				{failures > 0 && <span className="worked-fail">— {failures} failed</span>}
 			</summary>
@@ -429,7 +451,7 @@ export function MessageParts({
 				// nothing — they never split a run.
 				j++;
 			}
-			out.push(<Activity key={`w${i}`} parts={run} />);
+			out.push(<Activity key={`w${i}`} parts={run} live={streaming} />);
 			// Published artifacts hoist out of the fold into cards — the
 			// fold records that the call ran; the card is the openable
 			// thing. Direct artifact calls and a script's collected
@@ -1108,32 +1130,16 @@ export function ContextGauge({
 		(model === undefined || ctx.model === model)
 			? ctx.limit
 			: null;
-	// The figures every face shows — the streaming turn's current step
-	// while it runs, the last read's otherwise. Label, ring, and
-	// popover all derive from these, so they cannot disagree. A turn
-	// whose step hasn't reported occupancy reads as unknown — the
-	// settled read is a turn stale and never stands in.
-	const viewInput = busy ? (live?.input ?? null) : (ctx?.input ?? null);
+	// The figures every face shows — the streaming turn's metered step
+	// while it reports one, the settled read's until it does. Label,
+	// ring, and popover all derive from these, so they cannot disagree.
+	// A stale number beats a placeholder (ruling 2026-10-24): while a
+	// turn runs without a metered step — before the first report, or a
+	// step the provider didn't meter — the last settled read stands in.
+	const viewInput = (busy ? live?.input : null) ?? ctx?.input ?? null;
 	const viewPct =
 		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
 	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));
-	// While a turn streams, the gauge reads the wire's data-context
-	// parts — the settled view is a turn behind. A step whose usage the
-	// provider didn't report says "ctx ?", never zero, never "no turns
-	// yet"; before the first step report lands the label names the turn
-	// in flight.
-	const busyLabel =
-		live !== null && live !== undefined
-			? live.input !== null
-				? limit !== null
-					? `${contextCount(live.input)}/${contextCount(limit)} · ${viewPct}%`
-					: `${contextCount(live.input)} tok`
-				: "ctx ?"
-			: // The settled view holds the count when it has landed —
-				// on a switch-in-mid-turn it hasn't, so no number.
-				ctx === null
-				? "turn in flight"
-				: `turn ${ctx.turns + 1} in flight`;
 	// The read wearing the figures above — the settled label and the
 	// popover render this, so a streamed step moves them with the ring.
 	const shown: AppContextView | null =
@@ -1145,6 +1151,18 @@ export function ContextGauge({
 					input: viewInput,
 					pct: viewPct,
 				};
+	// While a turn streams: a metered step's figures when they land,
+	// the settled read standing in until then, and only when no read
+	// exists at all — a fresh conversation, a mid-turn switch — the
+	// turn itself by name. Never "no turns yet" over a live stream.
+	const busyLabel =
+		live?.input != null
+			? limit !== null
+				? `${contextCount(live.input)}/${contextCount(limit)} · ${viewPct}%`
+				: `${contextCount(live.input)} tok`
+			: shown !== null && shown.input !== null
+				? contextLabel(shown)
+				: "turn in flight";
 	// The wire's cacheRead/input pair is the same numerator and
 	// denominator the server reports for a settled turn — while one
 	// runs, the freshest metered step's rate wins; a step whose split

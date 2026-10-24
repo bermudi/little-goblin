@@ -37,8 +37,10 @@ by podman: only the lookup command is registered.
 
 Fail loud: every step reports what it is doing and aborts with context on
 the first failure. Idempotent for assets; refuses to touch existing env
-files unless --reconfigure. Provider knowledge lives in providers.py;
-this file is the flow.
+files unless --reconfigure. An install interrupted between the env write
+and its first secret registration is completed — never rewritten — by
+the next run. Provider knowledge lives in providers.py; this file is the
+flow.
 
 Usage: uv run python deploy/memory/install.py [--no-start] [--reconfigure]
 """
@@ -46,13 +48,15 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import getpass
+# Redundant-alias imports are deliberate re-exports (strict mypy requires
+# them): tests patch preflight's stdlib edge through install's namespace.
+import getpass as getpass
 import ipaddress
 import json
-import os
+import os as os
 from pathlib import Path
 import re
-import shutil
+import shutil as shutil
 import socket
 import subprocess
 import sys
@@ -66,15 +70,18 @@ from urllib.parse import urlsplit
 from providers import (
     DEFAULT_OPENAI_BASE_URL,
     PROVIDERS,
-    auth_command_for,
+    # Re-exported on purpose: the flow resolves these through this
+    # module's namespace so tests can patch install.<name> (strict mypy
+    # requires the explicit `as`).
+    auth_command_for as auth_command_for,
     catalog_url_for,
     embedding_prefixes,
     example_for,
     fetch_model_catalog,
     filter_catalog,
     providers_for,
-    read_goblin_providers,
-    resolve_auth_key,
+    read_goblin_providers as read_goblin_providers,
+    resolve_auth_key as resolve_auth_key,
 )
 from start import validate, validate_endpoint
 
@@ -117,6 +124,11 @@ BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 # . _ ~ : / -. Anything else — %, $, whitespace, quotes, backslashes —
 # is a systemd-lexer or JSON-payload hazard in the pin unit's ExecStart.
 EMBED_MODEL_PATTERN = re.compile(r"[A-Za-z0-9._~:/-]+")
+# Podman secret names this installer registers: env-var names derived
+# from the provider entries. Reconstructed env names that miss this are
+# a mangled env file, not a registration (a corrupt name would end up
+# verbatim in the Quadlet's Secret= lines).
+SECRET_NAME_PATTERN = re.compile(r"HINDSIGHT_API_[A-Z0-9_]+")
 # The database listens on the pod's loopback and pg_hba trusts loopback —
 # there is no password to issue, store, or keep in sync.
 DATABASE_URL = "postgresql://hindsight@127.0.0.1:5432/hindsight"
@@ -843,6 +855,77 @@ def refresh_assets(enable_watch: bool) -> None:
         info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
 
+def _specs_from_installed_env(goblin_home: Path) -> list[SecretSpec]:
+    """Reconstruct the secret registrations the installed hindsight.env
+    needs: the env file's provider entries plus goblin's own provider
+    registry — the same specs prompt_answers would have produced for
+    this config. No key values are resolved (only the model catalog
+    ever needed one); the lookup command is all a podman shell secret
+    stores."""
+    env_text = HINDSIGHT_ENV.read_text()
+    llm_provider = _env_assignment(env_text, "HINDSIGHT_API_LLM_PROVIDER")
+    emb_provider = _env_assignment(env_text, "HINDSIGHT_API_EMBEDDINGS_PROVIDER")
+    if llm_provider is None or emb_provider is None:
+        fail(f"cannot reconstruct the needed secrets from "
+             f"{HINDSIGHT_ENV.name}: provider entries are missing")
+    emb_key = f"HINDSIGHT_API_EMBEDDINGS_{emb_provider.upper()}_API_KEY"
+    if SECRET_NAME_PATTERN.fullmatch(emb_key) is None:
+        fail(f"{HINDSIGHT_ENV.name}: unsupported embeddings provider entry")
+    registry, problem = read_goblin_providers(goblin_home, REPO_ROOT)
+    if problem is not None:
+        fail(f"{problem} — the interrupted install registers its secrets "
+             "from goblin's provider registry; fix it and rerun")
+
+    def spec_for(provider: str, env_name: str) -> SecretSpec:
+        auth_name = registry.get(provider)
+        if auth_name is None:
+            fail(f"{provider}: not in goblin's provider registry — the "
+                 "interrupted install registered its secrets from that "
+                 "registry. Run: pass-keys add goblin-dev <NAME> Keys/<item>, "
+                 f"then set providers.{provider}.auth in goblin.json5 and rerun")
+        try:
+            command = auth_command_for(goblin_home, auth_name)
+        except ValueError as error:
+            fail(f"{provider}: {error}")
+        return SecretSpec(env_name, secret_lookup(command))
+
+    specs = [spec_for(llm_provider, "HINDSIGHT_API_LLM_API_KEY")]
+    # The local-embeddings sentinel is render_env_file's one allowed
+    # *_API_KEY line: its presence means no embeddings secret exists.
+    if _env_assignment(env_text, emb_key) != LOCAL_EMBED_KEY:
+        specs.append(spec_for(emb_provider, emb_key))
+    return specs
+
+
+def complete_half_install(goblin_home: Path) -> None:
+    """Converge a fresh install that died between writing hindsight.env
+    and registering its first podman secret — an install_assets or
+    apply_secret_block failure, a failed first `podman secret create`,
+    or Ctrl+C in that window. Every rerun path previously dead-ended
+    there: the status path only refreshed assets, --resume could not
+    start an API whose Quadlet mounts never-created secrets, and
+    --reconfigure refuses an empty managed set. The env file is the
+    config of record and is NOT rewritten (the no-rewrite contract
+    holds): assets land with fresh-install semantics — this state can
+    only come from the crashed fresh path, whose own Quadlet copies are
+    minutes old — the Quadlet's managed block is refilled, and the
+    secret registrations are reconstructed against the env file.
+    Refuses before any mutation when the env is not this profile's
+    pod-era config (a legacy install needs migration, not completion)."""
+    assert_compatible_install()
+    specs = _specs_from_installed_env(goblin_home)
+    info(f"{HINDSIGHT_ENV.name} is present with no registered podman "
+         "secrets — an interrupted install; completing asset install and "
+         "secret registration (config kept as-is)")
+    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR)
+    for path in installed:
+        info(f"installed {path}")
+    apply_secret_block(SYSTEMD_DIR / "goblin-memory-api.container",
+                       [s.env_name for s in specs])
+    sync_secrets(specs)
+    info("interrupted install completed: assets and podman secrets are in place")
+
+
 def http_ok(url: str) -> bool:
     try:
         with urlrequest.urlopen(url, timeout=5) as response:
@@ -1525,6 +1608,11 @@ def main(argv: list[str] | None = None) -> None:
         if not HINDSIGHT_ENV.is_file():
             fail(f"--resume needs the config a partial install left "
                  f"({HINDSIGHT_ENV}); run without flags for a fresh install")
+        if not managed_secrets():
+            # Same crash window the plain rerun converges: finish the
+            # secret registration BEFORE starting, or the API's first
+            # start fails on its never-created secret mounts.
+            complete_half_install(args.goblin_home)
         bank_id, mission = prompt_bank()
         state = probe(["systemctl", "--user", "is-active", API_UNIT])
         if ((state.stdout if state else "") or "").strip() != "active":
@@ -1537,6 +1625,12 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if HINDSIGHT_ENV.is_file():
+        if not managed_secrets():
+            # A complete pod-era install always has its secrets
+            # registered (the LLM key is unconditional), so this state
+            # is the fresh path's crash window: converge it instead of
+            # dead-ending on the status path.
+            complete_half_install(args.goblin_home)
         api_state = existing_install_status()
         # install_assets is fresh-install-only otherwise: a re-run on an
         # existing box never picked up the watch units. Idempotent copy
@@ -1607,9 +1701,11 @@ def cli() -> None:
     try:
         main()
     except KeyboardInterrupt:
-        # Prompts happen before any write and writes are atomic, so an
-        # interrupt can only leave CLEAN state: no file, or complete
-        # files. A partial install (env files written, stack never
+        # Prompts happen before any write and writes are atomic. An
+        # interrupt between the hindsight.env write and the first secret
+        # registration leaves the env with zero registered secrets —
+        # the next run (plain or --resume) detects that and completes
+        # the install. A later partial (config written, stack never
         # started) is finished by --resume.
         print("\ninstall: interrupted — safe to rerun; existing files are "
               "detected and kept", file=sys.stderr)

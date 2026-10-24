@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from typing import Callable
+from typing import Protocol
 import urllib.error
 from urllib.parse import urlsplit
 import urllib.request as urlrequest
@@ -33,6 +33,18 @@ from install import (
 )
 from providers import auth_command_for
 from start import validate
+
+
+class Probe(Protocol):
+    """install.probe's declared shape: the fake podman/systemd edges
+    stubbing it must match it exactly for strict mypy (a bare Callable
+    is Any, and a Callable alias's positional-only params are not
+    assignable to a def-declared named parameter)."""
+
+    def __call__(self, command: list[str],
+                 ) -> subprocess.CompletedProcess[str] | None:
+        ...
+
 
 SYNTHETIC_KEY = "synthetic-secret"
 LLM_SPEC = SecretSpec("HINDSIGHT_API_LLM_API_KEY", "synthetic-lookup-llm")
@@ -953,6 +965,7 @@ FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "pre_pull_images", "start_stack",
          "managed_secrets", "ensure_secret", "sync_secrets",
          "prune_secrets", "restore_secrets", "apply_secret_block",
+         "read_goblin_providers", "auth_command_for",
          "time", "CFG_DIR", "SYSTEMD_DIR",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
@@ -1085,10 +1098,11 @@ class MainFlowTest(unittest.TestCase):
         install.ask_yes = lambda prompt, default: True
 
     def stub_secret_edge(self,
-                         managed: dict[str, dict[str, str]] | None = None) -> dict[str, list]:
+                         managed: dict[str, dict[str, str]] | None = None,
+                         ) -> dict[str, list[object]]:
         """No real podman in tests: secret ops record calls instead."""
-        calls: dict[str, list] = {"created": [], "pruned": [], "restored": [],
-                                  "blocked": []}
+        calls: dict[str, list[object]] = {"created": [], "pruned": [],
+                                          "restored": [], "blocked": []}
         install.managed_secrets = lambda: (
             dict(managed) if managed is not None else {})
         install.ensure_secret = lambda spec: calls["created"].append(spec.env_name)
@@ -1157,6 +1171,10 @@ class MainFlowTest(unittest.TestCase):
         # creation and goblin wiring unreachable. Resume runs exactly
         # that tail and never re-prompts keys.
         self.write_partial_install()
+        # A partial install past the secret stage has its registrations:
+        # an empty managed set means the older crash window instead.
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.prompt_answers = lambda goblin_home: self.fail(
             "--resume must never re-prompt keys")
         install.prompt_bank = lambda: ("goblin", "synthetic mission")
@@ -1185,6 +1203,8 @@ class MainFlowTest(unittest.TestCase):
 
     def test_resume_starts_a_down_stack(self) -> None:
         self.write_partial_install()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.prompt_bank = lambda: ("goblin", "synthetic mission")
         install.probe = lambda command: subprocess.CompletedProcess(
             command, 0, "inactive\n", "")
@@ -1213,6 +1233,162 @@ class MainFlowTest(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     install.main(["--resume", *extra])
+
+    # ------------------------------------------------------------------
+    # The audited half-install window: a fresh install that dies between
+    # writing hindsight.env and its first podman secret registration
+    # used to dead-end on every rerun path (hunt-06 F2).
+
+    def crash_a_fresh_install(self, answers: Answers) -> tuple[list[str], str]:
+        """Run a fresh install whose FIRST podman secret create fails —
+        the crash window: hindsight.env, assets and the Quadlet secret
+        block land, zero secrets register. Leaves ensure_secret working
+        for the recovery rerun. Returns the recorder of registered
+        names and the env text as written."""
+        self.fake_prompts()
+        install.prompt_answers = lambda goblin_home: answers
+        self.fake_yes()
+        created: list[str] = []
+        first = {"pending": True}
+
+        def failing_first(spec: install.SecretSpec) -> None:
+            if first["pending"]:
+                first["pending"] = False
+                raise SystemExit(1)  # the first podman secret create fails
+            created.append(spec.env_name)
+
+        install.ensure_secret = failing_first
+        install.managed_secrets = (
+            lambda: {name: {"lookup": "synthetic"} for name in created})
+        # setUp stubbed the whole secret edge: run the REAL sync_secrets
+        # so the failing ensure is actually driven and the crash lands
+        # exactly between the env write and the first registration.
+        # Everything after the secrets is fail-stubbed: if the crash
+        # ever fails to happen, the test fails HERE instead of reaching
+        # the system edge (a test once restarted the real goblin unit
+        # from exactly that gap).
+        install.sync_secrets = self.saved["sync_secrets"]
+        install.apply_secret_block = self.saved["apply_secret_block"]
+        install.pre_pull_images = lambda: self.fail(
+            "the crash must happen before any image pull")
+        install.start_stack = lambda: self.fail(
+            "the crash must happen before the stack starts")
+        install.create_bank = lambda bank_id, mission: self.fail(
+            "the crash must happen before bank creation")
+        install.wire_goblin = lambda goblin_home, bank_id: self.fail(
+            "the crash must happen before goblin wiring")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertTrue(install.HINDSIGHT_ENV.is_file())
+        self.assertEqual(created, [], "the crash must leave zero secrets")
+        return created, install.HINDSIGHT_ENV.read_text()
+
+    def stub_registry(self, registry: dict[str, str]) -> None:
+        """The provider registry the crashed install was built from."""
+        install.read_goblin_providers = lambda goblin_home, repo_root: (
+            dict(registry), None)
+        install.auth_command_for = (
+            lambda goblin_home, auth_name: f"pass-keys get goblin-dev {auth_name}")
+
+    def stub_down_stack_edge(self) -> list[list[str]]:
+        """Status-path edge for the recovery rerun: down stack, no boot
+        hook yet; every run() command recorded."""
+        runs: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: float = 600,
+                 stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        install.run = fake_run
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "inactive\n", "")
+        install.http_ok = lambda url: False
+        return runs
+
+    def test_plain_rerun_converges_a_crashed_fresh_install(self) -> None:
+        # Hunt-06 F2: the status path used to only refresh assets and
+        # point at a --resume that could not start an API mounting
+        # never-created secrets. The plain rerun must converge instead:
+        # register the secrets the installed config needs and keep the
+        # env file byte-identical.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({"zai": "ZAI_KEY", "openrouter": "OR_KEY"})
+        self.stub_down_stack_edge()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertEqual(
+            created, [s.env_name for s in needed_secrets(synthetic_answers())],
+            "the registrations the crashed config needs, in its order")
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text,
+                         "completion never rewrites the env file")
+        quadlet = (install.SYSTEMD_DIR
+                    / "goblin-memory-api.container").read_text()
+        for name in created:
+            self.assertIn(f"Secret={name},type=mount", quadlet)
+        self.assertIn("interrupted install", output.getvalue())
+        self.assertIn("--resume", output.getvalue(),
+                      "the printed continuation is now actionable")
+
+    def test_resume_converges_a_crashed_fresh_install(self) -> None:
+        # The other dead end: --resume went straight to start_stack and
+        # failed on the Quadlet's never-created secret mounts. It now
+        # completes the registration first, then finishes the install —
+        # still without re-prompting keys.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({"zai": "ZAI_KEY", "openrouter": "OR_KEY"})
+        install.prompt_answers = lambda goblin_home: self.fail(
+            "--resume must never re-prompt keys")
+        install.prompt_bank = lambda: ("goblin", "synthetic mission")
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, "inactive\n", "")
+        install.pre_pull_images = lambda: None
+        started: list[bool] = []
+        install.start_stack = lambda: started.append(True)
+        banks: list[tuple[str, str]] = []
+        install.create_bank = lambda bank_id, mission: banks.append((bank_id, mission))
+        install.wire_goblin = lambda goblin_home, bank_id: "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--resume", "--goblin-home", str(self.goblin_home)])
+        self.assertEqual(
+            created, [s.env_name for s in needed_secrets(synthetic_answers())])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
+        self.assertEqual(started, [True])
+        self.assertEqual(banks, [("goblin", "synthetic mission")])
+
+    def test_recovery_honors_the_local_embeddings_sentinel(self) -> None:
+        # A local-embeddings env carries the sentinel where a remote key
+        # would be: recovery registers the LLM secret only, and never
+        # needs the embeddings provider's registry entry.
+        answers = synthetic_answers(
+            emb_provider="openai", emb_base_url="http://100.64.0.1:11435/v1",
+            emb_model="embeddinggemma", local_embeddings=True)
+        created, env_text = self.crash_a_fresh_install(answers)
+        self.assertIn(f"HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY="
+                      f"{install.LOCAL_EMBED_KEY}", env_text)
+        self.stub_registry({"zai": "ZAI_KEY"})
+        self.stub_down_stack_edge()
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertEqual(created, ["HINDSIGHT_API_LLM_API_KEY"])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
+
+    def test_recovery_refuses_when_the_registry_cannot_serve_the_config(self) -> None:
+        # Unrecoverable half-install: the registry that produced the
+        # crashed install no longer knows the provider. Refuse loud and
+        # mutate nothing — spec reconstruction precedes every write.
+        created, env_text = self.crash_a_fresh_install(synthetic_answers())
+        self.stub_registry({})
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit):
+                install.main(["--goblin-home", str(self.goblin_home)])
+        self.assertIn("not in goblin's provider registry", errors.getvalue())
+        self.assertEqual(created, [])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(), env_text)
 
     def test_reconfigure_rewrites_env_and_resyncs_secrets(self) -> None:
         self.fake_prompts()
@@ -1489,6 +1665,10 @@ class MainFlowTest(unittest.TestCase):
         # re-running on an existing box left the health watcher inactive
         # forever. Stack up → copy + reload + timer live.
         self.existing_stack()
+        # A complete install has its secrets registered; an empty
+        # managed set is the interrupted-install crash window instead.
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("active", [])
         self.assertEqual(runs, [BOOT_QUERY,
                                ["systemctl", "--user", "daemon-reload"],
@@ -1504,6 +1684,8 @@ class MainFlowTest(unittest.TestCase):
         # raise the health-gate failure message tells the operator to
         # make by hand.
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
         edited = install.SYSTEMD_DIR / "goblin-memory-api.container"
         edited.write_text("[Container]\nPod=goblin-memory.pod\nTimeoutStartSec=900\n")
@@ -1517,16 +1699,20 @@ class MainFlowTest(unittest.TestCase):
         # A stopped stack is a deliberate operator choice: assets and
         # reload only, no enable.
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("inactive", [])
         self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
 
     def test_existing_install_respects_no_start(self) -> None:
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         runs = self.run_existing("active", ["--no-start"])
         self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
 
     def run_existing_expect_refusal(self, argv: list[str]) -> tuple[
-            list[list[str]], dict[str, list], str]:
+            list[list[str]], dict[str, list[object]], str]:
         """Status-path run that must refuse: capture run() commands, the
         secret-edge recorders and the refusal stderr."""
         runs: list[list[str]] = []
@@ -1614,6 +1800,8 @@ class MainFlowTest(unittest.TestCase):
 
     def test_refresh_accepts_a_quoted_passwordless_uri(self) -> None:
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         install.HINDSIGHT_ENV.write_text(
             f'HINDSIGHT_API_DATABASE_URL="{install.DATABASE_URL}"\n'
             "HINDSIGHT_API_LLM_MODEL=old\n")
@@ -1633,7 +1821,8 @@ class MainFlowTest(unittest.TestCase):
                 install.refresh_assets(enable_watch=False)
         self.assertIn("unsupported installed memory stack", errors.getvalue())
 
-    def write_reconfigure_incumbent(self) -> tuple[dict[str, list], str, str]:
+    def write_reconfigure_incumbent(self) -> tuple[dict[str, list[object]],
+                                                   str, str]:
         """A pod-era incumbent with a full secret/env/Quadlet snapshot to
         roll back onto. Returns the managed map plus the file texts."""
         self.fake_prompts()
@@ -1650,7 +1839,7 @@ class MainFlowTest(unittest.TestCase):
         write_file_atomic(quadlet, previous_quadlet, 0o640)
         return calls, previous_env, previous_quadlet
 
-    def assert_rollback_restored(self, calls: dict[str, list],
+    def assert_rollback_restored(self, calls: dict[str, list[object]],
                                  previous_managed: dict[str, dict[str, str]],
                                  previous_env: str, previous_quadlet: str,
                                  commands: list[list[str]]) -> None:
@@ -1830,6 +2019,8 @@ class MainFlowTest(unittest.TestCase):
 
     def test_existing_install_enables_embed_relay_when_switched(self) -> None:
         self.existing_stack()
+        self.stub_secret_edge(
+            {"HINDSIGHT_API_LLM_API_KEY": {"lookup": "old-lookup"}})
         self.write_relay_switch()
         runs = self.run_existing("active", [])
         self.assertEqual(runs, [
@@ -2120,7 +2311,7 @@ class ManagedSecretsTest(unittest.TestCase):
         self.real_probe = install.probe
         self.addCleanup(setattr, install, "probe", self.real_probe)
 
-    def _stderr_for(self, probe: Callable) -> str:
+    def _stderr_for(self, probe: Probe) -> str:
         install.probe = probe
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
@@ -2128,8 +2319,8 @@ class ManagedSecretsTest(unittest.TestCase):
                 install.managed_secrets()
         return errors.getvalue()
 
-    def _edge(self, inspect: Callable) -> Callable:
-        def probe(command: list[str]) -> object:
+    def _edge(self, inspect: Probe) -> Probe:
+        def probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
             if "ls" in command:
                 return subprocess.CompletedProcess(
                     command, 0, "HINDSIGHT_API_LLM_API_KEY\tshell\n", "")
@@ -2144,7 +2335,7 @@ class ManagedSecretsTest(unittest.TestCase):
                 self.assertIn("cannot list podman secrets", errors)
 
     def test_every_inspect_failure_refuses_by_operation_and_name_only(self) -> None:
-        outcomes: list[tuple[str, object]] = [
+        outcomes: list[tuple[str, subprocess.CompletedProcess[str] | None]] = [
             ("probe-gone", None),
             ("nonzero", subprocess.CompletedProcess(["podman"], 2, "", "err")),
             ("bad-json", subprocess.CompletedProcess(["podman"], 0, "raw-garbage", "")),
@@ -2201,9 +2392,9 @@ class ManagedSecretsTest(unittest.TestCase):
             install.preflight = lambda: None
             install.prompt_answers = lambda goblin_home: self.fail(
                 "a failed snapshot must never reach prompts")
-            mutations: dict[str, list] = {"run": [], "probe": [],
-                                          "ensure": [], "block": [],
-                                          "assets": []}
+            mutations: dict[str, list[object]] = {"run": [], "probe": [],
+                                                  "ensure": [], "block": [],
+                                                  "assets": []}
             def fake_run(command: list[str], timeout: float = 600,
                          stdin: str | None = None) -> subprocess.CompletedProcess[str]:
                 mutations["run"].append(command)
@@ -2238,7 +2429,8 @@ class ManagedSecretsTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     install.main(["--reconfigure"])
             self.assertTrue(
-                any("inspect" in c for c in mutations["probe"]),
+                any(isinstance(c, list) and "inspect" in c
+                    for c in mutations["probe"]),
                 "the snapshot's inspect must be the observed failure")
             self.assertIn("cannot inspect podman secret", errors.getvalue())
             self.assertIn("HINDSIGHT_API_LLM_API_KEY", errors.getvalue())

@@ -2,16 +2,18 @@
 // propagate. Refresh tokens rotate — a refreshed pair must be written
 // back or the CLI's login is invalidated.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { paths } from "../../config.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 
 const OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
-// Codex CLI's public OAuth client id — published in the CLI source.
-const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+// Codex CLI's public OAuth client id — published in the CLI source and
+// reused by the in-app device-code sign-in.
+export const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 // Refresh a token this far ahead of its JWT exp — clock skew plus the
 // duration of one request is comfortably covered.
 const EXPIRY_MARGIN_S = 60;
@@ -194,4 +196,17 @@ export function defaultCodexAuthFile(): string {
 // "~/…" means the operator's home — the mini app's own placeholder uses it.
 export function expandHome(p: string): string {
 	return p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+}
+
+// Which auth file a codex provider reads: an explicit authFile wins,
+// then goblin's own file from in-app sign-in, then the codex CLI's —
+// prod keeps working on the CLI file until the operator signs in once.
+export function resolveCodexAuthFile(authFile?: string): {
+	path: string;
+	source: "custom" | "goblin" | "codex-cli";
+} {
+	if (authFile !== undefined) return { path: expandHome(authFile), source: "custom" };
+	const goblin = paths.codexAuth();
+	if (existsSync(goblin)) return { path: goblin, source: "goblin" };
+	return { path: defaultCodexAuthFile(), source: "codex-cli" };
 }

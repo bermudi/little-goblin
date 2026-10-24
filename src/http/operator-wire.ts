@@ -3,23 +3,33 @@
 
 import type {
 	authDefaults,
+	CapabilityName,
 	Config,
+	MemoryConfig,
 	ProviderConfig,
 	ThinkingLevel,
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
 } from "../config.ts";
+import type { ProviderModelCatalog } from "./app-wire.ts";
 
-export interface ModelOption {
-	id: string;
-	name: string | null;
-	releaseDate: string | null;
+// Shared with the app wire — defined there (app-wire is the leaf both
+// clients import); re-exported so operator-wire consumers keep one
+// import site.
+export type { ModelOption, ProviderModelCatalog } from "./app-wire.ts";
+
+export interface CapabilityState {
+	/** on = the block is live; off = parked or has a default; needs-setup
+	 *  = neither — `hint` is the same message the enable path 422s with. */
+	state: "on" | "off" | "needs-setup";
+	hint: string | null;
 }
 
-export interface ProviderModelCatalog {
-	provider: string;
-	models: ModelOption[];
+export interface ProviderPreset {
+	id: string;
+	name: string;
+	provider: ProviderConfig;
 }
 
 export interface ConfigResponse {
@@ -32,8 +42,17 @@ export interface ConfigResponse {
 	ttsDefaults: typeof ttsCloudDefaults;
 	authDefaults: typeof authDefaults;
 	authNames: string[];
+	/** auth.jsonl record names that are `!command` records — names only. */
+	authCommandNames: string[];
 	modelCatalog: ProviderModelCatalog[];
+	capabilities: Record<CapabilityName, CapabilityState>;
+	serviceNames: Record<string, string>;
+	providerPresets: ProviderPreset[];
 }
+
+// The status shape is owned by the agent layer (login.ts) so agent
+// code never imports the http wire — re-exported here for the routes.
+export type { ChatGptStatus } from "../agent/codex/login.ts";
 
 export interface ConfigPostBody {
 	providers: Record<string, ProviderConfig>;
@@ -50,7 +69,9 @@ export interface ConfigPostBody {
 				auth?: string;
 				voice?: string;
 		  };
-	transcription:
+	// Optional on the four parkable blocks: an enable with no editable
+	// content is expressed through `capabilities` instead of a body key.
+	transcription?:
 		| ""
 		| {
 				kind: (typeof transcriptionKinds)[number];
@@ -69,8 +90,10 @@ export interface ConfigPostBody {
 					engine?: string | undefined;
 					weights?: string | undefined;
 				}[];
-		  };
-	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
+		  }
+		| undefined;
+	vision?: "" | { model: string; maxTokens: number; mode?: "auto" | "always" } | undefined;
+	image?: "" | { model: string; size?: string } | undefined;
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
@@ -86,17 +109,25 @@ export interface ConfigPostBody {
 	};
 	publicUrl: string;
 	http: { port: number };
-	memory:
+	// The six form fields are always sent; the client's emit also
+	// spreads the installer-owned tuning fields (MemoryConfig keys the
+	// form never edits), which the server reparses through
+	// memoryConfigSchema.
+	memory?:
 		| ""
-		| {
+		| ({
 				baseUrl: string;
 				bankId: string;
 				auth: string | undefined;
 				budget: "low" | "mid" | "high";
 				maxTokens: number | undefined;
 				recallTimeoutMs: number | undefined;
-		  };
+		  } & Partial<Record<keyof MemoryConfig, unknown>>)
+		| undefined;
 	logLevel: "debug" | "info" | "warn" | "error";
+	/** On/off flips for the parkable blocks — applied to the normalized
+	 *  disk config before the rest of the body merges. */
+	capabilities?: Partial<Record<CapabilityName, boolean>>;
 }
 
 export interface ThinkingLevelsResponse {

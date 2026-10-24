@@ -44,6 +44,9 @@ const OPERATOR_TAILS: Record<string, string> = {
 	"/api/attachments/file": "attachments/file",
 	"/api/identity": "identity",
 	"/api/log": "log",
+	"/api/accounts/chatgpt": "accounts/chatgpt",
+	"/api/accounts/chatgpt/login": "accounts/chatgpt/login",
+	"/api/accounts/chatgpt/logout": "accounts/chatgpt/logout",
 };
 
 const HOOK_BODY_CAP = 32 * 1024;

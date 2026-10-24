@@ -33,9 +33,11 @@ import {
 	patchConversationMemory,
 	rateReply,
 	stopConversation,
+	toggleFavorite,
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { ModelPicker } from "./ModelPicker.tsx";
 import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 import { ApprovalCard } from "./Approvals.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
@@ -1449,10 +1451,16 @@ export function Composer({
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
 	const [configError, setConfigError] = useState<string | null>(null);
 	const [configSaving, setConfigSaving] = useState(false);
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [modelSheetOpen, setModelSheetOpen] = useState(false);
+	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
+	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
 	useEffect(() => {
 		let live = true;
 		setCfg(null);
 		setConfigError(null);
+		setModelMenuOpen(false);
+		setModelSheetOpen(false);
 		const load =
 			conversationId === undefined
 				? getConfig(token)
@@ -1478,6 +1486,47 @@ export function Composer({
 				(err: unknown) => setConfigError(String(err)),
 			)
 			.finally(() => setConfigSaving(false));
+	};
+
+	// Dismiss the model menu on any outside press or Escape — mirrors
+	// the context gauge's popover; Escape hands focus back to the knob.
+	useEffect(() => {
+		if (!modelMenuOpen) return;
+		const onPointer = (e: Event) => {
+			if (modelKnobRef.current?.contains(e.target as Node | null) === true) return;
+			setModelMenuOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setModelMenuOpen(false);
+			modelBtnRef.current?.focus();
+		};
+		document.addEventListener("pointerdown", onPointer, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointer, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [modelMenuOpen]);
+
+	// ref → catalog display name; the fallbacks are the ref's last path
+	// segment, then the ref itself for single-segment ids.
+	const modelNames = useMemo(() => {
+		const names = new Map<string, string>();
+		for (const group of cfg?.catalog ?? [])
+			for (const m of group.models)
+				if (m.name != null) names.set(`${group.provider}/${m.id}`, m.name);
+		return names;
+	}, [cfg?.catalog]);
+	const friendly = (ref: string) => modelNames.get(ref) ?? ref.split("/").pop() ?? ref;
+
+	// The star writes immediately — one POST, the response's list is
+	// truth. A failure surfaces like every other knob error.
+	const starModel = (ref: string, on: boolean) => {
+		void toggleFavorite(token, ref, on).then(
+			(res) => setCfg((c) => (c === null ? c : { ...c, favorites: res.favorites })),
+			(err: unknown) => setConfigError(String(err)),
+		);
 	};
 
 	const [memory, setMemory] = useState<AppConversationMemoryView | null>(null);
@@ -1749,8 +1798,6 @@ export function Composer({
 			});
 	};
 
-	const modelName = cfg === null ? null : (cfg.model.split("/").pop() ?? cfg.model);
-
 	return (
 		<form
 			className={recording ? "composer recording" : "composer"}
@@ -2012,33 +2059,62 @@ export function Composer({
 				)}
 				{cfg !== null && (
 					<>
-						<label
-							className="knob"
-							title={
-								conversationId === undefined
-									? "Default model for new app chats"
-									: "Model for this conversation"
-							}
-						>
-							<select
+						<span className="knob model-knob" ref={modelKnobRef}>
+							<button
+								ref={modelBtnRef}
+								type="button"
+								className="knob-btn"
 								aria-label={
 									conversationId === undefined ? "New app chat model" : "Conversation model"
 								}
-								value={cfg.model}
-								onChange={(e) => setKnob({ model: e.target.value })}
+								title={cfg.model}
+								aria-haspopup="menu"
+								aria-expanded={modelMenuOpen}
 								disabled={busy || configSaving}
+								onClick={() => setModelMenuOpen((v) => !v)}
 							>
-								{cfg.favorites.length === 0 ? (
-									<option value={cfg.model}>{modelName}</option>
-								) : (
-									[...new Set([cfg.model, ...cfg.favorites])].map((m) => (
-										<option key={m} value={m}>
-											{m.split("/").pop()}
-										</option>
-									))
-								)}
-							</select>
-						</label>
+								{friendly(cfg.model)}
+							</button>
+							{modelMenuOpen && (
+								<div className="note-pick composer-pick model-pop" role="menu">
+									<ul>
+										{[...new Set([cfg.model, ...cfg.favorites])].map((ref) => (
+											<li key={ref}>
+												<button
+													type="button"
+													role="menuitemradio"
+													aria-checked={ref === cfg.model}
+													title={ref}
+													onClick={() => {
+														setModelMenuOpen(false);
+														if (ref !== cfg.model) setKnob({ model: ref });
+													}}
+												>
+													<span className="mi">
+														<span>{friendly(ref)}</span>
+														{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
+													</span>
+													{ref === cfg.model && <span className="check">✓</span>}
+												</button>
+											</li>
+										))}
+										<li className="menu-div" aria-hidden="true" />
+										<li>
+											<button
+												type="button"
+												role="menuitem"
+												onClick={() => {
+													setModelMenuOpen(false);
+													setModelSheetOpen(true);
+												}}
+											>
+												All models…
+											</button>
+										</li>
+									</ul>
+								</div>
+							)}
+						</span>
 						<label
 							className="knob"
 							title={
@@ -2062,6 +2138,26 @@ export function Composer({
 								))}
 							</select>
 						</label>
+						{modelSheetOpen && (
+							<ModelPicker
+								title={
+									conversationId === undefined
+										? "Default model for new app chats"
+										: "Model for this conversation"
+								}
+								current={cfg.model}
+								allowOff={false}
+								favorites={cfg.favorites}
+								catalog={cfg.catalog}
+								provNames={cfg.catalog.map((g) => g.provider)}
+								onPick={(ref) => {
+									setModelSheetOpen(false);
+									if (ref !== cfg.model) setKnob({ model: ref });
+								}}
+								onToggleFavorite={starModel}
+								onClose={() => setModelSheetOpen(false)}
+							/>
+						)}
 					</>
 				)}
 				<ContextGauge

@@ -14,7 +14,7 @@ import { SettingsView } from "./SettingsView.tsx";
 import type { ConfigPostBody, ProviderModelCatalog } from "../../src/http/operator-wire.ts";
 
 describe("main branch regressions", () => {
-	// The pending provider-name departure guard: a half-typed name sits in
+	// The pending service-name departure guard: a half-typed name sits in
 	// the card's blur-commit field, outside every serialized field, so the
 	// serialized diff can't see it — it must still arm onDirtyChange and
 	// hold the autosave. happy-dom mount, fetch faked at globalThis.fetch.
@@ -41,6 +41,13 @@ describe("main branch regressions", () => {
 		allowedUsers: [111],
 		telegram: { model: "main/test", thinking: "medium" },
 	});
+
+	// Every capability off — the client mirrors the server's states map.
+	const CAPS = Object.fromEntries(
+		["memory", "transcription", "vision", "image", "sandbox", "subagents", "scripting", "delegation", "guest", "reviewer"].map(
+			(k) => [k, { state: "off", hint: null }],
+		),
+	);
 
 	beforeEach(() => {
 		win = new Window({ url: "http://localhost/app/settings" });
@@ -89,16 +96,63 @@ describe("main branch regressions", () => {
 					new Response(
 						JSON.stringify({
 							config: settings,
-							providerKinds: ["openai-compatible", "openrouter"],
+							providerKinds: ["openai-compatible", "responses", "openrouter", "codex"],
 							searchKinds,
 							fetchKinds,
 							transcriptionKinds,
 							transcriptionDefaults,
 							authDefaults,
 							authNames: ["main", "groq"],
+							authCommandNames: ["pass-managed"],
+							serviceNames: {
+								brave: "Brave Search",
+								jina: "Jina",
+								tavily: "Tavily",
+								firecrawl: "Firecrawl",
+								parallel: "Parallel",
+								ddg: "DuckDuckGo",
+								local: "Built-in",
+								edge: "Edge voices (free)",
+								openrouter: "OpenRouter",
+								logfare: "Logfare",
+								mimo: "Xiaomi MiMo",
+								onemin: "1min.AI",
+								whistle: "Whistle (on this machine)",
+								groq: "Groq",
+								openai: "OpenAI",
+								codex: "ChatGPT",
+							},
+							providerPresets: [
+								{
+									id: "zai",
+									name: "Z.ai",
+									provider: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
+								},
+								{
+									id: "openrouter",
+									name: "OpenRouter",
+									provider: { kind: "openrouter", auth: "openrouter" },
+								},
+							],
+							capabilities: CAPS,
 							modelCatalog,
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
+					),
+				);
+			if (url === "/api/app/status")
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							version: "0.0.0-test",
+							startedAt: "2026-01-01T00:00:00.000Z",
+							uptimeSec: 60,
+							restartHints: [],
+							memory: { state: "off", detail: "", lastRecallAt: null },
+							programs: null,
+							delegations: null,
+						}),
+						{ headers: { "content-type": "application/json" } },
 					),
 				);
 			if (url.includes("thinking-levels"))
@@ -169,8 +223,6 @@ describe("main branch regressions", () => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(
-				// Braces: the component's effect returns the callback's value,
-				// and push() returns a number — not a cleanup.
 				<SettingsView
 					token={null}
 					onDirtyChange={(d) => {
@@ -181,36 +233,30 @@ describe("main branch regressions", () => {
 		});
 		await waitFor(() => container.querySelector("button.idx") !== null, "settings editor");
 	};
-	const openProviders = async () => {
+	const openSection = async (label: string) => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) =>
-				b.textContent?.includes("Providers"),
+				b.textContent?.includes(label),
 			),
 		);
-		expect(container.querySelector(".prov.card")).not.toBeNull();
+	};
+	const openAccounts = async () => {
+		await openSection("Accounts & keys");
+		expect(container.querySelector(".chain-card")).not.toBeNull();
+	};
+	// The service name field lives inside the card's Edit disclosure.
+	const openEdit = async (name = "main") => {
+		await click(container.querySelector(`[aria-label="edit ${name}"]`));
 	};
 	const nameInput = () =>
-		container.querySelector('.prov.card input[aria-label="provider name"]') as HTMLInputElement;
+		container.querySelector('.chain-card input[aria-label="service name"]') as HTMLInputElement;
 	const lastDirty = () => dirtyLog.at(-1);
 
-	const openWeb = async () => {
-		await mount();
-		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Web")),
-		);
-	};
-	const button = (card: Element, text: string) =>
-		[...card.querySelectorAll("button")].find((b) => b.textContent === text);
-	const changeProvider = async (card: Element, kind: string) => {
-		await act(async () => {
-			const select = card.querySelector("select")!;
-			select.value = kind;
-			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
-		await settle();
-	};
+	const button = (scope: Element | DocumentFragment | HTMLElement, text: string) =>
+		[...scope.querySelectorAll("button")].find((b) => b.textContent === text);
+	// KeyStatus's paste box — "Add key"/"Replace" opens the password row.
 	const startStore = async (card: Element) => {
-		await click(button(card, "+ store a key"));
+		await click(button(card, "Add key") ?? button(card, "Replace"));
 		await typeInto(card.querySelector('input[type="password"]')!, "fixture-pending-key");
 		await click(button(card, "Store"));
 		expect(secretPosts).toHaveLength(1);
@@ -218,43 +264,44 @@ describe("main branch regressions", () => {
 
 	for (const chain of ["search", "fetch"] as const) {
 		const kind = chain === "search" ? "brave" : "firecrawl";
-		for (const edit of ["remove target", "remove other", "reorder", "edit target", "edit other"]) {
+		const other = chain === "search" ? "tavily" : "parallel";
+		for (const edit of ["remove target", "remove other", "reorder", "add service"]) {
 			test(`${chain}: delayed Store preserves ${edit} and the saved chain`, async () => {
 				settings = parseConfig({
 					...SETTINGS,
 					[chain]: [{ kind }, { kind: "jina", auth: "fallback" }],
 				});
-				await openWeb();
+				await mount();
+				await openSection("Web");
 				const cards = () => [...container.querySelectorAll(".chain-card")];
-				const authInput = (card: Element) => card.querySelector('input:not([type="password"])')!;
-				await typeInto(authInput(cards()[0]!), "");
 				await startStore(cards()[0]!);
-				let expected = [
+				const expected = [
 					{ kind, auth: kind },
 					{ kind: "jina", auth: "fallback" },
 				];
 				if (edit === "remove target") {
 					await click(cards()[0]!.querySelector('[aria-label="remove"]'));
-					expected = expected.slice(1);
+					expected[0] = { kind, auth: "" } as never;
+					expected.splice(0, 1);
 				} else if (edit === "remove other") {
 					await click(cards()[1]!.querySelector('[aria-label="remove"]'));
-					expected = expected.slice(0, 1);
+					expected.pop();
 				} else if (edit === "reorder") {
 					await click(cards()[0]!.querySelector('[aria-label="move down"]'));
 					expected.reverse();
 				} else {
-					const index = edit === "edit target" ? 0 : 1;
-					await typeInto(authInput(cards()[index]!), "edited");
-					expected[index]!.auth = "edited";
+					const select = container.querySelector('select[aria-label="add a service"]')!;
+					await act(async () => {
+						(select as HTMLSelectElement).value = other;
+						select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+					});
+					await settle();
+					expected.push({ kind: other } as never);
 				}
 				await act(async () => secretGate.resolve());
 				await settle();
-				expect(
-					cards().map((card) => ({
-						kind: card.querySelector("select")!.value,
-						auth: (authInput(card) as HTMLInputElement).value,
-					})),
-				).toEqual(expected);
+				// The stored key lands on its entry wherever it survived —
+				// and a removed entry stays gone.
 				await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "updated chain save");
 				expect(savedBodies.at(-1)?.[chain]).toEqual(expected);
 			});
@@ -271,36 +318,31 @@ describe("main branch regressions", () => {
 				},
 			});
 			await mount();
-			await click(
-				[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Voice")),
-			);
+			await openSection("Voice");
 			const cards = () => [...container.querySelectorAll(".chain-card")];
-			const authInput = (card: Element) =>
-				card.querySelector<HTMLInputElement>('input[aria-label$="secret name"]')!;
-			await typeInto(authInput(cards()[0]!), "");
+			const modelInput = (card: Element) =>
+				card.querySelector<HTMLInputElement>('input[aria-label$="model"]')!;
 			await startStore(cards()[0]!);
-			let expected = [
-				{ kind: "groq" as const, auth: "groq", model: transcriptionDefaults.groq.model },
-				{ kind: "openai" as const, auth: "openai", model: transcriptionDefaults.openai.model },
+			const expected = [
+				{ kind: "groq" as const, auth: "groq", model: transcriptionDefaults.groq.model as string },
+				{
+					kind: "openai" as const,
+					auth: "openai",
+					model: transcriptionDefaults.openai.model as string,
+				},
 			];
 			if (edit === "reorder") {
 				await click(cards()[0]!.querySelector('[aria-label="move fallback 1 down"]'));
 				expected.reverse();
 			} else if (edit === "remove target") {
 				await click(cards()[0]!.querySelector('[aria-label="remove fallback 1"]'));
-				expected = expected.slice(1);
+				expected.shift();
 			} else {
-				await typeInto(authInput(cards()[0]!), "edited");
-				expected[0]!.auth = "edited";
+				await typeInto(modelInput(cards()[0]!), "whisper-turbo");
+				expected[0]!.model = "whisper-turbo";
 			}
 			await act(async () => secretGate.resolve());
 			await settle();
-			expect(
-				cards().map((card) => ({
-					kind: card.querySelector("select")!.value,
-					auth: authInput(card).value,
-				})),
-			).toEqual(expected.map(({ kind, auth }) => ({ kind, auth })));
 			await waitFor(
 				() => savedBodies.length > 0 && lastDirty() === false,
 				"updated transcription save",
@@ -310,77 +352,54 @@ describe("main branch regressions", () => {
 		});
 	}
 
-	test("changing a chain provider clears the pending password before Store", async () => {
-		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
-		await openWeb();
+	test("switching the provider protocol clears the pending password before Store", async () => {
+		await mount();
+		await openAccounts();
 		const card = container.querySelector(".chain-card")!;
-		await click(button(card, "+ store a key"));
+		await openEdit();
+		await click(button(card, "Replace") ?? button(card, "Add key"));
 		await typeInto(card.querySelector('input[type="password"]')!, "fixture-brave-key");
-		await changeProvider(card, "tavily");
-		expect(card.querySelector('input[type="password"]')).toBeNull();
-		await click(button(card, "+ store a key"));
-		const password = card.querySelector<HTMLInputElement>('input[type="password"]')!;
-		expect(password.value).toBe("");
-		expect(button(card, "Store")?.disabled).toBe(true);
-		expect(secretPosts).toEqual([]);
-		await typeInto(password, "fixture-tavily-key");
-		await click(button(card, "Store"));
-		expect(secretPosts).toEqual([{ name: "tavily", value: "fixture-tavily-key" }]);
-		await act(async () => secretGate.resolve());
-	});
-
-	test("changing the credential record clears the pending password", async () => {
-		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
-		await openWeb();
-		const card = container.querySelector(".chain-card")!;
-		await click(button(card, "+ store a key"));
-		await typeInto(card.querySelector('input[type="password"]')!, "fixture-old-record-key");
-		await typeInto(card.querySelector('input[aria-label="step 1 secret name"]')!, "another-record");
-		expect(card.querySelector('input[type="password"]')).toBeNull();
-		await click(button(card, "+ store a key"));
-		expect(card.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
-		expect(button(card, "Store")?.disabled).toBe(true);
-		expect(secretPosts).toEqual([]);
-	});
-
-	test("a completed Store does not retarget a changed provider", async () => {
-		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
-		await openWeb();
-		const card = container.querySelector(".chain-card")!;
-		await startStore(card);
-		await changeProvider(card, "tavily");
-		await act(async () => secretGate.resolve());
+		// The protocol switch drops the credential record — the in-flight
+		// paste must not land under the new name.
+		await act(async () => {
+			const select = card.querySelector(
+				'select[aria-label="protocol"]',
+			) as HTMLSelectElement;
+			select.value = "responses";
+			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
 		await settle();
-		expect(card.querySelector("select")!.value).toBe("tavily");
-		expect(
-			card.querySelector<HTMLInputElement>('input[aria-label="step 1 secret name"]')!.value,
-		).toBe("");
-		await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "changed provider save");
-		expect(savedBodies.at(-1)?.search).toEqual([{ kind: "tavily" }]);
+		expect(card.querySelector('input[type="password"]')).toBeNull();
+		expect(secretPosts).toEqual([]);
 	});
 
 	test("a completed Store does not re-enable a disabled chain", async () => {
 		settings = parseConfig({ ...SETTINGS, search: [{ kind: "brave" }] });
-		await openWeb();
+		await mount();
+		await openSection("Web");
 		await startStore(container.querySelector(".chain-card")!);
-		await click(container.querySelector('[aria-label="search tool"]'));
+		await click(container.querySelector('[aria-label="web search"]'));
 		await act(async () => secretGate.resolve());
 		await settle();
-		expect(container.querySelector(".chain-card")).toBeNull();
+		// Only the fetch card's Built-in row remains — the search rows are gone.
+		const rows = [...container.querySelectorAll(".chain-card")];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.textContent).toContain("Built-in");
 		await waitFor(() => savedBodies.length > 0 && lastDirty() === false, "disabled chain save");
 		expect(savedBodies.at(-1)?.search).toBe("");
 	});
 
 	test("an uncommitted provider name arms the guard and holds the autosave", async () => {
 		await mount();
-		await openProviders();
+		await openAccounts();
+		await openEdit();
 		expect(lastDirty()).toBe(false);
 		await typeInto(nameInput(), "renamed");
 		expect(lastDirty()).toBe(true);
 		expect(container.textContent).toContain("provider name (still editing)");
 		// The typed name reached no model reference — the card still lists
 		// the committed name's referrers — and nothing was written.
-		expect(container.querySelector(".prov.card")?.textContent).toContain(
+		expect(container.querySelector(".chain-card")?.textContent).toContain(
 			"Used by app default model",
 		);
 		// A serialized edit alongside the pending name would normally
@@ -389,9 +408,9 @@ describe("main branch regressions", () => {
 		// the name and end the very state under test.
 		await act(async () => {
 			const select = container.querySelector(
-				'.prov.card select[aria-label="provider type"]',
+				'.chain-card select[aria-label="protocol"]',
 			) as HTMLSelectElement;
-			select.value = "openrouter";
+			select.value = "responses";
 			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
 		});
 		await settle();
@@ -405,16 +424,20 @@ describe("main branch regressions", () => {
 		await typeInto(nameInput(), "main");
 		expect(lastDirty()).toBe(true); // serialized edit still dirty
 		await waitFor(() => savedBodies.length > 0, "the held edit to write once the name disarms");
+		// The protocol switch cleared the old record — a blank auth
+		// materializes to the provider's own name.
 		expect(savedBodies.at(-1)?.providers["main"]).toEqual({
-			kind: "openrouter",
-			auth: authDefaults.openrouter,
+			kind: "responses",
+			baseUrl: "https://api.example.test",
+			auth: "main",
 		});
 		await waitFor(() => lastDirty() === false, "the guard to clear after the ack");
 	});
 
 	test("a committed rename writes itself and the guard clears only after the ack", async () => {
 		await mount();
-		await openProviders();
+		await openAccounts();
+		await openEdit();
 		await typeInto(nameInput(), "primary");
 		expect(lastDirty()).toBe(true);
 		const gate = Promise.withResolvers<void>();
@@ -441,7 +464,8 @@ describe("main branch regressions", () => {
 
 	test("an invalid or unchanged commit restores the name and disarms", async () => {
 		await mount();
-		await openProviders();
+		await openAccounts();
+		await openEdit();
 		// Whitespace-only: commit rejects, the draft restores, pending clears.
 		await typeInto(nameInput(), "   ");
 		expect(lastDirty()).toBe(true);
@@ -462,15 +486,14 @@ describe("main branch regressions", () => {
 
 	test("removing the provider clears its pending flag — serialized dirty is all that remains", async () => {
 		await mount();
-		await openProviders();
+		await openAccounts();
+		await openEdit();
 		await typeInto(nameInput(), "ghost");
 		expect(lastDirty()).toBe(true);
-		await click(
-			[...container.querySelectorAll(".prov.card button")].find((b) => b.textContent === "Remove"),
-		);
+		await click(container.querySelector('[aria-label="remove main"]'));
 		// The card is gone and its flag cleared — a stuck pending flag would
 		// gate the autosave forever; the removal write itself is the proof.
-		expect(container.querySelector(".prov.card")).toBeNull();
+		expect(container.querySelector(".chain-card")).toBeNull();
 		expect(container.textContent).toContain("Removed — still referenced");
 		expect(container.textContent).not.toContain("still editing");
 		await waitFor(() => savedBodies.length > 0, "the removal save");
@@ -490,9 +513,7 @@ describe("main branch regressions", () => {
 			},
 		];
 		await mount();
-		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
-		);
+		await openSection("Models");
 		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
 		const sheet = container.querySelector(".msheet");
 		expect(sheet).not.toBeNull();
@@ -508,9 +529,7 @@ describe("main branch regressions", () => {
 
 	test("the model sheet still accepts a typed ref the catalog does not know", async () => {
 		await mount();
-		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
-		);
+		await openSection("Models");
 		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
 		const sheet = container.querySelector(".msheet")!;
 		await typeInto(sheet.querySelector('input[aria-label="Search models"]')!, "main/new-model");
@@ -533,9 +552,7 @@ describe("main branch regressions", () => {
 			},
 		];
 		await mount();
-		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Chat")),
-		);
+		await openSection("Models");
 		await click(container.querySelector('[aria-labelledby="appModelLabel"]'));
 		const sheet = container.querySelector(".msheet")!;
 		const input = sheet.querySelector('input[aria-label="Search models"]')!;
@@ -552,6 +569,76 @@ describe("main branch regressions", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "the Enter pick to save");
 		expect(savedBodies.at(-1)?.model).toBe("main/glm-5");
+	});
+
+	test("the value buttons show the catalog's friendly name over the ref", async () => {
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "test", name: "Test Model", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		const btn = container.querySelector('[aria-labelledby="appModelLabel"]');
+		expect(btn?.textContent).toContain("Test Model");
+		expect(btn?.textContent).toContain("main/test");
+	});
+
+	test("the favorites card lists, reorders, and removes entries", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a", "main/fav-b"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.textContent?.includes("Add favorites"),
+		);
+		expect(card).toBeTruthy();
+		// Friendly name over the small ref; unknown entries show the ref.
+		expect(card?.textContent).toContain("Fav Beta");
+		expect(card?.textContent).toContain("main/fav-a");
+		// Reorder: moving fav-a down swaps the pair.
+		await click(card?.querySelector('[aria-label="move main/fav-a down"]'));
+		await waitFor(() => savedBodies.length > 0, "the reorder save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-b", "main/fav-a"]);
+		// Remove drops the entry.
+		await click(card?.querySelector('[aria-label="remove main/fav-b"]'));
+		await waitFor(() => savedBodies.at(-1)?.favorites?.length === 1, "the removal save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a"]);
+	});
+
+	test("the Add favorites sheet toggles stars into the draft, not a pick", async () => {
+		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a"] });
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "+ Add favorites"),
+		);
+		const sheet = container.querySelector(".msheet");
+		expect(sheet).not.toBeNull();
+		expect(sheet?.getAttribute("aria-label")).toBe("Favorites");
+		// The existing favorite shows a filled star; the catalog row's row
+		// click adds it — the sheet stays open and nothing picks a model.
+		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-a"]')).not.toBeNull();
+		const row = [...sheet!.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Fav Beta"),
+		);
+		await click(row);
+		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-b"]')).not.toBeNull();
+		await waitFor(() => savedBodies.length > 0, "the favorites save");
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a", "main/fav-b"]);
+		expect(savedBodies.at(-1)?.model).toBe("main/test");
 	});
 });
 
@@ -681,14 +768,14 @@ describe("quiet harbor regressions", () => {
 		const retryButton = () =>
 			[...container.querySelectorAll("button")].find((b) => b.textContent === "retry");
 
-		// Public URL is deliberately staged, so use an ordinary autosaved field.
+		// Log level lives in System; the seg flips an ordinary autosaved field.
 		async function editLogLevel(): Promise<void> {
-			const access = [...container.querySelectorAll("button")].find((b) =>
-				b.textContent?.includes("Access"),
+			const nav = [...container.querySelectorAll("button")].find((b) =>
+				b.textContent?.includes("System"),
 			);
-			if (access === undefined) throw new Error("Access section button not found");
+			if (nav === undefined) throw new Error("System section button not found");
 			await act(async () => {
-				access.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				nav.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
 			});
 			const debug = [...container.querySelectorAll('[aria-label="Log level"] button')].find(
 				(b) => b.textContent === "debug",
@@ -776,19 +863,22 @@ describe("quiet harbor regressions", () => {
 			});
 			// The tree is alive and the unknown kind fell back to the
 			// captions' copy — blank fields, honest captions, no crash.
-			expect(container.querySelector('select[aria-label="tts kind"]')).not.toBeNull();
+			const kindNow = container.querySelector<HTMLSelectElement>('select[aria-label="tts kind"]');
+			expect(kindNow).not.toBeNull();
 			const rowByLabel = (text: string) =>
 				[...container.querySelectorAll(".frow")].find(
 					(r) => r.querySelector("label")?.textContent === text,
 				);
-			// Both placeholder chains fell back to undefined/"auth" — no
-			// server-provided default exists for this kind.
+			// Both default chains fell back — no server-provided default
+			// exists for this kind: the model placeholder is blank with the
+			// caption fallback, and the key row's KeyStatus carries the
+			// empty name into its missing state instead of throwing.
 			expect(rowByLabel("Model")?.querySelector("input")?.placeholder).toBe("");
 			expect(container.textContent).toContain("Blank uses the kind's default.");
-			expect(rowByLabel("Secret name")?.querySelector("input")?.placeholder).toBe(
-				"auth — in auth.jsonl",
+			const keyRow = [...(kindNow?.closest(".card")?.querySelectorAll(".row") ?? [])].find(
+				(r) => r.querySelector(".rlabel")?.textContent === "Key",
 			);
-			expect(container.textContent).toContain("Blank uses the kind's record.");
+			expect(keyRow?.textContent).toContain("Key missing");
 		});
 
 		test("a failed write isn't re-fired by the debounce on identical state", async () => {

@@ -108,6 +108,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 					model: "prov/model",
 					thinking: "off",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["off"],
 				}),
 			);

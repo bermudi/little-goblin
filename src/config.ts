@@ -51,6 +51,9 @@ export const paths = {
 	logFile: () => join(goblinHome(), "state", "goblin.log"),
 	delegations: () => join(goblinHome(), "state", "delegations"),
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
+	// Goblin's own ChatGPT OAuth tokens from in-app sign-in — ~/.codex
+	// stays the codex CLI's file, this one is ours.
+	codexAuth: () => join(goblinHome(), "state", "codex-auth.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
@@ -1004,6 +1007,24 @@ const configSchema = z
 		// file. Absent = trust mode: /api/app/* unauthenticated, the
 		// tailnet is the only lock. Boot-pinned; a flip needs a restart.
 		appToken: z.string().min(1).optional(),
+		// Blocks switched off in Settings keep their contents here so
+		// re-enable restores them whole — including fields no form edits.
+		// Runtime consumers never read `parked`; authReferences ignores it.
+		parked: z
+			.object({
+				memory: memoryConfigSchema.optional(),
+				transcription: transcriptionSchema.optional(),
+				vision: visionConfigSchema.optional(),
+				image: imageConfigSchema.optional(),
+				sandbox: sandboxConfigSchema.optional(),
+				subagents: subagentsConfigSchema.optional(),
+				scripting: scriptingConfigSchema.optional(),
+				delegation: delegationConfigSchema.optional(),
+				guest: guestConfigSchema.optional(),
+				reviewer: reviewerConfigSchema.optional(),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict()
 	.transform((cfg) => {
@@ -1011,6 +1032,8 @@ const configSchema = z
 		// silently change Telegram on a legacy config's first save.
 		cfg.telegram.model ??= cfg.model;
 		cfg.telegram.thinking ??= cfg.thinking;
+		// A save with nothing parked drops the key entirely.
+		if (cfg.parked !== undefined && Object.keys(cfg.parked).length === 0) delete cfg.parked;
 		return cfg;
 	})
 	.superRefine((cfg, ctx) => {
@@ -1075,6 +1098,22 @@ const configSchema = z
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
+
+// The blocks Settings can switch off without losing their contents —
+// each parks under `parked` when off. Order is display order.
+export const capabilityNames = [
+	"memory",
+	"transcription",
+	"vision",
+	"image",
+	"sandbox",
+	"subagents",
+	"scripting",
+	"delegation",
+	"guest",
+	"reviewer",
+] as const;
+export type CapabilityName = (typeof capabilityNames)[number];
 export type TranscriptionConfig = NonNullable<Config["transcription"]>;
 
 // ttsDown is decided once, at boot (ffmpeg probe) — a config mutation

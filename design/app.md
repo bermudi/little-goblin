@@ -253,6 +253,70 @@ opening settings cannot stall on models.dev (the boot warm refreshes the
 catalog like it already does for openrouter), and a failed or stale
 catalog degrades to the typed fallback rather than blocking a save.
 
+**Favorites are stars (ruling 2026-10-23).** The shared `ModelPicker`
+sheet (Settings and composer) carries a star on every model row; a star
+never picks. The composer's model knob is a menu — current model,
+favorites by friendly name, then "All models…" opening the sheet — so
+switching to an unfavorited model never needs a Settings round-trip.
+Composer stars write one ref through `POST /api/app/favorites`
+(`{ref, on}`, idempotent; adding requires a configured provider,
+removing accepts anything so a stale entry can always leave). Settings
+stars edit the draft instead, so its autosave never races its own etag.
+The app config view carries the cached catalog for friendly names.
+
+## Settings shape (ruling 2026-10-23)
+
+Supersedes the form-mirrors-the-file layout. Operator rule: **anything
+changed in normal use gets a form; everything else is goblin-managed** —
+not shown as an input, round-tripped untouched by every save, and edited
+in `goblin.json5` only by advanced operators. Managed values may appear
+as read-only text (System, the memory card).
+
+- **No credential plumbing in the UI.** Record names (`auth` fields) never
+  render as inputs; each service shows key status instead — no key
+  needed / from pass-keys (command records, never replaced from the UI) /
+  key saved / key missing, with paste-to-store. Kind ids render through
+  the server-served `serviceNames`. The naming discipline in
+  `design/auth.md` still decides what a blank derives to; it just stops
+  being visible.
+- **Model services come from presets** (`providerPresets`, base URLs the
+  docs already carry); "custom endpoint" is the only place protocol and
+  base URL appear. ChatGPT is an account, not a provider type.
+- **ChatGPT sign-in is in-app** — the Codex CLI's device-code flow
+  (`src/agent/codex/login.ts`, wire pinned from codex-rs
+  `device_code_auth.rs`/`server.rs`; `login.live.test.ts` is its drift
+  check). Tokens land in goblin's own `state/codex-auth.json` (0600);
+  `~/.codex/auth.json` stays the CLI's. Resolution: explicit `authFile`
+  (pinned — in-app sign-in refused) > goblin's file > the CLI's file (the
+  legacy path keeps an existing install working until its first in-app
+  sign-in). Sign-out removes only goblin's file. A first sign-in adds
+  a codex provider under the first unused name (`codex`, `codex-2`, …)
+  when none exists; an existing service named `codex` is never replaced.
+  A sign-in action returning pending starts status polling immediately;
+  completion reloads clean settings so the new provider is visible.
+- **Off parks, never deletes.** Switching off memory, transcription,
+  vision, image, sandbox, subagents, scripting, delegation, guest or
+  reviewer moves the block under `parked`; on restores it whole, file-only
+  fields included. Runtime consumers and `authReferences` never read
+  `parked`. A block with no parked copy and no safe default reports
+  `needs-setup` with its hint; a bare switch cannot invent config. A save
+  may supply the block together with its enable switch (including a
+  first-time vision, image or transcription setup). Supplied blocks win
+  over parked copies and defaults; the whole resulting config, including
+  provider changes in that save, must validate before anything is written.
+  The editor hydrates its restoration stash from parked content on load;
+  enabling transcription or memory restores that content into the draft,
+  so its switch and subsequent saves reflect the requested state.
+- Sections: Models · Accounts & keys · Web · Voice · Memory · Telegram ·
+  Access · Capabilities · System. Boot-pinned changes surface as one
+  restart banner from the config-pins restart hints, not per-field
+  captions. This includes all reviewer changes: its switch persists and
+  parks/restores config, but the reviewer itself is wired only at boot;
+  enabling or disabling it takes an approved restart (design/skills.md →
+  Skill reviewer). Failed status checks preserve last-known restart hints
+  and show explicit uncertainty; unavailable status never confirms that
+  a saved change needs no restart.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: durable work — something that runs,

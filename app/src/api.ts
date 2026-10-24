@@ -24,6 +24,8 @@ import type {
 	AppConversationPatch,
 	AppDecideRequest,
 	AppDecideResponse,
+	AppFavoriteToggleRequest,
+	AppFavoritesResponse,
 	AppInterruptedList,
 	AppInterruptedRun,
 	AppMessageList,
@@ -65,6 +67,7 @@ import type {
 	MemoryStatusResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
+	ChatGptStatus,
 	OperatorStatusResponse,
 	SecretStoreResponse,
 	SkillDecideBody,
@@ -540,6 +543,19 @@ export function patchConversationConfig(
 	});
 }
 
+// One favorite at a time — the picker's star writes directly, no draft.
+export function toggleFavorite(
+	token: string | null,
+	ref: string,
+	on: boolean,
+): Promise<AppFavoritesResponse> {
+	return request(token, "/api/app/favorites", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ ref, on } satisfies AppFavoriteToggleRequest),
+	});
+}
+
 export function getConversationMemory(
 	token: string | null,
 	id: string,
@@ -713,6 +729,22 @@ export function storeSecret(
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
+}
+
+export function getChatGptStatus(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt");
+}
+
+export function startChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "POST" });
+}
+
+export function cancelChatGptLogin(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/login", { method: "DELETE" });
+}
+
+export function signOutChatGpt(token: string | null): Promise<ChatGptStatus> {
+	return request(token, "/api/app/accounts/chatgpt/logout", { method: "POST" });
 }
 
 export function getThinkingLevels(

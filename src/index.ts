@@ -43,6 +43,7 @@ import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
+import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
 import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
@@ -722,8 +723,8 @@ async function boot() {
 	const appTokenName = resolveAppAuth(config.appToken);
 	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
 	// delegation/subagents freeze adapters and pool limits at boot,
-	// http.port binds the Bun.serve listener — a mid-run change is a
-	// warn + restart.
+	// http.port binds the Bun.serve listener, and reviewer wiring is
+	// boot-bound — a mid-run change is a warn + restart.
 	const bootPins: BootPins = {
 		memory: memoryBootConfig,
 		appToken: appTokenName,
@@ -732,6 +733,7 @@ async function boot() {
 		delegation: delegationBoot,
 		subagents: subagentsBoot,
 		http: config.http,
+		reviewer: config.reviewer,
 	};
 	// One post-write path for every config door: hot-apply what's live,
 	// flip-log what joins/leaves the tool set, warn on what's boot-pinned —
@@ -752,6 +754,12 @@ async function boot() {
 	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).
 	// http/operator.ts owns the assembly; boot binds configRef and
 	// onConfigWritten per door.
+	const chatgptLogin = createChatGptLogin({
+		config: () => configRef.current,
+		// A first sign-in makes ChatGPT usable — providers.codex lands
+		// only when no codex provider is configured at all.
+		onSignedIn: () => ensureCodexProvider(configRef, onConfigWritten),
+	});
 	const operatorSeams = makeOperatorSeams({
 		store,
 		memory,
@@ -769,6 +777,7 @@ async function boot() {
 		startedAt,
 		restartHints,
 	});
+	operatorSeams.chatgpt = chatgptLogin;
 	const http = startHttp({
 		configRef,
 		...operatorSeams,

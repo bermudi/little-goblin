@@ -1428,3 +1428,40 @@ describe("config parser safety", () => {
 		expect(readFileSync(paths.config(), "utf8")).toBe(text);
 	});
 });
+
+describe("parked capability blocks", () => {
+	const base = () => ({
+		providers: { zai: { kind: "openrouter" } },
+		model: "zai/m",
+		operators: [],
+		telegram: { enabled: false },
+	});
+
+	test("an empty parked object is dropped on parse and write", () => {
+		const home = useHome("goblin-cfg-");
+		const parsed = parseConfig({ ...base(), parked: {} });
+		expect("parked" in parsed).toBe(false);
+		writeConfig(parseConfig({ ...base(), parked: {} }));
+		expect(readFileSync(paths.config(), "utf8")).not.toContain("parked");
+		expect(home).toContain("goblin-cfg-");
+	});
+
+	test("parked blocks keep their own schema; authReferences never sees them", () => {
+		const parsed = parseConfig({
+			...base(),
+			parked: {
+				reviewer: { auth: "parked-secret-name" },
+				vision: { model: "zai/m", maxTokens: 999 },
+			},
+		});
+		expect(parsed.parked?.reviewer?.auth).toBe("parked-secret-name");
+		expect(parsed.parked?.vision?.maxTokens).toBe(999);
+		expect(authReferences(parsed).has("parked-secret-name")).toBe(false);
+	});
+
+	test("parked fields that fail their own schema are rejected", () => {
+		expect(
+			safeFailure(() => parseConfig({ ...base(), parked: { memory: { bankId: "x" } } })).message,
+		).toContain("invalid config");
+	});
+});

@@ -4,7 +4,7 @@
 // conservatively (text-only / unknown), never fatally.
 
 import { z } from "zod";
-import { paths } from "../config.ts";
+import { type Config, paths } from "../config.ts";
 import { createCachedCatalog, type CachedCatalog } from "./catalog-fetch.ts";
 
 // ---------- models.dev ----------
@@ -191,6 +191,16 @@ export function modelOptionsCached(
 			const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
 			return byDate !== 0 ? byDate : a.id.localeCompare(b.id);
 		});
+}
+
+// Every configured provider's cached options — the picker's catalog on
+// both operator and app config views. Cached-only like
+// modelOptionsCached: the operator surface never awaits models.dev.
+export function modelCatalogFor(config: Config): { provider: string; models: ModelOption[] }[] {
+	return Object.entries(config.providers).map(([provider, p]) => ({
+		provider,
+		models: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
+	}));
 }
 
 // ---------- openrouter ----------

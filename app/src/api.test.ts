@@ -105,6 +105,7 @@ describe("model setting scopes", () => {
 					model: "test/chat",
 					thinking: "high",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["high"],
 				});
 			},
@@ -132,6 +133,7 @@ describe("model setting scopes", () => {
 					model: "test/default",
 					thinking: "low",
 					favorites: [],
+					catalog: [],
 					thinkingLevels: ["low"],
 				});
 			},

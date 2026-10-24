@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { modelOptionsCached } from "../agent/models-dev.ts";
+import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
+	capabilityNames,
+	type CapabilityName,
 	type Config,
 	ConfigValidationError,
 	fetchKinds,
@@ -17,17 +19,14 @@ import {
 	ttsCloudDefaults,
 	writeConfig,
 } from "../config.ts";
+import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
 import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { checkInjection } from "../injection.ts";
 import type { System1Client } from "../system1.ts";
-import {
-	fetchSkill,
-	SkillFetchError,
-	stampVerdict,
-} from "../agent/skill-fetch.ts";
+import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
 import { readFileSync } from "node:fs";
 import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
@@ -60,6 +59,8 @@ import {
 	tailLog,
 } from "../stateview.ts";
 import type {
+	CapabilityState,
+	ChatGptStatus,
 	ConfigPostBody,
 	ConfigResponse,
 	MemoriesListResponse,
@@ -143,6 +144,14 @@ export interface OperatorDeps {
 		gate: Pick<System1Client, "decide">;
 		fetchImpl?: typeof fetch;
 		cacheRoot?: string;
+	};
+	// In-app ChatGPT sign-in (device code) — absent = the accounts
+	// routes answer 503.
+	chatgpt?: {
+		status(): ChatGptStatus;
+		start(): Promise<ChatGptStatus>;
+		cancel(): ChatGptStatus;
+		signOut(): ChatGptStatus;
 	};
 }
 
@@ -239,6 +248,7 @@ const CONFIG_POST_KEYS = {
 	tts: true,
 	transcription: true,
 	vision: true,
+	image: true,
 	search: true,
 	fetch: true,
 	operators: true,
@@ -248,6 +258,7 @@ const CONFIG_POST_KEYS = {
 	http: true,
 	memory: true,
 	logLevel: true,
+	capabilities: true,
 } as const satisfies Record<keyof ConfigPostBody, true>;
 
 const CONFIG_POST_TELEGRAM_KEYS = {
@@ -265,22 +276,40 @@ const configPostBodySchema = z
 		Object.fromEntries(
 			(Object.keys(CONFIG_POST_KEYS) as (keyof ConfigPostBody)[]).map((k) => [
 				k,
-				k === "telegram"
-					? z
-							.object(
-								Object.fromEntries(
-									(
-										Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
-									).map((tk) => [tk, z.unknown().optional()]),
-								),
-							)
-							.strict()
-							.optional()
-					: z.unknown().optional(),
+				k === "capabilities"
+					? z.partialRecord(z.enum(capabilityNames), z.boolean()).optional()
+					: k === "telegram"
+						? z
+								.object(
+									Object.fromEntries(
+										(
+											Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
+										).map((tk) => [tk, z.unknown().optional()]),
+									),
+								)
+								.strict()
+								.optional()
+						: z.unknown().optional(),
 			]),
 		),
 	)
 	.strict();
+
+const capabilitiesPostSchema = z.partialRecord(z.enum(capabilityNames), z.boolean());
+
+function capabilityState(config: Config, k: CapabilityName): CapabilityState {
+	if (config[k] !== undefined) return { state: "on", hint: null };
+	if (config.parked?.[k] !== undefined || capabilityDefaults[k] !== undefined)
+		return { state: "off", hint: null };
+	return { state: "needs-setup", hint: capabilityHints[k] };
+}
+
+function capabilityStates(config: Config): Record<CapabilityName, CapabilityState> {
+	return Object.fromEntries(capabilityNames.map((k) => [k, capabilityState(config, k)])) as Record<
+		CapabilityName,
+		CapabilityState
+	>;
+}
 
 function unknownConfigKeys(body: object): string[] {
 	const parsed = configPostBodySchema.safeParse(body);
@@ -320,15 +349,63 @@ async function saveConfig(
 			);
 		}
 		const normalized = parseConfig(base);
-		const candidate = { ...normalized, ...body };
-		if (
-			"telegram" in body &&
-			typeof body.telegram === "object" &&
-			body.telegram !== null &&
-			!Array.isArray(body.telegram)
-		) {
-			candidate.telegram = { ...normalized.telegram, ...body.telegram };
+		// Capability flips apply to the normalized disk config BEFORE the
+		// body merge — a body block for the same key then still wins.
+		const parked: Partial<Record<CapabilityName, unknown>> = { ...(normalized.parked ?? {}) };
+		const candidate: Record<string, unknown> = { ...normalized };
+		const caps = capabilitiesPostSchema.parse(
+			(body as { capabilities?: unknown }).capabilities ?? {},
+		);
+		for (const [k, on] of Object.entries(caps) as [CapabilityName, boolean][]) {
+			if (!on) {
+				if (candidate[k] !== undefined) {
+					parked[k] = candidate[k];
+					delete candidate[k];
+				}
+				continue;
+			}
+			if (candidate[k] !== undefined) continue;
+			// First-time setup may arrive with the enable switch. The body
+			// merge below wins over parked/default blocks; validate that
+			// supplied value with the WHOLE resulting config before writing
+			// (it may also introduce the model's provider).
+			const supplied = (body as Record<string, unknown>)[k];
+			if (supplied !== undefined && supplied !== "") continue;
+			if (parked[k] !== undefined) {
+				candidate[k] = parked[k];
+				delete parked[k];
+				continue;
+			}
+			const dflt = capabilityDefaults[k];
+			if (dflt !== undefined) {
+				candidate[k] = dflt;
+				continue;
+			}
+			log.warn(`${actor.via} config save refused — capability needs setup`, {
+				...who,
+				capability: k,
+			});
+			return Response.json(
+				{ error: `cannot enable ${k}: ${capabilityHints[k]}` },
+				{ status: 422, headers: NO_STORE },
+			);
 		}
+		for (const [k, v] of Object.entries(body)) {
+			if (k === "capabilities") continue;
+			if (k === "telegram" && typeof v === "object" && v !== null && !Array.isArray(v)) {
+				candidate.telegram = { ...normalized.telegram, ...v };
+				continue;
+			}
+			// "" on a parkable block keeps its contents — off, not deleted.
+			if (v === "" && (capabilityNames as readonly string[]).includes(k)) {
+				if (candidate[k] !== undefined) parked[k as CapabilityName] = candidate[k];
+				delete candidate[k];
+				continue;
+			}
+			candidate[k] = v;
+			if ((capabilityNames as readonly string[]).includes(k)) delete parked[k as CapabilityName];
+		}
+		candidate.parked = Object.keys(parked).length > 0 ? parked : undefined;
 		const merged = parseConfig(candidate);
 		// A stored level the model can't express is a lie — write the
 		// rung the wire clamp would land on, on both channels.
@@ -608,11 +685,14 @@ export async function handleOperatorRoute(
 				ttsDefaults: ttsCloudDefaults,
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
+				authCommandNames: (deps.authNames?.() ?? [])
+					.filter((n) => deps.secrets?.isCommand(n) ?? false)
+					.sort(),
 				// Cached only: the settings door never waits on models.dev.
-				modelCatalog: Object.entries(config.providers).map(([provider, p]) => ({
-					provider,
-					models: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
-				})),
+				modelCatalog: modelCatalogFor(config),
+				capabilities: capabilityStates(config),
+				serviceNames,
+				providerPresets,
 			};
 			return Response.json(body, {
 				headers: { ...NO_STORE, etag: configTag(config) },
@@ -649,6 +729,48 @@ export async function handleOperatorRoute(
 			return attempt;
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	if (
+		tail === "accounts/chatgpt" ||
+		tail === "accounts/chatgpt/login" ||
+		tail === "accounts/chatgpt/logout"
+	) {
+		const chatgpt = deps.chatgpt;
+		if (chatgpt === undefined) {
+			return Response.json(
+				{ error: "chatgpt sign-in is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		if (tail === "accounts/chatgpt") {
+			if (req.method !== "GET") {
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			}
+			return Response.json(chatgpt.status(), { headers: NO_STORE });
+		}
+		if (tail === "accounts/chatgpt/login") {
+			if (req.method === "DELETE") {
+				return Response.json(chatgpt.cancel(), { headers: NO_STORE });
+			}
+			if (req.method !== "POST") {
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			}
+			if (chatgpt.status().pinned) {
+				return Response.json(
+					{
+						error:
+							"a codex provider pins authFile in goblin.json5 — remove it to sign in from Settings",
+					},
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			return Response.json(await chatgpt.start(), { headers: NO_STORE });
+		}
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		return Response.json(chatgpt.signOut(), { headers: NO_STORE });
 	}
 
 	if (tail === "secrets") {
@@ -1083,7 +1205,10 @@ export async function handleOperatorRoute(
 			.object({ url: z.string().url().startsWith("https://").max(2048) })
 			.safeParse(raw);
 		if (!parsed.success)
-			return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
 		try {
 			const fetched = await fetchSkill(parsed.data.url, {
 				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
@@ -1133,8 +1258,7 @@ export async function handleOperatorRoute(
 			return Response.json(responseBody, { headers: NO_STORE });
 		} catch (err) {
 			if (err instanceof SkillFetchError) {
-				const status =
-					err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
+				const status = err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
 				return Response.json({ error: err.message }, { status, headers: NO_STORE });
 			}
 			throw err;

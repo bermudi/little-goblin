@@ -424,6 +424,41 @@ survive. A project-bound source refuses to branch into an archived project
 not in scope: `editMessageId` names a durable event, which only the app
 channel addresses.
 
+## Mobile navigation (ruling 2026-10-24, operator ask)
+
+Operator ask: the sidebar prototypes (`design/prototypes/sidebar/`) picked
+direction C — a glyph gutter — for desktop and direction M for phones. This
+ruling lands the phone half only; the desktop rail is untouched and C's
+gutter remains chosen-but-unbuilt.
+
+On phone widths (≤720px, the same breakpoint the drawer used) the
+slide-in drawer is retired on the app channel. Navigation is a fixed thumb
+bar — Chats · Projects · Notes · Attention · More — and one surface fills
+the screen.
+
+- The bar stands down inside a thread, the staged composer, a project
+  page, and the context-window view: a full-bleed surface with its own
+  bottom edge owns the screen there. The header carries a phone-only
+  back door to the chats list for the chat states and to the projects
+  index for a project page. The context-window view needs no door — its
+  own in-page back returns to the thread on every width.
+- `/app` on a phone is the chats list — the rail's list, not the
+  empty-state composer. "New conversation" stages the composer as its own
+  screen (`composeStaged`); on desktop `select(null)` still is the
+  composer, so the bit is inert there. A staged send creates the
+  conversation as usual and the thread takes over.
+- More is a bottom sheet (`.veil`/`.msheet`, like the model picker)
+  carrying every system surface except Attention, grouped Reads · Operate ·
+  Inspect plus Settings — the rail-ops keep their grouping through the
+  move.
+- The M chrome is gated in JSX on `matchMedia` (`usePhoneWidth`), not CSS
+  alone: navigation must not exist as hidden duplicates in a desktop DOM,
+  where it would double every accessible name. `.chatlist-screen`,
+  `.tabbar`, and `.mobile-back` carry `display: none` at desktop widths as
+  the style sheet's own guarantee, not the mechanism.
+- The Telegram door keeps its drawer untouched: `/t/` is phone-only and
+  its two pages don't warrant a bar.
+
 ## The app wire must never idle — SSE heartbeat
 
 Ruling 2026-10-07, from a failed operator turn: the app showed "The turn

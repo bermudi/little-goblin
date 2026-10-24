@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import {
@@ -599,7 +599,27 @@ export function App() {
 	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
 }
 
+// Phone widths carry the M chrome — thumb bar, chats screen, back doors.
+// CSS hides and shows around the same query, but these surfaces must not
+// exist in a desktop DOM at all: they are navigation, and a hidden
+// duplicate would double every name a screen reader or test queries.
+const PHONE_QUERY = "(max-width: 720px)";
+
+function usePhoneWidth(): boolean {
+	const [phone, setPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches);
+	useEffect(() => {
+		const mq = window.matchMedia(PHONE_QUERY);
+		const onChange = (e: MediaQueryListEvent) => setPhone(e.matches);
+		mq.addEventListener("change", onChange);
+		return () => mq.removeEventListener("change", onChange);
+	}, []);
+	return phone;
+}
+
 function AppShell() {
+	// First hook, before the gate's early return — hook order must not
+	// depend on which render lets the operator through.
+	const phone = usePhoneWidth();
 	const [token, setToken] = useState<string | null>(loadToken);
 	// Trust mode (appToken unset — the tailnet is the only lock) means a
 	// bare request just works and the gate must never show. With no
@@ -628,7 +648,20 @@ function AppShell() {
 	// Per-action failures — cleared by the next successful action or
 	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
-	const [navOpen, setNavOpen] = useState(false);
+	// Mobile (M): "+" on the chats list stages the empty-state composer.
+	// Desktop reaches that same surface by selecting null — /app is the
+	// composer there — but on phone widths /app is the list, so the staged
+	// composer is its own bit. Irrelevant off phone widths (CSS decides).
+	const [composeStaged, setComposeStaged] = useState(false);
+	const [systemSheetOpen, setSystemSheetOpen] = useState(false);
+	useEffect(() => {
+		if (!systemSheetOpen) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setSystemSheetOpen(false);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [systemSheetOpen]);
 	// A failed search must surface as an error, never read as "no
 	// matches".
 	const [query, setQuery] = useState("");
@@ -907,6 +940,7 @@ function AppShell() {
 			setProjectId(null);
 			setNoteId(null);
 			setWindowConv(null);
+			setComposeStaged(false);
 			setCurrent(id);
 		};
 		window.addEventListener("popstate", onPop);
@@ -1008,6 +1042,9 @@ function AppShell() {
 		setNoteId(null);
 		setWindowConv(null);
 		setCurrent(id);
+		// Landing in a thread always leaves the staged composer behind;
+		// landing on null keeps it — that is the composer on desktop.
+		if (id !== null) setComposeStaged(false);
 		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
 		if (path !== window.location.pathname) pushRoute(path);
 	};
@@ -1019,7 +1056,7 @@ function AppShell() {
 		setProjectId(id);
 		setNoteId(null);
 		setWindowConv(null);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute(`/app/p/${id}`);
 	};
 
@@ -1030,7 +1067,7 @@ function AppShell() {
 		setProjectId(null);
 		setNoteId(null);
 		setWindowConv(null);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute("/app/projects");
 	};
 
@@ -1041,72 +1078,67 @@ function AppShell() {
 		setProjectId(null);
 		setNoteId(null);
 		setWindowConv(null);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute("/app/notes");
 	};
 
 	const openNote = (id: string) => {
-		if (page === "note" && noteId === id) {
-			setNavOpen(false);
-			return;
-		}
+		if (page === "note" && noteId === id) return;
 		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage("note");
 		setProjectId(null);
 		setNoteId(id);
 		setWindowConv(null);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute(`/app/n/${id}`);
 	};
 
 	// The context-window view of one conversation — read-only, so the
 	// dirty guard has nothing to protect here.
 	const openWindow = (id: string) => {
-		if (page === "window" && windowConv === id) {
-			setNavOpen(false);
-			return;
-		}
+		if (page === "window" && windowConv === id) return;
 		clearStartFailure();
 		setPage("window");
 		setProjectId(null);
 		setNoteId(null);
 		setWindowConv(id);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute(`/app/c/${id.slice("app/".length)}/window`);
 	};
 
 	const rowRemoved = (id: string) => {
 		if (id !== current) return;
-		if (page === "chat") select(null);
-		else setCurrent(null);
+		if (page === "chat") {
+			setComposeStaged(false);
+			select(null);
+		} else {
+			setCurrent(null);
+		}
 	};
 
 	const openPage = (p: Exclude<Page, "chat" | "notes" | "note">) => {
-		if (page === p) {
-			setNavOpen(false);
-			return;
-		}
+		if (page === p) return;
 		if (!leaveDirty()) return;
 		clearStartFailure();
 		setPage(p);
 		setWindowConv(null);
-		setNavOpen(false);
+		setComposeStaged(false);
 		pushRoute(`/app/${p}`);
 	};
 
 	// "New conversation" opens the empty state; the conversation itself is
 	// created lazily, on the first send — an untouched composer never
-	// leaves an empty row in the store.
+	// leaves an empty row in the store. On phone widths "+" is tapped from
+	// the chats list, so staging the composer is the mobile bit.
 	const newConversation = () => {
-		setNavOpen(false);
+		setComposeStaged(true);
 		setComposerFocus((t) => t + 1);
 		select(null);
 	};
 
 	const openConversation = (id: string) => {
 		select(id);
-		setNavOpen(false);
 	};
 
 	// One start path for every composer — the empty state passes null,
@@ -1207,6 +1239,29 @@ function AppShell() {
 			? projectList.find((p) => p.id === currentConv.projectId)
 			: undefined;
 
+	// Mobile (M): /app is the chats list, a thread or the staged composer
+	// is full-bleed, and the thumb bar stands down while either is open.
+	// A project page stands down too — its composer is pinned to the
+	// viewport bottom, where the fixed bar would paint over it.
+	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
+	const chatSurfaceOpen =
+		(page === "chat" && (current !== null || composeStaged)) ||
+		page === "window" ||
+		page === "project";
+	// The More sheet carries every system surface except Attention, which
+	// owns its own bar slot.
+	const MORE_TAB_KEYS = [
+		"settings",
+		"memory",
+		"delegations",
+		"programs",
+		"status",
+		"skills",
+		"files",
+		"log",
+	] as const;
+	const moreTabActive = (MORE_TAB_KEYS as readonly string[]).includes(page);
+
 	const renderRow = (c: AppConversationList["conversations"][number]) => (
 		<li key={c.id}>
 			<ConversationRow
@@ -1237,9 +1292,60 @@ function AppShell() {
 		</li>
 	);
 
+	// The search hits and the archived disclosure serve two hosts — the
+	// desktop rail and the mobile chats screen render the same rows off
+	// the same state.
+	const searchBody =
+		hits !== null && (
+			<>
+				<ul className="search-results">
+					{hits.map((h) => (
+						<li key={`${h.conversationId}:${h.seq}`}>
+							<button
+								type="button"
+								className="hit"
+								onClick={() => {
+									openConversation(h.conversationId);
+									setQuery("");
+								}}
+							>
+								<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
+								<span className="hit-text">{flatLine(h.text)}</span>
+								<span className="hit-conv">
+									{flatTitle(h.title) ?? h.conversationId.slice(4)}
+									{" · "}
+									{relTime(h.createdAt)}
+								</span>
+							</button>
+						</li>
+					))}
+				</ul>
+				{searchError !== null && (
+					<p className="error" role="alert">
+						Search failed: {searchError}
+					</p>
+				)}
+				{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
+			</>
+		);
+	const archivedRows =
+		archived.length > 0 && (
+			<>
+				<button
+					type="button"
+					className="rail-archived"
+					aria-expanded={archivedOpen}
+					onClick={() => setArchivedOpen((v) => !v)}
+				>
+					Archived ({archived.length})
+				</button>
+				{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
+			</>
+		);
+
 	return (
 		<div className="shell">
-			<nav className={navOpen ? "rail open" : "rail"}>
+			<nav className="rail app-rail">
 				<button type="button" className="new" onClick={newConversation}>
 					New conversation
 				</button>
@@ -1253,57 +1359,15 @@ function AppShell() {
 						if (e.key === "Escape") setQuery("");
 					}}
 				/>
-				{hits !== null ? (
-					<>
-						<ul className="search-results">
-							{hits.map((h) => (
-								<li key={`${h.conversationId}:${h.seq}`}>
-									<button
-										type="button"
-										className="hit"
-										onClick={() => {
-											openConversation(h.conversationId);
-											setQuery("");
-										}}
-									>
-										<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
-										<span className="hit-text">{flatLine(h.text)}</span>
-										<span className="hit-conv">
-											{flatTitle(h.title) ?? h.conversationId.slice(4)}
-											{" · "}
-											{relTime(h.createdAt)}
-										</span>
-									</button>
-								</li>
-							))}
-						</ul>
-						{searchError !== null && (
-							<p className="error" role="alert">
-								Search failed: {searchError}
-							</p>
-						)}
-						{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
-					</>
-				) : (
+				{searchBody}
+				{hits === null && (
 					<>
 						{/* Projects and Notes sit below the chat list, never wedged
 							between New + search and the conversations. */}
 						<div className="rail-convs">
 							<div className="rail-label">Conversations</div>
 							<ul>{rail.map(renderRow)}</ul>
-							{archived.length > 0 && (
-								<>
-									<button
-										type="button"
-										className="rail-archived"
-										aria-expanded={archivedOpen}
-										onClick={() => setArchivedOpen((v) => !v)}
-									>
-										Archived ({archived.length})
-									</button>
-									{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
-								</>
-							)}
+							{archivedRows}
 						</div>
 						{projects !== null && (
 							<div className="rail-projects">
@@ -1364,29 +1428,90 @@ function AppShell() {
 					))}
 				</div>
 			</nav>
-			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
-			<main className={chatWidth === "wide" ? "chat-wide" : undefined}>
+			<main
+				className={
+					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
+						.filter(Boolean)
+						.join(" ") || undefined
+				}
+			>
 				<header>
-					<button
-						type="button"
-						className="nav-toggle"
-						aria-label="Conversations"
-						title="Conversations"
-						onClick={() => setNavOpen((v) => !v)}
-					>
-						<svg
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="1.75"
-							strokeLinecap="round"
-							width="18"
-							height="18"
+					{/* Phone-widths-only back doors: a thread and the staged
+						composer both stand down for the chats list, which is the
+						home surface on a phone; a project stands down for the
+						projects index it came from. Desktop never renders them. */}
+					{phone && page === "chat" && current !== null && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to chats"
+							title="Chats"
+							onClick={() => {
+								if (!leaveDirty()) return;
+								setComposeStaged(false);
+								// The guard above settled the question — select's
+								// own guard must not ask it again.
+								select(null, { skipDirtyGuard: true });
+							}}
 						>
-							<rect x="3" y="4" width="18" height="16" rx="3" />
-							<line x1="9.5" y1="4" x2="9.5" y2="20" />
-						</svg>
-					</button>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
+					{phone && page === "chat" && current === null && composeStaged && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to chats"
+							title="Chats"
+							onClick={() => setComposeStaged(false)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
+					{phone && page === "project" && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to projects"
+							title="Projects"
+							onClick={openProjectsIndex}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
 					<h1>goblin</h1>
 					{page === "chat" && current !== null && (
 						<span className="header-title">{flatTitle(currentTitle)}</span>
@@ -1472,6 +1597,64 @@ function AppShell() {
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 				</header>
+				{/* Mobile (M): the chats surface is a screen. Desktop never sees
+					it — the rail is the list there; CSS shows this on phone
+					widths only, hiding the header and the empty-state composer
+					beneath it. */}
+				{chatListMode && (
+					<div className="chatlist-screen">
+						<div className="chatlist-bar">
+							<h1>Chats</h1>
+							<button
+								type="button"
+								className="header-action"
+								title="New conversation"
+								aria-label="New conversation"
+								onClick={newConversation}
+							>
+								<svg
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="1.75"
+									strokeLinecap="round"
+									width="18"
+									height="18"
+								>
+									<path d="M12 5v14M5 12h14" />
+								</svg>
+							</button>
+						</div>
+						<input
+							className="rail-search chatlist-search"
+							type="search"
+							placeholder="Search history"
+							value={query}
+							onChange={(e) => setQuery(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Escape") setQuery("");
+							}}
+						/>
+						{searchBody}
+						{hits === null && (
+							<>
+								<ul>{rail.map(renderRow)}</ul>
+								{archivedRows}
+								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
+								{rowError !== null && (
+									<p className="error" role="alert">
+										{rowError}
+									</p>
+								)}
+								{conversations !== null &&
+									unbound.length === 0 &&
+									activeProjects.length === 0 && (
+										<p className="empty">Nothing here yet — start a conversation.</p>
+									)}
+							</>
+						)}
+					</div>
+				)}
 				{navigationError !== null && (
 					<p className="error" role="alert">
 						{navigationError}
@@ -1682,6 +1865,189 @@ function AppShell() {
 						</>
 					))}
 			</main>
+			{/* Mobile (M): the thumb bar — every surface one tap away. It
+				stands down inside a thread, the staged composer, a project, or
+				the context-window view, where the open surface owns the
+				bottom edge. Desktop never renders it. */}
+			{phone && !chatSurfaceOpen && (
+				<nav className="tabbar" aria-label="Surfaces">
+					<button
+						type="button"
+						className={page === "chat" ? "tab on" : "tab"}
+						aria-current={page === "chat" ? "page" : undefined}
+						onClick={() => {
+							if (page === "chat") return;
+							if (!leaveDirty()) return;
+							setComposeStaged(false);
+							// The guard above settled the question — select's own
+							// guard must not ask again (a decline there would
+							// silently cancel an approved navigation).
+							select(null, { skipDirtyGuard: true });
+						}}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="18"
+							height="18"
+							aria-hidden="true"
+						>
+							<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z" />
+						</svg>
+						Chats
+					</button>
+					<button
+						type="button"
+						// The bar is stood down on a project page, so the tab can
+						// only be current for the index.
+						className={page === "projects" ? "tab on" : "tab"}
+						aria-current={page === "projects" ? "page" : undefined}
+						onClick={openProjectsIndex}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="18"
+							height="18"
+							aria-hidden="true"
+						>
+							<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+						</svg>
+						Projects
+					</button>
+					<button
+						type="button"
+						className={page === "notes" || page === "note" ? "tab on" : "tab"}
+						aria-current={page === "notes" || page === "note" ? "page" : undefined}
+						onClick={openNotesIndex}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="18"
+							height="18"
+							aria-hidden="true"
+						>
+							<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z" />
+							<path d="M9 3v18" />
+						</svg>
+						Notes
+					</button>
+					<button
+						type="button"
+						className={page === "attention" ? "tab on" : "tab"}
+						aria-current={page === "attention" ? "page" : undefined}
+						onClick={() => openPage("attention")}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="18"
+							height="18"
+							aria-hidden="true"
+						>
+							<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z" />
+							<path d="M10 19a2.2 2.2 0 0 0 4 0" />
+						</svg>
+						Attention
+					</button>
+					<button
+						type="button"
+						className={moreTabActive ? "tab on" : "tab"}
+						aria-haspopup="dialog"
+						aria-expanded={systemSheetOpen}
+						onClick={() => setSystemSheetOpen(true)}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="18"
+							height="18"
+							aria-hidden="true"
+						>
+							<rect x="4" y="4" width="7" height="7" rx="1.5" />
+							<rect x="13" y="4" width="7" height="7" rx="1.5" />
+							<rect x="4" y="13" width="7" height="7" rx="1.5" />
+							<rect x="13" y="13" width="7" height="7" rx="1.5" />
+						</svg>
+						More
+					</button>
+				</nav>
+			)}
+			{systemSheetOpen && (
+				<div className="veil on system-veil" onClick={() => setSystemSheetOpen(false)}>
+					<div
+						className="msheet system-sheet"
+						role="dialog"
+						aria-label="System"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<header className="msheet-head">
+							<h3>System</h3>
+							<button type="button" aria-label="Close" onClick={() => setSystemSheetOpen(false)}>
+								×
+							</button>
+						</header>
+						<div className="msheet-body">
+							{(
+								[
+									{ group: "Reads", keys: ["delegations", "memory"] },
+									{ group: "Operate", keys: ["programs", "skills", "files"] },
+									{ group: "Inspect", keys: ["status", "log"] },
+								] as const
+							).map((g) => (
+								<Fragment key={g.group}>
+									<div className="sheet-group">{g.group}</div>
+									{g.keys.map((k) => (
+										<button
+											key={k}
+											type="button"
+											className="sheet-row"
+											onClick={() => {
+												setSystemSheetOpen(false);
+												openPage(k);
+											}}
+										>
+											{PAGES.find((p) => p.key === k)?.label ?? k}
+										</button>
+									))}
+								</Fragment>
+							))}
+							<hr />
+							<button
+								type="button"
+								className="sheet-row"
+								onClick={() => {
+									setSystemSheetOpen(false);
+									openPage("settings");
+								}}
+							>
+								Settings
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
 			{page === "chat" && sourcesOpen && current !== null && (
 				<ThreadSourcesSheet
 					token={token}

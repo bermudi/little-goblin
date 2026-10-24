@@ -527,6 +527,147 @@ p code,
 	color: var(--app-fg-muted);
 }
 
+/* Mobile (M) surfaces — thumb bar, chats screen, back doors. JSX gates
+   them on matchMedia, so a desktop DOM never contains them; the
+   display:none here is the style-sheet's own guarantee, not the
+   mechanism. */
+.tabbar {
+	display: none;
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 30;
+	padding: 0.3rem 0.5rem calc(0.3rem + env(safe-area-inset-bottom));
+	background: var(--app-bg);
+	border-top: 1px solid var(--app-divider);
+}
+.tab {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.2rem;
+	min-height: 2.4rem;
+	padding: 0.25rem 0;
+	border-radius: 10px;
+	font-size: 10px;
+	color: var(--app-fg-muted);
+	transition: background-color 75ms, color 75ms;
+}
+.tab:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.tab.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+.mobile-back {
+	display: none;
+	align-items: center;
+	justify-content: center;
+	width: 2.25rem;
+	height: 2.25rem;
+	border-radius: 8px;
+	color: var(--app-fg-muted);
+	transition: background-color 75ms, color 75ms;
+}
+.mobile-back:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.chatlist-screen {
+	display: none;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+}
+.chatlist-bar {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+	padding: 0.4rem 0.75rem 0.3rem 1.1rem;
+}
+.chatlist-bar h1 {
+	flex: 1;
+	font-size: 15px;
+	font-weight: 600;
+	margin: 0;
+}
+.chatlist-bar .header-action {
+	width: 2.25rem;
+	height: 2.25rem;
+}
+.chatlist-search {
+	margin: 0.15rem 1rem 0.55rem;
+}
+.chatlist-screen ul {
+	list-style: none;
+	margin: 0;
+	padding: 0 0.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+/* The row skin mirrors `.rail .conv` — same anchors, this host. */
+.chatlist-screen .conv {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	width: 100%;
+	border-radius: 8px;
+	transition: background-color 75ms;
+}
+.chatlist-screen .conv:hover {
+	background: var(--app-hover);
+}
+.chatlist-screen .conv.current {
+	background: var(--app-active);
+}
+.chatlist-screen .empty {
+	color: var(--app-fg-muted);
+	font-size: 12px;
+	padding: 0.2rem 0.9rem;
+}
+
+/* The More sheet's grouped rows — a bottom sheet on phones like every
+   other .msheet; the rows read as the rail-ops they came from. */
+.sheet-group {
+	padding: 0.5rem 0.6rem 0.15rem;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--app-fg-subtle);
+}
+.sheet-row {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	min-height: 2.5rem;
+	text-align: left;
+	padding: 0.45rem 0.6rem;
+	border-radius: 8px;
+	font-size: 13px;
+	color: var(--app-fg-muted);
+	transition: background-color 75ms, color 75ms;
+}
+.sheet-row:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.system-sheet hr {
+	border: none;
+	border-top: 1px solid var(--app-divider);
+	margin: 0.35rem 0.4rem;
+}
+/* The bar is z-30; the sheet must stand over it. */
+.system-veil {
+	z-index: 40;
+}
+
 .scrim {
 	position: fixed;
 	inset: 0;
@@ -3546,6 +3687,36 @@ select.ui-input option {
 /* ---------- narrow screens: rail slides over ---------- */
 
 @media (max-width: 720px) {
+	/* M: the drawer is retired on the app channel — the thumb bar and the
+	   chats screen replace it. The rail keeps its drawer rules for the
+	   Telegram door, which still opens over a scrim. */
+	.app-rail {
+		display: none;
+	}
+	.mobile-back {
+		display: inline-flex;
+	}
+	.list-mode > header {
+		display: none;
+	}
+	.list-mode .chat {
+		display: none;
+	}
+	.chatlist-screen {
+		display: flex;
+		padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
+	}
+	.tabbar {
+		display: grid;
+		grid-template-columns: repeat(5, 1fr);
+		gap: 1px;
+	}
+	.system-sheet {
+		padding-bottom: env(safe-area-inset-bottom);
+	}
+	.ops {
+		padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+	}
 	.rail {
 		position: fixed;
 		inset: 0 auto 0 0;
@@ -3574,7 +3745,8 @@ select.ui-input option {
 @media (pointer: coarse), (max-width: 720px) {
 	.icon-btn,
 	.nav-toggle,
-	.header-action {
+	.header-action,
+	.mobile-back {
 		min-width: 2.25rem;
 		min-height: 2.25rem;
 	}
@@ -3582,11 +3754,15 @@ select.ui-input option {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
+	.tab {
+		min-height: 2.4rem;
+	}
 	.rail .new,
 	.rail-op,
 	.rail-archived,
 	.rail-section,
-	.rail .proj {
+	.rail .proj,
+	.sheet-row {
 		min-height: 2.25rem;
 		display: flex;
 		align-items: center;

@@ -49,23 +49,9 @@ export interface ConfigResponse {
 	providerPresets: ProviderPreset[];
 }
 
-export interface ChatGptStatus {
-	state: "signed-in" | "signed-out" | "pending" | "error";
-	/** Which file supplies the credentials — goblin's own sign-in file,
-	 *  the codex CLI's, or a provider-pinned custom path. */
-	source: "goblin" | "codex-cli" | "custom" | null;
-	email: string | null;
-	plan: string | null;
-	pending: {
-		userCode: string;
-		verificationUrl: string;
-		expiresAt: string;
-	} | null;
-	error: string | null;
-	/** A codex provider pins authFile in goblin.json5 — in-app sign-in
-	 *  is refused until it's removed. */
-	pinned: boolean;
-}
+// The status shape is owned by the agent layer (login.ts) so agent
+// code never imports the http wire — re-exported here for the routes.
+export type { ChatGptStatus } from "../agent/codex/login.ts";
 
 export interface ConfigPostBody {
 	providers: Record<string, ProviderConfig>;

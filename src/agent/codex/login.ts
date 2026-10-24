@@ -13,9 +13,26 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import { type Config, loadConfig, parseConfig, paths, writeConfig } from "../../config.ts";
 import { durableWriteFile } from "../../durable.ts";
-import type { ChatGptStatus } from "../../http/operator-wire.ts";
 import { log } from "../../log.ts";
 import { OAUTH_CLIENT_ID, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
+
+export interface ChatGptStatus {
+	state: "signed-in" | "signed-out" | "pending" | "error";
+	/** Which file supplies the credentials — goblin's own sign-in file,
+	 *  the codex CLI's, or a provider-pinned custom path. */
+	source: "goblin" | "codex-cli" | "custom" | null;
+	email: string | null;
+	plan: string | null;
+	pending: {
+		userCode: string;
+		verificationUrl: string;
+		expiresAt: string;
+	} | null;
+	error: string | null;
+	/** A codex provider pins authFile in goblin.json5 — in-app sign-in
+	 *  is refused until it's removed. */
+	pinned: boolean;
+}
 
 const USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 const DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";
@@ -24,6 +41,8 @@ export const VERIFICATION_URL = "https://auth.openai.com/codex/device";
 // Codex gives the pairing up to 15 minutes.
 const LOGIN_DEADLINE_MS = 15 * 60 * 1000;
 const MIN_POLL_INTERVAL_S = 5;
+// Every request in the flow hangs for at most this long.
+const FETCH_TIMEOUT_MS = 30_000;
 
 const usercodeSchema = z.object({
 	device_auth_id: z.string().min(1),
@@ -89,6 +108,7 @@ interface PendingLogin {
 	expiresAt: string;
 	intervalMs: number;
 	deadlineMs: number;
+	abort: AbortController;
 }
 
 export interface ChatGptLogin {
@@ -100,23 +120,35 @@ export interface ChatGptLogin {
 
 type Stage = "usercode" | "poll" | "exchange" | "write";
 
-// What the effective auth file holds — read defensively: a malformed
-// file means signed-out, never a thrown status.
-function readTokens(path: string): { accessToken: string; idToken: string | null } | null {
+const UNREADABLE = "unreadable" as const;
+
+// What the effective auth file holds. ENOENT means no login (null — a
+// signed-out answer); a present-but-unreadable file is an error state;
+// anything else (EACCES and friends) propagates — fail loud.
+function readTokens(
+	path: string,
+): { accessToken: string; idToken: string | null } | null | typeof UNREADABLE {
+	let raw: string;
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (typeof parsed !== "object" || parsed === null) return null;
+		raw = readFileSync(path, "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null) return UNREADABLE;
 		const tokens = (parsed as { tokens?: unknown }).tokens;
-		if (typeof tokens !== "object" || tokens === null) return null;
+		if (typeof tokens !== "object" || tokens === null) return UNREADABLE;
 		const t = tokens as Record<string, unknown>;
 		return typeof t.access_token === "string"
 			? {
 					accessToken: t.access_token,
 					idToken: typeof t.id_token === "string" ? t.id_token : null,
 				}
-			: null;
+			: UNREADABLE;
 	} catch {
-		return null;
+		return UNREADABLE;
 	}
 }
 
@@ -134,6 +166,11 @@ export function createChatGptLogin(deps: {
 	let pending: PendingLogin | null = null;
 	let lastError: string | null = null;
 	let seq = 0;
+
+	function clearPending(): void {
+		pending?.abort.abort();
+		pending = null;
+	}
 
 	function codexAuthFile(): string | undefined {
 		const pinned = Object.values(deps.config().providers).find(
@@ -163,12 +200,23 @@ export function createChatGptLogin(deps: {
 					pinned,
 				};
 			}
-			pending = null;
+			clearPending();
 			lastError = "the pairing code expired — sign in again";
 			log.info("chatgpt login expired");
 		}
 		const resolved = resolveCodexAuthFile(codexAuthFile());
 		const file = readTokens(resolved.path);
+		if (file === UNREADABLE) {
+			return {
+				state: "error",
+				source: resolved.source,
+				email: null,
+				plan: null,
+				pending: null,
+				error: "the auth file is unreadable — sign in again",
+				pinned,
+			};
+		}
 		if (file !== null) {
 			const payload = file.idToken !== null ? jwtPayload(file.idToken) : null;
 			return {
@@ -192,20 +240,26 @@ export function createChatGptLogin(deps: {
 		};
 	}
 
-	function fail(stage: Stage, message: string, httpStatus?: number): ChatGptStatus {
-		pending = null;
+	function fail(
+		stage: Stage,
+		message: string,
+		opts: { status?: number; err?: unknown } = {},
+	): ChatGptStatus {
+		clearPending();
 		lastError = message;
-		log.warn("chatgpt login failed", {
+		const fields = {
 			stage,
-			...(httpStatus !== undefined ? { status: httpStatus } : {}),
-		});
+			...(opts.status !== undefined ? { status: opts.status } : {}),
+		};
+		if (opts.err !== undefined) log.warn("chatgpt login failed", opts.err, fields);
+		else log.warn("chatgpt login failed", fields);
 		return status();
 	}
 
 	async function pollLoop(id: number): Promise<void> {
 		while (pending?.id === id) {
 			if (now() >= pending.deadlineMs) {
-				pending = null;
+				clearPending();
 				lastError = "the pairing code expired — sign in again";
 				log.info("chatgpt login expired");
 				return;
@@ -222,21 +276,23 @@ export function createChatGptLogin(deps: {
 						device_auth_id: p.deviceAuthId,
 						user_code: p.userCode,
 					}),
+					signal: AbortSignal.any([p.abort.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
 				});
-			} catch {
-				fail("poll", "device token poll failed");
+			} catch (err) {
+				if (p.abort.signal.aborted) return; // cancelled or superseded mid-flight
+				fail("poll", "device token poll failed", { err });
 				return;
 			}
 			if (res.status === 403 || res.status === 404) continue; // still pending
 			if (!res.ok) {
-				fail("poll", `device token poll failed: HTTP ${res.status}`, res.status);
+				fail("poll", `device token poll failed: HTTP ${res.status}`, { status: res.status });
 				return;
 			}
 			let grant: z.infer<typeof deviceTokenSchema>;
 			try {
 				grant = deviceTokenSchema.parse(await res.json());
-			} catch {
-				fail("poll", "device token poll answered an unexpected body");
+			} catch (err) {
+				fail("poll", "device token poll answered an unexpected body", { err });
 				return;
 			}
 			// The exact field set is the standard PKCE authorization_code
@@ -255,20 +311,24 @@ export function createChatGptLogin(deps: {
 						client_id: OAUTH_CLIENT_ID,
 						code_verifier: grant.code_verifier,
 					}).toString(),
+					signal: AbortSignal.any([p.abort.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
 				});
-			} catch {
-				fail("exchange", "token exchange request failed");
+			} catch (err) {
+				if (p.abort.signal.aborted) return;
+				fail("exchange", "token exchange request failed", { err });
 				return;
 			}
 			if (!tokens.ok) {
-				fail("exchange", `token exchange failed: HTTP ${tokens.status}`, tokens.status);
+				fail("exchange", `token exchange failed: HTTP ${tokens.status}`, {
+					status: tokens.status,
+				});
 				return;
 			}
 			let t: z.infer<typeof tokenResponseSchema>;
 			try {
 				t = tokenResponseSchema.parse(await tokens.json());
-			} catch {
-				fail("exchange", "token exchange answered an unexpected body");
+			} catch (err) {
+				fail("exchange", "token exchange answered an unexpected body", { err });
 				return;
 			}
 			const payload = jwtPayload(t.id_token);
@@ -294,15 +354,21 @@ export function createChatGptLogin(deps: {
 					) + "\n",
 					0o600,
 				);
-			} catch {
-				fail("write", "the auth file could not be written");
+			} catch (err) {
+				fail("write", "the auth file could not be written", { err });
 				return;
 			}
 			pending = null;
 			lastError = null;
 			const plan = planOf(payload);
 			log.info("chatgpt login completed", plan !== null ? { plan } : {});
-			deps.onSignedIn?.();
+			try {
+				deps.onSignedIn?.();
+			} catch (err) {
+				// The sign-in itself succeeded — a provider-add failure is
+				// reported but must not turn the status into an error.
+				log.error("codex provider add failed after sign-in", err);
+			}
 			return;
 		}
 	}
@@ -313,7 +379,7 @@ export function createChatGptLogin(deps: {
 			// A live pending login is returned as-is — a second start must
 			// not request a second pairing code.
 			if (pending !== null && now() < pending.deadlineMs) return status();
-			pending = null;
+			clearPending();
 			lastError = null;
 			let res: Response;
 			try {
@@ -321,21 +387,26 @@ export function createChatGptLogin(deps: {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ client_id: OAUTH_CLIENT_ID }),
+					signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 				});
-			} catch {
-				return fail("usercode", "device login request failed");
+			} catch (err) {
+				return fail("usercode", "device login request failed", { err });
 			}
 			if (res.status === 404) {
-				return fail("usercode", "device login is not enabled for this client", 404);
+				return fail("usercode", "device login is not enabled for this client", {
+					status: 404,
+				});
 			}
 			if (!res.ok) {
-				return fail("usercode", `device login request failed: HTTP ${res.status}`, res.status);
+				return fail("usercode", `device login request failed: HTTP ${res.status}`, {
+					status: res.status,
+				});
 			}
 			let parsed: z.infer<typeof usercodeSchema>;
 			try {
 				parsed = usercodeSchema.parse(await res.json());
-			} catch {
-				return fail("usercode", "device login answered an unexpected body");
+			} catch (err) {
+				return fail("usercode", "device login answered an unexpected body", { err });
 			}
 			const userCode = parsed.user_code ?? parsed.usercode;
 			if (userCode === undefined) {
@@ -358,6 +429,7 @@ export function createChatGptLogin(deps: {
 						: new Date(deadlineMs).toISOString(),
 				intervalMs,
 				deadlineMs,
+				abort: new AbortController(),
 			};
 			log.info("chatgpt login started");
 			const id = pending.id;
@@ -370,13 +442,13 @@ export function createChatGptLogin(deps: {
 		},
 		cancel(): ChatGptStatus {
 			if (pending !== null) {
-				pending = null;
+				clearPending();
 				log.info("chatgpt login cancelled");
 			}
 			return status();
 		},
 		signOut(): ChatGptStatus {
-			pending = null;
+			clearPending();
 			lastError = null;
 			try {
 				unlinkSync(paths.codexAuth());

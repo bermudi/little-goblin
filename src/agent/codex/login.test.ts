@@ -42,7 +42,7 @@ const pinnedConfig = (home: string) =>
 	});
 
 function rig(opts: {
-	respond: (url: string, init?: RequestInit) => Response;
+	respond: (url: string, init?: RequestInit) => Response | Promise<Response>;
 	onSignedIn?(): void;
 	config?: () => Config;
 }) {
@@ -206,6 +206,55 @@ describe("chatgpt device login", () => {
 		const s = login.status();
 		expect(s.state).toBe("error");
 		expect(s.error).toContain("expired");
+	});
+
+	test("a malformed auth file is an error state; a missing one is signed-out", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-login-pin-"));
+		const pin = join(home, "pinned.json");
+		const { login } = rig({
+			config: () => pinnedConfig(home),
+			respond: happyFlow,
+		});
+		expect(login.status().state).toBe("signed-out"); // ENOENT → null
+		writeFileSync(pin, "{not json");
+		const s = login.status();
+		expect(s.state).toBe("error");
+		expect(s.error).toContain("unreadable");
+		expect(s.source).toBe("custom");
+	});
+
+	test("cancel aborts an in-flight poll fetch", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-login-pin-"));
+		let pollSignal: AbortSignal | undefined;
+		const { login } = rig({
+			config: () => pinnedConfig(home),
+			respond: (url, init) => {
+				if (url.endsWith("/deviceauth/token")) {
+					pollSignal = init?.signal ?? undefined;
+					return new Promise<Response>(() => {}); // hangs forever
+				}
+				return Promise.resolve(happyFlow(url));
+			},
+		});
+		await login.start();
+		await flush();
+		expect(pollSignal).toBeDefined();
+		expect(pollSignal?.aborted).toBe(false);
+		login.cancel();
+		expect(pollSignal?.aborted).toBe(true);
+	});
+
+	test("a throwing onSignedIn keeps the completed sign-in signed-in", async () => {
+		const { login } = rig({
+			respond: happyFlow,
+			onSignedIn: () => {
+				throw new Error("provider add blew up");
+			},
+		});
+		await login.start();
+		await flush();
+		expect(login.status().state).toBe("signed-in");
+		expect(login.status().source).toBe("goblin");
 	});
 
 	test("cancel stops the poll and returns to signed-out", async () => {

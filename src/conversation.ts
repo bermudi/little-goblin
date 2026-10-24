@@ -1122,6 +1122,10 @@ export function openStore(dbPath: string): ConversationStore {
 	const qInsertProjection = db.query(
 		"INSERT OR IGNORE INTO event_projections (conversation_id, seq, tool_call_id, replacement, route_key, settings_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
+	// A branch's projection copy rides the copied event set, not the raw
+	// seq: a late answer that rides with its question takes its overlay
+	// along — without it the branch's model view would serve the full
+	// output where the source serves the replacement.
 	const qProjectionsThrough = db.query<
 		{
 			seq: number;
@@ -1133,7 +1137,10 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 		[string, number]
 	>(
-		"SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at FROM event_projections WHERE conversation_id = ? AND seq <= ? ORDER BY seq",
+		`SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at
+		 FROM event_projections WHERE conversation_id = ?1
+		 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
+		  AND COALESCE(anchor_seq, seq) <= ?2) ORDER BY seq`,
 	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
@@ -1200,13 +1207,16 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
 	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
-	// An edit's targeted deletes, all keyed by the same causal cut or the
-	// raw seq. Each dependent was derived from events at or after the cut,
-	// so keeping it would let the model (or the rail) read a transcript
-	// that no longer exists.
+	// An edit's targeted deletes, all keyed by the same causal cut. Each
+	// dependent was derived from the events the cut drops, so keeping it
+	// would let the model (or the rail) read a transcript that no longer
+	// exists. Projections and ratings key on the causal event set itself:
+	// a late answer that rides with its question keeps its projection (the
+	// overlay follows the event it rewrites) and its rating — so the
+	// projection delete reads events and must run before the event delete.
 	const qRewindEvents = db.query(
 		`DELETE FROM events WHERE conversation_id = ?1
-		 AND ((anchor_seq IS NOT NULL AND anchor_seq >= ?2) OR (anchor_seq IS NULL AND seq >= ?2))`,
+		 AND COALESCE(anchor_seq, seq) >= ?2`,
 	);
 	const qRewindCompactions = db.query(
 		"DELETE FROM compactions WHERE conversation_id = ? AND boundary_seq >= ?",
@@ -1215,11 +1225,16 @@ export function openStore(dbPath: string): ConversationStore {
 		"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq >= ?",
 	);
 	const qRewindProjections = db.query(
-		"DELETE FROM event_projections WHERE conversation_id = ? AND seq >= ?",
+		`DELETE FROM event_projections WHERE conversation_id = ?1
+		 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
+		  AND COALESCE(anchor_seq, seq) >= ?2)`,
 	);
+	// A rating row denormalizes its event's seq and anchor, so the causal
+	// key evaluated on the row is the rated event's fate; a legacy null
+	// event_seq falls back to the anchor, as before.
 	const qRewindRatings = db.query(
 		`DELETE FROM reply_ratings WHERE channel = 'app' AND conversation_id = ?1
-		 AND (event_seq >= ?2 OR anchor_seq >= ?2)`,
+		 AND COALESCE(anchor_seq, event_seq) >= ?2`,
 	);
 	const qRaiseSeqHighwater = db.query(
 		`UPDATE conversations SET seq_highwater = MAX(seq_highwater,
@@ -1627,10 +1642,12 @@ export function openStore(dbPath: string): ConversationStore {
 				// delete: a rating or journal row addressed past the cut must
 				// never re-bind to the event the edit appends.
 				qRaiseSeqHighwater.run(id);
+				// The projection sweep reads the events it matches — it runs
+				// before the event delete empties them.
+				const projections = Number(qRewindProjections.run(id, cut).changes);
 				const events = Number(qRewindEvents.run(id, cut).changes);
 				const compactions = Number(qRewindCompactions.run(id, cut).changes);
 				const contexts = Number(qRewindContexts.run(id, cut).changes);
-				const projections = Number(qRewindProjections.run(id, cut).changes);
 				const ratings = Number(qRewindRatings.run(id, cut).changes);
 				const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
 				qInsertEvent.run(

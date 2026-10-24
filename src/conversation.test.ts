@@ -681,6 +681,30 @@ describe("forkToApp (branch)", () => {
 		store.close();
 	});
 
+	test("a late answer riding the cut takes its projection along", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "first")]); // 1
+		store.append(src.id, [user("q2", "second")]); // 2
+		// The pending lane lands Q1's answer after Q2 was asked.
+		store.append(src.id, [asst("a1", "late answer to first")], { anchorSeq: 1 }); // 3
+		store.applyEventProjections(src.id, [projection(3, "t1", "late marker")]);
+		const copied = store.forkToApp(src.id, "branch-5", "/w", "b", undefined, { throughSeq: 2 });
+		// The causal prefix through Q2 is 1 and 2 — and the late answer
+		// (anchor 1) rides in with its question, projection included: the
+		// branch's model view must serve the marker, not the full output
+		// the source replaced.
+		expect(store.historyDetail(copied.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
+			[1, "q1", null],
+			[3, "a1", 1],
+			[2, "q2", null],
+		]);
+		expect(store.eventProjections(copied.id)).toEqual([
+			{ seq: 3, toolCallId: "t1", replacement: "late marker" },
+		]);
+		store.close();
+	});
+
 	test("the project binding copies as creation-fixed state", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		store.db.run(
@@ -828,6 +852,49 @@ describe("editUserMessage (rewind)", () => {
 			[3, "a1", 1],
 			[4, "q2b", null],
 		]);
+		store.close();
+	});
+
+	test("a surviving late answer keeps its projection and its rating", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-6");
+		store.append(c.id, [user("q1", "first")]); // 1
+		store.append(c.id, [user("q2", "second")]); // 2
+		store.append(c.id, [asst("a2", "answer to second")], { anchorSeq: 2 }); // 3
+		// The pending lane lands Q1's answer after Q2's exchange.
+		store.append(c.id, [asst("a1", "late answer to first")], { anchorSeq: 1 }); // 4
+		store.applyEventProjections(c.id, [
+			projection(3, "t2", "second marker"),
+			projection(4, "t1", "late marker"),
+		]);
+		const ratings = openRatings(store.db);
+		ratings.recordApp({
+			conversationId: c.id,
+			anchorSeq: 2,
+			eventSeq: 3,
+			rating: "down",
+		});
+		ratings.recordApp({
+			conversationId: c.id,
+			anchorSeq: 1,
+			eventSeq: 4,
+			rating: "up",
+		});
+
+		const edit = store.editUserMessage(c.id, "q2", user("q2b", "second, rewritten"));
+		// Only the dropped exchange's dependents went: seq 4 rides with
+		// its question, so its projection and its rating ride too — the
+		// model view keeps serving the marker and the rail keeps the vote.
+		expect(edit).toMatchObject({ cutSeq: 2, events: 2, projections: 1, ratings: 1 });
+		expect(store.historyDetail(c.id).map((e) => [e.seq, e.message.id, e.anchorSeq])).toEqual([
+			[1, "q1", null],
+			[4, "a1", 1],
+			[5, "q2b", null],
+		]);
+		expect(store.eventProjections(c.id)).toEqual([
+			{ seq: 4, toolCallId: "t1", replacement: "late marker" },
+		]);
+		expect(ratings.listApp(c.id).map((r) => [r.eventSeq, r.rating])).toEqual([[4, "up"]]);
 		store.close();
 	});
 

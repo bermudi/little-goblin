@@ -384,10 +384,14 @@ skill chips) ride into the replacement, only text is rewritten.
 `COALESCE(anchor_seq, seq)`: a late answer to an earlier question belongs to
 that question's span and survives an edit below it, exactly like the
 compaction boundary rule. The dependent sweep is part of the same
-transaction — compactions whose `boundary_seq` reaches the cut,
-`memory_contexts` at or after it, `event_projections` at or after it, app
-`reply_ratings` addressing an event or anchor at or after it. Queued
-retention for the dropped exchanges is cancelled after commit
+transaction and keys on the same causal event set, not the raw seq —
+compactions whose `boundary_seq` reaches the cut, `memory_contexts`
+anchored at or after it (a recall anchor is a user-event seq, already the
+causal key), the `event_projections` of the cut events — the overlay rides
+the event it rewrites — and app `reply_ratings` on the cut events, whose
+rows denormalize the event's seq and anchor so the causal key evaluates on
+the row. A surviving late answer keeps its projection and its rating.
+Queued retention for the dropped exchanges is cancelled after commit
 (`cancelAnchoredFrom`); **already-retained memory is out of scope** — the
 memory service owns it, and the store cannot unpublish what has landed. An
 archived chat auto-unarchives, like any other activity.
@@ -402,8 +406,9 @@ and silently re-bind stale rating and journal rows to new events.
 conversation holding the source's causal prefix through the selected event,
 then returns 201 and the client opens it. The source is never modified. A
 branch copies the source's project binding (fixed at creation, like every
-app conversation), its memory exclusion, its settings, contexts and
-projections at or below the cut, and its compaction only when
+app conversation), its memory exclusion, its settings, its contexts
+anchored at or below the cut, and the projections of the events it copies,
+and its compaction only when
 `boundary_seq < throughSeq` — a summary reaching past the cut describes
 events the branch does not hold. Ratings never copy. The title is
 `<title> (branch)` and explicit, so the auto-title path leaves it alone; an

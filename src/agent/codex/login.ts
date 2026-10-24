@@ -245,7 +245,11 @@ export function createChatGptLogin(deps: {
 				email: emailOf(payload),
 				plan: planOf(payload),
 				pending: null,
-				error: null,
+				// Fallback credentials (CLI file, pinned path) stay usable
+				// even when the requested sign-in just failed — the state is
+				// honestly signed-in AND the error still surfaces on the card,
+				// so a failed pairing can't masquerade as completion.
+				error: lastError,
 				pinned,
 			};
 		}

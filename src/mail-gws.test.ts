@@ -338,10 +338,16 @@ describe("gws mail reader", () => {
 	});
 
 	test("an arrival that outlasts the grace window is treated as a non-match — the cursor advances", async () => {
+		// Grace is counted in records observed after the candidate —
+		// history ids are opaque and gappy, their distance means nothing.
+		// 50 later records past the candidate is the full grace.
 		const { run } = fakeGws({
 			history: () => ({
-				history: [{ id: "150", messagesAdded: [{ message: { id: "m" } }] }],
-				historyId: "250", // age 100 ≥ grace — noise, not lag
+				history: [
+					{ id: "150", messagesAdded: [{ message: { id: "m" } }] },
+					...Array.from({ length: 50 }, (_, i) => ({ id: String(151 + i) })),
+				],
+				historyId: "250",
 			}),
 			list: () => ({ messages: [] }),
 		});
@@ -350,18 +356,21 @@ describe("gws mail reader", () => {
 	});
 
 	test("the hold skips an aged-out unconfirmed record and pins to the next fresh one", async () => {
+		// 140 trails 51 later records — aged out. 191 trails none — fresh,
+		// so the hold pins to its predecessor, 190.
 		const { run } = fakeGws({
 			history: () => ({
 				history: [
 					{ id: "140", messagesAdded: [{ message: { id: "old" } }] },
-					{ id: "145", messagesAdded: [{ message: { id: "new" } }] },
+					...Array.from({ length: 50 }, (_, i) => ({ id: String(141 + i) })),
+					{ id: "191", messagesAdded: [{ message: { id: "new" } }] },
 				],
-				historyId: "190", // age(140)=50 aged out; age(145)=45 fresh
+				historyId: "250",
 			}),
 			list: () => ({ messages: [] }),
 		});
 		const out = await makeGwsReader(run).poll("from:bank", "100");
-		expect(out).toEqual({ hits: [], historyId: "140" });
+		expect(out).toEqual({ hits: [], historyId: "190" });
 	});
 
 	test("a 404 history list surfaces as HistoryExpiredError", async () => {

@@ -17,10 +17,12 @@ const POLL_BATCH_CAP = 10;
 // cannot confirm them, so the lag watermark below holds their records
 // until the grace runs out, and the full page still gets a warn line.
 const LIST_PAGE = 50;
-// How much mailbox history (in history-record ids) may accrue past an
-// arrival the search has not confirmed before it is treated as a
-// non-match: long enough that a lagging search index gets several
-// polls to surface the record again, short enough that a
+// How many later-arriving history records an unconfirmed arrival may
+// trail before it is treated as a non-match. History ids themselves are
+// opaque — the API documents them as non-contiguous — so the grace is
+// counted in records observed after the candidate, never as the
+// numeric distance between ids. Long enough that a lagging search index
+// gets several polls to surface the record again, short enough that a
 // never-matching filter's cursor cannot trail the head indefinitely.
 const LAG_GRACE_RECORDS = 50;
 
@@ -382,17 +384,18 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		// forever. Hold the checkpoint at the last seen-consistent
 		// boundary: the record before the earliest unconfirmed arrival,
 		// so that record re-arrives next poll and is offered to the
-		// search again. The hold is bounded — once LAG_GRACE_RECORDS of
-		// mailbox history has accrued past the record, the arrival has
-		// had its chances and is treated as a non-match — and it never
+		// search again. The hold is bounded — once LAG_GRACE_RECORDS
+		// later records have accrued past the candidate (counted from
+		// this poll's list; a held checkpoint makes the list re-cover it
+		// each poll, so the count only grows) the arrival has had its
+		// chances and is treated as a non-match — and the hold never
 		// crosses a fired record (records at or before the checkpoint
 		// never re-arrive), so nothing already fired refires:
 		// at-least-once without duplicates.
-		const head = Number(latest);
 		const seen = new Set(matching.map((m) => m.id));
 		let prev = "";
 		let held = "";
-		for (const rec of records) {
+		for (const [i, rec] of records.entries()) {
 			if (Number(rec.id) <= Number(lastIncluded)) {
 				prev = rec.id;
 				continue;
@@ -401,8 +404,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 				prev = rec.id;
 				continue;
 			}
-			const age = head - Number(rec.id);
-			if (Number.isFinite(head) && head > 0 && Number.isFinite(age) && age < LAG_GRACE_RECORDS) {
+			if (records.length - 1 - i < LAG_GRACE_RECORDS) {
 				// The earliest fresh unconfirmed record decides the hold;
 				// later ones sit behind it and re-arrive with it.
 				held = prev === "" ? startHistoryId : prev;

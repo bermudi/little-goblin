@@ -14,25 +14,26 @@ import {
 	symlinkSync,
 	unlinkSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
+import { authFile } from "./auth-parse.ts";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
 import { durableWriteFile } from "./durable.ts";
+import { goblinHome } from "./goblin-home.ts";
 import { log } from "./log.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
 import { MEMORY_DEFAULTS } from "./memory/policy.ts";
 
 // ---------- paths ----------
 
-export function goblinHome(): string {
-	return process.env.GOBLIN_HOME ?? join(homedir(), "goblin");
-}
+// Lives in ./goblin-home.ts — dependency-free so pre-install tooling
+// resolves the same root without this module's json5/zod chain.
+export { goblinHome } from "./goblin-home.ts";
 
 export const paths = {
 	config: () => join(goblinHome(), "goblin.json5"),
-	auth: () => join(goblinHome(), "auth.jsonl"),
+	auth: authFile,
 	mcporter: () => join(goblinHome(), "mcporter.json"),
 	mcpShim: () => join(goblinHome(), "mcp"),
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),

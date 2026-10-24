@@ -109,6 +109,17 @@ late success or failure cannot install a pairing, exchange a grant, write
 credentials, or change a successor login's state. Aborting network I/O is
 an optimization, not the authority fence.
 
+Sign-out's fence extends to the credential refresh in `src/agent/codex/auth.ts`:
+a rotated pair may only be written back over the pair it derived from. A file
+still absent after the merge-read retries was unlinked mid-refresh — the
+fresh pair is sacrificed, never resurrected; a file holding a different
+refresh_token (sibling rotation or a newer login) is adopted, never clobbered.
+
+Usable fallback credentials are not the requested login's outcome: status
+reports signed-in from whichever file resolves (pinned, goblin's, the CLI's)
+while still carrying the last flow's error, so a failed pairing can never
+read as silent completion.
+
 After sign-in, an existing provider of kind `codex` is reused without config
 changes. If none exists, creation chooses the first unused name: `codex`,
 then `codex-2`, `codex-3`, and so on. A different provider already named

@@ -177,6 +177,34 @@ describe("ChatGptAccount", () => {
 		expect(container.textContent).toContain("Signed in as new@example.test");
 	});
 
+	test("a pending → signed-in+error transition shows the failure and never fires onSignedIn", async () => {
+		// Fallback CLI creds report signed-in even though the requested
+		// pairing failed — not a completion, and the error stays visible.
+		statusQueue = [
+			st({
+				state: "pending",
+				pending: {
+					userCode: "WXYZ-1234",
+					verificationUrl: "https://auth.openai.com/codex/device",
+					expiresAt: new Date(Date.now() + 600_000).toISOString(),
+				},
+			}),
+			st({
+				state: "signed-in",
+				source: "codex-cli",
+				email: "cli@example.test",
+				error: "device login request failed: HTTP 500",
+			}),
+		];
+		await mountCard();
+		await waitFor(
+			() => container.textContent?.includes("HTTP 500") ?? false,
+			"the failure line",
+		);
+		expect(signedInCalls).toBe(0);
+		expect(container.textContent).toContain("Using your Codex CLI login");
+	});
+
 	test("starting sign-in from signed-out starts polling without a parent rerender", async () => {
 		statusQueue = [
 			st({}),

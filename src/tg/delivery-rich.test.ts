@@ -29,7 +29,11 @@ const conv: Conversation = {
 	createdAt: "",
 };
 
-const groupConv: Conversation = { ...conv, id: "tg:-100", chatId: -100 };
+// Production shape: a topic-less group's standing lane is addressed
+// dm:<negative chatId> (mod.ts conversationAddress) — it shares the dm:
+// prefix with real DMs, so the rich gate must parse the address, not
+// match the prefix.
+const groupConv: Conversation = { ...conv, id: "dm:-404", chatId: -404 };
 
 interface DraftCall {
 	kind: "plain" | "rich";
@@ -373,9 +377,16 @@ describe("rich delivery", () => {
 	test("the kill switch and non-DM conversations keep the plain sink", async () => {
 		const done = silenceLogs();
 		try {
+			const topicConv: Conversation = {
+				...conv,
+				id: "topic:-100:44",
+				chatId: -100,
+				threadId: 44,
+			};
 			for (const [c, enabled] of [
 				[conv, false],
 				[groupConv, true],
+				[topicConv, true],
 			] as const) {
 				const { api, drafts, richSends, msgs } = fakeApi();
 				const sink = makeDeliverySink(api, c, { editIntervalMs: 0, rich: { enabled } });
@@ -385,6 +396,25 @@ describe("rich delivery", () => {
 				expect(richSends).toEqual([]);
 				expect(msgs).toContain("plain");
 			}
+		} finally {
+			done();
+		}
+	});
+
+	// Rolling DMs are private chats too — the parsed-address gate must
+	// keep them rich, not fence everything past the standing lane.
+	test("a rolling DM keeps the rich sink", async () => {
+		const done = silenceLogs();
+		try {
+			const rollingConv: Conversation = { ...conv, id: "dm:7:3", chatId: 7 };
+			const { api, drafts, richSends, msgs } = fakeApi();
+			const sink = makeDeliverySink(api, rollingConv, { editIntervalMs: 0, rich: { enabled: true } });
+			sink.onTextDelta("rolled");
+			await sink.onDone({ kind: "completed" });
+			expect(drafts.some((d) => d.kind === "rich" && d.markdown === "rolled")).toBe(true);
+			expect(richSends).toHaveLength(1);
+			expect(richSends[0]!.markdown).toBe("rolled");
+			expect(msgs).toEqual([]);
 		} finally {
 			done();
 		}

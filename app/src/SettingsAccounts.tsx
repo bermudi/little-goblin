@@ -75,6 +75,7 @@ function ServiceCard({ prov, ctx }: { prov: ProvDraft; ctx: SettingsCtx }) {
 				<span className="fav-cell">
 					<span className="fav-name">{label}</span>
 					{label !== prov.name && <span className="fav-ref">{prov.name}</span>}
+					{refs.length > 0 && <span className="fav-ref">Used by {refs.join(", ")}</span>}
 				</span>
 				<KeyStatus
 					token={token}
@@ -99,7 +100,6 @@ function ServiceCard({ prov, ctx }: { prov: ProvDraft; ctx: SettingsCtx }) {
 					</button>
 				</span>
 			</div>
-			{refs.length > 0 && <div className="cap">Used by {refs.join(", ")}.</div>}
 			{nameErr !== null && <div className="cap err-inline">{nameErr}</div>}
 			{open && (
 				<>

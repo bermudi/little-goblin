@@ -85,7 +85,7 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 				)}
 				{modelButton(
 					"Image generation",
-					"Adds an image tool for openai-compatible providers — the OpenAI images endpoint.",
+					"Adds an image tool — the OpenAI images endpoint.",
 					"image",
 					draft.image?.model ?? "",
 					"imageLabel",

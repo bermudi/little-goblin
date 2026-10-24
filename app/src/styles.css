@@ -2400,14 +2400,15 @@ a.hit-title {
 }
 
 .chain-card {
-	border: 1px solid var(--app-divider);
-	border-radius: 10px;
-	background: var(--app-gray-50);
-	padding: 0.6rem 0.75rem;
 	display: flex;
 	flex-direction: column;
 	gap: 0.45rem;
-	margin-bottom: 0.5rem;
+	padding: 0.5rem 0;
+	border-top: 1px solid var(--app-divider);
+}
+.chain-card:first-of-type {
+	border-top: 0;
+	padding-top: 0.1rem;
 }
 .chain-head {
 	display: flex;
@@ -2417,7 +2418,8 @@ a.hit-title {
 	font-family: var(--font-mono);
 	font-size: 11px;
 	color: var(--app-fg-muted);
-	flex: 1;
+	flex: none;
+	width: 1.4rem;
 }
 .chain-btns {
 	display: flex;
@@ -4768,4 +4770,48 @@ button.link:hover {
 .win-table th {
 	color: var(--app-fg-subtle);
 	font-weight: 500;
+}
+
+.keystat {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+/* Settings selects — dark, token-styled, with a chevron. */
+.settings select {
+	appearance: none;
+	-webkit-appearance: none;
+	font: inherit;
+	font-size: 12.5px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 1.7rem 0.4rem 0.6rem;
+	outline: none;
+	background-image:
+		linear-gradient(45deg, transparent 50%, var(--app-fg-muted) 50%),
+		linear-gradient(135deg, var(--app-fg-muted) 50%, transparent 50%);
+	background-position:
+		calc(100% - 14px) 55%,
+		calc(100% - 9px) 55%;
+	background-size: 5px 5px;
+	background-repeat: no-repeat;
+	max-width: 100%;
+}
+.settings select option {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+/* Model popover rows: label stack left, check pinned right, never wraps. */
+.model-pop li button {
+	flex-wrap: nowrap;
+}
+.model-pop .check {
+	flex: none;
+	margin-left: auto;
+}
+.chatgpt-code {
+	font-size: 1.3em;
+	letter-spacing: 0.12em;
 }

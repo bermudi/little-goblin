@@ -134,7 +134,7 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 			<div className="card">
 				<Row
 					label="Text to speech"
-					cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
+					cap="Read replies aloud and send voice notes."
 				>
 					<Switch
 						on={tts !== null}
@@ -164,7 +164,11 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 					<>
 						<Row
 							label="Engine"
-							cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint, mimo through Xiaomi's chat-completions speech, onemin through 1min.AI's feature API."
+							cap={
+								tts.kind === "edge"
+									? "Free Microsoft voices, run through ffmpeg on this machine."
+									: `Uses your ${displayName(serviceNames, tts.kind)} key.`
+							}
 						>
 							<select
 								className="mono"
@@ -237,6 +241,7 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 								<Field
 									label="Rate"
 									value={tts.rate}
+									cap="Speed, like +10% or -5%."
 									onChange={(v) => patchTts({ rate: v })}
 									placeholder="+10%"
 									mono
@@ -300,7 +305,11 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 					<>
 						<Row
 							label="Engine"
-							cap="Whistle runs on this machine with no model or key; the rest are cloud services."
+							cap={
+									tr.kind === "whistle"
+										? "Runs on this machine — no key."
+										: `Uses your ${displayName(serviceNames, tr.kind)} key.`
+								}
 						>
 							<select
 								className="mono"

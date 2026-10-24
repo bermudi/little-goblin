@@ -13,6 +13,7 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { useCopy } from "./useCopy.ts";
+import { Row } from "./settingsKit.tsx";
 
 const POLL_MS = 3000;
 
@@ -78,108 +79,107 @@ export function ChatGptAccount({
 
 	if (status === null) {
 		return (
-			<div className="card">
-				<h3 className="ops-h3">ChatGPT</h3>
-				<div className="cap">{err ?? "Loading…"}</div>
-			</div>
+			<>
+				<h2 className="ops-h2">ChatGPT</h2>
+				<div className="card">
+					<div className="cap">{err ?? "Loading…"}</div>
+				</div>
+			</>
 		);
 	}
 
 	const doorNote = telegramDoor() ? "Finish the pairing in the browser tab that opens." : null;
+	const signIn = (
+		<button
+			type="button"
+			className="addbtn"
+			disabled={busy}
+			onClick={() => void act(startChatGptLogin)}
+		>
+			Sign in with ChatGPT
+		</button>
+	);
 
 	return (
-		<div className="card">
-			<h3 className="ops-h3">ChatGPT</h3>
-			{status.state === "pending" && status.pending !== null ? (
-				<>
-					<div className="cap">
-						Enter this code at OpenAI's sign-in page
-						{doorNote !== null ? ` — ${doorNote}` : ""}:
-					</div>
-					<div className="addrow">
-						<code className="mono" style={{ fontSize: "1.4em", letterSpacing: "0.15em" }}>
-							{status.pending.userCode}
-						</code>
-						<button type="button" className="addbtn" onClick={() => copy(status.pending!.userCode)}>
-							{copied ? "Copied" : "Copy"}
-						</button>
-						<a
-							href={status.pending.verificationUrl}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="keylink"
+		<>
+			<h2 className="ops-h2">ChatGPT</h2>
+			<div className="card">
+				{status.state === "pending" && status.pending !== null ? (
+					<>
+						<Row label="Pairing code" cap={`Enter it at OpenAI's sign-in page${doorNote !== null ? ` — ${doorNote}` : ""}.`}>
+							<code className="mono chatgpt-code">{status.pending.userCode}</code>
+						</Row>
+						<div className="addrow">
+							<button type="button" className="addbtn" onClick={() => copy(status.pending!.userCode)}>
+								{copied ? "Copied" : "Copy"}
+							</button>
+							<a
+								href={status.pending.verificationUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+								className="keylink"
+							>
+								Open sign-in page
+							</a>
+							<button
+								type="button"
+								className="ghost"
+								disabled={busy}
+								onClick={() => void act(cancelChatGptLogin)}
+							>
+								Cancel
+							</button>
+						</div>
+						<div className="cap">
+							{expiryCountdown(status.pending.expiresAt, nowMs) !== null
+								? `Expires in ${expiryCountdown(status.pending.expiresAt, nowMs)}`
+								: "Pairing code expired — start again."}
+						</div>
+					</>
+				) : status.state === "signed-in" && status.source === "goblin" ? (
+					<Row
+						label="Status"
+						cap={`Signed in as ${status.email ?? "your ChatGPT account"}${status.plan !== null ? ` · ${status.plan}` : ""}`}
+					>
+						<button
+							type="button"
+							className="ghost"
+							disabled={busy}
+							onClick={() => {
+								if (window.confirm("Sign goblin out of ChatGPT?")) {
+									void act(signOutChatGpt);
+								}
+							}}
 						>
-							Open sign-in page
-						</a>
-					</div>
-					<div className="cap">
-						{expiryCountdown(status.pending.expiresAt, nowMs) !== null
-							? `Expires in ${expiryCountdown(status.pending.expiresAt, nowMs)}`
-							: "Pairing code expired — start again."}
-					</div>
-					<button
-						type="button"
-						className="addbtn"
-						disabled={busy}
-						onClick={() => void act(cancelChatGptLogin)}
+							Sign out
+						</button>
+					</Row>
+				) : status.state === "signed-in" && status.source === "codex-cli" ? (
+					<>
+						<Row
+							label="Status"
+							cap={`Using your Codex CLI login${status.email !== null ? ` (${status.email})` : ""} — sign in here to give goblin its own login; your terminal's codex stays untouched.`}
+						>
+							{signIn}
+						</Row>
+					</>
+				) : status.pinned ? (
+					<Row
+						label="Status"
+						cap="Using the auth file set in goblin.json5 — remove authFile from the codex provider to sign in here."
 					>
-						Cancel
-					</button>
-				</>
-			) : status.state === "signed-in" && status.source === "goblin" ? (
-				<>
-					<div>
-						Signed in as {status.email ?? "your ChatGPT account"}
-						{status.plan !== null ? ` · ${status.plan}` : ""}
-					</div>
-					<button
-						type="button"
-						className="keylink"
-						disabled={busy}
-						onClick={() => {
-							if (window.confirm("Sign goblin out of ChatGPT?")) {
-								void act(signOutChatGpt);
-							}
-						}}
+						<span className="cap">read-only</span>
+					</Row>
+				) : (
+					<Row
+						label="Status"
+						cap={`Not signed in.${status.error !== null ? ` ${status.error}` : ""}`}
 					>
-						Sign out
-					</button>
-				</>
-			) : status.state === "signed-in" && status.source === "codex-cli" ? (
-				<>
-					<div>Using your Codex CLI login{status.email !== null ? ` (${status.email})` : ""}.</div>
-					<div className="cap">
-						Sign in here to give goblin its own login — your terminal's codex stays untouched.
-					</div>
-					<button
-						type="button"
-						className="addbtn"
-						disabled={busy}
-						onClick={() => void act(startChatGptLogin)}
-					>
-						Sign in with ChatGPT
-					</button>
-				</>
-			) : status.pinned ? (
-				<>
-					<div>Using the auth file set in goblin.json5.</div>
-					<div className="cap">Remove authFile from the codex provider to sign in here.</div>
-				</>
-			) : (
-				<>
-					<div>Not signed in.</div>
-					{status.error !== null && <div className="cap err-inline">{status.error}</div>}
-					<button
-						type="button"
-						className="addbtn"
-						disabled={busy}
-						onClick={() => void act(startChatGptLogin)}
-					>
-						Sign in with ChatGPT
-					</button>
-				</>
-			)}
-			{err !== null && <div className="cap err-inline">{err}</div>}
-		</div>
+						{signIn}
+					</Row>
+				)}
+				{err !== null && <div className="cap err-inline">{err}</div>}
+			</div>
+		</>
 	);
 }

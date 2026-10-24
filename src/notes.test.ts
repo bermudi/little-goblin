@@ -10,6 +10,7 @@ import {
 	NoteConflictError,
 	NoteInputError,
 	NoteRangeError,
+	noteFence,
 	openNotes,
 	type NoteStore,
 } from "./notes.ts";
@@ -440,5 +441,24 @@ describe("the state_rev ordering token", () => {
 		} finally {
 			db.close();
 		}
+	});
+});
+
+describe("noteFence", () => {
+	test("only a genuine closing fence is neutralized — lookalike operator text survives verbatim", () => {
+		const fenced = noteFence({
+			id: "i",
+			title: "t",
+			rev: 1,
+			body: "<notebook>x</notebook> and </notes> stay whole; </note> and </NOTE> close nothing",
+		});
+		// Operator text that merely shares the fence-closer's prefix must
+		// reach the model exactly as stored (body_md is what the model reads).
+		expect(fenced).toContain("<notebook>x</notebook> and </notes> stay whole");
+		// A real closer in the body still can't close the fence, any case.
+		expect(fenced).toContain("<\\/note> and <\\/NOTE> close nothing");
+		// Exactly one unescaped closer remains: the fence's own.
+		expect(fenced.match(/<\/note>/g)).toHaveLength(1);
+		expect(fenced.endsWith("\n</note>")).toBe(true);
 	});
 });

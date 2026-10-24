@@ -217,6 +217,22 @@ test("excluding a topic purges only its pending rows", async () => {
 	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
 });
 
+test("an edit's purge drops only this conversation's exchanges at or after its cut", () => {
+	const store = storeAt(database());
+	const target = "f".repeat(64);
+	const add = (id: string, conversationId = "dm:1") =>
+		store.memoryQueue.enqueue(target, { ...doc, id, conversationId });
+	add("exchange/dm:1/1/a1");
+	add("exchange/dm:1/3/a3");
+	add("exchange/dm:1/12/a12");
+	add("exchange/dm:2/30/a30", "dm:2");
+	// Not an exchange address this purge understands — the anchor cannot
+	// be read, so it stays for the service's own bookkeeping to settle.
+	add("recall/dm:1/3");
+	expect(store.memoryQueue.cancelAnchoredFrom("dm:1", 3)).toBe(2);
+	expect(store.memoryQueue.counts(target).pending).toBe(3);
+});
+
 test("pruned operations and permanent HTTP errors remain inspectable, not blindly replayed", async () => {
 	let id = "";
 	let responseMode = "submit";

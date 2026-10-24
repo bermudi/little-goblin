@@ -256,7 +256,7 @@ export class MemoryQueue {
 		return Number(change.changes);
 	}
 
-	cancelConversation(conversationId: string): number {
+	private purgePending(match: (doc: MemoryDocument) => boolean): number {
 		const rows = this.db
 			.query<{ rowid: number; operation_id: string; payload: string }, []>(
 				`SELECT rowid, operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
@@ -276,12 +276,12 @@ export class MemoryQueue {
 				this.quarantine(row, err);
 				continue;
 			}
-			if (doc.conversationId !== conversationId) continue;
+			if (!match(doc)) continue;
 			if (this.inflight !== null && this.inflight.operationId === row.operation_id) {
 				this.inflight.cancelRequested = true;
 				log.info("memory retention cancel deferred — submit in flight", {
 					operation: row.operation_id,
-					conversation: conversationId,
+					conversation: doc.conversationId,
 				});
 				continue;
 			}
@@ -292,6 +292,24 @@ export class MemoryQueue {
 			);
 		}
 		return removed;
+	}
+
+	cancelConversation(conversationId: string): number {
+		return this.purgePending((doc) => doc.conversationId === conversationId);
+	}
+
+	// An edit deleted the exchanges at and after anchorSeq: their queued
+	// retention must not reach the service. The document id is
+	// `exchange/<conversation>/<anchor>/<assistant>`; the conversation id
+	// itself may contain slashes, so the prefix includes its trailing
+	// separator and only the remainder is split.
+	cancelAnchoredFrom(conversationId: string, anchorSeq: number): number {
+		const prefix = `exchange/${conversationId}/`;
+		return this.purgePending((doc) => {
+			if (doc.conversationId !== conversationId || !doc.id.startsWith(prefix)) return false;
+			const anchor = Number(doc.id.slice(prefix.length).split("/")[0]);
+			return Number.isSafeInteger(anchor) && anchor >= anchorSeq;
+		});
 	}
 
 	counts(target: string): MemoryQueueCounts {

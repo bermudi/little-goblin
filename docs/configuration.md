@@ -83,10 +83,18 @@ Four kinds exist (the shipped example uses `responses` for Z.AI):
 | `openai-compatible` | OpenAI-style Chat Completions endpoints | a secret in `auth.jsonl` |
 | `responses` | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl` |
 | `openrouter` | OpenRouter | a secret in `auth.jsonl` |
-| `codex` | ChatGPT-subscription models via the Codex CLI's own login | nothing — it reads `~/.codex/auth.json` (override with `authFile`) |
+| `codex` | ChatGPT-subscription models | nothing — sign in from Settings → Accounts & keys; tokens live in `$GOBLIN_HOME/state/codex-auth.json` (falls back to `~/.codex/auth.json`; `authFile` pins a path) |
 
-For `codex`, run `codex login` first. The bot refreshes expired tokens
-itself and writes the rotated tokens back, so the CLI login keeps working.
+For `codex`, use **Sign in with ChatGPT** in Settings (a device code you
+approve on any browser). Goblin keeps its own token file, so signing in or
+out never touches your terminal's `codex` login. Until the first in-app
+sign-in it reads `~/.codex/auth.json` (run `codex login`); an explicit
+`authFile` pins a path and disables in-app sign-in. Expired tokens are
+refreshed in-process and written back.
+
+Blocks switched off in Settings move under `parked` instead of being
+deleted, so switching them back on restores every field — including the
+ones only this file edits.
 
 #### 1min.AI (OpenAI-compatible relay)
 

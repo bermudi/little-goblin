@@ -391,20 +391,20 @@ describe("turn resume", () => {
 		expect(rows[0]!.status).toBe("completed");
 		const newCalls = journal.callsFor(rows[0]!.run_id);
 		expect(newCalls.map((c) => c.toolCallId).sort()).toEqual([
-			"c-amb",
-			"c-done",
-			"c-plan",
 			"n1",
 			"n2",
 			"n3",
+			"run-src:c-amb",
+			"run-src:c-done",
+			"run-src:c-plan",
 		]);
 		// 'dispatched' stays un-inherited — ambiguity remains owned by the
 		// row that ran.
-		expect(newCalls.find((c) => c.toolCallId === "c-done")!.state).toBe("completed");
-		const granted = newCalls.find((c) => c.toolCallId === "c-amb")!;
+		expect(newCalls.find((c) => c.toolCallId === "run-src:c-done")!.state).toBe("completed");
+		const granted = newCalls.find((c) => c.toolCallId === "run-src:c-amb")!;
 		expect(granted.state).toBe("resolved-retry");
 		expect(granted.retryConsumed).toBe(true);
-		expect(newCalls.find((c) => c.toolCallId === "c-plan")!.state).toBe("planned");
+		expect(newCalls.find((c) => c.toolCallId === "run-src:c-plan")!.state).toBe("planned");
 		expect(
 			newCalls.filter((c) => c.toolCallId.startsWith("n")).every((c) => c.state === "completed"),
 		).toBe(true);
@@ -1802,7 +1802,7 @@ describe("turn resume", () => {
 		expect(first.state).toBe("completed");
 		expect(first.replayed).toBe(false);
 		// The grant spent durably on the successor's inherited copy.
-		expect(calls.find((c) => c.toolCallId === "c-done")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "run-src:c-done")!.retryConsumed).toBe(true);
 		const second = calls.find((c) => c.toolCallId === "n2")!;
 		expect(second.replayed).toBe(true);
 		expect(second.result).toContain("[turn-journal conflict]");
@@ -1843,8 +1843,8 @@ describe("turn resume", () => {
 			{ name: "probe", args: { q: 1 } },
 		]);
 		const calls = journal.callsFor(successorRunId(store, "run-src"));
-		expect(calls.find((c) => c.toolCallId === "g-amb")!.retryConsumed).toBe(true);
-		expect(calls.find((c) => c.toolCallId === "g-known")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "run-src:g-amb")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "run-src:g-known")!.retryConsumed).toBe(true);
 		const third = calls.find((c) => c.toolCallId === "n3")!;
 		expect(third.replayed).toBe(true);
 		expect(third.result).toContain("operator skipped re-running");
@@ -1884,7 +1884,7 @@ describe("turn resume", () => {
 			startedAt: "2026-10-11T00:01:00.000Z",
 			resumedFrom: "run-src",
 		});
-		journal.noteToolDispatch("run-r1", "n1", "probe", { q: 1 }, { retryCallId: "c-grant" });
+		journal.noteToolDispatch("run-r1", "n1", "probe", { q: 1 }, { retryCallId: "run-src:c-grant" });
 		store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = 'run-r1'");
 
 		// The ambiguous dispatch owns the fence — no resume until the
@@ -1899,7 +1899,7 @@ describe("turn resume", () => {
 		// same-signature re-ask conflicts, nothing runs again.
 		expect(executed).toEqual([]);
 		const calls = journal.callsFor(successorRunId(store, "run-r1"));
-		expect(calls.find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(true);
+		expect(calls.find((c) => c.toolCallId === "run-src:c-grant")!.retryConsumed).toBe(true);
 		const reask = calls.find((c) => c.toolCallId === "re-1")!;
 		expect(reask.replayed).toBe(true);
 		expect(reask.result).toContain("[turn-journal conflict]");
@@ -1949,7 +1949,9 @@ describe("turn resume", () => {
 		const continuation = journal.callsFor(rows[1]!.run_id);
 		// The predecessor's spent copy was inherited first — INSERT OR
 		// IGNORE keeps it over the source's still-open copy.
-		expect(continuation.find((c) => c.toolCallId === "c-grant")!.retryConsumed).toBe(true);
+		expect(continuation.find((c) => c.toolCallId === "run-src:c-grant")!.retryConsumed).toBe(
+			true,
+		);
 		const reask = continuation.find((c) => c.toolCallId === "re-1")!;
 		expect(reask.replayed).toBe(true);
 		expect(reask.result).toContain("[turn-journal conflict]");

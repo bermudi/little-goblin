@@ -419,6 +419,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 		replayed INTEGER NOT NULL DEFAULT 0,
 		retry_consumed INTEGER NOT NULL DEFAULT 0,
 		retry_from_known INTEGER NOT NULL DEFAULT 0,
+		origin_run TEXT,
 		result TEXT,
 		error TEXT,
 		began_ms INTEGER,
@@ -464,6 +465,12 @@ export function openTurnJournal(db: Database): TurnJournal {
 	// exact default, not a guess.
 	if (!callCols.has("retry_from_known")) {
 		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN retry_from_known INTEGER NOT NULL DEFAULT 0");
+	}
+	// The origin run of an inherited evidence copy — NULL for a call this
+	// run made itself. Rows copied before the column existed read NULL
+	// and take their immediate source's namespace at the next copy.
+	if (!callCols.has("origin_run")) {
+		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN origin_run TEXT");
 	}
 	const stale = db
 		.query<{ run_id: string; conversation_id: string; started_ms: number }, [number]>(
@@ -571,12 +578,37 @@ export function openTurnJournal(db: Database): TurnJournal {
 	);
 	const qCalls = db.query("SELECT * FROM turn_tool_calls WHERE run_id = ? ORDER BY rowid");
 	const interruptedAtOpen = stale.map((r) => decodeRun(qGet.get(r.run_id)));
+	// Inherited evidence copies are namespaced by their ORIGIN run, never
+	// carried under the raw provider id. The primary key (run_id,
+	// tool_call_id) spans both the inherited copies and this attempt's
+	// own calls, and providers that number tool-call ids per response
+	// (the part-id precedent at turn/stream.ts) hand the successor's
+	// fresh execution an id a terminal inherited row already holds —
+	// every upsert guard then silently drops that execution's records,
+	// and the retry-grant target check hard-fails the turn. Keying the
+	// copy on COALESCE(origin_run, source) keeps the namespace idempotent
+	// across hops: one piece of evidence copied along two paths (a
+	// continuation inherits both the failed attempt and the resume
+	// source) lands on a single row — first insert wins, so the more
+	// settled copy keeps beating the stale one — while the successor's
+	// own calls never collide with evidence. A namespaced row stores its
+	// origin and its id as `<origin>:<raw>`, so the raw id survives every
+	// hop: re-prefixing strips the stored origin's prefix first. Rows
+	// copied before origin_run existed read NULL and take their immediate
+	// source's namespace at the next copy. A provider emitting an id that
+	// already reads as `<run-id>:<id>` would re-enter the namespace;
+	// provider ids are not run-id-shaped.
 	const qInherit = db.query(
 		`INSERT OR IGNORE INTO turn_tool_calls
 			(run_id, tool_call_id, name, args, args_hash, state, replayed, result, error,
-			 began_ms, settled_ms, resolution_note, resolved_ms, retry_consumed, retry_from_known)
-		 SELECT ?, tool_call_id, name, args, args_hash, state, replayed, result, error,
-			began_ms, settled_ms, resolution_note, resolved_ms, retry_consumed, retry_from_known
+			 began_ms, settled_ms, resolution_note, resolved_ms, retry_consumed, retry_from_known, origin_run)
+		 SELECT ?,
+			COALESCE(origin_run, ?) || ':' ||
+				CASE WHEN origin_run IS NULL THEN tool_call_id
+					ELSE SUBSTR(tool_call_id, LENGTH(origin_run) + 2) END,
+			name, args, args_hash, state, replayed, result, error,
+			began_ms, settled_ms, resolution_note, resolved_ms, retry_consumed, retry_from_known,
+			COALESCE(origin_run, ?)
 		 FROM turn_tool_calls WHERE run_id = ? AND state != 'dispatched'`,
 	);
 
@@ -609,12 +641,12 @@ export function openTurnJournal(db: Database): TurnJournal {
 					if (qRunStatus.get(pred) === null) {
 						throw new Error(`inherit predecessor run ${pred} is gone`);
 					}
-					qInherit.run(input.runId, pred);
+					qInherit.run(input.runId, pred, pred, pred);
 				}
 				if (input.resumedFrom === undefined) return;
 				const src = qRunStatus.get(input.resumedFrom);
 				if (src === null) throw new Error(`resume source run ${input.resumedFrom} is gone`);
-				qInherit.run(input.runId, input.resumedFrom);
+				qInherit.run(input.runId, input.resumedFrom, input.resumedFrom, input.resumedFrom);
 				if (src.status === "interrupted") {
 					qMark.run("resumed", Date.now(), input.resumedFrom);
 					resumedMarked = true;
@@ -807,7 +839,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 			log.info("interrupted run marked", { run: runId, status });
 		},
 		inheritCalls(sourceRunId, intoRunId) {
-			qInherit.run(intoRunId, sourceRunId);
+			qInherit.run(intoRunId, sourceRunId, sourceRunId, sourceRunId);
 		},
 		interrupted() {
 			return qInterrupted.all().map(decodeRun);

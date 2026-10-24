@@ -570,9 +570,13 @@ describe("turn journal", () => {
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(src, next);
 		const calls = journal.callsFor(next);
-		expect(calls.map((c) => c.toolCallId).sort()).toEqual(["amb", "done", "plan"]);
-		expect(calls.find((c) => c.toolCallId === "done")!.result).toBe('{"out":"landed"}');
-		expect(calls.find((c) => c.toolCallId === "amb")!.state).toBe("resolved-skip");
+		expect(calls.map((c) => c.toolCallId).sort()).toEqual([
+			"run-src:amb",
+			"run-src:done",
+			"run-src:plan",
+		]);
+		expect(calls.find((c) => c.toolCallId === "run-src:done")!.result).toBe('{"out":"landed"}');
+		expect(calls.find((c) => c.toolCallId === "run-src:amb")!.state).toBe("resolved-skip");
 		journal.inheritCalls(src, next);
 		expect(journal.callsFor(next)).toHaveLength(3);
 		store.close();
@@ -764,7 +768,7 @@ describe("turn journal", () => {
 			});
 			expect(journal.get("source-run")!.status).toBe("resumed");
 			expect(journal.callsFor("successor-run")).toMatchObject([
-				{ toolCallId: "c-1", name: "probe", state: "completed" },
+				{ toolCallId: "source-run:c-1", name: "probe", state: "completed" },
 			]);
 		} finally {
 			reopened.close();
@@ -793,8 +797,8 @@ describe("turn journal", () => {
 			startedAt: "2026-10-11T00:00:00.000Z",
 			inheritFrom: [pred],
 		});
-		expect(journal.callsFor(next).map((c) => c.toolCallId)).toEqual(["done"]);
-		expect(journal.callsFor(next).find((c) => c.toolCallId === "done")!.result).toBe(
+		expect(journal.callsFor(next).map((c) => c.toolCallId)).toEqual(["run-pred:done"]);
+		expect(journal.callsFor(next).find((c) => c.toolCallId === "run-pred:done")!.result).toBe(
 			'{"out":"pred-ran"}',
 		);
 		// The evidence link is part of the row's creation — a gone
@@ -813,6 +817,121 @@ describe("turn journal", () => {
 			}),
 		).toThrow(/is gone/);
 		expect(journal.get("run-x")).toBeNull();
+		store.close();
+	});
+
+	test("a tool-call id reused across an inherited span journals the fresh execution", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		// Attempt A completes call_0. Providers that number tool-call ids
+		// per response (llama.cpp-style openai-compatible servers) hand
+		// the continuation's fresh execution the same id verbatim.
+		const a = begunRun(journal, conv.id, "run-a");
+		journal.noteToolInput(a, "call_0", "probe", { n: 1 });
+		journal.noteToolDispatch(a, "call_0", "probe", { n: 1 });
+		journal.noteToolResult(a, "call_0", { old: true });
+		journal.finishRun(a, "error", "undelivered");
+
+		journal.beginRun({
+			runId: "run-b",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: { model: "z.ai/glm-5", thinking: "low" },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:01:00.000Z",
+			inheritFrom: [a],
+		});
+		journal.noteToolInput("run-b", "call_0", "probe", { n: 2 });
+		journal.noteToolDispatch("run-b", "call_0", "probe", { n: 2 });
+		journal.noteToolResult("run-b", "call_0", { fresh: true });
+
+		const calls = journal.callsFor("run-b");
+		// A's evidence keeps its recorded outcome under its namespaced id.
+		const inherited = calls.find((c) => c.toolCallId === "run-a:call_0")!;
+		expect(inherited.state).toBe("completed");
+		expect(inherited.result).toBe('{"old":true}');
+		// B's own execution is journaled under the id the provider sent —
+		// never silently swallowed by A's terminal inherited row.
+		const fresh = calls.find((c) => c.toolCallId === "call_0")!;
+		expect(fresh.state).toBe("completed");
+		expect(fresh.result).toBe('{"fresh":true}');
+		expect(fresh.argsHash).not.toBe(inherited.argsHash);
+		expect(calls).toHaveLength(2);
+		store.close();
+	});
+
+	test("an inherited grant is consumable under a colliding dispatch id", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		// The operator granted the re-run on run-a's ambiguous c1. The
+		// resume successor inherits the grant, and per-response id
+		// renumbering hands the re-ask dispatch the same raw id — the
+		// target check must read the fresh id's row, never the inherited
+		// one (which reads 'resolved-retry' and hard-fails the turn).
+		const a = begunRun(journal, conv.id, "run-a");
+		journal.noteToolInput(a, "c1", "probe", { q: 1 });
+		journal.noteToolDispatch(a, "c1", "probe", { q: 1 });
+		interruptRun(store, a);
+		journal.resolveCall(a, "c1", "authorize-retry");
+
+		journal.beginRun({
+			runId: "run-b",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: { model: "z.ai/glm-5", thinking: "low" },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:01:00.000Z",
+			resumedFrom: "run-a",
+		});
+		// The fence's verdict carries the inherited grant's namespaced id.
+		journal.noteToolInput("run-b", "c1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-b", "c1", "probe", { q: 1 }, { retryCallId: "run-a:c1" });
+		const calls = journal.callsFor("run-b");
+		expect(calls.find((c) => c.toolCallId === "c1")!.state).toBe("dispatched");
+		expect(calls.find((c) => c.toolCallId === "run-a:c1")!.retryConsumed).toBe(true);
+		store.close();
+	});
+
+	test("a replayed refusal journals fresh under a colliding id", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		// The recovery fence refuses a re-ask matching inherited evidence
+		// and journals the synthetic answer under the id the provider
+		// sent — the inherited row must keep its own recorded outcome.
+		const a = begunRun(journal, conv.id, "run-a");
+		journal.noteToolInput(a, "c1", "probe", { q: 1 });
+		journal.noteToolDispatch(a, "c1", "probe", { q: 1 });
+		journal.noteToolResult(a, "c1", { old: true });
+		journal.finishRun(a, "error", "undelivered");
+
+		journal.beginRun({
+			runId: "run-b",
+			conversationId: conv.id,
+			epoch: 3,
+			anchorSeq: 7,
+			steerMark: 7,
+			convSnapshot: { model: "z.ai/glm-5", thinking: "low" },
+			toolNames: ["probe"],
+			startedAt: "2026-10-11T00:01:00.000Z",
+			inheritFrom: [a],
+		});
+		journal.noteToolResult("run-b", "c1", { error: "conflict" }, { replayed: true });
+
+		const calls = journal.callsFor("run-b");
+		const refused = calls.find((c) => c.toolCallId === "c1")!;
+		expect(refused.state).toBe("completed");
+		expect(refused.replayed).toBe(true);
+		expect(refused.result).toBe('{"error":"conflict"}');
+		const inherited = calls.find((c) => c.toolCallId === "run-a:c1")!;
+		expect(inherited.replayed).toBe(false);
+		expect(inherited.result).toBe('{"old":true}');
 		store.close();
 	});
 
@@ -842,13 +961,15 @@ describe("turn journal", () => {
 		expect(replayed.argsHash).toBe(executed.argsHash);
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(runId, next);
-		expect(journal.callsFor(next).find((c) => c.toolCallId === "c-replay")!.replayed).toBe(true);
+		expect(journal.callsFor(next).find((c) => c.toolCallId === "run-1:c-replay")!.replayed).toBe(
+			true,
+		);
 		// The recovery guard ignores synthetic replayed rows as history —
 		// they are journaled answers, never executions.
 		const entries = buildRetryGuard(journal.callsFor(next)).get(
 			`${replayed.name}:${replayed.argsHash}`,
 		)!;
-		expect(entries.map((e) => e.toolCallId)).toEqual(["c-exec"]);
+		expect(entries.map((e) => e.toolCallId)).toEqual(["run-1:c-exec"]);
 		store.close();
 	});
 
@@ -947,7 +1068,7 @@ describe("turn journal", () => {
 
 		const next = begunRun(journal, conv.id, "run-next");
 		journal.inheritCalls(runId, next);
-		const inh = journal.callsFor(next).find((c) => c.toolCallId === "big-in")!;
+		const inh = journal.callsFor(next).find((c) => c.toolCallId === "run-1:big-in")!;
 		expect(inh.argsHash).toBe(hashOf(huge));
 		expect(inh.args as string).toContain("[truncated]");
 

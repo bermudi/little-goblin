@@ -20,6 +20,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
 	APICallError,
+	InvalidToolInputError,
+	asSchema,
 	generateText,
 	stepCountIs,
 	wrapLanguageModel,
@@ -82,23 +84,26 @@ type ToolChoiceUsed = (typeof TOOL_CHOICES)[number];
 
 // ---------- args ----------
 
-function parseArgs(): { models: string[]; n: number; out: string } {
+function parseArgs(): { models: string[]; n: number; out: string; rescore: string[] } {
 	const args = process.argv.slice(2);
 	const models: string[] = [];
+	const rescore: string[] = [];
 	let n: number | null = null;
 	let out: string | null = null;
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i]!;
 		if (a === "--model") models.push(args[++i] ?? "");
+		else if (a === "--rescore") rescore.push(args[++i] ?? "");
 		else if (a === "--n") n = Number.parseInt(args[++i] ?? "", 10);
 		else if (a === "--out") out = args[++i] ?? "";
 		else throw new Error(`unknown arg ${a}`);
 	}
+	if (out === null || out === "") throw new Error("--out expects a directory");
+	if (rescore.length > 0) return { models, n: n ?? 0, out, rescore };
 	if (models.length === 0 || models.some((m) => !m.includes("/")))
 		throw new Error("needs --model <provider>/<model> (repeatable)");
 	if (n === null || !Number.isInteger(n) || n < 1) throw new Error("--n expects a positive integer");
-	if (out === null || out === "") throw new Error("--out expects a directory");
-	return { models, n, out };
+	return { models, n, out, rescore: [] };
 }
 
 // ---------- optional generic repair (Phase 1+) ----------
@@ -203,12 +208,128 @@ interface Stats {
 
 const emptyStats = (): Stats => ({ rawValid: 0, finalValid: 0, providerErrors: 0, total: 0 });
 
-const { models, n, out } = parseArgs();
+const { models, n, out, rescore } = parseArgs();
 mkdirSync(out, { recursive: true });
+const out_ = (s: string) => process.stdout.write(`${s}\n`);
+
+function summary(perPrompt: Map<string, Stats>, totals: Stats) {
+	out_(`\n   ${"prompt".padEnd(6)} ${"raw".padStart(6)} ${"final".padStart(6)} ${"errors".padStart(7)}`);
+	for (const [id, s] of perPrompt) {
+		out_(
+			`   ${id.padEnd(6)} ${`${s.rawValid}/${s.total}`.padStart(6)} ${`${s.finalValid}/${s.total}`.padStart(6)} ${String(s.providerErrors).padStart(7)}`,
+		);
+	}
+	out_(
+		`   ${"TOTAL".padEnd(6)} ${`${totals.rawValid}/${totals.total}`.padStart(6)} ${`${totals.finalValid}/${totals.total}`.padStart(6)} ${String(totals.providerErrors).padStart(7)}`,
+	);
+}
+
+// --rescore: replay stored rawInput rows through the CURRENT generic
+// repair (InvalidToolInputError path fires whenever strict JSON fails
+// or the schema rejects) + normalizeUiInput + uiInputSchema — no model
+// calls. Same row shape, same summary.
+if (rescore.length > 0) {
+	const wireSchema = asSchema(uiTool().inputSchema).jsonSchema;
+	const repairBase = makeToolCallRepair?.("ui-probe/rescore");
+	for (const file of rescore) {
+		const { readFileSync } = await import("node:fs");
+		const rows = readFileSync(file, "utf8")
+			.split("\n")
+			.filter((l) => l.trim() !== "")
+			.map((l) => JSON.parse(l) as Row);
+		const perPrompt = new Map<string, Stats>();
+		for (const p of PROMPTS) perPrompt.set(p.id, emptyStats());
+		const totals = emptyStats();
+		const outRows: Row[] = [];
+		for (const row of rows) {
+			const stats = perPrompt.get(row.promptId) ?? emptyStats();
+			if (!perPrompt.has(row.promptId)) perPrompt.set(row.promptId, stats);
+			stats.total++;
+			totals.total++;
+			if (row.providerError !== null || row.rawInput === null || row.rawInput === undefined) {
+				outRows.push(row);
+				stats.providerErrors += row.providerError !== null ? 1 : 0;
+				totals.providerErrors += row.providerError !== null ? 1 : 0;
+				continue;
+			}
+			const raw = String(row.rawInput);
+			const parsed = tryJson(raw);
+			const rawCheck = parsed.ok ? uiInputSchema.safeParse(parsed.value) : null;
+			const rawValid = rawCheck?.success ?? false;
+			// The repair path runs on any InvalidToolInputError — strict-JSON
+			// failure or schema rejection both qualify.
+			let generic: "absent" | "declined" | "applied" = "absent";
+			let fixes: string[] = [];
+			let text = raw;
+			if (!rawValid && repairBase !== undefined) {
+				const error = new InvalidToolInputError({
+					toolInput: raw,
+					toolName: "ui",
+					cause: null,
+				});
+				const outCall = await repairBase({
+					instructions: undefined,
+					system: undefined,
+					messages: [],
+					toolCall: { type: "tool-call", toolCallId: `rescore-${row.promptId}-${row.trial}`, toolName: "ui", input: raw },
+					tools: {},
+					inputSchema: async () => wireSchema,
+					error,
+				});
+				generic = outCall === null ? "declined" : "applied";
+				fixes = outCall === null ? [] : repairFixes(raw, outCall.input);
+				if (outCall !== null) text = outCall.input;
+			}
+			const finalParsed = tryJson(text);
+			const normalized = finalParsed.ok
+				? normalizeUiInput(finalParsed.value)
+				: (() => {
+						try {
+							return normalizeUiInput(JSON5.parse(text));
+						} catch {
+							return null;
+						}
+					})();
+			const finalCheck =
+				normalized === null ? null : uiInputSchema.safeParse(normalized.value);
+			const finalValid = finalCheck?.success ?? false;
+			const outRow: Row = {
+				...row,
+				rawValid,
+				repairs: {
+					generic,
+					fixes,
+					normalize: normalized === null ? null : normalized.report,
+				},
+				finalValid,
+				issues: (rawCheck && !rawCheck.success ? rawCheck.error.issues : [])
+					.slice(0, 5)
+					.map((i) => `${i.path.join(".")}: ${i.message}`),
+				finalIssues:
+					finalCheck !== null && !finalCheck.success
+						? finalCheck.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`)
+						: [],
+			};
+			outRows.push(outRow);
+			if (outRow.rawValid) stats.rawValid++;
+			if (outRow.finalValid) stats.finalValid++;
+			totals.rawValid += outRow.rawValid ? 1 : 0;
+			totals.finalValid += outRow.finalValid ? 1 : 0;
+		}
+		const base = file.split("/").at(-1)!;
+		const outFile = join(out, base);
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(outFile, outRows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+		out_(`\n== rescore ${file}`);
+		summary(perPrompt, totals);
+		out_(`   wrote ${outFile}`);
+	}
+	process.exit(0);
+}
+
 const config = loadConfig();
 if (config === null) throw new Error("no goblin config");
 const auth = loadAuth();
-const out_ = (s: string) => process.stdout.write(`${s}\n`);
 
 out_(
 	`ui-probe: ${models.length} model(s) × ${PROMPTS.length} prompts × ${n} trial(s); generic repair ${makeToolCallRepair === null ? "ABSENT" : "present"}`,
@@ -434,14 +555,6 @@ for (const modelRef of models) {
 		}
 	}
 
-	out_(`\n   ${"prompt".padEnd(6)} ${"raw".padStart(6)} ${"final".padStart(6)} ${"errors".padStart(7)}`);
-	for (const [id, s] of perPrompt) {
-		out_(
-			`   ${id.padEnd(6)} ${`${s.rawValid}/${s.total}`.padStart(6)} ${`${s.finalValid}/${s.total}`.padStart(6)} ${String(s.providerErrors).padStart(7)}`,
-		);
-	}
-	out_(
-		`   ${"TOTAL".padEnd(6)} ${`${totals.rawValid}/${totals.total}`.padStart(6)} ${`${totals.finalValid}/${totals.total}`.padStart(6)} ${String(totals.providerErrors).padStart(7)}`,
-	);
+	summary(perPrompt, totals);
 	out_(`   wrote ${file}`);
 }

@@ -344,6 +344,10 @@ export interface UiNormalizeReport {
 	synthesizedRoot: string | null;
 	// the single unreferenced element became root
 	inferredRoot: string | null;
+	// a string "root" entry inside the map was the misplaced root pointer
+	strayRoot: { value: string; action: "moved" | "dropped" } | null;
+	// the whole spec was nested one level deep inside elements
+	unwrapped: boolean;
 	// dropped: unreachable from root (prune only)
 	unreachable: string[];
 }
@@ -356,6 +360,8 @@ const emptyReport = (): UiNormalizeReport => ({
 	coerced: [],
 	synthesizedRoot: null,
 	inferredRoot: null,
+	strayRoot: null,
+	unwrapped: false,
 	unreachable: [],
 });
 
@@ -461,6 +467,19 @@ export function normalizeUiInput(
 			report.parsedProps.push("elements");
 		}
 	}
+	// The whole spec nested one level deep: elements holds {elements,
+	// root?} where the inner elements value is itself a map (a plain
+	// object with no "type" — an element value would carry one).
+	if (out.root === undefined && isPlainObject(out.elements)) {
+		const inner = out.elements;
+		if (isPlainObject(inner.elements) && !("type" in inner.elements)) {
+			out.elements = inner.elements;
+			if (typeof inner.root === "string") out.root = inner.root;
+			if (out.title === undefined && typeof inner.title === "string")
+				out.title = inner.title;
+			report.unwrapped = true;
+		}
+	}
 	if (!isPlainObject(out.elements)) return { value: out, report };
 	const elements: Record<string, unknown> = { ...out.elements };
 
@@ -535,6 +554,21 @@ export function normalizeUiInput(
 	};
 	for (let i = 0; i < queue.length; i++) process(queue[i]!);
 
+	// A string "root" entry inside the map is the misplaced root pointer
+	// — a string can never be an element. Missing root → move it up;
+	// same value → drop the stray; differing → no repair.
+	if (typeof elements.root === "string") {
+		const stray = elements.root;
+		if (out.root === undefined) {
+			out.root = stray;
+			delete elements.root;
+			report.strayRoot = { value: stray, action: "moved" };
+		} else if (out.root === stray) {
+			delete elements.root;
+			report.strayRoot = { value: stray, action: "dropped" };
+		}
+	}
+
 	// Array root → a synthesized stack element wrapping it.
 	if (Array.isArray(out.root)) {
 		const rid = freeId("root");
@@ -570,7 +604,10 @@ export function normalizeUiInput(
 			for (const c of el.children) if (typeof c === "string") todo.push(c);
 		}
 		for (const id of Object.keys(elements)) {
-			if (!reach.has(id)) {
+			// Only element objects prune — a non-element entry (a stray
+			// string, a number) is a schema violation, not unreachable
+			// junk, and must stay visible to validation.
+			if (!reach.has(id) && isPlainObject(elements[id])) {
 				delete elements[id];
 				report.unreachable.push(id);
 			}

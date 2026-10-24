@@ -270,6 +270,62 @@ describe("normalizeUiInput", () => {
 		expect(Object.keys(els)).toContain("stray");
 	});
 
+	test("rule 9: a stray string root inside elements moves to the top level", () => {
+		const r = normalizeUiInput({
+			elements: { root: "a", a: { type: "text", props: { md: "hi" } } },
+		});
+		expect(r.report.strayRoot).toEqual({ value: "a", action: "moved" });
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 9: a stray matching root is dropped", () => {
+		const r = normalizeUiInput({
+			root: "a",
+			elements: { root: "a", a: { type: "text", props: { md: "hi" } } },
+		});
+		expect(r.report.strayRoot).toEqual({ value: "a", action: "dropped" });
+		expect(uiInputSchema.safeParse(r.value).success).toBe(true);
+	});
+
+	test("rule 9 negative: differing roots are no repair", () => {
+		const r = normalizeUiInput({
+			root: "b",
+			elements: {
+				root: "a",
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "text", props: { md: "y" } },
+			},
+		});
+		expect(r.report.strayRoot).toBeNull();
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
+	test("rule 10: a spec wrapped one level deep inside elements unwraps", () => {
+		const r = normalizeUiInput({
+			elements: {
+				root: "main",
+				title: "wrapped",
+				elements: { main: { type: "text", props: { md: "hi" } } },
+			},
+		});
+		expect(r.report.unwrapped).toBe(true);
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+		if (parsed.success) expect(parsed.data.title).toBe("wrapped");
+	});
+
+	test("rule 10 negative: a top-level root blocks the unwrap", () => {
+		const r = normalizeUiInput({
+			root: "x",
+			elements: {
+				root: "main",
+				elements: { main: { type: "text", props: { md: "hi" } } },
+			},
+		});
+		expect(r.report.unwrapped).toBe(false);
+		expect(uiInputSchema.safeParse(r.value).success).toBe(false);
+	});
+
 	test("never mutates the input", () => {
 		const raw = { elements: { a: { md: "hi" } } };
 		normalizeUiInput(raw);

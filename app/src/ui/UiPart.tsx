@@ -37,18 +37,54 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 
 	// The map Node reads holds only schema-valid elements; invalid ones
 	// fall to the render wrapper's skeleton/nothing split below.
-	const elements: Record<string, UiElement> = {};
+	const valid: Record<string, UiElement> = {};
 	for (const [id, v] of Object.entries(normElements)) {
 		const parsed = uiElementSchema.safeParse(v);
-		if (parsed.success) elements[id] = parsed.data;
+		if (parsed.success) valid[id] = parsed.data;
 	}
 
-	const visited = new Set<string>();
+	// A partial map can hold cycles or shared children — sanitize the
+	// edges ONCE, before any render: DFS from root (or from each orphan
+	// while root is unwritten), dropping child refs that point at an
+	// ancestor (a cycle) or at a node another parent already claimed.
+	// The render below then keeps no per-render mutable state — Tabs
+	// re-rendering on a click must reuse the closure safely.
+	const claimed = new Set<string>();
+	const kept = new Map<string, string[]>();
+	const visit = (id: string, ancestors: Set<string>): void => {
+		const el = valid[id];
+		if (el === undefined) return;
+		const kids: string[] = [];
+		for (const c of el.children ?? []) {
+			if (ancestors.has(c) || claimed.has(c)) continue;
+			claimed.add(c);
+			kids.push(c);
+		}
+		kept.set(id, kids);
+		for (const c of kids) visit(c, new Set(ancestors).add(id));
+	};
+	const roots: string[] = [];
+	if (root !== null) {
+		roots.push(root);
+	} else {
+		const referenced = new Set<string>();
+		for (const v of Object.values(normElements)) {
+			if (!isPlainObject(v) || !Array.isArray(v.children)) continue;
+			for (const c of v.children) if (typeof c === "string") referenced.add(c);
+		}
+		roots.push(...Object.keys(normElements).filter((id) => !referenced.has(id)));
+	}
+	for (const id of roots) {
+		claimed.add(id);
+		visit(id, new Set([id]));
+	}
+	const elements: Record<string, UiElement> = {};
+	for (const [id, el] of Object.entries(valid)) {
+		const k = kept.get(id);
+		elements[id] = k === undefined ? el : { ...el, children: k };
+	}
+
 	const render: UiRender = (id) => {
-		// A partial map can hold cycles or shared children — a revisit
-		// renders nothing and must never recurse forever.
-		if (visited.has(id)) return null;
-		visited.add(id);
 		const el = elements[id];
 		if (el === undefined) {
 			if (!(id in normElements)) return <Skeleton key={id} />;
@@ -59,20 +95,7 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 		return <Node key={id} id={id} elements={elements} render={render} streaming {...note} />;
 	};
 
-	let body: ReactNode[];
-	if (root !== null) {
-		body = [render(root)];
-	} else {
-		// No root yet: unreferenced elements in arrival order.
-		const referenced = new Set<string>();
-		for (const v of Object.values(normElements)) {
-			if (!isPlainObject(v) || !Array.isArray(v.children)) continue;
-			for (const c of v.children) if (typeof c === "string") referenced.add(c);
-		}
-		body = Object.keys(normElements)
-			.filter((id) => !referenced.has(id))
-			.map((id) => render(id));
-	}
+	const body: ReactNode[] = roots.map((id) => render(id));
 	return (
 		<div className="ui">
 			{title !== null && <div className="ui-title">{title}</div>}

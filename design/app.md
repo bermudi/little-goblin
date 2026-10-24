@@ -695,10 +695,16 @@ the model sees its past interface as a past tool call.
   child objects hoist into the map as `<parent>.<index>`; an array root
   synthesizes a `stack`; a missing root picks the single unreferenced
   element; numeric-string chart series values coerce; and elements
-  unreachable from root are pruned. What no rule fixes surfaces as a
-  tool error — the model sees it and may retry. Server and client both
-  validate/render through the same repair, so history renders as
-  accepted.
+  unreachable from root are pruned (non-element junk entries stay — a
+  schema violation is not unreachable-element debris). Two wrapper
+  repairs handle whole-spec misplacement (2026-10-24 probe): a spec
+  nested one level deep as `elements.{elements,root}` unwraps when no
+  top-level root exists, and a string `elements.root` — the root
+  pointer misplaced inside the map — moves up (or drops when it
+  duplicates root; differing roots are no repair). What no rule fixes
+  surfaces as a tool error — the model sees it and may retry. Server
+  and client both validate/render through the same repair, so history
+  renders as accepted.
 - **Judgment lives in the description.** Goblin's models are prompted, not
   trained: the description says text is the default and names when layout
   carries meaning.

@@ -553,7 +553,9 @@ p code,
 	border-radius: 10px;
 	font-size: 10px;
 	color: var(--app-fg-muted);
-	transition: background-color 75ms, color 75ms;
+	transition:
+		background-color 75ms,
+		color 75ms;
 }
 .tab:hover {
 	background: var(--app-hover);
@@ -571,7 +573,9 @@ p code,
 	height: 2.25rem;
 	border-radius: 8px;
 	color: var(--app-fg-muted);
-	transition: background-color 75ms, color 75ms;
+	transition:
+		background-color 75ms,
+		color 75ms;
 }
 .mobile-back:hover {
 	background: var(--app-hover);
@@ -652,7 +656,9 @@ p code,
 	border-radius: 8px;
 	font-size: 13px;
 	color: var(--app-fg-muted);
-	transition: background-color 75ms, color 75ms;
+	transition:
+		background-color 75ms,
+		color 75ms;
 }
 .sheet-row:hover {
 	background: var(--app-hover);
@@ -776,6 +782,7 @@ header h1 {
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
+	position: relative;
 }
 
 .transcript {
@@ -809,6 +816,105 @@ header h1 {
 }
 .transcript-inner > .empty {
 	text-align: center;
+}
+
+/* ---------- conversation outline ---------- */
+
+/* DeepSeek's section rail: dashes at the right edge collapsed; hover or
+   keyboard focus expands the titles; the section in view carries the
+   accent. JSX-gated off phones (usePhoneWidth) — the display:none in the
+   M block is the style sheet's own guarantee. Flat card: a background
+   shift and a hairline border, never a shadow. */
+.outline {
+	position: absolute;
+	right: 0.5rem;
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 6;
+	/* Collapsed, the rail is a narrow edge zone over the dashes — never a
+	   wide invisible click strip over the transcript text. */
+	width: 3.25rem;
+	transition: width 180ms ease;
+}
+.outline:hover,
+.outline:focus-within {
+	width: min(16rem, 30vw);
+}
+.outline ol {
+	list-style: none;
+	margin: 0;
+	padding: 0.375rem 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: 55vh;
+	overflow-y: auto;
+	scrollbar-width: none;
+	border-radius: 10px;
+	border: 1px solid transparent;
+	background: transparent;
+	transition:
+		background 150ms ease,
+		border-color 150ms ease;
+}
+.outline:hover ol,
+.outline:focus-within ol {
+	background: var(--app-gray-50);
+	border-color: var(--app-border);
+}
+.outline li {
+	display: block;
+}
+.outline button {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 0.5rem;
+	width: 100%;
+	padding: 0.3rem 0.75rem;
+	background: none;
+	border: 0;
+	color: var(--app-fg-subtle);
+	cursor: pointer;
+	border-radius: 6px;
+}
+.outline button:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.outline-title {
+	min-width: 0;
+	max-width: 0;
+	opacity: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: 12.5px;
+	line-height: 1.5;
+	transition:
+		max-width 180ms ease,
+		opacity 150ms ease;
+}
+.outline:hover .outline-title,
+.outline:focus-within .outline-title {
+	max-width: calc(min(16rem, 30vw) - 3.5rem);
+	opacity: 1;
+}
+.outline-dash {
+	flex: none;
+	width: 14px;
+	height: 2px;
+	border-radius: 1px;
+	background: currentColor;
+	opacity: 0.7;
+	transition: width 180ms ease;
+}
+.outline li.current button {
+	color: var(--app-accent);
+}
+.outline li.current .outline-dash {
+	width: 18px;
+	opacity: 1;
 }
 
 .transcript a {
@@ -3691,6 +3797,11 @@ select.ui-input option {
 	   chats screen replace it. The rail keeps its drawer rules for the
 	   Telegram door, which still opens over a scrim. */
 	.app-rail {
+		display: none;
+	}
+	/* Hover rails are pointer affordances; the JSX gate never mounts
+	   one on a phone — this is the style sheet's own guarantee. */
+	.outline {
 		display: none;
 	}
 	.mobile-back {

@@ -24,6 +24,7 @@ import {
 import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
+import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { WindowView } from "./WindowView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
@@ -603,18 +604,8 @@ export function App() {
 // CSS hides and shows around the same query, but these surfaces must not
 // exist in a desktop DOM at all: they are navigation, and a hidden
 // duplicate would double every name a screen reader or test queries.
-const PHONE_QUERY = "(max-width: 720px)";
-
-function usePhoneWidth(): boolean {
-	const [phone, setPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches);
-	useEffect(() => {
-		const mq = window.matchMedia(PHONE_QUERY);
-		const onChange = (e: MediaQueryListEvent) => setPhone(e.matches);
-		mq.addEventListener("change", onChange);
-		return () => mq.removeEventListener("change", onChange);
-	}, []);
-	return phone;
-}
+// The gate itself lives in usePhoneWidth.ts, shared with the chat's
+// outline rail.
 
 function AppShell() {
 	// First hook, before the gate's early return — hook order must not

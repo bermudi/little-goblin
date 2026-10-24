@@ -189,6 +189,25 @@ spellings owned by src/tags.ts) at a block start renders fenced as
 `status`, not as a transcript paragraph — it is the event envelope, and
 the prose after it in the same paragraph continues as text.
 
+## Conversation outline (ruling 2026-10-24, operator ask)
+
+Operator ask, with DeepSeek's section rail on screen: conversation navigation
+should be a joy — copy the mechanism, not the screenshots. The chat gains a
+right-edge outline (`app/src/Outline.tsx`): one dash per operator message
+collapsed (the section list — assistant turns belong to the section above
+them), hover or keyboard focus expands it into a flat card of titles (first
+line of the message text; staged-chip kind as fallback title), a click jumps
+the transcript to that message, and a scroll spy marks the section in view
+with the accent. Collapsed the rail is a narrow edge zone — never a wide
+invisible click strip over the transcript text. Jumping scrolls the
+transcript and follow-mode unpins exactly the way any upward scroll does; no
+special case. It is a pointer/keyboard affordance, so it is JSX-gated off
+phone widths through the shared `usePhoneWidth` module (extracted from the
+shell, ruling 2026-10-24 → Mobile navigation — the same principle: width
+gated chrome must not exist as hidden DOM duplicates), and the style sheet's
+phone `display:none` is its own guarantee. Client-render only: history is
+already on the wire, no store or API change.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

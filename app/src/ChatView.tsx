@@ -1521,6 +1521,23 @@ export function Composer({
 		return () => clearInterval(t);
 	}, [recording]);
 	const recStart = useRef(0);
+	// Leaving the view mid-recording must tear the capture down: the
+	// composer's stop affordances unmount with it, so the unmount itself
+	// stops the recorder — its onstop then releases the tracks and, with
+	// recCancel set, skips the send. recDead covers the getUserMedia
+	// window: a permission grant landing after unmount releases the
+	// fresh tracks immediately instead of opening a mic nobody owns.
+	const recDead = useRef(false);
+	useEffect(() => {
+		recDead.current = false;
+		return () => {
+			recDead.current = true;
+			recCancel.current = true;
+			const r = recorder.current;
+			recorder.current = null;
+			if (r !== null && r.state !== "inactive") r.stop();
+		};
+	}, []);
 	// The recorder's onstop runs after render — read the live busy flag
 	// through a ref, not the prop captured when recording started.
 	const busyRef = useRef(busy);
@@ -1534,6 +1551,12 @@ export function Composer({
 		setMicError(null);
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			if (recDead.current) {
+				// Unmounted while the permission prompt was up — release the
+				// device we just received; nobody is recording into it.
+				for (const t of stream.getTracks()) t.stop();
+				return;
+			}
 			const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/mp4"].find((m) =>
 				MediaRecorder.isTypeSupported(m),
 			);

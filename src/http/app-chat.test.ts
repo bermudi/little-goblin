@@ -49,6 +49,60 @@ describe("app chat", () => {
 		}
 	});
 
+	test("a malformed part payload is refused before persistence — no poison pill", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "poison-01" }),
+			});
+			// A wrong-typed text payload converts cleanly, would persist,
+			// and then fails every later turn at standardizePrompt — the
+			// boundary must refuse it before anything is written.
+			const badText = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: { id: "m-bad", role: "user", parts: [{ type: "text", text: 12345 }] },
+				}),
+			});
+			expect(badText.status).toBe(422);
+			await badText.text();
+			const badFile = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: {
+						id: "m-bad-file",
+						role: "user",
+						parts: [{ type: "file", url: "https://x.example/a.png" }],
+					},
+				}),
+			});
+			expect(badFile.status).toBe(422);
+			await badFile.text();
+			// The refusals left nothing behind: a later well-formed turn
+			// runs to completion on the same conversation.
+			expect(store.history("app/poison-01")).toEqual([]);
+			const good = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/poison-01",
+					message: { id: "m-good", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(good.status).toBe(200);
+			await good.text();
+			expect(store.history("app/poison-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("generated files and voice notes persist durably and stream live", async () => {
 		const work = tmpDir("goblin-app-media-");
 		writeFileSync(join(work, "note.txt"), "file-bytes");

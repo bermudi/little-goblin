@@ -33,6 +33,31 @@ const chatBody = z
 					.min(1)
 					.superRefine((parts, ctx) => {
 						for (const [i, p] of parts.entries()) {
+							// The model pipeline consumes text/file payloads
+							// verbatim: a wrong-typed field converts cleanly,
+							// is persisted, then fails every later turn at
+							// standardizePrompt — the poison-pill shape the
+							// boundary must refuse before persistence.
+							if (p.type === "text") {
+								if (typeof p.text !== "string") {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "text"],
+										message: "a text part carries a string text",
+									});
+								}
+								continue;
+							}
+							if (p.type === "file") {
+								if (typeof p.mediaType !== "string" || typeof p.url !== "string") {
+									ctx.addIssue({
+										code: "custom",
+										path: [i],
+										message: "a file part carries string mediaType and url",
+									});
+								}
+								continue;
+							}
 							if (p.type === NOTE_PART) {
 								const id =
 									typeof p.data === "object" && p.data !== null

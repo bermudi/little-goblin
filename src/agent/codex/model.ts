@@ -42,6 +42,15 @@ function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
 	return `data:${mime};base64,${Buffer.from(data.data).toString("base64")}`;
 }
 
+// The Responses wire wants `arguments` as JSON text, but the SDK's model
+// messages carry a tool call's input as its parsed value — stringify it
+// or the backend rejects the request with invalid_type on input[n].
+function argumentsText(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (value === undefined) return "{}";
+	return JSON.stringify(value) ?? "{}";
+}
+
 function toolResultText(output: { type: string; value?: unknown; reason?: unknown }): string {
 	if (output.type === "text" || output.type === "error-text") {
 		return String(output.value ?? "");
@@ -116,14 +125,16 @@ function convertPrompt(prompt: LanguageModelV4Prompt): {
 						content.push({ type: "output_text", text: part.text });
 					} else if (part.type === "tool-call") {
 						if (content.length) {
-							input.push({ type: "message", role: "assistant", content });
+							// Copy — clearing the shared array below would empty
+							// the message item that was just attached.
+							input.push({ type: "message", role: "assistant", content: [...content] });
 							content.length = 0;
 						}
 						input.push({
 							type: "function_call",
 							call_id: part.toolCallId,
 							name: part.toolName,
-							arguments: part.input,
+							arguments: argumentsText(part.input),
 						});
 					}
 					// Spec v4 also allows tool-result parts on assistant
@@ -255,7 +266,7 @@ function mapEvent(
 					type: "tool-call",
 					toolCallId: String(item.call_id ?? item.id ?? ""),
 					toolName: String(item.name ?? ""),
-					input: String(item.arguments ?? "{}"),
+					input: argumentsText(item.arguments ?? "{}"),
 				});
 			} else if (item?.type === "message") {
 				if (state.textOpen) {

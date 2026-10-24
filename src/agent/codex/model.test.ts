@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { CodexLanguageModel } from "./model.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -156,6 +157,91 @@ describe("CodexLanguageModel — request shape", () => {
 			call_id: "call_1",
 			output: "file.txt",
 		});
+	});
+
+	test("tool-call input rides as JSON text when the SDK hands it parsed", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let sent: Record<string, unknown> = {};
+		const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([
+				{
+					type: "response.completed",
+					response: { status: "completed", usage: {} },
+				},
+			]);
+		});
+		// The real history boundary: a UIMessage tool part carries the
+		// parsed input, and convertToModelMessages keeps it an object.
+		const ui: UIMessage[] = [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "run ls" }] },
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "call_1",
+						state: "output-available",
+						input: { command: "ls" },
+						output: "file.txt",
+					},
+				],
+			},
+		];
+		// Ride the SDK's own prompt conversion — the same path a turn takes.
+		const result = streamText({
+			model,
+			messages: await convertToModelMessages(ui),
+			maxRetries: 0,
+		});
+		await result.text;
+		const input = sent.input as Array<Record<string, unknown>>;
+		// Responses rejects an object here with HTTP 400 invalid_type.
+		expect(input[1]).toEqual({
+			type: "function_call",
+			call_id: "call_1",
+			name: "bash",
+			arguments: '{"command":"ls"}',
+		});
+	});
+
+	test("assistant text before a tool call survives as its own message", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let sent: Record<string, unknown> = {};
+		const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([
+				{
+					type: "response.completed",
+					response: { status: "completed", usage: {} },
+				},
+			]);
+		});
+		await model.doGenerate({
+			prompt: [
+				{ role: "user", content: [{ type: "text", text: "run ls" }] },
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "checking" },
+						{
+							type: "tool-call",
+							toolCallId: "call_1",
+							toolName: "bash",
+							input: '{"command":"ls"}',
+						},
+					],
+				},
+			],
+		});
+		const input = sent.input as Array<Record<string, unknown>>;
+		expect(input[1]).toEqual({
+			type: "message",
+			role: "assistant",
+			content: [{ type: "output_text", text: "checking" }],
+		});
+		expect(input[2]).toMatchObject({ type: "function_call", call_id: "call_1" });
 	});
 
 	test("stream events map to parts — deltas, done-item fallback, tool calls", async () => {

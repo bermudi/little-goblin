@@ -360,9 +360,10 @@ export const EMPTY_DRAFT: SettingsDraft = {
 
 // All-off flag map — EMPTY_DRAFT's baseline.
 export function capabilityFlags(on?: readonly string[]): Record<CapabilityName, boolean> {
-	return Object.fromEntries(
-		CAPABILITY_NAMES.map((k) => [k, on?.includes(k) ?? false]),
-	) as Record<CapabilityName, boolean>;
+	return Object.fromEntries(CAPABILITY_NAMES.map((k) => [k, on?.includes(k) ?? false])) as Record<
+		CapabilityName,
+		boolean
+	>;
 }
 
 let provSeq = 0;
@@ -406,9 +407,7 @@ export function draftFromConfig(
 					mode: c.vision.mode || "auto",
 				}
 			: null,
-		image: c.image
-			? { model: c.image.model || "", size: c.image.size || "" }
-			: null,
+		image: c.image ? { model: c.image.model || "", size: c.image.size || "" } : null,
 		capabilities: capabilityFlags(
 			CAPABILITY_NAMES.filter((k) =>
 				caps !== undefined ? caps[k].state === "on" : c[k] !== undefined,
@@ -617,7 +616,16 @@ export function bodyFromDraft(
 			...(v.size.trim() ? { size: v.size.trim() } : {}),
 		})) as ConfigPostBody["image"],
 		search: draft.search === null ? "" : chainOut(draft.search, SEARCH_META),
-		fetch: draft.fetch === null ? "" : chainOut(draft.fetch, FETCH_META),
+		// A chain of just the built-in (or nothing) is "no custom chain" —
+		// "" keeps the saved file free of a degenerate entry.
+		fetch:
+			draft.fetch === null ||
+			draft.fetch.length === 0 ||
+			(draft.fetch.length === 1 &&
+				draft.fetch[0]!.kind === "local" &&
+				draft.fetch[0]!.auth.trim() === "")
+				? ""
+				: chainOut(draft.fetch, FETCH_META),
 		operators: [...draft.operators],
 		allowedUsers: [...draft.allowedUsers],
 		telegram: {
@@ -645,8 +653,6 @@ export function bodyFromDraft(
 			recallTimeoutMs: numOrUndef(m.timeout),
 		})) as ConfigPostBody["memory"],
 		logLevel: draft.logLevel,
-		...(capabilities !== undefined && Object.keys(capabilities).length > 0
-			? { capabilities }
-			: {}),
+		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
 	};
 }

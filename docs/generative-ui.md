@@ -28,47 +28,56 @@ default** — plain text stays the normal answer.
    default; use `ui` when layout matters; never repeat in prose what the
    interface already shows.
 
-3. **The model calls `ui` with JSON.** The JSON is the interface. A tiny
-   example:
+3. **The model calls `ui` with JSON.** The JSON is the interface — a flat
+   map of named elements, not a nested tree. `root` names the top element
+   (or lists several top-level ids, in display order); `elements` maps each
+   id to `{type, props, children}`, where `children` is a list of element
+   ids — never nested objects. A tiny example:
 
    ```json
    {
      "title": "Getting to work",
-     "blocks": [
-       { "type": "stats", "items": [
+     "root": "main",
+     "elements": {
+       "main": { "type": "stack", "children": ["s", "j"] },
+       "s": { "type": "stats", "props": { "items": [
          { "label": "Drive", "value": "24 min" },
          { "label": "Tram",  "value": "37 min" }
-       ]},
-       { "type": "steps", "items": [
+       ]}},
+       "j": { "type": "steps", "props": { "items": [
          { "title": "Leave by 07:40" },
          { "title": "Change at Central" }
-       ]}
-     ]
+       ]}}
+     }
    }
    ```
 
-4. **The blocks come from a fixed menu.** There is no free-form HTML in the
-   normal path. The model can only pick from these:
+4. **The elements come from a fixed menu.** There is no free-form HTML in
+   the normal path. The model can only pick from these:
 
    - **Leaves** (the actual widgets): `text`, `callout`, `stats`, `table`,
      `steps`, `chart` (bar/line/pie), `choices` (tappable buttons), `form`,
      `html` (the escape hatch, below).
-   - **Containers**: `tabs` and `columns`.
-   - It is **two levels deep only** — containers hold leaves, never other
-     containers. No recursion. (Recursive schemas confuse OpenAI-compatible
-     providers, and one rejected schema would break every app turn.)
+   - **Containers**: `stack` (a vertical group), `tabs` (whose children
+     must be `tab` elements), and `columns` (whose children must be
+     `column` elements).
+   - Nesting is **unbounded** — children are id references, so a column
+     can hold a tabs element which holds more columns. The flat map keeps
+     the JSON Schema itself non-recursive (no $ref/$defs — recursive
+     schemas confuse OpenAI-compatible providers, and one rejected schema
+     would break every app turn).
 
    The menu and its exact rules live in `src/agent/tools/ui-schema.ts`
    (zod schemas — the single source of truth for both server and app).
 
 5. **The server checks the JSON.** Before the interface is allowed to render,
    the server validates it with zod. Because real models *do* make small
-   mistakes, there is a **repair pass** first (`normalizeUiInput`): if a block
-   is missing its `type` field, the repair can infer it by matching the keys
-   that are present; it also drops stray half-written fragments. Probed live,
-   `zai/glm-5.3-flash` broke 9 of 22 comparison answers this way — repair cut
-   that to 3. If validation still fails, the model sees a normal tool error
-   and may retry. The model never gets a blank screen.
+   mistakes, there is a **repair pass** first (`normalizeUiInput`): if an
+   element is missing its `type` field, the repair can infer it by matching
+   the keys that are present; it also drops stray half-written fragments.
+   Probed live, `zai/glm-5.3-flash` broke 9 of 22 comparison answers this
+   way — repair cut that to 3. If validation still fails, the model sees a
+   normal tool error and may retry. The model never gets a blank screen.
 
 6. **The JSON is stored as the message itself.** The interface isn't a
    separate file or a saved "app" — the `ui` tool call *is* the record, saved
@@ -79,9 +88,9 @@ default** — plain text stays the normal answer.
 
 7. **The app draws it.** On the client, `app/src/ui/UiPart.tsx` takes the
    tool part and renders the right widgets from `app/src/ui/blocks.tsx`, using
-   goblin's design tokens. **While it streams**, every block that already
-   validates renders immediately and the one still arriving shows a skeleton —
-   so the interface grows in as the model writes it.
+   goblin's design tokens. **While it streams**, every element that already
+   validates renders immediately and the one still arriving shows a
+   skeleton — so the interface grows in as the model writes it.
 
 8. **Interaction is honest.** Tabs and form inputs keep their state in React,
    client-side only (the tab you opened dies with the page). A real action — a

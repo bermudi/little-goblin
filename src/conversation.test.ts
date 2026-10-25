@@ -828,6 +828,34 @@ describe("forkToApp (branch)", () => {
 		store.close();
 	});
 
+	test("a compaction at exactly the cut copies — the branch holds the whole folded set", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "first")]); // 1
+		store.append(src.id, [asst("a1", "first answer")], { anchorSeq: 1 }); // 2
+		store.setCompaction(src.id, {
+			boundarySeq: 2,
+			summary: "folds everything the branch holds",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const copied = store.forkToApp(src.id, "branch-eq", "/w", null, undefined, {
+			throughSeq: 2,
+		});
+		// The pointer folds the inclusive causal prefix (≤ boundary),
+		// which is exactly what the branch holds at boundary === cut:
+		// dropping it would silently undo the compaction and lose the
+		// summary's memory eligibility.
+		expect(store.getCompaction(copied.id)).toMatchObject({
+			boundarySeq: 2,
+			summary: "folds everything the branch holds",
+		});
+		// And the branch's model view is the summary alone.
+		expect(store.modelEntries(copied.id).map((e) => e.message.id)).toEqual(["compact-2"]);
+		store.close();
+	});
+
 	test("a compaction whose boundary reaches past the cut is not copied", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const src = app(store, "branch-src");

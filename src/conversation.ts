@@ -683,9 +683,11 @@ export function openStore(dbPath: string): ConversationStore {
 				// view — and its eligibility with it: the fork's memory-bound
 				// view must match the source's. A branch drops a pointer whose
 				// boundary lies past its cut: the summary would describe events
-				// the branch does not hold.
+				// the branch does not hold. Equality keeps it — the pointer
+				// folds the inclusive prefix (causal position ≤ boundary),
+				// which is exactly what the branch holds at that cut.
 				const compaction = qCompaction.get(fromId);
-				if (compaction !== null && (through === undefined || compaction.boundary_seq < through)) {
+				if (compaction !== null && (through === undefined || compaction.boundary_seq <= through)) {
 					qInsertCompaction.run(
 						id,
 						compaction.boundary_seq,

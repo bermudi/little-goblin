@@ -13,7 +13,7 @@ import {
 	transcriptionDefaults,
 	transcriptionKinds,
 } from "../../src/config.ts";
-import type { AppConversationList, AppProject } from "../../src/http/app-wire.ts";
+import type { AppConversationList, AppMessageList, AppProject } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
 
 const json = (body: unknown, status = 200) =>
@@ -49,6 +49,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let phone: boolean;
 	let conversations: AppConversationList["conversations"];
 	let projects: AppProject[];
+	let threadMessages: AppMessageList["messages"];
 	let settings: typeof SETTINGS;
 	let confirmAnswer = false;
 	let confirmCalls = 0;
@@ -68,6 +69,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installed = [];
 		phone = true;
 		projects = [];
+		threadMessages = [];
 		settings = SETTINGS;
 		confirmAnswer = false;
 		confirmCalls = 0;
@@ -144,7 +146,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 					),
 				);
 			if (url === "/api/app/conversations/fixture/messages")
-				return Promise.resolve(json({ messages: [], ratings: [], rateableMessageIds: [] }));
+				return Promise.resolve(
+					json({ messages: threadMessages, ratings: [], rateableMessageIds: [] }),
+				);
 			if (url === "/api/app/conversations/fixture/stream")
 				return Promise.resolve(new Response(null, { status: 204 }));
 			if (url === "/api/app/conversations/fixture/window")
@@ -264,6 +268,28 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 			"chats screen to return",
 		);
 		expect(container.querySelector(".tabbar")).toBeTruthy();
+	});
+
+	test("phone: the outline rail never enters a thread's DOM", async () => {
+		threadMessages = [
+			{ id: "m1", role: "user", parts: [{ type: "text", text: "section one" }] },
+			{ id: "m2", role: "assistant", parts: [{ type: "text", text: "answer" }] },
+		];
+		await mount();
+
+		await click(
+			[...container.querySelectorAll(".chatlist-screen .conv")].find(
+				(r) => r.querySelector(".conv-title")?.textContent === "fixture chat",
+			)?.querySelector(".conv-main"),
+		);
+		await waitFor(
+			() => container.querySelector("[data-outline-anchor]") !== null,
+			"thread section to render",
+		);
+		// The thread has a section to outline, but the rail is a hover
+		// affordance — on a phone it must not exist in the DOM at all,
+		// not even hidden.
+		expect(container.querySelector(".outline")).toBeNull();
 	});
 
 	test("phone: More opens the system sheet; a row lands on its page", async () => {
@@ -388,6 +414,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 
 	test("desktop: none of the M chrome exists", async () => {
 		phone = false;
+		threadMessages = [
+			{ id: "m1", role: "user", parts: [{ type: "text", text: "section one" }] },
+		];
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(<App />);
@@ -399,5 +428,10 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		expect(container.querySelector(".tabbar")).toBeNull();
 		expect(container.querySelector(".chatlist-screen")).toBeNull();
 		expect(container.querySelector(".mobile-back")).toBeNull();
+		// The gate's other side: a sectioned thread in a wide realm does
+		// mount the rail — what keeps it off phones is the gate, not an
+		// empty transcript.
+		await click(container.querySelector(".conv-main"));
+		await waitFor(() => container.querySelector(".outline") !== null, "outline rail");
 	});
 });

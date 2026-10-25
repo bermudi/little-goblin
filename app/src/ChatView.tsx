@@ -38,6 +38,8 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { Outline } from "./Outline.tsx";
+import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { ApprovalCard } from "./Approvals.tsx";
 import { ArtifactCard, DocViewerProvider } from "./docview.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -2716,6 +2718,9 @@ function Chat({
 	}, [token, conversationId, setMessages]);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
+	// The outline rail is a pointer/keyboard affordance — phones don't
+	// hover, so it never mounts there (the stylesheet hides it too).
+	const phone = usePhoneWidth();
 	// Select-to-quote: each QuoteFab click bumps `n`; the Composer appends
 	// the text as a blockquote.
 	const [quote, setQuote] = useState<{ text: string; n: number }>({ text: "", n: 0 });
@@ -2814,6 +2819,9 @@ function Chat({
 		<DocViewerProvider token={token} conversationId={conversationId}>
 			<div className="chat">
 				<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
+				{/* The outline is a hover rail — a pointer affordance, so it does
+				    not exist in a phone DOM at all. */}
+				{phone ? null : <Outline messages={messages} scrollRef={scrollRef} />}
 			<div
 				className="transcript"
 				ref={scrollRef}
@@ -2828,7 +2836,7 @@ function Chat({
 						if (m.role === "user") {
 							const isEditing = editing !== null && editing.id === m.id;
 							return (
-								<div key={m.id} className="msg user">
+								<div key={m.id} className="msg user" data-outline-anchor={m.id}>
 									{isEditing ? (
 										<div className="msg-edit">
 											<textarea

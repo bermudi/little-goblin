@@ -669,8 +669,10 @@ p code,
 	border-top: 1px solid var(--app-divider);
 	margin: 0.35rem 0.4rem;
 }
-/* The bar is z-30; the sheet must stand over it. */
-.system-veil {
+/* The bar is z-30; the sheet must stand over it. Compound selector:
+   a bare .system-veil ties .veil's specificity and loses to its z-index
+   rule, declared much further down this file. */
+.veil.system-veil {
 	z-index: 40;
 }
 

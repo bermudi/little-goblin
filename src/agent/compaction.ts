@@ -196,7 +196,7 @@ export async function runCompaction(
 		tailTokenBudget: number;
 		inputTokenBudget: number;
 		callTimeoutMs?: number;
-		reason?: "threshold" | "manual" | "overflow";
+		reason?: "threshold" | "manual" | "overflow" | "preempt";
 		// The authority fence (wired from runtime.ts checkAuthority):
 		// throws when the conversation's epoch advanced since this
 		// compaction captured it. Checked before each chunk and right

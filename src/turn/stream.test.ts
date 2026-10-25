@@ -4,19 +4,25 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
-import { z } from "zod";
 import {
 	APICallError,
 	type LanguageModelV4,
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
+import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
+import { z } from "zod";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
+import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
 import type { TurnJournal } from "../turn-journal.ts";
+import {
+	ContextOverflowError,
+	failureFromStream,
+	PreemptCompactError,
+	preemptArm,
+} from "./overflow.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
@@ -24,8 +30,8 @@ import {
 	emitChunk,
 	endLive,
 	joinMember,
-	openLive,
 	type MemberSettlement,
+	openLive,
 	type StreamDeps,
 	type WireMember,
 } from "./stream.ts";
@@ -653,6 +659,109 @@ describe("driveStream", () => {
 		// The error chunk — and everything after — stayed off the wire.
 		expect(r.live.chunks.some((c) => c.type === "error")).toBe(false);
 		expect(head.chunks).toEqual(r.live.chunks);
+	});
+
+	// The runtime's real closure: pressure reads the last completed
+	// step's reported input; fidelity the unfolded span. Reused so the
+	// stream tests exercise the same decision the runtime installs.
+	const realArms = (info: {
+		inputTokens: number | null;
+		historyChars: number;
+		stepNumber: number;
+	}) =>
+		preemptArm(
+			{ ...info, summaryChars: 0, contextWindow: 1000 },
+			{ pressurePct: 0.75, fidelitySpanTokens: 120_000 },
+		);
+
+	test("a pre-empt arm at the step boundary stops the next call and holds the rail for the fold-resume", async () => {
+		const r = rig([toolCallStep("c1", 900), textReply("never reached")]);
+		r.deps.overflowRecoverable = true;
+		r.deps.tools = { probe: probeTool() };
+		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
+		r.deps.preemptCheck = realArms;
+		const head = member("head");
+		r.members.push(head);
+		const outcome = await driveStream(r.deps);
+		// Step 0 (input 900/1000) completed the tool; the pressure arm
+		// fired at the next boundary (stepNumber 1, 0-based) — that call
+		// never dispatched.
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind !== "failed") return;
+		expect(outcome.holdForRecovery).toBe(true);
+		expect(outcome.preempt).toEqual({ arm: "pressure", step: 1 });
+		expect(r.prompts).toHaveLength(1);
+		// Nothing error-shaped reached the wire — the fold-resume owns the story.
+		expect(r.live.chunks.some((c) => c.type === "error")).toBe(false);
+		expect(head.chunks).toEqual(r.live.chunks);
+		const err = failureFromStream(outcome);
+		expect(err).toBeInstanceOf(PreemptCompactError);
+		expect(err).toBeInstanceOf(ContextOverflowError);
+		if (!(err instanceof PreemptCompactError)) return;
+		expect(err.arm).toBe("pressure");
+		expect(err.stepNumber).toBe(1);
+	});
+
+	test("without the recovery budget the pre-empt check is never consulted", async () => {
+		let consulted = 0;
+		const r = rig([toolCallStep("c1", 900), textReply("done")]);
+		r.deps.tools = { probe: probeTool() };
+		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
+		r.deps.preemptCheck = (info) => {
+			consulted++;
+			return realArms(info);
+		};
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		expect(r.prompts).toHaveLength(2);
+		expect(consulted).toBe(0);
+	});
+
+	test("preemptArm: fidelity reads the unfolded span, pressure the reported input", () => {
+		const arms = { pressurePct: 0.75, fidelitySpanTokens: 120_000 };
+		// Fidelity: history chars over the carried summary, chars/4.
+		expect(
+			preemptArm(
+				{ inputTokens: null, historyChars: 480_001, summaryChars: 0, contextWindow: undefined },
+				arms,
+			),
+		).toBe("fidelity");
+		expect(
+			preemptArm(
+				{
+					inputTokens: null,
+					historyChars: 480_001,
+					summaryChars: 400_000,
+					contextWindow: undefined,
+				},
+				arms,
+			),
+		).toBeNull();
+		// Pressure: the last step's input against the catalog window.
+		expect(
+			preemptArm(
+				{ inputTokens: 750_000, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				arms,
+			),
+		).toBe("pressure");
+		expect(
+			preemptArm(
+				{ inputTokens: 749_999, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				arms,
+			),
+		).toBeNull();
+		expect(
+			preemptArm(
+				{ inputTokens: 750_000, historyChars: 0, summaryChars: 0, contextWindow: undefined },
+				arms,
+			),
+		).toBeNull();
+		expect(
+			preemptArm(
+				{ inputTokens: null, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				arms,
+			),
+		).toBeNull();
 	});
 
 	test("an unrecoverable failure reaches the wire and reports its text", async () => {

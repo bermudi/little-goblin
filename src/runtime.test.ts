@@ -4,35 +4,35 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
+import { type LanguageModel, type ToolSet, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import {
-	finishPart,
-	scriptedModel as scriptedEdge,
-	type StreamAttempt,
-	textParts,
-	toolCallPart,
-} from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
+import { systemPromptFor } from "./agent/prompt.ts";
+import { toolNames } from "./agent/tools/mod.ts";
 import { readFileTool } from "./agent/tools/read.ts";
-import { parseConfig } from "./config.ts";
+import { memoryConfigSchema, parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
-import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
-import { Reviewer } from "./reviewer.ts";
-import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { openWindowCapture } from "./window-capture.ts";
-import type { HindsightClient } from "./memory/hindsight.ts";
 import { forgetDocument } from "./memory/forget.ts";
-import { memoryConfigSchema } from "./config.ts";
+import type { HindsightClient } from "./memory/hindsight.ts";
+import { Reviewer } from "./reviewer.ts";
 import {
-	Runtime,
+	compactionBudgets,
 	type ModelStep,
+	Runtime,
 	type RuntimeDeps,
 	type TurnDone,
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import type { System1Client } from "./system1.ts";
+import {
+	finishPart,
+	type StreamAttempt,
+	scriptedModel as scriptedEdge,
+	textParts,
+	toolCallPart,
+} from "./testkit/fake-model.ts";
 import {
 	deferred,
 	fakeModel,
@@ -43,12 +43,12 @@ import {
 	recordingModel,
 	sleep,
 	tmpDb,
+	tmpDir,
 	useHome,
 	waitUntil,
-	tmpDir,
 } from "./testkit.ts";
-import { systemPromptFor } from "./agent/prompt.ts";
-import { toolNames } from "./agent/tools/mod.ts";
+import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
+import { openWindowCapture } from "./window-capture.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -155,9 +155,7 @@ describe("skill body ownership across turns", () => {
 			expect(prompts[2]).not.toContain("RT-BODY-BBB");
 
 			const row = r.store.db
-				.query<{ run_id: string }, [number]>(
-					"SELECT run_id FROM turn_runs WHERE anchor_seq = ?",
-				)
+				.query<{ run_id: string }, [number]>("SELECT run_id FROM turn_runs WHERE anchor_seq = ?")
 				.get(secondSeq);
 			expect(row).not.toBeNull();
 			expect(journal.get(row!.run_id)!.ownedInputSeqs).toEqual([secondSeq]);
@@ -243,9 +241,7 @@ describe("skill body ownership across turns", () => {
 			// Step 2 folded the steer: its body rides THIS owning turn — exactly once.
 			expect(prompt(1).split("STEER-SKILL-UNIQUE").length).toBe(2);
 			expect(prompt(1)).toContain("steered invoke");
-			const run = r.store.db
-				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
-				.all();
+			const run = r.store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
 			expect(run).toHaveLength(1);
 			expect(journal.get(run[0]!.run_id)!.ownedInputSeqs).toEqual([headSeq, steerSeq]);
 			expect(journal.get(run[0]!.run_id)!.steerMark).toBe(steerSeq);
@@ -1323,6 +1319,91 @@ describe("context overflow recovery", () => {
 		expect(text?.text).toBe("the final answer");
 		expect(r.store.history(r.conv.id).filter((m) => m.role === "assistant")).toHaveLength(4);
 		r.store.close();
+	});
+
+	test("a step-boundary pre-empt folds mid-turn and resumes — one merged reply, full tail", async () => {
+		// design/compaction.md → Timing: the pressure arm fires at the
+		// boundary after step 0 reports 900/1000 — before the next call
+		// dispatches, so no provider call is wasted on a doomed prompt.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 900),
+				],
+				// The resume attempt's first call — step 1 never dispatched.
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "probe-result-7f3a";
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded past",
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// The tool ran once — the resume continues the partial, never re-runs.
+		expect(executions).toBe(1);
+		// Step 0 dispatched; the pre-empt stopped step 1; the resume's
+		// first call is the only other request.
+		expect(s.prompts).toHaveLength(2);
+		// The resumed prompt carries the failed attempt's tool result AND
+		// the mid-turn fold's summary.
+		expect(s.prompts[1]).toContain("probe-result-7f3a");
+		expect(s.prompts[1]).toContain("folded past");
+		expect(sink.chunkTypes).not.toContain("error");
+		const stored = r.store.history(r.conv.id).at(-1)!;
+		const types = stored.parts.map((p) => p.type);
+		expect(types).toContain("tool-probe");
+		expect(types).toContain("text");
+		const text = stored.parts.find((p) => p.type === "text") as { text: string } | undefined;
+		expect(text?.text).toBe("the final answer");
+		// The fold landed mid-turn: the pointer moved before the resume call.
+		expect(r.store.getCompaction(r.conv.id)).not.toBeNull();
+		r.store.close();
+	});
+
+	test("compaction budgets: absolute at scale, window-clamped small (design/compaction.md → Budgets)", () => {
+		// 1M-era rule: the fractions retire — 25% of a 1M window is a
+		// 262k tail, 50% a 524k summarizer call; neither is a bigger
+		// version of the small-window behavior.
+		expect(compactionBudgets(1_048_576)).toEqual({
+			tailTokenBudget: 30_000,
+			inputTokenBudget: 100_000,
+		});
+		expect(compactionBudgets(200_000)).toEqual({
+			tailTokenBudget: 30_000,
+			inputTokenBudget: 100_000,
+		});
+		// Small models keep today's ratios exactly — the caps never bind
+		// below 120k (tail) / 200k (chunk).
+		expect(compactionBudgets(65_536)).toEqual({
+			tailTokenBudget: 16_384,
+			inputTokenBudget: 32_768,
+		});
+		expect(compactionBudgets(32_768)).toEqual({ tailTokenBudget: 8_192, inputTokenBudget: 16_384 });
+		expect(compactionBudgets(1_000)).toEqual({ tailTokenBudget: 250, inputTokenBudget: 500 });
+		// A null window (manual /compact, catalog silent) takes absolutes.
+		expect(compactionBudgets(null)).toEqual({ tailTokenBudget: 30_000, inputTokenBudget: 100_000 });
 	});
 
 	test("an overflow with nothing left to compact ends with a plain message", async () => {
@@ -2712,12 +2793,20 @@ describe("streaming lane boundary", () => {
 		await parked.done;
 		r.runtime.submit(
 			r.conv,
-			{ id: "same-id", role: "user", parts: [{ type: "text", text: "background beat" }] } as UIMessage,
+			{
+				id: "same-id",
+				role: "user",
+				parts: [{ type: "text", text: "background beat" }],
+			} as UIMessage,
 			background,
 		);
 		r.runtime.submit(
 			r.conv,
-			{ id: "same-id", role: "user", parts: [{ type: "text", text: "client owns me" }] } as UIMessage,
+			{
+				id: "same-id",
+				role: "user",
+				parts: [{ type: "text", text: "client owns me" }],
+			} as UIMessage,
 			client,
 		);
 		gate.resolve();

@@ -27,22 +27,51 @@ import {
 	ContextOverflowError,
 	failureFromStream,
 	overflowHoldable,
+	PreemptCompactError,
+	preemptArm,
 	recoverFromOverflow,
 	type TurnRecovery,
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
+import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
-import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
 import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
 // Completed turns at/above this compact in-lane — the lane stays occupied
 // until the summary finishes so the next turn sees one whole view.
 const COMPACT_AT_PCT = 75;
+// design/compaction.md → Budgets: absolute at scale (the 1M-era rule —
+// fractions of a big window are consumption rules, not safety rules),
+// clamped to the window's own fractions on small models so a 32k window
+// keeps a working tail and chunk instead of a tail that swallows it.
+const COMPACT_TAIL_TOKENS = 30_000;
+const COMPACT_CHUNK_TOKENS = 100_000;
+// design/compaction.md → Triggers: the fidelity arm — the unfolded span
+// since the previous boundary, in estimated tokens (chars/4).
+const COMPACT_FIDELITY_SPAN_TOKENS = 120_000;
+
+// The compaction budgets as a pure function (design/compaction.md →
+// Budgets) — exported for the ruling's tests. Small windows keep today's
+// ratios exactly (the caps never bind below 120k/200k); at scale the
+// absolute values take over. A null window (manual /compact with the
+// catalog silent) takes the absolute values.
+export function compactionBudgets(contextWindow: number | null): {
+	tailTokenBudget: number;
+	inputTokenBudget: number;
+} {
+	if (contextWindow === null) {
+		return { tailTokenBudget: COMPACT_TAIL_TOKENS, inputTokenBudget: COMPACT_CHUNK_TOKENS };
+	}
+	return {
+		tailTokenBudget: Math.min(COMPACT_TAIL_TOKENS, Math.round(contextWindow * 0.25)),
+		inputTokenBudget: Math.min(COMPACT_CHUNK_TOKENS, Math.floor(contextWindow * 0.5)),
+	};
+}
 
 export type { ForcedKind } from "./turn/state.ts";
 
@@ -524,7 +553,7 @@ export class Runtime {
 	// caller decides whether a failure is reported or retried.
 	private async doCompact(
 		conv: Conversation,
-		reason: "threshold" | "manual" | "overflow",
+		reason: "threshold" | "manual" | "overflow" | "preempt",
 	): Promise<CompactionOutcome> {
 		if (reason === "manual") {
 			conv = this.deps.store.get(conv.id) ?? conv;
@@ -550,12 +579,10 @@ export class Runtime {
 			// reverses the order after each call — a provider may resolve under
 			// abort, so there the signal check must land first.
 			this.checkAuthority(conv.id, epoch);
-			const tailTokenBudget = contextWindow !== null ? Math.round(contextWindow * 0.25) : 20_000;
+			const { tailTokenBudget, inputTokenBudget } = compactionBudgets(contextWindow);
 			// Overflow recovery uses a smaller tail to stay below the provider's
-			// observed limit.
+			// observed limit. A pre-empt folds before any failure — full tail.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
-			// Keep summarizer input below half the window to leave answer headroom.
-			const inputTokenBudget = contextWindow !== null ? Math.floor(contextWindow * 0.5) : 32_000;
 			const modelRef = compaction.modelRef(conv);
 			log.info("compaction window", {
 				conversation: conv.id,
@@ -1188,6 +1215,31 @@ export class Runtime {
 				digest: recovery ? [...recovery.digest] : [],
 				filterRetryUsed,
 				overflowRecoverable: overflowHoldable(recovery, this.deps.compaction !== undefined),
+				// design/compaction.md → Timing: the step-boundary arms. Wired
+				// only when the fold-resume is possible — the gate and the budget
+				// are the same invariant (one fold-resume per logical turn), so an
+				// already-resumed attempt keeps dispatching and the 85% context
+				// landing stays its backstop.
+				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
+					? {
+							preemptCheck: (info: {
+								inputTokens: number | null;
+								historyChars: number;
+								stepNumber: number;
+							}) =>
+								preemptArm(
+									{
+										...info,
+										summaryChars: store.getCompaction(convId)?.summary.length ?? 0,
+										contextWindow: step.contextWindow,
+									},
+									{
+										pressurePct: COMPACT_AT_PCT / 100,
+										fidelitySpanTokens: COMPACT_FIDELITY_SPAN_TOKENS,
+									},
+								),
+						}
+					: {}),
 				evidence: this.reviewer?.evidence,
 				skillWatch: this.skillWatch,
 				turnStartMs,
@@ -1335,7 +1387,8 @@ export class Runtime {
 					recallVersion,
 					sourceInputSeq: sourceInputSeq(),
 					members: turns,
-					compact: () => this.doCompact(conv, "overflow"),
+					compact: () =>
+						this.doCompact(conv, err instanceof PreemptCompactError ? "preempt" : "overflow"),
 					assertAuthority: () => this.checkAuthority(convId, epoch),
 					holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
 					signal: controller.signal,

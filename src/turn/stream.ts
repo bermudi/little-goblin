@@ -1,34 +1,35 @@
 import { randomUUID } from "node:crypto";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import {
-	isLoopFinished,
-	streamText,
-	toUIMessageStream,
 	type CallWarning,
 	type FinishReason,
+	isLoopFinished,
 	type LanguageModel,
 	type LanguageModelUsage,
 	type ModelMessage,
+	streamText,
 	type ToolSet,
+	toUIMessageStream,
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { z } from "zod";
 import { filterErrorStream } from "../agent/filter-stream.ts";
-import type { AppLiveContext } from "../http/app-wire.ts";
 import {
 	isContentFilter,
 	isContextOverflow,
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
+import type { AppLiveContext } from "../http/app-wire.ts";
 import { log } from "../log.ts";
-import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
-import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
+import { type EvidenceLimits, summarize, type ToolCallDigest, toolOk } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
-import { measurePrompt, type PromptSegments } from "./itemize.ts";
-import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
+import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
+import { measurePrompt, type PromptSegments } from "./itemize.ts";
+import { PreemptSignal } from "./overflow.ts";
+import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
 
@@ -231,6 +232,19 @@ export interface StreamDeps<M extends WireMember> {
 	digest: { id: string; entry: ToolCallDigest }[];
 	filterRetryUsed: boolean;
 	overflowRecoverable: boolean;
+	// design/compaction.md → Timing: the pre-emption decision, evaluated
+	// at the step boundary before every model call including the first
+	// (after tools finish and their results are appended). Supplied by the
+	// runtime, which owns the thresholds and the compaction state; an arm
+	// returned means the next call must not dispatch — the turn folds and
+	// resumes on the compacted view. Absent = pre-emption off. Only
+	// consulted while the overflow rail is recoverable and authority holds
+	// (one fold-resume per logical turn; a fenced turn takes the fence path).
+	preemptCheck?(info: {
+		inputTokens: number | null;
+		historyChars: number;
+		stepNumber: number;
+	}): "pressure" | "fidelity" | null;
 	evidence: EvidenceLimits | undefined;
 	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
@@ -260,6 +274,10 @@ export type StreamOutcome =
 			errorText: string;
 			rawError: unknown;
 			holdForRecovery: boolean;
+			// Set when the failure is a step-boundary pre-empt, not a provider
+			// error: the recovery rail is the same, the compact reason and the
+			// operator-facing story are not.
+			preempt?: { arm: "pressure" | "fidelity"; step: number };
 			partial: UIMessage | null;
 			seenText: boolean;
 			toolCalls: string[];
@@ -300,16 +318,46 @@ export async function driveStream<M extends WireMember>(
 	// the factory call — an await inserted between the two leaves every
 	// step end in the TDZ while still compiling.
 	let holdForRecovery = false;
+	// The pre-empt decision, captured when the signal surfaces so the
+	// failed outcome can name the arm and step. Also read only after the
+	// stream settles — declared here for the same TDZ reason.
+	let preemptInfo: { arm: "pressure" | "fidelity"; step: number } | null = null;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
 	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
-	const notePrompt = (messages: readonly ModelMessage[]) => {
+	const notePrompt = (messages: readonly ModelMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		lastPromptChars = segments;
 		stagedWindow = { messages: [...messages], segments };
+		// The pre-emption gate (design/compaction.md → Timing): decide
+		// before the call dispatches. Gated on the overflow rail's budget —
+		// the one-fold-resume-per-logical-turn invariant — and on live
+		// authority: a fenced turn must take the fence path, not start a
+		// fold.
+		if (deps.preemptCheck !== undefined && deps.overflowRecoverable && deps.holdsAuthority()) {
+			const arm = deps.preemptCheck({
+				inputTokens: lastStepInputTokens,
+				historyChars: segments.history,
+				stepNumber,
+			});
+			if (arm !== null) {
+				// A context landing that issued at this same boundary has not
+				// driven its forced step (the throw stops the dispatch) — the
+				// pre-empt supersedes it, and the resume must start unforced.
+				state.retractContextLanding();
+				log.warn("compaction pre-empt — folding at the step boundary", {
+					conversation: convId,
+					arm,
+					step: stepNumber,
+					inputTokens: lastStepInputTokens,
+					historyChars: segments.history,
+				});
+				throw new PreemptSignal(arm, stepNumber);
+			}
+		}
 	};
 	const result = streamText({
 		model: filterErrorStream(deps.step.model, convId),
@@ -356,10 +404,10 @@ export async function driveStream<M extends WireMember>(
 			if (steered.length === 0) {
 				if (forced || warnMsgs.length > 0) {
 					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
-					notePrompt(outbound);
+					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
-				notePrompt(stepMessages);
+				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
 			if (!deps.holdsAuthority()) {
@@ -407,10 +455,10 @@ export async function driveStream<M extends WireMember>(
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0) {
 					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
-					notePrompt(outbound);
+					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
-				notePrompt(stepMessages);
+				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
 			// Ownership and the mark persist together — a crash after the
@@ -434,7 +482,7 @@ export async function driveStream<M extends WireMember>(
 				step: stepNumber,
 			});
 			const outbound = [...stepMessages, ...warnMsgs, ...injected, ...nudge];
-			notePrompt(outbound);
+			notePrompt(outbound, stepNumber);
 			return {
 				messages: outbound,
 				...(forced ? { toolChoice: "none" as const } : {}),
@@ -597,146 +645,165 @@ export async function driveStream<M extends WireMember>(
 		const call = callById.get(toolCallId);
 		state.noteCompletedCall(call?.tool ?? toolCallId, call?.input, result, failed);
 	};
-	for await (const chunk of uiStream) {
-		deps.assertAuthority();
-		if (chunk.type === "error") {
-			const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
-			if (overflow && deps.overflowRecoverable) {
-				holdForRecovery = true;
+	try {
+		for await (const chunk of uiStream) {
+			deps.assertAuthority();
+			if (chunk.type === "error") {
+				const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
+				if (overflow && deps.overflowRecoverable) {
+					holdForRecovery = true;
+				}
+				// A pre-empt signal surfacing as an error part: the next call
+				// was stopped before dispatch — hold the rail for the fold-resume.
+				if (rawError instanceof PreemptSignal && deps.overflowRecoverable) {
+					holdForRecovery = true;
+					preemptInfo = { arm: rawError.arm, step: rawError.stepNumber };
+				}
 			}
-		}
-		if (!holdForRecovery) {
-			emitChunk(convId, members, live, chunk);
-		}
-		// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
-		if (pendingStep && chunk.type !== "error") {
-			state.noteModelCall();
-			pendingStep = false;
-		}
-		switch (chunk.type) {
-			case "start-step":
-				// openai-compatible providers synthesize part ids per request, so step 2 can reuse step 1's id verbatim — reset instead of trusting ids.
-				lastTextPartId = null;
-				pendingStep = true;
-				break;
-			case "text-delta":
-				if (seenText && (lastTextPartId === null || chunk.id !== lastTextPartId)) {
-					head.onTextDelta("\n\n");
-				}
-				lastTextPartId = chunk.id;
-				seenText = true;
-				head.onTextDelta(chunk.delta);
-				break;
-			case "reasoning-delta":
-				head.onReasoningDelta(chunk.delta);
-				break;
-			case "tool-input-available":
-				head.onToolCall(chunk.toolName, chunk.input);
-				toolCalls.push(chunk.toolName);
-				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
-				deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
-				if (evidence !== undefined) {
-					digestRing.push({
-						id: chunk.toolCallId,
-						entry: {
-							tool: chunk.toolName,
-							args: summarize(chunk.input, evidence.argChars),
-							result: "(no result)",
-							ok: true,
-						},
-					});
-					if (digestRing.length > evidence.calls) digestRing.shift();
-				}
-				log.info("tool call", {
-					conversation: convId,
-					tool: chunk.toolName,
-					arg: JSON.stringify(chunk.input).slice(0, 200),
-				});
-				break;
-			case "tool-input-error":
-				// tool-output-error carries only the id — record name+input here or the detector hashes each rejection under a random call id and never trips.
-				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
-				log.warn("tool call rejected", {
-					conversation: convId,
-					tool: chunk.toolName,
-					arg: JSON.stringify(chunk.input ?? null).slice(0, 200),
-					error: chunk.errorText.slice(0, 300),
-				});
-				break;
-			case "tool-output-available": {
-				if (evidence !== undefined) {
-					for (let i = digestRing.length - 1; i >= 0; i--) {
-						if (digestRing[i]!.id !== chunk.toolCallId) continue;
-						digestRing[i]!.entry.result = summarize(chunk.output, evidence.outChars);
-						digestRing[i]!.entry.ok = toolOk(chunk.output);
-						break;
-					}
-				}
-				if (callById.get(chunk.toolCallId)?.tool === "script") {
-					const parsed = scriptOutputSchema.safeParse(chunk.output);
-					if (parsed.success) {
-						for (const [i, call] of parsed.data.calls.entries()) {
-							toolCalls.push(`script.${call.tool}`);
-							if (evidence !== undefined) {
-								digestRing.push({
-									id: `${chunk.toolCallId}/${i + 1}`,
-									entry: {
-										tool: `script.${call.tool}`,
-										args: summarize(call.args, evidence.argChars),
-										result: summarize(call.result, evidence.outChars),
-										ok: call.ok,
-									},
-								});
-								if (digestRing.length > evidence.calls) digestRing.shift();
-							}
-						}
-					} else {
-						log.warn("script call record unreadable — nested calls not expanded", {
-							conversation: convId,
-							toolCallId: chunk.toolCallId,
-						});
-					}
-				}
-				if (deps.skillWatch !== undefined) {
-					const tool = callById.get(chunk.toolCallId)?.tool ?? "";
-					if (tool === "write_file" || tool === "edit_file" || tool === "script") {
-						for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
-							try {
-								deps.skillWatch.record(convId, skill);
-								log.info("skill write attributed", { conversation: convId, tool, skill });
-							} catch (err) {
-								log.error("skill provenance record failed — turn continues", err, {
-									conversation: convId,
-									tool,
-									skill,
-								});
-							}
-						}
-					}
-				}
-				noteCompletedCall(chunk.toolCallId, chunk.output, false);
-				break;
+			if (!holdForRecovery) {
+				emitChunk(convId, members, live, chunk);
 			}
-			case "tool-output-error":
-				log.warn("tool execute failed", {
-					conversation: convId,
-					tool: callById.get(chunk.toolCallId)?.tool ?? chunk.toolCallId,
-					error: chunk.errorText.slice(0, 300),
-				});
-				if (evidence !== undefined) {
-					for (let i = digestRing.length - 1; i >= 0; i--) {
-						if (digestRing[i]!.id !== chunk.toolCallId) continue;
-						digestRing[i]!.entry.result = summarize(chunk.errorText, evidence.outChars);
-						digestRing[i]!.entry.ok = false;
-						break;
-					}
-				}
-				noteCompletedCall(chunk.toolCallId, chunk.errorText, true);
-				break;
-			case "error":
+			// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
+			if (pendingStep && chunk.type !== "error") {
+				state.noteModelCall();
 				pendingStep = false;
-				streamError = chunk.errorText;
-				break;
+			}
+			switch (chunk.type) {
+				case "start-step":
+					// openai-compatible providers synthesize part ids per request, so step 2 can reuse step 1's id verbatim — reset instead of trusting ids.
+					lastTextPartId = null;
+					pendingStep = true;
+					break;
+				case "text-delta":
+					if (seenText && (lastTextPartId === null || chunk.id !== lastTextPartId)) {
+						head.onTextDelta("\n\n");
+					}
+					lastTextPartId = chunk.id;
+					seenText = true;
+					head.onTextDelta(chunk.delta);
+					break;
+				case "reasoning-delta":
+					head.onReasoningDelta(chunk.delta);
+					break;
+				case "tool-input-available":
+					head.onToolCall(chunk.toolName, chunk.input);
+					toolCalls.push(chunk.toolName);
+					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
+					deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
+					if (evidence !== undefined) {
+						digestRing.push({
+							id: chunk.toolCallId,
+							entry: {
+								tool: chunk.toolName,
+								args: summarize(chunk.input, evidence.argChars),
+								result: "(no result)",
+								ok: true,
+							},
+						});
+						if (digestRing.length > evidence.calls) digestRing.shift();
+					}
+					log.info("tool call", {
+						conversation: convId,
+						tool: chunk.toolName,
+						arg: JSON.stringify(chunk.input).slice(0, 200),
+					});
+					break;
+				case "tool-input-error":
+					// tool-output-error carries only the id — record name+input here or the detector hashes each rejection under a random call id and never trips.
+					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
+					log.warn("tool call rejected", {
+						conversation: convId,
+						tool: chunk.toolName,
+						arg: JSON.stringify(chunk.input ?? null).slice(0, 200),
+						error: chunk.errorText.slice(0, 300),
+					});
+					break;
+				case "tool-output-available": {
+					if (evidence !== undefined) {
+						for (let i = digestRing.length - 1; i >= 0; i--) {
+							if (digestRing[i]!.id !== chunk.toolCallId) continue;
+							digestRing[i]!.entry.result = summarize(chunk.output, evidence.outChars);
+							digestRing[i]!.entry.ok = toolOk(chunk.output);
+							break;
+						}
+					}
+					if (callById.get(chunk.toolCallId)?.tool === "script") {
+						const parsed = scriptOutputSchema.safeParse(chunk.output);
+						if (parsed.success) {
+							for (const [i, call] of parsed.data.calls.entries()) {
+								toolCalls.push(`script.${call.tool}`);
+								if (evidence !== undefined) {
+									digestRing.push({
+										id: `${chunk.toolCallId}/${i + 1}`,
+										entry: {
+											tool: `script.${call.tool}`,
+											args: summarize(call.args, evidence.argChars),
+											result: summarize(call.result, evidence.outChars),
+											ok: call.ok,
+										},
+									});
+									if (digestRing.length > evidence.calls) digestRing.shift();
+								}
+							}
+						} else {
+							log.warn("script call record unreadable — nested calls not expanded", {
+								conversation: convId,
+								toolCallId: chunk.toolCallId,
+							});
+						}
+					}
+					if (deps.skillWatch !== undefined) {
+						const tool = callById.get(chunk.toolCallId)?.tool ?? "";
+						if (tool === "write_file" || tool === "edit_file" || tool === "script") {
+							for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
+								try {
+									deps.skillWatch.record(convId, skill);
+									log.info("skill write attributed", { conversation: convId, tool, skill });
+								} catch (err) {
+									log.error("skill provenance record failed — turn continues", err, {
+										conversation: convId,
+										tool,
+										skill,
+									});
+								}
+							}
+						}
+					}
+					noteCompletedCall(chunk.toolCallId, chunk.output, false);
+					break;
+				}
+				case "tool-output-error":
+					log.warn("tool execute failed", {
+						conversation: convId,
+						tool: callById.get(chunk.toolCallId)?.tool ?? chunk.toolCallId,
+						error: chunk.errorText.slice(0, 300),
+					});
+					if (evidence !== undefined) {
+						for (let i = digestRing.length - 1; i >= 0; i--) {
+							if (digestRing[i]!.id !== chunk.toolCallId) continue;
+							digestRing[i]!.entry.result = summarize(chunk.errorText, evidence.outChars);
+							digestRing[i]!.entry.ok = false;
+							break;
+						}
+					}
+					noteCompletedCall(chunk.toolCallId, chunk.errorText, true);
+					break;
+				case "error":
+					pendingStep = false;
+					streamError = chunk.errorText;
+					break;
+			}
+		}
+	} catch (err) {
+		// A pre-empt signal may reject the iterator outright instead of
+		// surfacing as an error part, depending on where the SDK catches the
+		// prepareStep throw. Either surface lands on the same rail.
+		if (err instanceof PreemptSignal && deps.overflowRecoverable) {
+			holdForRecovery = true;
+			preemptInfo = { arm: err.arm, step: err.stepNumber };
+			streamError = err.message;
+		} else {
+			throw err;
 		}
 	}
 
@@ -762,6 +829,7 @@ export async function driveStream<M extends WireMember>(
 			errorText: streamError,
 			rawError,
 			holdForRecovery,
+			...(preemptInfo !== null ? { preempt: preemptInfo } : {}),
 			partial: partialResponse as UIMessage | null,
 			seenText,
 			toolCalls,

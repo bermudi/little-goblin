@@ -180,4 +180,85 @@ describe("Outline", () => {
 
 		expect(entries()[0]?.getAttribute("aria-current")).toBeNull();
 	});
+
+	test("stream-chunk re-renders keep the spy; a changed section set re-runs it", async () => {
+		await mount([msg("u1", "user", "first"), msg("a1", "assistant", "answer")]);
+		const transcript = container.querySelector<HTMLElement>(".transcript");
+		if (transcript === null) throw new Error("no transcript");
+		// Each effect run re-registers the scroll listener — counting
+		// "scroll" adds counts measure()s, which is what must not happen
+		// per stream chunk.
+		let adds = 0;
+		const add = transcript.addEventListener.bind(transcript);
+		Object.defineProperty(transcript, "addEventListener", {
+			value: (type: string, listener: EventListenerOrEventListenerObject) => {
+				if (type === "scroll") adds += 1;
+				return add(type, listener);
+			},
+		});
+
+		// A streaming assistant turn: fresh messages array, same anchors.
+		await act(async () => {
+			root?.render(
+				<Harness
+					messages={[msg("u1", "user", "first"), msg("a1", "assistant", "longer answer")]}
+				/>,
+			);
+		});
+		await settle();
+		expect(adds).toBe(0);
+
+		// A new operator message changes the section set — re-measure.
+		await act(async () => {
+			root?.render(
+				<Harness
+					messages={[
+						msg("u1", "user", "first"),
+						msg("a1", "assistant", "longer answer"),
+						msg("u2", "user", "second"),
+					]}
+				/>,
+			);
+		});
+		await settle();
+		expect(adds).toBe(1);
+		expect(entries().length).toBe(2);
+	});
+
+	test("the spy re-measures on relayout, no scroll event needed", async () => {
+		// happy-dom's ResizeObserver never fires; record the registrations
+		// so the test can play one relayout by hand.
+		const callbacks: Array<() => void> = [];
+		class RecordingObserver {
+			constructor(callback: () => void) {
+				callbacks.push(callback);
+			}
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		}
+		Reflect.set(win, "ResizeObserver", RecordingObserver);
+
+		await mount([msg("u1", "user", "first"), msg("u2", "user", "second")]);
+		expect(callbacks.length).toBeGreaterThan(0);
+		const transcript = container.querySelector<HTMLElement>(".transcript");
+		if (transcript === null) throw new Error("no transcript");
+		const anchors = [...transcript.querySelectorAll<HTMLElement>("[data-outline-anchor]")];
+		const [first, second] = anchors;
+		if (first === undefined || second === undefined) throw new Error("missing anchors");
+		// At mount the zero rects made the last section current; after the
+		// relayout only the first section sits above the quarter mark.
+		expect(entries()[1]?.getAttribute("aria-current")).toBe("true");
+		first.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+		second.getBoundingClientRect = () => ({ top: 500 }) as DOMRect;
+		transcript.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+
+		await act(async () => {
+			for (const callback of callbacks) callback();
+		});
+		await settle();
+
+		expect(entries()[0]?.getAttribute("aria-current")).toBe("true");
+		expect(entries()[1]?.getAttribute("aria-current")).toBeNull();
+	});
 });

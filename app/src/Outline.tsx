@@ -38,6 +38,11 @@ export function Outline({
 		[messages],
 	);
 	const [current, setCurrent] = useState<string | null>(null);
+	// The spy re-measures when the section set changes, not when `messages`
+	// changes identity — every stream chunk is a fresh array, and
+	// re-measuring per token is forced layout for nothing. Scroll events
+	// already cover pure view changes.
+	const anchorKey = anchors.map((a) => a.id).join("\n");
 
 	// The section in view is the last anchor at or above the viewport's
 	// quarter mark. Scroll events re-run it; React drops the no-op sets.
@@ -58,8 +63,18 @@ export function Outline({
 		measure();
 		const onScroll = () => measure();
 		el.addEventListener("scroll", onScroll, { passive: true });
-		return () => el.removeEventListener("scroll", onScroll);
-	}, [anchors, scrollRef]);
+		// Relayout can move anchors without a scroll ever firing — the
+		// narrow/wide toggle, window resizes, images settling — so the
+		// transcript box and its content re-run the spy on resize.
+		const observer = new window.ResizeObserver(() => measure());
+		observer.observe(el);
+		const content = el.firstElementChild;
+		if (content !== null) observer.observe(content);
+		return () => {
+			el.removeEventListener("scroll", onScroll);
+			observer.disconnect();
+		};
+	}, [anchorKey, scrollRef]);
 
 	const jump = (id: string) => {
 		const el = scrollRef.current;

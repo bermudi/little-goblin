@@ -24,6 +24,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# Fresh installs run from the checkout. A box on the release layout runs from
+# ~/goblin-releases/live instead: one line, rewritten once by
+# `bun scripts/release.ts --adopt-unit` (design/deploy.md) — later releases
+# are a symlink flip, so this never changes again.
 WorkingDirectory=/home/daniel/build/little-goblin
 Environment=GOBLIN_HOME=/home/daniel/goblin
 # Auth commands (auth.jsonl "!cmd" records) resolve under THIS process's

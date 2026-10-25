@@ -240,6 +240,16 @@ separately reviewed operator update; it is not overwritten by deployment.
 
 ## Deploying
 
+**Release layout — cutover staged, not yet live.** `scripts/release.ts`
+replaces the in-place rollout below with immutable releases under
+`~/goblin-releases/`, served through a `live` symlink. `bun
+scripts/release.ts` builds the commit if needed, gates on a typecheck inside
+the release, flips the link with one rename, restarts and verifies;
+`--rollback <rev>`, `--status`, `--build-only` and the one-time `--adopt-unit`
+complete the surface. Invariants, the reasoning and the cutover procedure are
+in [design/deploy.md](../design/deploy.md). Until that cutover runs, the text
+below describes what this box actually does.
+
 Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
 source of truth for the seeded copy; `ensureHomeLayout` installs it on
 first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,

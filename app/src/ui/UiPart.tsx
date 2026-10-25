@@ -22,6 +22,16 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// A mid-stream payload never passes uiInputSchema's superRefine — the
+// streaming sanitizer owns its own bounds. The element cap mirrors the
+// complete-input schema's 200 max; the depth cap bounds the walk (and
+// React's recursive render) against a degenerate id chain. Beyond
+// either cap an element is dropped exactly like any other invalid one
+// — skeleton/nothing — and the completed part is still validated
+// server-side, so the truncation is transient, never durable.
+const STREAM_ELEMENT_CAP = 200;
+const STREAM_DEPTH_CAP = 100;
+
 function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteContext) {
 	// Tail semantics ride the RAW write order (the model's last-open
 	// element), while the map itself is the normalized one — hoisted
@@ -35,9 +45,10 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 	const title = typeof norm.title === "string" ? norm.title : null;
 
 	// The map Node reads holds only schema-valid elements; invalid ones
-	// fall to the render wrapper's skeleton/nothing split below.
+	// fall to the render wrapper's skeleton/nothing split below. Arrival
+	// order, capped at STREAM_ELEMENT_CAP.
 	const valid: Record<string, UiElement> = {};
-	for (const [id, v] of Object.entries(normElements)) {
+	for (const [id, v] of Object.entries(normElements).slice(0, STREAM_ELEMENT_CAP)) {
 		const parsed = uiElementSchema.safeParse(v);
 		if (parsed.success) valid[id] = parsed.data;
 	}
@@ -45,22 +56,29 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 	// A partial map can hold cycles or shared children — sanitize the
 	// edges ONCE, before any render: DFS from root (or from each orphan
 	// while root is unwritten), dropping child refs that point at an
-	// ancestor (a cycle) or at a node another parent already claimed.
-	// The render below then keeps no per-render mutable state — Tabs
-	// re-rendering on a click must reuse the closure safely.
+	// ancestor (a cycle) or at a node another parent already claimed,
+	// and refusing to descend past STREAM_DEPTH_CAP — a chain that deep
+	// is degenerate output, not a UI. The render below then keeps no
+	// per-render mutable state — Tabs re-rendering on a click must reuse
+	// the closure safely. The ancestors set is one shared path set
+	// (add/discard around each recursion), never a copy per level.
 	const claimed = new Set<string>();
 	const kept = new Map<string, string[]>();
-	const visit = (id: string, ancestors: Set<string>): void => {
+	const visit = (id: string, ancestors: Set<string>, depth: number): void => {
 		const el = Object.hasOwn(valid, id) ? valid[id] : undefined;
 		if (el === undefined) return;
 		const kids: string[] = [];
-		for (const c of el.children ?? []) {
-			if (ancestors.has(c) || claimed.has(c)) continue;
-			claimed.add(c);
-			kids.push(c);
+		if (depth < STREAM_DEPTH_CAP) {
+			for (const c of el.children ?? []) {
+				if (ancestors.has(c) || claimed.has(c)) continue;
+				claimed.add(c);
+				kids.push(c);
+			}
 		}
 		kept.set(id, kids);
-		for (const c of kids) visit(c, new Set(ancestors).add(id));
+		ancestors.add(id);
+		for (const c of kids) visit(c, ancestors, depth + 1);
+		ancestors.delete(id);
 	};
 	const roots: string[] = Array.isArray(norm.root)
 		? norm.root.filter((r): r is string => typeof r === "string")
@@ -73,12 +91,17 @@ function StreamingSurface({ input, ...note }: { input: unknown } & MarkdownNoteC
 			if (!isPlainObject(v) || !Array.isArray(v.children)) continue;
 			for (const c of v.children) if (typeof c === "string") referenced.add(c);
 		}
-		roots.push(...Object.keys(normElements).filter((id) => !referenced.has(id)));
+		// Orphan roots in arrival order, bounded by the element cap —
+		// past it `valid` holds nothing more to render anyway.
+		for (const id of Object.keys(normElements)) {
+			if (roots.length >= STREAM_ELEMENT_CAP) break;
+			if (!referenced.has(id)) roots.push(id);
+		}
 	}
 	// Claim every root before visiting any — a root id that is also a
 	// child then renders once, at top level, with its subtree intact.
 	for (const id of roots) claimed.add(id);
-	for (const id of roots) visit(id, new Set([id]));
+	for (const id of roots) visit(id, new Set([id]), 0);
 	const elements: Record<string, UiElement> = {};
 	for (const [id, el] of Object.entries(valid)) {
 		const k = kept.get(id);

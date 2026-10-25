@@ -236,6 +236,46 @@ describe("UiPart (static markup)", () => {
 		expect(html).toContain("ui-stack");
 	});
 
+	test("input-streaming truncates a degenerate id chain at the depth cap", () => {
+		// A wire blob far past any schema-valid UI: 5_000 chained stacks.
+		// The sanitizer must bound its walk and React's recursive render —
+		// the chain cuts at the cap instead of overflowing the stack.
+		const depth = 5_000;
+		const elements: Record<string, unknown> = {};
+		for (let i = 0; i < depth; i++) {
+			elements[`n${i}`] =
+				i === depth - 1
+					? { type: "text", props: { md: "chain end" } }
+					: { type: "stack", children: [`n${i + 1}`] };
+		}
+		const html = renderToStaticMarkup(
+				<UiPart
+					part={uiPart({ state: "input-streaming", input: { root: "n0", elements } })}
+				/>,
+		);
+		expect(html).toContain("ui-stack");
+		// The chain was cut, not followed to the end.
+		expect(html).not.toContain("chain end");
+	});
+
+	test("input-streaming caps the element map like the complete schema", () => {
+		// 400 root texts — past the 200-element cap. The overflow renders
+		// nothing; the surface stays up for the elements that fit.
+		const elements: Record<string, unknown> = {};
+		const root: string[] = [];
+		for (let i = 0; i < 400; i++) {
+			const id = `t${i}`;
+			elements[id] = { type: "text", props: { md: `body ${i}` } };
+			root.push(id);
+		}
+		const html = renderToStaticMarkup(
+				<UiPart part={uiPart({ state: "input-streaming", input: { root, elements } })} />,
+		);
+		expect(html).toContain("body 0");
+		expect(html).toContain("body 199");
+		expect(html).not.toContain("body 200");
+	});
+
 	test("input-streaming never mounts an html iframe, nested or not", () => {
 		for (const input of [
 			{ root: "calc", elements: pick("calc") },

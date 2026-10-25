@@ -164,7 +164,11 @@ describe("MemoryView", () => {
 		mount();
 		await flush();
 		expect(container.textContent).toContain("healthy");
+		// Non-exchange ids keep the raw id, and the global tab names the
+		// conversation per row (withConversation) — rows span threads here.
 		expect(container.textContent).toContain("doc-1");
+		expect(container.textContent).toContain("· tg/1");
+		expect(container.textContent).toContain("2 facts");
 
 		// Open the document — original text and both fact states render.
 		await click(container.querySelector(".doc-row"));

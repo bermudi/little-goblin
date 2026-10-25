@@ -46,7 +46,7 @@ describe("ThreadSourcesSheet", () => {
 		],
 	};
 	const DOC = {
-		id: "exchange/app/1/2/abc",
+		id: "exchange/app/1/2/23273113-2d99-4132-b8e8-3c9c8a1126f8",
 		createdAt: "2026-10-01T00:00:00Z",
 		updatedAt: null,
 		textLength: 42,
@@ -162,9 +162,13 @@ describe("ThreadSourcesSheet", () => {
 			"discard",
 		]);
 
-		// Exchanges: this conversation's documents.
+		// Exchanges: this conversation's documents. The row reads as a
+		// human label — the raw id (thread + message uuid) stays in the
+		// detail sheet, not the list.
 		const docRow = container.querySelector(".doc-row");
-		expect(docRow?.textContent).toContain("exchange/app/1/2/abc");
+		expect(docRow?.textContent).toContain("Exchange 2");
+		expect(docRow?.textContent).not.toContain("exchange/app/1/2");
+		expect(docRow?.textContent).toContain("42 chars · 2 facts");
 
 		// Detail, then forget — the shared sheet flow.
 		await click(docRow);
@@ -300,7 +304,7 @@ describe("ThreadSourcesSheet", () => {
 		await flush();
 		const text = container.textContent ?? "";
 		expect(text).toContain("skill provenance unavailable");
-		expect(text).toContain("exchange/app/1/2/abc");
+		expect(text).toContain("Exchange 2");
 	});
 
 	test("empty sections say so — absence of provenance is not an error", async () => {
@@ -456,7 +460,7 @@ describe("ThreadSourcesSheet", () => {
 		expect(forgot).toBe(true);
 		expect(container.textContent).toContain("Forgot 2; 1 failed — try again for the rest");
 		// The refused document is still listed after the reload.
-		expect(container.textContent).toContain("exchange/app/1/2/abc");
+		expect(container.textContent).toContain("Exchange 2");
 	});
 
 	test("Forget everything posts memories then skills, in order, and reloads both lists", async () => {

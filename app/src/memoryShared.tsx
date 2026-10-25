@@ -23,18 +23,34 @@ export function relTime(iso: string | null): string {
 	});
 }
 
+// exchange/<conversation>/<n>/<uuid> → a human row label. The raw id is
+// server plumbing: in a thread sheet every row shares one conversation,
+// and the trailing uuid is a message id the operator never uses — the
+// list reads as "Exchange 30" plus a sub line, not an id dump. Anything
+// else falls back to the raw id.
+export function memoryDocLabel(id: string): string | null {
+	const match = /^exchange\/.+\/(\d+)\/[0-9a-f-]{36}$/.exec(id);
+	return match === null ? null : `Exchange ${match[1]}`;
+}
+
 export function MemoryDocRow({
 	doc,
 	onOpen,
+	withConversation = false,
 }: {
 	doc: MemoryDocListItem;
 	onOpen: (id: string) => void;
+	/** Global Memories tab: rows span conversations, so name them. */
+	withConversation?: boolean;
 }) {
+	const label = memoryDocLabel(doc.id);
 	return (
 		<button type="button" className="doc-row" onClick={() => onOpen(doc.id)}>
-			<span className="doc-id mono">{doc.id}</span>
+			<span className={`doc-id${label === null ? " mono" : ""}`}>{label ?? doc.id}</span>
 			<span className="doc-sub">
-				{relTime(doc.createdAt)} · {doc.textLength} chars · {doc.factCount} facts
+				{relTime(doc.createdAt)} · {doc.textLength.toLocaleString()} chars ·{" "}
+				{doc.factCount} {doc.factCount === 1 ? "fact" : "facts"}
+				{withConversation && doc.conversationId !== null ? ` · ${doc.conversationId}` : ""}
 			</span>
 			<span className="chev">›</span>
 		</button>

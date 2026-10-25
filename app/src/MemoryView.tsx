@@ -235,7 +235,7 @@ export function MemoryView({ token }: { token: string | null }) {
 					<div className="card">
 						{items.length === 0 && <p className="empty">No retained exchanges.</p>}
 						{items.map((d) => (
-							<MemoryDocRow key={d.id} doc={d} onOpen={sheet.open} />
+							<MemoryDocRow key={d.id} doc={d} onOpen={sheet.open} withConversation />
 						))}
 					</div>
 					{items.length < total && (

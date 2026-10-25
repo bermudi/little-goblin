@@ -3153,11 +3153,11 @@ button.pathchip:hover svg {
 	font-size: 11px;
 	margin: 0.9rem 0.3rem 0.35rem;
 }
-/* Wider than the other sheets: exchange ids and the status rows
-   truncate at 34rem. Mobile is unchanged — width: 100% still caps it
-   and the ≥721px centered media query needs nothing new. */
+/* Wider than the other sheets: the exchange list is the sheet's whole
+   point at desktop width. Mobile is unchanged — width: 100% still caps
+   it and the ≥721px centered media query needs nothing new. */
 .msheet.thread-sources {
-	max-width: 44rem;
+	max-width: 48rem;
 }
 /* Bulk forget — the sheet's floor, list view only. The two scoped
    actions dress like a row's decide pills; "everything" is the

@@ -2853,6 +2853,12 @@ function Chat({
 	// the durable history reconciles the view.
 	const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
 	const editRestore = useRef<UIMessage[] | null>(null);
+	// Set when an edit's error path takes over reconciliation. The SDK
+	// calls onError before onFinish on an errored turn (onError in its
+	// catch, onFinish in the finally), and onFinish's merge-based
+	// re-sync would otherwise run after the error path's replace —
+	// re-admitting the failed optimistic message the replace removed.
+	const editFailed = useRef(false);
 	// A branch is a copy in a new chat; the click opens it via the host's
 	// navigation. Errors stay on the reply's action row.
 	const [branchPending, setBranchPending] = useState<string | null>(null);
@@ -2944,28 +2950,43 @@ function Chat({
 				// finished reply — the bell belongs to the real finish.
 				if (!isAbort && !isError) notifyDone(title ?? "", messageText(message));
 				onTurnDone();
-				refreshTranscript();
+				// An errored edit was reconciled by onError — its replace
+				// must not be re-merged against the optimistic view it
+				// discarded.
+				if (editFailed.current) editFailed.current = false;
+				else refreshTranscript();
 			},
 			onError: () => {
 				// The durable transcript is the truth in every failure mode: a
 				// refused request never reached the store (the tail stands
 				// there), and a post-commit failure already deleted it — only
-				// the server knows which, so reconcile from it. The pre-edit
+				// the server knows which, so reconcile from it — by REPLACE,
+				// not merge: the optimistic replacement carries a client id
+				// the store never saw, and a merge would keep it beside the
+				// original exchange the server still holds. The pre-edit
 				// backup covers a refresh that cannot get there.
 				const backup = editRestore.current;
 				editRestore.current = null;
 				if (backup === null) return;
-				refreshTranscript(() => setMessages(backup));
+				editFailed.current = true;
+				void getMessages(token, conversationId).then(
+					(r) => {
+						setMessages(r.messages);
+						applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+						setMarks(r.compactions ?? []);
+					},
+					() => setMessages(backup),
+				);
 			},
 		});
-	const refreshTranscript = (onUnavailable?: () => void) => {
+	const refreshTranscript = () => {
 		void getMessages(token, conversationId).then(
 			(r) => {
 				setMessages((current) => mergeTranscript(current, r.messages));
 				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
 				setMarks(r.compactions ?? []);
 			},
-			() => onUnavailable?.(),
+			() => {},
 		);
 	};
 	// A failed /stop means the client dropped its stream but the turn

@@ -1282,6 +1282,12 @@ describe("ChatView edit and branch", () => {
 				(dom.container.textContent?.includes("hi there") ?? false),
 		);
 		expect(dom.container.textContent).toContain("hi there");
+		// The refresh REPLACES, it does not merge: the optimistic
+		// replacement (an id the store never saw) must not sit beside the
+		// original it failed to replace — editing it would target a
+		// message that does not exist durably.
+		expect(dom.container.textContent).not.toContain("hello, edited");
+		expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(1);
 	});
 
 	test("an edit that fails while history is unreachable restores the pre-edit view from the backup", async () => {

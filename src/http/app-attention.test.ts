@@ -172,6 +172,7 @@ describe("app attention", () => {
 				},
 				skillSources: {
 					forConversation: () => [],
+					forgetConversation: () => 0,
 					skillsDir: join(dirs, "skills"),
 					proposedDir: join(dirs, "skills-proposed"),
 				},

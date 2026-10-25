@@ -14,10 +14,12 @@ import {
 import { openDelegations } from "../delegations.ts";
 import { setLogFile } from "../log.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
+import type { MemoryContexts } from "../memory/mod.ts";
+import type { MemoryQueue } from "../memory/queue.ts";
 import { openPrograms } from "../programs.ts";
 import { SkillSources } from "../skill-provenance.ts";
 import { useHome } from "../testkit.ts";
-import { handleAppApi, resolveAppAuth } from "./app-channel.ts";
+import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { APP_TOKEN_NAME, APP_TOKEN_VALUE, setup } from "./app-testing.ts";
 import { startHttp } from "./mod.ts";
 import type { OperatorDeps } from "./operator.ts";
@@ -721,6 +723,7 @@ describe("app operator surface", () => {
 				operator: {
 					skillSources: {
 						forConversation: (id: string) => sources.forConversation(id),
+					forgetConversation: (id: string) => sources.forgetConversation(id),
 						skillsDir,
 						proposedDir,
 					},
@@ -764,6 +767,132 @@ describe("app operator surface", () => {
 			db.close();
 		} finally {
 			http.stop();
+		}
+	});
+
+	test("thread forget tails mount through app auth: explicit skills entry, auto-mapped memory", async () => {
+		const deleted: string[] = [];
+		const client = {
+			listDocuments: (opts: { limit: number; offset: number }) =>
+				Promise.resolve({
+					items: [
+						{
+						id: "exchange/app/1/1/abc",
+						created_at: "2026-10-01T00:00:00Z",
+						updated_at: null,
+						text_length: 10,
+						memory_unit_count: 1,
+					},
+					],
+					total: 1,
+					limit: opts.limit,
+					offset: opts.offset,
+				}),
+			deleteDocument: (id: string) => {
+				deleted.push(id);
+				return Promise.resolve();
+			},
+		} as unknown as HindsightClient;
+		const contexts = {
+			suppress: () => {},
+			deleteByDocument: () => 1,
+		} as unknown as MemoryContexts;
+		const queue = {
+			documentDestinations: () => [],
+			markDocumentDeleting: () => 0,
+			confirmDeleted: () => 1,
+		} as unknown as MemoryQueue;
+		const db = new Database(":memory:");
+		const sources = new SkillSources(db);
+		sources.record("app/1", "herdr", "reviewer");
+		sources.record("dm:1", "herdr", "reviewer");
+		const operator: NonNullable<AppChannelDeps["operator"]> = {
+			memory: stubMemory({
+				client,
+				contexts,
+				queue,
+				withWorkerPaused: async <T>(fn: () => Promise<T>) => fn(),
+			}),
+		};
+		const { http, call, configRef, home } = setup({ token: APP_TOKEN_NAME, operator });
+		operator.skillSources = {
+			forgetConversation: (id: string) => sources.forgetConversation(id),
+			forConversation: (id: string) => sources.forConversation(id),
+			skillsDir: join(home, "workspace", "skills"),
+			proposedDir: join(home, "workspace", "skills-proposed"),
+		};
+		try {
+			const post = (path: string) =>
+				call(path, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ conversation: "app/1" }),
+				});
+			// Bearer gate precedes everything on both tails.
+			expect(
+				(
+					await call(
+						"/api/app/skills/forget-thread",
+						{
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ conversation: "app/1" }),
+						},
+						null,
+					)
+				).status,
+			).toBe(401);
+			expect(
+				(
+					await call(
+						"/api/app/memory/forget-thread",
+						{
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ conversation: "app/1" }),
+						},
+						null,
+					)
+				).status,
+			).toBe(401);
+			// The JSON gate fires before the seam on both POST tails (an
+			// ungated tail would reach the route and answer 400 bad json).
+			const plainSkills = await call("/api/app/skills/forget-thread", {
+				method: "POST",
+				body: "x",
+			});
+			expect(plainSkills.status).toBe(415);
+			expect(await plainSkills.json()).toEqual({ error: "expected application/json" });
+			const plainMemory = await call("/api/app/memory/forget-thread", {
+				method: "POST",
+				body: "x",
+			});
+			expect(plainMemory.status).toBe(415);
+
+			configRef.current = {
+				...configRef.current,
+				memory: memoryConfigSchema.parse({
+					baseUrl: "http://127.0.0.1:8888",
+					bankId: "goblin",
+				}),
+			};
+			const skills = await post("/api/app/skills/forget-thread");
+			expect(skills.status).toBe(200);
+			expect(await skills.json()).toEqual({ ok: true, removed: 1 });
+			expect(sources.forConversation("app/1")).toEqual([]);
+			expect(sources.forConversation("dm:1")).toHaveLength(1);
+			const memories = await post("/api/app/memory/forget-thread");
+			expect(memories.status).toBe(200);
+			expect(await memories.json()).toEqual({
+				ok: true,
+				forgotten: 1,
+				failed: [],
+				remaining: 0,
+			});
+			expect(deleted).toEqual(["exchange/app/1/1/abc"]);
+		} finally {
+			http.stop();
+			db.close();
 		}
 	});
 

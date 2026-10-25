@@ -5,10 +5,18 @@
 // skills/decide mechanics as the Telegram ✅/🚫 row and the Skills
 // page) — including an update parked on an installed skill, where
 // `pending` outlives the installed-wins state word; memories keep the
-// shared forget affordance.
+// shared forget affordance. The sheet's floor is the bulk-forget row:
+// the thread's whole memory footprint, its skill-generation records,
+// or both at once.
 import { useEffect, useRef, useState } from "react";
 import type { MemoryDocListItem, ThreadSkillItem } from "../../src/http/operator-wire.ts";
-import { decideSkill, listMemoryDocuments, listThreadSkills } from "./api.ts";
+import {
+	decideSkill,
+	forgetThreadMemories,
+	forgetThreadSkills,
+	listMemoryDocuments,
+	listThreadSkills,
+} from "./api.ts";
 import { MemoryDocDetail, MemoryDocRow, relTime, useMemoryDocSheet } from "./memoryShared.tsx";
 import { describe } from "./opsShared.tsx";
 
@@ -90,6 +98,11 @@ export function ThreadSourcesSheet({
 	const [listErr, setListErr] = useState<string | null>(null);
 	const listSeq = useRef(0);
 	const skillSeq = useRef(0);
+	// Which bulk forget is in flight — one slot, so the three buttons
+	// share one "any forget running" fence while keeping their own busy
+	// words. "everything" holds the slot across its two-step run.
+	const [forgetting, setForgetting] = useState<"memories" | "skills" | "everything" | null>(null);
+	const [forgetErr, setForgetErr] = useState<string | null>(null);
 
 	const loadSkills = (seq = ++skillSeq.current) => {
 		if (seq !== skillSeq.current) return;
@@ -140,6 +153,99 @@ export function ThreadSourcesSheet({
 	}, [token, conversationId]);
 
 	const sheet = useMemoryDocSheet(token, () => loadDocs(0, false));
+
+	// Bulk forget runs the thread's whole footprint through the two
+	// thread-scoped endpoints; the per-doc/per-proposal affordances
+	// above stay the surgical path. Empty sections forget zero items —
+	// that's a success, the emptied list is the feedback.
+	const forgetMemories = () => {
+		if (forgetting !== null) return;
+		if (
+			!window.confirm(
+				"Forget every retained exchange from this thread? Each is deleted from memory and redacted locally.",
+			)
+		)
+			return;
+		setForgetting("memories");
+		setForgetErr(null);
+		void forgetThreadMemories(token, conversationId).then(
+			(r) => {
+				setForgetting(null);
+				// A partial refusal still forgot the rest — reload and say
+				// what's left instead of failing the whole action.
+				loadDocs(0, false);
+				if (r.failed.length > 0)
+					setForgetErr(
+						`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`,
+					);
+			},
+			(e) => {
+				setForgetting(null);
+				setForgetErr(describe(e));
+			},
+		);
+	};
+
+	const forgetSkills = () => {
+		if (forgetting !== null) return;
+		if (
+			!window.confirm(
+				"Remove this thread's skill-generation records? Installed skills and pending updates are not touched — those stay on the Skills page.",
+			)
+		)
+			return;
+		setForgetting("skills");
+		setForgetErr(null);
+		void forgetThreadSkills(token, conversationId).then(
+			() => {
+				setForgetting(null);
+				loadSkills();
+			},
+			(e) => {
+				setForgetting(null);
+				setForgetErr(describe(e));
+			},
+		);
+	};
+
+	const forgetEverything = () => {
+		if (forgetting !== null) return;
+		if (
+			!window.confirm(
+				"Forget everything from this thread — all retained exchanges and skill-generation records?",
+			)
+		)
+			return;
+		setForgetting("everything");
+		setForgetErr(null);
+		void forgetThreadMemories(token, conversationId).then(
+			(r) => {
+				if (r.failed.length > 0)
+					setForgetErr(
+						`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`,
+					);
+				// Skills still run after a partial memory refusal — the
+				// provenance half of the pair shouldn't strand behind it.
+				void forgetThreadSkills(token, conversationId).then(
+					() => {
+						setForgetting(null);
+						loadDocs(0, false);
+						loadSkills();
+					},
+					(e) => {
+						setForgetting(null);
+						setForgetErr(describe(e));
+					},
+				);
+			},
+			(e) => {
+				// The memories half failed outright — stop the pair there;
+				// retrying is the operator's call.
+				setForgetting(null);
+				setForgetErr(describe(e));
+			},
+		);
+	};
 
 	return (
 		<div className="veil on" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -204,6 +310,33 @@ export function ThreadSourcesSheet({
 									Load more
 								</button>
 							)}
+							<div className="thread-forget">
+								<button
+									type="button"
+									className="pill"
+									disabled={forgetting !== null}
+									onClick={forgetMemories}
+								>
+									{forgetting === "memories" ? "Forgetting…" : "Forget memories"}
+								</button>
+								<button
+									type="button"
+									className="pill"
+									disabled={forgetting !== null}
+									onClick={forgetSkills}
+								>
+									{forgetting === "skills" ? "Forgetting…" : "Forget skills"}
+								</button>
+								<button
+									type="button"
+									className="danger"
+									disabled={forgetting !== null}
+									onClick={forgetEverything}
+								>
+									{forgetting === "everything" ? "Forgetting…" : "Forget everything"}
+								</button>
+							</div>
+							{forgetErr !== null && <p className="error">{forgetErr}</p>}
 						</>
 					)}
 				</div>

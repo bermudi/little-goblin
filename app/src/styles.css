@@ -3153,6 +3153,26 @@ button.pathchip:hover svg {
 	font-size: 11px;
 	margin: 0.9rem 0.3rem 0.35rem;
 }
+/* Wider than the other sheets: exchange ids and the status rows
+   truncate at 34rem. Mobile is unchanged — width: 100% still caps it
+   and the ≥721px centered media query needs nothing new. */
+.msheet.thread-sources {
+	max-width: 44rem;
+}
+/* Bulk forget — the sheet's floor, list view only. The two scoped
+   actions dress like a row's decide pills; "everything" is the
+   destructive one and dresses like the per-doc forget. */
+.thread-forget {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem;
+	margin-top: 0.9rem;
+	padding: 0 0.35rem;
+}
+.thread-forget button:disabled {
+	opacity: 0.4;
+}
 .doc-id {
 	font-size: 12px;
 }

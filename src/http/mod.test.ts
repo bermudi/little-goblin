@@ -8,6 +8,7 @@ import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
+import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
 import { type HttpDeps, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
@@ -1137,6 +1138,115 @@ describe("memories browser", () => {
 			}
 		} finally {
 			http.stop();
+		}
+	});
+});
+
+describe("thread forget tails", () => {
+	test("both bulk-forget tails mount behind initData auth and run their seams", async () => {
+		useHome("goblin-http-");
+		const home = process.env.GOBLIN_HOME!;
+		const store = openStore(join(home, "goblin.sqlite"));
+		const sources = new SkillSources(store.db);
+		sources.record("app/1", "herdr", "reviewer");
+		sources.record("dm:1", "herdr", "reviewer");
+		const deleted: string[] = [];
+		const client = stubClient();
+		client.listDocuments = (o) =>
+			Promise.resolve({
+				items: [
+					{
+					id: "exchange/app/1/1/abc",
+					created_at: "2026-10-01T00:00:00Z",
+					updated_at: null,
+					text_length: 10,
+					memory_unit_count: 1,
+				},
+					{
+					id: "exchange/dm:1/2/abc",
+					created_at: "2026-10-01T00:00:00Z",
+					updated_at: null,
+					text_length: 10,
+					memory_unit_count: 1,
+				},
+				].slice(o.offset, o.offset + o.limit),
+				total: 2,
+				limit: o.limit,
+				offset: o.offset,
+			});
+		client.deleteDocument = (id: string) => {
+			deleted.push(id);
+			return Promise.resolve();
+		};
+		const contexts = {
+			suppress: () => {},
+			deleteByDocument: () => 1,
+		} as unknown as MemoryContexts;
+		const queue = {
+			documentDestinations: () => [],
+			markDocumentDeleting: () => 0,
+			confirmDeleted: () => 1,
+		} as unknown as MemoryQueue;
+		const http = startHttp({
+			configRef: {
+				current: {
+					...baseConfig,
+					memory: memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "goblin" }),
+				},
+			},
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+			memory: {
+				counts: () => ({
+					pending: 0,
+					submitted: 0,
+					completed: 0,
+					blocked: 0,
+					dismissed: 0,
+					deleting: 0,
+				}),
+				deletingAll: () => 0,
+				blockedDetail: () => [],
+				lastRecallOk: () => null,
+				lastRecallAt: () => null,
+				client,
+				contexts,
+				queue,
+				withWorkerPaused: async <T>(fn: () => Promise<T>) => fn(),
+			},
+			skillSources: {
+				forgetConversation: (conversationId: string) =>
+					sources.forgetConversation(conversationId),
+				forConversation: (conversationId: string) => sources.forConversation(conversationId),
+				skillsDir: join(home, "workspace/skills"),
+				proposedDir: join(home, "workspace/skills-proposed"),
+			},
+		});
+		const initData = makeInitData({
+			auth_date: String(Math.floor(Date.now() / 1000)),
+			user: JSON.stringify({ id: 42 }),
+		});
+		const post = (path: string, authed = true) =>
+			fetch(`http://127.0.0.1:${http.port}${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json", ...(authed ? { "x-init-data": initData } : {}) },
+				body: JSON.stringify({ conversation: "app/1" }),
+			});
+		try {
+			expect((await post("/api/skills/forget-thread", false)).status).toBe(401);
+			expect((await post("/api/memory/forget-thread", false)).status).toBe(401);
+			const skills = await post("/api/skills/forget-thread");
+			expect(skills.status).toBe(200);
+			expect(await skills.json()).toEqual({ ok: true, removed: 1 });
+			expect(sources.forConversation("app/1")).toEqual([]);
+			expect(sources.forConversation("dm:1")).toHaveLength(1);
+			const memories = await post("/api/memory/forget-thread");
+			expect(memories.status).toBe(200);
+			expect(await memories.json()).toEqual({ ok: true, forgotten: 1, failed: [], remaining: 0 });
+			expect(deleted).toEqual(["exchange/app/1/1/abc"]);
+		} finally {
+			http.stop();
+			store.close();
 		}
 	});
 });

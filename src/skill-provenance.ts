@@ -117,6 +117,15 @@ export class SkillSources {
 		return rows.map(rowToItem);
 	}
 
+	// Bulk thread forget (the thread panel's 'From this thread' sheet):
+	// drop every provenance row one conversation authored. Returns the
+	// removed count — other conversations' rows stay put.
+	forgetConversation(conversationId: string): number {
+		return this.db
+			.run("DELETE FROM skill_sources WHERE conversation_id = ?", [conversationId])
+			.changes;
+	}
+
 	// Rows for one skill, newest write first — the decide doors' lookup
 	// for the conversation that learned it (the resolution event lands
 	// there). Raw rows; liveness joins at the route.

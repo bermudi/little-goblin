@@ -14,8 +14,11 @@ import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./op
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { loadConfig, parseConfig } from "../config.ts";
 import { openStore } from "../conversation.ts";
-import { HindsightClient } from "../memory/hindsight.ts";
+import { HindsightClient, HindsightError, type MemoryDocSummary } from "../memory/hindsight.ts";
+import type { MemoryContexts } from "../memory/mod.ts";
+import type { MemoryQueue } from "../memory/queue.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
+import { SkillSources } from "../skill-provenance.ts";
 import type { UIMessage } from "ai";
 
 const ACTOR: OperatorActor = { via: "app" };
@@ -513,6 +516,78 @@ describe("skills/decide route", () => {
 	});
 });
 
+describe("skills/forget-thread route", () => {
+	function skillsDeps(): {
+		d: OperatorDeps;
+		sources: SkillSources;
+		store: ReturnType<typeof openStore>;
+	} {
+		const store = openStore(join(home, "goblin.sqlite"));
+		const sources = new SkillSources(store.db);
+		const d: OperatorDeps = {
+			...deps(),
+			skillSources: {
+				forgetConversation: (conversationId: string) =>
+					sources.forgetConversation(conversationId),
+				forConversation: (conversationId: string) => sources.forConversation(conversationId),
+				skillsDir: join(home, "workspace/skills"),
+				proposedDir: join(home, "workspace/skills-proposed"),
+			},
+		};
+		return { d, sources, store };
+	}
+
+	function postSkillsForget(body: unknown, d: OperatorDeps): Promise<Response | null> {
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/skills/forget-thread", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: typeof body === "string" ? body : JSON.stringify(body),
+			}),
+			"skills/forget-thread",
+			new URL("http://x/skills/forget-thread"),
+		);
+	}
+
+	test("forgets only the named thread's provenance rows", async () => {
+		const { d, sources, store } = skillsDeps();
+		try {
+			sources.record("app/1", "herdr", "reviewer");
+			sources.record("app/1", "smoke-test", "turn");
+			sources.record("dm:1", "herdr", "reviewer");
+			const res = await postSkillsForget({ conversation: "app/1" }, d);
+			expect(res?.status).toBe(200);
+			expect(await res?.json()).toEqual({ ok: true, removed: 2 });
+			expect(sources.forConversation("app/1")).toEqual([]);
+			expect(sources.forConversation("dm:1")).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("bad methods and bodies get typed refusals; the unwired seam 503s", async () => {
+		const get = await handleOperatorRoute(
+			deps(),
+			ACTOR,
+			new Request("http://x/skills/forget-thread"),
+			"skills/forget-thread",
+			new URL("http://x/skills/forget-thread"),
+		);
+		expect(get?.status).toBe(405);
+		const { d, store } = skillsDeps();
+		try {
+			expect((await postSkillsForget("not json{", d))?.status).toBe(400);
+			expect((await postSkillsForget({ conversation: "" }, d))?.status).toBe(422);
+			expect((await postSkillsForget({ conversation: "a".repeat(257) }, d))?.status).toBe(422);
+		} finally {
+			store.close();
+		}
+		expect((await postSkillsForget({ conversation: "app/1" }, deps()))?.status).toBe(503);
+	});
+});
+
 describe("secrets route", () => {
 	function secretsDeps(): OperatorDeps {
 		const file = join(home, "auth.jsonl");
@@ -841,5 +916,159 @@ describe("memory/blocked route", () => {
 			store.close();
 		}
 		expect((await postBlocked({ action: "retry" }, deps()))?.status).toBe(503);
+	});
+});
+
+describe("memory/forget-thread route", () => {
+	const summary = (id: string): MemoryDocSummary => ({
+		id,
+		created_at: "2026-10-01T00:00:00Z",
+		updated_at: null,
+		text_length: 10,
+		memory_unit_count: 1,
+	});
+
+	function forgetThreadDeps(
+		items: MemoryDocSummary[],
+		failDelete?: (id: string) => boolean,
+	): { d: OperatorDeps; store: ReturnType<typeof openStore>; deleted: string[] } {
+		const store = openStore(join(home, "goblin.sqlite"));
+		const deleted: string[] = [];
+		const client = {
+			listDocuments: (o: { limit: number; offset: number }) =>
+				Promise.resolve({
+					items: items.slice(o.offset, o.offset + o.limit),
+					total: items.length,
+					limit: o.limit,
+					offset: o.offset,
+				}),
+			deleteDocument: (id: string) => {
+				if (failDelete?.(id)) return Promise.reject(new HindsightError("http", 500));
+				deleted.push(id);
+				return Promise.resolve();
+			},
+		} as unknown as HindsightClient;
+		const contexts = {
+			suppress: () => {},
+			deleteByDocument: () => 1,
+		} as unknown as MemoryContexts;
+		const queue = {
+			documentDestinations: () => [],
+			markDocumentDeleting: () => 0,
+			confirmDeleted: () => 1,
+		} as unknown as MemoryQueue;
+		const d = deps();
+		d.configRef.current = parseConfig({
+			providers: { test: { kind: "codex" } },
+			model: "test/m",
+			operators: [7],
+			allowedUsers: [],
+			memory: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+		});
+		d.memory = {
+			client,
+			contexts,
+			queue,
+			withWorkerPaused: async <T>(fn: () => Promise<T>) => fn(),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
+			deletingAll: () => 0,
+			blockedDetail: () => [],
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
+		};
+		return { d, store, deleted };
+	}
+
+	function postForgetThread(body: unknown, d: OperatorDeps): Promise<Response | null> {
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/memory/forget-thread", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: typeof body === "string" ? body : JSON.stringify(body),
+			}),
+			"memory/forget-thread",
+			new URL("http://x/memory/forget-thread"),
+		);
+	}
+
+	test("forgets every retained exchange of the thread, paging past foreign ids", async () => {
+		// 150 upstream docs force the limit-100 scan to page; the two
+		// matching ids sit on both pages and the collision ids never
+		// match (app/12 is a different thread, app/1/child adds a
+		// segment).
+		const wanted = [summary("exchange/app/1/1/a"), summary("exchange/app/1/2/b")];
+		const items: MemoryDocSummary[] = [wanted[0]!];
+		for (let i = 0; i < 74; i++) items.push(summary(`exchange/app/12/${i}/x`));
+		for (let i = 0; i < 74; i++) items.push(summary(`exchange/app/1/child/${i}/x`));
+		items.push(wanted[1]!);
+		const { d, store, deleted } = forgetThreadDeps(items);
+		try {
+			const res = await postForgetThread({ conversation: "app/1" }, d);
+			expect(res?.status).toBe(200);
+			expect(await res?.json()).toEqual({ ok: true, forgotten: 2, failed: [], remaining: 0 });
+			expect(deleted).toEqual(["exchange/app/1/1/a", "exchange/app/1/2/b"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("a thread with no retained exchanges forgets nothing, successfully", async () => {
+		const { d, store } = forgetThreadDeps([summary("exchange/dm:1/2/abc")]);
+		try {
+			const res = await postForgetThread({ conversation: "app/1" }, d);
+			expect(res?.status).toBe(200);
+			expect(await res?.json()).toEqual({ ok: true, forgotten: 0, failed: [], remaining: 0 });
+		} finally {
+			store.close();
+		}
+	});
+
+	test("one failed document is reported and the rest still forget", async () => {
+		const { d, store, deleted } = forgetThreadDeps(
+			[summary("exchange/app/1/1/a"), summary("exchange/app/1/2/b")],
+			(id) => id === "exchange/app/1/2/b",
+		);
+		try {
+			const res = await postForgetThread({ conversation: "app/1" }, d);
+			expect(res?.status).toBe(200);
+			expect(await res?.json()).toEqual({
+				ok: true,
+				forgotten: 1,
+				failed: [{ id: "exchange/app/1/2/b", error: "memory unavailable — try again later" }],
+				remaining: 1,
+			});
+			expect(deleted).toEqual(["exchange/app/1/1/a"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("bad methods and bodies get typed refusals; unwired memory 503s", async () => {
+		const get = await handleOperatorRoute(
+			deps(),
+			ACTOR,
+			new Request("http://x/memory/forget-thread"),
+			"memory/forget-thread",
+			new URL("http://x/memory/forget-thread"),
+		);
+		expect(get?.status).toBe(405);
+		const { d, store } = forgetThreadDeps([]);
+		try {
+			expect((await postForgetThread("not json{", d))?.status).toBe(400);
+			expect((await postForgetThread({ conversation: "" }, d))?.status).toBe(422);
+			expect((await postForgetThread({ conversation: "a".repeat(257) }, d))?.status).toBe(422);
+		} finally {
+			store.close();
+		}
+		expect((await postForgetThread({ conversation: "app/1" }, deps()))?.status).toBe(503);
 	});
 });

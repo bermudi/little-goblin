@@ -64,6 +64,8 @@ import type {
 	MemoryBlockedResponse,
 	MemoryDocDetailResponse,
 	MemoryForgetResponse,
+	MemoryForgetThreadBody,
+	MemoryForgetThreadResponse,
 	MemoriesListResponse,
 	MemoryStatusResponse,
 	OperatorDelegationsResponse,
@@ -74,6 +76,8 @@ import type {
 	SkillDecideBody,
 	SkillDecideResponse,
 	SkillFileResponse,
+	SkillForgetBody,
+	SkillForgetResponse,
 	SkillPreviewResponse,
 	SkillsResponse,
 	ThinkingLevelsResponse,
@@ -835,6 +839,19 @@ export function listThreadSkills(
 	return request(token, `/api/app/skills/from?conversation=${encodeURIComponent(conversation)}`);
 }
 
+// Provenance only: the thread's skill-generation records go, installed
+// skills and pending proposals stay where they are.
+export function forgetThreadSkills(
+	token: string | null,
+	conversation: string,
+): Promise<SkillForgetResponse> {
+	return request(token, "/api/app/skills/forget-thread", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ conversation } satisfies SkillForgetBody),
+	});
+}
+
 export function getMemoryDocument(
 	token: string | null,
 	id: string,
@@ -848,6 +865,20 @@ export function forgetMemoryDocument(
 ): Promise<MemoryForgetResponse> {
 	return request(token, `/api/app/memory/documents/${encodeURIComponent(id)}`, {
 		method: "DELETE",
+	});
+}
+
+// The thread sheet's bulk forget: every retained exchange of one
+// conversation, each run through the same per-doc protocol. A refusal
+// (`failed`) is partial success, not an error — the caller decides.
+export function forgetThreadMemories(
+	token: string | null,
+	conversation: string,
+): Promise<MemoryForgetThreadResponse> {
+	return request(token, "/api/app/memory/forget-thread", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ conversation } satisfies MemoryForgetThreadBody),
 	});
 }
 

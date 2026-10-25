@@ -116,6 +116,8 @@ describe("ThreadSourcesSheet", () => {
 		// happy-dom's typings miss confirm; the runtime has it.
 		(win as unknown as { confirm(ok: boolean): boolean }).confirm = () => ok;
 	};
+	const btn = (label: string) =>
+		[...container.querySelectorAll("button")].find((b) => b.textContent === label);
 
 	test("loads skills and this thread's exchanges, filters by conversation, opens detail, forgets", async () => {
 		const seen: { method: string; path: string }[] = [];
@@ -315,5 +317,237 @@ describe("ThreadSourcesSheet", () => {
 		const text = container.textContent ?? "";
 		expect(text).toContain("No skills generated from this conversation.");
 		expect(text).toContain("Nothing retained.");
+	});
+
+	// The sheet's floor: the bulk-forget row. The three buttons ride
+	// the thread-scoped forget endpoints — the emptied sections are the
+	// feedback, a refusal is a line, and empty threads forget zero
+	// items as a plain success.
+	test("Forget memories posts the thread conversation and reloads the exchange list", async () => {
+		const seen: { method: string; path: string; body?: string }[] = [];
+		let forgotten = false;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			seen.push({
+				method: init?.method ?? "GET",
+				path: url.pathname + url.search,
+				...(typeof init?.body === "string" ? { body: init.body } : {}),
+			});
+			if (url.pathname === "/api/app/skills/from") return Promise.resolve(json(SKILLS));
+			if (url.pathname === "/api/app/memory/documents") {
+				if (forgotten) return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			}
+			if (url.pathname === "/api/app/memory/forget-thread") {
+				forgotten = true;
+				return Promise.resolve(json({ ok: true, forgotten: 1, failed: [], remaining: 0 }));
+			}
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(true);
+		await click(btn("Forget memories"));
+		await flush();
+		const post = seen.find((s) => s.path === "/api/app/memory/forget-thread");
+		expect(post?.method).toBe("POST");
+		expect(JSON.parse(post!.body!)).toEqual({ conversation: "app/1" });
+		// The exchange list re-read and emptied — the feedback. Skills
+		// were not part of the action and did not re-fetch.
+		expect(container.textContent).toContain("Nothing retained.");
+		expect(seen.filter((s) => s.path.startsWith("/api/app/skills/from"))).toHaveLength(1);
+	});
+
+	test("Forget skills posts the conversation and the provenance list re-reads", async () => {
+		const seen: { method: string; path: string; body?: string }[] = [];
+		let forgotten = false;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			seen.push({
+				method: init?.method ?? "GET",
+				path: url.pathname + url.search,
+				...(typeof init?.body === "string" ? { body: init.body } : {}),
+			});
+			if (url.pathname === "/api/app/skills/from") {
+				if (forgotten) return Promise.resolve(json({ items: [] }));
+				return Promise.resolve(json(SKILLS));
+			}
+			if (url.pathname === "/api/app/skills/forget-thread") {
+				forgotten = true;
+				return Promise.resolve(json({ ok: true, removed: 2 }));
+			}
+			if (url.pathname === "/api/app/memory/documents")
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(true);
+		await click(btn("Forget skills"));
+		await flush();
+		const post = seen.find((s) => s.path === "/api/app/skills/forget-thread");
+		expect(post?.method).toBe("POST");
+		expect(JSON.parse(post!.body!)).toEqual({ conversation: "app/1" });
+		// The provenance re-read — no skills generated here anymore. The
+		// memory list was not part of the action and did not re-fetch.
+		expect(container.textContent).toContain("No skills generated from this conversation.");
+		expect(seen.filter((s) => s.path.startsWith("/api/app/memory/documents"))).toHaveLength(1);
+	});
+
+	test("cancelling the confirm sends nothing", async () => {
+		const seen: { method: string; path: string }[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			seen.push({ method: init?.method ?? "GET", path: url.pathname + url.search });
+			if (url.pathname === "/api/app/skills/from") return Promise.resolve(json(SKILLS));
+			if (url.pathname === "/api/app/memory/documents")
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(false);
+		await click(btn("Forget memories"));
+		await click(btn("Forget skills"));
+		await click(btn("Forget everything"));
+		await flush();
+		expect(seen.filter((s) => s.path.endsWith("/forget-thread"))).toHaveLength(0);
+		// Nothing re-fetched either — each list still has its one read.
+		expect(seen.filter((s) => s.path.startsWith("/api/app/skills/from"))).toHaveLength(1);
+		expect(seen.filter((s) => s.path.startsWith("/api/app/memory/documents"))).toHaveLength(1);
+	});
+
+	test("a partial memory refusal still reloads and says what's left", async () => {
+		let forgot = false;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			if (url.pathname === "/api/app/skills/from") return Promise.resolve(json(SKILLS));
+			if (url.pathname === "/api/app/memory/documents")
+				// The refused document survives the reload.
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			if (url.pathname === "/api/app/memory/forget-thread") {
+				forgot = true;
+				return Promise.resolve(
+					json({
+						ok: true,
+						forgotten: 2,
+						failed: [
+							{
+								id: DOC.id,
+								error:
+									"memory for that document is still processing remotely — retry in a minute",
+							},
+						],
+						remaining: 1,
+					}),
+				);
+			}
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(true);
+		await click(btn("Forget memories"));
+		await flush();
+		expect(forgot).toBe(true);
+		expect(container.textContent).toContain("Forgot 2; 1 failed — try again for the rest");
+		// The refused document is still listed after the reload.
+		expect(container.textContent).toContain("exchange/app/1/2/abc");
+	});
+
+	test("Forget everything posts memories then skills, in order, and reloads both lists", async () => {
+		const seen: { method: string; path: string; body?: string }[] = [];
+		const order: string[] = [];
+		let forgotMemories = false;
+		let forgotSkills = false;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			seen.push({
+				method: init?.method ?? "GET",
+				path: url.pathname + url.search,
+				...(typeof init?.body === "string" ? { body: init.body } : {}),
+			});
+			if (url.pathname === "/api/app/skills/from") {
+				if (forgotSkills) return Promise.resolve(json({ items: [] }));
+				return Promise.resolve(json(SKILLS));
+			}
+			if (url.pathname === "/api/app/memory/documents") {
+				if (forgotMemories) return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			}
+			if (url.pathname === "/api/app/memory/forget-thread") {
+				order.push("memories");
+				forgotMemories = true;
+				return Promise.resolve(json({ ok: true, forgotten: 1, failed: [], remaining: 0 }));
+			}
+			if (url.pathname === "/api/app/skills/forget-thread") {
+				order.push("skills");
+				forgotSkills = true;
+				return Promise.resolve(json({ ok: true, removed: 2 }));
+			}
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(true);
+		await click(btn("Forget everything"));
+		await flush();
+		expect(order).toEqual(["memories", "skills"]);
+		const memPost = seen.find((s) => s.path === "/api/app/memory/forget-thread");
+		const skillPost = seen.find((s) => s.path === "/api/app/skills/forget-thread");
+		expect(JSON.parse(memPost!.body!)).toEqual({ conversation: "app/1" });
+		expect(JSON.parse(skillPost!.body!)).toEqual({ conversation: "app/1" });
+		// Both lists re-read and emptied.
+		expect(seen.filter((s) => s.path.startsWith("/api/app/skills/from"))).toHaveLength(2);
+		expect(seen.filter((s) => s.path.startsWith("/api/app/memory/documents"))).toHaveLength(2);
+		expect(container.textContent).toContain("No skills generated from this conversation.");
+		expect(container.textContent).toContain("Nothing retained.");
+	});
+
+	test("all three bulk buttons disable while a forget is in flight", async () => {
+		let release: ((r: Response) => void) | null = null;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "https://x");
+			if (url.pathname === "/api/app/skills/from") return Promise.resolve(json(SKILLS));
+			if (url.pathname === "/api/app/memory/documents")
+				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+			if (url.pathname === "/api/app/memory/forget-thread")
+				return new Promise<Response>((res) => {
+					release = (r: Response) => res(r);
+				});
+			if (url.pathname === "/api/app/skills/forget-thread")
+				return Promise.resolve(json({ ok: true, removed: 2 }));
+			return Promise.resolve(json({ error: "unexpected" }, 500));
+		}) as typeof fetch;
+
+		mount();
+		await flush();
+		confirmSpy(true);
+		await click(btn("Forget everything"));
+		// The held-open POST fences the whole row: the active button
+		// wears its busy word, all three go disabled.
+		const inFlight = [...container.querySelectorAll(".thread-forget button")];
+		expect(inFlight.map((b) => b.textContent)).toEqual([
+			"Forget memories",
+			"Forget skills",
+			"Forgetting…",
+		]);
+		expect(inFlight.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+		await act(async () => {
+			release!(json({ ok: true, forgotten: 1, failed: [], remaining: 0 }));
+			});
+		await flush();
+		const settled = [...container.querySelectorAll(".thread-forget button")];
+		expect(settled.map((b) => b.textContent)).toEqual([
+			"Forget memories",
+			"Forget skills",
+			"Forget everything",
+		]);
+		expect(settled.every((b) => (b as HTMLButtonElement).disabled)).toBe(false);
 	});
 });

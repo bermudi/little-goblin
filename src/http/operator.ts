@@ -69,6 +69,7 @@ import type {
 	MemoryBlockedResponse,
 	MemoryFactItem,
 	MemoryForgetResponse,
+	MemoryForgetThreadResponse,
 	MemoryStatusResponse,
 	OperatorDelegationItem,
 	OperatorDelegationsResponse,
@@ -76,6 +77,7 @@ import type {
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
 	SecretStoreResponse,
+	SkillForgetResponse,
 	ThreadSkillItem,
 	ThreadSkillsResponse,
 } from "./operator-wire.ts";
@@ -131,6 +133,7 @@ export interface OperatorDeps {
 	};
 	skillSources?: {
 		forConversation(conversationId: string): SkillSourceRow[];
+		forgetConversation(conversationId: string): number;
 		skillsDir: string;
 		proposedDir: string;
 	};
@@ -212,6 +215,8 @@ export function makeOperatorSeams(
 		},
 		skillSources: {
 			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
+			forgetConversation: (conversationId: string) =>
+				skillSources.forgetConversation(conversationId),
 			skillsDir: paths.skills(),
 			proposedDir: paths.skillsProposed(),
 		},
@@ -1061,6 +1066,124 @@ export async function handleOperatorRoute(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 
+	if (tail === "memory/forget-thread") {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const gate = forgetGate(deps);
+		if (typeof gate === "string") {
+			return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+		}
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = z.object({ conversation: z.string().min(1).max(256) }).safeParse(raw);
+		if (!parsed.success)
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+			{ status: 422, headers: NO_STORE },
+		);
+		const conversation = parsed.data.conversation;
+		const started = Date.now();
+		try {
+			// Same conversation scan as the GET route: q='exchange/' pages,
+			// prefix match plus exactly two more id segments, limit-100
+			// batches walked to the upstream total.
+			const prefix = `exchange/${conversation}/`;
+			const ids: string[] = [];
+			for (let scanOffset = 0; ; ) {
+				const batch = await gate.client.listDocuments({
+					q: "exchange/",
+					limit: 100,
+					offset: scanOffset,
+				});
+				for (const item of batch.items) {
+					if (
+						!item.id.startsWith(prefix) ||
+						item.id.slice(prefix.length).split("/").length !== 2
+					)
+						continue;
+					ids.push(item.id);
+				}
+				scanOffset += batch.items.length;
+				if (scanOffset >= batch.total) break;
+				if (batch.items.length === 0) throw new HindsightError("protocol");
+			}
+			// Per document the SAME heavyweight forget the single-doc
+			// DELETE runs (suppress, park, remote delete, redact); one
+			// failure never stops the rest of the thread.
+			const failed: MemoryForgetThreadResponse["failed"] = [];
+			let forgotten = 0;
+			for (const id of ids) {
+				try {
+					const result = await forgetDocument(gate.source, id, {
+						channel: actor.via === "mini-app" ? "mini-app" : "app",
+					});
+					if (result.outcome === "busy") {
+						log.warn(`memory forget via ${actor.via} refused`, {
+							...who,
+							document: id,
+							unsettled: result.unsettled,
+							ms: Date.now() - started,
+						});
+						failed.push({
+								id,
+								error:
+									"memory for that document is still processing remotely — retry in a minute",
+							});
+						continue;
+					}
+					if (result.outcome === "foreign-bank") {
+						log.warn(`memory forget via ${actor.via} refused — previous bank not addressable`, {
+							...who,
+							document: id,
+							target: result.target,
+							ms: Date.now() - started,
+						});
+						failed.push({
+								id,
+								error:
+									"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
+							});
+						continue;
+					}
+					forgotten++;
+				} catch (err) {
+					if (err instanceof HindsightError) {
+						log.warn("memory forget failed", {
+							...who,
+							document: id,
+							kind: err.kind,
+							status: err.status,
+						});
+						failed.push({ id, error: "memory unavailable — try again later" });
+					} else {
+						log.error("memory forget failed", err, { ...who, document: id });
+						failed.push({ id, error: "memory request failed — check the service log" });
+					}
+				}
+			}
+			log.info(`memory thread forget via ${actor.via}`, {
+				...who,
+				conversation,
+				forgotten,
+				failed: failed.length,
+				ms: Date.now() - started,
+			});
+			const body: MemoryForgetThreadResponse = {
+				ok: true,
+				forgotten,
+				failed,
+				remaining: failed.length,
+			};
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			return memoryUpstreamError(err, "memory forget failed");
+		}
+	}
+
 	if (tail === "programs") {
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -1157,6 +1280,36 @@ export async function handleOperatorRoute(
 			returned: items.length,
 		});
 		const body: ThreadSkillsResponse = { items };
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	if (tail === "skills/forget-thread") {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		if (deps.skillSources === undefined)
+			return Response.json(
+				{ error: "skill provenance unavailable" },
+			{ status: 503, headers: NO_STORE },
+			);
+		let raw: unknown;
+		try {
+			raw = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = z.object({ conversation: z.string().min(1).max(256) }).safeParse(raw);
+		if (!parsed.success)
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+			{ status: 422, headers: NO_STORE },
+		);
+		const removed = deps.skillSources.forgetConversation(parsed.data.conversation);
+		log.info(`thread skill provenance forgotten via ${actor.via}`, {
+			...who,
+			conversation: parsed.data.conversation,
+			removed,
+		});
+		const body: SkillForgetResponse = { ok: true, removed };
 		return Response.json(body, { headers: NO_STORE });
 	}
 

@@ -25,6 +25,7 @@ const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/status": "status",
 	"/api/app/skills": "skills",
 	"/api/app/skills/from": "skills/from",
+	"/api/app/skills/forget-thread": "skills/forget-thread",
 	"/api/app/skills/file": "skills/file",
 	"/api/app/skills/preview": "skills/preview",
 	"/api/app/skills/decide": "skills/decide",
@@ -65,7 +66,9 @@ export async function handleAppApi(
 				opTail === "secrets" ||
 				opTail === "skills/preview" ||
 				opTail === "skills/decide" ||
-				opTail === "memory/blocked") &&
+				opTail === "skills/forget-thread" ||
+				opTail === "memory/blocked" ||
+				opTail === "memory/forget-thread") &&
 			req.method === "POST"
 		) {
 			const refusedJson = jsonBodyRefusal(req);

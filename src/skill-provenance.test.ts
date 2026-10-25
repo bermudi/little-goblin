@@ -48,6 +48,18 @@ test("records and upserts per (skill, conversation)", () => {
 	expect(sources.forConversation("app/1")).toHaveLength(1);
 });
 
+test("forgetting one conversation's rows leaves other threads intact", () => {
+	const { sources } = fixture();
+	sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z");
+	sources.record("app/1", "other-skill", "turn", "2026-10-16T02:00:00.000Z");
+	sources.record("dm:1", "herdr", "reviewer", "2026-10-16T03:00:00.000Z");
+	expect(sources.forgetConversation("app/1")).toBe(2);
+	expect(sources.forConversation("app/1")).toEqual([]);
+	expect(sources.forConversation("dm:1")).toHaveLength(1);
+	// Re-forgetting a clean thread removes nothing.
+	expect(sources.forgetConversation("app/1")).toBe(0);
+});
+
 test("rows order by latest write, then name", () => {
 	const { sources } = fixture();
 	sources.record("app/1", "b-skill", "reviewer", "2026-10-16T01:00:00.000Z");

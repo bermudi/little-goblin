@@ -208,6 +208,26 @@ export interface MemoryForgetResponse {
 	redacted: number;
 }
 
+export interface MemoryForgetThreadBody {
+	conversation: string;
+}
+
+export interface MemoryForgetThreadFailure {
+	id: string;
+	error: string;
+}
+
+// Bulk thread forget: every retained exchange of one conversation ran
+// through the per-document forget protocol. `failed` carries the docs
+// that refused (busy/foreign-bank/upstream) with the same reason line
+// the per-document DELETE answers; `remaining` is failed.length.
+export interface MemoryForgetThreadResponse {
+	ok: true;
+	forgotten: number;
+	failed: MemoryForgetThreadFailure[];
+	remaining: number;
+}
+
 export interface ThreadSkillItem {
 	skill: string;
 	state: "installed" | "proposed" | "gone";
@@ -278,6 +298,15 @@ export interface OperatorStatusResponse {
 export interface SkillDecideBody {
 	name: string;
 	action: "install" | "discard";
+}
+
+export interface SkillForgetBody {
+	conversation: string;
+}
+
+export interface SkillForgetResponse {
+	ok: true;
+	removed: number;
 }
 
 // Temp-skill preview card (ruling 2026-10-21): everything the yes/no

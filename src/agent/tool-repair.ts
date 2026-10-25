@@ -66,9 +66,16 @@ export function makeToolCallRepair(convId: string): ToolCallRepairFunction<ToolS
 			let schema: unknown = {};
 			try {
 				schema = await inputSchema({ toolName: tool });
-			} catch {
-				// No schema to check against — stringified-arg repair can't
-				// tell an object from an intended string, so it stays off.
+			} catch (err) {
+				// A throwing schema resolver is a tool-definition bug — loud
+				// here, never silent. Repair is advisory and the SDK still
+				// re-validates the original input, so the failure degrades to
+				// no-repair (the model sees the ordinary tool error); without
+				// this line the two states would be indistinguishable in the log.
+				log.warn("tool input schema unavailable — stringified-arg repair stays off", err, {
+					conversation: convId,
+					tool,
+				});
 			}
 			const props =
 				isPlainObject(schema) && isPlainObject(schema.properties) ? schema.properties : {};

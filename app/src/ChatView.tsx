@@ -192,11 +192,43 @@ async function fetchAttachmentUrl(token: string | null, path: string): Promise<s
 	return URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
 }
 
+// Transcript bytes are wire data — the persisted blob gets its shape
+// checked at this render boundary, never cast. The check is
+// structural (the server's zod schema imports node modules the
+// browser bundle cannot carry): the required fields with their types,
+// optional ones only when well-typed. A malformed blob renders as no
+// chip / is skipped from draft restore — it must not throw the
+// transcript (the app has no error boundary).
+function parseAttachmentRef(data: unknown): AttachmentRef | null {
+	if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+	const o = data as Record<string, unknown>;
+	if (
+		typeof o.path !== "string" ||
+		typeof o.mediaType !== "string" ||
+		typeof o.filename !== "string" ||
+		typeof o.size !== "number"
+	) {
+		return null;
+	}
+	return {
+		path: o.path,
+		mediaType: o.mediaType,
+		filename: o.filename,
+		size: o.size,
+		...(typeof o.transcript === "string" ? { transcript: o.transcript } : {}),
+		...(typeof o.transcriptionError === "string"
+			? { transcriptionError: o.transcriptionError }
+			: {}),
+		...(o.speech === true ? { speech: true } : {}),
+	};
+}
+
 function AttachmentChip({ data, token }: { data: unknown; token: string | null }) {
-	const ref = (typeof data === "object" && data !== null ? data : {}) as AttachmentRef;
-	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
-	const isAudio = typeof ref.mediaType === "string" && ref.mediaType.startsWith("audio/");
-	const path = typeof ref.path === "string" ? ref.path : "";
+	const ref = parseAttachmentRef(data);
+	if (ref === null) return null;
+	const isImage = ref.mediaType.startsWith("image/");
+	const isAudio = ref.mediaType.startsWith("audio/");
+	const path = ref.path;
 	const [inlineUrl, setInlineUrl] = useState<string | null>(null);
 	// A failed download surfaces as a chip message — a missing
 	// attachment or expired credential otherwise reads as a dead button.
@@ -226,13 +258,12 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			if (url !== null) URL.revokeObjectURL(url);
 		};
 	}, [isImage, isAudio, path, token]);
-	if (typeof ref.filename !== "string") return null;
 	if (isImage && inlineUrl !== null) {
 		return (
 			<a className="attachment image" href={inlineUrl} target="_blank" rel="noreferrer">
 				<img src={inlineUrl} alt={ref.filename} />
 				<span className="attachment-name">{ref.filename}</span>
-				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
+				<span className="attachment-size">{bytes(ref.size)}</span>
 			</a>
 		);
 	}
@@ -241,7 +272,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			<span className="attachment audio">
 				<audio controls preload="metadata" src={inlineUrl} />
 				<span className="attachment-name">{ref.filename}</span>
-				{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
+				<span className="attachment-size">{bytes(ref.size)}</span>
 				{ref.speech === true && ref.transcript !== undefined && (
 					<span className="attachment-transcript">“{ref.transcript}”</span>
 				)}
@@ -279,7 +310,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			) : (
 				<span className="attachment-name">{ref.filename}</span>
 			)}
-			{typeof ref.size === "number" && <span className="attachment-size">{bytes(ref.size)}</span>}
+			<span className="attachment-size">{bytes(ref.size)}</span>
 			{dlError !== null && <span className="msg-err">Download failed: {dlError}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
@@ -601,7 +632,11 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 	if (typeof md !== "object" || md === null) return null;
 	const o = md as Record<string, unknown>;
 	if (typeof o.model !== "string" || typeof o.durationMs !== "number") return null;
-	const usage = (o.usage ?? {}) as Record<string, unknown>;
+	// Wire data that persists into history — a malformed blob (a
+	// primitive usage field) must render as unavailable, never throw
+	// the transcript render.
+	const usage =
+		typeof o.usage === "object" && o.usage !== null ? (o.usage as Record<string, unknown>) : {};
 	const num = (v: unknown) => (typeof v === "number" ? v : null);
 	const ttftMs = num(o.ttftMs);
 	// Fall back as a pair only for legacy metadata; explicit null or
@@ -1697,7 +1732,8 @@ export function Composer({
 		const skills: StagedSkill[] = [];
 		for (const p of draftRestore.parts) {
 			if (p.type === "data-attachment") {
-				const data = p.data as AttachmentRef & { speech?: boolean };
+				const data = parseAttachmentRef(p.data);
+				if (data === null) continue; // malformed persisted blob — never restaged
 				uploads.push({
 					key: crypto.randomUUID(),
 					ref: data,

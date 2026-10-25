@@ -278,8 +278,10 @@ coderabbit review --base origin/main
 
 Each deploy annotates `goblin.log` itself — `deploy restarting goblin`
 just before the restart, `deploy restart accepted — goblin live at
-deployed rev` once startup acceptance passes — so a deploy-initiated
-restart is distinguishable from a spontaneous one in the operational log.
+deployed rev` only once acceptance, the journal scan and the memory probe
+have all passed — so a deploy-initiated restart is distinguishable from a
+spontaneous one, and a rollout that started but never finished is visible as
+a `restarting` line with no `accepted` after it.
 
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it

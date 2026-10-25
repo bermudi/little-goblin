@@ -103,7 +103,9 @@ for error lines, and probes the memory API when the stack is installed.
 
 It never rolls back automatically. A failed acceptance leaves the flip in
 place and exits non-zero: whether to roll back is the operator's decision,
-and silence plus an automated revert would hide which revision is live.
+and silence plus an automated revert would hide which revision is live. It
+does print the decision's command (`--rollback <previous>`), so recovery is
+never left to memory.
 
 ## Cutover (one time, per box)
 
@@ -142,4 +144,5 @@ cannot interleave flips; a lock whose recorded pid is gone is reported with
 the path to `trash`, never cleared automatically. Diagnostics go to stderr
 and the result to stdout (`deployed <sha>`, plus the rollback command); two
 `deploy …` annotations are appended to `goblin.log` so a deploy-initiated
-restart stays distinguishable from a spontaneous one.
+restart stays distinguishable from a spontaneous one — the `accepted` line
+is written last, only after every probe passed.

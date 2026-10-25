@@ -115,13 +115,20 @@ export function stagingDir(layout: Layout, rev: string): string {
 	return join(layout.root, `.staging.${short(rev)}.${process.pid}.${randomBytes(4).toString("hex")}`);
 }
 
+// The marker proves the builder finished; these prove the tree is still
+// usable. Rollback flips whatever is here, so a release someone gutted by
+// hand (trashed node_modules, deleted the client) must not present as
+// deployable just because its marker survived.
+const REQUIRED_IN_RELEASE = ["package.json", "bun.lock", "src/index.ts", "node_modules", "app/dist/index.html"];
+
 export function isCompleteRelease(dir: string, rev: string): boolean {
 	try {
-		return readFileSync(join(dir, COMPLETE_MARKER), "utf8").trim() === rev;
+		if (readFileSync(join(dir, COMPLETE_MARKER), "utf8").trim() !== rev) return false;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw error;
 	}
+	return REQUIRED_IN_RELEASE.every((path) => existsSync(join(dir, path)));
 }
 
 export interface LiveState {
@@ -395,6 +402,12 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 		if (existsSync(target)) fail(`${target} appeared during the build — refusing to replace it`);
 		renameSync(staging, target);
 		fsyncDirectory(context.layout.root);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		// Left behind for inspection rather than deleted (deleting it would
+		// delete the evidence), so say where it is and how to get rid of it.
+		const where = existsSync(staging) ? ` — the incomplete build is at ${staging} (trash it once inspected)` : "";
+		throw new DeployError(`${detail}${where}`);
 	} finally {
 		// Script-owned scratch only; a failed build's staging directory is left
 		// behind for inspection (the error line names it) because deleting it
@@ -498,7 +511,7 @@ async function restartAndVerify(context: Context, release: string, rev: string, 
 			join(release, "scripts", "check-startup.ts"),
 			"--watch",
 			"0",
-			String(context.acceptBudgetMs),
+			String(DEFAULT_ACCEPT_BUDGET_MS),
 			floor.invocationId,
 			String(floor.monotonic),
 		],
@@ -506,10 +519,9 @@ async function restartAndVerify(context: Context, release: string, rev: string, 
 		{
 			cwd: release,
 			env: context.goblinHome === null ? process.env : { ...process.env, GOBLIN_HOME: context.goblinHome },
-			timeoutMs: context.acceptBudgetMs + 10_000,
+			timeoutMs: DEFAULT_ACCEPT_BUDGET_MS + 10_000,
 		},
 	);
-	annotate(logPath, "restart accepted — goblin live at deployed rev", rev, null);
 	// Reported, never fatal: a rotation race or a grep miss must not fail a
 	// rollout that the acceptance probe already passed — but a recurring boot
 	// error should ship visibly with the deploy that introduced it.
@@ -525,6 +537,35 @@ async function restartAndVerify(context: Context, release: string, rev: string, 
 		for (const line of errors.slice(-5)) process.stderr.write(`  ${line}\n`);
 	}
 	await memoryProbe();
+	// Last, once every probe has passed: this line is the log's claim that the
+	// rollout succeeded, so it must not be written while a later step can still
+	// fail the command.
+	annotate(logPath, "restart accepted — goblin live at deployed rev", rev, null);
+}
+
+/** A flip that did not verify is the one state the operator must be told how
+ *  to leave. Never revert automatically — silence plus an automatic revert
+ *  hides which revision is live — but never make them remember the command
+ *  either. */
+async function finish(
+	ctx: Context,
+	release: string,
+	rev: string,
+	previous: string | null,
+	noPreviousAdvice = "",
+): Promise<void> {
+	try {
+		await restartAndVerify(ctx, release, rev, previous);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		step(`live is now ${short(rev)} and the rollout did not verify: ${detail}`);
+		if (previous !== null) {
+			step(`recover with: bun scripts/release.ts --rollback ${previous}`);
+		} else {
+			step(`there is no previous release to return to${noPreviousAdvice}`);
+		}
+		throw error;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -593,7 +634,6 @@ export interface Context {
 	layout: Layout;
 	bun: string;
 	goblinHome: string | null;
-	acceptBudgetMs: number;
 }
 
 async function context(): Promise<Context> {
@@ -613,14 +653,7 @@ async function context(): Promise<Context> {
 	// The probe reads config, log and state from the unit's own home: a shell
 	// GOBLIN_HOME must never decide which deployment is being verified.
 	const goblinHome = facts.environment.GOBLIN_HOME ?? null;
-	const budget = Number(process.env.GOBLIN_ACCEPT_BUDGET_MS ?? DEFAULT_ACCEPT_BUDGET_MS);
-	return {
-		repo,
-		layout,
-		bun,
-		goblinHome,
-		acceptBudgetMs: Number.isInteger(budget) && budget > 0 ? budget : DEFAULT_ACCEPT_BUDGET_MS,
-	};
+	return { repo, layout, bun, goblinHome };
 }
 
 async function rollout(ctx: Context, rev: string): Promise<void> {
@@ -635,7 +668,7 @@ async function rollout(ctx: Context, rev: string): Promise<void> {
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)}`);
 	flipLive(ctx.layout, dir);
-	await restartAndVerify(ctx, dir, rev, live?.rev ?? null);
+	await finish(ctx, dir, rev, live?.rev ?? null);
 	process.stdout.write(`deployed ${rev}\n`);
 	if (live !== null) process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
 }
@@ -650,7 +683,7 @@ async function rollback(ctx: Context, rev: string): Promise<void> {
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)} (rollback)`);
 	flipLive(ctx.layout, dir);
-	await restartAndVerify(ctx, dir, rev, live?.rev ?? null);
+	await finish(ctx, dir, rev, live?.rev ?? null);
 	process.stdout.write(`rolled back to ${rev}\n`);
 }
 
@@ -671,7 +704,14 @@ async function adoptUnit(ctx: Context, rev: string): Promise<void> {
 	durableWriteFile(ctx.layout.unit, rewritten, 0o644);
 	step(`unit: WorkingDirectory=${facts.workingDirectory} -> ${ctx.layout.live}`);
 	await run(["systemctl", "--user", "daemon-reload"], "reload user units");
-	await restartAndVerify(ctx, dir, rev, null);
+	// Cutover failure advice has to cover the unit too, not just the link.
+	await finish(
+		ctx,
+		dir,
+		rev,
+		null,
+		`; the unit now points at ${ctx.layout.live} — restore its WorkingDirectory=${facts.workingDirectory} line and run systemctl --user daemon-reload to return to the in-place layout`,
+	);
 	process.stdout.write(`adopted release layout and deployed ${rev}\n`);
 }
 
@@ -805,7 +845,14 @@ export async function main(argv: string[]): Promise<void> {
 			// build from the flip.
 			const release = await acquireLock(ctx.layout);
 			try {
-				const rev = await resolveRev(ctx.repo, "rev" in command ? command.rev : null);
+				// A full sha is already the directory name. Rollback must not need
+				// git at all: the promise of this layout is that the kept release is
+				// self-contained, so a commit pruned by a rebase or `git gc` cannot
+				// make a rollback impossible.
+				const rev =
+					command.kind === "rollback" && isRev(command.rev)
+						? command.rev
+						: await resolveRev(ctx.repo, "rev" in command ? command.rev : null);
 				if (command.kind === "rollout") await rollout(ctx, rev);
 				else if (command.kind === "rollback") await rollback(ctx, rev);
 				else await adoptUnit(ctx, rev);

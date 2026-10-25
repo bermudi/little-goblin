@@ -270,13 +270,46 @@ describe("rollout", () => {
 	test("a failed acceptance fails the rollout without rolling back on its own", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
+		const first = headRev();
 		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], { encoding: "utf8" }).stdout.trim();
 		const result = release(box, ["--rev", "HEAD~1"], { FAKE_ACCEPT_FAIL: "1" });
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("startup acceptance failed");
-		// The flip happened and stays: recovery is an explicit operator action.
+		// The flip happened and stays: recovery is an explicit operator action —
+		// but the command for it is printed, not left to memory.
 		expect(liveTarget(box)).toBe(older);
+		expect(result.stderr).toContain(`recover with: bun scripts/release.ts --rollback ${first}`);
 		expect(result.stdout).toBe("");
+	});
+
+	test("rollback needs no git object: a kept release is self-contained", () => {
+		const box = makeBox();
+		expect(release(box, ["--adopt-unit"]).status).toBe(0);
+		// A release whose commit git cannot resolve (pruned by a rebase or gc).
+		// Rolling back to it must work from the directory alone.
+		const orphan = "d".repeat(40);
+		const dir = join(box.releases, orphan);
+		for (const path of ["src", "app/dist", "node_modules"])
+			mkdirSync(join(dir, path), { recursive: true });
+		for (const path of ["package.json", "bun.lock", "src/index.ts", "app/dist/index.html"])
+			writeFileSync(join(dir, path), "");
+		writeFileSync(join(dir, ".release-complete"), `${orphan}\n`);
+		const result = release(box, ["--rollback", orphan]);
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe(`rolled back to ${orphan}`);
+		expect(liveTarget(box)).toBe(orphan);
+	});
+
+	test("rollback refuses a release whose tree is gone", () => {
+		const box = makeBox();
+		expect(release(box, ["--adopt-unit"]).status).toBe(0);
+		const gutted = join(box.releases, headRev());
+		spawnSync("trash", [join(gutted, "node_modules")]);
+		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
+		const result = release(box, ["--rollback", headRev()]);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("no complete release");
+		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(before);
 	});
 });
 
@@ -345,12 +378,25 @@ describe("layout invariants", () => {
 		const root = tmpDir("goblin-release-");
 		const rev = "a".repeat(40);
 		const dir = join(root, rev);
-		mkdirSync(dir, { recursive: true });
+		for (const path of ["src", "app/dist", "node_modules"])
+			mkdirSync(join(dir, path), { recursive: true });
+		for (const path of ["src/index.ts", "app/dist/index.html", "package.json", "bun.lock"])
+			writeFileSync(join(dir, path), "");
 		expect(isCompleteRelease(dir, rev)).toBe(false);
 		writeFileSync(join(dir, ".release-complete"), `${rev}\n`);
 		expect(isCompleteRelease(dir, rev)).toBe(true);
 		// A marker for a different commit never counts as this one.
 		expect(isCompleteRelease(dir, "b".repeat(40))).toBe(false);
+	});
+
+	test("a marker alone does not make a gutted release deployable", () => {
+		const root = tmpDir("goblin-release-");
+		const rev = "c".repeat(40);
+		const dir = join(root, rev);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, ".release-complete"), `${rev}\n`);
+		// The builder finished once, but the tree it would serve is gone.
+		expect(isCompleteRelease(dir, rev)).toBe(false);
 	});
 
 	test("the CLI refuses to guess", () => {

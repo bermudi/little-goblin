@@ -705,7 +705,7 @@ drifting call is recorded.
   pulled; embeddinggemma kept resident by `goblin-embed-pin.timer`
   (`keep_alive=-1`; default eviction is 5 min idle).
 - Bench commits: `b3f6e0a` (tool), `8bff773` (judge grading). Docs section:
-  Benchmarking, above. Not deployed — `scripts/deploy.sh` is the only
-  sanctioned push and was not run.
+  Benchmarking, above. Not deployed — `scripts/release.ts` is the only
+  sanctioned rollout and was not run.
 
 Unit tests: `uv run -m unittest discover -s deploy/memory -p 'test_bench.py'`.

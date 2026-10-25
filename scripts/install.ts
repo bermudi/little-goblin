@@ -233,7 +233,7 @@ async function install(): Promise<void> {
 	]) {
 		if (exists(join(unitDir, name)))
 			fail(
-				"existing-installed-target: use the approved scripts/deploy.sh update; reinstall requires separate operator action",
+				"existing-installed-target: use the approved scripts/release.ts rollout; reinstall requires separate operator action",
 			);
 	}
 	if (exists(join(target, "state", "goblin.sqlite")))

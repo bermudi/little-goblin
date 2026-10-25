@@ -15,7 +15,8 @@ opt-in capability boundary.
   prompts are a designed exception, not a precedent.)
 - **Fresh targets only.** The installer refuses an existing installed
   Goblin target — especially production — before mutating units or
-  publishing assets. Updates go through the approved `scripts/deploy.sh`;
+  publishing assets. Updates go through the approved `scripts/release.ts`
+  rollout;
   reinstall/repair is a separate explicit operator action; no general
   repair switch — "idempotent" implies no permission. Fresh setup never
   stops or overwrites a healthy existing service.

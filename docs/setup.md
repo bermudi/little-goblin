@@ -161,8 +161,8 @@ edits or resolved-key rotation need an approved restart; see
 **Fresh targets only.** The installer must reject any existing installed
 Goblin target **before dependency sync**, even if it is stopped. It is not
 an idempotent update/repair command. Existing-target reinstall or repair
-requires separate explicit operator authority; prod updates use approved
-`scripts/deploy.sh` instead.
+requires separate explicit operator authority; prod updates use the approved
+`bun scripts/release.ts` rollout instead.
 
 Once the shared integration above is complete, and installation itself is
 explicitly authorized, run from the selected checkout:

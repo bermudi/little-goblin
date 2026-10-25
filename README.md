@@ -12,9 +12,10 @@ aspiration: Goblin as Chief of Staff, carrying work while the operator stays
 in the outer loop. [ROADMAP.md](ROADMAP.md) charts the next acceptance targets;
 `DESIGN.md` records implementation contracts and non-goals.
 
-It runs in one place: g7, this tree; `scripts/deploy.sh`
-gates, refreshes, and restarts locally, and publishing to GitHub is
-separate (see [`docs/operations.md`](docs/operations.md)).
+It runs in one place: g7; `bun scripts/release.ts` builds a commit into an
+immutable release, flips the live symlink, and restarts locally, and
+publishing to GitHub is separate (see
+[`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph
 

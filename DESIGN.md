@@ -15,13 +15,14 @@ and everything else is rebuilt only if it earns its place.
 
 ## Product boundary
 
-- One human operator (bermudi), one Bun process, homelab. Prod is g7: this
-  tree runs `goblin.service` (systemd user unit, linger) plus the memory
-  stack directly. Install is `scripts/install.sh` — fresh-only,
-  path-substituting, first-boot scaffolding; there is no onboarding wizard,
-  ever. `scripts/deploy.sh` is the update path (gate, rebuild the app client
-  when it moved, restart, verify); tests gate merges in CI, not deploys, and
-  it never pushes (docs/operations.md → Deploying).
+- One human operator (bermudi), one Bun process, homelab. Prod is g7: a
+  `goblin.service` (systemd user unit, linger) running one immutable release
+  from `~/goblin-releases/`, plus the memory stack directly. Install is
+  `scripts/install.sh` — fresh-only, path-substituting, first-boot
+  scaffolding; there is no onboarding wizard, ever. `scripts/release.ts` is
+  the update path (build a release from a commit, gate on typecheck, flip,
+  restart, verify; design/deploy.md); tests gate merges in CI, not deploys,
+  and it never pushes (docs/operations.md → Deploying).
 - Two channels. Telegram: long polling, topics, reactions, files, voice —
   **and Mini Apps, designed in from the start** (the process serves them over
   HTTP; see Telegram intake & delivery). The app: a React client, PWA while

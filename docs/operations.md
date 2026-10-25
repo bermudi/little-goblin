@@ -16,13 +16,12 @@ journalctl --user -u goblin -f    # live logs
 ```
 
 On prod, restarting/deploying Goblin, installing/reloading units, or
-publishing `app/dist` requires bermudi's OK. The commands here are an
+replacing the served client requires bermudi's OK. The commands here are an
 operator runbook, not permission to run them during source verification.
-`app/dist` is a symlink to the last published slot, resolved from disk on
-every request. `bun run app:build` only stages `app/dist.next` and changes
-nothing served; publishing is `scripts/publish-app.sh`'s atomic symlink
-flip, which the approved rollout runs. Client publication and backend
-restart are one coordinated approved rollout;
+The live client is `app/dist` *inside the running release*, resolved per
+request; `bun run app:build` in a checkout only builds a local artifact and
+changes nothing served. A client change reaches prod only as a release
+(design/deploy.md), so client and backend always move together.
 the plain Settings client is instead loaded once at backend startup.
 
 Use Settings for routine configuration. Direct `goblin.json5` edits are for
@@ -240,31 +239,34 @@ separately reviewed operator update; it is not overwritten by deployment.
 
 ## Deploying
 
-**Release layout — cutover staged, not yet live.** `scripts/release.ts`
-replaces the in-place rollout below with immutable releases under
-`~/goblin-releases/`, served through a `live` symlink. `bun
-scripts/release.ts` builds the commit if needed, gates on a typecheck inside
-the release, flips the link with one rename, restarts and verifies;
-`--rollback <rev>`, `--status`, `--build-only` and the one-time `--adopt-unit`
-complete the surface. Invariants, the reasoning and the cutover procedure are
-in [design/deploy.md](../design/deploy.md). Until that cutover runs, the text
-below describes what this box actually does.
-
-Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
-source of truth for the seeded copy; `ensureHomeLayout` installs it on
-first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
-which assumes the `herdr` tool exists) must NOT be synced into the live
-workspace ahead of the backend deploy that ships the tool. After the
-approved `scripts/deploy.sh` rollout verifies the new backend, explicitly
-sync the changed seed to its installed workspace copy as part of that
-rollout. The script does not update existing installed skills.
-
-Prod is this tree on g7 — `goblin.service` runs from the working copy,
-plus the local memory stack (Podman). With bermudi's OK, one command:
+Prod is g7: `goblin.service` runs from `~/goblin-releases/live`, a symlink to
+one complete release directory named by commit, plus the local memory stack
+(Podman). With bermudi's OK, one command:
 
 ```sh
-scripts/deploy.sh
+bun scripts/release.ts
 ```
+
+That builds the current commit if no release for it exists, gates on a
+typecheck *inside the release* against that release's own dependency tree,
+flips `live` with one rename, restarts, and verifies. Running it IS the
+restart OK. The rest of the surface:
+
+```sh
+bun scripts/release.ts --status          # live, running, kept, unit match
+bun scripts/release.ts --build-only      # build + gate, touch nothing live
+bun scripts/release.ts --rev <rev>       # deploy a specific commit
+bun scripts/release.ts --rollback <rev>  # flip back to a kept release
+```
+
+Invariants and the reasoning behind the layout are in
+[design/deploy.md](../design/deploy.md). In short: a release directory that
+exists is complete (builds assemble under `.staging.` and are renamed into
+place only after every gate passes), the unit is the single source of truth
+for where the code lives and which bun runs it, and a release is a commit, so
+uncommitted and untracked files in the checkout cannot be deployed even by
+accident. Rolling back rebuilds nothing: the previous release is still intact
+and its own dependencies and client are still there.
 
 Deployment is local: it never pushes, fetches, or pulls Git refs.
 Publishing to GitHub is a separate, explicitly approved action. This keeps
@@ -279,35 +281,32 @@ just before the restart, `deploy restart accepted — goblin live at
 deployed rev` once startup acceptance passes — so a deploy-initiated
 restart is distinguishable from a spontaneous one in the operational log.
 
-It refuses modified **tracked** files — the server runs in place, so the
-process must match HEAD or the marker and its rollback would lie.
-Untracked files are in no commit; it names them and deploys HEAD anyway.
-It runs the gate (`bun run typecheck`; the full
-suite gates merges via `.github/workflows/ci.yml`, not deploys),
-then refreshes what the gate can't cover: `bun install --frozen-lockfile`
-when the dependency manifests moved and `bun run app:build` when `app/`
-or the manifests moved — the bundle inlines dependency code, so a React
-or AI-SDK bump alone must rebuild it, and the client is served from
-disk, so client and backend restart as one rollout. A marker in
-`.git/GOBLIN_DEPLOYED_REV` tracks the last deployed revision (first run
-refreshes unconditionally). A second marker,
-`.git/GOBLIN_DEPLOY_INCOMPLETE`, is published before any mutation and
-removed only after the restart verifies — a leftover means the last
-deploy died mid-refresh, so the next run reinstalls dependencies and
-rebuilds the client regardless of the source diff. It then restarts
-the unit and gates on 75 s
-startup acceptance (`scripts/check-startup.ts --watch`, the installer's
-grammar): both lifecycle events in the new invocation's journal, `/app/`
-HTML and its local assets served on loopback, and no crash-restart
-within the budget — a bare is-active poll closes before slow boot
-failures (e.g. a timed-out provider handshake) show. It then scans the
-fresh journal for error lines, and prints the old→new
-hashes plus a one-line rollback (`git reset --hard <old>`, then
-`bun install`, `bun run app:build` and `scripts/publish-app.sh` — the
-client slots and node_modules are gitignored, so the old revision needs
-its own deps and client — then restart, and reset the marker). A gate
-failure stops everything
-before the service is touched.
+The gate is `bun run typecheck` inside the release; the full suite gates
+merges via `.github/workflows/ci.yml`, not deploys. After the restart it
+requires 75 s startup acceptance (`scripts/check-startup.ts --watch`, the
+installer's grammar): both lifecycle events in the new invocation's journal,
+`/app/` HTML and its local assets served on loopback, and no crash-restart
+within the budget — a bare is-active poll closes before slow boot failures
+(e.g. a timed-out provider handshake) show. It then scans the fresh journal
+for error lines, probes the memory API when the stack is installed, and
+prints the deployed hash plus the one-line rollback. A failed acceptance
+leaves the flip in place and exits non-zero: whether to roll back is the
+operator's decision, taken with `--rollback`.
+
+Two things a rollout deliberately does not do. It never deletes a release —
+retention is `trash` on old directories under `~/goblin-releases/`, and
+`--status` lists what is kept (a second release costs only megabytes; bun
+hardlinks the dependency store). And it never hides a flip that was not
+restarted: `--status` reads `/proc/<pid>/cwd` and prints `(restart pending)`.
+
+Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
+source of truth for the seeded copy; `ensureHomeLayout` installs it on
+first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
+which assumes the `herdr` tool exists) must NOT be synced into the live
+workspace ahead of the release that ships the tool. After the approved
+`bun scripts/release.ts` rollout verifies the new backend, explicitly
+sync the changed seed to its installed workspace copy as part of that
+rollout. The script does not update existing installed skills.
 
 After a state-viewer rollout, verify data access in the authenticated PWA:
 open `/app/skills`, `/app/files`, and `/app/log`; click an installed or
@@ -666,7 +665,7 @@ it only while the bot is stopped, if ever.
 | `config would remove your own telegram user id` | the save you're attempting drops your id from `operators` — fix the field, save again |
 | Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |
 | `/memory` says degraded — blocked retention(s) | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked |
-| `/app/` answers 500 / "app client not built" | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. `app:build` + `publish-app.sh`, then check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved publish |
+| `/app/` answers 500 / "app client not built" | The client is a build artifact: absent on a fresh clone, and inside a release it means that release's build never finished (a complete release always has one — design/deploy.md). In a checkout, `bun run app:build` then re-check assets; on prod, deploy the commit instead of building in place |
 | `/app/` asks for a token you didn't expect | the server is in bearer mode — `appToken` is set in `goblin.json5`; paste the value of the `auth.jsonl` record it names. Never had a token? `appToken` was probably just added — it's boot-pinned, so a running process ignores the change until restart |
 | `/app/` shows "The stored token stopped working" | the `auth.jsonl` record's value rotated (rotation needs a goblin restart to take) — the app's own "Paste a new token" door clears it |
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |

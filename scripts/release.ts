@@ -383,11 +383,10 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 			cwd: staging,
 			timeoutMs: BUILD_TIMEOUT_MS,
 		});
-		// vite stages into dist.next so a dev checkout's served tree is never
-		// written in place. Inside a private release nothing is being served
-		// yet, so promotion is a plain rename; the atomic swap is the whole-tree
-		// symlink flip below.
-		renameSync(join(staging, "app", "dist.next"), join(staging, "app", "dist"));
+		// vite writes app/dist directly now: the staging dance that kept a dev
+		// checkout's served bundle from being written in place went away with the
+		// in-place layout, and the atomic swap here is the whole-tree symlink
+		// flip below.
 		await run([context.bun, "--no-install", "run", "scripts/check-app-assets.ts", staging], "verify client assets", {
 			cwd: staging,
 			timeoutMs: 60_000,

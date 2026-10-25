@@ -8,9 +8,11 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
 	base: "/app/",
 	plugins: [react()],
-	// Builds only stage: publish is the atomic dist-symlink swap in
-	// scripts/publish-app.sh, so a build alone never changes what is served.
-	build: { outDir: "dist.next", emptyOutDir: true },
+	// Writes the served tree directly. Staging into dist.next existed only so a
+	// dev checkout's served bundle was never written in place; the live client
+	// now lives inside an immutable release (design/deploy.md), so a dev-tree
+	// build is just a local artifact.
+	build: { outDir: "dist", emptyOutDir: true },
 	server: {
 		proxy: {
 			"/api": {

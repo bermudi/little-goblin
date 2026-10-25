@@ -68,37 +68,30 @@ lists on our non-goals list. Cite what you took in the design docs.
 
 ## Live services
 
-- **Prod is g7.** `goblin.service` runs goblin; code changes go live only
-  on `systemctl --user restart goblin`, which needs bermudi's OK each
-  time. Two layouts — `bun scripts/release.ts --status` says which one this
-  box is in:
-  - *Release layout* (ruling: `design/deploy.md`; cutover staged, not yet
-    run). The unit runs from `~/goblin-releases/live`, a symlink to one
-    complete release directory named by commit. The only sanctioned update
-    is `bun scripts/release.ts` (build-if-missing → typecheck gate →
-    atomic symlink flip → restart → startup acceptance; also `--rollback
-    <rev>`, `--status`, `--build-only`, and the one-time `--adopt-unit`).
-    Running a rollout IS the restart OK.
-  - *In-place layout* (what runs today): the unit runs from this working
-    copy and the only sanctioned update is `scripts/deploy.sh`, which also
-    IS the restart OK.
-
-  Neither pushes, fetches, or pulls; publishing main is separate and also
-  needs bermudi's OK. The memory stack is never auto-deployed —
-  `deploy/memory/` changes print the manual runbook. Lithium cutover
-  archives: `~/goblin-migration-20261008/`.
+- **Prod is g7 — immutable releases.** `goblin.service` runs from
+  `~/goblin-releases/live`, a symlink to one complete release directory
+  named by commit (`WorkingDirectory` resolves at process start). Code
+  changes go live only through `bun scripts/release.ts` — build-if-missing
+  → typecheck gate inside the release → atomic symlink flip → restart →
+  startup acceptance — and running it IS bermudi's restart OK. Also
+  `--rollback <rev>`, `--status`, `--build-only`, and `--adopt-unit` (the
+  one-time per-box cutover). Ruling: `design/deploy.md`. It never pushes,
+  fetches, or pulls; publishing main is separate and also needs bermudi's
+  OK. The memory stack is never auto-deployed — `deploy/memory/` changes
+  print the manual runbook. Lithium cutover archives:
+  `~/goblin-migration-20261008/`.
 - Quadlet `HealthCmd` takes no shell metacharacters — podman's
   CMD-SHELL re-quoting mangles one-liners into restart-loops (lithium,
   podman 5.4). Healthchecks are mounted scripts; keep them that way.
-- **The client ships inside the release.** `bun run app:build` stages
-  `app/dist.next`; nothing else writes a served tree. In the release layout
-  `app/dist` is a plain directory inside the release, served per request for
-  `/app/` (the PWA) and `/t/` (the Telegram mini app) — so a client change
-  *is* a release and a release *is* a restart, and client/backend skew is
-  unrepresentable. The `app/dist.a`/`dist.b` slots and
-  `scripts/publish-app.sh` belong to the in-place layout and retire with
-  it; until the cutover their behaviour is unchanged, including "client
-  publication and backend restart are one approved rollout".
+- **The client ships inside the release.** `bun run app:build` writes
+  `app/dist`; in prod that directory lives inside the running release,
+  served per request for `/app/` (the PWA) and `/t/` (the Telegram mini
+  app). So a client change *is* a release and a release *is* a restart —
+  client/backend skew is unrepresentable, and there is no second thing to
+  publish. The old `app/dist.a`/`dist.b` slots and
+  `scripts/publish-app.sh` are gone: a dev-tree build is just a local
+  artifact. `bun run app:dev` remains the HMR loop against the live
+  backend.
 - Memory embeddings are local: ollama `embeddinggemma` on the system
   `ollama.service`, reached from the API container through
   `goblin-embed-relay` (socat on the tailscale IP — see docs/memory.md →

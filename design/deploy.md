@@ -80,7 +80,9 @@ which made "publish the client" a second deployable thing and skew between
 client and backend a rule to remember ("both halves, one approval"). In the
 release layout the client is inside the release, so skew cannot be
 expressed: a client change *is* a release, and a release *is* a restart. The
-slots and their rollback flip are gone, not deprecated.
+slots, their rollback flip and the build-time staging into `app/dist.next`
+are gone, not deprecated: `bun run app:build` now writes `app/dist`, and in
+a checkout that is only a local artifact nothing serves.
 
 The cost, stated plainly: iterating on the client no longer skips a restart.
 `bun run app:dev` (Vite HMR against the live backend) remains the development
@@ -105,6 +107,9 @@ and silence plus an automated revert would hide which revision is live.
 
 ## Cutover (one time, per box)
 
+**g7 cut over on 2026-10-25** — the running process is a release
+(`--status` reports it). Other boxes follow the procedure below.
+
 A box that still runs the in-place layout is refused by a normal rollout with
 the reason and the remedy. `--adopt-unit` performs the transition: build the
 release, point `live` at it, rewrite the single `WorkingDirectory=` line of
@@ -112,6 +117,10 @@ the installed unit, `daemon-reload`, restart, verify. Only that line changes;
 a hand-edited unit is reported, never replaced with a rendered copy, and a
 unit reached through a symlink is refused because write-temp-then-rename
 through a link forks the config it points at.
+
+Once the unit has moved, the retired in-place script refuses on its own
+(its WorkingDirectory-versus-checkout guard), so there is no window in which
+two deploy paths both appear to work.
 
 The tracked `deploy/goblin.service` keeps its checkout-shaped
 `WorkingDirectory`: it is the fresh-install truth for a new box, which

@@ -91,7 +91,8 @@ apply next turn without interrupting the current answer.
   `window.Telegram`; a local shim stands in (ruling 2026-10-13), reading
   `tgWebAppData` from the URL hash and posting `web_app_ready`/`expand`
   via the official bridges. Settings-from-Telegram depends on the app build
-  (deploy.sh gates it, rollback rebuilds it; accepted by ruling). `/`
+  (the release that shipped it built the client; rollback is a symlink
+  flip, design/deploy.md — accepted by ruling). `/`
   redirects to `/app/` with a *relative* Location — the #105 rule: never
   bounce off a Host the backend guessed.
 - **Commands** are few on purpose; `/model` and `/think` are retired — the

@@ -83,7 +83,7 @@ isolation.
 
 ```bash
 export DEPLOY_TOKEN='pass://SHARE_ID/ITEM_ID/token'
-pass-cli run -- ./deploy.sh                     # masked; child-only value
+pass-cli run -- bun scripts/release.ts        # masked; child-only value
 
 pass-cli run --env-file .env.secrets -- ./cmd   # refs in a gitignored file
 

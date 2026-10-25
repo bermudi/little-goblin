@@ -71,9 +71,9 @@ case "\${1:-}" in
     case "\${2:-}" in
       typecheck) if [ -n "\${FAKE_TYPECHECK_FAIL:-}" ]; then echo "fake tsc: bad" >&2; exit 3; fi; exit 0 ;;
       app:build)
-        mkdir -p app/dist.next/assets
-        echo '<html>fake</html>' > app/dist.next/index.html
-        echo 'js' > app/dist.next/assets/index.js
+        mkdir -p app/dist/assets
+        echo '<html>fake</html>' > app/dist/index.html
+        echo 'js' > app/dist/assets/index.js
         exit 0 ;;
       *) exit 0 ;;
     esac ;;

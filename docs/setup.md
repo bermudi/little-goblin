@@ -185,9 +185,8 @@ The required executable order is:
    Preflight checks configured start-readiness, not an untouched checkout;
    it skips expected boot-created paths/DB, not-yet-installed units and
    not-yet-built assets. Missing configured dependencies block readiness.
-5. Build the app with `bun run app:build` and publish it with
-   `bash scripts/publish-app.sh` (the first publish converts `app/dist`
-   to the slot symlink), then run the dedicated
+5. Build the app with `bun run app:build` (it writes `app/dist` directly),
+   then run the dedicated
    `scripts/check-app-assets.ts` helper, which invokes shared
    `checkAppAssets(checkout)`. This is a separate post-build gate **before**
    units/enable, not a second implementation of asset diagnosis.
@@ -265,14 +264,13 @@ Keep raw logs private; old deployed code/logs may still contain parser fragments
 
 Do **not** re-run the fresh installer on an existing target. Reinstall/repair
 is a separately authorized operator procedure. On prod (g7), use the approved
-[`scripts/deploy.sh` rollout](operations.md#deploying).
+[`bun scripts/release.ts` rollout](operations.md#deploying).
 
-The built client is served per request through `app/dist`, a symlink to the
-last published slot. `bun run app:build` only stages `app/dist.next`;
-publishing is the atomic swap in `scripts/publish-app.sh`, run by the
-approved rollout. Client publication and backend restart are one coordinated
-rollout requiring bermudi's OK. Source edits and these instructions authorize
-neither.
+The client is built into the release that runs it: a fresh install serves
+`app/dist` from the checkout it installed from, and once a box adopts the
+release layout (design/deploy.md) every client change arrives as a release,
+so client and backend move together and the rollout needs bermudi's OK.
+Source edits and these instructions authorize neither.
 
 Conversation state, settings and workspace files live in `GOBLIN_HOME`, not
 in the checkout. Updates must preserve them and never silently migrate keys
@@ -284,6 +282,6 @@ or deploy the separate memory stack.
 `http://localhost:5173/app/`, proxying `/api` to the local goblin listener
 (config `http.port`; `GOBLIN_HTTP` overrides). The proxy strips browser
 origin headers so trust-mode mutations pass — the app talks to the live
-backend, so edits there are real. It never writes `app/dist`; publishing
-the client still goes through `app:build` + `publish-app.sh` in the
-approved rollout.
+backend, so edits there are real. It never writes `app/dist`, and a
+dev-tree `app:build` is only a local artifact; getting a client change onto
+prod means a release in the approved rollout.

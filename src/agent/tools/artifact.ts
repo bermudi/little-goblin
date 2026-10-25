@@ -53,7 +53,10 @@ export const artifactTool = (deps: ArtifactToolDeps) =>
 					: undefined;
 			return { type: "text", value: typeof err === "string" ? err : "artifact failed" };
 		},
-		execute: async (input, { abortSignal }): Promise<{ artifact: Artifact } | { error: string }> => {
+		execute: async (
+			input,
+			{ abortSignal },
+		): Promise<{ artifact: Artifact } | { error: string }> => {
 			let data: Uint8Array;
 			if (input.source.target === "workspace") {
 				const r = readWorkspaceFile(deps.workspace, input.source.path, ARTIFACT_MAX_BYTES);

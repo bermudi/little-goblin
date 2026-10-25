@@ -324,8 +324,10 @@ describe("CodexLanguageModel — request shape", () => {
 
 	test("a connection cut mid-frame still fails as an ended stream, not a parse error", async () => {
 		const path = authDir({ access_token: jwt(FUTURE) });
-		const model = new CodexLanguageModel("gpt-6-astra", path, async () =>
-			new Response(new TextEncoder().encode(`data: {"type":"response.compl`)),
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () => new Response(new TextEncoder().encode(`data: {"type":"response.compl`)),
 		);
 		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
 	});

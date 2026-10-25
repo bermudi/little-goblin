@@ -408,7 +408,10 @@ describe("rich delivery", () => {
 		try {
 			const rollingConv: Conversation = { ...conv, id: "dm:7:3", chatId: 7 };
 			const { api, drafts, richSends, msgs } = fakeApi();
-			const sink = makeDeliverySink(api, rollingConv, { editIntervalMs: 0, rich: { enabled: true } });
+			const sink = makeDeliverySink(api, rollingConv, {
+				editIntervalMs: 0,
+				rich: { enabled: true },
+			});
 			sink.onTextDelta("rolled");
 			await sink.onDone({ kind: "completed" });
 			expect(drafts.some((d) => d.kind === "rich" && d.markdown === "rolled")).toBe(true);

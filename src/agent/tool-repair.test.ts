@@ -105,7 +105,11 @@ describe("streamText integration", () => {
 			},
 		});
 		const scripted = scriptedModel([
-			[{ type: "stream-start", warnings: [] }, toolCallPart("tc-1", "probe", '{"payload":"{\\"n\\":7}"}'), finishPart("tool-calls")],
+			[
+				{ type: "stream-start", warnings: [] },
+				toolCallPart("tc-1", "probe", '{"payload":"{\\"n\\":7}"}'),
+				finishPart("tool-calls"),
+			],
 			textParts("done"),
 		]);
 		const result = streamText({

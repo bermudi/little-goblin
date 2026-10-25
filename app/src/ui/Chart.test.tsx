@@ -28,9 +28,7 @@ test("integer, zero and large charts keep compact readable ticks", () => {
 });
 
 function chart(kind: "bar" | "line" | "pie", x: string[], values: number[], unit?: string): string {
-	return renderToStaticMarkup(
-		<Chart leaf={{ kind, x, series: [{ name: "km", values }], unit }} />,
-	);
+	return renderToStaticMarkup(<Chart leaf={{ kind, x, series: [{ name: "km", values }], unit }} />);
 }
 
 test("a pie renders one arc per slice, labelled by x with share tooltips", () => {

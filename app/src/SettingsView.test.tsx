@@ -44,9 +44,18 @@ describe("main branch regressions", () => {
 
 	// Every capability off — the client mirrors the server's states map.
 	const CAPS = Object.fromEntries(
-		["memory", "transcription", "vision", "image", "sandbox", "subagents", "scripting", "delegation", "guest", "reviewer"].map(
-			(k) => [k, { state: "off", hint: null }],
-		),
+		[
+			"memory",
+			"transcription",
+			"vision",
+			"image",
+			"sandbox",
+			"subagents",
+			"scripting",
+			"delegation",
+			"guest",
+			"reviewer",
+		].map((k) => [k, { state: "off", hint: null }]),
 	);
 
 	beforeEach(() => {
@@ -235,9 +244,7 @@ describe("main branch regressions", () => {
 	};
 	const openSection = async (label: string) => {
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) =>
-				b.textContent?.includes(label),
-			),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes(label)),
 		);
 	};
 	const openAccounts = async () => {
@@ -362,9 +369,7 @@ describe("main branch regressions", () => {
 		// The protocol switch drops the credential record — the in-flight
 		// paste must not land under the new name.
 		await act(async () => {
-			const select = card.querySelector(
-				'select[aria-label="protocol"]',
-			) as HTMLSelectElement;
+			const select = card.querySelector('select[aria-label="protocol"]') as HTMLSelectElement;
 			select.value = "responses";
 			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
 		});

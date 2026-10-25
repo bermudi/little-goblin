@@ -19,7 +19,9 @@ describe("skill chip rendering", () => {
 	test("a catalog invocation renders its chip", () => {
 		const html = renderToStaticMarkup(
 			<MessageParts
-				parts={[{ type: "data-skill", data: { name: "herdr" } } as unknown as UIMessage["parts"][number]]}
+				parts={[
+					{ type: "data-skill", data: { name: "herdr" } } as unknown as UIMessage["parts"][number],
+				]}
 			/>,
 		);
 		expect(html).toContain("note-chip");
@@ -110,7 +112,12 @@ describe("Composer skill staging", () => {
 						skills: [],
 						proposed: [],
 						catalog: [
-							{ name: "herdr", description: "drive herdr panes", manualOnly: false, bodyBytes: 900 },
+							{
+								name: "herdr",
+								description: "drive herdr panes",
+								manualOnly: false,
+								bodyBytes: 900,
+							},
 							{
 								name: "secret",
 								description: "shh",
@@ -211,7 +218,9 @@ describe("Composer skill staging", () => {
 				"run it",
 			);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
-			el.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
 		});
 		await act(async () => {
 			(textarea as HTMLTextAreaElement).dispatchEvent(
@@ -234,7 +243,9 @@ describe("Composer skill staging", () => {
 			root?.render(<ComposerHarness />);
 		});
 		await act(async () => {
-			buttonByLabel("Invoke a skill")!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			buttonByLabel("Invoke a skill")!.dispatchEvent(
+				new win.Event("click", { bubbles: true }) as unknown as Event,
+			);
 		});
 		await act(async () => {});
 		const row = Array.from(container.querySelectorAll("button")).find((b) =>
@@ -258,7 +269,9 @@ describe("Composer skill staging", () => {
 			root?.render(<ComposerHarness />);
 		});
 		await act(async () => {
-			buttonByLabel("Invoke a skill")!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			buttonByLabel("Invoke a skill")!.dispatchEvent(
+				new win.Event("click", { bubbles: true }) as unknown as Event,
+			);
 		});
 		await act(async () => {});
 		const row = Array.from(container.querySelectorAll("button")).find((b) =>
@@ -268,9 +281,7 @@ describe("Composer skill staging", () => {
 			row.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
 		});
 		expect(container.textContent).toContain("Skill · herdr");
-		const sendBtn = container.querySelector<HTMLButtonElement>(
-			'button[aria-label="Send"]',
-		);
+		const sendBtn = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
 		expect(sendBtn).not.toBeNull();
 		expect(sendBtn!.disabled).toBe(false);
 		await act(async () => {

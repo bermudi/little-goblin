@@ -18,9 +18,7 @@ import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
 import { srcdoc } from "./ui/HtmlFrame.tsx";
 
-export type DocRef =
-	| { kind: "file"; path: string }
-	| { kind: "artifact"; artifact: Artifact };
+export type DocRef = { kind: "file"; path: string } | { kind: "artifact"; artifact: Artifact };
 
 export interface DocViewer {
 	openFile(path: string): void;
@@ -169,9 +167,43 @@ type DocRender = "markdown" | "html" | "image" | "audio" | "video" | "pdf" | "te
 const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
 // Extensions the mime sniff won't know but a reader should show as text.
 const TEXT_EXTS = new Set([
-	"txt", "md", "markdown", "html", "htm", "css", "csv", "json", "jsonl", "xml", "yaml", "yml",
-	"toml", "ini", "log", "sh", "bash", "zsh", "py", "js", "jsx", "ts", "tsx", "go", "rs", "c",
-	"cc", "cpp", "h", "hpp", "java", "kt", "rb", "php", "sql", "lua", "zig",
+	"txt",
+	"md",
+	"markdown",
+	"html",
+	"htm",
+	"css",
+	"csv",
+	"json",
+	"jsonl",
+	"xml",
+	"yaml",
+	"yml",
+	"toml",
+	"ini",
+	"log",
+	"sh",
+	"bash",
+	"zsh",
+	"py",
+	"js",
+	"jsx",
+	"ts",
+	"tsx",
+	"go",
+	"rs",
+	"c",
+	"cc",
+	"cpp",
+	"h",
+	"hpp",
+	"java",
+	"kt",
+	"rb",
+	"php",
+	"sql",
+	"lua",
+	"zig",
 ]);
 
 function extOf(name: string): string {
@@ -211,7 +243,8 @@ function DocModal({
 	onNavigate: (path: string) => void;
 }) {
 	const top = stack.at(-1)!;
-	const title = top.kind === "file" ? basenameOf(top.path) : (top.artifact.title ?? top.artifact.name);
+	const title =
+		top.kind === "file" ? basenameOf(top.path) : (top.artifact.title ?? top.artifact.name);
 	const base = baseOf(top);
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -268,8 +301,7 @@ function DocBody({
 }) {
 	const [state, setState] = useState<BodyState>({ phase: "loading" });
 	const name = doc.kind === "file" ? basenameOf(doc.path) : doc.artifact.name;
-	const declaredType =
-		doc.kind === "artifact" ? doc.artifact.mediaType : null;
+	const declaredType = doc.kind === "artifact" ? doc.artifact.mediaType : null;
 
 	useEffect(() => {
 		let live = true;
@@ -277,14 +309,11 @@ function DocBody({
 		setState({ phase: "loading" });
 		fetchDoc(doc)
 			.then(async (res) => {
-				const blob =
-					res instanceof Blob ? res : await res.blob();
+				const blob = res instanceof Blob ? res : await res.blob();
 				if (!live) return;
 				const mediaType =
 					declaredType ??
-					(res instanceof Blob
-						? ""
-						: (res.headers.get("content-type") ?? "").split(";")[0]!);
+					(res instanceof Blob ? "" : (res.headers.get("content-type") ?? "").split(";")[0]!);
 				let render = renderKind(mediaType || blob.type, name);
 				if (
 					(render === "markdown" || render === "html" || render === "text") &&

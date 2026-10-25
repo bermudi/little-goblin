@@ -290,9 +290,8 @@ export function WindowView({
 	// number honestly against the unfiltered list, not the subset.
 	const messages = (view.messages ?? [])
 		.map((message, index) => ({ message, index }))
-		.filter(
-			(e): e is { message: { role: string; content: unknown }; index: number } =>
-				isMessage(e.message),
+		.filter((e): e is { message: { role: string; content: unknown }; index: number } =>
+			isMessage(e.message),
 		)
 		.filter(
 			(e) =>

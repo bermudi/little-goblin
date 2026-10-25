@@ -1083,8 +1083,8 @@ export async function handleOperatorRoute(
 		if (!parsed.success)
 			return Response.json(
 				{ error: z.prettifyError(parsed.error) },
-			{ status: 422, headers: NO_STORE },
-		);
+				{ status: 422, headers: NO_STORE },
+			);
 		const conversation = parsed.data.conversation;
 		const started = Date.now();
 		try {
@@ -1100,10 +1100,7 @@ export async function handleOperatorRoute(
 					offset: scanOffset,
 				});
 				for (const item of batch.items) {
-					if (
-						!item.id.startsWith(prefix) ||
-						item.id.slice(prefix.length).split("/").length !== 2
-					)
+					if (!item.id.startsWith(prefix) || item.id.slice(prefix.length).split("/").length !== 2)
 						continue;
 					ids.push(item.id);
 				}
@@ -1129,10 +1126,9 @@ export async function handleOperatorRoute(
 							ms: Date.now() - started,
 						});
 						failed.push({
-								id,
-								error:
-									"memory for that document is still processing remotely — retry in a minute",
-							});
+							id,
+							error: "memory for that document is still processing remotely — retry in a minute",
+						});
 						continue;
 					}
 					if (result.outcome === "foreign-bank") {
@@ -1143,10 +1139,10 @@ export async function handleOperatorRoute(
 							ms: Date.now() - started,
 						});
 						failed.push({
-								id,
-								error:
-									"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
-							});
+							id,
+							error:
+								"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
+						});
 						continue;
 					}
 					forgotten++;
@@ -1289,7 +1285,7 @@ export async function handleOperatorRoute(
 		if (deps.skillSources === undefined)
 			return Response.json(
 				{ error: "skill provenance unavailable" },
-			{ status: 503, headers: NO_STORE },
+				{ status: 503, headers: NO_STORE },
 			);
 		let raw: unknown;
 		try {
@@ -1301,8 +1297,8 @@ export async function handleOperatorRoute(
 		if (!parsed.success)
 			return Response.json(
 				{ error: z.prettifyError(parsed.error) },
-			{ status: 422, headers: NO_STORE },
-		);
+				{ status: 422, headers: NO_STORE },
+			);
 		const removed = deps.skillSources.forgetConversation(parsed.data.conversation);
 		log.info(`thread skill provenance forgotten via ${actor.via}`, {
 			...who,

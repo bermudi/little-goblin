@@ -527,8 +527,7 @@ describe("skills/forget-thread route", () => {
 		const d: OperatorDeps = {
 			...deps(),
 			skillSources: {
-				forgetConversation: (conversationId: string) =>
-					sources.forgetConversation(conversationId),
+				forgetConversation: (conversationId: string) => sources.forgetConversation(conversationId),
 				forConversation: (conversationId: string) => sources.forConversation(conversationId),
 				skillsDir: join(home, "workspace/skills"),
 				proposedDir: join(home, "workspace/skills-proposed"),

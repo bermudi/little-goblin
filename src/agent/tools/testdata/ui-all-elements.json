@@ -4,7 +4,22 @@
 	"elements": {
 		"main": {
 			"type": "stack",
-			"children": ["intro", "warn", "kpis", "tbl", "plan", "bars", "temps", "spend", "pick", "ride", "pack", "bytype", "side", "calc"]
+			"children": [
+				"intro",
+				"warn",
+				"kpis",
+				"tbl",
+				"plan",
+				"bars",
+				"temps",
+				"spend",
+				"pick",
+				"ride",
+				"pack",
+				"bytype",
+				"side",
+				"calc"
+			]
 		},
 		"intro": {
 			"type": "text",
@@ -32,7 +47,11 @@
 			"type": "table",
 			"props": {
 				"columns": ["Bike", "Speed", "Comfort"],
-				"rows": [["Road", "fast", "low"], ["Gravel", "medium", "high"], ["Hybrid", "medium", "high"]]
+				"rows": [
+					["Road", "fast", "low"],
+					["Gravel", "medium", "high"],
+					["Hybrid", "medium", "high"]
+				]
 			}
 		},
 		"plan": {
@@ -87,7 +106,12 @@
 			"props": {
 				"fields": [
 					{ "name": "distance", "label": "Distance (km)", "kind": "number" },
-					{ "name": "terrain", "label": "Terrain", "kind": "select", "options": ["flat", "hilly", "mixed"] },
+					{
+						"name": "terrain",
+						"label": "Terrain",
+						"kind": "select",
+						"options": ["flat", "hilly", "mixed"]
+					},
 					{ "name": "notes", "label": "Notes", "kind": "text" }
 				],
 				"submit": "Plan ride"

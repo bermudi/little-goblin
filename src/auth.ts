@@ -18,11 +18,7 @@ import {
 	statSync,
 	writeSync,
 } from "node:fs";
-import {
-	invokesPassCliDirectly,
-	parseAuthRecords,
-	type AuthRecord,
-} from "./auth-parse.ts";
+import { invokesPassCliDirectly, parseAuthRecords, type AuthRecord } from "./auth-parse.ts";
 import { paths } from "./config.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
@@ -30,7 +26,11 @@ import { boundedRun, spawnProc } from "./proc.ts";
 // The record grammar lives in ./auth-parse.ts — dependency-free so the
 // pre-install poison scan parses exactly like this loader before
 // node_modules exists. Re-exported so existing importers keep one door.
-export { invokesPassCliDirectly, passKeysCommandExecutable, parsePassKeysGet } from "./auth-parse.ts";
+export {
+	invokesPassCliDirectly,
+	passKeysCommandExecutable,
+	parsePassKeysGet,
+} from "./auth-parse.ts";
 export type { AuthRecord } from "./auth-parse.ts";
 
 // The configured auth file's records — the same as parseAuthRecords

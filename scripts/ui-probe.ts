@@ -75,11 +75,7 @@ const PROMPTS: { id: string; text: string }[] = [
 	},
 ];
 
-const TOOL_CHOICES = [
-	{ type: "tool", toolName: "ui" },
-	"required",
-	"auto",
-] as const;
+const TOOL_CHOICES = [{ type: "tool", toolName: "ui" }, "required", "auto"] as const;
 type ToolChoiceUsed = (typeof TOOL_CHOICES)[number];
 
 // ---------- args ----------
@@ -102,7 +98,8 @@ function parseArgs(): { models: string[]; n: number; out: string; rescore: strin
 	if (rescore.length > 0) return { models, n: n ?? 0, out, rescore };
 	if (models.length === 0 || models.some((m) => !m.includes("/")))
 		throw new Error("needs --model <provider>/<model> (repeatable)");
-	if (n === null || !Number.isInteger(n) || n < 1) throw new Error("--n expects a positive integer");
+	if (n === null || !Number.isInteger(n) || n < 1)
+		throw new Error("--n expects a positive integer");
 	return { models, n, out, rescore: [] };
 }
 
@@ -213,7 +210,9 @@ mkdirSync(out, { recursive: true });
 const out_ = (s: string) => process.stdout.write(`${s}\n`);
 
 function summary(perPrompt: Map<string, Stats>, totals: Stats) {
-	out_(`\n   ${"prompt".padEnd(6)} ${"raw".padStart(6)} ${"final".padStart(6)} ${"errors".padStart(7)}`);
+	out_(
+		`\n   ${"prompt".padEnd(6)} ${"raw".padStart(6)} ${"final".padStart(6)} ${"errors".padStart(7)}`,
+	);
 	for (const [id, s] of perPrompt) {
 		out_(
 			`   ${id.padEnd(6)} ${`${s.rawValid}/${s.total}`.padStart(6)} ${`${s.finalValid}/${s.total}`.padStart(6)} ${String(s.providerErrors).padStart(7)}`,
@@ -271,7 +270,12 @@ if (rescore.length > 0) {
 					instructions: undefined,
 					system: undefined,
 					messages: [],
-					toolCall: { type: "tool-call", toolCallId: `rescore-${row.promptId}-${row.trial}`, toolName: "ui", input: raw },
+					toolCall: {
+						type: "tool-call",
+						toolCallId: `rescore-${row.promptId}-${row.trial}`,
+						toolName: "ui",
+						input: raw,
+					},
 					tools: {},
 					inputSchema: async () => wireSchema,
 					error,
@@ -290,8 +294,7 @@ if (rescore.length > 0) {
 							return null;
 						}
 					})();
-			const finalCheck =
-				normalized === null ? null : uiInputSchema.safeParse(normalized.value);
+			const finalCheck = normalized === null ? null : uiInputSchema.safeParse(normalized.value);
 			const finalValid = finalCheck?.success ?? false;
 			const outRow: Row = {
 				...row,
@@ -366,9 +369,7 @@ for (const modelRef of models) {
 			const capture: LanguageModelMiddleware = {
 				wrapGenerate: async ({ doGenerate }) => {
 					const result = await doGenerate();
-					rawInputs = result.content
-						.filter((c) => c.type === "tool-call")
-						.map((c) => c.input);
+					rawInputs = result.content.filter((c) => c.type === "tool-call").map((c) => c.input);
 					return result;
 				},
 			};
@@ -425,9 +426,7 @@ for (const modelRef of models) {
 								: (() => {
 										try {
 											return uiInputSchema.safeParse(
-												typeof call.input === "string"
-													? JSON5.parse(call.input)
-													: call.input,
+												typeof call.input === "string" ? JSON5.parse(call.input) : call.input,
 											);
 										} catch {
 											return null;

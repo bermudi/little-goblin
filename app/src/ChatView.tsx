@@ -2656,15 +2656,15 @@ function Chat({
 				refreshTranscript(() => setMessages(backup));
 			},
 		});
-		const refreshTranscript = (onUnavailable?: () => void) => {
-			void getMessages(token, conversationId).then(
-				(r) => {
-					setMessages((current) => mergeTranscript(current, r.messages));
-					applyRatingSnapshot(r.ratings, r.rateableMessageIds);
-				},
-				() => onUnavailable?.(),
-			);
-		};
+	const refreshTranscript = (onUnavailable?: () => void) => {
+		void getMessages(token, conversationId).then(
+			(r) => {
+				setMessages((current) => mergeTranscript(current, r.messages));
+				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+			},
+			() => onUnavailable?.(),
+		);
+	};
 	// A failed /stop means the client dropped its stream but the turn
 	// keeps running server-side and will write the reply the operator
 	// asked to stop — that has to be visible, not swallowed.
@@ -2822,153 +2822,153 @@ function Chat({
 				{/* The outline is a hover rail — a pointer affordance, so it does
 				    not exist in a phone DOM at all. */}
 				{phone ? null : <Outline messages={messages} scrollRef={scrollRef} />}
-			<div
-				className="transcript"
-				ref={scrollRef}
-				onScroll={(e) => {
-					const el = e.currentTarget;
-					pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-				}}
-			>
-				<div className="transcript-inner">
-					{messages.length === 0 && <p className="empty">Say something.</p>}
-					{messages.map((m) => {
-						if (m.role === "user") {
-							const isEditing = editing !== null && editing.id === m.id;
-							return (
-								<div key={m.id} className="msg user" data-outline-anchor={m.id}>
-									{isEditing ? (
-										<div className="msg-edit">
-											<textarea
-												value={editing.draft}
-												rows={Math.min(10, Math.max(2, editing.draft.split("\n").length))}
-												onChange={(e) => setEditing({ id: m.id, draft: e.target.value })}
-												aria-label="Edit message"
-												// biome-ignore lint/a11y/noAutofocus: opening the editor is the user's request
-												autoFocus
-											/>
-											<div className="msg-edit-actions">
-												<button type="button" onClick={cancelEdit}>
-													cancel
-												</button>
-												<button
-													type="button"
-													className="primary"
-													onClick={() => saveEdit(m)}
-													disabled={
-														editing.draft.trim() === "" && !m.parts.some((p) => p.type !== "text")
-													}
-												>
-													save &amp; resend
-												</button>
+				<div
+					className="transcript"
+					ref={scrollRef}
+					onScroll={(e) => {
+						const el = e.currentTarget;
+						pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+					}}
+				>
+					<div className="transcript-inner">
+						{messages.length === 0 && <p className="empty">Say something.</p>}
+						{messages.map((m) => {
+							if (m.role === "user") {
+								const isEditing = editing !== null && editing.id === m.id;
+								return (
+									<div key={m.id} className="msg user" data-outline-anchor={m.id}>
+										{isEditing ? (
+											<div className="msg-edit">
+												<textarea
+													value={editing.draft}
+													rows={Math.min(10, Math.max(2, editing.draft.split("\n").length))}
+													onChange={(e) => setEditing({ id: m.id, draft: e.target.value })}
+													aria-label="Edit message"
+													// biome-ignore lint/a11y/noAutofocus: opening the editor is the user's request
+													autoFocus
+												/>
+												<div className="msg-edit-actions">
+													<button type="button" onClick={cancelEdit}>
+														cancel
+													</button>
+													<button
+														type="button"
+														className="primary"
+														onClick={() => saveEdit(m)}
+														disabled={
+															editing.draft.trim() === "" && !m.parts.some((p) => p.type !== "text")
+														}
+													>
+														save &amp; resend
+													</button>
+												</div>
 											</div>
-										</div>
-									) : (
-										<>
-											<MessageParts
-												parts={m.parts}
-												token={token}
-												noteProjectId={noteProjectId}
-												onOpenNote={onOpenNote}
-												clipFences
-											/>
-											<UserActions message={m} disabled={busy} onEdit={() => beginEdit(m)} />
-										</>
-									)}
-								</div>
-							);
-						}
-						if (m.role === "system")
+										) : (
+											<>
+												<MessageParts
+													parts={m.parts}
+													token={token}
+													noteProjectId={noteProjectId}
+													onOpenNote={onOpenNote}
+													clipFences
+												/>
+												<UserActions message={m} disabled={busy} onEdit={() => beginEdit(m)} />
+											</>
+										)}
+									</div>
+								);
+							}
+							if (m.role === "system")
+								return (
+									<div key={m.id} className="msg system">
+										<MessageParts
+											parts={m.parts}
+											token={token}
+											noteProjectId={noteProjectId}
+											messages={messages}
+											onOpenNote={onOpenNote}
+										/>
+									</div>
+								);
+							const meta = turnMeta(m);
 							return (
-								<div key={m.id} className="msg system">
+								<div key={m.id} className="msg assistant">
 									<MessageParts
 										parts={m.parts}
 										token={token}
 										noteProjectId={noteProjectId}
+										busy={busy}
+										streaming={status === "streaming" && m.id === lastAssistantId}
 										messages={messages}
 										onOpenNote={onOpenNote}
+										onAction={(text) => void submit({ text })}
 									/>
+									<ActionBar
+										message={m}
+										isLastAssistant={m.id === lastAssistantId}
+										busy={busy}
+										onRetry={() => {
+											setLiveCtx(null);
+											void regenerate();
+										}}
+										token={token}
+										rateable={rateableIds.has(m.id)}
+										rating={ratings[m.id]?.rating ?? null}
+										ratingPending={ratingPending === m.id}
+										ratingError={ratingErrors[m.id] ?? null}
+										onRate={(vote) => rate(m.id, vote)}
+										onBranch={() => branch(m)}
+										branchPending={branchPending === m.id}
+										branchError={branchErrors[m.id] ?? null}
+									/>
+									{meta !== null && <MetaLine meta={meta} />}
 								</div>
 							);
-						const meta = turnMeta(m);
-						return (
-							<div key={m.id} className="msg assistant">
-								<MessageParts
-									parts={m.parts}
-									token={token}
-									noteProjectId={noteProjectId}
-									busy={busy}
-									streaming={status === "streaming" && m.id === lastAssistantId}
-									messages={messages}
-									onOpenNote={onOpenNote}
-									onAction={(text) => void submit({ text })}
-								/>
-								<ActionBar
-									message={m}
-									isLastAssistant={m.id === lastAssistantId}
-									busy={busy}
-									onRetry={() => {
-										setLiveCtx(null);
-										void regenerate();
-									}}
-									token={token}
-									rateable={rateableIds.has(m.id)}
-									rating={ratings[m.id]?.rating ?? null}
-									ratingPending={ratingPending === m.id}
-									ratingError={ratingErrors[m.id] ?? null}
-									onRate={(vote) => rate(m.id, vote)}
-									onBranch={() => branch(m)}
-									branchPending={branchPending === m.id}
-									branchError={branchErrors[m.id] ?? null}
-								/>
-								{meta !== null && <MetaLine meta={meta} />}
-							</div>
+						})}
+						{busy && <div className="msg assistant pending shimmer">…</div>}
+						{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
+						<InterruptedTurns
+							key={conversationId}
+							token={token}
+							conversationId={conversationId}
+							busy={busy}
+							onResumed={async () => {
+								onTurnDone();
+								await resumeStream();
+							}}
+						/>
+					</div>
+				</div>
+				{stopError !== null && (
+					<div className="error" role="alert">
+						Stop request failed — the turn keeps running server-side: {stopError}
+					</div>
+				)}
+				<Composer
+					token={token}
+					conversationId={conversationId}
+					draftScope={conversationId}
+					busy={busy}
+					liveCtx={liveCtx}
+					staged={staged}
+					setStaged={setStaged}
+					stagedNotes={stagedNotes}
+					setStagedNotes={setStagedNotes}
+					stagedSkills={stagedSkills}
+					setStagedSkills={setStagedSkills}
+					quote={quote}
+					onSend={(parts) => {
+						askNotifyPermission();
+						void submit({ parts });
+					}}
+					onStop={() => {
+						setStopError(null);
+						void stopConversation(token, conversationId).catch((err: unknown) =>
+							setStopError(err instanceof Error ? err.message : "request failed"),
 						);
-					})}
-					{busy && <div className="msg assistant pending shimmer">…</div>}
-					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
-					<InterruptedTurns
-						key={conversationId}
-						token={token}
-						conversationId={conversationId}
-						busy={busy}
-						onResumed={async () => {
-							onTurnDone();
-							await resumeStream();
-						}}
-					/>
-				</div>
-			</div>
-			{stopError !== null && (
-				<div className="error" role="alert">
-					Stop request failed — the turn keeps running server-side: {stopError}
-				</div>
-			)}
-			<Composer
-				token={token}
-				conversationId={conversationId}
-				draftScope={conversationId}
-				busy={busy}
-				liveCtx={liveCtx}
-				staged={staged}
-				setStaged={setStaged}
-				stagedNotes={stagedNotes}
-				setStagedNotes={setStagedNotes}
-				stagedSkills={stagedSkills}
-				setStagedSkills={setStagedSkills}
-				quote={quote}
-				onSend={(parts) => {
-					askNotifyPermission();
-					void submit({ parts });
-				}}
-				onStop={() => {
-					setStopError(null);
-					void stopConversation(token, conversationId).catch((err: unknown) =>
-						setStopError(err instanceof Error ? err.message : "request failed"),
-					);
-					void stop();
-				}}
-			/>
+						void stop();
+					}}
+				/>
 			</div>
 		</DocViewerProvider>
 	);

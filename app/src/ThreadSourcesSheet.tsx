@@ -175,9 +175,7 @@ export function ThreadSourcesSheet({
 				// what's left instead of failing the whole action.
 				loadDocs(0, false);
 				if (r.failed.length > 0)
-					setForgetErr(
-						`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`,
-					);
+					setForgetErr(`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`);
 			},
 			(e) => {
 				setForgetting(null);
@@ -221,9 +219,7 @@ export function ThreadSourcesSheet({
 		void forgetThreadMemories(token, conversationId).then(
 			(r) => {
 				if (r.failed.length > 0)
-					setForgetErr(
-						`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`,
-					);
+					setForgetErr(`Forgot ${r.forgotten}; ${r.failed.length} failed — try again for the rest`);
 				// Skills still run after a partial memory refusal — the
 				// provenance half of the pair shouldn't strand behind it.
 				void forgetThreadSkills(token, conversationId).then(

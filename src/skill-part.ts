@@ -106,9 +106,7 @@ export function tempSkillBodyText(
 ): string {
 	const v = descriptor.verdict;
 	const verdict =
-		v.status === "unavailable"
-			? "injection check unavailable"
-			: `injection check: ${v.status}`;
+		v.status === "unavailable" ? "injection check unavailable" : `injection check: ${v.status}`;
 	return [
 		`The operator explicitly invoked a TEMP skill fetched from ${descriptor.sourceUrl}.`,
 		`It is NOT installed in the catalog. System One scored it: ${verdict}.`,

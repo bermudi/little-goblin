@@ -329,9 +329,7 @@ describe("app operator surface", () => {
 		const src = mkdtempSync(join(tmpdir(), "app-preview-src-"));
 		mkdirSync(join(src, "r-main/demo"), { recursive: true });
 		const skillBody =
-			"---\nname: demo\ndescription: the demo\n---\n" +
-			"pad ".repeat(2500) +
-			"TAIL_SENTINEL";
+			"---\nname: demo\ndescription: the demo\n---\n" + "pad ".repeat(2500) + "TAIL_SENTINEL";
 		writeFileSync(join(src, "r-main/demo/SKILL.md"), skillBody);
 		const out = mkdtempSync(join(tmpdir(), "app-preview-ball-"));
 		const proc = Bun.spawn(["tar", "-czf", join(out, "b.tgz"), "r-main"], { cwd: src });
@@ -723,7 +721,7 @@ describe("app operator surface", () => {
 				operator: {
 					skillSources: {
 						forConversation: (id: string) => sources.forConversation(id),
-					forgetConversation: (id: string) => sources.forgetConversation(id),
+						forgetConversation: (id: string) => sources.forgetConversation(id),
 						skillsDir,
 						proposedDir,
 					},
@@ -777,12 +775,12 @@ describe("app operator surface", () => {
 				Promise.resolve({
 					items: [
 						{
-						id: "exchange/app/1/1/abc",
-						created_at: "2026-10-01T00:00:00Z",
-						updated_at: null,
-						text_length: 10,
-						memory_unit_count: 1,
-					},
+							id: "exchange/app/1/1/abc",
+							created_at: "2026-10-01T00:00:00Z",
+							updated_at: null,
+							text_length: 10,
+							memory_unit_count: 1,
+						},
 					],
 					total: 1,
 					limit: opts.limit,

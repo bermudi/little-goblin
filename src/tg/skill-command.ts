@@ -293,11 +293,7 @@ async function previewTempSkill(
 			await reply("cancelled — the conversation moved on.");
 			return;
 		}
-		verdict = stampVerdict(
-			deps.cacheRoot ?? paths.skillcache(),
-			fetched.digest,
-			scored,
-		).verdict;
+		verdict = stampVerdict(deps.cacheRoot ?? paths.skillcache(), fetched.digest, scored).verdict;
 	}
 
 	const token = randomUUID().slice(0, 8);
@@ -424,11 +420,7 @@ export async function handleTempSkillCallback(
 	await answer();
 }
 
-async function stamp(
-	deps: SkillCommandDeps,
-	query: TempSkillQuery,
-	text: string,
-): Promise<void> {
+async function stamp(deps: SkillCommandDeps, query: TempSkillQuery, text: string): Promise<void> {
 	if (query.message === undefined) return;
 	await withTimeout(
 		deps.api.editMessageText(query.message.chat.id, query.message.message_id, text, {

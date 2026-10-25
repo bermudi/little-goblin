@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage, UIMessage } from "ai";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
-import {
-	buildModelView,
-	convertSteeredMessage,
-	type ViewContext,
-} from "./view.ts";
+import { buildModelView, convertSteeredMessage, type ViewContext } from "./view.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -168,14 +164,7 @@ describe("skill invocation in the model view", () => {
 		dirs.push(home);
 		process.env.GOBLIN_HOME = home;
 		const { mkdirSync: mkd } = await import("node:fs");
-		const cached = join(
-			home,
-			"state",
-			"skillcache",
-			"d".repeat(64),
-			"claude-api",
-			"SKILL.md",
-		);
+		const cached = join(home, "state", "skillcache", "d".repeat(64), "claude-api", "SKILL.md");
 		mkd(join(cached, ".."), { recursive: true });
 		writeFileSync(cached, "x");
 		const ctx: ViewContext = {
@@ -232,10 +221,7 @@ describe("skill invocation in the model view", () => {
 		};
 		// Old skill and the current ordinary input share one app-chosen id —
 		// only the latest durable seq is owned; the old one stays a marker.
-		const history = [
-			skillMsg("dup-id", { name: "dup" }),
-			user("dup-id", "current input"),
-		];
+		const history = [skillMsg("dup-id", { name: "dup" }), user("dup-id", "current input")];
 		const view = await buildModelView(ctx, {
 			entries: entries(history),
 			prior: [],
@@ -296,9 +282,7 @@ describe("skill invocation in the model view", () => {
 		const history = [user("u0", "first"), invoking];
 		const withBlock = await buildModelView(ctx, {
 			entries: entries(history),
-			prior: [
-				{ anchorSeq: 1, content: "memory block rides before its anchor", sourceIds: ["e1"] },
-			],
+			prior: [{ anchorSeq: 1, content: "memory block rides before its anchor", sourceIds: ["e1"] }],
 			current: null,
 			partial: null,
 			ownedSeqs: [2],
@@ -420,17 +404,13 @@ describe("resolveSkillRef (real fs)", () => {
 		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
 		const url = "https://github.com/o/r/tree/main/demo";
 		// A support file under the digest dir is not the scored body.
-		expect(
-			resolveSkillRef({ url, path: join(digestDir, "demo", "payload.txt") }).body,
-		).toBeNull();
+		expect(resolveSkillRef({ url, path: join(digestDir, "demo", "payload.txt") }).body).toBeNull();
 		// A same-named file in a sibling dir is not the descriptor's skill.
-		expect(
-			resolveSkillRef({ url, path: join(digestDir, "sibling", "SKILL.md") }).body,
-		).toBeNull();
+		expect(resolveSkillRef({ url, path: join(digestDir, "sibling", "SKILL.md") }).body).toBeNull();
 		// The descriptor's own SKILL.md still injects.
-		expect(
-			resolveSkillRef({ url, path: join(digestDir, "demo", "SKILL.md") }).body,
-		).toContain("SCORED");
+		expect(resolveSkillRef({ url, path: join(digestDir, "demo", "SKILL.md") }).body).toContain(
+			"SCORED",
+		);
 	});
 
 	test("a corrupt descriptor degrades like a missing one — the turn survives", async () => {

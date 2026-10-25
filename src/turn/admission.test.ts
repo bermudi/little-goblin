@@ -29,12 +29,12 @@ const msg = (id: string, role: "user" | "assistant" | "system" = "user"): UIMess
 });
 
 function baseDeps(
-		over: {
-			conversation?: Conversation | null;
-			pendingSeqs?: Set<number>;
-			ownedSeqs?: Set<number>;
-			entries?: { seq: number; message: UIMessage }[];
-		} = {},
+	over: {
+		conversation?: Conversation | null;
+		pendingSeqs?: Set<number>;
+		ownedSeqs?: Set<number>;
+		entries?: { seq: number; message: UIMessage }[];
+	} = {},
 ): {
 	deps: AdmissionDeps;
 	order: string[];

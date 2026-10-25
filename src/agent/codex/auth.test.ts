@@ -93,9 +93,7 @@ describe("codexCredentials — oauth refresh write-back", () => {
 				// signOut unlinks while the refresh POST is in flight — the
 				// rotated pair is sacrificed, never written back over it.
 				unlinkSync(path);
-				return new Response(
-					JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
-				);
+				return new Response(JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }));
 			}),
 		).rejects.toThrow("removed during token refresh");
 		expect(existsSync(path)).toBe(false);
@@ -108,9 +106,7 @@ describe("codexCredentials — oauth refresh write-back", () => {
 			// A new sign-in wrote its own pair while our POST was in flight —
 			// our tokens derived from the dead pair must not overwrite it.
 			writeFileSync(path, JSON.stringify({ tokens: loginPair }));
-			return new Response(
-				JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
-			);
+			return new Response(JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }));
 		});
 		expect(auth.tokens.refresh_token).toBe("login-rt");
 		const onDisk = JSON.parse(readFileSync(path, "utf8"));

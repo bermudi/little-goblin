@@ -284,9 +284,7 @@ describe("/skill delivery sink", () => {
 		h.sinks[0]!.onTextDelta("a rich answer");
 		await h.sinks[0]!.onDone({ kind: "completed" });
 		const methods = h.api.calls.map((c) => c.method);
-		expect(methods.some((m) => m === "sendRichMessage" || m === "sendRichMessageDraft")).toBe(
-			true,
-		);
+		expect(methods.some((m) => m === "sendRichMessage" || m === "sendRichMessageDraft")).toBe(true);
 	});
 
 	test("a plain conversation answers by text, never voice", async () => {
@@ -309,7 +307,11 @@ describe("/skill <url> (temp)", () => {
 		const h = harness();
 		const fetchImpl = (async () =>
 			new Response((await fixtureTarball()) as never)) as unknown as typeof fetch;
-		await handleSkillCommand(depsWithFetch(h, fetchImpl), conv(), "/skill https://github.com/o/r/tree/main/demo do things");
+		await handleSkillCommand(
+			depsWithFetch(h, fetchImpl),
+			conv(),
+			"/skill https://github.com/o/r/tree/main/demo do things",
+		);
 		const text = sent(h);
 		expect(text).toContain("temp skill: demo");
 		expect(text).toContain("injection check: clean");
@@ -327,7 +329,11 @@ describe("/skill <url> (temp)", () => {
 		const h = harness();
 		const fetchImpl = (async () =>
 			new Response((await fixtureTarball()) as never)) as unknown as typeof fetch;
-		await handleSkillCommand(depsWithFetch(h, fetchImpl), conv(), "/skill https://github.com/o/r/tree/main/demo check things");
+		await handleSkillCommand(
+			depsWithFetch(h, fetchImpl),
+			conv(),
+			"/skill https://github.com/o/r/tree/main/demo check things",
+		);
 		const invokeData = (lastMarkup(h)[0] as { callback_data: string }).callback_data;
 		const parsed = parseTempSkillCallback(invokeData);
 		expect(parsed?.op).toBe("invoke");
@@ -402,7 +408,11 @@ describe("/skill <url> (temp)", () => {
 		const h = harness();
 		const fetchImpl = (async () =>
 			new Response((await fixtureTarball()) as never)) as unknown as typeof fetch;
-		await handleSkillCommand(depsWithFetch(h, fetchImpl), conv(), "/skill https://github.com/o/r/tree/main/demo");
+		await handleSkillCommand(
+			depsWithFetch(h, fetchImpl),
+			conv(),
+			"/skill https://github.com/o/r/tree/main/demo",
+		);
 		const dropData = (lastMarkup(h)[1] as { callback_data: string }).callback_data;
 		await handleTempSkillCallback(depsWithFetch(h, fetchImpl), {
 			id: "q2",
@@ -611,7 +621,11 @@ describe("/skill <url> (temp)", () => {
 
 	test("no gate wired: temp answers unavailable, nothing submitted", async () => {
 		const h = harness({ gate: false });
-		await handleSkillCommand(harnessDeps(h), conv(), "/skill https://github.com/o/r/tree/main/demo");
+		await handleSkillCommand(
+			harnessDeps(h),
+			conv(),
+			"/skill https://github.com/o/r/tree/main/demo",
+		);
 		expect(h.submitted).toHaveLength(0);
 		expect(sent(h)).toContain("temp skills are unavailable");
 	});
@@ -635,9 +649,7 @@ async function fixtureTarball(): Promise<Uint8Array> {
 	mkdirSync(join(src, "r-main", "demo", "scripts"), { recursive: true });
 	writeFileSync(
 		join(src, "r-main", "demo", "SKILL.md"),
-		"---\nname: demo\ndescription: the demo skill\n---\n" +
-			"pad ".repeat(2500) +
-			"TAIL_SENTINEL",
+		"---\nname: demo\ndescription: the demo skill\n---\n" + "pad ".repeat(2500) + "TAIL_SENTINEL",
 	);
 	writeFileSync(join(src, "r-main", "demo", "scripts", "run.sh"), "echo hi\n");
 	const outDir = mkdtempSync(join(tmpdir(), "goblin-skillfixout-"));

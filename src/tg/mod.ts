@@ -1151,20 +1151,18 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			});
 			return;
 		}
-		void handleTempSkillCallback(skillCommandDeps(deps, bot.api),
-			{
-				id: q.id,
-				data: q.data,
-				...(q.message !== undefined
-					? {
-							message: {
-								message_id: q.message.message_id,
-								chat: { id: q.message.chat.id },
-							},
-						}
-					: {}),
-			},
-		).catch((err: unknown) => {
+		void handleTempSkillCallback(skillCommandDeps(deps, bot.api), {
+			id: q.id,
+			data: q.data,
+			...(q.message !== undefined
+				? {
+						message: {
+							message_id: q.message.message_id,
+							chat: { id: q.message.chat.id },
+						},
+					}
+				: {}),
+		}).catch((err: unknown) => {
 			log.error("temp skill callback failed", err, { query: q.id });
 		});
 	});

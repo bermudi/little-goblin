@@ -1156,19 +1156,19 @@ describe("thread forget tails", () => {
 			Promise.resolve({
 				items: [
 					{
-					id: "exchange/app/1/1/abc",
-					created_at: "2026-10-01T00:00:00Z",
-					updated_at: null,
-					text_length: 10,
-					memory_unit_count: 1,
-				},
+						id: "exchange/app/1/1/abc",
+						created_at: "2026-10-01T00:00:00Z",
+						updated_at: null,
+						text_length: 10,
+						memory_unit_count: 1,
+					},
 					{
-					id: "exchange/dm:1/2/abc",
-					created_at: "2026-10-01T00:00:00Z",
-					updated_at: null,
-					text_length: 10,
-					memory_unit_count: 1,
-				},
+						id: "exchange/dm:1/2/abc",
+						created_at: "2026-10-01T00:00:00Z",
+						updated_at: null,
+						text_length: 10,
+						memory_unit_count: 1,
+					},
 				].slice(o.offset, o.offset + o.limit),
 				total: 2,
 				limit: o.limit,
@@ -1215,8 +1215,7 @@ describe("thread forget tails", () => {
 				withWorkerPaused: async <T>(fn: () => Promise<T>) => fn(),
 			},
 			skillSources: {
-				forgetConversation: (conversationId: string) =>
-					sources.forgetConversation(conversationId),
+				forgetConversation: (conversationId: string) => sources.forgetConversation(conversationId),
 				forConversation: (conversationId: string) => sources.forConversation(conversationId),
 				skillsDir: join(home, "workspace/skills"),
 				proposedDir: join(home, "workspace/skills-proposed"),
@@ -1229,7 +1228,10 @@ describe("thread forget tails", () => {
 		const post = (path: string, authed = true) =>
 			fetch(`http://127.0.0.1:${http.port}${path}`, {
 				method: "POST",
-				headers: { "content-type": "application/json", ...(authed ? { "x-init-data": initData } : {}) },
+				headers: {
+					"content-type": "application/json",
+					...(authed ? { "x-init-data": initData } : {}),
+				},
 				body: JSON.stringify({ conversation: "app/1" }),
 			});
 		try {

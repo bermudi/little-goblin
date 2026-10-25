@@ -161,9 +161,7 @@ async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAut
 		} catch (err) {
 			if (attempt === 2) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					throw new Error(
-						`${path}: auth file removed during token refresh — sign in again`,
-					);
+					throw new Error(`${path}: auth file removed during token refresh — sign in again`);
 				}
 				log.warn("codex auth re-read failed — writing tokens without sibling fields", err, {
 					authFile: path,

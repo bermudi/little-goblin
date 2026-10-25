@@ -121,8 +121,7 @@ export class SkillSources {
 	// drop every provenance row one conversation authored. Returns the
 	// removed count — other conversations' rows stay put.
 	forgetConversation(conversationId: string): number {
-		return this.db
-			.run("DELETE FROM skill_sources WHERE conversation_id = ?", [conversationId])
+		return this.db.run("DELETE FROM skill_sources WHERE conversation_id = ?", [conversationId])
 			.changes;
 	}
 

@@ -1286,53 +1286,51 @@ function AppShell() {
 	// The search hits and the archived disclosure serve two hosts — the
 	// desktop rail and the mobile chats screen render the same rows off
 	// the same state.
-	const searchBody =
-		hits !== null && (
-			<>
-				<ul className="search-results">
-					{hits.map((h) => (
-						<li key={`${h.conversationId}:${h.seq}`}>
-							<button
-								type="button"
-								className="hit"
-								onClick={() => {
-									openConversation(h.conversationId);
-									setQuery("");
-								}}
-							>
-								<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
-								<span className="hit-text">{flatLine(h.text)}</span>
-								<span className="hit-conv">
-									{flatTitle(h.title) ?? h.conversationId.slice(4)}
-									{" · "}
-									{relTime(h.createdAt)}
-								</span>
-							</button>
-						</li>
-					))}
-				</ul>
-				{searchError !== null && (
-					<p className="error" role="alert">
-						Search failed: {searchError}
-					</p>
-				)}
-				{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
-			</>
-		);
-	const archivedRows =
-		archived.length > 0 && (
-			<>
-				<button
-					type="button"
-					className="rail-archived"
-					aria-expanded={archivedOpen}
-					onClick={() => setArchivedOpen((v) => !v)}
-				>
-					Archived ({archived.length})
-				</button>
-				{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
-			</>
-		);
+	const searchBody = hits !== null && (
+		<>
+			<ul className="search-results">
+				{hits.map((h) => (
+					<li key={`${h.conversationId}:${h.seq}`}>
+						<button
+							type="button"
+							className="hit"
+							onClick={() => {
+								openConversation(h.conversationId);
+								setQuery("");
+							}}
+						>
+							<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
+							<span className="hit-text">{flatLine(h.text)}</span>
+							<span className="hit-conv">
+								{flatTitle(h.title) ?? h.conversationId.slice(4)}
+								{" · "}
+								{relTime(h.createdAt)}
+							</span>
+						</button>
+					</li>
+				))}
+			</ul>
+			{searchError !== null && (
+				<p className="error" role="alert">
+					Search failed: {searchError}
+				</p>
+			)}
+			{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
+		</>
+	);
+	const archivedRows = archived.length > 0 && (
+		<>
+			<button
+				type="button"
+				className="rail-archived"
+				aria-expanded={archivedOpen}
+				onClick={() => setArchivedOpen((v) => !v)}
+			>
+				Archived ({archived.length})
+			</button>
+			{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
+		</>
+	);
 
 	return (
 		<div className="shell">
@@ -1637,11 +1635,9 @@ function AppShell() {
 										{rowError}
 									</p>
 								)}
-								{conversations !== null &&
-									unbound.length === 0 &&
-									activeProjects.length === 0 && (
-										<p className="empty">Nothing here yet — start a conversation.</p>
-									)}
+								{conversations !== null && unbound.length === 0 && activeProjects.length === 0 && (
+									<p className="empty">Nothing here yet — start a conversation.</p>
+								)}
 							</>
 						)}
 					</div>

@@ -254,10 +254,7 @@ export function formatSkillsSection(
 // never lists a name that could escape the root. A missing skill (the
 // operator deleted it mid-flight) is null, not an error: the marker
 // stands alone and the turn lives.
-export function readSkillBody(
-	root: string,
-	name: string,
-): { body: string; bytes: number } | null {
+export function readSkillBody(root: string, name: string): { body: string; bytes: number } | null {
 	if (!NAME_RE.test(name)) return null;
 	let body: string;
 	try {

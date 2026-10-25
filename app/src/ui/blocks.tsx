@@ -8,7 +8,14 @@
 // they post a [ui] message through the composer's own sendMessage,
 // never a hidden channel.
 
-import { createContext, Fragment, useContext, useState, type CSSProperties, type ReactNode } from "react";
+import {
+	createContext,
+	Fragment,
+	useContext,
+	useState,
+	type CSSProperties,
+	type ReactNode,
+} from "react";
 import type { UIMessage } from "ai";
 import type {
 	UiElement,
@@ -54,10 +61,7 @@ const PickContext = createContext<{ picked: string | null; pick: (label: string)
 	pick: () => {},
 });
 
-function Text({
-	leaf,
-	...note
-}: { leaf: UiLeafProps<"text"> } & MarkdownNoteContext) {
+function Text({ leaf, ...note }: { leaf: UiLeafProps<"text"> } & MarkdownNoteContext) {
 	return (
 		<div className="ui-text">
 			<Markdown text={leaf.md} {...note} />
@@ -65,10 +69,7 @@ function Text({
 	);
 }
 
-function Callout({
-	leaf,
-	...note
-}: { leaf: UiLeafProps<"callout"> } & MarkdownNoteContext) {
+function Callout({ leaf, ...note }: { leaf: UiLeafProps<"callout"> } & MarkdownNoteContext) {
 	return (
 		<div className={`ui-callout ui-callout-${leaf.tone ?? "info"}`}>
 			{leaf.title !== undefined && <div className="ui-callout-title">{leaf.title}</div>}
@@ -117,10 +118,7 @@ function Table({ leaf }: { leaf: UiLeafProps<"table"> }) {
 	);
 }
 
-function Steps({
-	leaf,
-	...note
-}: { leaf: UiLeafProps<"steps"> } & MarkdownNoteContext) {
+function Steps({ leaf, ...note }: { leaf: UiLeafProps<"steps"> } & MarkdownNoteContext) {
 	return (
 		<ol className="ui-steps">
 			{leaf.items.map((item, i) => (
@@ -137,11 +135,7 @@ function Steps({
 	);
 }
 
-function Choices({
-	leaf,
-	onAction,
-	busy,
-}: { leaf: UiLeafProps<"choices"> } & UiActionProps) {
+function Choices({ leaf, onAction, busy }: { leaf: UiLeafProps<"choices"> } & UiActionProps) {
 	const { pick } = useContext(PickContext);
 	const disabled = actionsOff({ onAction, busy });
 	return (
@@ -167,11 +161,7 @@ function Choices({
 	);
 }
 
-function Form({
-	leaf,
-	onAction,
-	busy,
-}: { leaf: UiLeafProps<"form"> } & UiActionProps) {
+function Form({ leaf, onAction, busy }: { leaf: UiLeafProps<"form"> } & UiActionProps) {
 	const disabled = actionsOff({ onAction, busy });
 	return (
 		<form
@@ -290,12 +280,12 @@ function Tabs({
 function Columns({
 	element,
 	render,
-}: { element: Extract<UiElement, { type: "columns" }>; render: UiRender }) {
+}: {
+	element: Extract<UiElement, { type: "columns" }>;
+	render: UiRender;
+}) {
 	return (
-		<div
-			className="ui-columns"
-			style={{ "--ui-cols": element.children.length } as CSSProperties}
-		>
+		<div className="ui-columns" style={{ "--ui-cols": element.children.length } as CSSProperties}>
 			{element.children.map((id) => (
 				<Fragment key={id}>{render(id)}</Fragment>
 			))}
@@ -384,18 +374,14 @@ export function Node({
 		case "column":
 			return (
 				<div className="ui-column">
-					{el.props?.title !== undefined && (
-						<div className="ui-column-title">{el.props.title}</div>
-					)}
+					{el.props?.title !== undefined && <div className="ui-column-title">{el.props.title}</div>}
 					{el.children.map((c) => (
 						<Fragment key={c}>{render(c)}</Fragment>
 					))}
 				</div>
 			);
 		default:
-			return (
-				<Leaf leaf={el} onAction={onAction} busy={busy} streaming={streaming} {...note} />
-			);
+			return <Leaf leaf={el} onAction={onAction} busy={busy} streaming={streaming} {...note} />;
 	}
 }
 

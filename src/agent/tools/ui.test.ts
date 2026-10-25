@@ -71,8 +71,7 @@ describe("uiInputSchema", () => {
 			},
 		});
 		expect(parsed.success).toBe(false);
-		if (!parsed.success)
-			expect(parsed.error.issues.map((i) => i.message).join()).toContain('"b"');
+		if (!parsed.success) expect(parsed.error.issues.map((i) => i.message).join()).toContain('"b"');
 	});
 });
 
@@ -227,7 +226,10 @@ describe("normalizeUiInput", () => {
 	test("rule 5: an array root stays an array — no wrapper is synthesized", () => {
 		const r = normalizeUiInput({
 			root: ["a", "b"],
-			elements: { a: { type: "text", props: { md: "x" } }, b: { type: "text", props: { md: "y" } } },
+			elements: {
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "text", props: { md: "y" } },
+			},
 		});
 		expect((r.value as { root: unknown }).root).toEqual(["a", "b"]);
 		const parsed = uiInputSchema.safeParse(r.value);
@@ -247,7 +249,10 @@ describe("normalizeUiInput", () => {
 
 	test("rule 6 negative: two orphans mean no guess", () => {
 		const r = normalizeUiInput({
-			elements: { a: { type: "text", props: { md: "x" } }, b: { type: "text", props: { md: "y" } } },
+			elements: {
+				a: { type: "text", props: { md: "x" } },
+				b: { type: "text", props: { md: "y" } },
+			},
 		});
 		expect(r.report.inferredRoot).toBeNull();
 		expect(uiInputSchema.safeParse(r.value).success).toBe(false);

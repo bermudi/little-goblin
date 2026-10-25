@@ -224,10 +224,7 @@ describe("ChatGptAccount", () => {
 			}),
 		];
 		await mountCard();
-		await waitFor(
-			() => container.textContent?.includes("HTTP 500") ?? false,
-			"the failure line",
-		);
+		await waitFor(() => container.textContent?.includes("HTTP 500") ?? false, "the failure line");
 		expect(signedInCalls).toBe(0);
 		expect(container.textContent).toContain("Using your Codex CLI login");
 	});

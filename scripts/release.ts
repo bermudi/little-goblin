@@ -100,7 +100,9 @@ export function layoutFrom(
 	return {
 		root: resolve(root),
 		live: resolve(env.GOBLIN_LIVE_LINK ?? join(root, "live")),
-		unit: resolve(env.GOBLIN_UNIT_FILE ?? join(home, ".config", "systemd", "user", "goblin.service")),
+		unit: resolve(
+			env.GOBLIN_UNIT_FILE ?? join(home, ".config", "systemd", "user", "goblin.service"),
+		),
 		lock: join(resolve(root), ".rollout-lock"),
 	};
 }
@@ -112,14 +114,23 @@ export function releaseDir(layout: Layout, rev: string): string {
 /** Assembled out of the way, then renamed — an incomplete release is never
  *  addressable by name, so `--rollback <rev>` can never find a half build. */
 export function stagingDir(layout: Layout, rev: string): string {
-	return join(layout.root, `.staging.${short(rev)}.${process.pid}.${randomBytes(4).toString("hex")}`);
+	return join(
+		layout.root,
+		`.staging.${short(rev)}.${process.pid}.${randomBytes(4).toString("hex")}`,
+	);
 }
 
 // The marker proves the builder finished; these prove the tree is still
 // usable. Rollback flips whatever is here, so a release someone gutted by
 // hand (trashed node_modules, deleted the client) must not present as
 // deployable just because its marker survived.
-const REQUIRED_IN_RELEASE = ["package.json", "bun.lock", "src/index.ts", "node_modules", "app/dist/index.html"];
+const REQUIRED_IN_RELEASE = [
+	"package.json",
+	"bun.lock",
+	"src/index.ts",
+	"node_modules",
+	"app/dist/index.html",
+];
 
 export function isCompleteRelease(dir: string, rev: string): boolean {
 	try {
@@ -207,9 +218,12 @@ export function parseUnit(text: string): UnitFacts {
 	if (!isAbsolute(workingDirectory)) {
 		fail(`unit WorkingDirectory is not absolute: ${workingDirectory}`);
 	}
-	const execStart = one(lines, "ExecStart").split(/\s+/).filter((part) => part !== "");
+	const execStart = one(lines, "ExecStart")
+		.split(/\s+/)
+		.filter((part) => part !== "");
 	const argv0 = execStart[0] ?? "";
-	if (!isAbsolute(argv0)) fail(`unit ExecStart does not name an absolute binary: ${execStart.join(" ")}`);
+	if (!isAbsolute(argv0))
+		fail(`unit ExecStart does not name an absolute binary: ${execStart.join(" ")}`);
 	// systemd's Environment= may repeat and may carry several assignments per
 	// line; this unit has no quoting, and a quote here means someone edited it
 	// by hand — read the truth rather than guess at shell rules.
@@ -246,7 +260,8 @@ function readUnit(layout: Layout): { text: string; facts: UnitFacts } {
 	}
 	// Writing through a stitch symlink replaces the link with a regular file
 	// and silently forks the config — edit the target instead.
-	if (stat.isSymbolicLink()) fail(`${layout.unit} is a symlink — rewrite its target in place, not the link`);
+	if (stat.isSymbolicLink())
+		fail(`${layout.unit} is a symlink — rewrite its target in place, not the link`);
 	if (!stat.isFile()) fail(`${layout.unit} is not a regular file`);
 	const text = readFileSync(layout.unit, "utf8");
 	return { text, facts: parseUnit(text) };
@@ -346,7 +361,11 @@ async function git(repo: string, argv: string[], label: string): Promise<string>
  *  fetched: the deployable object set is whatever this clone already has. */
 export async function resolveRev(repo: string, requested: string | null): Promise<string> {
 	const target = requested ?? "HEAD";
-	const resolved = await git(repo, ["rev-parse", "--verify", `${target}^{commit}`], `resolve ${target}`);
+	const resolved = await git(
+		repo,
+		["rev-parse", "--verify", `${target}^{commit}`],
+		`resolve ${target}`,
+	);
 	if (!isRev(resolved)) fail(`${target} did not resolve to a commit: ${resolved}`);
 	return resolved;
 }
@@ -372,7 +391,11 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 	step(`building ${short(rev)} in ${staging}`);
 	const tarball = join(context.layout.root, `.archive.${short(rev)}.${process.pid}.tar`);
 	try {
-		await git(context.repo, ["archive", `--output=${tarball}`, "--format=tar", rev], `archive ${short(rev)}`);
+		await git(
+			context.repo,
+			["archive", `--output=${tarball}`, "--format=tar", rev],
+			`archive ${short(rev)}`,
+		);
 		await run(["tar", "-xf", tarball, "-C", staging], "extract archive");
 		// The release's own dependency tree: no sharing with the dev checkout,
 		// so a stale or half-installed node_modules there cannot be deployed.
@@ -394,10 +417,14 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 		// checkout's served bundle from being written in place went away with the
 		// in-place layout, and the atomic swap here is the whole-tree symlink
 		// flip below.
-		await run([context.bun, "--no-install", "run", "scripts/check-app-assets.ts", staging], "verify client assets", {
-			cwd: staging,
-			timeoutMs: 60_000,
-		});
+		await run(
+			[context.bun, "--no-install", "run", "scripts/check-app-assets.ts", staging],
+			"verify client assets",
+			{
+				cwd: staging,
+				timeoutMs: 60_000,
+			},
+		);
 		durableWriteFile(join(staging, COMPLETE_MARKER), `${rev}\n`, 0o644);
 		if (existsSync(target)) fail(`${target} appeared during the build — refusing to replace it`);
 		renameSync(staging, target);
@@ -406,7 +433,9 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 		const detail = error instanceof Error ? error.message : String(error);
 		// Left behind for inspection rather than deleted (deleting it would
 		// delete the evidence), so say where it is and how to get rid of it.
-		const where = existsSync(staging) ? ` — the incomplete build is at ${staging} (trash it once inspected)` : "";
+		const where = existsSync(staging)
+			? ` — the incomplete build is at ${staging} (trash it once inspected)`
+			: "";
 		throw new DeployError(`${detail}${where}`);
 	} finally {
 		// Script-owned scratch only; a failed build's staging directory is left
@@ -429,7 +458,14 @@ const identitySchema = z.object({
 
 async function serviceIdentity(): Promise<{ invocationId: string; monotonic: number }> {
 	const result = await run(
-		["systemctl", "--user", "show", "goblin.service", "--property=InvocationID,ExecMainStartTimestampMonotonic", "--value"],
+		[
+			"systemctl",
+			"--user",
+			"show",
+			"goblin.service",
+			"--property=InvocationID,ExecMainStartTimestampMonotonic",
+			"--value",
+		],
 		"read service identity",
 		{ quiet: true },
 	);
@@ -444,7 +480,9 @@ async function serviceIdentity(): Promise<{ invocationId: string; monotonic: num
  *  incident. Lines match src/log.ts's JSONL shape. Diagnostics, not gating. */
 function annotate(logPath: string | null, message: string, rev: string, was: string | null): void {
 	if (logPath === null) {
-		step("WARNING — GOBLIN_HOME unresolved from the unit; goblin.log will not carry deploy context");
+		step(
+			"WARNING — GOBLIN_HOME unresolved from the unit; goblin.log will not carry deploy context",
+		);
 		return;
 	}
 	const record: Record<string, string> = {
@@ -466,9 +504,13 @@ async function memoryProbe(): Promise<void> {
 		step("memory probe skipped: podman unavailable");
 		return;
 	}
-	const exists = await run(["podman", "container", "exists", "goblin-memory-api"], "inspect memory container", {
-		allowFailure: true,
-	});
+	const exists = await run(
+		["podman", "container", "exists", "goblin-memory-api"],
+		"inspect memory container",
+		{
+			allowFailure: true,
+		},
+	);
 	if (exists.exitCode === 0) {
 		const health = await run(
 			["podman", "inspect", "goblin-memory-api", "--format", "{{.State.Health.Status}}"],
@@ -492,15 +534,23 @@ async function memoryProbe(): Promise<void> {
 		step("memory stack not installed");
 		return;
 	}
-	fail(`memory API unit is ${state} but its container is absent; inspect systemctl --user status goblin-memory-api`);
+	fail(
+		`memory API unit is ${state} but its container is absent; inspect systemctl --user status goblin-memory-api`,
+	);
 }
 
 /** Restart into whatever `live` names now, then require evidence from the
  *  invocation this restart created. A bare is-active poll closes before slow
  *  boot failures (a timed-out provider handshake) surface. */
-async function restartAndVerify(context: Context, release: string, rev: string, was: string | null): Promise<void> {
+async function restartAndVerify(
+	context: Context,
+	release: string,
+	rev: string,
+	was: string | null,
+): Promise<void> {
 	const floor = await serviceIdentity();
-	const logPath = context.goblinHome === null ? null : join(context.goblinHome, "state", "goblin.log");
+	const logPath =
+		context.goblinHome === null ? null : join(context.goblinHome, "state", "goblin.log");
 	annotate(logPath, "restarting goblin", rev, was);
 	const startedAt = Math.floor(Date.now() / 1000);
 	await run(["systemctl", "--user", "restart", "goblin"], "restart goblin");
@@ -518,7 +568,10 @@ async function restartAndVerify(context: Context, release: string, rev: string, 
 		"startup acceptance",
 		{
 			cwd: release,
-			env: context.goblinHome === null ? process.env : { ...process.env, GOBLIN_HOME: context.goblinHome },
+			env:
+				context.goblinHome === null
+					? process.env
+					: { ...process.env, GOBLIN_HOME: context.goblinHome },
 			timeoutMs: DEFAULT_ACCEPT_BUDGET_MS + 10_000,
 		},
 	);
@@ -530,7 +583,8 @@ async function restartAndVerify(context: Context, release: string, rev: string, 
 		"read the fresh journal",
 		{ allowFailure: true, quiet: true },
 	);
-	if (journal.exitCode !== 0) step("WARNING — could not read the fresh journal; error scan skipped");
+	if (journal.exitCode !== 0)
+		step("WARNING — could not read the fresh journal; error scan skipped");
 	const errors = journal.stdout.split("\n").filter((line) => line.includes('"level":"error"'));
 	if (errors.length > 0) {
 		step(`WARNING — ${errors.length} error line(s) in the fresh journal:`);
@@ -615,10 +669,14 @@ async function acquireLock(layout: Layout): Promise<() => void> {
 		}
 		const holder = lockHolder(layout.lock);
 		if (holder !== null && !pidAlive(holder)) {
-			fail(`stale rollout lock at ${layout.lock} (pid ${holder} is gone) — trash it if no rollout is running`);
+			fail(
+				`stale rollout lock at ${layout.lock} (pid ${holder} is gone) — trash it if no rollout is running`,
+			);
 		}
 		if (Date.now() > deadline) {
-			fail(`rollout lock held for over ${LOCK_WAIT_MS / 60_000}m (${layout.lock}) — inspect the running rollout`);
+			fail(
+				`rollout lock held for over ${LOCK_WAIT_MS / 60_000}m (${layout.lock}) — inspect the running rollout`,
+			);
 		}
 		step("another rollout is running — waiting");
 		await Bun.sleep(500);
@@ -639,7 +697,9 @@ export interface Context {
 async function context(): Promise<Context> {
 	const repo = resolve(import.meta.dir, "..");
 	if (!existsSync(join(repo, "bun.lock"))) {
-		fail(`${repo} is not a checkout with bun.lock — run this from the development tree, not a release`);
+		fail(
+			`${repo} is not a checkout with bun.lock — run this from the development tree, not a release`,
+		);
 	}
 	// `.git` is a directory in a clone and a file in a linked worktree; a
 	// release built by `git archive` has neither. This is the whole check —
@@ -670,13 +730,16 @@ async function rollout(ctx: Context, rev: string): Promise<void> {
 	flipLive(ctx.layout, dir);
 	await finish(ctx, dir, rev, live?.rev ?? null);
 	process.stdout.write(`deployed ${rev}\n`);
-	if (live !== null) process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
+	if (live !== null)
+		process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
 }
 
 async function rollback(ctx: Context, rev: string): Promise<void> {
 	const { facts } = readUnit(ctx.layout);
 	if (!unitRunsLive(ctx.layout, facts)) {
-		fail(`goblin.service does not run from ${ctx.layout.live}; rollback only applies to the release layout`);
+		fail(
+			`goblin.service does not run from ${ctx.layout.live}; rollback only applies to the release layout`,
+		);
 	}
 	const dir = releaseDir(ctx.layout, rev);
 	if (!isCompleteRelease(dir, rev)) fail(`no complete release for ${rev} at ${dir}`);
@@ -762,7 +825,9 @@ async function status(ctx: Context): Promise<void> {
 		const liveMark = live !== null && live.rev === release.name ? " *live*" : "";
 		lines.push(`  ${short(release.name)}  ${release.at.toISOString()}${liveMark}`);
 	}
-	lines.push("retention: manual — `trash` old release directories; nothing is pruned automatically");
+	lines.push(
+		"retention: manual — `trash` old release directories; nothing is pruned automatically",
+	);
 	process.stdout.write(`${lines.join("\n")}\n`);
 }
 
@@ -870,7 +935,9 @@ if (import.meta.main) {
 		if (error instanceof DeployError) {
 			process.stderr.write(`deploy: FAILED — ${error.message}\n`);
 		} else {
-			process.stderr.write(`deploy: FAILED — ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+			process.stderr.write(
+				`deploy: FAILED — ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+			);
 		}
 		process.exitCode = 1;
 	}

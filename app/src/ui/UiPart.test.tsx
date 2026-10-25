@@ -19,8 +19,7 @@ function uiPart(p: Record<string, unknown>): ToolUIPart {
 }
 
 const els = fixture.elements as Record<string, unknown>;
-const pick = (...ids: string[]) =>
-	Object.fromEntries(ids.map((id) => [id, els[id]])) as typeof els;
+const pick = (...ids: string[]) => Object.fromEntries(ids.map((id) => [id, els[id]])) as typeof els;
 
 describe("UiPart (static markup)", () => {
 	test("output-available renders every leaf and container class", () => {

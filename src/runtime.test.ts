@@ -155,9 +155,7 @@ describe("skill body ownership across turns", () => {
 			expect(prompts[2]).not.toContain("RT-BODY-BBB");
 
 			const row = r.store.db
-				.query<{ run_id: string }, [number]>(
-					"SELECT run_id FROM turn_runs WHERE anchor_seq = ?",
-				)
+				.query<{ run_id: string }, [number]>("SELECT run_id FROM turn_runs WHERE anchor_seq = ?")
 				.get(secondSeq);
 			expect(row).not.toBeNull();
 			expect(journal.get(row!.run_id)!.ownedInputSeqs).toEqual([secondSeq]);
@@ -243,9 +241,7 @@ describe("skill body ownership across turns", () => {
 			// Step 2 folded the steer: its body rides THIS owning turn — exactly once.
 			expect(prompt(1).split("STEER-SKILL-UNIQUE").length).toBe(2);
 			expect(prompt(1)).toContain("steered invoke");
-			const run = r.store.db
-				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
-				.all();
+			const run = r.store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
 			expect(run).toHaveLength(1);
 			expect(journal.get(run[0]!.run_id)!.ownedInputSeqs).toEqual([headSeq, steerSeq]);
 			expect(journal.get(run[0]!.run_id)!.steerMark).toBe(steerSeq);
@@ -2712,12 +2708,20 @@ describe("streaming lane boundary", () => {
 		await parked.done;
 		r.runtime.submit(
 			r.conv,
-			{ id: "same-id", role: "user", parts: [{ type: "text", text: "background beat" }] } as UIMessage,
+			{
+				id: "same-id",
+				role: "user",
+				parts: [{ type: "text", text: "background beat" }],
+			} as UIMessage,
 			background,
 		);
 		r.runtime.submit(
 			r.conv,
-			{ id: "same-id", role: "user", parts: [{ type: "text", text: "client owns me" }] } as UIMessage,
+			{
+				id: "same-id",
+				role: "user",
+				parts: [{ type: "text", text: "client owns me" }],
+			} as UIMessage,
 			client,
 		);
 		gate.resolve();

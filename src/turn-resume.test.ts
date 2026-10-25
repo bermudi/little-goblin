@@ -1949,9 +1949,7 @@ describe("turn resume", () => {
 		const continuation = journal.callsFor(rows[1]!.run_id);
 		// The predecessor's spent copy was inherited first — INSERT OR
 		// IGNORE keeps it over the source's still-open copy.
-		expect(continuation.find((c) => c.toolCallId === "run-src:c-grant")!.retryConsumed).toBe(
-			true,
-		);
+		expect(continuation.find((c) => c.toolCallId === "run-src:c-grant")!.retryConsumed).toBe(true);
 		const reask = continuation.find((c) => c.toolCallId === "re-1")!;
 		expect(reask.replayed).toBe(true);
 		expect(reask.result).toContain("[turn-journal conflict]");

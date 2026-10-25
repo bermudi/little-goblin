@@ -145,8 +145,12 @@ const htmlProps = z.object({
 const leaf = <T extends string, P extends z.ZodType>(type: T, props: P) =>
 	z.object({ type: z.literal(type), props, children: z.array(z.string()).optional() });
 
-const container = <T extends string, P extends z.ZodType>(type: T, props: P, min: number, max: number) =>
-	z.object({ type: z.literal(type), props: props.optional(), children: children(min, max) });
+const container = <T extends string, P extends z.ZodType>(
+	type: T,
+	props: P,
+	min: number,
+	max: number,
+) => z.object({ type: z.literal(type), props: props.optional(), children: children(min, max) });
 
 const leafElements = z.discriminatedUnion("type", [
 	leaf("text", textProps),
@@ -469,7 +473,9 @@ const candidates: Candidate[] = [
 // Re-type a typeless element by exact props key-set: every key must be
 // known to the candidate, the candidate must validate, and the minimal
 // matching key-set must be unique (a tie is no repair).
-function inferType(props: Record<string, unknown>): { type: string; props: Record<string, unknown> } | null {
+function inferType(
+	props: Record<string, unknown>,
+): { type: string; props: Record<string, unknown> } | null {
 	const keys = Object.keys(props);
 	const qualifying: { c: Candidate; prepared: Record<string, unknown> }[] = [];
 	for (const c of candidates) {
@@ -506,8 +512,7 @@ export function normalizeUiInput(
 		if (isPlainObject(inner.elements) && !Object.hasOwn(inner.elements, "type")) {
 			out.elements = inner.elements;
 			if (isRootLike(inner.root)) out.root = inner.root;
-			if (out.title === undefined && typeof inner.title === "string")
-				out.title = inner.title;
+			if (out.title === undefined && typeof inner.title === "string") out.title = inner.title;
 			report.unwrapped = true;
 		}
 	}

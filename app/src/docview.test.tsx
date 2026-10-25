@@ -72,10 +72,7 @@ describe("MessageParts artifact hoisting", () => {
 	test("a direct artifact call leaves a card after the fold", () => {
 		const html = renderToStaticMarkup(
 			<MessageParts
-				parts={[
-					toolPart("artifact", { artifact }),
-					{ type: "text", text: "published" },
-				]}
+				parts={[toolPart("artifact", { artifact }), { type: "text", text: "published" }]}
 			/>,
 		);
 		expect(html).toContain("worked");
@@ -90,18 +87,14 @@ describe("MessageParts artifact hoisting", () => {
 			error: "script",
 			presentations: [{ call: "tc/1", artifact }],
 		};
-		const html = renderToStaticMarkup(
-			<MessageParts parts={[toolPart("script", scriptOut)]} />,
-		);
+		const html = renderToStaticMarkup(<MessageParts parts={[toolPart("script", scriptOut)]} />);
 		expect(html).toContain("doccard");
 		expect(html).toContain("Quarterly report");
 	});
 
 	test("a script without presentations leaves no card", () => {
 		const html = renderToStaticMarkup(
-			<MessageParts
-				parts={[toolPart("script", { text: "ok", calls: [] })]}
-			/>,
+			<MessageParts parts={[toolPart("script", { text: "ok", calls: [] })]} />,
 		);
 		expect(html).not.toContain("doccard");
 	});
@@ -120,9 +113,7 @@ describe("markdown relative links", () => {
 	});
 
 	test("http links still win over the relative branch", () => {
-		const html = renderToStaticMarkup(
-			<Markdown text="[x](https://a.dev)" onFileLink={() => {}} />,
-		);
+		const html = renderToStaticMarkup(<Markdown text="[x](https://a.dev)" onFileLink={() => {}} />);
 		expect(html).toContain('href="https://a.dev"');
 		expect(html).not.toContain("md-filelink");
 	});
@@ -140,9 +131,7 @@ describe("markdown relative links", () => {
 	});
 
 	test("a malformed percent escape is not a file open — the link stays literal", () => {
-		const html = renderToStaticMarkup(
-			<Markdown text="[bad](100%.md)" onFileLink={() => {}} />,
-		);
+		const html = renderToStaticMarkup(<Markdown text="[bad](100%.md)" onFileLink={() => {}} />);
 		// The destination cannot decode to a file: the link renders as
 		// literal text — visible on the page, not a dead button.
 		expect(html).not.toContain("md-filelink");
@@ -162,8 +151,7 @@ describe("markdown relative links", () => {
 		);
 		for (const part of parts) {
 			if (typeof part !== "object" || part === null) continue;
-			const props = (part as { props?: { className?: string; onClick?: () => void } })
-				.props;
+			const props = (part as { props?: { className?: string; onClick?: () => void } }).props;
 			if (props?.className === "md-filelink") props.onClick?.();
 		}
 		// Decoded ONCE: foo%2520.md names a file literally called
@@ -228,9 +216,10 @@ function mountDom() {
 
 const click = (dom: { win: Window }, el: Element) =>
 	el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
-const settle = () => act(async () => {
-	await new Promise((r) => setTimeout(r, 20));
-});
+const settle = () =>
+	act(async () => {
+		await new Promise((r) => setTimeout(r, 20));
+	});
 
 describe("doc viewer journey (happy-dom)", () => {
 	const dom = mountDom();
@@ -442,9 +431,7 @@ describe("doc viewer journey (happy-dom)", () => {
 		});
 		await settle();
 		expect(requested.at(-1)).toBe("../other.md");
-		expect(dom.container.querySelector(".doc-err")?.textContent).toContain(
-			"escapes the workspace",
-		);
+		expect(dom.container.querySelector(".doc-err")?.textContent).toContain("escapes the workspace");
 	});
 
 	test("a pdf shows the download affordance — never a sandboxed frame", async () => {

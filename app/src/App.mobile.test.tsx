@@ -126,8 +126,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				);
 			if (url === "/api/app/conversations") return Promise.resolve(json({ conversations }));
 			if (url === "/api/app/projects") return Promise.resolve(json({ projects }));
-			if (url.startsWith("/api/app/notes"))
-				return Promise.resolve(json({ notes: [] }));
+			if (url.startsWith("/api/app/notes")) return Promise.resolve(json({ notes: [] }));
 			if (url === "/api/app/settings")
 				return Promise.resolve(
 					new Response(
@@ -158,7 +157,19 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 						capturedAt: "2026-10-22T10:00:00.000Z",
 						capturedModel: "main/test",
 						steps: 1,
-						segments: { identity: 10, environment: 0, project: 0, agentsMd: 0, userMd: 0, skills: 0, toolDefs: 0, history: 20, toolResults: 0, system: "x", messages: 0 },
+						segments: {
+							identity: 10,
+							environment: 0,
+							project: 0,
+							agentsMd: 0,
+							userMd: 0,
+							skills: 0,
+							toolDefs: 0,
+							history: 20,
+							toolResults: 0,
+							system: "x",
+							messages: 0,
+						},
 						system: "You are goblin.",
 						tools: [],
 						messages: [],
@@ -252,9 +263,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await mount();
 
 		await click(
-			[...container.querySelectorAll(".chatlist-screen .conv")].find(
-				(r) => r.querySelector(".conv-title")?.textContent === "fixture chat",
-			)?.querySelector(".conv-main"),
+			[...container.querySelectorAll(".chatlist-screen .conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fixture chat")
+				?.querySelector(".conv-main"),
 		);
 		await waitFor(
 			() => container.querySelector(".tabbar") === null,
@@ -278,9 +289,9 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await mount();
 
 		await click(
-			[...container.querySelectorAll(".chatlist-screen .conv")].find(
-				(r) => r.querySelector(".conv-title")?.textContent === "fixture chat",
-			)?.querySelector(".conv-main"),
+			[...container.querySelectorAll(".chatlist-screen .conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fixture chat")
+				?.querySelector(".conv-main"),
 		);
 		await waitFor(
 			() => container.querySelector("[data-outline-anchor]") !== null,
@@ -298,7 +309,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await click(tab("More"));
 		const sheet = container.querySelector('.msheet[aria-label="System"]');
 		expect(sheet).toBeTruthy();
-		const rows = [...sheet?.querySelectorAll(".sheet-row") ?? []].map((b) => b.textContent);
+		const rows = [...(sheet?.querySelectorAll(".sheet-row") ?? [])].map((b) => b.textContent);
 		expect(rows).toEqual([
 			"Delegations",
 			"Memories",
@@ -310,10 +321,14 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 			"Settings",
 		]);
 
-		await click([...sheet?.querySelectorAll(".sheet-row") ?? []].find((b) => b.textContent === "Status"));
+		await click(
+			[...(sheet?.querySelectorAll(".sheet-row") ?? [])].find((b) => b.textContent === "Status"),
+		);
 		expect(container.querySelector(".msheet")).toBeNull();
 		await waitFor(
-			() => container.querySelector(".status-page") !== null || container.textContent?.includes("Status") === true,
+			() =>
+				container.querySelector(".status-page") !== null ||
+				container.textContent?.includes("Status") === true,
 			"status page",
 		);
 		expect(tab("More")?.classList.contains("on")).toBe(true);
@@ -344,15 +359,15 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await click(tab("Projects"));
 		await waitFor(
 			() =>
-					[...container.querySelectorAll("button.idx")].some((b) =>
-						b.textContent?.includes("Goblin Work"),
-					),
+				[...container.querySelectorAll("button.idx")].some((b) =>
+					b.textContent?.includes("Goblin Work"),
+				),
 			"projects index",
 		);
 		await click(
-				[...container.querySelectorAll("button.idx")].find((b) =>
-					b.textContent?.includes("Goblin Work"),
-				),
+			[...container.querySelectorAll("button.idx")].find((b) =>
+				b.textContent?.includes("Goblin Work"),
+			),
 		);
 		await waitFor(
 			() => container.querySelector(".tabbar") === null,
@@ -378,27 +393,17 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 
 		await click(tab("More"));
 		await click(
-				[...container.querySelectorAll(".sheet-row")].find(
-					(b) => b.textContent === "Settings",
-				),
+			[...container.querySelectorAll(".sheet-row")].find((b) => b.textContent === "Settings"),
 		);
-		await waitFor(
-			() => container.querySelector(".settings") !== null,
-			"settings page",
-		);
+		await waitFor(() => container.querySelector(".settings") !== null, "settings page");
 		await click(
-				[...container.querySelectorAll("button.idx")].find((b) =>
-					b.textContent?.includes("Access"),
-			),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
 		);
 		// An invalid edit — dropping the only operator — can never
 		// autosave, so the editor stays dirty: exactly the state the
 		// navigation guard must question.
 		await click(container.querySelector(".chip button"));
-		await waitFor(
-			() => container.textContent?.includes("unsaved") === true,
-			"dirty editor",
-		);
+		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty editor");
 
 		confirmAnswer = true;
 		await click(tab("Chats"));
@@ -414,9 +419,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 
 	test("desktop: none of the M chrome exists", async () => {
 		phone = false;
-		threadMessages = [
-			{ id: "m1", role: "user", parts: [{ type: "text", text: "section one" }] },
-		];
+		threadMessages = [{ id: "m1", role: "user", parts: [{ type: "text", text: "section one" }] }];
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(<App />);

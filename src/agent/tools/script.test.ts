@@ -490,9 +490,11 @@ return "tail marker";`,
 	expect(full).toContain("tail marker");
 	// The footer's named recovery must work end to end: read_file opens
 	// the spill it names.
-	const opened = await (readFileTool(home) as unknown as {
-		execute: (i: unknown, o: unknown) => Promise<{ error?: string; content?: string }>;
-	}).execute({ path: file }, { toolCallId: "tc-rf", messages: [], context: {} });
+	const opened = await (
+		readFileTool(home) as unknown as {
+			execute: (i: unknown, o: unknown) => Promise<{ error?: string; content?: string }>;
+		}
+	).execute({ path: file }, { toolCallId: "tc-rf", messages: [], context: {} });
 	expect(opened.error).toBeUndefined();
 	expect(opened.content).toContain("line 0 ");
 });

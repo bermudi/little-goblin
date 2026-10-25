@@ -61,9 +61,7 @@ describe("GET /api/app/conversations/:id/file", () => {
 		try {
 			expect((await get(s, "ghost-99", "x.md")).status).toBe(404);
 			expect(
-				(
-					await s.call("/api/app/conversations/file-01/file?path=x.md", { method: "POST" })
-				).status,
+				(await s.call("/api/app/conversations/file-01/file?path=x.md", { method: "POST" })).status,
 			).toBe(405);
 		} finally {
 			s.http.stop();

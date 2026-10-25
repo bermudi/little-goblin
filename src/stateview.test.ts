@@ -187,10 +187,7 @@ describe("listPickerSkills", () => {
 		for (let i = 0; i < 129; i++) {
 			const name = `filler-${String(i).padStart(3, "0")}`;
 			mkdirSync(join(skills, name), { recursive: true });
-			writeFileSync(
-				join(skills, name, "SKILL.md"),
-				`---\nname: ${name}\ndescription: f\n---\nx`,
-			);
+			writeFileSync(join(skills, name, "SKILL.md"), `---\nname: ${name}\ndescription: f\n---\nx`);
 		}
 		setLogFile(join(home, "test.log"));
 		setLogWriter((_path, line) => {

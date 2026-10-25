@@ -397,9 +397,7 @@ export function oneminEngine(
 				// drift — "" would read as silence, so it names itself.
 				const results = record.aiRecordDetail?.resultObject;
 				if (!Array.isArray(results)) {
-					throw new Error(
-						`onemin: SUCCESS without a resultObject array (uuid ${record.uuid})`,
-					);
+					throw new Error(`onemin: SUCCESS without a resultObject array (uuid ${record.uuid})`);
 				}
 				const text = results[0] ?? "";
 				log.debug("onemin transcription complete", {

@@ -48,8 +48,8 @@ export function MemoryDocRow({
 		<button type="button" className="doc-row" onClick={() => onOpen(doc.id)}>
 			<span className={`doc-id${label === null ? " mono" : ""}`}>{label ?? doc.id}</span>
 			<span className="doc-sub">
-				{relTime(doc.createdAt)} · {doc.textLength.toLocaleString()} chars ·{" "}
-				{doc.factCount} {doc.factCount === 1 ? "fact" : "facts"}
+				{relTime(doc.createdAt)} · {doc.textLength.toLocaleString()} chars · {doc.factCount}{" "}
+				{doc.factCount === 1 ? "fact" : "facts"}
 				{withConversation && doc.conversationId !== null ? ` · ${doc.conversationId}` : ""}
 			</span>
 			<span className="chev">›</span>

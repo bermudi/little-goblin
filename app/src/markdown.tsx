@@ -86,7 +86,10 @@ function fileDestination(dest: string): string | null {
 	}
 }
 
-export function inline(text: string, onFileLink?: ((path: string) => void) | undefined): ReactNode[] {
+export function inline(
+	text: string,
+	onFileLink?: ((path: string) => void) | undefined,
+): ReactNode[] {
 	const out: ReactNode[] = [];
 	let last = 0;
 	let i = 0;
@@ -114,12 +117,7 @@ export function inline(text: string, onFileLink?: ((path: string) => void) | und
 			if (dest === null) out.push(m[0]);
 			else
 				out.push(
-					<button
-						key={i}
-						type="button"
-						className="md-filelink"
-						onClick={() => onFileLink(dest)}
-					>
+					<button key={i} type="button" className="md-filelink" onClick={() => onFileLink(dest)}>
 						{m[9]}
 					</button>,
 				);
@@ -293,14 +291,12 @@ function boxTable(run: string[]): { head: string[] | null; rows: string[][] } | 
 	const cellsOf = (l: string) =>
 		edges.slice(0, -1).map((e, c) => l.slice(e + 1, edges[c + 1]).trim());
 	const cols = (band: string[]) =>
-		edges
-			.slice(0, -1)
-			.map((e, c) =>
-				band
-					.map((l) => l.slice(e + 1, edges[c + 1]).trim())
-					.filter((s) => s !== "")
-					.join(" "),
-			);
+		edges.slice(0, -1).map((e, c) =>
+			band
+				.map((l) => l.slice(e + 1, edges[c + 1]).trim())
+				.filter((s) => s !== "")
+				.join(" "),
+		);
 	// One band means no mid-rules: each physical line is its own row,
 	// and a line with an empty first cell continues the row above —
 	// the shape a wrapped cell takes without separators delimiting
@@ -661,9 +657,7 @@ export function Markdown({
 				flushPara();
 				const t = boxTable(run);
 				if (t === null)
-					blocks.push(
-						<CodeBlock key={key++} lang="" code={run.join("\n")} clip={clipFences} />,
-					);
+					blocks.push(<CodeBlock key={key++} lang="" code={run.join("\n")} clip={clipFences} />);
 				else
 					blocks.push(
 						<div key={key++} className="md-tablewrap">

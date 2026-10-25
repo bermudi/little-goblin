@@ -70,7 +70,8 @@ export function makeToolCallRepair(convId: string): ToolCallRepairFunction<ToolS
 				// No schema to check against — stringified-arg repair can't
 				// tell an object from an intended string, so it stays off.
 			}
-			const props = isPlainObject(schema) && isPlainObject(schema.properties) ? schema.properties : {};
+			const props =
+				isPlainObject(schema) && isPlainObject(schema.properties) ? schema.properties : {};
 			for (const [key, value] of Object.entries(fixed)) {
 				if (typeof value !== "string") continue;
 				const kinds = schemaKinds(props[key]);

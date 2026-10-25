@@ -962,9 +962,8 @@ describe("operator-only command gate", () => {
 
 	test("an approved user's /skill refuses — bare, by name, by URL, bot-addressed", async () => {
 		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
-		const fetching = spyOn(globalThis, "fetch").mockImplementation(
-			(() => Promise.reject(new Error("skill fetch must not run"))) as unknown as typeof fetch,
-		);
+		const fetching = spyOn(globalThis, "fetch").mockImplementation((() =>
+			Promise.reject(new Error("skill fetch must not run"))) as unknown as typeof fetch);
 		const submitted: string[] = [];
 		h.env.deps.runtime.submitPersisted = (conv) => {
 			submitted.push(conv.id);

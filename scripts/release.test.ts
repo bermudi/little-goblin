@@ -9,10 +9,27 @@
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpDir } from "../src/testkit.ts";
-import { isCompleteRelease, isRev, layoutFrom, parseArgs, parseUnit, readLive, releaseDir, rewriteWorkingDirectory } from "./release.ts";
+import {
+	isCompleteRelease,
+	isRev,
+	layoutFrom,
+	parseArgs,
+	parseUnit,
+	readLive,
+	releaseDir,
+	rewriteWorkingDirectory,
+} from "./release.ts";
 
 const REPO = resolve(import.meta.dir, "..");
 const BUN = process.execPath;
@@ -137,7 +154,9 @@ function release(box: Box, args: string[], extraEnv: Record<string, string> = {}
 }
 
 function calls(box: Box): string[] {
-	return readFileSync(box.log, "utf8").split("\n").filter((line) => line !== "");
+	return readFileSync(box.log, "utf8")
+		.split("\n")
+		.filter((line) => line !== "");
 }
 
 function headRev(): string {
@@ -146,7 +165,18 @@ function headRev(): string {
 
 function liveTarget(box: Box): string | null {
 	try {
-		return readLive(layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases, GOBLIN_LIVE_LINK: box.live, GOBLIN_UNIT_FILE: box.unit }, box.root))?.rev ?? null;
+		return (
+			readLive(
+				layoutFrom(
+					{
+						GOBLIN_RELEASES_ROOT: box.releases,
+						GOBLIN_LIVE_LINK: box.live,
+						GOBLIN_UNIT_FILE: box.unit,
+					},
+					box.root,
+				),
+			)?.rev ?? null
+		);
 	} catch {
 		return null;
 	}
@@ -158,13 +188,17 @@ describe("release build", () => {
 		const rev = headRev();
 		const result = release(box, ["--build-only"]);
 		expect(result.status).toBe(0);
-		expect(result.stdout.trim()).toBe(`built ${rev} at ${releaseDir(layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases }), rev)}`);
+		expect(result.stdout.trim()).toBe(
+			`built ${rev} at ${releaseDir(layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases }), rev)}`,
+		);
 		const dir = join(box.releases, rev);
 		expect(readFileSync(join(dir, ".release-complete"), "utf8").trim()).toBe(rev);
 		// The release is exactly the tracked tree at that commit: every path git
 		// reports is present, and the untracked files of the dev tree (this new
 		// script among them, before it was committed) are not.
-		const tracked = spawnSync("git", ["-C", REPO, "ls-tree", "-r", "--name-only", rev], { encoding: "utf8" })
+		const tracked = spawnSync("git", ["-C", REPO, "ls-tree", "-r", "--name-only", rev], {
+			encoding: "utf8",
+		})
 			.stdout.trim()
 			.split("\n");
 		expect(tracked.length).toBeGreaterThan(50);
@@ -225,7 +259,9 @@ describe("rollout", () => {
 		const recorded = calls(box);
 		expect(recorded.some((line) => line === "systemctl --user daemon-reload")).toBe(true);
 		expect(recorded.some((line) => line === "systemctl --user restart goblin")).toBe(true);
-		expect(recorded.some((line) => line.includes("/scripts/check-startup.ts --watch 0 75000"))).toBe(true);
+		expect(
+			recorded.some((line) => line.includes("/scripts/check-startup.ts --watch 0 75000")),
+		).toBe(true);
 		const annotations = readFileSync(join(box.home, "state", "goblin.log"), "utf8")
 			.trim()
 			.split("\n")
@@ -241,7 +277,9 @@ describe("rollout", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
 		const first = headRev();
-		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], { encoding: "utf8" }).stdout.trim();
+		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], {
+			encoding: "utf8",
+		}).stdout.trim();
 		const result = release(box, ["--rev", "HEAD~1"]);
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(`deployed ${older}`);
@@ -260,18 +298,24 @@ describe("rollout", () => {
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
 		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
 		// A real commit that was never built into a release here.
-		const unbuilt = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~2"], { encoding: "utf8" }).stdout.trim();
+		const unbuilt = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~2"], {
+			encoding: "utf8",
+		}).stdout.trim();
 		const result = release(box, ["--rollback", unbuilt]);
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("no complete release");
-		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(before);
+		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
+			before,
+		);
 	});
 
 	test("a failed acceptance fails the rollout without rolling back on its own", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
 		const first = headRev();
-		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], { encoding: "utf8" }).stdout.trim();
+		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], {
+			encoding: "utf8",
+		}).stdout.trim();
 		const result = release(box, ["--rev", "HEAD~1"], { FAKE_ACCEPT_FAIL: "1" });
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("startup acceptance failed");
@@ -309,7 +353,9 @@ describe("rollout", () => {
 		const result = release(box, ["--rollback", headRev()]);
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("no complete release");
-		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(before);
+		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
+			before,
+		);
 	});
 });
 
@@ -344,16 +390,25 @@ ExecStart=/usr/bin/bun run src/index.ts
 		const facts = parseUnit(base);
 		expect(facts.workingDirectory).toBe("/home/daniel/build/little-goblin");
 		expect(facts.execStart).toEqual(["/usr/bin/bun", "run", "src/index.ts"]);
-		expect(facts.environment).toEqual({ GOBLIN_HOME: "/home/daniel/goblin", PATH: "/usr/bin:/bin" });
+		expect(facts.environment).toEqual({
+			GOBLIN_HOME: "/home/daniel/goblin",
+			PATH: "/usr/bin:/bin",
+		});
 	});
 
 	test("refuses ambiguity instead of guessing", () => {
-		expect(() => parseUnit(`${base}WorkingDirectory=/elsewhere\n`)).toThrow(/exactly one WorkingDirectory/);
-		expect(() => parseUnit("WorkingDirectory=relative/path\nExecStart=/usr/bin/bun run x.ts\n")).toThrow(/not absolute/);
-		expect(() => parseUnit("WorkingDirectory=/x\nExecStart=bun run x.ts\n")).toThrow(/absolute binary/);
-		expect(() => parseUnit("Environment=GOBLIN_HOME=/x\nExecStart=/usr/bin/bun run x.ts\n")).toThrow(
+		expect(() => parseUnit(`${base}WorkingDirectory=/elsewhere\n`)).toThrow(
 			/exactly one WorkingDirectory/,
 		);
+		expect(() =>
+			parseUnit("WorkingDirectory=relative/path\nExecStart=/usr/bin/bun run x.ts\n"),
+		).toThrow(/not absolute/);
+		expect(() => parseUnit("WorkingDirectory=/x\nExecStart=bun run x.ts\n")).toThrow(
+			/absolute binary/,
+		);
+		expect(() =>
+			parseUnit("Environment=GOBLIN_HOME=/x\nExecStart=/usr/bin/bun run x.ts\n"),
+		).toThrow(/exactly one WorkingDirectory/);
 	});
 
 	test("rewrites exactly one line and leaves the rest byte-identical", () => {

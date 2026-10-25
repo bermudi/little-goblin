@@ -122,7 +122,12 @@ describe("structural rules", () => {
 	test("a tabs child that is not a tab is rejected", () => {
 		const bad = {
 			root: "t",
-			elements: { t: { type: "tabs", children: ["a", "x"] }, a: tab("a", ["l"]), x: text(), l: text() },
+			elements: {
+				t: { type: "tabs", children: ["a", "x"] },
+				a: tab("a", ["l"]),
+				x: text(),
+				l: text(),
+			},
 		};
 		expect(issues(bad).some((m) => m.includes('child "x" is type "text"'))).toBe(true);
 	});

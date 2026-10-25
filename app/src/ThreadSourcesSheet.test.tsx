@@ -441,8 +441,7 @@ describe("ThreadSourcesSheet", () => {
 						failed: [
 							{
 								id: DOC.id,
-								error:
-									"memory for that document is still processing remotely — retry in a minute",
+								error: "memory for that document is still processing remotely — retry in a minute",
 							},
 						],
 						remaining: 1,
@@ -480,7 +479,8 @@ describe("ThreadSourcesSheet", () => {
 				return Promise.resolve(json(SKILLS));
 			}
 			if (url.pathname === "/api/app/memory/documents") {
-				if (forgotMemories) return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
+				if (forgotMemories)
+					return Promise.resolve(json({ items: [], total: 0, limit: 20, offset: 0 }));
 				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
 			}
 			if (url.pathname === "/api/app/memory/forget-thread") {
@@ -544,7 +544,7 @@ describe("ThreadSourcesSheet", () => {
 		expect(inFlight.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
 		await act(async () => {
 			release!(json({ ok: true, forgotten: 1, failed: [], remaining: 0 }));
-			});
+		});
 		await flush();
 		const settled = [...container.querySelectorAll(".thread-forget button")];
 		expect(settled.map((b) => b.textContent)).toEqual([

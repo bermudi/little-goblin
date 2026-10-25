@@ -132,10 +132,7 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 		<>
 			<h2 className="ops-h2">Speaking</h2>
 			<div className="card">
-				<Row
-					label="Text to speech"
-					cap="Read replies aloud and send voice notes."
-				>
+				<Row label="Text to speech" cap="Read replies aloud and send voice notes.">
 					<Switch
 						on={tts !== null}
 						ariaLabel="text to speech"
@@ -310,10 +307,10 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 						<Row
 							label="Engine"
 							cap={
-									tr.kind === "whistle"
-										? "Runs on this machine — no key."
-										: `Uses your ${displayName(serviceNames, tr.kind)} key.`
-								}
+								tr.kind === "whistle"
+									? "Runs on this machine — no key."
+									: `Uses your ${displayName(serviceNames, tr.kind)} key.`
+							}
 						>
 							<select
 								className="mono"

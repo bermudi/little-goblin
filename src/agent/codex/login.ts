@@ -8,7 +8,7 @@
 // Never logged or surfaced: tokens, user_code, device_auth_id,
 // code_verifier, response bodies.
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { type Config, loadConfig, parseConfig, paths, writeConfig } from "../../config.ts";
@@ -255,7 +255,9 @@ export function createChatGptLogin(deps: {
 		}
 		return {
 			state: lastError !== null ? "error" : "signed-out",
-			source: existsSync(resolved.path) ? resolved.source : null,
+			// readTokens's null is ENOENT — the file does not exist, so there
+			// is no source to name.
+			source: null,
 			email: null,
 			plan: null,
 			pending: null,

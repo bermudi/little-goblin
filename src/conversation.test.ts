@@ -24,6 +24,8 @@ import {
 } from "./conversation-queries.ts";
 import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
+import { openWakeStore } from "./wake-store.ts";
+import { openWindowCapture } from "./window-capture.ts";
 
 const msg = (text: string): UIMessage => ({
 	id: "m1",
@@ -1122,6 +1124,86 @@ describe("editUserMessage (rewind)", () => {
 		store.append(c.id, [asst("a1", "answer")], { anchorSeq: 1 }); // 2
 		store.editUserMessage(c.id, "q1", user("q1b", "rewritten")); // 3, high-water 2
 		expect(store.lastSeq(c.id)).toBe(3);
+		store.close();
+	});
+
+	test("the rewind retires pre-edit wake claims — reconcile fails them closed, pending delivery survives", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const wakes = openWakeStore(store.db);
+		const c = app(store, "rewind-wakes");
+		store.append(c.id, [user("q1", "first")]); // 1
+		// A claimed wake in the crash window: trigger appended (seq 2),
+		// no run ever linked.
+		const claimed = wakes.record({
+			sourceKey: "obs:pane-done",
+			conversationId: c.id,
+			kind: "observation",
+			text: "pane finished",
+			facts: null,
+			origin: "test",
+		});
+		wakes.commit(claimed.wakeId, ({ id, text }) => {
+			store.append(c.id, [{ id, role: "user", parts: [{ type: "text", text }] }]);
+		});
+		expect(wakes.get(claimed.wakeId)!.state).toBe("claimed");
+		// A pending wake: delivery still owed, nothing appended yet.
+		const pending = wakes.record({
+			sourceKey: "obs:later",
+			conversationId: c.id,
+			kind: "observation",
+			text: "later nudge",
+			facts: null,
+			origin: "test",
+		});
+		const epochBefore = store.get(c.id)!.epoch;
+
+		store.editUserMessage(c.id, "q1", user("q1b", "rewritten"));
+
+		// The edit advanced the epoch — the pre-edit claim's stamped
+		// authority no longer matches.
+		expect(store.get(c.id)!.epoch).toBeGreaterThan(epochBefore);
+		const now = new Date().toISOString();
+		const plan = wakes.reconcile(now, () => null);
+		// The claimed wake's trigger seq died at the cut: it must fail
+		// closed, never resubmit against the dead seq.
+		expect(plan.toResubmit.map((r) => r.wakeId)).not.toContain(claimed.wakeId);
+		expect(plan.toFail.map((r) => r.wakeId)).toContain(claimed.wakeId);
+		// The pending wake's delivery is still owed — it lands at the
+		// new tail, not swept by the rewind.
+		expect(plan.toAppend.map((r) => r.wakeId)).toContain(pending.wakeId);
+		store.close();
+	});
+
+	test("the rewind drops the captured context window — the view never serves pre-edit content", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const windows = openWindowCapture(store.db);
+		const c = app(store, "rewind-window");
+		store.append(c.id, [user("q1", "first")]); // 1
+		windows.record(c.id, {
+			model: "m",
+			step: 1,
+			recallVersion: 0,
+			capture: {
+				v: 1,
+				system: "sys",
+				tools: [],
+				messages: [],
+				segments: {
+					identity: 1,
+					environment: 1,
+					project: 1,
+					agentsMd: 1,
+					userMd: 1,
+					skills: 1,
+					toolDefs: 1,
+					history: 1,
+					toolResults: 1,
+				},
+			},
+		});
+		expect(windows.read(c.id)).not.toBeNull();
+		store.editUserMessage(c.id, "q1", user("q1b", "rewritten"));
+		expect(windows.read(c.id)).toBeNull();
 		store.close();
 	});
 });

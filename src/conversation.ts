@@ -214,10 +214,13 @@ export interface ConversationStore {
 	// Edit a user message: drop it and every causally later event in one
 	// transaction, sweep their compaction/recall/projection/rating
 	// dependents, then append the edited message at a seq no event has
-	// ever used. One transaction, so an interrupted write cannot leave a
-	// hole where the transcript was. Null when the id is not a user event
-	// of this conversation; the caller fences live work and owns the log
-	// line. Queued retention for the dropped tail is cancelled after the
+	// ever used. The epoch advances with the rewind — pre-edit wake
+	// claims fail closed instead of resubmitting dead seqs — and the
+	// captured context window drops with the content it described. One
+	// transaction, so an interrupted write cannot leave a hole where the
+	// transcript was. Null when the id is not a user event of this
+	// conversation; the caller fences live work and owns the log line.
+	// Queued retention for the dropped tail is cancelled after the
 	// commit (an already-retained memory is not recalled here).
 	editUserMessage(id: string, messageId: string, message: UIMessage): MessageEdit | null;
 	// Initialize missing app settings once, no reset, no epoch fence;
@@ -761,6 +764,21 @@ export function openStore(dbPath: string): ConversationStore {
 					new Date().toISOString(),
 					conv.memory_excluded === 0 ? 1 : 0,
 				);
+				// The rewind retires every pre-edit admission's authority: a
+				// claimed-but-unlinked wake (crash/backoff window) carries a
+				// history_seq the delete just killed, and reconcile resubmits
+				// such claims only while the claim epoch still matches — the
+				// bump fails them closed, never resubmitting a dead seq.
+				// Pending wakes are untouched: their delivery is still owed
+				// and lands at the new tail under the new epoch; linked wakes
+				// keep their run-chain settlement (the edit route abandons
+				// interrupted runs the cut orphans).
+				bump(id);
+				// The captured outbound prompt is verbatim pre-edit content —
+				// the window view must not serve it after the rewind. Same
+				// sweep deleteConversation runs; the next turn's capture
+				// rewrites the row.
+				qDeleteWindows.run(id);
 				if (
 					conv.archived_at !== null &&
 					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0

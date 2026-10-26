@@ -234,6 +234,9 @@ const BOX_ANY = /[\u2500-\u257F]/;
 const BOX_RUN = /[\u2500-\u257F].*[\u2500-\u257F]/;
 const BOX_HORIZ = /[─━═]/;
 const BOX_VERT = /[│┃║]/;
+// A pure stroke line is a drawn rule — a status-bar border or a pasted
+// ─── divider — never a table part (those carry verticals and corners).
+const BOX_HLINE = /^[\s─━═┄┅┈┉╌╍]+$/;
 
 // A rule line holds only box chars and whitespace with at least one
 // horizontal stroke — a table's border or row separator. Its column
@@ -647,6 +650,18 @@ export function Markdown({
 		// renders as a real table; anything else keeps its fixed-width
 		// shape fenced, never proportional-font noise.
 		if (BOX_RUN.test(line)) {
+			// A drawn rule renders as a rule, not a paragraph of dash
+			// glyphs — collapse the band (blank-line separated repeats
+			// included, like a status bar's top+bottom borders) into one.
+			if (BOX_HLINE.test(line)) {
+				flushPara();
+				i++;
+				while (i < lines.length && (lines[i]!.trim() === "" || BOX_HLINE.test(lines[i]!))) {
+					i++;
+				}
+				blocks.push(<hr key={key++} className="md-hr" />);
+				continue;
+			}
 			const run: string[] = [];
 			let j = i;
 			while (j < lines.length && BOX_ANY.test(lines[j]!)) {

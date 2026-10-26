@@ -91,6 +91,28 @@ describe("Markdown", () => {
 		expect(html).not.toContain("<table");
 	});
 
+	// A status bar's top+bottom borders arrive as stroke-only lines —
+	// verbatim screen capture the transcript must not echo back as
+	// paragraphs of dash glyphs.
+	test("a pure box-stroke line is a drawn rule, its band collapses to one", () => {
+		const rule = "─".repeat(60);
+		const html = renderToStaticMarkup(
+			<Markdown text={`Error: Retry failed after 5 attempts\n\n${rule}\n\n${rule}\nstatus line`} />,
+		);
+		expect(html.match(/class="md-hr"/g)?.length).toBe(1);
+		expect(html).toContain("status line");
+		expect(html).toContain("Retry failed");
+		expect(html).not.toContain(rule);
+	});
+
+	test("a drawn rule inside a box run still keeps the table shape", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"┌───┬───┐\n│ a │ b │\n├───┼───┤\n│ 1 │ 2 │\n└───┴───┘"} />,
+		);
+		expect(html).toContain('class="md-tablewrap"');
+		expect(html).toContain("<td>2</td>");
+	});
+
 	// Delegation and program notices open with a machinery tag line —
 	// machine speech that must read as an envelope, not transcript prose.
 	test("a machinery tag line renders fenced, following prose stays text", () => {

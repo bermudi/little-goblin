@@ -665,7 +665,7 @@ describe("driveStream", () => {
 	// step's reported input; fidelity the unfolded span. Reused so the
 	// stream tests exercise the same decision the runtime installs.
 	const realArms = (info: {
-		inputTokens: number | null;
+		projectedInputTokens: number | null;
 		historyChars: number;
 		stepNumber: number;
 	}) =>
@@ -722,14 +722,19 @@ describe("driveStream", () => {
 		// Fidelity: history chars over the carried summary, chars/4.
 		expect(
 			preemptArm(
-				{ inputTokens: null, historyChars: 480_001, summaryChars: 0, contextWindow: undefined },
+				{
+					projectedInputTokens: null,
+					historyChars: 480_001,
+					summaryChars: 0,
+					contextWindow: undefined,
+				},
 				arms,
 			),
 		).toBe("fidelity");
 		expect(
 			preemptArm(
 				{
-					inputTokens: null,
+					projectedInputTokens: null,
 					historyChars: 480_001,
 					summaryChars: 400_000,
 					contextWindow: undefined,
@@ -740,25 +745,40 @@ describe("driveStream", () => {
 		// Pressure: the last step's input against the catalog window.
 		expect(
 			preemptArm(
-				{ inputTokens: 750_000, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				{
+					projectedInputTokens: 750_000,
+					historyChars: 0,
+					summaryChars: 0,
+					contextWindow: 1_000_000,
+				},
 				arms,
 			),
 		).toBe("pressure");
 		expect(
 			preemptArm(
-				{ inputTokens: 749_999, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				{
+					projectedInputTokens: 749_999,
+					historyChars: 0,
+					summaryChars: 0,
+					contextWindow: 1_000_000,
+				},
 				arms,
 			),
 		).toBeNull();
 		expect(
 			preemptArm(
-				{ inputTokens: 750_000, historyChars: 0, summaryChars: 0, contextWindow: undefined },
+				{
+					projectedInputTokens: 750_000,
+					historyChars: 0,
+					summaryChars: 0,
+					contextWindow: undefined,
+				},
 				arms,
 			),
 		).toBeNull();
 		expect(
 			preemptArm(
-				{ inputTokens: null, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
+				{ projectedInputTokens: null, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
 				arms,
 			),
 		).toBeNull();

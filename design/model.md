@@ -123,10 +123,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   so a fence spends no further calls and clears no frozen prompt snapshot —
   the crossing retries under the new settings. Ruling 2026-10-25
   ([compaction](compaction.md) → Timing): the normal fold is now a
-  **step-boundary pre-emption** — both trigger arms (pressure: a step
-  reporting ≥75% of the window; fidelity: an unfolded span ≥120k tokens)
-  are checked at the `prepareStep` seam before every model call, and a
-  firing arm stops the next dispatch, folds mid-turn, and resumes the
+  **step-boundary pre-emption** — both trigger arms (pressure: the
+  projected upcoming request ≥75% of the window; fidelity: an unfolded
+  span ≥120k tokens) are checked at the `prepareStep` seam before every
+  model call, gate-checked for foldable stored history, and a firing arm
+  stops the next dispatch, folds mid-turn, and resumes the
   turn on the compacted view through the overflow rail (full tail,
   reason `preempt`; it consumes the turn's one fold-resume; a context
   landing at the same boundary retracts in its favor). The serial-lane

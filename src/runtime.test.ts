@@ -1215,6 +1215,20 @@ function seedExchanges(store: Store, convId: string): void {
 	}
 }
 
+// Enough stored bulk that a fold is real against a given tail budget —
+// exchanges × 2 messages × chars, estimated at chars/4 tokens.
+function seedBigExchanges(store: Store, convId: string, exchanges: number, chars: number): void {
+	const big = "z".repeat(chars);
+	for (let i = 0; i < exchanges; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `b${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}
+
 describe("context overflow recovery", () => {
 	test("an overflow on the first call compacts and resumes — one stored reply", async () => {
 		const s = scripted([overflowError(), textParts("the answer")], { extra: textParts("ok") });
@@ -1404,6 +1418,105 @@ describe("context overflow recovery", () => {
 		expect(compactionBudgets(1_000)).toEqual({ tailTokenBudget: 250, inputTokenBudget: 500 });
 		// A null window (manual /compact, catalog silent) takes absolutes.
 		expect(compactionBudgets(null)).toEqual({ tailTokenBudget: 30_000, inputTokenBudget: 100_000 });
+	});
+
+	test("a fresh conversation whose live tool output crosses the fidelity threshold is not interrupted", async () => {
+		// design/compaction.md → Timing (2026-10-25): the fidelity arm is
+		// maintenance, never a killer. The live turn's growth is not
+		// foldable — with nothing stored to fold, the arm stands down and
+		// the turn proceeds on the big window. Regression: this exact shape
+		// previously terminated the turn with "nothing left to compact".
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls"),
+				],
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1_048_576 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					// ~130k estimated tokens — past the 120k fidelity arm.
+					execute: async () => "x".repeat(520_000),
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1_048_576,
+					summarize: async () => {
+						throw new Error("no fold may run on a fresh conversation");
+					},
+				},
+			},
+		});
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// Both calls dispatched — no interruption, no fold, no error.
+		expect(s.prompts).toHaveLength(2);
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		expect(sink.chunkTypes).not.toContain("error");
+		r.store.close();
+	});
+
+	test("a large tool result makes the upcoming request cross pressure even when the last request read small", async () => {
+		// design/compaction.md → Timing: pressure budgets the UPCOMING
+		// request. The last completed step reported 5k of an 8k window —
+		// below the arm — but the 30k-char tool result after it projects
+		// the next request far over, and stored history exists to fold.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 5_000),
+				],
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 8_000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "y".repeat(30_000);
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 8_000,
+					summarize: async () => "folded past",
+				},
+			},
+		});
+		// ~12k tokens stored against a 2k tail budget (25% of 8k, under
+		// the 30k cap) — a fold is real.
+		seedBigExchanges(r.store, r.conv.id, 6, 4_000);
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(executions).toBe(1);
+		// Step 0 dispatched; pressure pre-empted step 1; the resume's call
+		// is the only other request, on the folded view with the tool
+		// result carried.
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("folded past");
+		expect(s.prompts[1]).toContain("yyyy");
+		expect(r.store.getCompaction(r.conv.id)).not.toBeNull();
+		r.store.close();
 	});
 
 	test("an overflow with nothing left to compact ends with a plain message", async () => {

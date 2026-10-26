@@ -241,7 +241,7 @@ export interface StreamDeps<M extends WireMember> {
 	// consulted while the overflow rail is recoverable and authority holds
 	// (one fold-resume per logical turn; a fenced turn takes the fence path).
 	preemptCheck?(info: {
-		inputTokens: number | null;
+		projectedInputTokens: number | null;
 		historyChars: number;
 		stepNumber: number;
 	}): "pressure" | "fidelity" | null;
@@ -338,8 +338,17 @@ export async function driveStream<M extends WireMember>(
 		// authority: a fenced turn must take the fence path, not start a
 		// fold.
 		if (deps.preemptCheck !== undefined && deps.overflowRecoverable && deps.holdsAuthority()) {
+			// The upcoming request, not the last one: the last completed
+			// step's reported input plus everything appended since its
+			// dispatch (assistant output, tool results, steers), at
+			// chars/4. Null before the first completed step.
+			const projectedInputTokens =
+				lastStepInputTokens !== null && lastWindow !== null
+					? lastStepInputTokens +
+						Math.ceil(Math.max(0, segments.history - lastWindow.segments.history) / 4)
+					: null;
 			const arm = deps.preemptCheck({
-				inputTokens: lastStepInputTokens,
+				projectedInputTokens,
 				historyChars: segments.history,
 				stepNumber,
 			});
@@ -352,7 +361,7 @@ export async function driveStream<M extends WireMember>(
 					conversation: convId,
 					arm,
 					step: stepNumber,
-					inputTokens: lastStepInputTokens,
+					projectedInputTokens,
 					historyChars: segments.history,
 				});
 				throw new PreemptSignal(arm, stepNumber);

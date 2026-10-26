@@ -80,14 +80,20 @@ export class PreemptCompactError extends ContextOverflowError {
 	}
 }
 
-// The two arms (design/compaction.md → Triggers). Pressure reads the last
-// completed step's reported input against the catalog window — it exists
-// to prevent hitting a wall. Fidelity estimates the unfolded span since
-// the previous boundary (history chars minus the carried summary, chars/4)
-// — it exists because the fold is the lossy step and span size sets its
-// loss. Fidelity wins ties: it is checked first and fires at any window.
+// The two arms (design/compaction.md → Triggers). Pressure budgets the
+// UPCOMING request — the last completed step's reported input plus the
+// growth since its dispatch (assistant output, tool results, steers),
+// estimated at chars/4 — because a tool result can blow the window in one
+// step while the previous request read small. Fidelity estimates the
+// unfolded span since the previous boundary (history chars minus the
+// carried summary, chars/4) — it exists because the fold is the lossy
+// step and span size sets its loss. Fidelity wins ties: it is checked
+// first and fires at any window. Both arms are gate-checked for
+// foldability by the runtime before any interruption — an arm with
+// nothing stored to fold stands down.
 export interface PreemptInfo {
-	inputTokens: number | null;
+	/** Null before the first completed step — pressure cannot fire blind. */
+	projectedInputTokens: number | null;
 	historyChars: number;
 	summaryChars: number;
 	contextWindow: number | undefined;
@@ -101,8 +107,8 @@ export function preemptArm(
 	if (span >= arms.fidelitySpanTokens) return "fidelity";
 	if (
 		info.contextWindow !== undefined &&
-		info.inputTokens !== null &&
-		info.inputTokens >= info.contextWindow * arms.pressurePct
+		info.projectedInputTokens !== null &&
+		info.projectedInputTokens >= info.contextWindow * arms.pressurePct
 	) {
 		return "pressure";
 	}

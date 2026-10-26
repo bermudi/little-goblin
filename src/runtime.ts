@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
-import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
+import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/compaction.ts";
 import { isTransientTurnFailure } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
@@ -1223,21 +1223,46 @@ export class Runtime {
 				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
 					? {
 							preemptCheck: (info: {
-								inputTokens: number | null;
+								projectedInputTokens: number | null;
 								historyChars: number;
 								stepNumber: number;
-							}) =>
-								preemptArm(
+							}) => {
+								const previousFold = store.getCompaction(convId);
+								const arm = preemptArm(
 									{
 										...info,
-										summaryChars: store.getCompaction(convId)?.summary.length ?? 0,
+										summaryChars: previousFold?.summary.length ?? 0,
 										contextWindow: step.contextWindow,
 									},
 									{
 										pressurePct: COMPACT_AT_PCT / 100,
 										fidelitySpanTokens: COMPACT_FIDELITY_SPAN_TOKENS,
 									},
-								),
+								);
+								if (arm === null) return null;
+								// Never interrupt for a fold that cannot happen: a
+								// no-op compact on the recovery rail is a TERMINAL
+								// error, and the live turn's own growth is never
+								// foldable — only stored history is. An arm with
+								// nothing to fold stands down; a genuinely doomed
+								// turn still fails honestly through the overflow
+								// rail (a real 400, not a projection).
+								const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
+								const foldable =
+									chooseBoundary(store.historyDetail(convId), {
+										tailTokenBudget,
+										previousBoundary: previousFold?.boundarySeq ?? null,
+									}) !== null;
+								if (!foldable) {
+									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
+										conversation: convId,
+										arm,
+										step: info.stepNumber,
+									});
+									return null;
+								}
+								return arm;
+							},
 						}
 					: {}),
 				evidence: this.reviewer?.evidence,

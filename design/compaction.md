@@ -177,6 +177,21 @@ Implementation rulings (2026-10-25):
   on the recovery. A turn that keeps growing after a pre-empt is guarded by
   the 85% context landing (tools-off prose ending) and the overflow error
   path, in that order; both are terminal for the turn, never loops.
+- **Pressure budgets the upcoming request, not the last one**: the last
+  completed step's reported input plus everything appended since its
+  dispatch (assistant output, tool results, steers), estimated at chars/4.
+  A tool result can blow the window in one step while the previous request
+  read small; null before the first completed step (pressure cannot fire
+  blind — a 400 on the admitted view rides the overflow rail).
+- **An arm with nothing foldable stands down — never interrupt for a fold
+  that cannot happen.** A no-op compact on the recovery rail is a terminal
+  error, and the live turn's own growth is never foldable (only stored
+  history is). Both arms are gate-checked with `chooseBoundary` against the
+  same tail budget the eventual fold would use; a stood-down arm logs and
+  returns null. A genuinely doomed turn — live content alone over the
+  window — still fails honestly through the overflow rail (a real 400,
+  not a projection). Regression-pinned 2026-10-25: a fresh conversation
+  whose 130k-token tool output crosses fidelity must complete untouched.
 - **A context landing that issues at the same boundary retracts** — the
   pre-empt supersedes the tools-off ending (`TurnState.retractContextLanding`);
   the resume starts unforced with tools on. A repeat/watchdog cut never

@@ -109,6 +109,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // confirm; short enough that a wedged Telegram API can't hold a deploy.
 // The startup-failure cleanup budgets a wedged close with it too.
 const SHUTDOWN_DRAIN_MS = 10_000;
+// Attach retries back off toward the cap — the observed boot miss is a
+// wallet or resolver still coming up, which heals in seconds. A
+// genuinely broken credential stays loud at the cap rather than dying
+// silent for the whole boot.
+const TELEGRAM_ATTACH_RETRY_STEPS_MS = [5_000, 15_000, 30_000, 60_000];
+const TELEGRAM_ATTACH_RETRY_CAP_MS = 300_000;
+const attachRetryMs = (attempt: number) =>
+	TELEGRAM_ATTACH_RETRY_STEPS_MS[attempt - 1] ?? TELEGRAM_ATTACH_RETRY_CAP_MS;
 
 async function boot() {
 	ensureHomeLayout();
@@ -336,6 +344,12 @@ async function boot() {
 	// The init task reads this after each await — a getMe landing during
 	// shutdown must not attach or start polling.
 	let telegramSealed = false;
+	// Resolved by stopTelegram — the attach retry's backoff races it, so a
+	// shutdown never waits out a pending retry.
+	let fireTelegramSeal!: () => void;
+	const telegramSealSignal = new Promise<void>((resolve) => {
+		fireTelegramSeal = resolve;
+	});
 	// Resolved inside the Telegram init task only; the HTTP bot-token
 	// getter fails closed until the channel attaches.
 	let telegramToken: string | undefined;
@@ -876,11 +890,13 @@ async function boot() {
 
 	// ---------- deferred telegram attach ----------
 	//
-	// One bounded attempt (getMe carries the shared 30s deadline), kicked
-	// only after every core service stands — the app channel, HTTP, the
-	// scheduler and the mail watcher must never wait on bot auth. A
-	// failed attempt leaves every telegram seam unavailable and asks for
-	// a config repair plus approved restart; there is no retry loop.
+	// The init task kicks only after every core service stands — the app
+	// channel, HTTP, the scheduler and the mail watcher must never wait on
+	// bot auth. Attach retries with backoff until it lands, the channel
+	// seals, or config disables it: the observed boot failure is a wallet
+	// or resolver still coming up — environmental, self-healing. A
+	// getUpdates ending mid-run (grammy rethrows 401/409) stays a
+	// one-shot detach — that death is fatal, not environmental.
 	const attachTelegram = (running: RunningBot): void => {
 		mailLanes.telegram = makeTelegramMailLane(running.bot.api);
 		if (mailApproval !== undefined) {
@@ -912,75 +928,99 @@ async function boot() {
 	};
 	const telegramInit = telegramEnabled
 		? (async () => {
-				try {
-					// The token resolves inside this task only — the HTTP door
-					// fails closed until the attach below sets it live.
-					telegramToken = await auth.resolve(AUTH_TELEGRAM_TOKEN);
-					if (telegramSealed || !runtime.accepting()) {
-						log.info("telegram attach skipped — shutdown in progress");
-						return;
-					}
-					const running = await startBot({
-						configRef,
-						auth,
-						store,
-						runtime,
-						titleFor,
-						async synthesize(text, tts) {
-							return synthesizeSpeech(text, tts, { auth });
-						},
-						transcribe: transcribeFile,
-						...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-						mail: () => telegramMailApproval,
-						programApproval: () => telegramProgramApproval,
-						followUpGate: () => system1Gate ?? undefined,
-						resumeOps: () => resumeOps,
-					});
-					// Own the bot the moment it exists — a later detach or a
-					// seal mid-replay must never strand its stop/drain.
-					telegramRunning = running;
-					if (telegramSealed || !runtime.accepting()) {
-						log.info("telegram attach skipped — shutdown in progress");
-						return;
-					}
-					attachTelegram(running);
-					// Rows reclassified 'interrupted' at open get one DM per
-					// operator — terse facts, never a replay. Sent only after a
-					// successful attach; the skip/failure logs above stand alone.
-					sendInterruptedTurnNotices(
-						running.bot.api,
-						turnJournal.interruptedAtOpen,
-						configRef.current.operators,
-						(id) => store.get(id)?.title ?? undefined,
-					);
-					if (telegramSealed || !runtime.accepting()) {
-						detachTelegram();
-						return;
-					}
-					// Replay before polling — the offset must not advance past
-					// journaled input — then poll with a detach-on-end contract:
-					// a terminated long poll degrades the channel, never the boot.
-					await running.replayInbox();
-					if (telegramSealed || !runtime.accepting()) {
-						detachTelegram();
-						return;
-					}
-					running.startPolling((err) => {
-						log.error(
-							"telegram polling ended — channel detached; repair and restart to reattach",
-							err,
+				for (let attempt = 1; ; attempt++) {
+					if (telegramSealed) return;
+					try {
+						// The token resolves inside this task only — the HTTP door
+						// fails closed until the attach below sets it live.
+						telegramToken = await auth.resolve(AUTH_TELEGRAM_TOKEN);
+						if (telegramSealed || !runtime.accepting()) {
+							log.info("telegram attach skipped — shutdown in progress");
+							return;
+						}
+						const running = await startBot({
+							configRef,
+							auth,
+							store,
+							runtime,
+							titleFor,
+							async synthesize(text, tts) {
+								return synthesizeSpeech(text, tts, { auth });
+							},
+							transcribe: transcribeFile,
+							...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
+							mail: () => telegramMailApproval,
+							programApproval: () => telegramProgramApproval,
+							followUpGate: () => system1Gate ?? undefined,
+							resumeOps: () => resumeOps,
+						});
+						// Own the bot the moment it exists — a later detach or a
+						// seal mid-replay must never strand its stop/drain.
+						telegramRunning = running;
+						if (telegramSealed || !runtime.accepting()) {
+							log.info("telegram attach skipped — shutdown in progress");
+							return;
+						}
+						attachTelegram(running);
+						// Rows reclassified 'interrupted' at open get one DM per
+						// operator — terse facts, never a replay. Sent only after a
+						// successful attach; the skip/failure logs above stand alone.
+						sendInterruptedTurnNotices(
+							running.bot.api,
+							turnJournal.interruptedAtOpen,
+							configRef.current.operators,
+							(id) => store.get(id)?.title ?? undefined,
 						);
+						if (telegramSealed || !runtime.accepting()) {
+							detachTelegram();
+							return;
+						}
+						// Replay before polling — the offset must not advance past
+						// journaled input — then poll with a detach-on-end contract:
+						// a terminated long poll degrades the channel, never the boot.
+						await running.replayInbox();
+						if (telegramSealed || !runtime.accepting()) {
+							detachTelegram();
+							return;
+						}
+						running.startPolling((err) => {
+							log.error(
+								"telegram polling ended — channel detached; repair and restart to reattach",
+								err,
+							);
+							detachTelegram();
+						});
+						// Catch up any occurrence held while the channel was
+						// unattached — after replay, before steady-state polling.
+						scheduler.tick();
+						return;
+					} catch (err) {
+						// A partial attempt can own a live poller or buffered
+						// intake — supersede it before the next try, or the two
+						// getUpdates consumers fight over the token (409).
+						const superseded = telegramRunning;
 						detachTelegram();
-					});
-					// Catch up any occurrence held while the channel was
-					// unattached — after replay, before steady-state polling.
-					scheduler.tick();
-				} catch (err) {
-					log.error(
-						"telegram channel init failed — running without it; fix the credentials/config and restart",
-						err,
-					);
-					detachTelegram();
+						if (superseded !== null) {
+							telegramRunning = null;
+							if (superseded.bot.isRunning()) {
+								await superseded.bot.stop().catch(() => {});
+							}
+							await superseded.drainIntake().catch(() => {});
+						}
+						if (telegramSealed || !runtime.accepting()) return;
+						if (!configRef.current.telegram.enabled) {
+							log.info("telegram attach stopped — channel disabled in config");
+							return;
+						}
+						const retryMs = attachRetryMs(attempt);
+						// Loud on the first failure, a warn each retry after.
+						if (attempt === 1) {
+							log.error("telegram attach failed — retrying", err, { attempt, retryMs });
+						} else {
+							log.warn("telegram attach failed — retrying", err, { attempt, retryMs });
+						}
+						await Promise.race([sleep(retryMs), telegramSealSignal]);
+					}
 				}
 			})().catch((err: unknown) => {
 				log.error("telegram init task failed", err);
@@ -994,6 +1034,7 @@ async function boot() {
 	// the caller's shared drain budget, never its own timer.
 	const stopTelegram = (): Promise<unknown> => {
 		telegramSealed = true;
+		fireTelegramSeal();
 		// Owner, not router: a detached channel still has intake to drain.
 		const running = telegramRunning;
 		if (tg !== null) detachTelegram();

@@ -15,14 +15,19 @@ turn without an output door. `operators: []` is legal only in this mode.
 
 When `true`, the channel attaches *deferred*: boot builds the runtime,
 mail/program owners, wake/resume seams, HTTP, the scheduler and the mail
-watcher on `tg = null` first, then runs one bounded init task — token
-resolve, `getMe` (30s deadline), seam attach, interrupted-run notices,
-inbox replay, polling. A failed attempt logs the channel degraded and
-leaves every Telegram seam answering *unavailable*; recovery is a
-credential/config repair plus an approved restart — there is no retry
-loop. A `getUpdates` ending mid-run (grammy rethrows 401/409) detaches
-the same seams and keeps the app up. The mini-app door and `botToken`
-fail closed until attach. A disabled channel keeps its saved
+watcher on `tg = null` first, then runs the init task — token resolve,
+`getMe` (30s deadline), seam attach, interrupted-run notices, inbox
+replay, polling. Attach *retries with backoff* (5s → 15s → 30s → 60s →
+5m cap) until it lands, the channel seals, or a live config write
+disables it (ruling 2026-10-25): the observed boot failure is the
+secrets wallet or the resolver still coming up — environmental,
+self-healing — and a one-shot attempt meant every such boot left the
+channel dead until the next restart. A partial attempt is superseded
+(stop/drain) before the next try so two `getUpdates` consumers never
+fight over the token. A `getUpdates` ending mid-run (grammy rethrows
+401/409) still detaches the same seams without retry — that death is
+fatal, not environmental — and keeps the app up. The mini-app door and
+`botToken` fail closed until attach. A disabled channel keeps its saved
 `telegram.model`/`thinking` pin dormant: the ref's syntax still
 validates, provider membership and the thinking clamp apply only once
 the channel is re-enabled.

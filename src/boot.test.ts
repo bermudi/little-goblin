@@ -38,7 +38,7 @@ function signedInitData(userId: number): string {
 
 describe("deferred telegram boot", () => {
 	test(
-		"enabled + missing telegram auth degrades the channel; the app serves",
+		"enabled + missing telegram auth degrades the channel and keeps retrying; the app serves",
 		async () => {
 			const tg = fakeTelegram({ getMe: "ok", getUpdates: "hold" });
 			const child = bootChild({
@@ -49,8 +49,14 @@ describe("deferred telegram boot", () => {
 			try {
 				await child.waitLog("http listening");
 				expect((await child.http("/api/app/status")).status).toBe(200);
-				await child.waitLog("telegram channel init failed");
-				// Auth never resolved → the fake API sees nothing.
+				await child.waitLog("telegram attach failed");
+				// Auth never resolved → the fake API sees nothing, but the loop
+				// must keep trying — the second backoff step logs again.
+				const deadline = Date.now() + 12_000;
+				while (child.lines().filter((l) => l.includes("telegram attach failed")).length < 2) {
+					if (Date.now() > deadline) throw new Error("no attach retry logged");
+					await Bun.sleep(25);
+				}
 				expect(tg.methods).toEqual([]);
 			} finally {
 				await child.stop();
@@ -61,7 +67,7 @@ describe("deferred telegram boot", () => {
 	);
 
 	test(
-		"enabled + getMe 401 degrades the channel; the app serves",
+		"enabled + getMe 401 degrades the channel and retries reach the API; the app serves",
 		async () => {
 			const tg = fakeTelegram({ getMe: "unauthorized", getUpdates: "hold" });
 			const child = bootChild({
@@ -71,9 +77,66 @@ describe("deferred telegram boot", () => {
 			try {
 				await child.waitLog("http listening");
 				expect((await child.http("/api/app/status")).status).toBe(200);
-				await child.waitLog("telegram channel init failed");
-				expect(tg.methods).toContain("getMe");
+				await child.waitLog("telegram attach failed");
+				// A permanent failure still re-attempts — the second getMe
+				// landing proves the loop, never getUpdates.
+				await tg.waitMethod("getMe", 15_000, 2);
 				expect(tg.methods).not.toContain("getUpdates");
+			} finally {
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"a getMe that fails once self-heals — the retry attaches and polls",
+		async () => {
+			const tg = fakeTelegram({ getMe: "flaky", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await child.waitLog("telegram attach failed");
+				// Still detached inside the backoff window — every seam closed.
+				expect((await child.http("/t/settings")).status).toBe(503);
+				await child.waitLog("telegram channel attached");
+				await child.waitLog("long polling started");
+				await tg.waitMethod("getUpdates");
+				expect(
+					(
+						await child.http("/api/status", {
+							headers: { "x-init-data": signedInitData(42) },
+						})
+					).status,
+				).toBe(200);
+			} finally {
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"SIGTERM inside the attach backoff exits clean — the seal beats the sleep",
+		async () => {
+			const tg = fakeTelegram({ getMe: "unauthorized", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await child.waitLog("telegram attach failed");
+				const t0 = Date.now();
+				expect(await child.stop()).toBe(0);
+				// The first backoff step is 5s — a seal-raced sleep ends now.
+				expect(Date.now() - t0).toBeLessThan(4_500);
+				expect(child.lines().join("\n")).toContain('"msg":"bye"');
 			} finally {
 				await child.stop();
 				tg.stop();

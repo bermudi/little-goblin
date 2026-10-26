@@ -20,7 +20,8 @@ export interface FakeTelegram {
 }
 
 export interface FakeTelegramOpts {
-	getMe: "ok" | "unauthorized" | "held";
+	/** "flaky" 401s the first getMe then answers ok — the attach-retry path. */
+	getMe: "ok" | "unauthorized" | "held" | "flaky";
 	/** Once getMe passes: "hold" the long poll open, "unauthorized" to kill
 	 *  polling (grammy rethrows 401/409), or "ok" for an empty batch. */
 	getUpdates: "hold" | "unauthorized" | "ok";
@@ -31,6 +32,7 @@ export function fakeTelegram(opts: FakeTelegramOpts): FakeTelegram {
 	const calls: { method: string; body: Record<string, unknown> }[] = [];
 	const getMeGate = Promise.withResolvers<void>();
 	const heldGate = Promise.withResolvers<void>();
+	let getMeCalls = 0;
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
@@ -48,8 +50,9 @@ export function fakeTelegram(opts: FakeTelegramOpts): FakeTelegram {
 			}
 			calls.push({ method, body });
 			if (method === "getMe") {
+				getMeCalls += 1;
 				if (opts.getMe === "held") await getMeGate.promise;
-				if (opts.getMe === "unauthorized") {
+				if (opts.getMe === "unauthorized" || (opts.getMe === "flaky" && getMeCalls === 1)) {
 					return Response.json(
 						{ ok: false, error_code: 401, description: "Unauthorized" },
 						{ status: 401 },

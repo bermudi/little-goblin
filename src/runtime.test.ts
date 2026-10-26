@@ -1396,6 +1396,149 @@ describe("context overflow recovery", () => {
 		r.store.close();
 	});
 
+	test("a queued input behind a headless turn never pushes the fold past the running request", async () => {
+		// P1 regression (review 2026-10-25): an input queued behind a
+		// non-streaming turn is durable history whose exchange has no reply
+		// yet. Counting it in the tail walk let the boundary land AT the
+		// running turn's user event; the reply then landed anchored exactly
+		// at that boundary, so modelEntries cut it out of every later
+		// request — even though the summary was minted before the reply
+		// existed and never saw it. The fold must see completed history
+		// strictly before the active exchange.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 900),
+				],
+				// The resume attempt's first call — step 1 never dispatched.
+				textParts("the final answer"),
+			],
+			{ extra: textParts("queued answer") },
+		);
+		const summaryPrompts: string[] = [];
+		let queued: RecordingSink | undefined;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						// A large streaming input lands between steps: durable in
+						// history (it alone dwarfs the 250-token tail budget) but
+						// queued behind the headless head, so the running turn
+						// never consumes it.
+						queued = new RecordingSink();
+						r.runtime.submit(
+							r.conv,
+							userMessage([{ type: "text", text: `${"y".repeat(1600)} queued ask` }]),
+							queued,
+						);
+						return "probe-result-7f3a";
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaryPrompts.push(prompt);
+						return "folded past";
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const headless = new HeadlessSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "run the probe" }]), headless);
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// The queued exchange settles after the headless one.
+		expect(await queued!.done).toEqual({ kind: "completed" });
+		const fold = r.store.getCompaction(r.conv.id);
+		expect(fold).not.toBeNull();
+		const liveSeq = r.store
+			.historyEntries(r.conv.id)
+			.find((e) =>
+				e.message.parts.some((p) => p.type === "text" && p.text === "run the probe"),
+			)!.seq;
+		// The boundary never reaches the active exchange's user event.
+		expect(fold!.boundarySeq).toBeLessThan(liveSeq);
+		// The summary never folded the running turn's own request.
+		expect(summaryPrompts.join("\n")).not.toContain("run the probe");
+		// The landed reply stays in the model view: a later request must
+		// still see it even though it anchored at the exchange the fold
+		// raced against.
+		const follow = submit(r, "what landed before me");
+		expect(await follow.done).toEqual({ kind: "completed" });
+		const lastPrompt = s.prompts.at(-1)!;
+		expect(lastPrompt).toContain("the final answer");
+		expect(lastPrompt).toContain("queued ask");
+		await drain(r);
+		r.store.close();
+	});
+
+	test("a threshold fold never consumes a still-queued input", async () => {
+		// Same hazard, end-of-turn rail: two large inputs queued behind a
+		// headless turn are durable history with no replies. Unconstrained,
+		// the second one's bulk parks the boundary ON the first — its turn
+		// would then land anchored at the boundary and fall out of the
+		// view. The threshold fold must stay below the queue's head.
+		const s = scripted([textParts("the landed answer", 800)], {
+			extra: textParts("queued answer"),
+		});
+		const summaryPrompts: string[] = [];
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaryPrompts.push(prompt);
+						return "folded past";
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const headless = new HeadlessSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "answer me" }]), headless);
+		const queuedA = new RecordingSink();
+		const queuedB = new RecordingSink();
+		const big = "y".repeat(1600);
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: `${big} first queued` }]), queuedA);
+		r.runtime.submit(
+			r.conv,
+			userMessage([{ type: "text", text: `${big} second queued` }]),
+			queuedB,
+		);
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// The 80% window lands the threshold fold; the queued exchange
+		// settles after it.
+		expect(await queuedA.done).toEqual({ kind: "completed" });
+		expect(await queuedB.done).toEqual({ kind: "completed" });
+		await drain(r);
+		const fold = r.store.getCompaction(r.conv.id);
+		expect(fold).not.toBeNull();
+		const firstQueuedSeq = r.store
+			.historyEntries(r.conv.id)
+			.find((e) =>
+				e.message.parts.some((p) => p.type === "text" && p.text === `${big} first queued`),
+			)!.seq;
+		expect(fold!.boundarySeq).toBeLessThan(firstQueuedSeq);
+		expect(summaryPrompts.join("\n")).not.toContain("first queued");
+		// The landed reply stays in the model view for later requests.
+		const follow = submit(r, "what landed before me");
+		expect(await follow.done).toEqual({ kind: "completed" });
+		expect(s.prompts.at(-1)!).toContain("the landed answer");
+		await drain(r);
+		r.store.close();
+	});
+
 	test("compaction budgets: absolute at scale, window-clamped small (design/compaction.md → Budgets)", () => {
 		// 1M-era rule: the fractions retire — 25% of a 1M window is a
 		// 262k tail, 50% a 524k summarizer call; neither is a bigger

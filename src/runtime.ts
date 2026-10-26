@@ -550,10 +550,13 @@ export class Runtime {
 	// Compaction summarizes the event delta without rewriting the event stream.
 	// Its dedicated controller handles stop/shutdown; authority checks leave the
 	// pointer and prompt snapshot unchanged on cancellation or fencing. The
-	// caller decides whether a failure is reported or retried.
+	// caller decides whether a failure is reported or retried. activeFloor,
+	// when given, is the running turn's earliest member seq — the fold stays
+	// strictly below it (and below any still-queued input; foldCeiling).
 	private async doCompact(
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow" | "preempt",
+		activeFloor?: number,
 	): Promise<CompactionOutcome> {
 		if (reason === "manual") {
 			conv = this.deps.store.get(conv.id) ?? conv;
@@ -601,6 +604,9 @@ export class Runtime {
 					tailTokenBudget: tail,
 					inputTokenBudget,
 					reason,
+					// Evaluated at history-read time: work may have queued while
+					// the contextWindow lookup awaited.
+					beforeSeq: () => this.foldCeiling(conv.id, activeFloor),
 					assertAuthority: () => this.checkAuthority(conv.id, epoch),
 				},
 				controller.signal,
@@ -635,6 +641,21 @@ export class Runtime {
 			this.lanes.set(convId, l);
 		}
 		return l;
+	}
+
+	// Where completed history ends for a fold: the lowest seq whose reply
+	// has not landed. While a turn runs, that is its earliest member — every
+	// event at or after it is that exchange or input queued behind it. On an
+	// idle lane it is the first still-queued input (its reply comes only
+	// with its own turn). Events at or after the ceiling must never be
+	// folded: their reply would anchor at or below the boundary and drop
+	// out of the model view, unseen by the summary that replaced it.
+	private foldCeiling(convId: string, activeFloor?: number): number | null {
+		let ceiling = activeFloor ?? null;
+		for (const t of this.lanes.get(convId)?.pending ?? []) {
+			if (ceiling === null || t.seq < ceiling) ceiling = t.seq;
+		}
+		return ceiling;
 	}
 
 	// Keep terminal delivery exactly once, even when a sink throws. Mark before
@@ -1005,6 +1026,13 @@ export class Runtime {
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;
 
+		// The active exchange starts at the earliest member seq: this turn's
+		// stored user events (replies still in flight) and, above them, every
+		// input queued behind the running request. Compaction — the pre-empt
+		// foldability probe and the fold itself — must see only completed
+		// history strictly before it (foldCeiling).
+		const activeFloor = Math.min(...turns.map((t) => t.seq));
+
 		// Reuse recall on overflow resume; it belongs to the pre-compaction view.
 		// Reissuing it would spend memory quota twice for one logical turn.
 		let memory: { prior: RecallContext[]; current: RecallContext | null } = {
@@ -1252,6 +1280,10 @@ export class Runtime {
 									chooseBoundary(store.historyDetail(convId), {
 										tailTokenBudget,
 										previousBoundary: previousFold?.boundarySeq ?? null,
+										// Completed history only — inputs queued behind
+										// this request must not push the boundary onto
+										// the running exchange.
+										beforeSeq: this.foldCeiling(convId, activeFloor),
 									}) !== null;
 								if (!foldable) {
 									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
@@ -1413,7 +1445,11 @@ export class Runtime {
 					sourceInputSeq: sourceInputSeq(),
 					members: turns,
 					compact: () =>
-						this.doCompact(conv, err instanceof PreemptCompactError ? "preempt" : "overflow"),
+						this.doCompact(
+							conv,
+							err instanceof PreemptCompactError ? "preempt" : "overflow",
+							activeFloor,
+						),
 					assertAuthority: () => this.checkAuthority(convId, epoch),
 					holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
 					signal: controller.signal,

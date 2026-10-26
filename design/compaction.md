@@ -138,7 +138,7 @@ ratios still bind, so a small model keeps exactly its old budgets and a
 the one function that owns this; a null window (manual `/compact`, catalog
 silent) takes the absolute values.
 
-## Cut rule: unchanged
+## Cut rule: exchange-complete, over completed history
 
 `chooseBoundary`'s exchange-complete rule stands: a cut is legal only where
 no later event anchors at or before the boundary. For a linear transcript
@@ -147,6 +147,20 @@ never between a tool call and its result" — every pi cut satisfies the anchor
 rule, and the anchor rule additionally handles the case pi's cannot see, a
 steer arriving mid-turn that has no span start of its own. Bursts stay atomic
 and the cut still coarsens to whole bursts.
+
+Ruling added 2026-10-26 (P1 fix, review of the same day): the walk sees
+**completed history only**. Events belonging to an exchange whose reply has
+not landed — a running turn's stored user event, or inputs queued behind it
+(a streaming submit deliberately waits out a headless turn) — are excluded
+by an exclusive ceiling (`beforeSeq`) in both the pre-empt's foldability
+probe and the fold itself. Without it, a queued input alone can exceed the
+tail budget and park the boundary ON the running exchange; the reply then
+lands anchored at exactly that boundary, `modelEntries`' causal cut drops it
+from every later request, and the summary — minted before the reply existed
+— never saw it. The ceiling is derived in the runtime (`foldCeiling`): the
+earliest member seq while a turn runs, else the first still-queued input,
+re-read when the fold reads history so late arrivals are covered. A landed
+reply needs no ceiling — the anchor rule already protects its exchange.
 
 ## Timing: pre-empt at the step boundary
 
@@ -187,9 +201,11 @@ Implementation rulings (2026-10-25):
   that cannot happen.** A no-op compact on the recovery rail is a terminal
   error, and the live turn's own growth is never foldable (only stored
   history is). Both arms are gate-checked with `chooseBoundary` against the
-  same tail budget the eventual fold would use; a stood-down arm logs and
-  returns null. A genuinely doomed turn — live content alone over the
-  window — still fails honestly through the overflow rail (a real 400,
+  same tail budget the eventual fold would use, under the same completed-
+  history ceiling (`beforeSeq`) the eventual fold applies — queued inputs
+  count toward neither the tail walk nor the boundary; a stood-down arm
+  logs and returns null. A genuinely doomed turn — live content alone over
+  the window — still fails honestly through the overflow rail (a real 400,
   not a projection). Regression-pinned 2026-10-25: a fresh conversation
   whose 130k-token tool output crosses fidelity must complete untouched.
 - **A context landing that issues at the same boundary retracts** — the

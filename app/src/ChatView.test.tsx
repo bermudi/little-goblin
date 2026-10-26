@@ -1643,6 +1643,16 @@ describe("mergeTranscript", () => {
 		const history = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
 		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2", "ax"]);
 	});
+
+	// A mid-turn steer appends optimistically below the reply already in
+	// the view, but the turn folded it before that reply — the durable
+	// order is [steer, answer]. Same ids in a different order is the
+	// anchor working, not an anomaly: take the store's order.
+	test("a folded steer reorders under the reply it steered", () => {
+		const current = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
+		const history = [msg("u1", "user"), msg("u2", "user"), msg("a1", "assistant")];
+		expect(mergeTranscript(current, history)).toEqual(history);
+	});
 });
 
 describe("appendQuote", () => {

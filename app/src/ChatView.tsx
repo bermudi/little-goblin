@@ -2383,12 +2383,20 @@ function askNotifyPermission() {
 // and the tail appends after it — nothing local is ever dropped.
 export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIMessage[] {
 	const currentIds = new Set(current.map((m) => m.id));
-	const arrivals = history.filter((m) => !currentIds.has(m.id));
-	// Nothing new durably — the view stands (a history that shrank or
-	// reordered is an anomaly; the live view wins).
-	if (arrivals.length === 0) return current;
 	const historyIds = new Set(history.map((m) => m.id));
-	if (current.every((m) => historyIds.has(m.id))) return history;
+	// Everything the view holds is durable — the store's causal order
+	// wins outright, arrivals or not. A steered message sorts before the
+	// reply that folded it in, which the optimistic tail-append gets
+	// backwards; identical order keeps the live reference untouched.
+	if (current.every((m) => historyIds.has(m.id))) {
+		const sameOrder =
+			current.length === history.length && current.every((m, i) => m.id === history[i]!.id);
+		return sameOrder ? current : history;
+	}
+	const arrivals = history.filter((m) => !currentIds.has(m.id));
+	// Nothing new durably — the view stands (a shrunk history is an
+	// anomaly; the live view wins).
+	if (arrivals.length === 0) return current;
 	// The store owns the interleaving of every message it holds — an
 	// answer belongs between its question and the next one, not below
 	// both. The view's contribution is only the messages the store

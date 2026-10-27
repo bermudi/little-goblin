@@ -131,6 +131,34 @@ describe("chooseBoundary", () => {
 		expect(boundary).toBe(6);
 	});
 
+	test("beforeSeq keeps the active exchange out of the fold — queued input, running request", () => {
+		// P1 regression (review 2026-10-25): an input queued behind a
+		// non-streaming turn is durable history with no reply yet. Alone it
+		// dwarfs the tail budget, so the unconstrained walk breaks with the
+		// boundary AT the running turn's user event — the reply would then
+		// land anchored at that boundary and drop out of the model view,
+		// unseen by the summary. The ceiling folds completed history only.
+		const live = ev(7, "user", "run the probe".repeat(200));
+		const queued = ev(8, "user", "y".repeat(4_000));
+		const detail = [...sample(), live, queued];
+		// Unconstrained: the queued bulk pushes the boundary onto the live
+		// exchange's user event.
+		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null })).toBe(7);
+		// Constrained: the fold stops below the active exchange — the live
+		// request and the queued input both stay in the tail.
+		expect(
+			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: 7 }),
+		).toBe(4);
+		// Nothing completed left to fold stands down entirely.
+		expect(
+			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: 4, beforeSeq: 7 }),
+		).toBeNull();
+		// A null ceiling is the unconstrained walk — unchanged semantics.
+		expect(
+			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: null }),
+		).toBe(7);
+	});
+
 	test("re-compaction stops at the previous boundary — nothing new to fold", () => {
 		expect(chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: 4 })).toBeNull();
 	});
@@ -209,6 +237,37 @@ describe("runCompaction", () => {
 			summary: "the folded summary",
 			model: "zai/glm-5.3",
 		});
+	});
+
+	test("beforeSeq keeps the active exchange and queued input out of the fold", async () => {
+		// P1 regression (review 2026-10-25): the fold must summarize
+		// completed history only. A running turn's user event and an input
+		// queued behind it never enter the span, the summary, or the
+		// pointer — the landing reply would otherwise anchor at or below
+		// the boundary and vanish from the model view.
+		const detail = [
+			...sample(),
+			ev(7, "user", "run the probe".repeat(200)),
+			ev(8, "user", "y".repeat(4_000)),
+		];
+		const { store, writes } = fakeStore(detail);
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return "folded";
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000, beforeSeq: () => 7 },
+			signal(),
+		);
+		expect(outcome).toMatchObject({ kind: "compacted", boundarySeq: 4 });
+		expect(prompts.join("\n")).not.toContain("run the probe");
+		expect(prompts.join("\n")).not.toContain("yyyy");
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toMatchObject({ boundarySeq: 4 });
 	});
 
 	test("spoken instructions survive into the summarizer prompt — the loss precedes any model judgment", async () => {

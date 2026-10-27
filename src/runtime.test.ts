@@ -4,35 +4,35 @@ import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
+import { type LanguageModel, type ToolSet, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import {
-	finishPart,
-	scriptedModel as scriptedEdge,
-	type StreamAttempt,
-	textParts,
-	toolCallPart,
-} from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
+import { systemPromptFor } from "./agent/prompt.ts";
+import { toolNames } from "./agent/tools/mod.ts";
 import { readFileTool } from "./agent/tools/read.ts";
-import { parseConfig } from "./config.ts";
+import { memoryConfigSchema, parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
-import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
-import { Reviewer } from "./reviewer.ts";
-import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { openWindowCapture } from "./window-capture.ts";
-import type { HindsightClient } from "./memory/hindsight.ts";
 import { forgetDocument } from "./memory/forget.ts";
-import { memoryConfigSchema } from "./config.ts";
+import type { HindsightClient } from "./memory/hindsight.ts";
+import { Reviewer } from "./reviewer.ts";
 import {
-	Runtime,
+	compactionBudgets,
 	type ModelStep,
+	Runtime,
 	type RuntimeDeps,
 	type TurnDone,
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import type { System1Client } from "./system1.ts";
+import {
+	finishPart,
+	type StreamAttempt,
+	scriptedModel as scriptedEdge,
+	textParts,
+	toolCallPart,
+} from "./testkit/fake-model.ts";
 import {
 	deferred,
 	fakeModel,
@@ -43,12 +43,12 @@ import {
 	recordingModel,
 	sleep,
 	tmpDb,
+	tmpDir,
 	useHome,
 	waitUntil,
-	tmpDir,
 } from "./testkit.ts";
-import { systemPromptFor } from "./agent/prompt.ts";
-import { toolNames } from "./agent/tools/mod.ts";
+import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
+import { openWindowCapture } from "./window-capture.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -1215,6 +1215,20 @@ function seedExchanges(store: Store, convId: string): void {
 	}
 }
 
+// Enough stored bulk that a fold is real against a given tail budget —
+// exchanges × 2 messages × chars, estimated at chars/4 tokens.
+function seedBigExchanges(store: Store, convId: string, exchanges: number, chars: number): void {
+	const big = "z".repeat(chars);
+	for (let i = 0; i < exchanges; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `b${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}
+
 describe("context overflow recovery", () => {
 	test("an overflow on the first call compacts and resumes — one stored reply", async () => {
 		const s = scripted([overflowError(), textParts("the answer")], { extra: textParts("ok") });
@@ -1318,6 +1332,333 @@ describe("context overflow recovery", () => {
 		const text = stored.parts.find((p) => p.type === "text") as { text: string } | undefined;
 		expect(text?.text).toBe("the final answer");
 		expect(r.store.history(r.conv.id).filter((m) => m.role === "assistant")).toHaveLength(4);
+		r.store.close();
+	});
+
+	test("a step-boundary pre-empt folds mid-turn and resumes — one merged reply, full tail", async () => {
+		// design/compaction.md → Timing: the pressure arm fires at the
+		// boundary after step 0 reports 900/1000 — before the next call
+		// dispatches, so no provider call is wasted on a doomed prompt.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 900),
+				],
+				// The resume attempt's first call — step 1 never dispatched.
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "probe-result-7f3a";
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async () => "folded past",
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// The tool ran once — the resume continues the partial, never re-runs.
+		expect(executions).toBe(1);
+		// Step 0 dispatched; the pre-empt stopped step 1; the resume's
+		// first call is the only other request.
+		expect(s.prompts).toHaveLength(2);
+		// The resumed prompt carries the failed attempt's tool result AND
+		// the mid-turn fold's summary.
+		expect(s.prompts[1]).toContain("probe-result-7f3a");
+		expect(s.prompts[1]).toContain("folded past");
+		expect(sink.chunkTypes).not.toContain("error");
+		const stored = r.store.history(r.conv.id).at(-1)!;
+		const types = stored.parts.map((p) => p.type);
+		expect(types).toContain("tool-probe");
+		expect(types).toContain("text");
+		const text = stored.parts.find((p) => p.type === "text") as { text: string } | undefined;
+		expect(text?.text).toBe("the final answer");
+		// The fold landed mid-turn: the pointer moved before the resume call.
+		expect(r.store.getCompaction(r.conv.id)).not.toBeNull();
+		r.store.close();
+	});
+
+	test("a queued input behind a headless turn never pushes the fold past the running request", async () => {
+		// P1 regression (review 2026-10-25): an input queued behind a
+		// non-streaming turn is durable history whose exchange has no reply
+		// yet. Counting it in the tail walk let the boundary land AT the
+		// running turn's user event; the reply then landed anchored exactly
+		// at that boundary, so modelEntries cut it out of every later
+		// request — even though the summary was minted before the reply
+		// existed and never saw it. The fold must see completed history
+		// strictly before the active exchange.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 900),
+				],
+				// The resume attempt's first call — step 1 never dispatched.
+				textParts("the final answer"),
+			],
+			{ extra: textParts("queued answer") },
+		);
+		const summaryPrompts: string[] = [];
+		let queued: RecordingSink | undefined;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						// A large streaming input lands between steps: durable in
+						// history (it alone dwarfs the 250-token tail budget) but
+						// queued behind the headless head, so the running turn
+						// never consumes it.
+						queued = new RecordingSink();
+						r.runtime.submit(
+							r.conv,
+							userMessage([{ type: "text", text: `${"y".repeat(1600)} queued ask` }]),
+							queued,
+						);
+						return "probe-result-7f3a";
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaryPrompts.push(prompt);
+						return "folded past";
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const headless = new HeadlessSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "run the probe" }]), headless);
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// The queued exchange settles after the headless one.
+		expect(await queued!.done).toEqual({ kind: "completed" });
+		const fold = r.store.getCompaction(r.conv.id);
+		expect(fold).not.toBeNull();
+		const liveSeq = r.store
+			.historyEntries(r.conv.id)
+			.find((e) =>
+				e.message.parts.some((p) => p.type === "text" && p.text === "run the probe"),
+			)!.seq;
+		// The boundary never reaches the active exchange's user event.
+		expect(fold!.boundarySeq).toBeLessThan(liveSeq);
+		// The summary never folded the running turn's own request.
+		expect(summaryPrompts.join("\n")).not.toContain("run the probe");
+		// The landed reply stays in the model view: a later request must
+		// still see it even though it anchored at the exchange the fold
+		// raced against.
+		const follow = submit(r, "what landed before me");
+		expect(await follow.done).toEqual({ kind: "completed" });
+		const lastPrompt = s.prompts.at(-1)!;
+		expect(lastPrompt).toContain("the final answer");
+		expect(lastPrompt).toContain("queued ask");
+		await drain(r);
+		r.store.close();
+	});
+
+	test("a threshold fold never consumes a still-queued input", async () => {
+		// Same hazard, end-of-turn rail: two large inputs queued behind a
+		// headless turn are durable history with no replies. Unconstrained,
+		// the second one's bulk parks the boundary ON the first — its turn
+		// would then land anchored at the boundary and fall out of the
+		// view. The threshold fold must stay below the queue's head.
+		const s = scripted([textParts("the landed answer", 800)], {
+			extra: textParts("queued answer"),
+		});
+		const summaryPrompts: string[] = [];
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaryPrompts.push(prompt);
+						return "folded past";
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const headless = new HeadlessSink();
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "answer me" }]), headless);
+		const queuedA = new RecordingSink();
+		const queuedB = new RecordingSink();
+		const big = "y".repeat(1600);
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: `${big} first queued` }]), queuedA);
+		r.runtime.submit(
+			r.conv,
+			userMessage([{ type: "text", text: `${big} second queued` }]),
+			queuedB,
+		);
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// The 80% window lands the threshold fold; the queued exchange
+		// settles after it.
+		expect(await queuedA.done).toEqual({ kind: "completed" });
+		expect(await queuedB.done).toEqual({ kind: "completed" });
+		await drain(r);
+		const fold = r.store.getCompaction(r.conv.id);
+		expect(fold).not.toBeNull();
+		const firstQueuedSeq = r.store
+			.historyEntries(r.conv.id)
+			.find((e) =>
+				e.message.parts.some((p) => p.type === "text" && p.text === `${big} first queued`),
+			)!.seq;
+		expect(fold!.boundarySeq).toBeLessThan(firstQueuedSeq);
+		expect(summaryPrompts.join("\n")).not.toContain("first queued");
+		// The landed reply stays in the model view for later requests.
+		const follow = submit(r, "what landed before me");
+		expect(await follow.done).toEqual({ kind: "completed" });
+		expect(s.prompts.at(-1)!).toContain("the landed answer");
+		await drain(r);
+		r.store.close();
+	});
+
+	test("compaction budgets: absolute at scale, window-clamped small (design/compaction.md → Budgets)", () => {
+		// 1M-era rule: the fractions retire — 25% of a 1M window is a
+		// 262k tail, 50% a 524k summarizer call; neither is a bigger
+		// version of the small-window behavior.
+		expect(compactionBudgets(1_048_576)).toEqual({
+			tailTokenBudget: 30_000,
+			inputTokenBudget: 100_000,
+		});
+		expect(compactionBudgets(200_000)).toEqual({
+			tailTokenBudget: 30_000,
+			inputTokenBudget: 100_000,
+		});
+		// Small models keep today's ratios exactly — the caps never bind
+		// below 120k (tail) / 200k (chunk).
+		expect(compactionBudgets(65_536)).toEqual({
+			tailTokenBudget: 16_384,
+			inputTokenBudget: 32_768,
+		});
+		expect(compactionBudgets(32_768)).toEqual({ tailTokenBudget: 8_192, inputTokenBudget: 16_384 });
+		expect(compactionBudgets(1_000)).toEqual({ tailTokenBudget: 250, inputTokenBudget: 500 });
+		// A null window (manual /compact, catalog silent) takes absolutes.
+		expect(compactionBudgets(null)).toEqual({ tailTokenBudget: 30_000, inputTokenBudget: 100_000 });
+	});
+
+	test("a fresh conversation whose live tool output crosses the fidelity threshold is not interrupted", async () => {
+		// design/compaction.md → Timing (2026-10-25): the fidelity arm is
+		// maintenance, never a killer. The live turn's growth is not
+		// foldable — with nothing stored to fold, the arm stands down and
+		// the turn proceeds on the big window. Regression: this exact shape
+		// previously terminated the turn with "nothing left to compact".
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls"),
+				],
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1_048_576 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					// ~130k estimated tokens — past the 120k fidelity arm.
+					execute: async () => "x".repeat(520_000),
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1_048_576,
+					summarize: async () => {
+						throw new Error("no fold may run on a fresh conversation");
+					},
+				},
+			},
+		});
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// Both calls dispatched — no interruption, no fold, no error.
+		expect(s.prompts).toHaveLength(2);
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		expect(sink.chunkTypes).not.toContain("error");
+		r.store.close();
+	});
+
+	test("a large tool result makes the upcoming request cross pressure even when the last request read small", async () => {
+		// design/compaction.md → Timing: pressure budgets the UPCOMING
+		// request. The last completed step reported 5k of an 8k window —
+		// below the arm — but the 30k-char tool result after it projects
+		// the next request far over, and stored history exists to fold.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 5_000),
+				],
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 8_000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "y".repeat(30_000);
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 8_000,
+					summarize: async () => "folded past",
+				},
+			},
+		});
+		// ~12k tokens stored against a 2k tail budget (25% of 8k, under
+		// the 30k cap) — a fold is real.
+		seedBigExchanges(r.store, r.conv.id, 6, 4_000);
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(executions).toBe(1);
+		// Step 0 dispatched; pressure pre-empted step 1; the resume's call
+		// is the only other request, on the folded view with the tool
+		// result carried.
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("folded past");
+		expect(s.prompts[1]).toContain("yyyy");
+		expect(r.store.getCompaction(r.conv.id)).not.toBeNull();
 		r.store.close();
 	});
 

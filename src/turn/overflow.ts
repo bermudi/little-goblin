@@ -44,10 +44,92 @@ export class ContextOverflowError extends Error {
 	}
 }
 
+// ---------- step-boundary pre-emption (design/compaction.md → Timing) ----------
+
+// Thrown from the step boundary (prepareStep) when a pre-empt arm fires:
+// the next model call must not dispatch. The turn folds and resumes on
+// the compacted view through the same rail as an overflow. Carries only
+// the decision — the recovery payload is assembled by the driver, where
+// the partial lives.
+export class PreemptSignal extends Error {
+	constructor(
+		readonly arm: "pressure" | "fidelity",
+		readonly stepNumber: number,
+	) {
+		super("compaction pre-empt — the step boundary folded the context before dispatch");
+		this.name = "PreemptSignal";
+	}
+}
+
+// The failed outcome's preempt payload becomes this at the runtime
+// boundary: same recovery rail as a provider 400, different compact
+// reason (full tail, "preempt") and a different operator-facing story.
+// The arm and step number ride along so the recovery log names what fired.
+export class PreemptCompactError extends ContextOverflowError {
+	constructor(
+		partial: UIMessage | null,
+		seenText: boolean,
+		toolCalls: string[],
+		digest: { id: string; entry: ToolCallDigest }[],
+		loop: LoopTurnState,
+		readonly arm: "pressure" | "fidelity",
+		readonly stepNumber: number,
+	) {
+		super(partial, seenText, toolCalls, digest, loop);
+		this.name = "PreemptCompactError";
+	}
+}
+
+// The two arms (design/compaction.md → Triggers). Pressure budgets the
+// UPCOMING request — the last completed step's reported input plus the
+// growth since its dispatch (assistant output, tool results, steers),
+// estimated at chars/4 — because a tool result can blow the window in one
+// step while the previous request read small. Fidelity estimates the
+// unfolded span since the previous boundary (history chars minus the
+// carried summary, chars/4) — it exists because the fold is the lossy
+// step and span size sets its loss. Fidelity wins ties: it is checked
+// first and fires at any window. Both arms are gate-checked for
+// foldability by the runtime before any interruption — an arm with
+// nothing stored to fold stands down.
+export interface PreemptInfo {
+	/** Null before the first completed step — pressure cannot fire blind. */
+	projectedInputTokens: number | null;
+	historyChars: number;
+	summaryChars: number;
+	contextWindow: number | undefined;
+}
+
+export function preemptArm(
+	info: PreemptInfo,
+	arms: { pressurePct: number; fidelitySpanTokens: number },
+): "pressure" | "fidelity" | null {
+	const span = Math.ceil(Math.max(0, info.historyChars - info.summaryChars) / 4);
+	if (span >= arms.fidelitySpanTokens) return "fidelity";
+	if (
+		info.contextWindow !== undefined &&
+		info.projectedInputTokens !== null &&
+		info.projectedInputTokens >= info.contextWindow * arms.pressurePct
+	) {
+		return "pressure";
+	}
+	return null;
+}
+
 export type StreamFailure = Extract<StreamOutcome, { kind: "failed" }>;
 
 export function failureFromStream(outcome: StreamFailure): Error {
 	if (outcome.holdForRecovery) {
+		if (outcome.preempt !== undefined) {
+			return new PreemptCompactError(
+				outcome.partial,
+				outcome.seenText,
+				outcome.toolCalls,
+				outcome.digestRing,
+				outcome.loop,
+				outcome.preempt.arm,
+				outcome.preempt.step,
+			);
+		}
 		return new ContextOverflowError(
 			outcome.partial,
 			outcome.seenText,
@@ -104,12 +186,25 @@ export interface OverflowDeps<M> {
 
 export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<OverflowOutcome<M>> {
 	const { convId, epoch, failure } = deps;
-	log.warn("context overflow — compacting and resuming turn", {
-		conversation: convId,
-		epoch,
-		toolCalls: failure.toolCalls.length,
-		partialParts: failure.partial?.parts.length ?? 0,
-	});
+	if (failure instanceof PreemptCompactError) {
+		// Not a failure — a scheduled fold. The step that would have
+		// dispatched never did, so no provider call was wasted.
+		log.info("compaction pre-empt — folding at the step boundary, resuming turn", {
+			conversation: convId,
+			epoch,
+			arm: failure.arm,
+			step: failure.stepNumber,
+			toolCalls: failure.toolCalls.length,
+			partialParts: failure.partial?.parts.length ?? 0,
+		});
+	} else {
+		log.warn("context overflow — compacting and resuming turn", {
+			conversation: convId,
+			epoch,
+			toolCalls: failure.toolCalls.length,
+			partialParts: failure.partial?.parts.length ?? 0,
+		});
+	}
 	let outcome: CompactionOutcome;
 	try {
 		outcome = await deps.compact();

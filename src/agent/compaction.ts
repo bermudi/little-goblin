@@ -51,10 +51,26 @@ function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boo
 // event's seq) or null when nothing is worth compacting — a span must
 // exist beyond the previous boundary and carry ≥ minSpanTokens
 // (compacting a few messages into a summary buys nothing).
+//
+// beforeSeq is an exclusive ceiling marking where completed history ends:
+// events at or after it belong to an exchange whose reply has not landed
+// (a running turn's stored user event, or inputs queued behind it) and are
+// never foldable. Without the ceiling such events inflate the tail walk
+// and can push the boundary ONTO the running exchange — the reply then
+// lands anchored at or below the boundary and modelEntries cuts it from
+// every later request, unseen by the summary that replaced its context.
 export function chooseBoundary(
 	detail: CompactionEvent[],
-	opts: { tailTokenBudget: number; previousBoundary: number | null; minSpanTokens?: number },
+	opts: {
+		tailTokenBudget: number;
+		previousBoundary: number | null;
+		minSpanTokens?: number;
+		beforeSeq?: number | null;
+	},
 ): number | null {
+	if (opts.beforeSeq !== null && opts.beforeSeq !== undefined) {
+		detail = detail.filter((e) => e.seq < opts.beforeSeq!);
+	}
 	if (detail.length < 2) return null;
 	// Grow the tail backward while it fits; each step re-checks exchange
 	// completeness, so an anchored response pulls its user message into
@@ -196,7 +212,13 @@ export async function runCompaction(
 		tailTokenBudget: number;
 		inputTokenBudget: number;
 		callTimeoutMs?: number;
-		reason?: "threshold" | "manual" | "overflow";
+		reason?: "threshold" | "manual" | "overflow" | "preempt";
+		// Exclusive fold ceiling over stored history, evaluated when history
+		// is read (the lane may gain queued work while earlier awaits ran):
+		// events at or after it — a running turn's members, inputs queued
+		// behind them — have no landed reply and must never be folded.
+		// Null (or absent) folds over the whole stored history.
+		beforeSeq?: () => number | null;
 		// The authority fence (wired from runtime.ts checkAuthority):
 		// throws when the conversation's epoch advanced since this
 		// compaction captured it. Checked before each chunk and right
@@ -211,6 +233,7 @@ export async function runCompaction(
 	const boundary = chooseBoundary(detail, {
 		tailTokenBudget: opts.tailTokenBudget,
 		previousBoundary: previous?.boundarySeq ?? null,
+		beforeSeq: opts.beforeSeq?.() ?? null,
 	});
 	if (boundary === null) {
 		log.info("compaction skipped", { conversation: id, reason: "nothing worth compacting" });

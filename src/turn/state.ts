@@ -1,8 +1,8 @@
-import type { System1Client } from "../system1.ts";
-import { LoopDetector, LOOP_DETECT_WARN, type LoopDetectorState } from "../loop-detect.ts";
-import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
 import { log } from "../log.ts";
-import { summarize, toolOk, type ToolCallDigest } from "../reviewer.ts";
+import { LOOP_DETECT_WARN, LoopDetector, type LoopDetectorState } from "../loop-detect.ts";
+import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
+import { summarize, type ToolCallDigest, toolOk } from "../reviewer.ts";
+import type { System1Client } from "../system1.ts";
 
 export type ForcedKind = "repeat" | "watchdog" | "context";
 
@@ -73,6 +73,22 @@ export class TurnState {
 		this.forcedKind = this.cutKind;
 		this.landingIssued = true;
 		return this.cutKind;
+	}
+
+	// A context landing that has not yet driven a forced step yields to a
+	// step-boundary pre-empt (design/compaction.md → Timing): the fold
+	// supersedes the tools-off ending, and the turn resumes with tools on
+	// the compacted view instead of ending in prose. Only the context
+	// landing retracts — a repeat/watchdog cut is a verdict about the
+	// loop, not the window, and an issued landing whose forced step
+	// already dispatched cannot be taken back (the loop would have ended
+	// with it). The restored snapshot carries the retraction, so the
+	// resumed attempt starts unforced.
+	retractContextLanding(): void {
+		if (this.cutKind !== "context") return;
+		this.cutKind = null;
+		this.forcedKind = null;
+		this.landingIssued = false;
 	}
 
 	decidedCut(): ForcedKind | null {

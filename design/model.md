@@ -121,10 +121,20 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   epoch-bumping settings change (the authority rule) fences the same
   commit: the re-check runs before each chunk and before the pointer lands,
   so a fence spends no further calls and clears no frozen prompt snapshot —
-  the crossing retries under the new settings. Auto-compaction runs in the
-  serial lane after the turn's sinks are notified — the reply lands first;
-  `/compact` serializes through it and still compacts with the window
-  unknown (a forced scrub). Ruling 2026-10-19: the window lookup is
+  the crossing retries under the new settings. Ruling 2026-10-25
+  ([compaction](compaction.md) → Timing): the normal fold is now a
+  **step-boundary pre-emption** — both trigger arms (pressure: the
+  projected upcoming request ≥75% of the window; fidelity: an unfolded
+  span ≥120k tokens) are checked at the `prepareStep` seam before every
+  model call, gate-checked for foldable stored history, and a firing arm
+  stops the next dispatch, folds mid-turn, and resumes the
+  turn on the compacted view through the overflow rail (full tail,
+  reason `preempt`; it consumes the turn's one fold-resume; a context
+  landing at the same boundary retracts in its favor). The serial-lane
+  end-of-turn fold stays as the backstop when pre-emption could not or
+  did not fire, and `/compact` serializes through it and still compacts
+  with the window unknown (a forced scrub). Ruling 2026-10-19: the window
+  lookup is
   metadata, not a model step — `compaction.contextWindow` reads the
   catalog only, resolving no auth and building no model step, so the
   lookup can never mint or rewrite a frozen prompt snapshot (the
@@ -257,9 +267,13 @@ isn't stored until the turn ends, so it isn't compactable. A step whose
 reported input nears the catalog window lands tools-off — the turn ends in
 prose and a "continue" handoff. Measured headroom: ~700 input tokens per
 tool call (the 28-call Safari turn finished at 24k on a 1M window) — the
-physical bound on a turn, not a practical one. In-turn compaction of the
-partial is deliberately not built; revisit when a context landing shows
-up in the log.
+physical bound on a turn, not a practical one. Ruling 2026-10-25
+([compaction](compaction.md) → Timing): in-turn compaction of the partial
+is now built as the normal path — a step-boundary pre-emption folds
+mid-turn and resumes the turn on the compacted view before the next call
+dispatches, and a context landing that issues at the same boundary
+retracts in its favor. The landing remains the backstop when compaction
+is not wired or the turn's one fold-resume is already spent.
 
 **4. The operator.** `/stop` is the backstop for everything above.
 

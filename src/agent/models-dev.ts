@@ -149,6 +149,9 @@ function providerCatalogKey(
 ): string | null {
 	if (cat[provider] !== undefined) return provider;
 	if (kind === "openrouter" && cat.openrouter !== undefined) return "openrouter";
+	// The claude-code kind runs Anthropic models through the subscription
+	// engine — its ids are the anthropic catalog's.
+	if (kind === "claude-code" && cat.anthropic !== undefined) return "anthropic";
 	if (baseUrl === undefined) return null;
 	let host: string;
 	try {

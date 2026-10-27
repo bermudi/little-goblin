@@ -3,6 +3,11 @@ import { splitModelRef } from "../config.ts";
 
 export const CACHE_CONTRACT_REVIEW_MS = 30 * 24 * 60 * 60 * 1_000;
 export const CACHE_CONTRACT_REVIEWED_AT = "2026-10-15T00:00:00.000Z";
+// The claude-code lane's contract was verified separately (2026-10-27,
+// platform.claude.com prompt-caching: "the cache has a 5-minute lifetime",
+// "refreshed for no additional cost") — the entry carries its own date so
+// the registry's global review doesn't vouch for it unexamined.
+export const CLAUDE_CODE_CONTRACT_REVIEWED_AT = "2026-10-27T00:00:00.000Z";
 
 export const cacheContractSources = {
 	zai: {
@@ -45,6 +50,7 @@ export type CacheContractId =
 	| "openrouter"
 	| "openai"
 	| "codex"
+	| "claude-code"
 	| "logfare"
 	| "onemin"
 	| "unknown";
@@ -56,6 +62,10 @@ export interface CacheContract {
 	lifetime: "rolling-expiry" | "model-dependent-minimum-or-range" | "unpublished" | "unknown";
 	idleExpiryMs: number | null;
 	requiresExplicitControls: boolean;
+	/** When this entry's sources were last verified — defaults to the
+	 * registry's global review date; a lane verified on its own cadence
+	 * carries its own stamp. */
+	reviewedAt?: string;
 	detail: string;
 }
 
@@ -108,6 +118,17 @@ const contracts: Readonly<Record<CacheContractId, CacheContract>> = {
 		requiresExplicitControls: false,
 		detail: "ChatGPT/Codex backend retention is unverified; OpenAI API retention is not inherited.",
 	},
+	"claude-code": {
+		id: "claude-code",
+		sources: ["anthropic"],
+		mode: "explicit",
+		lifetime: "rolling-expiry",
+		idleExpiryMs: 5 * 60 * 1_000,
+		requiresExplicitControls: false,
+		reviewedAt: CLAUDE_CODE_CONTRACT_REVIEWED_AT,
+		detail:
+			"Same Anthropic cache semantics as the API lane (rolling 5-minute default), but the bundled CLI owns the cache_control breakpoints — goblin never sends them on this route.",
+	},
 	logfare: {
 		id: "logfare",
 		sources: ["logfare"],
@@ -143,6 +164,7 @@ export function cacheContractFor(config: Config, modelRef: string): CacheContrac
 	const entry = config.providers[provider];
 	if (entry === undefined) return contracts.unknown;
 	if (entry.kind === "codex") return contracts.codex;
+	if (entry.kind === "claude-code") return contracts["claude-code"];
 	if (entry.kind === "openrouter")
 		return modelId.startsWith("anthropic/")
 			? contracts["openrouter-anthropic"]
@@ -155,7 +177,7 @@ export function cacheContractFor(config: Config, modelRef: string): CacheContrac
 	return contracts.unknown;
 }
 
-export function cacheContractFresh(now: number): boolean {
-	const reviewed = Date.parse(CACHE_CONTRACT_REVIEWED_AT);
+export function cacheContractFresh(now: number, contract?: CacheContract): boolean {
+	const reviewed = Date.parse(contract?.reviewedAt ?? CACHE_CONTRACT_REVIEWED_AT);
 	return now >= reviewed && now - reviewed <= CACHE_CONTRACT_REVIEW_MS;
 }

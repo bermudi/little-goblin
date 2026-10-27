@@ -446,8 +446,9 @@ export function draftFromConfig(
 				}
 			: null,
 	};
-	// Union arms differ (openrouter has no baseUrl, codex uses authFile);
-	// widen once — absent fields read as undefined either way.
+	// Union arms differ (openrouter has no baseUrl, codex uses authFile,
+	// claude-code is auth-only); widen once — absent fields read as
+	// undefined either way.
 	const providers: ProvDraft[] = Object.entries(c.providers || {}).map(([name, p]) => {
 		const w = p as { kind: string; baseUrl?: string; auth?: string; authFile?: string };
 		return {
@@ -540,6 +541,11 @@ export function bodyFromDraft(
 			providers[name] = p.auth.trim()
 				? { kind: p.kind, authFile: p.auth.trim() }
 				: { kind: p.kind };
+		} else if (p.kind === "claude-code") {
+			// The subscription token's record — the kind default, not the
+			// provider's own name (a provider named "claude" still reads
+			// the "claude-code" record unless told otherwise).
+			providers[name] = { kind: p.kind, auth: p.auth.trim() || authDefaults.claudeCode };
 		} else {
 			providers[name] = {
 				kind: p.kind as "openrouter",

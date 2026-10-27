@@ -63,6 +63,15 @@ export async function resolveModel(
 		}
 		case "codex":
 			return codexModel(modelId, p.authFile);
+		case "claude-code":
+			// Engine-driven: the subscription path has no LanguageModel —
+			// buildStep routes claude-code conversations to the parallel
+			// engine (agent/claude-code/) instead of streamText. Reaching
+			// this arm means a caller tried the API lane; fail loud rather
+			// than fabricate a model.
+			throw new Error(
+				`model "${modelRef}": provider kind "claude-code" is engine-driven — there is no LanguageModel to resolve`,
+			);
 	}
 }
 
@@ -105,6 +114,14 @@ export function carriesMedia(
 			return (
 				position === "user" && (mediaType.startsWith("image/") || mediaType === "application/pdf")
 			);
+		case "claude-code":
+			// The Messages API takes images/PDFs in user content; the engine
+			// maps view FileParts to prompt content blocks there. Tool results
+			// ride the bridge as text — no media through that position.
+			return (
+				position === "user" &&
+				(mediaType.startsWith("image/") || mediaType === "application/pdf")
+			);
 		default:
 			return position === "user" && mediaType.startsWith("image/");
 	}
@@ -132,10 +149,40 @@ export function cacheRouteFor(config: Config, modelRef: string): CacheRoute | un
 			const url = new URL(RESPONSES_URL);
 			return { provider, kind: p.kind, base: url.origin + url.pathname, modelRef };
 		}
+		case "claude-code":
+			// The logical upstream is the Anthropic Messages API — the cache
+			// semantics the subscription lane actually rides. The route key
+			// just needs to be stable and distinct from API-key routes.
+			return {
+				provider,
+				kind: p.kind,
+				base: "https://api.anthropic.com/v1/messages",
+				modelRef,
+			};
 	}
 }
 
 const sha256hex = (json: string) => createHash("sha256").update(json).digest("hex");
+
+// The prompt-hash trio the observed-model middleware computes per call.
+// Exported so the claude engine hashes its own request shape with the
+// same primitives — each side stays byte-stable across turns, which is
+// all cache observation needs (routes are keyed per modelRef anyway).
+export function callHashes(
+	prompt: readonly unknown[],
+	tools: unknown,
+): { headHash: string; requestHash: string; promptHashes: string[] } {
+	return {
+		headHash: sha256hex(
+			JSON.stringify({
+				system: (prompt as { role?: unknown }[]).filter((m) => m.role === "system"),
+				tools: tools ?? null,
+		}),
+		),
+		requestHash: sha256hex(JSON.stringify(prompt)),
+		promptHashes: prompt.map((m) => sha256hex(JSON.stringify(m))),
+	};
+}
 
 // Pruning profiles key on this hash — the byte shape is frozen. The
 // inferred fallback pins the call's purpose so its key can't collide
@@ -229,15 +276,8 @@ export function observedModel(
 		routeEvidence: context.route === undefined ? "inferred" : "configured",
 	};
 	const beginCall = (type: "generate" | "stream", params: LanguageModelV4CallOptions) => {
-		const headHash = sha256hex(
-			JSON.stringify({
-				system: params.prompt.filter((m) => m.role === "system"),
-				tools: params.tools ?? null,
-			}),
-		);
-		const requestHash = sha256hex(JSON.stringify(params.prompt));
+		const { headHash, requestHash, promptHashes } = callHashes(params.prompt, params.tools);
 		const settingsHash = hashCacheSettings(params);
-		const promptHashes = params.prompt.map((m) => sha256hex(JSON.stringify(m)));
 		const callId = randomUUID();
 		const obs = context.observation?.begin({
 			callId,

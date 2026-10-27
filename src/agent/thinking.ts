@@ -277,6 +277,34 @@ function gptLevels(modelId: string): readonly ThinkingLevel[] {
 	return ["low", "medium", "high", "xhigh"];
 }
 
+// ---------- claude-code (subscription engine) ----------
+
+// The SDK's own effort vocabulary (Options.effort — 'low'|'medium'|
+// 'high'|'xhigh'|'max') is the honest carrier for goblin's rungs; the
+// vendor publishes no per-rung budgetTokens, so inventing numbers would
+// fake knowledge. "off" is a real disable (thinking: {type:'disabled'}).
+// "minimal" is not an SDK effort and clamps to low.
+const CLAUDE_CODE_RUNGS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+// The wire form of one level on the claude engine — carried in
+// providerOptions under "claude-code" and translated to the SDK's own
+// thinking/effort options by the engine (effort rungs, disabled for off).
+// A type alias (not an interface) so it satisfies ProviderOptions'
+// record shape without a cast.
+export type ClaudeCodeThinking = {
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	disabled?: boolean;
+};
+
+function claudeCodeOptions(level: ThinkingLevel): ClaudeCodeThinking {
+	if (level === "off") return { disabled: true };
+	return {
+		effort: clampToLevels(CLAUDE_CODE_RUNGS, level) as NonNullable<
+			ClaudeCodeThinking["effort"]
+		>,
+	};
+}
+
 // ---------- the profile ----------
 
 export function reasoningProfileFor(
@@ -302,6 +330,9 @@ export function reasoningProfileFor(
 	if (bare.startsWith("glm-")) return glmProfile(bare, baseUrl);
 	if (kind === "codex" || bare.startsWith("gpt-")) {
 		return { levels: gptLevels(bare), off: "floor", knob: "effort" };
+	}
+	if (kind === "claude-code" || bare.startsWith("claude-")) {
+		return { levels: [...CLAUDE_CODE_RUNGS], off: "disable", knob: "effort" };
 	}
 	// A generic OpenAI-compatible endpoint: the classic effort set, and
 	// "off" as the floor (the endpoint may reject "none"). "minimal" is
@@ -380,6 +411,8 @@ export function thinkingOptions(
 			return {
 				codex: { reasoningEffort: clampToLevels(gptLevels(bare), level) },
 			};
+		case "claude-code":
+			return { "claude-code": claudeCodeOptions(level) };
 	}
 }
 

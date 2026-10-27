@@ -16,6 +16,7 @@ export const serviceNames: Record<string, string> = {
 	local: "Built-in",
 	edge: "Edge voices (free)",
 	openrouter: "OpenRouter",
+	"claude-code": "Claude Code (subscription)",
 	logfare: "Logfare",
 	mimo: "Xiaomi MiMo",
 	onemin: "1min.AI",

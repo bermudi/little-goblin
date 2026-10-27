@@ -83,7 +83,11 @@ Conversation ─────── (channel address) → durable event history
   call including the first, so submits landing during turn startup (recall,
   attachments) steer too. Injection is an appended tail: prefix bytes
   untouched, the conversation's prompt cache stays warm (Cache stability).
-  Recall stays admission-time — steered input is not re-recalled. The reply's
+  Recall stays admission-time — steered input is not re-recalled. Engine
+  scope: `prepareStep` folding is the streamText engine's seam; a
+  claude-code engine turn (design/model.md → The claude-code engine) has no
+  mid-run injection seam, so steers queue into the immediate successor
+  turn — the v1 ruling, not a regression. The reply's
   anchor, retention source, and reviewer evidence read the exchange as it
   ended **bounded by an ownership high-water mark** advancing only over
   entries the turn actually injected (claimed by durable event seq, never

@@ -560,6 +560,24 @@ inside the desktop and `chrome://sandbox`'s real status read back
 from the page, with the screenshot and tree dump preserved under
 `/tmp/goblin-desktop-evidence/`.
 
+## Claude Code engine drift check
+
+The claude-code engine pins the SDK's event stream as structural types
+(`src/agent/claude-code/translate.ts`); after a `claude-agent-sdk`
+upgrade, re-pin against the real subscription:
+
+```sh
+GOBLIN_CLAUDE_CODE_LIVE=1 GOBLIN_CLAUDE_CODE_AUTH_FILE=<path-to-auth.jsonl> \
+  bun test src/agent/claude-code/live.test.ts
+```
+
+The check resolves the `claude-code` record through the given auth
+file (path only in the environment, never a token) and runs one real
+text-only query plus one tool round-trip through the bridge. Red means
+the pinned interface moved: run one probe session, re-pin the shapes,
+fix the adapter — the same rule as the herdr and gws checks. It spends
+subscription quota; run it after upgrades, not on a schedule.
+
 ## Subagent drift checks
 
 Three env-gated checks cover the subagent stack (design/subagents.md):

@@ -13,7 +13,6 @@ import {
 	type UIMessageChunk,
 } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import { z } from "zod";
 import { filterErrorStream } from "../agent/filter-stream.ts";
 import type { AppLiveContext } from "../http/app-wire.ts";
 import {
@@ -24,11 +23,18 @@ import {
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import { log } from "../log.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
-import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
+import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import { measurePrompt, type PromptSegments } from "./itemize.ts";
-import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
+import type { SkillWatch } from "./skill-attribution.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
+import {
+	noteToolError,
+	noteToolInput,
+	noteToolInputRejected,
+	noteToolOutput,
+	openToolEvents,
+} from "./tool-events.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
 
@@ -43,17 +49,6 @@ const CUT_NUDGE: Record<ForcedKind, string> = {
 	watchdog: WATCHDOG_CUT,
 	context: CONTEXT_CUT,
 };
-
-const scriptOutputSchema = z.object({
-	calls: z.array(
-		z.object({
-			tool: z.string(),
-			args: z.string(),
-			ok: z.boolean(),
-			result: z.string(),
-		}),
-	),
-});
 
 function describeWarning(w: CallWarning): string {
 	switch (w.type) {
@@ -533,9 +528,15 @@ export async function driveStream<M extends WireMember>(
 
 	let responseMessage: UIMessage | null = null;
 	let partialResponse: UIMessage | null = null;
-	const toolCalls: string[] = [...deps.toolCalls];
 	const evidence = deps.evidence;
-	const digestRing: { id: string; entry: ToolCallDigest }[] = [...deps.digest];
+	const events = openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest });
+	const eventsDeps = {
+		convId,
+		evidence,
+		skillWatch: deps.skillWatch,
+		onCompleted: (tool: string, input: unknown, result: unknown, failed: boolean) =>
+			state.noteCompletedCall(tool, input, result, failed),
+	};
 	let lastTextPartId: string | null = null;
 	let seenText = deps.seenText;
 	let pendingStep = false;
@@ -592,11 +593,9 @@ export async function driveStream<M extends WireMember>(
 		},
 	});
 
-	const callById = new Map<string, { tool: string; input: unknown }>();
-	const noteCompletedCall = (toolCallId: string, result: unknown, failed: boolean): void => {
-		const call = callById.get(toolCallId);
-		state.noteCompletedCall(call?.tool ?? toolCallId, call?.input, result, failed);
-	};
+	const callById = events.callById;
+	const toolCalls = events.toolCalls;
+	const digestRing = events.digestRing;
 	for await (const chunk of uiStream) {
 		deps.assertAuthority();
 		if (chunk.type === "error") {
@@ -632,106 +631,38 @@ export async function driveStream<M extends WireMember>(
 				break;
 			case "tool-input-available":
 				head.onToolCall(chunk.toolName, chunk.input);
-				toolCalls.push(chunk.toolName);
-				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
-				deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
-				if (evidence !== undefined) {
-					digestRing.push({
-						id: chunk.toolCallId,
-						entry: {
-							tool: chunk.toolName,
-							args: summarize(chunk.input, evidence.argChars),
-							result: "(no result)",
-							ok: true,
-						},
-					});
-					if (digestRing.length > evidence.calls) digestRing.shift();
-				}
-				log.info("tool call", {
-					conversation: convId,
-					tool: chunk.toolName,
-					arg: JSON.stringify(chunk.input).slice(0, 200),
-				});
+				noteToolInput(
+					events,
+					{
+						convId,
+						evidence,
+						noteJournal: (callId, name, input) =>
+							deps.journal?.noteToolInput(deps.runId, callId, name, input),
+					},
+					chunk.toolCallId,
+					chunk.toolName,
+					chunk.input,
+				);
 				break;
 			case "tool-input-error":
-				// tool-output-error carries only the id — record name+input here or the detector hashes each rejection under a random call id and never trips.
-				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
-				log.warn("tool call rejected", {
-					conversation: convId,
-					tool: chunk.toolName,
-					arg: JSON.stringify(chunk.input ?? null).slice(0, 200),
-					error: chunk.errorText.slice(0, 300),
-				});
+				// tool-output-error carries only the id — the ledger keeps
+				// name+input so the detector hashes a rejection under a
+				// stable id instead of a random call id and never trips.
+				noteToolInputRejected(
+					events,
+					{ convId },
+					chunk.toolCallId,
+					chunk.toolName,
+					chunk.input,
+					chunk.errorText,
+				);
 				break;
 			case "tool-output-available": {
-				if (evidence !== undefined) {
-					for (let i = digestRing.length - 1; i >= 0; i--) {
-						if (digestRing[i]!.id !== chunk.toolCallId) continue;
-						digestRing[i]!.entry.result = summarize(chunk.output, evidence.outChars);
-						digestRing[i]!.entry.ok = toolOk(chunk.output);
-						break;
-					}
-				}
-				if (callById.get(chunk.toolCallId)?.tool === "script") {
-					const parsed = scriptOutputSchema.safeParse(chunk.output);
-					if (parsed.success) {
-						for (const [i, call] of parsed.data.calls.entries()) {
-							toolCalls.push(`script.${call.tool}`);
-							if (evidence !== undefined) {
-								digestRing.push({
-									id: `${chunk.toolCallId}/${i + 1}`,
-									entry: {
-										tool: `script.${call.tool}`,
-										args: summarize(call.args, evidence.argChars),
-										result: summarize(call.result, evidence.outChars),
-										ok: call.ok,
-									},
-								});
-								if (digestRing.length > evidence.calls) digestRing.shift();
-							}
-						}
-					} else {
-						log.warn("script call record unreadable — nested calls not expanded", {
-							conversation: convId,
-							toolCallId: chunk.toolCallId,
-						});
-					}
-				}
-				if (deps.skillWatch !== undefined) {
-					const tool = callById.get(chunk.toolCallId)?.tool ?? "";
-					if (tool === "write_file" || tool === "edit_file" || tool === "script") {
-						for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
-							try {
-								deps.skillWatch.record(convId, skill);
-								log.info("skill write attributed", { conversation: convId, tool, skill });
-							} catch (err) {
-								log.error("skill provenance record failed — turn continues", err, {
-									conversation: convId,
-									tool,
-									skill,
-								});
-							}
-						}
-					}
-				}
-				noteCompletedCall(chunk.toolCallId, chunk.output, false);
+				noteToolOutput(events, eventsDeps, chunk.toolCallId, chunk.output);
 				break;
 			}
 			case "tool-output-error":
-				log.warn("tool execute failed", {
-					conversation: convId,
-					tool: callById.get(chunk.toolCallId)?.tool ?? chunk.toolCallId,
-					error: chunk.errorText.slice(0, 300),
-				});
-				if (evidence !== undefined) {
-					for (let i = digestRing.length - 1; i >= 0; i--) {
-						if (digestRing[i]!.id !== chunk.toolCallId) continue;
-						digestRing[i]!.entry.result = summarize(chunk.errorText, evidence.outChars);
-						digestRing[i]!.entry.ok = false;
-						break;
-					}
-				}
-				noteCompletedCall(chunk.toolCallId, chunk.errorText, true);
+				noteToolError(events, eventsDeps, chunk.toolCallId, chunk.errorText);
 				break;
 			case "error":
 				pendingStep = false;

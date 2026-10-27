@@ -39,6 +39,10 @@ export const paths = {
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
 	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),
+	// The claude-code child CLI's CLAUDE_CONFIG_DIR — all of its state
+	// (config, scratch, telemetry ids) lives under goblin's state tree,
+	// never ~/.claude.
+	claudeCodeState: () => join(goblinHome(), "state", "claude-code"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),

@@ -20,6 +20,8 @@
 // types in translate.ts are the contract; red drift check means re-pin.
 
 import { randomUUID } from "node:crypto";
+import type { LanguageModelV4Usage } from "@ai-sdk/provider";
+import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
 	FinishReason,
@@ -30,15 +32,18 @@ import type {
 	UIMessage,
 	UIMessageChunk,
 } from "ai";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import type { AppLiveContext } from "../../http/app-wire.ts";
-import { isContextOverflow } from "../provider-errors.ts";
-import { cacheRouteFor, callHashes, hashCacheSettings, cacheRouteKey, type CacheRoute } from "../providers.ts";
+import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
-import { serializeToolDefs, type WindowCapture } from "../../window-capture.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
+import {
+	emitChunk,
+	type StreamDeps,
+	type StreamOutcome,
+	type WireMember,
+} from "../../turn/stream.ts";
 import {
 	noteToolError,
 	noteToolInput,
@@ -46,12 +51,20 @@ import {
 	openToolEvents,
 	type ToolEventState,
 } from "../../turn/tool-events.ts";
-import { emitChunk, type StreamDeps, type StreamOutcome, type WireMember } from "../../turn/stream.ts";
 import type { TurnJournal } from "../../turn-journal.ts";
-import type { AuthStore } from "../../auth.ts";
-import type { ConfigRef } from "../../config.ts";
+import { serializeToolDefs, type WindowCapture } from "../../window-capture.ts";
+import { isContextOverflow } from "../provider-errors.ts";
+import {
+	type CacheRoute,
+	cacheRouteFor,
+	cacheRouteKey,
+	callHashes,
+	hashCacheSettings,
+} from "../providers.ts";
 import { claudeChildEnv } from "./auth.ts";
+import type { ClaudeStep } from "./mod.ts";
 import { promptText, serializePrompt } from "./prompt.ts";
+import { createToolBridge } from "./tools.ts";
 import type {
 	ClaudeContentBlock,
 	ClaudeMessage,
@@ -61,8 +74,6 @@ import type {
 	ClaudeToolResultBlock,
 	ClaudeUsage,
 } from "./translate.ts";
-import type { ClaudeStep } from "./mod.ts";
-import { createToolBridge } from "./tools.ts";
 
 // The array arm of AssistantContent (the union also allows a bare
 // string message, which we never build).
@@ -74,6 +85,8 @@ export interface ClaudeEngineConfig {
 	configRef: ConfigRef;
 	observation?: CacheObservation | undefined;
 	configDir?: string | undefined;
+	/** Test seam: wrap or replace the bridge factory (production uses the real one). */
+	bridgeFactory?: typeof createToolBridge | undefined;
 }
 
 export interface ClaudeRunDeps<M extends WireMember> extends Omit<StreamDeps<M>, "step"> {
@@ -120,10 +133,14 @@ export function isRateLimitText(text: string): boolean {
 
 export function resultErrorText(text: string, assistantError: string | undefined): string {
 	const base = text || "claude code returned an error result";
-	if (assistantError === "rate_limit" || assistantError === "account_on_hold" || isRateLimitText(base)) {
+	if (
+		assistantError === "rate_limit" ||
+		assistantError === "account_on_hold" ||
+		isRateLimitText(base)
+	) {
 		return `Claude Code subscription limit hit — no retry; switch this conversation to an API model or wait for the window to reset. (${base})`;
 	}
-	if (/not logged in|authentication|oauth|token|credential/i.test(base)) {
+	if (/not logged in|authentication|oauth|credential|token\b(?!s)/i.test(base)) {
 		return `Claude Code auth failed — the subscription token is missing or expired; rotate the claude-code auth record. (${base})`;
 	}
 	return base;
@@ -161,6 +178,15 @@ function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
 			reasoning: undefined,
 		},
 	};
+}
+
+// One tool part per call, evolved in place: input-available →
+// output-available/output-error, matching how the client reducer folds
+// the same chunks into a single part.
+function evolveToolPart(run: RunState, toolCallId: string, part: UIMessage["parts"][number]): void {
+	const idx = run.parts.findIndex((p) => "toolCallId" in p && p.toolCallId === toolCallId);
+	if (idx >= 0) run.parts[idx] = part;
+	else run.parts.push(part);
 }
 
 function modelOutput(output: unknown): ToolResultOutput {
@@ -204,6 +230,7 @@ interface RunState {
 	lastAssistantError: string | undefined;
 	pendingCall: boolean;
 	// stream block bookkeeping
+	streamedBlocks: Set<number>;
 	blockIds: Map<number, string>;
 	openTextBlocks: Set<number>;
 	openReasoningBlocks: Set<number>;
@@ -236,6 +263,7 @@ export async function driveClaude<M extends WireMember>(
 		lastStopReason: null,
 		lastAssistantError: undefined,
 		pendingCall: false,
+		streamedBlocks: new Set(),
 		blockIds: new Map(),
 		openTextBlocks: new Set(),
 		openReasoningBlocks: new Set(),
@@ -284,11 +312,13 @@ export async function driveClaude<M extends WireMember>(
 
 	let callId: string | null = null;
 	let obs: ReturnType<CacheObservation["begin"]> | undefined;
+	let callOpen = false;
 
 	const beginCall = (): void => {
 		// Context landing feeds the detector state even though this engine
 		// cannot cut — parity with prepareStep's recording.
 		state.noteContextLanding(run.lastInput ?? undefined, step.contextWindow);
+		callOpen = true;
 		callId = randomUUID();
 		obs = observation?.begin({
 			callId,
@@ -323,12 +353,15 @@ export async function driveClaude<M extends WireMember>(
 
 	const failCall = (stage: "read" | "provider-error" | "no-finish", error?: unknown): void => {
 		if (callId === null) return;
+		callOpen = false;
 		obs?.fail();
 		log.error("model call failed", undefined, {
 			...baseFields,
 			callId,
 			stage,
-			...(error === undefined ? {} : { errorName: error instanceof Error ? error.name : "provider-error" }),
+			...(error === undefined
+				? {}
+				: { errorName: error instanceof Error ? error.name : "provider-error" }),
 		});
 		callId = null;
 		obs = undefined;
@@ -337,6 +370,7 @@ export async function driveClaude<M extends WireMember>(
 	const finishStep = (message: ClaudeMessage): void => {
 		run.stepCount += 1;
 		run.pendingCall = false;
+		callOpen = false;
 		const usage = message.usage;
 		const input = billedInput(usage);
 		run.lastInput = input;
@@ -424,6 +458,7 @@ export async function driveClaude<M extends WireMember>(
 				const d = ev.delta;
 				if (d.type === "text_delta" && typeof d.text === "string") {
 					spendPendingCall();
+					run.streamedBlocks.add(ev.index);
 					const id = blockId(ev.index, "text");
 					if (run.sawText && run.lastTextPartId !== id) head.onTextDelta("\n\n");
 					run.lastTextPartId = id;
@@ -436,6 +471,7 @@ export async function driveClaude<M extends WireMember>(
 					d.thinking !== ""
 				) {
 					spendPendingCall();
+					run.streamedBlocks.add(ev.index);
 					head.onReasoningDelta(d.thinking);
 					emit({
 						type: "reasoning-delta",
@@ -464,6 +500,9 @@ export async function driveClaude<M extends WireMember>(
 
 	const handleAssistant = (message: ClaudeMessage, error: string | undefined): void => {
 		run.lastAssistantError = error;
+		// A complete assistant message without preceding stream frames (a
+		// call the CLI chose not to stream) still opens its model call.
+		if (!callOpen) beginCall();
 		if (message.content.length > 0) spendPendingCall();
 		// Close any blocks the stream never stopped (defensive; the CLI
 		// emits content_block_stop for each).
@@ -476,9 +515,20 @@ export async function driveClaude<M extends WireMember>(
 			emit({ type: "reasoning-end", id: blockId(index, "reasoning") });
 		}
 		run.blockIds.clear();
+		const streamed = new Set(run.streamedBlocks);
+		run.streamedBlocks.clear();
 		const assistantContent: AssistantPart[] = [];
-		for (const block of message.content) {
-			const part = wireFromBlock(run, eventsDeps, emit, head, block, deps.journal, deps.runId);
+		for (const [index, block] of message.content.entries()) {
+			const part = wireFromBlock(
+				run,
+				eventsDeps,
+				emit,
+				head,
+				block,
+				streamed.has(index),
+				deps.journal,
+				deps.runId,
+			);
 			if (part !== null) assistantContent.push(part);
 		}
 		if (message.content.some((b) => b.type === "tool_use")) run.sawToolUse = true;
@@ -497,13 +547,15 @@ export async function driveClaude<M extends WireMember>(
 			const adopted = bridge.adoptResult(pending?.name ?? name, pending?.input ?? null);
 			run.pendingToolUse.delete(block.tool_use_id);
 			const output =
-				adopted !== null && adopted.output !== null ? adopted.output : echoContentText(block.content);
+				adopted !== null && adopted.output !== null
+					? adopted.output
+					: echoContentText(block.content);
 			const errorText =
 				adopted?.error ?? (block.is_error === true ? echoContentText(block.content) : null);
 			if (errorText !== null) {
 				emit({ type: "tool-output-error", toolCallId: block.tool_use_id, errorText });
 				noteToolError(run.events, eventsDeps, block.tool_use_id, errorText);
-				run.parts.push({
+				evolveToolPart(run, block.tool_use_id, {
 					type: `tool-${name}` as never,
 					toolCallId: block.tool_use_id,
 					state: "output-error",
@@ -519,7 +571,7 @@ export async function driveClaude<M extends WireMember>(
 			} else {
 				emit({ type: "tool-output-available", toolCallId: block.tool_use_id, output });
 				noteToolOutput(run.events, eventsDeps, block.tool_use_id, output);
-				run.parts.push({
+				evolveToolPart(run, block.tool_use_id, {
 					type: `tool-${name}` as never,
 					toolCallId: block.tool_use_id,
 					state: "output-available",
@@ -545,7 +597,8 @@ export async function driveClaude<M extends WireMember>(
 	deps.signal.addEventListener("abort", onAbort, { once: true });
 
 	const childEnv = await claudeChildEnv(engine.auth, step.auth, engine.configDir);
-	const bridge = createToolBridge({ convId, tools: deps.tools });
+	const makeBridge = engine.bridgeFactory ?? createToolBridge;
+	const bridge = makeBridge({ convId, tools: deps.tools });
 
 	const messageId = randomUUID();
 	emit({ type: "start", messageId });
@@ -651,7 +704,7 @@ export async function driveClaude<M extends WireMember>(
 						cacheWriteTokens: run.totalCacheWrite ?? undefined,
 					},
 					outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
-			};
+				};
 
 	// The window record rides both outcome rails, gated on stepCount —
 	// a prompt a call never completed is not a window anything saw.
@@ -668,6 +721,9 @@ export async function driveClaude<M extends WireMember>(
 
 	deps.assertAuthority();
 	if (streamError !== null) {
+		// Failed turns surface an error chunk on the wire, like the API
+		// lane's error part — overflow recovery is the one holdback.
+		if (!holdForRecovery) emit({ type: "error", errorText: streamError });
 		return {
 			kind: "failed",
 			errorText: streamError,
@@ -708,9 +764,7 @@ export async function driveClaude<M extends WireMember>(
 	};
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
 	const responseMessage: UIMessage | null =
-		run.parts.length > 0
-			? { id: messageId, role: "assistant", parts: run.parts, metadata }
-			: null;
+		run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts, metadata } : null;
 
 	return {
 		kind: "ok",
@@ -736,8 +790,13 @@ function wireFromBlock(
 	run: RunState,
 	eventsDeps: Parameters<typeof noteToolOutput>[1],
 	emit: (chunk: UIMessageChunk) => void,
-	head: { onTextDelta(delta: string): void; onToolCall(toolName: string, input: unknown): void },
+	head: {
+		onTextDelta(delta: string): void;
+		onReasoningDelta(delta: string): void;
+		onToolCall(toolName: string, input: unknown): void;
+	},
 	block: ClaudeContentBlock,
+	streamed: boolean,
 	journal: TurnJournal | undefined,
 	runId: string,
 ): AssistantPart | null {
@@ -745,12 +804,16 @@ function wireFromBlock(
 		case "text": {
 			const text = block.text ?? "";
 			if (text !== "") run.parts.push({ type: "text", text });
+			// The display sink heard streamed deltas already; a block that
+			// only arrives complete still needs its head notification.
+			if (!streamed && text !== "") head.onTextDelta(text);
 			return { type: "text", text };
 		}
 		case "thinking":
 		case "redacted_thinking": {
 			const text = block.thinking ?? "";
 			if (text !== "") run.parts.push({ type: "reasoning", text });
+			if (!streamed && text !== "") head.onReasoningDelta(text);
 			return null;
 		}
 		case "tool_use": {
@@ -778,6 +841,7 @@ function wireFromBlock(
 				state: "input-available",
 				input,
 			});
+			emit({ type: "tool-input-available", toolCallId: id, toolName: name, input });
 			return { type: "tool-call", toolCallId: id, toolName: name, input };
 		}
 		default:
@@ -785,4 +849,3 @@ function wireFromBlock(
 			return null;
 	}
 }
-

@@ -13,11 +13,11 @@
 // queued results (FIFO, exact (name, input) match preferred) to emit
 // exact goblin outputs on the wire. The two namespaces never mix.
 
-import { asSchema } from "ai";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
 import type { ToolSet } from "ai";
+import { asSchema } from "ai";
+import { z } from "zod";
 import { log } from "../../log.ts";
 
 export const MCP_SERVER_NAME = "goblin";
@@ -25,6 +25,11 @@ export const MCP_SERVER_NAME = "goblin";
 export interface BridgeResult {
 	name: string;
 	input: unknown;
+	output: unknown;
+	error: string | null;
+}
+
+export interface BridgeInvokeResult {
 	output: unknown;
 	error: string | null;
 }
@@ -38,6 +43,12 @@ export interface ToolBridge {
 	adoptResult(name: string, input: unknown): BridgeResult | null;
 	/** Every bridged tool name — the surface the model actually sees. */
 	toolNames(): string[];
+	/**
+	 * Execute a bridged tool's handler directly — the same closure the MCP
+	 * registration holds. Tests drive real executions through this without
+	 * the child CLI; nothing in-process calls it in production.
+	 */
+	invoke(name: string, input: unknown): Promise<BridgeInvokeResult>;
 }
 
 // A JSON-Schema'd tool's object schema, decomposed property-by-property
@@ -122,8 +133,13 @@ export interface ToolBridgeDeps {
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	const { convId, tools } = deps;
 	const results: BridgeResult[] = [];
-	let callSeq = 0;
-	const definitions: Array<ReturnType<typeof sdkTool>> = [];
+	const handlers = new Map<
+		string,
+		(input: Record<string, unknown>) => Promise<{
+			content: Array<{ type: "text"; text: string }>;
+			isError?: boolean;
+		}>
+	>();
 	const names: string[] = [];
 
 	for (const [name, t] of Object.entries(tools)) {
@@ -133,29 +149,25 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		const schema = asSchema(t.inputSchema);
 		const shape = rawShapeFor(schema.jsonSchema);
 		names.push(name);
-		definitions.push(
-			sdkTool(
-				name,
-				description,
-				shape ?? { args: z.unknown().optional() },
-				async (
-					input: Record<string, unknown>,
-				): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> => {
-					const callId = `claude-${(callSeq += 1)}`;
-					// Parsed input or a loud tool error — the model sees the
-					// issues and can re-ask, like the API lane's tool errors.
-					let args: unknown;
-					try {
-						if (schema.validate === undefined) {
-							// A schema with no validator (raw jsonSchema pass-
-							// through): the CLI validated the zod properties we
-							// derived; execute's own guards are the backstop.
-							args = input;
-						} else {
-							args = await schema.validate(input);
-						}
-					} catch (err) {
-						const errorText = `invalid arguments for ${name}: ${issueText(err)}`;
+		handlers.set(
+			name,
+			async (
+				input: Record<string, unknown>,
+			): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> => {
+				const callId = `claude-${results.length + 1}-${names.indexOf(name)}`;
+				// Parsed input or a loud tool error — the model sees the
+				// issues and can re-ask, like the API lane's tool errors.
+				// Schema.validate is safeParse-shaped ({success, value|error}).
+				let args: unknown;
+				if (schema.validate === undefined) {
+					// A schema with no validator (raw jsonSchema pass-
+					// through): the CLI validated the zod properties we
+					// derived; execute's own guards are the backstop.
+					args = input;
+				} else {
+					const parsed = await schema.validate(input);
+					if (!parsed.success) {
+						const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
 						log.warn("tool call rejected", {
 							conversation: convId,
 							tool: name,
@@ -165,29 +177,40 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 						results.push({ name, input, output: null, error: errorText });
 						return { content: [{ type: "text", text: errorText }], isError: true };
 					}
-					try {
-						const output = await execute(args as never, {
-							toolCallId: callId,
-							messages: [] as never,
-							context: {} as never,
-						});
-						results.push({ name, input: args, output, error: null });
-						if (t.toModelOutput === undefined) {
-							return { content: [{ type: "text", text: resultText(output) }] };
-						}
-						const shaped = await t.toModelOutput({
-							output,
-							toolCallId: callId,
-							input: args as never,
-						});
-						return callToolResult(shaped);
-					} catch (err) {
-						const errorText = err instanceof Error ? err.message : String(err);
-						results.push({ name, input: args, output: null, error: errorText });
-						return { content: [{ type: "text", text: errorText }], isError: true };
+					args = parsed.value;
+				}
+				try {
+					const output = await execute(args as never, {
+						toolCallId: callId,
+						messages: [] as never,
+						context: {} as never,
+					});
+					results.push({ name, input: args, output, error: null });
+					if (t.toModelOutput === undefined) {
+						return { content: [{ type: "text", text: resultText(output) }] };
 					}
-				},
-			),
+					const shaped = await t.toModelOutput({
+						output,
+						toolCallId: callId,
+						input: args as never,
+					});
+					return callToolResult(shaped);
+				} catch (err) {
+					const errorText = err instanceof Error ? err.message : String(err);
+					results.push({ name, input: args, output: null, error: errorText });
+					return { content: [{ type: "text", text: errorText }], isError: true };
+				}
+			},
+		);
+	}
+	const definitions: Array<ReturnType<typeof sdkTool>> = [];
+	for (const [name, t] of Object.entries(tools)) {
+		const handler = handlers.get(name);
+		if (handler === undefined) continue;
+		const description = typeof t.description === "string" ? t.description : name;
+		const shape = rawShapeFor(asSchema(t.inputSchema).jsonSchema);
+		definitions.push(
+			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, handler),
 		);
 	}
 
@@ -201,6 +224,18 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		server: () => server,
 		allowedTools: () => [`mcp__${MCP_SERVER_NAME}`],
 		toolNames: () => names,
+		invoke: async (name, input) => {
+			const handler = handlers.get(name);
+			if (handler === undefined) {
+				return { output: null, error: `no bridged tool named ${name}` };
+			}
+			const r = await handler(input as Record<string, unknown>);
+			const queued = results[results.length - 1];
+			if (r.isError === true) {
+				return { output: null, error: queued?.error ?? r.content[0]?.text ?? "tool failed" };
+			}
+			return { output: queued?.output ?? null, error: null };
+		},
 		adoptResult: (name, input) => {
 			// Prefer an exact (name, input) match — identical parallel calls
 			// fall through to FIFO order, which is the CLI's dispatch order.

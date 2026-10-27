@@ -3,17 +3,17 @@
 // (module-boundaries.test.ts); everything the engine needs from the
 // vendor is adapted into the pinned shapes of translate.ts here.
 
-import { query as vendorQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query as vendorQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { ToolSet } from "ai";
-import type { MediaPosition } from "../attachments.ts";
-import type { WireMember, StreamOutcome } from "../../turn/stream.ts";
 import type { AuthStore } from "../../auth.ts";
-import type { ConfigRef } from "../../config.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { StreamOutcome, WireMember } from "../../turn/stream.ts";
+import type { MediaPosition } from "../attachments.ts";
 import type { ClaudeCodeThinking } from "../thinking.ts";
-import { driveClaude, type ClaudeEngineConfig, type ClaudeRunDeps } from "./engine.ts";
 import { claudeChildEnv } from "./auth.ts";
+import { type ClaudeEngineConfig, type ClaudeRunDeps, driveClaude } from "./engine.ts";
 import type {
 	ClaudeEvent,
 	ClaudeQuery,
@@ -119,14 +119,16 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 			const content =
 				typeof msg.message.content === "string"
 					? msg.message.content
-				: (msg.message.content as unknown[]).filter(
+					: (msg.message.content as unknown[]).filter(
 							(b): b is ClaudeToolResultBlock =>
-								typeof b === "object" && b !== null && (b as { type?: unknown }).type === "tool_result",
+								typeof b === "object" &&
+								b !== null &&
+								(b as { type?: unknown }).type === "tool_result",
 						);
 			return {
-					type: "user",
-					content,
-					...(msg.tool_use_result !== undefined ? { toolUseResult: msg.tool_use_result } : {}),
+				type: "user",
+				content,
+				...(msg.tool_use_result !== undefined ? { toolUseResult: msg.tool_use_result } : {}),
 			};
 		}
 		case "result": {
@@ -137,18 +139,18 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 					? msg.result
 					: `${msg.subtype}: ${"errors" in msg ? ((msg.errors as string[]) ?? []).join("; ") : ""}`;
 			return {
-					type: "result",
-					subtype: msg.subtype,
-					isError: msg.is_error,
-					result: text,
-					numTurns: msg.num_turns,
-					durationMs: msg.duration_ms,
-					totalCostUsd: msg.total_cost_usd,
-					usage: msg.usage,
-					modelUsage: msg.modelUsage,
-					...(msg.terminal_reason !== undefined
-						? { terminalReason: msg.terminal_reason as string | null }
-						: {}),
+				type: "result",
+				subtype: msg.subtype,
+				isError: msg.is_error,
+				result: text,
+				numTurns: msg.num_turns,
+				durationMs: msg.duration_ms,
+				totalCostUsd: msg.total_cost_usd,
+				usage: msg.usage,
+				modelUsage: msg.modelUsage,
+				...(msg.terminal_reason !== undefined
+					? { terminalReason: msg.terminal_reason as string | null }
+					: {}),
 			};
 		}
 		default:

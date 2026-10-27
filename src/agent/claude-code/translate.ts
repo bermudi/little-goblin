@@ -72,7 +72,11 @@ export type ClaudeStreamEvent =
 			delta: { type: string; text?: string; thinking?: string; partial_json?: string };
 	  }
 	| { type: "content_block_stop"; index: number }
-	| { type: "message_delta"; delta: { stop_reason: string | null }; usage: Partial<ClaudeUsage> | null }
+	| {
+			type: "message_delta";
+			delta: { stop_reason: string | null };
+			usage: Partial<ClaudeUsage> | null;
+	  }
 	| { type: "message_stop" };
 
 // ---------- frames ----------

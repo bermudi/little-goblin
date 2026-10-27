@@ -42,13 +42,16 @@ type PromptBlock = Extract<PromptContent["blocks"][number], { kind: "image" | "d
 function mediaBlock(mediaType: string, data: unknown, filename?: string): PromptBlock | null {
 	const b64 = toBase64(data);
 	if (b64 === null) return null;
-	const kind: PromptBlock["kind"] | null = mediaType.startsWith("image/")
-		? "image"
-		: mediaType === "application/pdf"
-			? "document"
-			: null;
-	if (kind === null) return null;
-	return { kind, mediaType, data: b64, ...(filename !== undefined ? { filename } : {}) };
+	// Anthropic image blocks carry no filename; documents do.
+	if (mediaType.startsWith("image/")) return { kind: "image", mediaType, data: b64 };
+	if (mediaType === "application/pdf")
+		return {
+			kind: "document",
+			mediaType,
+			data: b64,
+			...(filename !== undefined ? { filename } : {}),
+		};
+	return null;
 }
 
 function capped(text: string): string {
@@ -146,9 +149,7 @@ function messageBlocks(msg: ModelMessage, out: PromptContent["blocks"]): void {
 					// Dropped — thinking blocks cannot replay without signatures.
 				} else if (part.type === "tool-call") {
 					calls.push(
-						`[tool call: ${String(part.toolName)}]\n${capped(
-							safeJson(part.input ?? {}),
-						)}`,
+						`[tool call: ${String(part.toolName)}]\n${capped(safeJson(part.input ?? {}))}`,
 					);
 				}
 			}

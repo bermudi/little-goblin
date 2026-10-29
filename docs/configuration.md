@@ -201,7 +201,9 @@ and relays the answers. This is the only way the bot can see an image
 file's content (images you send in chat are already visible to
 vision-capable models); `followUp: true` continues the previous thread
 about the same image. The model ref uses the same `providers` map as your
-daily driver, and its output is capped by `maxTokens` (default 2000).
+daily driver, and its output is capped by `maxTokens` (default 2000 — an
+empty answer, a thinking model spending the cap on reasoning, re-asks
+once at up to 4× before failing).
 
 `mode` decides when the tool is in the set: `"auto"` (default) registers
 it only while the chat model can't consume images itself — exactly the

@@ -269,14 +269,43 @@ describe("askVision — provider edge", () => {
 		expect(second.followUps).toBe(0);
 	});
 
-	test("empty answer fails loud with the budget diagnosis", async () => {
+	test("empty answer re-asks once at a raised budget, then fails loud", async () => {
 		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, [], () => answer("   ")),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => answer("   ")),
+			),
+		).rejects.toThrow(/empty answer.*re-ask at 8000 maxTokens/s);
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.maxOutputTokens).toBe(2000);
+		expect(calls[1]!.maxOutputTokens).toBe(8000);
+	});
+
+	test("empty then answer — the raised-budget re-ask recovers the call", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		let n = 0;
+		const result = await askVision(
+			query(),
+			deps({ model: "zai/glm-5.3-flash" }, calls, () => answer(n++ === 0 ? "   " : "a chart")),
+		);
+		expect(result.answer).toBe("a chart");
+		expect(calls).toHaveLength(2);
+		expect(calls[1]!.maxOutputTokens).toBe(8000);
+	});
+
+	test("an empty answer at the budget cap does not re-ask", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () => answer("   ")),
 			),
 		).rejects.toThrow(/empty answer.*maxTokens/s);
+		expect(calls).toHaveLength(1);
 	});
 
 	test("provider errors propagate untouched", async () => {
